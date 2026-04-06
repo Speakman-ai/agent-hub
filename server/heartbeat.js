@@ -163,10 +163,16 @@ export async function runHeartbeat(agent) {
  */
 export async function runCronJob(cronJob) {
   console.log(`[Cron] Running "${cronJob.name}"...`);
+  const logEntry = stmts.addCronLog.run(cronJob.id, 'running');
+  const logId = logEntry.lastInsertRowid;
+  const startTime = Date.now();
+
   try {
     const result = await runClaude(cronJob.prompt, cronJob.cwd);
+    const durationMs = Date.now() - startTime;
     stmts.updateCronResult.run(result, cronJob.id);
-    console.log(`[Cron] "${cronJob.name}" completed successfully`);
+    stmts.updateCronLog.run(result, 'success', durationMs, logId);
+    console.log(`[Cron] "${cronJob.name}" completed successfully (${durationMs}ms)`);
 
     // Notify for cron results too
     if (SLACK_WEBHOOK_URL) {
@@ -179,15 +185,19 @@ export async function runCronJob(cronJob) {
       }
     }
 
-    return { status: 'success', result };
+    return { id: logId, status: 'success', result };
   } catch (err) {
     const errorMsg = err.message || 'Unknown error';
+    const durationMs = Date.now() - startTime;
     stmts.updateCronResult.run(`ERROR: ${errorMsg}`, cronJob.id);
+    stmts.updateCronLog.run(errorMsg, 'error', durationMs, logId);
     console.error(`[Cron] "${cronJob.name}" failed:`, errorMsg);
-    return { status: 'error', result: errorMsg };
+    return { id: logId, status: 'error', result: errorMsg };
   } finally {
     const task = scheduledTasks.get(`cron:${cronJob.id}`);
     if (task) persistNextRun('cron', cronJob.id, task);
+    // Keep only the last 100 logs per cron
+    try { stmts.pruneCronLogs.run(cronJob.id, cronJob.id); } catch {}
   }
 }
 

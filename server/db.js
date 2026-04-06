@@ -79,6 +79,19 @@ db.exec(`
     timestamp TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS cron_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cron_id INTEGER NOT NULL,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'success', 'error')),
+    result TEXT,
+    duration_ms INTEGER,
+    FOREIGN KEY (cron_id) REFERENCES crons(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_cron_logs_cron ON cron_logs(cron_id);
+  CREATE INDEX IF NOT EXISTS idx_cron_logs_timestamp ON cron_logs(timestamp);
+
   CREATE INDEX IF NOT EXISTS idx_heartbeat_agent ON heartbeat_logs(agent_id);
   CREATE INDEX IF NOT EXISTS idx_heartbeat_timestamp ON heartbeat_logs(timestamp);
   CREATE INDEX IF NOT EXISTS idx_slack_agent ON slack_messages(agent_id);
@@ -253,6 +266,22 @@ const stmts = {
   ),
   updateCronNextRun: db.prepare(
     'UPDATE crons SET next_run_at = ? WHERE id = ?'
+  ),
+
+  // Cron logs
+  addCronLog: db.prepare(
+    'INSERT INTO cron_logs (cron_id, status) VALUES (?, ?)'
+  ),
+  updateCronLog: db.prepare(
+    'UPDATE cron_logs SET result = ?, status = ?, duration_ms = ? WHERE id = ?'
+  ),
+  getCronLogs: db.prepare(
+    'SELECT * FROM cron_logs WHERE cron_id = ? ORDER BY timestamp DESC LIMIT ?'
+  ),
+  pruneCronLogs: db.prepare(
+    `DELETE FROM cron_logs WHERE cron_id = ? AND id NOT IN (
+       SELECT id FROM cron_logs WHERE cron_id = ? ORDER BY timestamp DESC LIMIT 100
+     )`
   ),
 
   // Session events (stream-json telemetry for chat/heartbeat/cron runs)

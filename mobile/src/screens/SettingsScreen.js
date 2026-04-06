@@ -179,6 +179,8 @@ function CronSection() {
   const [crons, setCrons] = useState([]);
   const [running, setRunning] = useState({});
   const [showForm, setShowForm] = useState(false);
+  const [cronLogs, setCronLogs] = useState({});
+  const [expandedLog, setExpandedLog] = useState(null);
   const [form, setForm] = useState({
     name: '',
     schedule: '',
@@ -187,8 +189,31 @@ function CronSection() {
     enabled: true,
   });
 
+  const refreshLogs = async (cronList) => {
+    const entries = await Promise.all(
+      (cronList || crons).map(async (c) => {
+        try {
+          const logs = await api.getCronLogs(c.id, 3);
+          return [c.id, logs];
+        } catch {
+          return [c.id, []];
+        }
+      })
+    );
+    setCronLogs(Object.fromEntries(entries));
+  };
+
   useEffect(() => {
-    api.getCrons().then(setCrons).catch(console.error);
+    const load = async () => {
+      try {
+        const data = await api.getCrons();
+        setCrons(data);
+        await refreshLogs(data);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    load();
   }, []);
 
   const toggleCron = async (cronJob) => {
@@ -294,6 +319,96 @@ function CronSection() {
                   cwd: {cronJob.cwd}
                   {cronJob.last_run && ` · Last: ${relativeTime(cronJob.last_run)}`}
                 </Text>
+                {/* Recent runs — clickable status dots */}
+                {cronLogs[cronJob.id]?.length > 0 && (
+                  <View style={{ marginTop: 6 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={{ fontSize: 11, color: colors.gray500 }}>Runs:</Text>
+                      {cronLogs[cronJob.id].map((log) => {
+                        const key = `${cronJob.id}:${log.id}`;
+                        const isExpanded = expandedLog === key;
+                        const dotColor =
+                          log.status === 'success' ? '#10b981' :
+                          log.status === 'error' ? '#ef4444' :
+                          log.status === 'running' ? '#fbbf24' : '#6b7280';
+                        return (
+                          <TouchableOpacity
+                            key={log.id}
+                            onPress={() => setExpandedLog(isExpanded ? null : key)}
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 4,
+                              paddingHorizontal: 6,
+                              paddingVertical: 3,
+                              borderRadius: 4,
+                              backgroundColor: isExpanded ? colors.gray700 : colors.gray800,
+                              borderWidth: isExpanded ? 1 : 0,
+                              borderColor: colors.gray600,
+                            }}
+                          >
+                            <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: dotColor }} />
+                            <Text style={{ fontSize: 10, color: colors.gray400 }}>
+                              {relativeTime(log.timestamp)}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                    {cronLogs[cronJob.id].map((log) => {
+                      const key = `${cronJob.id}:${log.id}`;
+                      if (expandedLog !== key) return null;
+                      return (
+                        <View key={`detail-${log.id}`} style={{
+                          marginTop: 8,
+                          backgroundColor: colors.gray900,
+                          borderRadius: 8,
+                          padding: 10,
+                          borderWidth: 1,
+                          borderColor: colors.gray700,
+                        }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                              <Text style={{
+                                fontSize: 11,
+                                fontWeight: '600',
+                                color: log.status === 'success' ? '#10b981' :
+                                       log.status === 'error' ? '#ef4444' :
+                                       log.status === 'running' ? '#fbbf24' : colors.gray400,
+                              }}>
+                                {log.status === 'success' ? '✓ Success' :
+                                 log.status === 'error' ? '✗ Error' :
+                                 log.status === 'running' ? '⏳ Running' : log.status}
+                              </Text>
+                              <Text style={{ fontSize: 10, color: colors.gray500 }}>
+                                {new Date(log.timestamp).toLocaleString()}
+                              </Text>
+                              {log.duration_ms != null && (
+                                <Text style={{ fontSize: 10, color: colors.gray500, fontFamily: 'monospace' }}>
+                                  {(log.duration_ms / 1000).toFixed(1)}s
+                                </Text>
+                              )}
+                            </View>
+                            <TouchableOpacity onPress={() => setExpandedLog(null)}>
+                              <Text style={{ fontSize: 11, color: colors.gray500 }}>✕</Text>
+                            </TouchableOpacity>
+                          </View>
+                          {log.result ? (
+                            <ScrollView style={{ maxHeight: 160 }}>
+                              <Text style={{ fontSize: 11, color: colors.gray400, fontFamily: 'monospace' }}>
+                                {log.result}
+                              </Text>
+                            </ScrollView>
+                          ) : (
+                            <Text style={{ fontSize: 11, color: colors.gray600, fontStyle: 'italic' }}>
+                              No output yet
+                            </Text>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
               </View>
               <View style={styles.actionButtons}>
                 <TouchableOpacity

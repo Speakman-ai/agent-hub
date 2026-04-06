@@ -181,6 +181,8 @@ function CronSection() {
   const [running, setRunning] = useState({});
   const [showForm, setShowForm] = useState(false);
   const [, setTick] = useState(0);
+  const [cronLogs, setCronLogs] = useState({});       // { [cronId]: log[] }
+  const [expandedLog, setExpandedLog] = useState(null); // "cronId:logId"
   const [form, setForm] = useState({
     name: '',
     schedule: '',
@@ -189,8 +191,31 @@ function CronSection() {
     enabled: true,
   });
 
+  /** Fetch last-3 logs for every cron */
+  const refreshLogs = async (cronList) => {
+    const entries = await Promise.all(
+      (cronList || crons).map(async (c) => {
+        try {
+          const logs = await api.getCronLogs(c.id, 3);
+          return [c.id, logs];
+        } catch {
+          return [c.id, []];
+        }
+      })
+    );
+    setCronLogs(Object.fromEntries(entries));
+  };
+
   useEffect(() => {
-    const refresh = () => api.getCrons().then(setCrons).catch(console.error);
+    const refresh = async () => {
+      try {
+        const data = await api.getCrons();
+        setCrons(data);
+        await refreshLogs(data);
+      } catch (e) {
+        console.error(e);
+      }
+    };
     refresh();
     const pollId = setInterval(refresh, 60_000);
     const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
@@ -319,15 +344,87 @@ function CronSection() {
                     <> · Last: {relativeTime(cronJob.last_run)}</>
                   )}
                 </p>
-                {cronJob.last_result && (
-                  <details className="mt-1">
-                    <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400">
-                      Last result
-                    </summary>
-                    <pre className="text-xs text-gray-400 whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto bg-gray-900 rounded p-2">
-                      {cronJob.last_result}
-                    </pre>
-                  </details>
+                {/* Recent runs — clickable status dots */}
+                {cronLogs[cronJob.id]?.length > 0 && (
+                  <div className="mt-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-gray-500 mr-0.5">Runs:</span>
+                      {cronLogs[cronJob.id].map((log) => {
+                        const key = `${cronJob.id}:${log.id}`;
+                        const isExpanded = expandedLog === key;
+                        const statusColor =
+                          log.status === 'success'
+                            ? 'bg-emerald-500'
+                            : log.status === 'error'
+                            ? 'bg-red-500'
+                            : log.status === 'running'
+                            ? 'bg-amber-400 animate-pulse'
+                            : 'bg-gray-500';
+                        const durationLabel = log.duration_ms != null
+                          ? `${(log.duration_ms / 1000).toFixed(1)}s`
+                          : '';
+                        return (
+                          <button
+                            key={log.id}
+                            onClick={() => setExpandedLog(isExpanded ? null : key)}
+                            title={`${log.status} — ${new Date(log.timestamp).toLocaleString()}${durationLabel ? ` (${durationLabel})` : ''}`}
+                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors ${
+                              isExpanded
+                                ? 'bg-gray-700 ring-1 ring-gray-500'
+                                : 'bg-gray-800 hover:bg-gray-700'
+                            }`}
+                          >
+                            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
+                            <span className="text-gray-400">{relativeTime(log.timestamp)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {/* Expanded log result */}
+                    {cronLogs[cronJob.id].map((log) => {
+                      const key = `${cronJob.id}:${log.id}`;
+                      if (expandedLog !== key) return null;
+                      return (
+                        <div key={`detail-${log.id}`} className="mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700/50">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs font-medium ${
+                                log.status === 'success' ? 'text-emerald-400' :
+                                log.status === 'error' ? 'text-red-400' :
+                                log.status === 'running' ? 'text-amber-400' :
+                                'text-gray-400'
+                              }`}>
+                                {log.status === 'success' ? '✓ Success' :
+                                 log.status === 'error' ? '✗ Error' :
+                                 log.status === 'running' ? '⏳ Running' : log.status}
+                              </span>
+                              <span className="text-xs text-gray-500">
+                                {new Date(log.timestamp).toLocaleString()}
+                              </span>
+                              {log.duration_ms != null && (
+                                <span className="text-xs text-gray-500 font-mono">
+                                  {(log.duration_ms / 1000).toFixed(1)}s
+                                </span>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => setExpandedLog(null)}
+                              className="text-xs text-gray-500 hover:text-gray-300"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                          {log.result ? (
+                            <pre className="text-xs text-gray-400 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                              {log.result}
+                            </pre>
+                          ) : (
+                            <p className="text-xs text-gray-600 italic">No output yet</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
               <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">

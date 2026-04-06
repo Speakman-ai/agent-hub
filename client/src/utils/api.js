@@ -68,6 +68,8 @@ export const api = {
 
   // Crons
   getCrons: () => fetchJSON('/crons'),
+  getCronLogs: (id, limit = 3) =>
+    fetchJSON(`/crons/${id}/logs?limit=${limit}`),
   createCron: (data) =>
     fetchJSON('/crons', { method: 'POST', body: JSON.stringify(data) }),
   updateCron: (id, data) =>
