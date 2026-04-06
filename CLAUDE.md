@@ -11,11 +11,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Build Commands  
 - `npm run build` - Build the client React application
-- `npm install:all` - Install dependencies for root, server, and client
+- `npm install:all` - Install dependencies for root, server, client, and mobile
 
 ### Individual Component Commands
 - **Client**: `cd client && npm run dev` (Vite dev server on port 3050)
 - **Server**: `cd server && npm start` (Express server on port 3051)
+- **Mobile**: `npm run mobile` or `cd mobile && expo start` (Expo dev server)
 
 ## Architecture Overview
 
@@ -42,6 +43,16 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Skills browser** - View and manage agent-specific skills
 - **Settings pages** - Configure agents, heartbeats, cron jobs
 - **Memory interface** - View and edit agent memory files
+
+**Mobile (`/mobile`)**
+- **React Native + Expo** mobile app (iOS & Android)
+- **1:1 feature parity** with the web client
+- **Drawer navigation** for agent/session sidebar (swipe to open)
+- **Real-time chat** via WebSocket with streaming responses
+- **Skills & Context** - Browse skills and edit context files
+- **Settings** - Heartbeats, cron jobs, Slack bots, agent configuration
+- **Auto-connects** to local server using Expo's dev host detection
+- **Dark theme** matching the web app's color palette
 
 ### Key Architecture Patterns
 

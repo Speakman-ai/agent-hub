@@ -3,7 +3,7 @@ import Sidebar from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
 import ChatMessage from './components/ChatMessage.jsx';
 import ThinkingIndicator from './components/ThinkingIndicator.jsx';
-import StreamingMessage from './components/StreamingMessage.jsx';
+import SessionTail from './components/SessionTail.jsx';
 import MessageInput from './components/MessageInput.jsx';
 import AgentSwitcher from './components/AgentSwitcher.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
@@ -26,7 +26,18 @@ export default function App() {
   const [currentView, setCurrentView] = useState('chat');
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Map of sessionId -> running task state ({messageId, content, engine, model}).
+  // Populated from the server's snapshot on connect and updated as stream events arrive.
+  // Used to (a) restore streaming state when switching sessions and (b) power the
+  // "running" indicator in the sidebar.
+  const [activeTasks, setActiveTasks] = useState({});
+  // Map of messageId -> array of { seq, event } for the SessionTail timeline.
+  // Populated by 'session-event' WS messages (live) or via api.getMessageEvents
+  // (historical, lazy on first SessionTail render).
+  const [eventsByMessage, setEventsByMessage] = useState({});
   const messagesEndRef = useRef(null);
+  const activeSessionIdRef = useRef(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
 
@@ -41,28 +52,107 @@ export default function App() {
 
   // WebSocket handler
   const handleWsMessage = useCallback((data) => {
+    // Is this event for the session the user is currently viewing?
+    const forActiveSession =
+      data.sessionId && data.sessionId === activeSessionIdRef.current;
+    // 'message' events use message.session_id rather than top-level sessionId.
+    const msgForActiveSession =
+      data.message?.session_id === activeSessionIdRef.current;
+
     switch (data.type) {
+      case 'active-tasks-snapshot': {
+        // Rebuild active-task map from server snapshot.
+        const next = {};
+        for (const t of data.tasks || []) {
+          next[t.sessionId] = {
+            messageId: t.messageId,
+            content: t.content || '',
+            engine: t.engine || null,
+            model: t.model || null,
+          };
+        }
+        setActiveTasks(next);
+        // If the currently viewed session has an in-flight task, restore streaming state.
+        const sid = activeSessionIdRef.current;
+        if (sid && next[sid]) {
+          const t = next[sid];
+          setStreamingMsgId(t.messageId);
+          setStreamingContent(t.content);
+          setStreamingEngine(t.engine);
+          setThinking(!t.content);
+        }
+        break;
+      }
       case 'message':
-        if (data.message.role === 'user') {
+        if (data.message.role === 'user' && msgForActiveSession) {
           setMessages((prev) => [...prev, data.message]);
         }
         break;
       case 'thinking':
-        setThinking(true);
-        setStreamingMsgId(data.messageId);
-        setStreamingEngine(data.engine || null);
+        // Always track the task; only update the visible indicator if it's our session.
+        setActiveTasks((prev) => ({
+          ...prev,
+          [data.sessionId]: {
+            messageId: data.messageId,
+            content: '',
+            engine: data.engine || null,
+            model: data.model || null,
+          },
+        }));
+        if (forActiveSession) {
+          setThinking(true);
+          setStreamingMsgId(data.messageId);
+          setStreamingEngine(data.engine || null);
+          setStreamingContent('');
+        }
         break;
       case 'stream':
-        setThinking(false);
-        setStreamingContent(data.content);
-        setStreamingEngine(data.engine || null);
+        setActiveTasks((prev) => ({
+          ...prev,
+          [data.sessionId]: {
+            ...(prev[data.sessionId] || {}),
+            messageId: data.messageId,
+            content: data.content,
+            engine: data.engine || null,
+          },
+        }));
+        if (forActiveSession) {
+          setThinking(false);
+          setStreamingContent(data.content);
+          setStreamingEngine(data.engine || null);
+        }
         break;
+      case 'session-event': {
+        // Append a single event to the message's timeline. Dedup by seq in case
+        // a reconnect causes the server to replay something we already have.
+        // The common case is strictly increasing seq, so fast-path the append.
+        const { messageId, seq, event } = data;
+        if (!messageId) break;
+        setEventsByMessage((prev) => {
+          const existing = prev[messageId] || [];
+          const last = existing[existing.length - 1];
+          if (!last || last.seq < seq) {
+            return { ...prev, [messageId]: [...existing, { seq, event }] };
+          }
+          if (existing.some((e) => e.seq === seq)) return prev;
+          const next = [...existing, { seq, event }].sort((a, b) => a.seq - b.seq);
+          return { ...prev, [messageId]: next };
+        });
+        break;
+      }
       case 'done':
-        setThinking(false);
-        setStreamingContent('');
-        setStreamingMsgId(null);
-        setStreamingEngine(null);
-        setMessages((prev) => [...prev, data.message]);
+        setActiveTasks((prev) => {
+          const next = { ...prev };
+          delete next[data.sessionId];
+          return next;
+        });
+        if (forActiveSession) {
+          setThinking(false);
+          setStreamingContent('');
+          setStreamingMsgId(null);
+          setStreamingEngine(null);
+          setMessages((prev) => [...prev, data.message]);
+        }
         break;
       case 'session-updated':
         setSessions((prev) =>
@@ -72,26 +162,45 @@ export default function App() {
         );
         break;
       case 'error':
-        setThinking(false);
-        setStreamingContent('');
-        setStreamingMsgId(null);
-        setStreamingEngine(null);
-        if (data.error) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: data.messageId || `err-${Date.now()}`,
-              role: 'assistant',
-              content: `⚠️ Error: ${data.error}`,
-              created_at: new Date().toISOString(),
-            },
-          ]);
+        if (data.sessionId) {
+          setActiveTasks((prev) => {
+            const next = { ...prev };
+            delete next[data.sessionId];
+            return next;
+          });
+        }
+        if (forActiveSession) {
+          setThinking(false);
+          setStreamingContent('');
+          setStreamingMsgId(null);
+          setStreamingEngine(null);
+          if (data.error) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: data.messageId || `err-${Date.now()}`,
+                role: 'assistant',
+                content: `⚠️ Error: ${data.error}`,
+                created_at: new Date().toISOString(),
+              },
+            ]);
+          }
         }
         break;
     }
   }, []);
 
   const { send, connected, reconnecting } = useWebSocket(handleWsMessage);
+
+  // Called by SessionTail after it lazy-fetches historical events for a
+  // legacy message. Hoists them into the shared map so subsequent renders
+  // don't refetch.
+  const handleEventsLoaded = useCallback((messageId, events) => {
+    setEventsByMessage((prev) => {
+      if (prev[messageId]) return prev; // already populated by live stream
+      return { ...prev, [messageId]: events };
+    });
+  }, []);
 
   const refreshAgents = useCallback(() => {
     api.getAgents().then((data) => {
@@ -144,6 +253,31 @@ export default function App() {
       return;
     }
     api.getMessages(activeSessionId).then(setMessages);
+  }, [activeSessionId]);
+
+  // When the user switches sessions, rehydrate streaming state from the
+  // in-memory active-tasks map so an in-flight task on another session becomes
+  // visible as soon as you click into it.
+  useEffect(() => {
+    if (!activeSessionId) {
+      setThinking(false);
+      setStreamingContent('');
+      setStreamingMsgId(null);
+      setStreamingEngine(null);
+      return;
+    }
+    const t = activeTasks[activeSessionId];
+    if (t) {
+      setStreamingMsgId(t.messageId);
+      setStreamingContent(t.content);
+      setStreamingEngine(t.engine);
+      setThinking(!t.content);
+    } else {
+      setThinking(false);
+      setStreamingContent('');
+      setStreamingMsgId(null);
+      setStreamingEngine(null);
+    }
   }, [activeSessionId]);
 
   // Keyboard shortcuts
@@ -282,6 +416,7 @@ export default function App() {
             setSidebarOpen(false);
           }}
           currentView={currentView}
+          activeTaskSessionIds={activeTasks}
         />
       </div>
 
@@ -321,21 +456,39 @@ export default function App() {
                     </p>
                   </div>
                 )}
-                {messages.map((msg) => (
-                  <ChatMessage
-                    key={msg.id}
-                    message={msg}
-                    agentColor={activeAgent?.color}
-                  />
-                ))}
-                {thinking && (
+                {messages.map((msg) =>
+                  msg.role === 'assistant' ? (
+                    <SessionTail
+                      key={msg.id}
+                      message={msg}
+                      events={eventsByMessage[msg.id]}
+                      agentColor={activeAgent?.color}
+                      onEventsLoaded={handleEventsLoaded}
+                    />
+                  ) : (
+                    <ChatMessage
+                      key={msg.id}
+                      message={msg}
+                      agentColor={activeAgent?.color}
+                    />
+                  )
+                )}
+                {thinking && !streamingMsgId && (
                   <ThinkingIndicator agentColor={activeAgent?.color} />
                 )}
-                {streamingContent && (
-                  <StreamingMessage
-                    content={streamingContent}
+                {streamingMsgId && (
+                  <SessionTail
+                    key={streamingMsgId}
+                    message={{
+                      id: streamingMsgId,
+                      role: 'assistant',
+                      engine: streamingEngine,
+                      model: sessionModel,
+                      content: streamingContent,
+                    }}
+                    events={eventsByMessage[streamingMsgId]}
                     agentColor={activeAgent?.color}
-                    engine={streamingEngine}
+                    streaming
                   />
                 )}
                 <div ref={messagesEndRef} />

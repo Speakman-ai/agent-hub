@@ -30,30 +30,3 @@ export function formatElapsed(seconds) {
   const sec = seconds % 60;
   return `${min}m ${sec}s`;
 }
-
-/**
- * Format a future date string as "in Xm" / "in 2h" etc.
- * Returns { label, overdue } where overdue=true means the date is in the past.
- */
-export function relativeFuture(dateStr) {
-  if (!dateStr) return { label: '', overdue: false };
-  const date = new Date(dateStr);
-  const d = dateStr.includes('T') ? date : new Date(dateStr + 'Z');
-  const diffMs = d - new Date();
-  const overdue = diffMs < 0;
-  const absSec = Math.floor(Math.abs(diffMs) / 1000);
-  const absMin = Math.floor(absSec / 60);
-  const absHr = Math.floor(absMin / 60);
-  const absDay = Math.floor(absHr / 24);
-
-  let magnitude;
-  if (absSec < 60) magnitude = `${absSec}s`;
-  else if (absMin < 60) magnitude = `${absMin}m`;
-  else if (absHr < 24) magnitude = `${absHr}h`;
-  else magnitude = `${absDay}d`;
-
-  return {
-    label: overdue ? `overdue ${magnitude}` : `in ${magnitude}`,
-    overdue,
-  };
-}

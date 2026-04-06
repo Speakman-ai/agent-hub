@@ -8,7 +8,9 @@
     "dev:client": "cd client && npx vite --port 3050",
     "build": "cd client && npx vite build",
     "start": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "install:all": "npm install && cd server && npm install && cd ../client && npm install"
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install && cd ../mobile && npm install",
+    "dev:mobile": "cd mobile && expo start",
+    "mobile": "cd mobile && expo start"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
