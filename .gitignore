@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Build output
+client/dist/
+
+# Environment & secrets
+.env
+.env.*
+
+# Slack config (may contain tokens)
+server/slack-config.json
+server/slack-config.json.real
+server/slack-config.json.ready
+
+# Backup files
+server/*-backup.json
+
+# OS files
+.DS_Store
+Thumbs.db

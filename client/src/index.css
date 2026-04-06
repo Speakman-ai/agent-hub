@@ -1,0 +1,101 @@
+/* Import highlight.js theme */
+@import 'highlight.js/styles/github-dark.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
+/* Code block styling */
+pre {
+  @apply bg-gray-900 rounded-lg p-4 overflow-x-auto my-2;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+code {
+  @apply text-sm;
+}
+:not(pre) > code {
+  @apply bg-gray-800 px-1.5 py-0.5 rounded text-emerald-400;
+}
+
+/* Override highlight.js background to match our theme */
+pre code.hljs {
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+/* Markdown content */
+.markdown-content h1 { @apply text-2xl font-bold mt-4 mb-2; }
+.markdown-content h2 { @apply text-xl font-bold mt-3 mb-2; }
+.markdown-content h3 { @apply text-lg font-semibold mt-3 mb-1; }
+.markdown-content p { @apply my-1.5 leading-relaxed; }
+.markdown-content ul { @apply list-disc pl-6 my-2; }
+.markdown-content ol { @apply list-decimal pl-6 my-2; }
+.markdown-content li { @apply my-0.5; }
+.markdown-content a { @apply text-blue-400 hover:underline; }
+.markdown-content blockquote { @apply border-l-4 border-gray-600 pl-4 italic my-2 text-gray-400; }
+.markdown-content table { @apply border-collapse my-2; }
+.markdown-content th { @apply border border-gray-700 px-3 py-1 bg-gray-800; }
+.markdown-content td { @apply border border-gray-700 px-3 py-1; }
+.markdown-content hr { @apply border-gray-700 my-4; }
+
+/* Thinking animation */
+@keyframes pulse-dot {
+  0%, 80%, 100% { opacity: 0.3; }
+  40% { opacity: 1; }
+}
+.thinking-dot {
+  animation: pulse-dot 1.4s infinite;
+}
+.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* Sidebar responsive */
+.sidebar-container {
+  width: 16rem;
+}
+
+@media (max-width: 767px) {
+  .sidebar-container {
+    width: 18rem;
+  }
+}
+
+/* Touch-friendly targets */
+button, a, [role="button"] {
+  touch-action: manipulation;
+}
+
+/* Safe area insets for notched phones */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Ensure code blocks don't break mobile layout */
+.markdown-content pre {
+  max-width: calc(100vw - 4rem);
+}
+
+@media (max-width: 639px) {
+  .markdown-content pre {
+    max-width: calc(100vw - 3rem);
+  }
+  .markdown-content pre code {
+    font-size: 0.75rem;
+  }
+}

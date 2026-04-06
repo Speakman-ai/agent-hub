@@ -1,0 +1,20 @@
+{
+  "name": "agent-hub-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.6.0",
+    "better-sqlite3": "^11.7.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "gray-matter": "^4.0.3",
+    "node-cron": "^4.2.1",
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0"
+  }
+}
