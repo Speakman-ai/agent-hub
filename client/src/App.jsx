@@ -47,18 +47,33 @@ export default function App() {
   activeRoomIdRef.current = activeRoomId;
 
   const messagesEndRef = useRef(null);
+  const scrollContainerRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
 
   // Auto-scroll — instant on initial load, smooth for live updates.
-  // Uses rAF to ensure the browser has painted new content before scrolling.
+  // Only auto-scrolls if user is already near the bottom (within threshold).
   const initialScrollRef = useRef(true);
   const scrollRafRef = useRef(null);
+  const isNearBottomRef = useRef(true);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+
+  const checkNearBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return true;
+    const threshold = 150;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  }, []);
+
+  const handleScrollEvent = useCallback(() => {
+    const nearBottom = checkNearBottom();
+    isNearBottomRef.current = nearBottom;
+    setShowScrollBtn(!nearBottom);
+  }, [checkNearBottom]);
 
   const scrollToBottom = useCallback((instant) => {
-    // Cancel any pending scroll to avoid stacking
     if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
     scrollRafRef.current = requestAnimationFrame(() => {
       messagesEndRef.current?.scrollIntoView({
@@ -67,16 +82,19 @@ export default function App() {
     });
   }, []);
 
-  // useLayoutEffect fires synchronously after DOM mutation but before paint,
-  // the rAF inside then fires after paint — guaranteeing content is rendered.
+  // Auto-scroll on new content, but only if user is near the bottom or it's initial load.
   useLayoutEffect(() => {
-    scrollToBottom(initialScrollRef.current);
+    if (initialScrollRef.current || isNearBottomRef.current) {
+      scrollToBottom(initialScrollRef.current);
+    }
     initialScrollRef.current = false;
   }, [messages, thinking, streamingContent, scrollToBottom]);
 
   // Reset to instant scroll when switching sessions
   useLayoutEffect(() => {
     initialScrollRef.current = true;
+    isNearBottomRef.current = true;
+    setShowScrollBtn(false);
   }, [activeSessionId]);
 
   // WebSocket handler
@@ -609,7 +627,11 @@ export default function App() {
         ) : (
           <>
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-3 md:p-6">
+            <div
+              ref={scrollContainerRef}
+              onScroll={handleScrollEvent}
+              className="flex-1 overflow-y-auto p-3 md:p-6 relative"
+            >
               <div className="max-w-4xl mx-auto">
                 {messages.length === 0 && !thinking && !streamingContent && (
                   <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
@@ -660,6 +682,26 @@ export default function App() {
                 )}
                 <div ref={messagesEndRef} />
               </div>
+
+              {/* Scroll to bottom button */}
+              {showScrollBtn && (
+                <button
+                  onClick={() => scrollToBottom(false)}
+                  className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
+                  style={{ width: 'fit-content', display: 'flex' }}
+                >
+                  <svg
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2.5}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                  </svg>
+                  Scroll to bottom
+                </button>
+              )}
             </div>
 
             {/* Input */}
