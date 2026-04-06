@@ -13,6 +13,7 @@ import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 
 export default function App() {
+  const [projects, setProjects] = useState([]);
   const [agents, setAgents] = useState([]);
   const [activeAgentId, _setActiveAgentId] = useState(() => {
     return localStorage.getItem('activeAgentId') || null;
@@ -353,21 +354,29 @@ export default function App() {
   }, []);
 
   const refreshAgents = useCallback(() => {
-    api.getAgents().then((data) => {
-      setAgents(data);
+    api.getProjects().then((data) => {
+      setProjects(data);
+      const flat = data.flatMap((p) =>
+        p.agents.map((a) => ({ ...a, projectId: p.id, projectName: p.name, cwd: p.cwd, ahw: p.ahw }))
+      );
+      setAgents(flat);
     });
   }, []);
 
-  // Load agents on mount
+  // Load projects + agents on mount
   useEffect(() => {
-    api.getAgents().then((data) => {
-      setAgents(data);
+    api.getProjects().then((data) => {
+      setProjects(data);
+      const flat = data.flatMap((p) =>
+        p.agents.map((a) => ({ ...a, projectId: p.id, projectName: p.name, cwd: p.cwd, ahw: p.ahw }))
+      );
+      setAgents(flat);
       const storedId = localStorage.getItem('activeAgentId');
-      const storedAgentExists = storedId && data.some((a) => a.id === storedId);
+      const storedAgentExists = storedId && flat.some((a) => a.id === storedId);
       if (storedAgentExists) {
         setActiveAgentId(storedId);
-      } else if (data.length > 0) {
-        setActiveAgentId(data[0].id);
+      } else if (flat.length > 0) {
+        setActiveAgentId(flat[0].id);
       }
     });
   }, []);
@@ -627,6 +636,7 @@ export default function App() {
         }`}
       >
         <Sidebar
+          projects={projects}
           agents={agents}
           activeAgentId={activeAgentId}
           onSelectAgent={(id) => {
@@ -676,7 +686,7 @@ export default function App() {
         />
 
         {currentView === 'settings' ? (
-          <SettingsPage agents={agents} onAgentsChange={refreshAgents} />
+          <SettingsPage projects={projects} agents={agents} onAgentsChange={refreshAgents} />
         ) : currentView === 'skills' ? (
           <SkillsPage agents={agents} />
         ) : currentView === 'room' && activeRoom ? (

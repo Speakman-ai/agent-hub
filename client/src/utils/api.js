@@ -10,6 +10,19 @@ async function fetchJSON(url, options = {}) {
 }
 
 export const api = {
+  // Projects
+  getProjects: () => fetchJSON('/projects'),
+  getProject: (projectId) => fetchJSON(`/projects/${projectId}`),
+  createProject: (data) =>
+    fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
+  updateProject: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteProject: (projectId) =>
+    fetch(`${API_BASE}/projects/${projectId}`, { method: 'DELETE' }).then((res) => {
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      return null;
+    }),
+
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`),

@@ -62,8 +62,12 @@ const config = {
   /** Fallback cwd when an agent has no cwd set */
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME),
 
-  /** Where agents.json lives (default: same dir as this file) */
+  /** Where data files live (projects.json, db, etc.) */
   dataDir:    resolve('AGENT_HUB_DATA_DIR', 'dataDir', __dirname),
+
+  /** Base directory for project ahw directories */
+  projectsDir: resolve('AGENT_HUB_PROJECTS_DIR', 'projectsDir',
+    path.join(HOME, '.openclaw', 'projects')),
 
   // ── Models ─────────────────────────────────────────────────────
   defaultModel: resolve(null, 'defaultModel', 'claude-opus-4-6'),

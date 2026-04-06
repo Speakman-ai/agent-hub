@@ -629,7 +629,7 @@ function SlackSection() {
   );
 }
 
-function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
+function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChange }) {
   const [agents, setAgents] = useState(initialAgents);
   const [expanded, setExpanded] = useState(null);
   const [saving, setSaving] = useState({});
@@ -641,8 +641,7 @@ function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
     id: '',
     name: '',
     engine: 'claude-code',
-    cwd: '/home/ryan',
-    workspace: '',
+    projectId: projects[0]?.id || '',
     color: '#6b7280',
     systemPrompt: '',
     heartbeat: { enabled: false, interval: '', prompt: '' },
@@ -697,7 +696,7 @@ function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
       const created = await api.createAgent(newForm);
       setAgents((prev) => [...prev, created]);
       setShowNew(false);
-      setNewForm({ id: '', name: '', engine: 'claude-code', cwd: '/home/ryan', workspace: '', color: '#6b7280', systemPrompt: '', heartbeat: { enabled: false, interval: '', prompt: '' } });
+      setNewForm({ id: '', name: '', engine: 'claude-code', projectId: projects[0]?.id || '', color: '#6b7280', systemPrompt: '', heartbeat: { enabled: false, interval: '', prompt: '' } });
       if (onAgentsChange) onAgentsChange();
     } catch (e) {
       console.error('Failed to create agent:', e);
@@ -791,20 +790,20 @@ function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
             </div>
           </div>
           <div>
-            <label className={labelClass}>Working Directory</label>
-            <input
-              value={newForm.cwd}
-              onChange={(e) => setNewForm({ ...newForm, cwd: e.target.value })}
+            <label className={labelClass}>Project</label>
+            <select
+              value={newForm.projectId}
+              onChange={(e) => setNewForm({ ...newForm, projectId: e.target.value })}
               className={inputClass}
-            />
-          </div>
-          <div>
-            <label className={labelClass}>Workspace</label>
-            <input
-              value={newForm.workspace}
-              onChange={(e) => setNewForm({ ...newForm, workspace: e.target.value })}
-              className={inputClass}
-            />
+              required
+            >
+              <option value="" disabled>Select a project...</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} — {p.cwd}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
             <label className={labelClass}>System Prompt</label>
@@ -850,8 +849,10 @@ function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-gray-500 font-mono mt-0.5 truncate">
-                    {agent.cwd}
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    {agent.projectName && <span className="text-gray-400">{agent.projectName}</span>}
+                    {agent.projectName && agent.cwd && <span className="mx-1">·</span>}
+                    <span className="font-mono">{agent.cwd}</span>
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -925,21 +926,11 @@ function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
                   </div>
 
                   <div>
-                    <label className={labelClass}>Working Directory (CWD)</label>
-                    <input
-                      value={edit.cwd || ''}
-                      onChange={(e) => setEdit(agent.id, 'cwd', e.target.value)}
-                      className={inputClass}
-                    />
-                  </div>
-
-                  <div>
-                    <label className={labelClass}>Workspace</label>
-                    <input
-                      value={edit.workspace || ''}
-                      onChange={(e) => setEdit(agent.id, 'workspace', e.target.value)}
-                      className={inputClass}
-                    />
+                    <label className={labelClass}>Project</label>
+                    <p className="text-sm text-gray-300 font-mono bg-gray-900 rounded-lg px-3 py-2">
+                      {agent.projectName || 'Unknown'}{' '}
+                      <span className="text-gray-500">— {agent.cwd || 'no cwd'}</span>
+                    </p>
                   </div>
 
                   <div>
@@ -1220,8 +1211,8 @@ function ConfigBackupSection({ onAgentsChange }) {
     reader.onload = (ev) => {
       try {
         const data = JSON.parse(ev.target.result);
-        if (data.version !== 1) {
-          setImportError('Invalid export file - expected version 1');
+        if (data.version !== 1 && data.version !== 2) {
+          setImportError('Invalid export file - expected version 1 or 2');
           setPreview(null);
           return;
         }
@@ -1309,8 +1300,16 @@ function ConfigBackupSection({ onAgentsChange }) {
             <div className="bg-gray-900 rounded-lg p-3 mb-3 text-sm">
               <p className="text-gray-300 mb-2 font-medium">Preview:</p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-400">
+                <span>Version:</span>
+                <span className="text-white">v{preview.version}</span>
+                {preview.projects && (
+                  <>
+                    <span>Projects:</span>
+                    <span className="text-white">{preview.projects?.length || 0}</span>
+                  </>
+                )}
                 <span>Agents:</span>
-                <span className="text-white">{preview.agents?.length || 0}</span>
+                <span className="text-white">{preview.agents?.length || (preview.projects?.reduce((n, p) => n + (p.agents?.length || 0), 0) || 0)}</span>
                 <span>Crons:</span>
                 <span className="text-white">{preview.crons?.length || 0}</span>
                 <span>Rooms:</span>
@@ -1367,7 +1366,7 @@ function ConfigBackupSection({ onAgentsChange }) {
   );
 }
 
-export default function SettingsPage({ agents, onAgentsChange }) {
+export default function SettingsPage({ projects = [], agents, onAgentsChange }) {
   const [tab, setTab] = useState('heartbeats');
 
   const tabs = [
@@ -1403,7 +1402,7 @@ export default function SettingsPage({ agents, onAgentsChange }) {
         {tab === 'heartbeats' && <HeartbeatSection />}
         {tab === 'crons' && <CronSection />}
         {tab === 'slack' && <SlackSection />}
-        {tab === 'agents' && <AgentConfigSection agents={agents} onAgentsChange={onAgentsChange} />}
+        {tab === 'agents' && <AgentConfigSection agents={agents} projects={projects} onAgentsChange={onAgentsChange} />}
         {tab === 'usage' && <UsageSection />}
         {tab === 'backup' && <ConfigBackupSection onAgentsChange={onAgentsChange} />}
       </div>
