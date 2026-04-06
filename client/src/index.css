@@ -54,6 +54,15 @@ pre code.hljs {
 .markdown-content td { @apply border border-gray-700 px-3 py-1; }
 .markdown-content hr { @apply border-gray-700 my-4; }
 
+/* Toast slide-in animation */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.animate-slide-in {
+  animation: slide-in-right 0.3s ease-out;
+}
+
 /* Thinking animation */
 @keyframes pulse-dot {
   0%, 80%, 100% { opacity: 0.3; }

@@ -1,4 +1,4 @@
-import React, { memo, useState, useCallback } from 'react';
+import React, { memo, useState, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -33,6 +33,76 @@ function CodeBlock({ children, className }) {
   );
 }
 
+function ImageLightbox({ src, alt, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 cursor-zoom-out"
+      onClick={onClose}
+    >
+      <img
+        src={src}
+        alt={alt}
+        className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
+      />
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center bg-gray-800 rounded-full text-white hover:bg-gray-700 transition-colors"
+      >
+        x
+      </button>
+    </div>
+  );
+}
+
+function MessageAttachments({ attachments }) {
+  const [lightboxSrc, setLightboxSrc] = useState(null);
+
+  const parsed = useMemo(() => {
+    if (!attachments) return [];
+    try {
+      return typeof attachments === 'string' ? JSON.parse(attachments) : attachments;
+    } catch {
+      return [];
+    }
+  }, [attachments]);
+
+  if (parsed.length === 0) return null;
+
+  // Build the display URL: prefer the server-hosted /uploads/ path
+  const getDisplayUrl = (img) => {
+    if (img.url) return img.url;
+    if (img.dataUrl) return img.dataUrl;
+    return null;
+  };
+
+  return (
+    <>
+      <div className={`flex flex-wrap gap-2 ${parsed.length > 0 ? 'mb-2' : ''}`}>
+        {parsed.map((img, i) => {
+          const src = getDisplayUrl(img);
+          if (!src) return null;
+          return (
+            <img
+              key={img.id || i}
+              src={src}
+              alt={img.originalName || img.name || 'attachment'}
+              className="max-h-48 max-w-xs rounded-lg border border-gray-600/50 cursor-zoom-in hover:brightness-110 transition-all"
+              onClick={() => setLightboxSrc(src)}
+            />
+          );
+        })}
+      </div>
+      {lightboxSrc && (
+        <ImageLightbox
+          src={lightboxSrc}
+          alt="Full size image"
+          onClose={() => setLightboxSrc(null)}
+        />
+      )}
+    </>
+  );
+}
+
 const ENGINE_BADGES = {
   'claude-code': { emoji: '🟣', label: 'Claude Code' },
   'cursor-agent': { emoji: '🟢', label: 'Cursor Agent' },
@@ -56,10 +126,16 @@ function ChatMessage({ message, agentColor }) {
     },
   };
 
+  // Don't show "(image attached)" as text if it was auto-generated and there are actual attachments
+  const displayContent = useMemo(() => {
+    if (message.content === '(image attached)' && message.attachments) return '';
+    return message.content;
+  }, [message.content, message.attachments]);
+
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
       <div
-        className={`max-w-[90%] sm:max-w-[80%] ${
+        className={`max-w-[95%] sm:max-w-[90%] ${
           isUser
             ? 'bg-blue-600 rounded-2xl rounded-br-md px-4 py-2.5'
             : 'bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3'
@@ -83,9 +159,13 @@ function ChatMessage({ message, agentColor }) {
             )}
           </div>
         )}
+
+        {/* Render image attachments */}
+        <MessageAttachments attachments={message.attachments} />
+
         <div className={isUser ? 'text-white' : 'markdown-content text-gray-200'}>
           {isUser ? (
-            <p className="whitespace-pre-wrap">{message.content}</p>
+            displayContent ? <p className="whitespace-pre-wrap">{displayContent}</p> : null
           ) : (
             <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={components}>
               {message.content}

@@ -219,9 +219,18 @@ function CronSection() {
     refresh();
     const pollId = setInterval(refresh, 60_000);
     const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
+
+    // When a babysit cron is cleaned up server-side, remove it from local state
+    const onBabysitCleaned = (e) => {
+      const { cronId } = e.detail;
+      if (cronId) setCrons((prev) => prev.filter((c) => c.id !== cronId));
+    };
+    window.addEventListener('babysit-cleaned', onBabysitCleaned);
+
     return () => {
       clearInterval(pollId);
       clearInterval(tickId);
+      window.removeEventListener('babysit-cleaned', onBabysitCleaned);
     };
   }, []);
 
@@ -1174,6 +1183,190 @@ function UsageSection() {
   );
 }
 
+function ConfigBackupSection({ onAgentsChange }) {
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [importError, setImportError] = useState(null);
+  const [preview, setPreview] = useState(null);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const data = await api.exportConfig();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `agent-hub-export-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export failed:', err);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportResult(null);
+    setImportError(null);
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.version !== 1) {
+          setImportError('Invalid export file - expected version 1');
+          setPreview(null);
+          return;
+        }
+        setPreview(data);
+      } catch {
+        setImportError('Invalid JSON file');
+        setPreview(null);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleImport = async () => {
+    if (!preview) return;
+    setImporting(true);
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const result = await api.importConfig(preview);
+      setImportResult(result);
+      setPreview(null);
+      if (onAgentsChange) onAgentsChange();
+    } catch (err) {
+      setImportError(err.message || 'Import failed');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setPreview(null);
+    setImportResult(null);
+    setImportError(null);
+  };
+
+  return (
+    <div>
+      <h3 className="text-lg font-semibold mb-4">Export / Import Configuration</h3>
+      <p className="text-sm text-gray-400 mb-6">
+        Export your Agent Hub configuration (agents, crons, rooms, Slack mappings) as a JSON file.
+        Import it on another instance to replicate your setup. Slack tokens are redacted on export
+        - you'll need to re-enter them manually. Agent workspace directories should be moved separately.
+      </p>
+
+      {/* Export */}
+      <div className="bg-gray-800/50 rounded-lg p-4 mb-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h4 className="font-medium mb-1">Export Configuration</h4>
+            <p className="text-sm text-gray-400">
+              Downloads agents, crons, rooms, and settings as a single JSON file.
+            </p>
+          </div>
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 disabled:text-gray-400 text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
+          >
+            {exporting ? 'Exporting...' : 'Download Export'}
+          </button>
+        </div>
+      </div>
+
+      {/* Import */}
+      <div className="bg-gray-800/50 rounded-lg p-4">
+        <h4 className="font-medium mb-1">Import Configuration</h4>
+        <p className="text-sm text-gray-400 mb-3">
+          Upload a previously exported JSON file. Agents are overwritten; crons and rooms are merged by name (duplicates skipped).
+        </p>
+
+        {!preview && (
+          <label className="inline-flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium transition-colors cursor-pointer">
+            Choose File
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+          </label>
+        )}
+
+        {preview && (
+          <div className="mt-3">
+            <div className="bg-gray-900 rounded-lg p-3 mb-3 text-sm">
+              <p className="text-gray-300 mb-2 font-medium">Preview:</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-400">
+                <span>Agents:</span>
+                <span className="text-white">{preview.agents?.length || 0}</span>
+                <span>Crons:</span>
+                <span className="text-white">{preview.crons?.length || 0}</span>
+                <span>Rooms:</span>
+                <span className="text-white">{preview.rooms?.length || 0}</span>
+                <span>Slack accounts:</span>
+                <span className="text-white">{preview.slack?.accounts?.length || 0}</span>
+                {preview.exportedAt && (
+                  <>
+                    <span>Exported:</span>
+                    <span className="text-white">{new Date(preview.exportedAt).toLocaleString()}</span>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleImport}
+                disabled={importing}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 disabled:text-gray-400 text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                {importing ? 'Importing...' : 'Import'}
+              </button>
+              <button
+                onClick={handleCancel}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {importResult && (
+          <div className="mt-3 bg-emerald-900/30 border border-emerald-700/50 rounded-lg p-3">
+            <p className="text-emerald-400 font-medium text-sm mb-1">{importResult.message}</p>
+            <div className="text-xs text-gray-400 space-y-0.5">
+              {Object.entries(importResult.results || {}).map(([key, val]) => (
+                <p key={key}>
+                  <span className="text-gray-300 capitalize">{key}:</span>{' '}
+                  {val === true ? 'Updated' : val === false ? 'Skipped' : String(val)}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {importError && (
+          <div className="mt-3 bg-red-900/30 border border-red-700/50 rounded-lg p-3">
+            <p className="text-red-400 text-sm">{importError}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsPage({ agents, onAgentsChange }) {
   const [tab, setTab] = useState('heartbeats');
 
@@ -1183,6 +1376,7 @@ export default function SettingsPage({ agents, onAgentsChange }) {
     { id: 'slack', label: '💬 Slack' },
     { id: 'agents', label: '🤖 Agents' },
     { id: 'usage', label: '📊 Usage' },
+    { id: 'backup', label: '💾 Backup' },
   ];
 
   return (
@@ -1211,6 +1405,7 @@ export default function SettingsPage({ agents, onAgentsChange }) {
         {tab === 'slack' && <SlackSection />}
         {tab === 'agents' && <AgentConfigSection agents={agents} onAgentsChange={onAgentsChange} />}
         {tab === 'usage' && <UsageSection />}
+        {tab === 'backup' && <ConfigBackupSection onAgentsChange={onAgentsChange} />}
       </div>
     </div>
   );

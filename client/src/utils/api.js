@@ -109,10 +109,22 @@ export const api = {
       body: JSON.stringify({ content }),
     }),
 
+  // Upload
+  uploadImage: (dataUrl, filename) =>
+    fetchJSON('/upload', {
+      method: 'POST',
+      body: JSON.stringify({ dataUrl, filename }),
+    }),
+
   // Slack
   getSlackStatus: () => fetchJSON('/slack/status'),
   restartSlack: () =>
     fetchJSON('/slack/restart', { method: 'POST' }),
   getSlackMessages: (agentId, limit = 50) =>
     fetchJSON(`/slack/messages?${agentId ? `agentId=${agentId}&` : ''}limit=${limit}`),
+
+  // Config export/import
+  exportConfig: () => fetchJSON('/config/export'),
+  importConfig: (data) =>
+    fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
 };

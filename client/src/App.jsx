@@ -14,7 +14,13 @@ import { api } from './utils/api.js';
 
 export default function App() {
   const [agents, setAgents] = useState([]);
-  const [activeAgentId, setActiveAgentId] = useState(null);
+  const [activeAgentId, _setActiveAgentId] = useState(() => {
+    return localStorage.getItem('activeAgentId') || null;
+  });
+  const setActiveAgentId = useCallback((id) => {
+    if (id) localStorage.setItem('activeAgentId', id);
+    _setActiveAgentId(id);
+  }, []);
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -43,6 +49,10 @@ export default function App() {
   const [roomStreaming, setRoomStreaming] = useState(null);
   const [roomThinking, setRoomThinking] = useState(null);
   const [roomProcessing, setRoomProcessing] = useState(false);
+  // Skills for the active agent (for /slash-command autocomplete)
+  const [skills, setSkills] = useState([]);
+  // Toast notifications (e.g., babysit events)
+  const [toasts, setToasts] = useState([]);
   const activeRoomIdRef = useRef(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
 
@@ -302,6 +312,31 @@ export default function App() {
           setRoomStreaming(null);
         }
         break;
+
+      // ─── Babysit notifications ─────────────────────────────
+      case 'babysit_started': {
+        const toast = {
+          id: `babysit-start-${Date.now()}`,
+          type: 'info',
+          message: `Babysitting ${data.repoSlug}#${data.prNumber} — watching until green`,
+          duration: 8000,
+        };
+        setToasts((prev) => [...prev, toast]);
+        break;
+      }
+      case 'babysit_complete': {
+        const toast = {
+          id: `babysit-done-${Date.now()}`,
+          type: 'success',
+          message: `${data.repoSlug}#${data.prNumber} is green and ready to merge!`,
+          duration: 15000,
+        };
+        setToasts((prev) => [...prev, toast]);
+        // Babysit cron has been deleted server-side — notify settings page
+        // by dispatching a custom event that SettingsPage can listen for.
+        window.dispatchEvent(new CustomEvent('babysit-cleaned', { detail: { cronId: data.cronId } }));
+        break;
+      }
     }
   }, []);
 
@@ -327,7 +362,13 @@ export default function App() {
   useEffect(() => {
     api.getAgents().then((data) => {
       setAgents(data);
-      if (data.length > 0) setActiveAgentId(data[0].id);
+      const storedId = localStorage.getItem('activeAgentId');
+      const storedAgentExists = storedId && data.some((a) => a.id === storedId);
+      if (storedAgentExists) {
+        setActiveAgentId(storedId);
+      } else if (data.length > 0) {
+        setActiveAgentId(data[0].id);
+      }
     });
   }, []);
 
@@ -347,6 +388,17 @@ export default function App() {
         setSessionModel('claude-opus-4-6');
       }
     });
+  }, [activeAgentId]);
+
+  // Load skills for slash-command autocomplete when agent changes
+  useEffect(() => {
+    if (!activeAgentId) {
+      setSkills([]);
+      return;
+    }
+    api.getSkills(activeAgentId)
+      .then(setSkills)
+      .catch(() => setSkills([]));
   }, [activeAgentId]);
 
   // Update session engine/model when session changes
@@ -525,7 +577,7 @@ export default function App() {
     }
   };
 
-  const handleSend = async (content) => {
+  const handleSend = async (content, images = []) => {
     let sessionId = activeSessionId;
     if (!sessionId) {
       const session = await api.createSession(activeAgentId);
@@ -534,11 +586,25 @@ export default function App() {
       sessionId = session.id;
     }
 
+    // Upload images first, then send chat with references
+    let uploadedImages = [];
+    if (images.length > 0) {
+      try {
+        uploadedImages = await Promise.all(
+          images.map((img) => api.uploadImage(img.dataUrl, img.name))
+        );
+      } catch (err) {
+        console.error('Image upload failed:', err);
+        // Still send the text message even if upload fails
+      }
+    }
+
     send({
       type: 'chat',
       agentId: activeAgentId,
       sessionId,
       content,
+      ...(uploadedImages.length > 0 ? { images: uploadedImages } : {}),
     });
   };
 
@@ -632,7 +698,7 @@ export default function App() {
               onScroll={handleScrollEvent}
               className="flex-1 overflow-y-auto p-3 md:p-6 relative"
             >
-              <div className="max-w-4xl mx-auto">
+              <div className="mx-auto">
                 {messages.length === 0 && !thinking && !streamingContent && (
                   <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
                     <span className="text-5xl mb-4">💬</span>
@@ -711,6 +777,7 @@ export default function App() {
               disabled={!activeAgentId || !connected || isProcessing}
               isProcessing={isProcessing}
               agentColor={activeAgent?.color}
+              skills={skills}
             />
           </>
         )}
@@ -727,6 +794,58 @@ export default function App() {
           onClose={() => setShowSwitcher(false)}
         />
       )}
+
+      {/* Toast notifications (babysit events, etc.) */}
+      {toasts.length > 0 && (
+        <div className="fixed top-4 right-4 z-[60] flex flex-col gap-2 max-w-sm">
+          {toasts.map((toast) => (
+            <Toast
+              key={toast.id}
+              toast={toast}
+              onDismiss={() =>
+                setToasts((prev) => prev.filter((t) => t.id !== toast.id))
+              }
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Toast({ toast, onDismiss }) {
+  useEffect(() => {
+    if (toast.duration) {
+      const timer = setTimeout(onDismiss, toast.duration);
+      return () => clearTimeout(timer);
+    }
+  }, [toast.duration, onDismiss]);
+
+  const colors = {
+    info: 'bg-blue-900/90 border-blue-700 text-blue-100',
+    success: 'bg-emerald-900/90 border-emerald-700 text-emerald-100',
+    error: 'bg-red-900/90 border-red-700 text-red-100',
+  };
+  const icons = {
+    info: '👶',
+    success: '✅',
+    error: '⚠️',
+  };
+
+  return (
+    <div
+      className={`${colors[toast.type] || colors.info} border rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm flex items-start gap-2.5 animate-slide-in`}
+    >
+      <span className="text-lg flex-shrink-0">{icons[toast.type] || '💬'}</span>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium">{toast.message}</p>
+      </div>
+      <button
+        onClick={onDismiss}
+        className="text-current opacity-50 hover:opacity-100 flex-shrink-0 text-lg leading-none"
+      >
+        &times;
+      </button>
     </div>
   );
 }

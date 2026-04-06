@@ -194,6 +194,11 @@ function normalizeCursor(raw) {
       // to surface this — the chat already knows the user message — so skip it.
       return [];
 
+    case 'thinking':
+      // Cursor emits thinking events during model reasoning. Silently skip —
+      // these are internal chain-of-thought and not user-facing content.
+      return [];
+
     case 'assistant': {
       // Cursor emits multiple assistant events during streaming, plus a final
       // consolidated one without a `timestamp_ms` field. Skip the final to

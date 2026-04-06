@@ -1,8 +1,9 @@
-import React, { memo } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { memo, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
+import { API_BASE_URL } from '../utils/config';
 
 const ENGINE_BADGES = {
   'claude-code': { emoji: '🟣', label: 'Claude Code' },
@@ -124,12 +125,92 @@ const markdownStyles = {
   },
 };
 
+function MessageAttachments({ attachments }) {
+  const [lightboxUrl, setLightboxUrl] = useState(null);
+  const screenWidth = Dimensions.get('window').width;
+
+  const parsed = useMemo(() => {
+    if (!attachments) return [];
+    try {
+      return typeof attachments === 'string' ? JSON.parse(attachments) : attachments;
+    } catch {
+      return [];
+    }
+  }, [attachments]);
+
+  if (parsed.length === 0) return null;
+
+  const getDisplayUrl = (img) => {
+    if (img.url) return `${API_BASE_URL.replace('/api', '')}${img.url}`;
+    if (img.dataUrl) return img.dataUrl;
+    return null;
+  };
+
+  return (
+    <>
+      <View style={imageStyles.row}>
+        {parsed.map((img, i) => {
+          const src = getDisplayUrl(img);
+          if (!src) return null;
+          return (
+            <TouchableOpacity key={img.id || i} onPress={() => setLightboxUrl(src)} activeOpacity={0.8}>
+              <Image source={{ uri: src }} style={imageStyles.thumb} />
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+      {lightboxUrl && (
+        <Modal transparent visible animationType="fade" onRequestClose={() => setLightboxUrl(null)}>
+          <TouchableOpacity
+            style={imageStyles.lightbox}
+            activeOpacity={1}
+            onPress={() => setLightboxUrl(null)}
+          >
+            <Image
+              source={{ uri: lightboxUrl }}
+              style={{ width: screenWidth * 0.9, height: screenWidth * 0.9 }}
+              resizeMode="contain"
+            />
+          </TouchableOpacity>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+const imageStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 6,
+  },
+  thumb: {
+    width: 120,
+    height: 120,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  lightbox: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+});
+
 function ChatMessage({ message, agentColor }) {
   const isUser = message.role === 'user';
   const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;
   const modelLabel = !isUser && message.model
     ? message.model.replace('claude-', '').replace('-', ' ')
     : null;
+
+  const displayContent = useMemo(() => {
+    if (message.content === '(image attached)' && message.attachments) return '';
+    return message.content;
+  }, [message.content, message.attachments]);
 
   return (
     <View style={[styles.container, isUser ? styles.containerUser : styles.containerAssistant]}>
@@ -155,9 +236,12 @@ function ChatMessage({ message, agentColor }) {
           </View>
         )}
 
+        {/* Image attachments */}
+        <MessageAttachments attachments={message.attachments} />
+
         {/* Content */}
         {isUser ? (
-          <Text style={styles.userText}>{message.content}</Text>
+          displayContent ? <Text style={styles.userText}>{displayContent}</Text> : null
         ) : (
           <Markdown style={markdownStyles}>{message.content}</Markdown>
         )}

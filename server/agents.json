@@ -4,7 +4,7 @@
     "name": "Survey Tracker Dev",
     "cwd": "/home/ryan/.openclaw/agents/surveytracker-dev/workspace/surveytracker",
     "workspace": "/home/ryan/.openclaw/agents/surveytracker-dev/workspace",
-    "engine": "cursor-agent",
+    "engine": "claude-code",
     "systemPrompt": "You are the Survey Tracker development agent. You work on the mcsteen/surveytracker codebase.",
     "color": "#4F46E5",
     "heartbeat": {
@@ -18,7 +18,7 @@
     "name": "Relic Book Dev",
     "cwd": "/home/ryan/.openclaw/agents/relicbook-dev/workspace/relic-book",
     "workspace": "/home/ryan/.openclaw/agents/relicbook-dev/workspace",
-    "engine": "cursor-agent",
+    "engine": "claude-code",
     "systemPrompt": "You are the Relic Book development agent. You work on the speakmanra/relic-book codebase.",
     "color": "#059669",
     "heartbeat": {
@@ -32,7 +32,7 @@
     "name": "Pipeline Engine Dev",
     "cwd": "/home/ryan/.openclaw/agents/pipeline-engine-dev/workspace",
     "workspace": "/home/ryan/.openclaw/agents/pipeline-engine-dev/workspace",
-    "engine": "cursor-agent",
+    "engine": "claude-code",
     "systemPrompt": "You are the Pipeline Engine development agent.",
     "color": "#D97706",
     "heartbeat": {
@@ -68,6 +68,7 @@
       "enabled": false,
       "interval": "",
       "prompt": "Ensure that the dev server is still running and healthy on 192.168.50.127:3050"
-    }
+    },
+    "active": true
   }
 ]

@@ -1,9 +1,10 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import config from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, 'agent-hub.db');
+const DB_PATH = path.join(config.dataDir, 'agent-hub.db');
 
 const db = new Database(DB_PATH);
 
@@ -44,7 +45,7 @@ db.exec(`
     name TEXT NOT NULL,
     schedule TEXT NOT NULL,
     prompt TEXT NOT NULL,
-    cwd TEXT NOT NULL DEFAULT '/home/ryan',
+    cwd TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     last_run TEXT,
     last_result TEXT,
@@ -196,6 +197,20 @@ try {
   db.exec('ALTER TABLE rooms ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 10');
 }
 
+// Migration: add attachments column to messages (JSON array of image metadata)
+try {
+  db.prepare('SELECT attachments FROM messages LIMIT 1').get();
+} catch {
+  db.exec('ALTER TABLE messages ADD COLUMN attachments TEXT');
+}
+
+// Migration: add attachments column to room_messages
+try {
+  db.prepare('SELECT attachments FROM room_messages LIMIT 1').get();
+} catch {
+  db.exec('ALTER TABLE room_messages ADD COLUMN attachments TEXT');
+}
+
 // Seed default crons if table is empty
 const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get();
 if (cronCount.count === 0) {
@@ -206,14 +221,14 @@ if (cronCount.count === 0) {
     'dependabot-merger',
     '0 */6 * * *',
     'Check all repos (mcsteen/surveytracker, speakmanra/relic-book, speakmanra/homeinspector, speakmanra/pipeline-engine) for open Dependabot PRs using gh CLI. If any have passing CI, merge them with gh pr merge --squash.',
-    '/home/ryan',
+    config.defaultCwd,
     1
   );
   insertCron.run(
     'job-search-monitor',
     '0 8 * * 1-5',
     'Search for senior full-stack software engineer remote jobs. Check Gmail for any job application responses. Search LinkedIn for new postings matching: Python, Django, TypeScript, React, AWS, healthcare. Summarize findings.',
-    '/home/ryan',
+    config.defaultCwd,
     0
   );
 }
@@ -268,7 +283,7 @@ const stmts = {
 
   // Messages
   addMessage: db.prepare(
-    'INSERT INTO messages (id, session_id, role, content, engine, model) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO messages (id, session_id, role, content, engine, model, attachments) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ),
   getMessages: db.prepare(
     'SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC'
@@ -390,7 +405,7 @@ const stmts = {
     'SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC'
   ),
   addRoomMessage: db.prepare(
-    'INSERT INTO room_messages (id, room_id, role, agent_id, agent_name, agent_color, content) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO room_messages (id, room_id, role, agent_id, agent_name, agent_color, content, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
   ),
 
   // Slack messages

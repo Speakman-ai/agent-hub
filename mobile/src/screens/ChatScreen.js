@@ -30,6 +30,7 @@ export default function ChatScreen({ navigation }) {
     isProcessing,
     handleSend,
     handleCancel,
+    skills,
   } = useApp();
 
   const flatListRef = useRef(null);
@@ -124,6 +125,7 @@ export default function ChatScreen({ navigation }) {
           disabled={!activeAgentId || !connected || isProcessing}
           isProcessing={isProcessing}
           agentColor={activeAgent?.color}
+          skills={skills}
         />
       </KeyboardAvoidingView>
 

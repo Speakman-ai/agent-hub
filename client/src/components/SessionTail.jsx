@@ -57,7 +57,7 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded })
 
   return (
     <div className="flex justify-start mb-4">
-      <div className="max-w-[95%] sm:max-w-[88%] w-full bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
+      <div className="max-w-[95%] sm:max-w-[90%] w-full bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
         <Header
           agentColor={agentColor}
           engine={message?.engine}
@@ -404,7 +404,7 @@ function UnknownBlock({ event }) {
 function LegacyAssistantBubble({ message, agentColor }) {
   return (
     <div className="flex justify-start mb-4">
-      <div className="max-w-[90%] sm:max-w-[80%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
+      <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
         <Header
           agentColor={agentColor}
           engine={message.engine}

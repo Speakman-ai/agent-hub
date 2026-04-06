@@ -5,10 +5,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getMemoryContext, appendDailyNote } from './memory.js';
 
+import config from './config.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CLAUDE_BIN = '/home/ryan/.local/share/nvm/v22.22.0/bin/claude';
-const CURSOR_BIN = '/home/ryan/.local/bin/cursor-agent';
-const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const CLAUDE_BIN = config.claudeBin;
+const CURSOR_BIN = config.cursorBin;
+const TIMEOUT_MS = config.slackTimeoutMs;
 
 // Active bot instances: Map<accountName, { app, botUserId, connected, lastMessage, error }>
 const bots = new Map();
@@ -234,7 +236,7 @@ async function handleMessage(account, agent, { client, message, say }) {
     const response = await runAgent(
       systemPrompt,
       prompt,
-      agent?.cwd || '/home/ryan',
+      agent?.cwd || config.defaultCwd,
       agent?.engine || 'claude-code'
     );
 

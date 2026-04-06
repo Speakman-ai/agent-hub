@@ -54,7 +54,7 @@ function StreamingMessage({ content, agentColor, engine }) {
 
   return (
     <div className="flex justify-start mb-4">
-      <div className="max-w-[90%] sm:max-w-[80%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
+      <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
         <div className="flex items-center gap-2 mb-1">
           <span
             className="w-2 h-2 rounded-full"

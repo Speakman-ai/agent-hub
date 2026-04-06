@@ -24,6 +24,8 @@ export function AppProvider({ children }) {
   // Map of sessionId -> running task state. Populated from server snapshot on
   // connect and kept in sync via stream events so it survives session switches.
   const [activeTasks, setActiveTasks] = useState({});
+  // Skills for the active agent (for /slash-command autocomplete)
+  const [skills, setSkills] = useState([]);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSessionIdRef = useRef(activeSessionId);
@@ -182,6 +184,17 @@ export function AppProvider({ children }) {
     }).catch((err) => console.error('Failed to load sessions:', err));
   }, [activeAgentId]);
 
+  // Load skills for /slash-command autocomplete when agent changes
+  useEffect(() => {
+    if (!activeAgentId) {
+      setSkills([]);
+      return;
+    }
+    api.getSkills(activeAgentId)
+      .then(setSkills)
+      .catch(() => setSkills([]));
+  }, [activeAgentId]);
+
   // Update session engine/model when session changes
   useEffect(() => {
     if (!activeSessionId) return;
@@ -282,7 +295,7 @@ export function AppProvider({ children }) {
     }
   }, [send]);
 
-  const handleSend = useCallback(async (content) => {
+  const handleSend = useCallback(async (content, images = []) => {
     let sessionId = activeSessionIdRef.current;
     if (!sessionId) {
       const session = await api.createSession(activeAgentId);
@@ -290,11 +303,25 @@ export function AppProvider({ children }) {
       setActiveSessionId(session.id);
       sessionId = session.id;
     }
+
+    // Upload images first, then send chat with references
+    let uploadedImages = [];
+    if (images.length > 0) {
+      try {
+        uploadedImages = await Promise.all(
+          images.map((img) => api.uploadImage(img.dataUrl, img.name))
+        );
+      } catch (err) {
+        console.error('Image upload failed:', err);
+      }
+    }
+
     send({
       type: 'chat',
       agentId: activeAgentId,
       sessionId,
       content,
+      ...(uploadedImages.length > 0 ? { images: uploadedImages } : {}),
     });
   }, [activeAgentId, send]);
 
@@ -326,6 +353,7 @@ export function AppProvider({ children }) {
     handleCancel,
     handleSend,
     refreshAgents,
+    skills,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

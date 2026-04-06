@@ -104,6 +104,13 @@ export const api = {
       body: JSON.stringify({ content }),
     }),
 
+  // Upload
+  uploadImage: (dataUrl, filename) =>
+    fetchJSON('/upload', {
+      method: 'POST',
+      body: JSON.stringify({ dataUrl, filename }),
+    }),
+
   // Slack
   getSlackStatus: () => fetchJSON('/slack/status'),
   restartSlack: () =>

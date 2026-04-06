@@ -1,12 +1,17 @@
 import cron from 'node-cron';
 import { spawn } from 'child_process';
 import { stmts } from './db.js';
+import config from './config.js';
 
-const CLAUDE_BIN = '/home/ryan/.local/share/nvm/v22.22.0/bin/claude';
-const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
+const CLAUDE_BIN = config.claudeBin;
+const SLACK_WEBHOOK_URL = config.slackWebhookUrl;
 
 // Track scheduled tasks so we can stop/restart them
 const scheduledTasks = new Map();
+
+// Optional callback for babysit-complete events (set by index.js).
+let onBabysitComplete = null;
+export function setOnBabysitComplete(fn) { onBabysitComplete = fn; }
 
 /**
  * Format a Date as an ISO string suitable for SQLite TEXT columns.
@@ -50,8 +55,12 @@ function persistLastRun(kind, id, when = new Date()) {
 
 /**
  * Run a claude --print command and return the result
+ * @param {string} prompt
+ * @param {string} cwd
+ * @param {string} [systemPrompt]
+ * @param {{ timeoutMs?: number }} [options]
  */
-function runClaude(prompt, cwd, systemPrompt) {
+function runClaude(prompt, cwd, systemPrompt, options = {}) {
   return new Promise((resolve, reject) => {
     const args = ['--print', '--permission-mode', 'bypassPermissions'];
     if (systemPrompt) {
@@ -61,7 +70,7 @@ function runClaude(prompt, cwd, systemPrompt) {
 
     let output = '';
     let errorOutput = '';
-    const timeout = 5 * 60 * 1000; // 5 min timeout
+    const timeout = options.timeoutMs || config.defaultTimeoutMs;
 
     const proc = spawn(CLAUDE_BIN, args, {
       cwd,
@@ -71,7 +80,7 @@ function runClaude(prompt, cwd, systemPrompt) {
 
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
-      reject(new Error('Timed out after 5 minutes'));
+      reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
     }, timeout);
 
     proc.stdout.on('data', (chunk) => {
@@ -167,15 +176,57 @@ export async function runCronJob(cronJob) {
   const logId = logEntry.lastInsertRowid;
   const startTime = Date.now();
 
+  // Babysit crons do real work (diagnose, fix, commit, push) — give them more time
+  const isBabysit = cronJob.name.includes('[babysit]');
+  const timeoutMs = isBabysit ? config.babysitTimeoutMs : config.defaultTimeoutMs;
+
   try {
-    const result = await runClaude(cronJob.prompt, cronJob.cwd);
+    const result = await runClaude(cronJob.prompt, cronJob.cwd, undefined, { timeoutMs });
     const durationMs = Date.now() - startTime;
     stmts.updateCronResult.run(result, cronJob.id);
     stmts.updateCronLog.run(result, 'success', durationMs, logId);
     console.log(`[Cron] "${cronJob.name}" completed successfully (${durationMs}ms)`);
 
+    // ── Babysit auto-termination ────────────────────────────────
+    // If this is a [babysit] cron and the agent reported completion,
+    // delete the cron, stop its scheduler, and notify connected clients.
+    if (cronJob.name.includes('[babysit]') && result.includes('BABYSIT_COMPLETE')) {
+      console.log(`[Babysit] PR is green — deleting cron "${cronJob.name}" (id=${cronJob.id})`);
+      try {
+        // Stop the in-memory scheduled task first
+        rescheduleCron({ ...cronJob, enabled: false });
+        // Delete the cron row (cascade-deletes its logs)
+        stmts.deleteCron.run(cronJob.id);
+      } catch (err) {
+        console.error(`[Babysit] Failed to clean up cron ${cronJob.id}:`, err.message);
+      }
+
+      // Extract PR info from cron name for the notification
+      const prMatch = cronJob.name.match(/\[babysit\]\s+(.+?)\s+#(\d+)/);
+      const prInfo = prMatch ? { repoSlug: prMatch[1], prNumber: parseInt(prMatch[2]) } : {};
+
+      // Notify via Slack
+      if (SLACK_WEBHOOK_URL) {
+        await notifySlack(
+          `Babysit Complete`,
+          `PR ${prInfo.repoSlug || ''}#${prInfo.prNumber || '?'} is green and ready to merge.\n${result.substring(0, 500)}`
+        ).catch(() => {});
+      }
+
+      // Notify connected clients via callback
+      if (onBabysitComplete) {
+        onBabysitComplete({
+          cronId: cronJob.id,
+          cronName: cronJob.name,
+          repoSlug: prInfo.repoSlug,
+          prNumber: prInfo.prNumber,
+          result: result.substring(0, 1000),
+        });
+      }
+    }
+
     // Notify for cron results too
-    if (SLACK_WEBHOOK_URL) {
+    if (SLACK_WEBHOOK_URL && !cronJob.name.includes('[babysit]')) {
       const lowerResult = result.toLowerCase();
       const allClear = ['no open', 'nothing to', 'all clear', 'no dependabot'].some(
         (p) => lowerResult.includes(p)
@@ -247,6 +298,20 @@ export function scheduleAll(agents) {
       // Heartbeat disabled — clear any stale state.
       try { stmts.deleteHeartbeatState.run(agent.id); } catch {}
     }
+  }
+
+  // Clean up disabled babysit crons left over from previous runs.
+  // These are ephemeral — once done, they should be deleted.
+  try {
+    const stale = stmts.getCrons.all().filter(
+      (c) => !c.enabled && c.name.includes('[babysit]')
+    );
+    for (const c of stale) {
+      stmts.deleteCron.run(c.id);
+      console.log(`[Babysit] Cleaned up stale disabled cron "${c.name}" (id=${c.id})`);
+    }
+  } catch (err) {
+    console.error('[Babysit] Stale cleanup failed:', err.message);
   }
 
   // Schedule standalone crons
