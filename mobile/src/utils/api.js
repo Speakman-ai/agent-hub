@@ -1,7 +1,7 @@
-const API_BASE = '/api';
+import { API_BASE_URL } from './config';
 
 async function fetchJSON(url, options = {}) {
-  const res = await fetch(`${API_BASE}${url}`, {
+  const res = await fetch(`${API_BASE_URL}${url}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
@@ -19,7 +19,6 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
-  getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
   deleteSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
@@ -37,7 +36,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ model }),
     }),
-
   updateAgent: (agentId, data) =>
     fetchJSON(`/agents/${agentId}`, {
       method: 'PATCH',
@@ -49,7 +47,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
   deleteAgent: (agentId) =>
-    fetch(`${API_BASE}/agents/${agentId}`, { method: 'DELETE' }).then((res) => {
+    fetch(`${API_BASE_URL}/agents/${agentId}`, { method: 'DELETE' }).then((res) => {
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       return null;
     }),

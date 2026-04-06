@@ -12,6 +12,7 @@ export default function Sidebar({
   onDeleteSession,
   onNavigate,
   currentView,
+  activeTaskSessionIds = {},
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [collapsedAgents, setCollapsedAgents] = useState({});
@@ -91,7 +92,9 @@ export default function Sidebar({
               {/* Sessions (collapsible, only for active agent) */}
               {activeAgentId === agent.id && !collapsedAgents[agent.id] && (
                 <div className="ml-6 mb-2">
-                  {sessions.map((session) => (
+                  {sessions.map((session) => {
+                    const isRunning = !!activeTaskSessionIds[session.id];
+                    return (
                     <div
                       key={session.id}
                       onMouseEnter={() => setHoveredSession(session.id)}
@@ -107,9 +110,15 @@ export default function Sidebar({
                           onSelectSession(session.id);
                           onNavigate('chat');
                         }}
-                        className="flex-1 text-left px-2 py-2 md:py-1.5 truncate text-xs"
+                        className="flex-1 text-left px-2 py-2 md:py-1.5 truncate text-xs flex items-center gap-1.5"
                       >
-                        {session.name}
+                        {isRunning && (
+                          <span
+                            className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
+                            title="Task running"
+                          />
+                        )}
+                        <span className="truncate">{session.name}</span>
                       </button>
                       {hoveredSession === session.id && (
                         <button
@@ -124,7 +133,8 @@ export default function Sidebar({
                         </button>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                   <button
                     onClick={onNewSession}
                     className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"

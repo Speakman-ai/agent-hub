@@ -1,15 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
-import { relativeTime } from '../utils/time.js';
+import { relativeTime, relativeFuture } from '../utils/time.js';
 
 function HeartbeatSection() {
   const [heartbeats, setHeartbeats] = useState([]);
   const [expandedAgent, setExpandedAgent] = useState(null);
   const [logs, setLogs] = useState({});
   const [running, setRunning] = useState({});
+  // Tick every 30s so the "next run in Xm" badges decrement live without
+  // hitting the network. Server is re-polled every 60s for fresh state.
+  const [, setTick] = useState(0);
 
   useEffect(() => {
-    api.getHeartbeats().then(setHeartbeats).catch(console.error);
+    const refresh = () => api.getHeartbeats().then(setHeartbeats).catch(console.error);
+    refresh();
+    const pollId = setInterval(refresh, 60_000);
+    const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => {
+      clearInterval(pollId);
+      clearInterval(tickId);
+    };
   }, []);
 
   const loadLogs = async (agentId) => {
@@ -55,11 +65,26 @@ function HeartbeatSection() {
                 style={{ backgroundColor: hb.color }}
               />
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium text-sm">{hb.agentName}</span>
                   <span className="text-xs text-gray-500 font-mono">
                     {hb.heartbeat.interval || 'not set'}
                   </span>
+                  {hb.heartbeat.enabled && hb.state?.next_run_at && (() => {
+                    const { label, overdue } = relativeFuture(hb.state.next_run_at);
+                    return (
+                      <span
+                        title={`Next run: ${new Date(hb.state.next_run_at).toLocaleString()}`}
+                        className={`text-xs px-1.5 py-0.5 rounded font-mono ${
+                          overdue
+                            ? 'bg-amber-900/40 text-amber-400'
+                            : 'bg-gray-700/60 text-gray-400'
+                        }`}
+                      >
+                        {label}
+                      </span>
+                    );
+                  })()}
                 </div>
                 <p className="text-xs text-gray-500 truncate mt-0.5">
                   {hb.heartbeat.prompt || 'No prompt configured'}
@@ -155,6 +180,7 @@ function CronSection() {
   const [crons, setCrons] = useState([]);
   const [running, setRunning] = useState({});
   const [showForm, setShowForm] = useState(false);
+  const [, setTick] = useState(0);
   const [form, setForm] = useState({
     name: '',
     schedule: '',
@@ -164,7 +190,14 @@ function CronSection() {
   });
 
   useEffect(() => {
-    api.getCrons().then(setCrons).catch(console.error);
+    const refresh = () => api.getCrons().then(setCrons).catch(console.error);
+    refresh();
+    const pollId = setInterval(refresh, 60_000);
+    const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => {
+      clearInterval(pollId);
+      clearInterval(tickId);
+    };
   }, []);
 
   const toggleCron = async (cronJob) => {
@@ -256,11 +289,26 @@ function CronSection() {
           <div key={cronJob.id} className="bg-gray-800 rounded-xl p-4">
             <div className="flex items-center gap-3">
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium text-sm">{cronJob.name}</span>
                   <span className="text-xs text-gray-500 font-mono">
                     {cronJob.schedule}
                   </span>
+                  {cronJob.enabled && cronJob.next_run_at && (() => {
+                    const { label, overdue } = relativeFuture(cronJob.next_run_at);
+                    return (
+                      <span
+                        title={`Next run: ${new Date(cronJob.next_run_at).toLocaleString()}`}
+                        className={`text-xs px-1.5 py-0.5 rounded font-mono ${
+                          overdue
+                            ? 'bg-amber-900/40 text-amber-400'
+                            : 'bg-gray-700/60 text-gray-400'
+                        }`}
+                      >
+                        {label}
+                      </span>
+                    );
+                  })()}
                 </div>
                 <p className="text-xs text-gray-500 truncate mt-0.5">
                   {cronJob.prompt}
