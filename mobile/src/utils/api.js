@@ -77,6 +77,23 @@ export const api = {
   runCron: (id) =>
     fetchJSON(`/crons/${id}/run`, { method: 'POST' }),
 
+  // Rooms
+  getRooms: () => fetchJSON('/rooms'),
+  getRoom: (id) => fetchJSON(`/rooms/${id}`),
+  createRoom: (name) =>
+    fetchJSON('/rooms', { method: 'POST', body: JSON.stringify({ name }) }),
+  deleteRoom: (id) =>
+    fetchJSON(`/rooms/${id}`, { method: 'DELETE' }),
+  renameRoom: (id, name) =>
+    fetchJSON(`/rooms/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  updateRoom: (id, data) =>
+    fetchJSON(`/rooms/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  addRoomAgent: (roomId, agentId) =>
+    fetchJSON(`/rooms/${roomId}/agents`, { method: 'POST', body: JSON.stringify({ agentId }) }),
+  removeRoomAgent: (roomId, agentId) =>
+    fetchJSON(`/rooms/${roomId}/agents/${agentId}`, { method: 'DELETE' }),
+  getRoomMessages: (roomId) => fetchJSON(`/rooms/${roomId}/messages`),
+
   // Skills & Context
   getSkills: (agentId) => fetchJSON(`/agents/${agentId}/skills`),
   getSkill: (agentId, skillId) => fetchJSON(`/agents/${agentId}/skills/${skillId}`),

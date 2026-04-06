@@ -54,6 +54,39 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_id);
   CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 
+  -- Conference rooms: multi-agent group chats
+  CREATE TABLE IF NOT EXISTS rooms (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    max_turns INTEGER NOT NULL DEFAULT 10,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS room_agents (
+    room_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (room_id, agent_id),
+    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS room_messages (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    agent_id TEXT,
+    agent_name TEXT,
+    agent_color TEXT,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_room_messages_room ON room_messages(room_id);
+  CREATE INDEX IF NOT EXISTS idx_room_agents_room ON room_agents(room_id);
+
   CREATE TABLE IF NOT EXISTS active_tasks (
     session_id TEXT PRIMARY KEY,
     message_id TEXT NOT NULL,
@@ -154,6 +187,13 @@ try {
   db.prepare("SELECT engine_session_id FROM sessions LIMIT 1").get();
 } catch {
   db.exec("ALTER TABLE sessions ADD COLUMN engine_session_id TEXT");
+}
+
+// Migration: add max_turns to rooms
+try {
+  db.prepare('SELECT max_turns FROM rooms LIMIT 1').get();
+} catch {
+  db.exec('ALTER TABLE rooms ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 10');
 }
 
 // Seed default crons if table is empty
@@ -314,6 +354,43 @@ const stmts = {
   ),
   deleteHeartbeatState: db.prepare(
     'DELETE FROM heartbeat_state WHERE agent_id = ?'
+  ),
+
+  // Rooms
+  getRooms: db.prepare('SELECT * FROM rooms ORDER BY updated_at DESC'),
+  getRoom: db.prepare('SELECT * FROM rooms WHERE id = ?'),
+  createRoom: db.prepare(
+    'INSERT INTO rooms (id, name) VALUES (?, ?)'
+  ),
+  updateRoomName: db.prepare(
+    "UPDATE rooms SET name = ?, updated_at = datetime('now') WHERE id = ?"
+  ),
+  updateRoomMaxTurns: db.prepare(
+    "UPDATE rooms SET max_turns = ?, updated_at = datetime('now') WHERE id = ?"
+  ),
+  touchRoom: db.prepare(
+    "UPDATE rooms SET updated_at = datetime('now') WHERE id = ?"
+  ),
+  deleteRoom: db.prepare('DELETE FROM rooms WHERE id = ?'),
+
+  // Room agents
+  getRoomAgents: db.prepare(
+    'SELECT * FROM room_agents WHERE room_id = ? ORDER BY position ASC'
+  ),
+  addRoomAgent: db.prepare(
+    `INSERT OR IGNORE INTO room_agents (room_id, agent_id, position)
+     VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM room_agents WHERE room_id = ?))`
+  ),
+  removeRoomAgent: db.prepare(
+    'DELETE FROM room_agents WHERE room_id = ? AND agent_id = ?'
+  ),
+
+  // Room messages
+  getRoomMessages: db.prepare(
+    'SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC'
+  ),
+  addRoomMessage: db.prepare(
+    'INSERT INTO room_messages (id, room_id, role, agent_id, agent_name, agent_color, content) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ),
 
   // Slack messages

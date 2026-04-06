@@ -695,6 +695,16 @@ function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
     }
   };
 
+  const handleToggleActive = async (agentId, currentlyActive) => {
+    try {
+      const updated = await api.updateAgent(agentId, { active: !currentlyActive });
+      setAgents((prev) => prev.map((a) => (a.id === agentId ? { ...a, active: updated.active } : a)));
+      if (onAgentsChange) onAgentsChange();
+    } catch (e) {
+      console.error('Failed to toggle agent active state:', e);
+    }
+  };
+
   const handleDelete = async (agentId) => {
     try {
       await api.deleteAgent(agentId);
@@ -811,7 +821,7 @@ function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
           const edit = getEdit(agent.id);
           const isDirty = !!edits[agent.id];
           return (
-            <div key={agent.id} className="bg-gray-800 rounded-xl overflow-hidden">
+            <div key={agent.id} className={`bg-gray-800 rounded-xl overflow-hidden${agent.active === false ? ' opacity-50' : ''}`}>
               <div
                 className="flex items-center gap-3 p-4 cursor-pointer hover:bg-gray-750"
                 onClick={() => setExpanded(isExpanded ? null : agent.id)}
@@ -825,12 +835,30 @@ function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
                     <span className="font-medium text-sm">{agent.name}</span>
                     <span className="text-xs text-gray-500 font-mono">{agent.id}</span>
                     <span className="text-xs text-gray-500">{agent.engine}</span>
+                    {agent.active === false && (
+                      <span className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">
+                        inactive
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-gray-500 font-mono mt-0.5 truncate">
                     {agent.cwd}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleActive(agent.id, agent.active !== false);
+                    }}
+                    className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                      agent.active !== false
+                        ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                    }`}
+                  >
+                    {agent.active !== false ? 'Active' : 'Inactive'}
+                  </button>
                   {saveStatus[agent.id] === 'saved' && (
                     <span className="text-xs text-emerald-400">✓ Saved</span>
                   )}
@@ -993,6 +1021,159 @@ function AgentConfigSection({ agents: initialAgents, onAgentsChange }) {
   );
 }
 
+function UsageSection() {
+  const [usage, setUsage] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.getUsage()
+      .then(setUsage)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return <p className="text-sm text-gray-500">Loading usage data...</p>;
+  }
+
+  if (!usage || !usage.totals) {
+    return <p className="text-sm text-gray-500">No usage data available yet. Usage is tracked from Claude Code stream-json output.</p>;
+  }
+
+  const { totals, byAgent, byDay, recentSessions } = usage;
+  const fmtCost = (c) => `$${Number(c || 0).toFixed(2)}`;
+  const fmtDuration = (ms) => {
+    const s = (ms || 0) / 1000;
+    if (s < 60) return `${s.toFixed(0)}s`;
+    if (s < 3600) return `${(s / 60).toFixed(1)}m`;
+    return `${(s / 3600).toFixed(1)}h`;
+  };
+
+  // Find max daily cost for bar chart scaling
+  const maxDayCost = Math.max(...(byDay || []).map((d) => d.cost), 0.01);
+
+  return (
+    <div className="space-y-6">
+      {/* Summary cards */}
+      <div>
+        <h3 className="text-lg font-semibold mb-3">Overview</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-gray-800 rounded-xl p-4">
+            <p className="text-xs text-gray-500 uppercase tracking-wider">Total Cost</p>
+            <p className="text-2xl font-bold text-emerald-400 mt-1">{fmtCost(totals.total_cost)}</p>
+          </div>
+          <div className="bg-gray-800 rounded-xl p-4">
+            <p className="text-xs text-gray-500 uppercase tracking-wider">Total Time</p>
+            <p className="text-2xl font-bold text-blue-400 mt-1">{fmtDuration(totals.total_duration_ms)}</p>
+          </div>
+          <div className="bg-gray-800 rounded-xl p-4">
+            <p className="text-xs text-gray-500 uppercase tracking-wider">Turns</p>
+            <p className="text-2xl font-bold text-gray-200 mt-1">{totals.total_turns}</p>
+          </div>
+          <div className="bg-gray-800 rounded-xl p-4">
+            <p className="text-xs text-gray-500 uppercase tracking-wider">Messages</p>
+            <p className="text-2xl font-bold text-gray-200 mt-1">{totals.count}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Per-agent breakdown */}
+      {byAgent?.length > 0 && (
+        <div>
+          <h3 className="text-lg font-semibold mb-3">By Agent</h3>
+          <div className="bg-gray-800 rounded-xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-700 text-left text-xs text-gray-500 uppercase">
+                  <th className="px-4 py-3">Agent</th>
+                  <th className="px-4 py-3 text-right">Cost</th>
+                  <th className="px-4 py-3 text-right">Time</th>
+                  <th className="px-4 py-3 text-right">Turns</th>
+                  <th className="px-4 py-3 text-right">Messages</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byAgent.map((row) => (
+                  <tr key={row.agent_id} className="border-b border-gray-700/50 last:border-0">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: row.agent_color }} />
+                        <span className="font-medium">{row.agent_name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right text-emerald-400 font-mono">{fmtCost(row.total_cost)}</td>
+                    <td className="px-4 py-3 text-right text-gray-400 font-mono">{fmtDuration(row.total_duration_ms)}</td>
+                    <td className="px-4 py-3 text-right text-gray-400">{row.total_turns}</td>
+                    <td className="px-4 py-3 text-right text-gray-400">{row.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Daily usage chart */}
+      {byDay?.length > 0 && (
+        <div>
+          <h3 className="text-lg font-semibold mb-3">Daily Cost (last 30 days)</h3>
+          <div className="bg-gray-800 rounded-xl p-4">
+            <div className="space-y-1.5">
+              {byDay.map((day) => {
+                const pct = (day.cost / maxDayCost) * 100;
+                return (
+                  <div key={day.day} className="flex items-center gap-3">
+                    <span className="text-xs text-gray-500 font-mono w-20 flex-shrink-0">
+                      {day.day.slice(5)}
+                    </span>
+                    <div className="flex-1 h-5 bg-gray-900 rounded overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-600/60 rounded"
+                        style={{ width: `${Math.max(pct, 1)}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-400 font-mono w-16 text-right">
+                      {fmtCost(day.cost)}
+                    </span>
+                    <span className="text-xs text-gray-600 w-8 text-right">{day.count}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recent sessions */}
+      {recentSessions?.length > 0 && (
+        <div>
+          <h3 className="text-lg font-semibold mb-3">Recent Sessions</h3>
+          <div className="bg-gray-800 rounded-xl overflow-hidden">
+            <div className="divide-y divide-gray-700/50">
+              {recentSessions.map((s) => (
+                <div key={s.id} className="px-4 py-3 flex items-center gap-3">
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: s.agent_color }} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{s.session_name}</p>
+                    <p className="text-xs text-gray-500">
+                      {s.agent_name} · {s.message_count} message{s.message_count !== 1 ? 's' : ''}
+                      {' · '}{fmtDuration(s.duration_ms)}
+                    </p>
+                  </div>
+                  <span className="text-sm text-emerald-400 font-mono flex-shrink-0">{fmtCost(s.cost)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <p className="text-xs text-gray-600 mt-2">
+            Note: Only Claude Code sessions report cost. Cursor Agent sessions show duration only.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage({ agents, onAgentsChange }) {
   const [tab, setTab] = useState('heartbeats');
 
@@ -1001,6 +1182,7 @@ export default function SettingsPage({ agents, onAgentsChange }) {
     { id: 'crons', label: '⏰ Cron Jobs' },
     { id: 'slack', label: '💬 Slack' },
     { id: 'agents', label: '🤖 Agents' },
+    { id: 'usage', label: '📊 Usage' },
   ];
 
   return (
@@ -1028,6 +1210,7 @@ export default function SettingsPage({ agents, onAgentsChange }) {
         {tab === 'crons' && <CronSection />}
         {tab === 'slack' && <SlackSection />}
         {tab === 'agents' && <AgentConfigSection agents={agents} onAgentsChange={onAgentsChange} />}
+        {tab === 'usage' && <UsageSection />}
       </div>
     </div>
   );

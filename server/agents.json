@@ -50,10 +50,11 @@
     "systemPrompt": "You are the Home Inspector development agent. You work on the speakmanra/homeinspector codebase.",
     "color": "#DC2626",
     "heartbeat": {
-      "enabled": true,
+      "enabled": false,
       "interval": "0 */2 * * *",
       "prompt": "Check repo status for speakmanra/homeinspector using gh CLI. Report open PRs, any failing CI, or issues needing attention."
-    }
+    },
+    "active": false
   },
   {
     "id": "agent-hub",

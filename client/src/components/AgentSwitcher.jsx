@@ -9,7 +9,7 @@ export default function AgentSwitcher({ agents, onSelect, onClose }) {
   }, []);
 
   const filtered = agents.filter((a) =>
-    a.name.toLowerCase().includes(query.toLowerCase())
+    a.active !== false && a.name.toLowerCase().includes(query.toLowerCase())
   );
 
   const handleKeyDown = (e) => {

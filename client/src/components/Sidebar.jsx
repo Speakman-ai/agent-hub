@@ -13,8 +13,14 @@ export default function Sidebar({
   onNavigate,
   currentView,
   activeTaskSessionIds = {},
+  rooms = [],
+  activeRoomId,
+  onSelectRoom,
+  onNewRoom,
+  onDeleteRoom,
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
+  const [hoveredRoom, setHoveredRoom] = useState(null);
   const [collapsedAgents, setCollapsedAgents] = useState({});
 
   const toggleCollapse = (agentId, e) => {
@@ -47,7 +53,7 @@ export default function Sidebar({
           <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
             Agents
           </div>
-          {agents.map((agent) => (
+          {agents.filter((a) => a.active !== false).map((agent) => (
             <div key={agent.id}>
               <button
                 onClick={() => {
@@ -145,6 +151,69 @@ export default function Sidebar({
               )}
             </div>
           ))}
+
+          {/* Conference Rooms */}
+          <div className="mt-4">
+            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
+              Conference Rooms
+            </div>
+            {rooms.map((room) => (
+              <div
+                key={room.id}
+                onMouseEnter={() => setHoveredRoom(room.id)}
+                onMouseLeave={() => setHoveredRoom(null)}
+                className={`group flex items-center rounded-lg mb-0.5 transition-colors ${
+                  activeRoomId === room.id && currentView === 'room'
+                    ? 'bg-gray-800 text-white'
+                    : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+                }`}
+              >
+                <button
+                  onClick={() => {
+                    onSelectRoom(room.id);
+                    onNavigate('room');
+                  }}
+                  className="flex-1 text-left px-3 py-2.5 flex items-center gap-2 min-w-0"
+                >
+                  <span className="text-sm flex-shrink-0">🏢</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="truncate text-sm font-medium block">{room.name}</span>
+                    <div className="flex items-center gap-1 mt-0.5">
+                      {room.agents?.slice(0, 5).map((a) => (
+                        <span
+                          key={a.id}
+                          className="w-2 h-2 rounded-full"
+                          style={{ backgroundColor: a.color }}
+                          title={a.name}
+                        />
+                      ))}
+                      {room.agents?.length > 5 && (
+                        <span className="text-xs text-gray-600">+{room.agents.length - 5}</span>
+                      )}
+                    </div>
+                  </div>
+                </button>
+                {hoveredRoom === room.id && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteRoom(room.id);
+                    }}
+                    className="pr-2 text-gray-600 hover:text-red-400 text-xs"
+                    title="Delete room"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+            <button
+              onClick={onNewRoom}
+              className="text-xs text-gray-600 hover:text-gray-400 px-3 py-1 transition-colors"
+            >
+              + New Room
+            </button>
+          </div>
         </div>
       </div>
 

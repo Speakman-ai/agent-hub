@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
 import ChatMessage from './components/ChatMessage.jsx';
@@ -8,6 +8,7 @@ import MessageInput from './components/MessageInput.jsx';
 import AgentSwitcher from './components/AgentSwitcher.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import SkillsPage from './components/SkillsPage.jsx';
+import RoomChat from './components/RoomChat.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 
@@ -35,20 +36,48 @@ export default function App() {
   // Populated by 'session-event' WS messages (live) or via api.getMessageEvents
   // (historical, lazy on first SessionTail render).
   const [eventsByMessage, setEventsByMessage] = useState({});
+  // Conference room state
+  const [rooms, setRooms] = useState([]);
+  const [activeRoomId, setActiveRoomId] = useState(null);
+  const [roomMessages, setRoomMessages] = useState([]);
+  const [roomStreaming, setRoomStreaming] = useState(null);
+  const [roomThinking, setRoomThinking] = useState(null);
+  const [roomProcessing, setRoomProcessing] = useState(false);
+  const activeRoomIdRef = useRef(activeRoomId);
+  activeRoomIdRef.current = activeRoomId;
+
   const messagesEndRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
 
-  // Auto-scroll
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // Auto-scroll — instant on initial load, smooth for live updates.
+  // Uses rAF to ensure the browser has painted new content before scrolling.
+  const initialScrollRef = useRef(true);
+  const scrollRafRef = useRef(null);
+
+  const scrollToBottom = useCallback((instant) => {
+    // Cancel any pending scroll to avoid stacking
+    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({
+        behavior: instant ? 'instant' : 'smooth',
+      });
+    });
   }, []);
 
-  useEffect(() => {
-    scrollToBottom();
+  // useLayoutEffect fires synchronously after DOM mutation but before paint,
+  // the rAF inside then fires after paint — guaranteeing content is rendered.
+  useLayoutEffect(() => {
+    scrollToBottom(initialScrollRef.current);
+    initialScrollRef.current = false;
   }, [messages, thinking, streamingContent, scrollToBottom]);
+
+  // Reset to instant scroll when switching sessions
+  useLayoutEffect(() => {
+    initialScrollRef.current = true;
+  }, [activeSessionId]);
 
   // WebSocket handler
   const handleWsMessage = useCallback((data) => {
@@ -187,6 +216,74 @@ export default function App() {
           }
         }
         break;
+
+      // ─── Conference Room events ─────────────────────────────
+      case 'room_message':
+        if (data.roomId === activeRoomIdRef.current) {
+          setRoomMessages((prev) => [...prev, data.message]);
+        }
+        break;
+      case 'room_round_start':
+        if (data.roomId === activeRoomIdRef.current) {
+          setRoomProcessing(true);
+        }
+        break;
+      case 'room_thinking':
+        if (data.roomId === activeRoomIdRef.current) {
+          setRoomStreaming(null);
+          setRoomThinking({
+            agentId: data.agentId,
+            agentName: data.agentName,
+            agentColor: data.agentColor,
+          });
+        }
+        break;
+      case 'room_stream':
+        if (data.roomId === activeRoomIdRef.current) {
+          setRoomThinking(null);
+          setRoomStreaming({
+            agentId: data.agentId,
+            agentName: data.agentName,
+            agentColor: data.agentColor,
+            messageId: data.messageId,
+            content: data.content,
+          });
+        }
+        break;
+      case 'room_agent_done':
+        if (data.roomId === activeRoomIdRef.current) {
+          setRoomThinking(null);
+          setRoomStreaming(null);
+          setRoomMessages((prev) => [...prev, data.message]);
+        }
+        break;
+      case 'room_agent_error':
+        if (data.roomId === activeRoomIdRef.current) {
+          setRoomThinking(null);
+          setRoomStreaming(null);
+          setRoomMessages((prev) => [
+            ...prev,
+            {
+              id: data.messageId || `err-${Date.now()}`,
+              room_id: data.roomId,
+              role: 'assistant',
+              agent_id: data.agentId,
+              agent_name: data.agentName,
+              agent_color: null,
+              content: `⚠️ Error: ${data.error}`,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+        }
+        break;
+      case 'room_round_done':
+      case 'room_cancelled':
+        if (data.roomId === activeRoomIdRef.current) {
+          setRoomProcessing(false);
+          setRoomThinking(null);
+          setRoomStreaming(null);
+        }
+        break;
     }
   }, []);
 
@@ -301,6 +398,55 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showSwitcher, thinking, streamingContent]);
 
+  // ─── Room data loading ───────────────────────────────────
+  const refreshRooms = useCallback(() => {
+    api.getRooms().then(setRooms).catch(console.error);
+  }, []);
+
+  // Load rooms on mount
+  useEffect(() => {
+    refreshRooms();
+  }, [refreshRooms]);
+
+  // Load room messages when active room changes
+  useEffect(() => {
+    if (!activeRoomId) {
+      setRoomMessages([]);
+      return;
+    }
+    api.getRoomMessages(activeRoomId).then(setRoomMessages).catch(console.error);
+  }, [activeRoomId]);
+
+  const handleNewRoom = async () => {
+    const name = prompt('Room name:');
+    if (!name?.trim()) return;
+    const room = await api.createRoom(name.trim());
+    setRooms((prev) => [room, ...prev]);
+    setActiveRoomId(room.id);
+    setCurrentView('room');
+  };
+
+  const handleDeleteRoom = async (roomId) => {
+    await api.deleteRoom(roomId);
+    setRooms((prev) => prev.filter((r) => r.id !== roomId));
+    if (activeRoomId === roomId) {
+      setActiveRoomId(null);
+      setCurrentView('chat');
+    }
+  };
+
+  const handleRoomUpdated = useCallback(() => {
+    refreshRooms();
+    // Also refresh the active room's detail
+    if (activeRoomIdRef.current) {
+      api.getRoom(activeRoomIdRef.current).then((room) => {
+        setRooms((prev) => prev.map((r) => (r.id === room.id ? room : r)));
+      });
+    }
+  }, [refreshRooms]);
+
+  const activeRoom = rooms.find((r) => r.id === activeRoomId);
+
   const handleNewSession = async () => {
     if (!activeAgentId) return;
     const session = await api.createSession(activeAgentId);
@@ -407,6 +553,7 @@ export default function App() {
           activeSessionId={activeSessionId}
           onSelectSession={(id) => {
             setActiveSessionId(id);
+            setActiveRoomId(null);
             setSidebarOpen(false);
           }}
           onNewSession={handleNewSession}
@@ -417,6 +564,15 @@ export default function App() {
           }}
           currentView={currentView}
           activeTaskSessionIds={activeTasks}
+          rooms={rooms}
+          activeRoomId={activeRoomId}
+          onSelectRoom={(id) => {
+            setActiveRoomId(id);
+            setActiveSessionId(null);
+            setSidebarOpen(false);
+          }}
+          onNewRoom={handleNewRoom}
+          onDeleteRoom={handleDeleteRoom}
         />
       </div>
 
@@ -439,6 +595,17 @@ export default function App() {
           <SettingsPage agents={agents} onAgentsChange={refreshAgents} />
         ) : currentView === 'skills' ? (
           <SkillsPage agents={agents} />
+        ) : currentView === 'room' && activeRoom ? (
+          <RoomChat
+            room={activeRoom}
+            agents={agents}
+            send={send}
+            roomMessages={roomMessages}
+            roomStreaming={roomStreaming}
+            roomThinking={roomThinking}
+            roomProcessing={roomProcessing}
+            onRoomUpdated={handleRoomUpdated}
+          />
         ) : (
           <>
             {/* Messages */}
