@@ -75,7 +75,17 @@ export function useWebSocket(onMessage) {
     return () => {
       clearTimeout(reconnectTimer.current);
       clearInterval(pingTimer.current);
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      if (ws) {
+        // Neutralize handlers so a phantom socket from StrictMode's
+        // mount→cleanup→mount cycle can't fire onmessage/onclose after we're gone.
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.close();
+        wsRef.current = null;
+      }
     };
   }, [connect]);
 
