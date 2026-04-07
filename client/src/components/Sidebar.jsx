@@ -106,99 +106,128 @@ export default function Sidebar({
                 {/* Agents within project (auto-expand if single agent) */}
                 {(!isCollapsed || activeAgents.length === 1) && (
                   <div className={activeAgents.length > 1 ? 'ml-3' : ''}>
-                    {activeAgents.map((agent) => {
-                      const isActive = activeAgentId === agent.id;
+                    {(() => {
+                      // Separate top-level agents from sub-agents
+                      const topLevel = activeAgents.filter((a) => !a.parentAgentId);
+                      const subAgentMap = {};
+                      activeAgents.forEach((a) => {
+                        if (a.parentAgentId) {
+                          if (!subAgentMap[a.parentAgentId]) subAgentMap[a.parentAgentId] = [];
+                          subAgentMap[a.parentAgentId].push(a);
+                        }
+                      });
 
-                      return (
-                        <div key={agent.id}>
-                          <button
-                            onClick={() => {
-                              onSelectAgent(agent.id);
-                              onNavigate('chat');
-                            }}
-                            className={`w-full text-left px-3 py-2 rounded-lg mb-0.5 flex items-center gap-2.5 transition-colors ${
-                              isActive && currentView === 'chat'
-                                ? 'bg-gray-800 text-white'
-                                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-                            }`}
-                          >
-                            <div className="relative flex-shrink-0">
-                              <span
-                                className="w-2.5 h-2.5 rounded-full block"
-                                style={{ backgroundColor: agent.color }}
-                              />
-                              {isRecent(agent.lastActivity) && (
-                                <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-500 rounded-full border border-gray-900" />
+                      const renderAgent = (agent, indent = 0) => {
+                        const isActive = activeAgentId === agent.id;
+                        const subs = subAgentMap[agent.id] || [];
+                        const isLead = agent.role === 'lead' || subs.length > 0;
+
+                        return (
+                          <div key={agent.id} style={indent > 0 ? { marginLeft: `${indent * 12}px` } : {}}>
+                            <button
+                              onClick={() => {
+                                onSelectAgent(agent.id);
+                                onNavigate('chat');
+                              }}
+                              className={`w-full text-left px-3 py-2 rounded-lg mb-0.5 flex items-center gap-2.5 transition-colors ${
+                                isActive && currentView === 'chat'
+                                  ? 'bg-gray-800 text-white'
+                                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+                              }`}
+                            >
+                              <div className="relative flex-shrink-0">
+                                {indent > 0 && (
+                                  <span className="absolute -left-3 top-1/2 w-2 border-t border-gray-700" />
+                                )}
+                                <span
+                                  className={`block ${isLead ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
+                                  style={{ backgroundColor: agent.color }}
+                                />
+                                {isRecent(agent.lastActivity) && (
+                                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-500 rounded-full border border-gray-900" />
+                                )}
+                              </div>
+                              <span className="flex-1 truncate text-sm">
+                                {agent.name}
+                                {isLead && <span className="text-xs text-gray-600 ml-1">lead</span>}
+                              </span>
+                              {isActive && (
+                                <button
+                                  onClick={(e) => toggleAgentCollapse(agent.id, e)}
+                                  className="text-gray-500 hover:text-gray-300 text-xs"
+                                >
+                                  {collapsedAgents[agent.id] ? '▸' : '▾'}
+                                </button>
                               )}
-                            </div>
-                            <span className="flex-1 truncate text-sm">{agent.name}</span>
-                            {isActive && (
-                              <button
-                                onClick={(e) => toggleAgentCollapse(agent.id, e)}
-                                className="text-gray-500 hover:text-gray-300 text-xs"
-                              >
-                                {collapsedAgents[agent.id] ? '▸' : '▾'}
-                              </button>
-                            )}
-                          </button>
+                            </button>
 
-                          {/* Sessions for active agent */}
-                          {isActive && !collapsedAgents[agent.id] && (
-                            <div className="ml-5 mb-2">
-                              {sessions.map((session) => {
-                                const isRunning = !!activeTaskSessionIds[session.id];
-                                return (
-                                  <div
-                                    key={session.id}
-                                    onMouseEnter={() => setHoveredSession(session.id)}
-                                    onMouseLeave={() => setHoveredSession(null)}
-                                    className={`group flex items-center rounded-md mb-0.5 transition-colors ${
-                                      activeSessionId === session.id
-                                        ? 'bg-gray-800 text-white'
-                                        : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                                    }`}
-                                  >
-                                    <button
-                                      onClick={() => {
-                                        onSelectSession(session.id);
-                                        onNavigate('chat');
-                                      }}
-                                      className="flex-1 text-left px-2 py-2 md:py-1.5 truncate text-xs flex items-center gap-1.5"
+                            {/* Sessions for active agent */}
+                            {isActive && !collapsedAgents[agent.id] && (
+                              <div className="ml-5 mb-2">
+                                {sessions.map((session) => {
+                                  const isRunning = !!activeTaskSessionIds[session.id];
+                                  return (
+                                    <div
+                                      key={session.id}
+                                      onMouseEnter={() => setHoveredSession(session.id)}
+                                      onMouseLeave={() => setHoveredSession(null)}
+                                      className={`group flex items-center rounded-md mb-0.5 transition-colors ${
+                                        activeSessionId === session.id
+                                          ? 'bg-gray-800 text-white'
+                                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                                      }`}
                                     >
-                                      {isRunning && (
-                                        <span
-                                          className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
-                                          title="Task running"
-                                        />
-                                      )}
-                                      <span className="truncate">{session.name}</span>
-                                    </button>
-                                    {hoveredSession === session.id && (
                                       <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onDeleteSession(session.id);
+                                        onClick={() => {
+                                          onSelectSession(session.id);
+                                          onNavigate('chat');
                                         }}
-                                        className="pr-2 text-gray-600 hover:text-red-400 text-xs"
-                                        title="Delete session"
+                                        className="flex-1 text-left px-2 py-2 md:py-1.5 truncate text-xs flex items-center gap-1.5"
                                       >
-                                        ✕
+                                        {isRunning && (
+                                          <span
+                                            className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
+                                            title="Task running"
+                                          />
+                                        )}
+                                        <span className="truncate">{session.name}</span>
                                       </button>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                              <button
-                                onClick={onNewSession}
-                                className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
-                              >
-                                + New Session
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                                      {hoveredSession === session.id && (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onDeleteSession(session.id);
+                                          }}
+                                          className="pr-2 text-gray-600 hover:text-red-400 text-xs"
+                                          title="Delete session"
+                                        >
+                                          ✕
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                <button
+                                  onClick={onNewSession}
+                                  className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
+                                >
+                                  + New Session
+                                </button>
+                              </div>
+                            )}
+
+                            {/* Render sub-agents nested under lead */}
+                            {subs.length > 0 && (!collapsedAgents[agent.id] || isActive) && (
+                              <div className="border-l border-gray-700/50 ml-3">
+                                {subs.map((sub) => renderAgent(sub, indent + 1))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      };
+
+                      return topLevel.map((agent) => renderAgent(agent, 0));
+                    })()}
                   </div>
                 )}
               </div>

@@ -9,6 +9,7 @@ import AgentSwitcher from './components/AgentSwitcher.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import SkillsPage from './components/SkillsPage.jsx';
 import RoomChat from './components/RoomChat.jsx';
+import DelegationPanel from './components/DelegationPanel.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 
@@ -51,6 +52,8 @@ export default function App() {
   const [roomStreaming, setRoomStreaming] = useState(null);
   const [roomThinking, setRoomThinking] = useState(null);
   const [roomProcessing, setRoomProcessing] = useState(false);
+  // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
+  const [delegations, setDelegations] = useState({});
   // Skills for the active agent (for /slash-command autocomplete)
   const [skills, setSkills] = useState([]);
   // Toast notifications (e.g., babysit events)
@@ -312,6 +315,140 @@ export default function App() {
           setRoomProcessing(false);
           setRoomThinking(null);
           setRoomStreaming(null);
+        }
+        break;
+
+      // ─── Delegation events ────────────────────────────────
+      case 'delegation_start':
+        if (data.sessionId === activeSessionIdRef.current) {
+          setDelegations((prev) => ({
+            ...prev,
+            [data.sessionId]: {
+              parentMessageId: data.parentMessageId,
+              tasks: data.tasks.map((t) => ({
+                delegationId: null,
+                agentId: t.agentId,
+                agentName: t.agentId,
+                agentColor: null,
+                task: t.task,
+                status: 'pending',
+                content: '',
+                output: null,
+                error: null,
+              })),
+            },
+          }));
+        }
+        break;
+      case 'delegation_thinking':
+        if (data.sessionId === activeSessionIdRef.current) {
+          setDelegations((prev) => {
+            const existing = prev[data.sessionId];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [data.sessionId]: {
+                ...existing,
+                tasks: existing.tasks.map((t) =>
+                  t.agentId === data.agentId
+                    ? { ...t, delegationId: data.delegationId, agentName: data.agentName, agentColor: data.agentColor, status: 'running' }
+                    : t
+                ),
+              },
+            };
+          });
+        }
+        break;
+      case 'delegation_stream':
+        if (data.sessionId === activeSessionIdRef.current) {
+          setDelegations((prev) => {
+            const existing = prev[data.sessionId];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [data.sessionId]: {
+                ...existing,
+                tasks: existing.tasks.map((t) =>
+                  t.agentId === data.agentId
+                    ? { ...t, agentName: data.agentName, agentColor: data.agentColor, content: data.content, status: 'running' }
+                    : t
+                ),
+              },
+            };
+          });
+        }
+        break;
+      case 'delegation_agent_done':
+        if (data.sessionId === activeSessionIdRef.current) {
+          setDelegations((prev) => {
+            const existing = prev[data.sessionId];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [data.sessionId]: {
+                ...existing,
+                tasks: existing.tasks.map((t) =>
+                  t.agentId === data.agentId
+                    ? { ...t, status: 'done', output: data.output, content: '' }
+                    : t
+                ),
+              },
+            };
+          });
+        }
+        break;
+      case 'delegation_agent_error':
+        if (data.sessionId === activeSessionIdRef.current) {
+          setDelegations((prev) => {
+            const existing = prev[data.sessionId];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [data.sessionId]: {
+                ...existing,
+                tasks: existing.tasks.map((t) =>
+                  t.agentId === data.agentId
+                    ? { ...t, status: 'error', error: data.error }
+                    : t
+                ),
+              },
+            };
+          });
+        }
+        break;
+      case 'delegation_round_done':
+        // Delegation complete — keep the data for display but mark as done
+        break;
+      case 'delegation_cancelled':
+        if (data.sessionId === activeSessionIdRef.current) {
+          setDelegations((prev) => {
+            const existing = prev[data.sessionId];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [data.sessionId]: {
+                ...existing,
+                tasks: existing.tasks.map((t) =>
+                  t.status === 'running' || t.status === 'pending'
+                    ? { ...t, status: 'cancelled' }
+                    : t
+                ),
+              },
+            };
+          });
+        }
+        break;
+      case 'delegation_error':
+        if (data.sessionId === activeSessionIdRef.current) {
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: `delegation-err-${Date.now()}`,
+              type: 'error',
+              message: `Delegation failed: ${data.error}`,
+              duration: 10000,
+            },
+          ]);
         }
         break;
 
@@ -774,6 +911,16 @@ export default function App() {
                     agentColor={activeAgent?.color}
                     streaming
                   />
+                )}
+                {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
+                {delegations[activeSessionId] && delegations[activeSessionId].tasks.length > 0 && (
+                  <div className="px-4 max-w-[95%] sm:max-w-[90%]">
+                    <DelegationPanel
+                      delegations={delegations[activeSessionId].tasks}
+                      sessionId={activeSessionId}
+                      onCancel={(sid) => send({ type: 'delegation_cancel', sessionId: sid })}
+                    />
+                  </div>
                 )}
                 <div ref={messagesEndRef} />
               </div>

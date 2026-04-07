@@ -154,6 +154,24 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_session_events_parent
     ON session_events(parent_kind, parent_id, seq);
+
+  -- Delegations: tracks sub-agent tasks spawned by a lead agent
+  CREATE TABLE IF NOT EXISTS delegations (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    parent_message_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    agent_name TEXT,
+    task TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','done','error','cancelled')),
+    output TEXT,
+    error TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_delegations_session ON delegations(session_id);
+  CREATE INDEX IF NOT EXISTS idx_delegations_parent ON delegations(parent_message_id);
 `);
 
 // Migration: add next_run_at to crons (last_run already exists)
@@ -440,6 +458,21 @@ const stmts = {
   ),
   getAllSlackMessages: db.prepare(
     'SELECT * FROM slack_messages ORDER BY timestamp DESC LIMIT ?'
+  ),
+
+  // Delegations
+  createDelegation: db.prepare(
+    `INSERT INTO delegations (id, session_id, parent_message_id, agent_id, agent_name, task, status)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending')`
+  ),
+  updateDelegation: db.prepare(
+    `UPDATE delegations SET status = ?, output = ?, error = ?, completed_at = datetime('now') WHERE id = ?`
+  ),
+  getDelegations: db.prepare(
+    'SELECT * FROM delegations WHERE parent_message_id = ? ORDER BY started_at ASC'
+  ),
+  getDelegationsBySession: db.prepare(
+    'SELECT * FROM delegations WHERE session_id = ? ORDER BY started_at DESC'
   ),
 };
 
