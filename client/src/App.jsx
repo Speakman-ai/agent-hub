@@ -47,6 +47,8 @@ export default function App() {
   // Populated by 'session-event' WS messages (live) or via api.getMessageEvents
   // (historical, lazy on first SessionTail render).
   const [eventsByMessage, setEventsByMessage] = useState({});
+  // Message queue state: sessionId -> [{id, content, position}]
+  const [messageQueues, setMessageQueues] = useState({});
   // Conference room state
   const [rooms, setRooms] = useState([]);
   const [activeRoomId, setActiveRoomId] = useState(null);
@@ -488,6 +490,23 @@ export default function App() {
         window.dispatchEvent(new CustomEvent('babysit-cleaned', { detail: { cronId: data.cronId } }));
         break;
       }
+
+      // ── Message queue events ────────────────────────────────────
+      case 'queue_updated':
+        setMessageQueues((prev) => ({
+          ...prev,
+          [data.sessionId]: data.queue,
+        }));
+        break;
+
+      case 'queue_item_processing':
+        // Mark the queued message as no longer queued (it's being processed now).
+        // The 'thinking' event that follows will handle the processing indicator.
+        setMessageQueues((prev) => {
+          const q = (prev[data.sessionId] || []).filter((m) => m.id !== data.messageId);
+          return { ...prev, [data.sessionId]: q };
+        });
+        break;
     }
   }, []);
 
@@ -759,6 +778,14 @@ export default function App() {
     }
   };
 
+  const handleDequeue = (messageId) => {
+    if (activeSessionId) {
+      send({ type: 'dequeue', sessionId: activeSessionId, messageId });
+      // Optimistically remove from local messages
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    }
+  };
+
   const handleSend = async (content, images = []) => {
     let sessionId = activeSessionId;
     if (!sessionId) {
@@ -918,23 +945,27 @@ export default function App() {
                     </p>
                   </div>
                 )}
-                {messages.map((msg) =>
-                  msg.role === 'assistant' ? (
-                    <SessionTail
-                      key={msg.id}
-                      message={msg}
-                      events={eventsByMessage[msg.id]}
-                      agentColor={activeAgent?.color}
-                      onEventsLoaded={handleEventsLoaded}
-                    />
-                  ) : (
-                    <ChatMessage
-                      key={msg.id}
-                      message={msg}
-                      agentColor={activeAgent?.color}
-                    />
-                  )
-                )}
+                {(() => {
+                  const queuedIds = new Set((messageQueues[activeSessionId] || []).map((q) => q.id));
+                  return messages.map((msg) =>
+                    msg.role === 'assistant' ? (
+                      <SessionTail
+                        key={msg.id}
+                        message={msg}
+                        events={eventsByMessage[msg.id]}
+                        agentColor={activeAgent?.color}
+                        onEventsLoaded={handleEventsLoaded}
+                      />
+                    ) : (
+                      <ChatMessage
+                        key={msg.id}
+                        message={{ ...msg, queued: queuedIds.has(msg.id) }}
+                        agentColor={activeAgent?.color}
+                        onDequeue={queuedIds.has(msg.id) ? handleDequeue : undefined}
+                      />
+                    )
+                  );
+                })()}
                 {thinking && !streamingMsgId && (
                   <ThinkingIndicator agentColor={activeAgent?.color} />
                 )}
@@ -991,8 +1022,9 @@ export default function App() {
             <MessageInput
               onSend={handleSend}
               onCancel={handleCancel}
-              disabled={!activeAgentId || !connected || isProcessing}
+              disabled={!activeAgentId || !connected}
               isProcessing={isProcessing}
+              queueLength={(messageQueues[activeSessionId] || []).length}
               agentColor={activeAgent?.color}
               skills={skills}
             />

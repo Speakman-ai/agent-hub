@@ -156,6 +156,11 @@ export const api = {
   onboardProject: (data) =>
     fetchJSON('/projects/onboard', { method: 'POST', body: JSON.stringify(data) }),
 
+  // Config settings
+  getConfig: () => fetchJSON('/config'),
+  updateConfig: (data) =>
+    fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
+
   // Config export/import
   exportConfig: () => fetchJSON('/config/export'),
   importConfig: (data) =>

@@ -108,8 +108,9 @@ const ENGINE_BADGES = {
   'cursor-agent': { emoji: '🟢', label: 'Cursor Agent' },
 };
 
-function ChatMessage({ message, agentColor }) {
+function ChatMessage({ message, agentColor, onDequeue }) {
   const isUser = message.role === 'user';
+  const isQueued = message.queued;
   const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;
   const modelLabel = !isUser && message.model ? message.model.replace('claude-', '').replace('-', ' ') : null;
 
@@ -137,7 +138,9 @@ function ChatMessage({ message, agentColor }) {
       <div
         className={`max-w-[95%] sm:max-w-[90%] ${
           isUser
-            ? 'bg-blue-600 rounded-2xl rounded-br-md px-4 py-2.5'
+            ? isQueued
+              ? 'bg-blue-600/40 border border-blue-500/30 rounded-2xl rounded-br-md px-4 py-2.5'
+              : 'bg-blue-600 rounded-2xl rounded-br-md px-4 py-2.5'
             : 'bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3'
         }`}
       >
@@ -156,6 +159,24 @@ function ChatMessage({ message, agentColor }) {
             )}
             {modelLabel && (
               <span className="text-xs text-gray-600">· {modelLabel}</span>
+            )}
+          </div>
+        )}
+
+        {/* Queued indicator */}
+        {isQueued && (
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-xs text-blue-300/70 font-medium flex items-center gap-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400/50 animate-pulse" />
+              Queued
+            </span>
+            {onDequeue && (
+              <button
+                onClick={() => onDequeue(message.id)}
+                className="text-xs text-blue-400/50 hover:text-red-400 transition-colors"
+              >
+                ✕ Remove
+              </button>
             )}
           </div>
         )}

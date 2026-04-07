@@ -410,26 +410,36 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                   </div>
                 )}
 
-                {/* Suggested agents */}
+                {/* Suggested agents — lead/sub hierarchy */}
                 {analysisResult.agents?.length > 0 && (
                   <div>
-                    <h4 className="text-sm font-medium text-gray-300 mb-2">Suggested Agents</h4>
+                    <h4 className="text-sm font-medium text-gray-300 mb-2">Agent Team</h4>
                     <div className="space-y-2">
-                      {analysisResult.agents.map((agent, i) => (
-                        <div key={i} className="bg-gray-800 rounded-lg p-3 border border-gray-700">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="font-medium text-sm text-white">{agent.name}</span>
-                            {agent.role && (
-                              <span className="bg-emerald-900/50 text-emerald-300 px-2 py-0.5 rounded-full text-xs">
-                                {agent.role}
-                              </span>
+                      {analysisResult.agents.map((agent, i) => {
+                        const isLead = agent.role === 'lead' || (i === 0 && analysisResult.agents.length > 1);
+                        const isSub = !isLead && analysisResult.agents.length > 1;
+                        return (
+                          <div key={i} className={`bg-gray-800 rounded-lg p-3 border ${isLead ? 'border-amber-600/50' : 'border-gray-700'} ${isSub ? 'ml-6' : ''}`}>
+                            <div className="flex items-center gap-2 mb-1">
+                              {isSub && <span className="text-gray-600 text-xs">└</span>}
+                              <span className="font-medium text-sm text-white">{agent.name}</span>
+                              {isLead && (
+                                <span className="bg-amber-900/50 text-amber-300 px-2 py-0.5 rounded-full text-xs font-medium">
+                                  Lead
+                                </span>
+                              )}
+                              {isSub && (
+                                <span className="bg-indigo-900/50 text-indigo-300 px-2 py-0.5 rounded-full text-xs">
+                                  Sub-agent
+                                </span>
+                              )}
+                            </div>
+                            {agent.specialty && (
+                              <p className="text-xs text-gray-400">{agent.specialty}</p>
                             )}
                           </div>
-                          {agent.specialty && (
-                            <p className="text-xs text-gray-400">{agent.specialty}</p>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -459,38 +469,50 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
             {/* Agent cards with checkboxes */}
             {analysisResult?.agents?.length > 0 && (
               <div>
-                <h4 className="text-sm font-medium text-gray-300 mb-2">Agents</h4>
+                <h4 className="text-sm font-medium text-gray-300 mb-2">Agent Team</h4>
                 <div className="space-y-2">
-                  {analysisResult.agents.map((agent, i) => (
-                    <label
-                      key={i}
-                      className={`flex items-start gap-3 bg-gray-800 rounded-lg p-3 border cursor-pointer transition-colors ${
-                        selectedAgents[i] ? 'border-emerald-600' : 'border-gray-700 opacity-60'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={!!selectedAgents[i]}
-                        onChange={() =>
-                          setSelectedAgents((prev) => ({ ...prev, [i]: !prev[i] }))
-                        }
-                        className="mt-0.5 accent-emerald-500"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <span className="font-medium text-sm text-white">{agent.name}</span>
-                          {agent.role && (
-                            <span className="bg-emerald-900/50 text-emerald-300 px-2 py-0.5 rounded-full text-xs">
-                              {agent.role}
-                            </span>
+                  {analysisResult.agents.map((agent, i) => {
+                    const isLead = agent.role === 'lead' || (i === 0 && analysisResult.agents.length > 1);
+                    const isSub = !isLead && analysisResult.agents.length > 1;
+                    return (
+                      <label
+                        key={i}
+                        className={`flex items-start gap-3 bg-gray-800 rounded-lg p-3 border cursor-pointer transition-colors ${isSub ? 'ml-6' : ''} ${
+                          selectedAgents[i]
+                            ? isLead ? 'border-amber-600/50' : 'border-emerald-600'
+                            : 'border-gray-700 opacity-60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!selectedAgents[i]}
+                          onChange={() =>
+                            setSelectedAgents((prev) => ({ ...prev, [i]: !prev[i] }))
+                          }
+                          className="mt-0.5 accent-emerald-500"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            {isSub && <span className="text-gray-600 text-xs">└</span>}
+                            <span className="font-medium text-sm text-white">{agent.name}</span>
+                            {isLead && (
+                              <span className="bg-amber-900/50 text-amber-300 px-2 py-0.5 rounded-full text-xs font-medium">
+                                Lead
+                              </span>
+                            )}
+                            {isSub && (
+                              <span className="bg-indigo-900/50 text-indigo-300 px-2 py-0.5 rounded-full text-xs">
+                                Sub-agent
+                              </span>
+                            )}
+                          </div>
+                          {agent.specialty && (
+                            <p className="text-xs text-gray-400">{agent.specialty}</p>
                           )}
                         </div>
-                        {agent.specialty && (
-                          <p className="text-xs text-gray-400">{agent.specialty}</p>
-                        )}
-                      </div>
-                    </label>
-                  ))}
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
             )}
