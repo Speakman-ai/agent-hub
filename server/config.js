@@ -94,6 +94,8 @@ const config = {
   babysitTimeoutMs:   resolveInt(null, 'babysitTimeoutMs',  15 * 60 * 1000),
   /** Slack response timeout (ms) */
   slackTimeoutMs:     resolveInt(null, 'slackTimeoutMs',    5 * 60 * 1000),
+  /** Conference room per-agent timeout (ms) */
+  conferenceTimeoutMs: resolveInt(null, 'conferenceTimeoutMs', 10 * 60 * 1000),
 
   // ── Slack ──────────────────────────────────────────────────────
   slackWebhookUrl: process.env.SLACK_WEBHOOK_URL || fileConfig.slackWebhookUrl || null,
