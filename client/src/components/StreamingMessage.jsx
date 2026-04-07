@@ -34,7 +34,6 @@ function CodeBlock({ children, className }) {
 
 const ENGINE_BADGES = {
   'claude-code': { emoji: '🟣', label: 'Claude Code' },
-  'cursor-agent': { emoji: '🟢', label: 'Cursor Agent' },
 };
 
 function StreamingMessage({ content, agentColor, engine }) {

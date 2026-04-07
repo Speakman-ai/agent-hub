@@ -4,7 +4,6 @@ import { api } from '../utils/api.js';
 
 const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', emoji: '🟣', color: '#8B5CF6' },
-  { id: 'cursor-agent', label: 'Cursor Agent', emoji: '🟢', color: '#10B981' },
 ];
 
 const ENGINE_MODELS = {
@@ -12,21 +11,7 @@ const ENGINE_MODELS = {
     { id: 'claude-opus-4-6', label: 'Opus', short: 'Opus' },
     { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
   ],
-  'cursor-agent': [
-    { id: 'gpt-5.3-codex-high', label: 'Codex 5.3 High', short: 'C5.3-H' },
-    { id: 'gpt-5.3-codex', label: 'Codex 5.3', short: 'C5.3' },
-    { id: 'gpt-5.3-codex-low', label: 'Codex 5.3 Low', short: 'C5.3-L' },
-    { id: 'gpt-5.3-codex-fast', label: 'Codex 5.3 Fast', short: 'C5.3-F' },
-    { id: 'gpt-5.2-codex-high', label: 'Codex 5.2 High', short: 'C5.2-H' },
-    { id: 'gpt-5.2-codex', label: 'Codex 5.2', short: 'C5.2' },
-    { id: 'gpt-5.1-codex-max-high', label: 'Codex 5.1 Max High', short: 'C5.1MH' },
-    { id: 'composer-2', label: 'Composer 2', short: 'Comp2' },
-    { id: 'composer-2-fast', label: 'Composer 2 Fast', short: 'Comp2F' },
-    { id: 'auto', label: 'Auto', short: 'Auto' },
-  ],
 };
-
-const ALL_MODELS = Object.values(ENGINE_MODELS).flat();
 
 export default function TopBar({
   agent,
@@ -96,21 +81,6 @@ export default function TopBar({
         )}
       </div>
       <div className="flex items-center gap-1.5 md:gap-3">
-        {/* Desktop: Engine Toggle */}
-        {agent && (
-          <button
-            onClick={() => {
-              const next = sessionEngine === 'claude-code' ? 'cursor-agent' : 'claude-code';
-              onEngineChange(next);
-            }}
-            className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors border border-gray-700"
-            title={`Engine: ${currentEngine.label} (click to toggle)`}
-          >
-            <span>{currentEngine.emoji}</span>
-            <span className="text-gray-300">{currentEngine.label}</span>
-          </button>
-        )}
-
         {/* Desktop: Worktree Toggle */}
         {agent && (
           <button
@@ -185,23 +155,6 @@ export default function TopBar({
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setMobileMenuOpen(false)} />
                 <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-[200px] py-1">
-                  <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">Engine</div>
-                  {ENGINE_OPTIONS.map((eng) => (
-                    <button
-                      key={eng.id}
-                      onClick={() => {
-                        onEngineChange(eng.id);
-                        setMobileMenuOpen(false);
-                      }}
-                      className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
-                        eng.id === sessionEngine ? 'text-white' : 'text-gray-400'
-                      }`}
-                    >
-                      <span className="flex items-center gap-2">{eng.emoji} {eng.label}</span>
-                      {eng.id === sessionEngine && <span className="text-emerald-400 text-xs">✓</span>}
-                    </button>
-                  ))}
-                  <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">Model</div>
                   {engineModels.map((m) => (
                     <button

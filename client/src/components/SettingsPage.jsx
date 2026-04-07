@@ -12,12 +12,12 @@ function GeneralSection() {
   useEffect(() => {
     api.getConfig().then((data) => {
       setConfig(data);
-      setEdits({ claudeBin: data.claudeBin, cursorBin: data.cursorBin });
+      setEdits({ claudeBin: data.claudeBin });
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
-  const isDirty = config && (edits.claudeBin !== config.claudeBin || edits.cursorBin !== config.cursorBin);
+  const isDirty = config && (edits.claudeBin !== config.claudeBin);
 
   const handleSave = async () => {
     setSaving(true);
@@ -63,19 +63,6 @@ function GeneralSection() {
           />
           <p className="text-xs text-gray-600 mt-1">
             Path to the <code>claude</code> binary. Used for all claude-code engine sessions.
-          </p>
-        </div>
-
-        <div>
-          <label className={labelClass}>Cursor Agent CLI</label>
-          <input
-            value={edits.cursorBin || ''}
-            onChange={(e) => setEdits((prev) => ({ ...prev, cursorBin: e.target.value }))}
-            className={inputClass}
-            placeholder="/usr/local/bin/agent"
-          />
-          <p className="text-xs text-gray-600 mt-1">
-            Path to the Cursor <code>agent</code> binary. Used for all cursor-agent engine sessions.
           </p>
         </div>
 
@@ -880,7 +867,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                 className={inputClass}
               >
                 <option value="claude-code">claude-code</option>
-                <option value="cursor-agent">cursor-agent</option>
               </select>
             </div>
             <div>
@@ -1056,7 +1042,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                         className={inputClass}
                       >
                         <option value="claude-code">claude-code</option>
-                        <option value="cursor-agent">cursor-agent</option>
                       </select>
                     </div>
                   </div>
@@ -1317,7 +1302,7 @@ function UsageSection() {
             </div>
           </div>
           <p className="text-xs text-gray-600 mt-2">
-            Note: Only Claude Code sessions report cost. Cursor Agent sessions show duration only.
+            Note: Only Claude Code sessions report cost data.
           </p>
         </div>
       )}
