@@ -779,8 +779,27 @@ export default function App() {
 
   const isProcessing = thinking || !!streamingContent;
 
+  const isElectron = !!window.electronAPI?.isElectron;
+  const isMac = window.electronAPI?.platform === 'darwin';
+
   return (
-    <div className="flex h-screen bg-gray-950 text-gray-100">
+    <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
+      {/* Electron title bar — draggable region for window movement */}
+      {isElectron && (
+        <div
+          className="electron-drag flex-shrink-0 bg-gray-900 border-b border-gray-800 flex items-center justify-center relative"
+          style={{ height: isMac ? 38 : 32 }}
+        >
+          {/* Spacer for macOS traffic lights (left side) */}
+          {isMac && <div style={{ width: 78 }} />}
+          <span className="text-xs text-gray-500 font-medium select-none flex-1 text-center">
+            Agent Hub
+          </span>
+          {isMac && <div style={{ width: 78 }} />}
+        </div>
+      )}
+
+      <div className="flex flex-1 min-h-0">
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div
@@ -1005,6 +1024,7 @@ export default function App() {
           ))}
         </div>
       )}
+      </div>{/* close flex row wrapper */}
     </div>
   );
 }

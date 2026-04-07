@@ -47,7 +47,7 @@ export default function Sidebar({
   );
 
   return (
-    <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full">
+    <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full electron-no-drag">
       {/* Header */}
       <div className="p-4 border-b border-gray-800">
         <h1

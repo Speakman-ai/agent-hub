@@ -74,6 +74,14 @@ pre code.hljs {
 .thinking-dot:nth-child(2) { animation-delay: 0.2s; }
 .thinking-dot:nth-child(3) { animation-delay: 0.4s; }
 
+/* Electron title bar drag region */
+.electron-drag {
+  -webkit-app-region: drag;
+}
+.electron-no-drag {
+  -webkit-app-region: no-drag;
+}
+
 /* Sidebar responsive */
 .sidebar-container {
   width: 16rem;
