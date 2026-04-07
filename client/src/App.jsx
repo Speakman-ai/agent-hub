@@ -31,6 +31,7 @@ export default function App() {
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-6');
+  const [sessionWorktree, setSessionWorktree] = useState(true);
   const [currentView, setCurrentView] = useState('chat');
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -390,11 +391,13 @@ export default function App() {
         setActiveSessionId(data[0].id);
         setSessionEngine(data[0].engine || activeAgent?.engine || 'claude-code');
         setSessionModel(data[0].model || 'claude-opus-4-6');
+        setSessionWorktree(data[0].use_worktree !== 0);
       } else {
         setActiveSessionId(null);
         setMessages([]);
         setSessionEngine(agents.find(a => a.id === activeAgentId)?.engine || 'claude-code');
         setSessionModel('claude-opus-4-6');
+        setSessionWorktree(true);
       }
     });
   }, [activeAgentId]);
@@ -420,6 +423,7 @@ export default function App() {
     if (session?.model) {
       setSessionModel(session.model);
     }
+    setSessionWorktree(session?.use_worktree !== 0);
   }, [activeSessionId, sessions]);
 
   // Load messages when session changes
@@ -533,6 +537,7 @@ export default function App() {
     setActiveSessionId(session.id);
     setSessionEngine(session.engine || activeAgent?.engine || 'claude-code');
     setSessionModel(session.model || 'claude-opus-4-6');
+    setSessionWorktree(session.use_worktree !== 0);
     setMessages([]);
     setCurrentView('chat');
   };
@@ -564,6 +569,16 @@ export default function App() {
       const updated = await api.setSessionModel(activeSessionId, model);
       setSessions((prev) =>
         prev.map((s) => (s.id === updated.id ? { ...s, model: updated.model } : s))
+      );
+    }
+  };
+
+  const handleWorktreeChange = async (enabled) => {
+    setSessionWorktree(enabled);
+    if (activeSessionId) {
+      const updated = await api.setSessionWorktree(activeSessionId, enabled);
+      setSessions((prev) =>
+        prev.map((s) => (s.id === updated.id ? { ...s, use_worktree: updated.use_worktree } : s))
       );
     }
   };
@@ -685,6 +700,8 @@ export default function App() {
           onModelChange={handleModelChange}
           messages={messages}
           activeSessionId={activeSessionId}
+          sessionWorktree={sessionWorktree}
+          onWorktreeChange={handleWorktreeChange}
         />
 
         {currentView === 'settings' ? (

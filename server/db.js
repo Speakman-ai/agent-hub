@@ -190,6 +190,23 @@ try {
   db.exec("ALTER TABLE sessions ADD COLUMN engine_session_id TEXT");
 }
 
+// Migration: add worktree columns to sessions
+try {
+  db.prepare('SELECT use_worktree FROM sessions LIMIT 1').get();
+} catch {
+  db.exec('ALTER TABLE sessions ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 1');
+}
+try {
+  db.prepare('SELECT worktree_path FROM sessions LIMIT 1').get();
+} catch {
+  db.exec('ALTER TABLE sessions ADD COLUMN worktree_path TEXT');
+}
+try {
+  db.prepare('SELECT worktree_branch FROM sessions LIMIT 1').get();
+} catch {
+  db.exec('ALTER TABLE sessions ADD COLUMN worktree_branch TEXT');
+}
+
 // Migration: add max_turns to rooms
 try {
   db.prepare('SELECT max_turns FROM rooms LIMIT 1').get();
@@ -237,7 +254,7 @@ if (cronCount.count === 0) {
 const stmts = {
   // Sessions
   createSession: db.prepare(
-    'INSERT INTO sessions (id, agent_id, name, engine, model) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree) VALUES (?, ?, ?, ?, ?, ?)'
   ),
   getSessions: db.prepare(
     'SELECT * FROM sessions WHERE agent_id = ? ORDER BY updated_at DESC'
@@ -260,6 +277,12 @@ const stmts = {
   ),
   updateSessionEngineSessionId: db.prepare(
     "UPDATE sessions SET engine_session_id = ?, updated_at = datetime('now') WHERE id = ?"
+  ),
+  updateSessionWorktree: db.prepare(
+    "UPDATE sessions SET use_worktree = ?, updated_at = datetime('now') WHERE id = ?"
+  ),
+  updateSessionWorktreePath: db.prepare(
+    "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, updated_at = datetime('now') WHERE id = ?"
   ),
 
   // Active tasks

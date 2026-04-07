@@ -52,6 +52,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ model }),
     }),
+  setSessionWorktree: (sessionId, enabled) =>
+    fetchJSON(`/sessions/${sessionId}/worktree`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
 
   updateAgent: (agentId, data) =>
     fetchJSON(`/agents/${agentId}`, {

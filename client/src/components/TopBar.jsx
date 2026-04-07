@@ -41,6 +41,8 @@ export default function TopBar({
   onModelChange,
   messages,
   activeSessionId,
+  sessionWorktree,
+  onWorktreeChange,
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -106,6 +108,24 @@ export default function TopBar({
           >
             <span>{currentEngine.emoji}</span>
             <span className="text-gray-300">{currentEngine.label}</span>
+          </button>
+        )}
+
+        {/* Desktop: Worktree Toggle */}
+        {agent && (
+          <button
+            onClick={() => onWorktreeChange(!sessionWorktree)}
+            className={`hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg transition-colors border ${
+              sessionWorktree
+                ? 'bg-emerald-900/30 border-emerald-700/50 text-emerald-400 hover:bg-emerald-900/50'
+                : 'bg-gray-800 border-gray-700 text-gray-500 hover:bg-gray-700'
+            }`}
+            title={`Git worktree isolation: ${sessionWorktree ? 'ON — each session uses its own branch' : 'OFF — working directly in the project directory'}`}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M7.707 3.293a1 1 0 010 1.414L5.414 7H11a7 7 0 017 7v2a1 1 0 11-2 0v-2a5 5 0 00-5-5H5.414l2.293 2.293a1 1 0 11-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clipRule="evenodd" />
+            </svg>
+            <span>{sessionWorktree ? 'Isolated' : 'Shared'}</span>
           </button>
         )}
 
@@ -198,6 +218,20 @@ export default function TopBar({
                       {m.id === sessionModel && <span className="text-emerald-400 text-xs">✓</span>}
                     </button>
                   ))}
+                  <div className="border-t border-gray-700 my-1" />
+                  <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">Worktree</div>
+                  <button
+                    onClick={() => {
+                      onWorktreeChange(!sessionWorktree);
+                      setMobileMenuOpen(false);
+                    }}
+                    className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
+                      sessionWorktree ? 'text-emerald-400' : 'text-gray-400'
+                    }`}
+                  >
+                    <span>{sessionWorktree ? 'Isolated (own branch)' : 'Shared (project dir)'}</span>
+                    {sessionWorktree && <span className="text-emerald-400 text-xs">✓</span>}
+                  </button>
                 </div>
               </>
             )}
