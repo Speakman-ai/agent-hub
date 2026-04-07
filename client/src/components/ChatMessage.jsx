@@ -105,7 +105,6 @@ function MessageAttachments({ attachments }) {
 
 const ENGINE_BADGES = {
   'claude-code': { emoji: '🟣', label: 'Claude Code' },
-  'cursor-agent': { emoji: '🟢', label: 'Cursor Agent' },
 };
 
 function ChatMessage({ message, agentColor, onDequeue }) {

@@ -721,7 +721,6 @@ export default function App() {
 
   const ENGINE_DEFAULT_MODELS = {
     'claude-code': 'claude-opus-4-6',
-    'cursor-agent': 'gpt-5.3-codex-high',
   };
 
   const handleEngineChange = async (engine) => {

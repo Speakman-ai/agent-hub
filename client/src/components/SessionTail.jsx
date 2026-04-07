@@ -171,7 +171,6 @@ function eventsToBlocks(events) {
 
 const ENGINE_BADGES = {
   'claude-code': { emoji: '🟣', label: 'Claude Code' },
-  'cursor-agent': { emoji: '🟢', label: 'Cursor Agent' },
 };
 
 // Shared markdown renderer config — used by both TextBubble (rich timeline)
