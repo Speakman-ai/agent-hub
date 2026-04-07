@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { spawn } from 'child_process';
 import { stmts } from './db.js';
 import config from './config.js';
+import { getOrCreateProcessWorktree } from './worktree.js';
 
 const CLAUDE_BIN = config.claudeBin;
 const SLACK_WEBHOOK_URL = config.slackWebhookUrl;
@@ -149,7 +150,8 @@ export async function runHeartbeat(agent) {
   const logId = logEntry.lastInsertRowid;
 
   try {
-    const result = await runClaude(agent.heartbeat.prompt, agent.cwd, agent.systemPrompt);
+    const heartbeatCwd = getOrCreateProcessWorktree(agent.cwd, `heartbeat-${agent.id}`);
+    const result = await runClaude(agent.heartbeat.prompt, heartbeatCwd, agent.systemPrompt);
     stmts.updateHeartbeatLog.run(result, 'success', logId);
     console.log(`[Heartbeat] ${agent.name} completed successfully`);
 
@@ -181,7 +183,8 @@ export async function runCronJob(cronJob) {
   const timeoutMs = isBabysit ? config.babysitTimeoutMs : config.defaultTimeoutMs;
 
   try {
-    const result = await runClaude(cronJob.prompt, cronJob.cwd, undefined, { timeoutMs });
+    const cronCwd = getOrCreateProcessWorktree(cronJob.cwd, `cron-${cronJob.id}`);
+    const result = await runClaude(cronJob.prompt, cronCwd, undefined, { timeoutMs });
     const durationMs = Date.now() - startTime;
     stmts.updateCronResult.run(result, cronJob.id);
     stmts.updateCronLog.run(result, 'success', durationMs, logId);
