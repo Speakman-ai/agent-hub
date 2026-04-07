@@ -172,6 +172,18 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_delegations_session ON delegations(session_id);
   CREATE INDEX IF NOT EXISTS idx_delegations_parent ON delegations(parent_message_id);
+
+  CREATE TABLE IF NOT EXISTS message_queue (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    attachments TEXT,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_message_queue_session ON message_queue(session_id, position ASC);
 `);
 
 // Migration: add next_run_at to crons (last_run already exists)
@@ -473,6 +485,29 @@ const stmts = {
   ),
   getDelegationsBySession: db.prepare(
     'SELECT * FROM delegations WHERE session_id = ? ORDER BY started_at DESC'
+  ),
+
+  // Message queue
+  enqueueMessage: db.prepare(
+    'INSERT INTO message_queue (id, session_id, agent_id, content, attachments, position) VALUES (?, ?, ?, ?, ?, ?)'
+  ),
+  getQueuedMessages: db.prepare(
+    'SELECT * FROM message_queue WHERE session_id = ? ORDER BY position ASC'
+  ),
+  getNextQueuedMessage: db.prepare(
+    'SELECT * FROM message_queue WHERE session_id = ? ORDER BY position ASC LIMIT 1'
+  ),
+  dequeueMessage: db.prepare(
+    'DELETE FROM message_queue WHERE id = ?'
+  ),
+  clearSessionQueue: db.prepare(
+    'DELETE FROM message_queue WHERE session_id = ?'
+  ),
+  getMaxQueuePosition: db.prepare(
+    'SELECT MAX(position) as max_pos FROM message_queue WHERE session_id = ?'
+  ),
+  getAllQueuedSessions: db.prepare(
+    'SELECT DISTINCT session_id FROM message_queue'
   ),
 };
 

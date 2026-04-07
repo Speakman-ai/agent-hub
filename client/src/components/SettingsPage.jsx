@@ -2,6 +2,113 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 
+function GeneralSection() {
+  const [config, setConfig] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(null);
+
+  useEffect(() => {
+    api.getConfig().then((data) => {
+      setConfig(data);
+      setEdits({ claudeBin: data.claudeBin, cursorBin: data.cursorBin });
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  const isDirty = config && (edits.claudeBin !== config.claudeBin || edits.cursorBin !== config.cursorBin);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateConfig(edits);
+      setConfig((prev) => ({ ...prev, ...edits }));
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 2000);
+    } catch {
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inputClass = 'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+  const labelClass = 'block text-xs text-gray-400 mb-1';
+
+  if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
+  if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold mb-4">General Settings</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          CLI binary paths are saved to <code className="text-gray-400">server/config.json</code>.
+          Changes take effect for new agent spawns immediately (no restart needed).
+        </p>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <h4 className="text-sm font-medium text-gray-300">CLI Binary Paths</h4>
+
+        <div>
+          <label className={labelClass}>Claude Code CLI</label>
+          <input
+            value={edits.claudeBin || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, claudeBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/claude"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the <code>claude</code> binary. Used for all claude-code engine sessions.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Cursor Agent CLI</label>
+          <input
+            value={edits.cursorBin || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, cursorBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/agent"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the Cursor <code>agent</code> binary. Used for all cursor-agent engine sessions.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-between pt-2">
+          <div className="flex items-center gap-2">
+            {saveStatus === 'saved' && <span className="text-xs text-emerald-400">✓ Saved</span>}
+            {saveStatus === 'error' && <span className="text-xs text-red-400">✕ Failed to save</span>}
+          </div>
+          <button
+            onClick={handleSave}
+            disabled={!isDirty || saving}
+            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-2">
+        <h4 className="text-sm font-medium text-gray-300">Current Config</h4>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <span className="text-gray-500">Port</span>
+          <span className="text-gray-300 font-mono">{config.port}</span>
+          <span className="text-gray-500">Default CWD</span>
+          <span className="text-gray-300 font-mono truncate">{config.defaultCwd}</span>
+          <span className="text-gray-500">Default Model</span>
+          <span className="text-gray-300 font-mono">{config.defaultModel}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HeartbeatSection() {
   const [heartbeats, setHeartbeats] = useState([]);
   const [expandedAgent, setExpandedAgent] = useState(null);
@@ -824,23 +931,67 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
       )}
 
       <div className="space-y-3">
-        {agents.map((agent) => {
+        {(() => {
+          // Group agents: leads first, then subs indented under their lead
+          const leads = agents.filter((a) => a.role === 'lead');
+          const subs = agents.filter((a) => a.role === 'sub');
+          const standalone = agents.filter((a) => a.role !== 'lead' && a.role !== 'sub');
+          const subsByParent = {};
+          for (const s of subs) {
+            const pid = s.parentAgentId;
+            if (!subsByParent[pid]) subsByParent[pid] = [];
+            subsByParent[pid].push(s);
+          }
+          // Build ordered list: lead, then its subs, then next lead, etc., then standalone
+          const ordered = [];
+          for (const lead of leads) {
+            ordered.push({ agent: lead, indent: 0, isLead: true });
+            for (const sub of (subsByParent[lead.id] || [])) {
+              ordered.push({ agent: sub, indent: 1, isSub: true });
+            }
+          }
+          for (const a of standalone) {
+            ordered.push({ agent: a, indent: 0 });
+          }
+          // Any orphan subs
+          for (const s of subs) {
+            if (!leads.find((l) => l.id === s.parentAgentId)) {
+              ordered.push({ agent: s, indent: 0, isSub: true });
+            }
+          }
+          return ordered;
+        })().map(({ agent, indent, isLead, isSub }) => {
           const isExpanded = expanded === agent.id;
           const edit = getEdit(agent.id);
           const isDirty = !!edits[agent.id];
           return (
-            <div key={agent.id} className={`bg-gray-800 rounded-xl overflow-hidden${agent.active === false ? ' opacity-50' : ''}`}>
+            <div
+              key={agent.id}
+              className={`bg-gray-800 rounded-xl overflow-hidden${agent.active === false ? ' opacity-50' : ''}`}
+              style={indent > 0 ? { marginLeft: `${indent * 24}px` } : {}}
+            >
               <div
                 className="flex items-center gap-3 p-4 cursor-pointer hover:bg-gray-750"
                 onClick={() => setExpanded(isExpanded ? null : agent.id)}
               >
+                {isSub && <span className="text-gray-600 text-xs -ml-1">└</span>}
                 <span
-                  className="w-3 h-3 rounded-full flex-shrink-0"
+                  className={`w-3 h-3 flex-shrink-0 ${isLead ? 'rounded-sm' : 'rounded-full'}`}
                   style={{ backgroundColor: agent.color }}
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-sm">{agent.name}</span>
+                    {isLead && (
+                      <span className="bg-amber-900/50 text-amber-300 px-1.5 py-0.5 rounded-full text-xs font-medium">
+                        Lead
+                      </span>
+                    )}
+                    {isSub && (
+                      <span className="bg-indigo-900/50 text-indigo-300 px-1.5 py-0.5 rounded-full text-xs">
+                        Sub
+                      </span>
+                    )}
                     <span className="text-xs text-gray-500 font-mono">{agent.id}</span>
                     <span className="text-xs text-gray-500">{agent.engine}</span>
                     {agent.active === false && (
@@ -1367,13 +1518,14 @@ function ConfigBackupSection({ onAgentsChange }) {
 }
 
 export default function SettingsPage({ projects = [], agents, onAgentsChange }) {
-  const [tab, setTab] = useState('heartbeats');
+  const [tab, setTab] = useState('general');
 
   const tabs = [
+    { id: 'general', label: '⚙️ General' },
+    { id: 'agents', label: '🤖 Agents' },
     { id: 'heartbeats', label: '💓 Heartbeats' },
     { id: 'crons', label: '⏰ Cron Jobs' },
     { id: 'slack', label: '💬 Slack' },
-    { id: 'agents', label: '🤖 Agents' },
     { id: 'usage', label: '📊 Usage' },
     { id: 'backup', label: '💾 Backup' },
   ];
@@ -1399,6 +1551,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange }) 
           ))}
         </div>
 
+        {tab === 'general' && <GeneralSection />}
         {tab === 'heartbeats' && <HeartbeatSection />}
         {tab === 'crons' && <CronSection />}
         {tab === 'slack' && <SlackSection />}
