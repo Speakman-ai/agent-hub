@@ -2,6 +2,8 @@
   "name": "agent-hub",
   "version": "1.0.0",
   "private": true,
+  "main": "electron/main.js",
+  "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "cd server && node index.js",
@@ -10,9 +12,47 @@
     "start": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "install:all": "npm install && cd server && npm install && cd ../client && npm install && cd ../mobile && npm install",
     "dev:mobile": "cd mobile && expo start",
-    "mobile": "cd mobile && expo start"
+    "mobile": "cd mobile && expo start",
+    "electron:dev": "NODE_ENV=development concurrently \"npm run dev:server\" \"npm run dev:client\" \"sleep 3 && npx electron .\"",
+    "electron:build": "npm run build && npx electron-builder --mac",
+    "electron:start": "npx electron .",
+    "electron:pack": "npm run build && npx electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.agenthub.app",
+    "productName": "Agent Hub",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "client/dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server/node_modules",
+        "to": "server/node_modules",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "target": ["dmg", "zip"],
+      "icon": null,
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    },
+    "win": {
+      "target": ["nsis", "portable"]
+    }
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
   }
 }

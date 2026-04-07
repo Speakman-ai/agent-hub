@@ -10,6 +10,7 @@ import SettingsPage from './components/SettingsPage.jsx';
 import SkillsPage from './components/SkillsPage.jsx';
 import RoomChat from './components/RoomChat.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
+import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 
@@ -56,6 +57,8 @@ export default function App() {
   const [delegations, setDelegations] = useState({});
   // Skills for the active agent (for /slash-command autocomplete)
   const [skills, setSkills] = useState([]);
+  // Open Project wizard
+  const [showWizard, setShowWizard] = useState(false);
   // Toast notifications (e.g., babysit events)
   const [toasts, setToasts] = useState([]);
   const activeRoomIdRef = useRef(activeRoomId);
@@ -463,6 +466,11 @@ export default function App() {
         setToasts((prev) => [...prev, toast]);
         break;
       }
+      case 'analyze-progress':
+      case 'analyze-complete':
+      case 'analyze-error':
+        window.dispatchEvent(new CustomEvent('analyze-ws', { detail: data }));
+        break;
       case 'babysit_complete': {
         const toast = {
           id: `babysit-done-${Date.now()}`,
@@ -819,6 +827,7 @@ export default function App() {
           }}
           onNewRoom={handleNewRoom}
           onDeleteRoom={handleDeleteRoom}
+          onOpenProject={() => setShowWizard(true)}
         />
       </div>
 
@@ -968,6 +977,17 @@ export default function App() {
             setCurrentView('chat');
           }}
           onClose={() => setShowSwitcher(false)}
+        />
+      )}
+
+      {/* Open Project wizard */}
+      {showWizard && (
+        <OpenProjectWizard
+          onClose={() => setShowWizard(false)}
+          onProjectCreated={() => {
+            setShowWizard(false);
+            refreshAgents();
+          }}
         />
       )}
 

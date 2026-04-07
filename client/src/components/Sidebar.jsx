@@ -18,6 +18,7 @@ export default function Sidebar({
   onSelectRoom,
   onNewRoom,
   onDeleteRoom,
+  onOpenProject,
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [hoveredRoom, setHoveredRoom] = useState(null);
@@ -64,6 +65,16 @@ export default function Sidebar({
           <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
             Projects
           </div>
+
+          {onOpenProject && (
+            <button
+              onClick={onOpenProject}
+              className="w-full text-left px-2 py-2 mb-2 rounded-lg flex items-center gap-2 text-gray-400 hover:bg-gray-800/50 hover:text-gray-200 transition-colors border border-dashed border-gray-700 hover:border-gray-500"
+            >
+              <span className="text-sm">+</span>
+              <span className="text-sm font-medium">Open Project</span>
+            </button>
+          )}
 
           {projects.map((project) => {
             const activeAgents = project.agents.filter((a) => a.active !== false);
