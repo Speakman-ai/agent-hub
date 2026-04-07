@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
+import { formatRoomExport, copyToClipboard } from '../utils/export.js';
 
 /**
  * RoomChat — conference room group chat with multiple agents.
@@ -18,6 +19,7 @@ export default function RoomChat({
 }) {
   const [input, setInput] = useState('');
   const [showAgentPanel, setShowAgentPanel] = useState(false);
+  const [exportFeedback, setExportFeedback] = useState(false);
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const initialScrollRef = useRef(true);
@@ -201,16 +203,43 @@ export default function RoomChat({
             </div>
           </div>
         </div>
-        <button
-          onClick={() => setShowAgentPanel(!showAgentPanel)}
-          className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${
-            showAgentPanel
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-          }`}
-        >
-          {showAgentPanel ? 'Close' : 'Manage Agents'}
-        </button>
+        <div className="flex items-center gap-2">
+          {roomMessages?.length > 0 && (
+            <button
+              onClick={async () => {
+                const text = formatRoomExport({ room, messages: roomMessages });
+                const ok = await copyToClipboard(text);
+                if (ok) {
+                  setExportFeedback(true);
+                  setTimeout(() => setExportFeedback(false), 2000);
+                }
+              }}
+              className="text-gray-400 hover:text-white p-2 transition-colors"
+              title={exportFeedback ? 'Copied!' : 'Copy conversation to clipboard'}
+            >
+              {exportFeedback ? (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-emerald-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                  <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                </svg>
+              )}
+            </button>
+          )}
+          <button
+            onClick={() => setShowAgentPanel(!showAgentPanel)}
+            className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${
+              showAgentPanel
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+            }`}
+          >
+            {showAgentPanel ? 'Close' : 'Manage Agents'}
+          </button>
+        </div>
       </div>
 
       {/* Agent management panel */}

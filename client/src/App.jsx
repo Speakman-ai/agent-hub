@@ -683,6 +683,7 @@ export default function App() {
           onEngineChange={handleEngineChange}
           sessionModel={sessionModel}
           onModelChange={handleModelChange}
+          messages={messages}
         />
 
         {currentView === 'settings' ? (

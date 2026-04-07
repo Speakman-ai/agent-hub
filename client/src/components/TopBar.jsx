@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { formatSessionExport, copyToClipboard } from '../utils/export.js';
 
 const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', emoji: '🟣', color: '#8B5CF6' },
@@ -37,9 +38,11 @@ export default function TopBar({
   onEngineChange,
   sessionModel,
   onModelChange,
+  messages,
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [exportFeedback, setExportFeedback] = useState(false);
   const modelRef = useRef(null);
   const currentEngine = ENGINE_OPTIONS.find((e) => e.id === sessionEngine) || ENGINE_OPTIONS[0];
   const engineModels = ENGINE_MODELS[sessionEngine] || ENGINE_MODELS['claude-code'];
@@ -208,6 +211,32 @@ export default function TopBar({
           <span className="sm:hidden">●</span>
           <span className="hidden sm:inline">{connected ? '● Connected' : reconnecting ? '● Reconnecting...' : '● Disconnected'}</span>
         </span>
+        {/* Export conversation */}
+        {agent && messages?.length > 0 && (
+          <button
+            onClick={async () => {
+              const text = formatSessionExport({ agent, messages, sessionEngine });
+              const ok = await copyToClipboard(text);
+              if (ok) {
+                setExportFeedback(true);
+                setTimeout(() => setExportFeedback(false), 2000);
+              }
+            }}
+            className="text-gray-400 hover:text-white p-2 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
+            title={exportFeedback ? 'Copied!' : 'Copy conversation to clipboard'}
+          >
+            {exportFeedback ? (
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-emerald-400" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+              </svg>
+            )}
+          </button>
+        )}
         <button
           onClick={onNewSession}
           disabled={!agent}
