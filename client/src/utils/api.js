@@ -32,6 +32,8 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
+  summarizeSession: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST' }),
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
   deleteSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
@@ -108,6 +110,8 @@ export const api = {
   removeRoomAgent: (roomId, agentId) =>
     fetchJSON(`/rooms/${roomId}/agents/${agentId}`, { method: 'DELETE' }),
   getRoomMessages: (roomId) => fetchJSON(`/rooms/${roomId}/messages`),
+  summarizeRoom: (roomId) =>
+    fetchJSON(`/rooms/${roomId}/summarize`, { method: 'POST' }),
 
   // Usage
   getUsage: () => fetchJSON('/usage'),

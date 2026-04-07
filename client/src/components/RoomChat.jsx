@@ -19,7 +19,9 @@ export default function RoomChat({
 }) {
   const [input, setInput] = useState('');
   const [showAgentPanel, setShowAgentPanel] = useState(false);
-  const [exportFeedback, setExportFeedback] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportState, setExportState] = useState(null); // null | 'summarizing' | 'copied'
+  const exportRef = useRef(null);
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const initialScrollRef = useRef(true);
@@ -79,6 +81,17 @@ export default function RoomChat({
   useEffect(() => {
     setMentionIndex(0);
   }, [mentionQuery]);
+
+  // Close export dropdown on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (exportRef.current && !exportRef.current.contains(e.target)) {
+        setExportOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const closeMention = useCallback(() => {
     setMentionQuery(null);
@@ -205,29 +218,74 @@ export default function RoomChat({
         </div>
         <div className="flex items-center gap-2">
           {roomMessages?.length > 0 && (
-            <button
-              onClick={async () => {
-                const text = formatRoomExport({ room, messages: roomMessages });
-                const ok = await copyToClipboard(text);
-                if (ok) {
-                  setExportFeedback(true);
-                  setTimeout(() => setExportFeedback(false), 2000);
-                }
-              }}
-              className="text-gray-400 hover:text-white p-2 transition-colors"
-              title={exportFeedback ? 'Copied!' : 'Copy conversation to clipboard'}
-            >
-              {exportFeedback ? (
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-emerald-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                </svg>
-              ) : (
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                  <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-                  <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
-                </svg>
+            <div className="relative" ref={exportRef}>
+              <button
+                onClick={() => setExportOpen((v) => !v)}
+                className="text-gray-400 hover:text-white p-2 transition-colors"
+                title="Export conversation"
+              >
+                {exportState === 'copied' ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-emerald-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                ) : exportState === 'summarizing' ? (
+                  <svg className="h-4 w-4 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                    <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                  </svg>
+                )}
+              </button>
+              {exportOpen && (
+                <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-[180px] py-1">
+                  <button
+                    onClick={async () => {
+                      const text = formatRoomExport({ room, messages: roomMessages });
+                      const ok = await copyToClipboard(text);
+                      if (ok) {
+                        setExportState('copied');
+                        setTimeout(() => setExportState(null), 2000);
+                      }
+                      setExportOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                      <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                      <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                    </svg>
+                    Copy Raw
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setExportOpen(false);
+                      setExportState('summarizing');
+                      try {
+                        const { summary } = await api.summarizeRoom(room.id);
+                        const ok = await copyToClipboard(summary);
+                        setExportState(ok ? 'copied' : null);
+                        if (ok) setTimeout(() => setExportState(null), 2000);
+                      } catch (err) {
+                        console.error('Summarize failed:', err);
+                        setExportState(null);
+                        alert('Summary failed: ' + err.message);
+                      }
+                    }}
+                    disabled={exportState === 'summarizing'}
+                    className="w-full text-left px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+                    </svg>
+                    Copy Summary
+                  </button>
+                </div>
               )}
-            </button>
+            </div>
           )}
           <button
             onClick={() => setShowAgentPanel(!showAgentPanel)}
