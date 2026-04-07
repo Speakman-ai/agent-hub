@@ -24,6 +24,17 @@ server/slack-config.json.ready
 # Backup files
 server/*-backup.json
 
+# Instance-specific config (contains local paths)
+server/config.json
+server/projects.json
+
+# Agent workspace context (instance-specific)
+ahw/
+
+# Uploaded files
+server/uploads/
+.agent-hub-images/
+
 # OS files
 .DS_Store
 Thumbs.db
