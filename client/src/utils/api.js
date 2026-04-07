@@ -145,6 +145,11 @@ export const api = {
   getSlackMessages: (agentId, limit = 50) =>
     fetchJSON(`/slack/messages?${agentId ? `agentId=${agentId}&` : ''}limit=${limit}`),
 
+  // Setup
+  getSetupStatus: () => fetchJSON('/setup/status'),
+  configureSetup: (data) =>
+    fetchJSON('/setup/configure', { method: 'POST', body: JSON.stringify(data) }),
+
   // Project onboarding
   analyzeProject: (cwd) =>
     fetchJSON('/projects/analyze', { method: 'POST', body: JSON.stringify({ cwd }) }),

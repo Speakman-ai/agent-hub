@@ -11,6 +11,7 @@ import SkillsPage from './components/SkillsPage.jsx';
 import RoomChat from './components/RoomChat.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
+import SetupWizard from './components/SetupWizard.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 
@@ -59,6 +60,9 @@ export default function App() {
   const [skills, setSkills] = useState([]);
   // Open Project wizard
   const [showWizard, setShowWizard] = useState(false);
+  // First-run setup
+  const [setupStatus, setSetupStatus] = useState(null);
+  const [showSetup, setShowSetup] = useState(false);
   // Toast notifications (e.g., babysit events)
   const [toasts, setToasts] = useState([]);
   const activeRoomIdRef = useRef(activeRoomId);
@@ -509,8 +513,17 @@ export default function App() {
     });
   }, []);
 
-  // Load projects + agents on mount
+  // Check setup status + load projects on mount
   useEffect(() => {
+    // Check first-run status
+    fetch('/api/setup/status')
+      .then((r) => r.json())
+      .then((status) => {
+        setSetupStatus(status);
+        if (status.firstRun) setShowSetup(true);
+      })
+      .catch(() => {}); // server may not have endpoint yet — ignore
+
     api.getProjects().then((data) => {
       setProjects(data);
       const flat = data.flatMap((p) =>
@@ -996,6 +1009,17 @@ export default function App() {
             setCurrentView('chat');
           }}
           onClose={() => setShowSwitcher(false)}
+        />
+      )}
+
+      {/* First-run setup wizard */}
+      {showSetup && setupStatus && (
+        <SetupWizard
+          setupStatus={setupStatus}
+          onComplete={() => {
+            setShowSetup(false);
+            setShowWizard(true); // immediately open the Open Project wizard
+          }}
         />
       )}
 

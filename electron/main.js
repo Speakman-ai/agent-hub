@@ -10,10 +10,14 @@ import { app, BrowserWindow, dialog, ipcMain, shell, Menu } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { fork } from 'child_process';
+import { mkdirSync } from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const isDev = process.env.NODE_ENV === 'development';
+
+// Use platform-appropriate user data directory
+const USER_DATA = path.join(app.getPath('userData'), 'data');
 
 let mainWindow = null;
 let serverProcess = null;
@@ -24,10 +28,14 @@ function startServer() {
   return new Promise((resolve, reject) => {
     const serverEntry = path.join(ROOT, 'server', 'index.js');
 
+    // Ensure the user data directory exists
+    mkdirSync(USER_DATA, { recursive: true });
+
     // Set env so the server knows to serve the built client
     const env = {
       ...process.env,
       ELECTRON: '1',
+      AGENT_HUB_DATA_DIR: USER_DATA,
       AGENT_HUB_SERVE_CLIENT: isDev ? '' : path.join(ROOT, 'client', 'dist'),
     };
 
