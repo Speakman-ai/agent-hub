@@ -1009,54 +1009,69 @@ export default function App() {
                 )}
                 {(() => {
                   const queuedIds = new Set((messageQueues[activeSessionId] || []).map((q) => q.id));
-                  return messages.map((msg) =>
-                    msg.role === 'assistant' ? (
-                      <SessionTail
-                        key={msg.id}
-                        message={msg}
-                        events={eventsByMessage[msg.id]}
-                        agentColor={activeAgent?.color}
-                        onEventsLoaded={handleEventsLoaded}
-                      />
-                    ) : (
-                      <ChatMessage
-                        key={msg.id}
-                        message={{ ...msg, queued: queuedIds.has(msg.id) }}
-                        agentColor={activeAgent?.color}
-                        onDequeue={queuedIds.has(msg.id) ? handleDequeue : undefined}
-                        onEditQueued={queuedIds.has(msg.id) ? handleEditQueuedMessage : undefined}
-                      />
-                    )
+                  // Render non-queued messages inline, queued messages stick to bottom
+                  const nonQueued = messages.filter((msg) => !queuedIds.has(msg.id));
+                  const queued = messages.filter((msg) => queuedIds.has(msg.id));
+                  return (
+                    <>
+                      {nonQueued.map((msg) =>
+                        msg.role === 'assistant' ? (
+                          <SessionTail
+                            key={msg.id}
+                            message={msg}
+                            events={eventsByMessage[msg.id]}
+                            agentColor={activeAgent?.color}
+                            onEventsLoaded={handleEventsLoaded}
+                          />
+                        ) : (
+                          <ChatMessage
+                            key={msg.id}
+                            message={msg}
+                            agentColor={activeAgent?.color}
+                          />
+                        )
+                      )}
+                      {thinking && !streamingMsgId && (
+                        <ThinkingIndicator agentColor={activeAgent?.color} />
+                      )}
+                      {streamingMsgId && (
+                        <SessionTail
+                          key={streamingMsgId}
+                          message={{
+                            id: streamingMsgId,
+                            role: 'assistant',
+                            engine: streamingEngine,
+                            model: sessionModel,
+                            content: streamingContent,
+                          }}
+                          events={eventsByMessage[streamingMsgId]}
+                          agentColor={activeAgent?.color}
+                          streaming
+                        />
+                      )}
+                      {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
+                      {delegations[activeSessionId] && delegations[activeSessionId].tasks.length > 0 && (
+                        <div className="px-4 max-w-[95%] sm:max-w-[90%]">
+                          <DelegationPanel
+                            delegations={delegations[activeSessionId].tasks}
+                            sessionId={activeSessionId}
+                            onCancel={(sid) => send({ type: 'delegation_cancel', sessionId: sid })}
+                          />
+                        </div>
+                      )}
+                      {/* Queued messages always render at the very bottom */}
+                      {queued.map((msg) => (
+                        <ChatMessage
+                          key={msg.id}
+                          message={{ ...msg, queued: true }}
+                          agentColor={activeAgent?.color}
+                          onDequeue={handleDequeue}
+                          onEditQueued={handleEditQueuedMessage}
+                        />
+                      ))}
+                    </>
                   );
                 })()}
-                {thinking && !streamingMsgId && (
-                  <ThinkingIndicator agentColor={activeAgent?.color} />
-                )}
-                {streamingMsgId && (
-                  <SessionTail
-                    key={streamingMsgId}
-                    message={{
-                      id: streamingMsgId,
-                      role: 'assistant',
-                      engine: streamingEngine,
-                      model: sessionModel,
-                      content: streamingContent,
-                    }}
-                    events={eventsByMessage[streamingMsgId]}
-                    agentColor={activeAgent?.color}
-                    streaming
-                  />
-                )}
-                {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
-                {delegations[activeSessionId] && delegations[activeSessionId].tasks.length > 0 && (
-                  <div className="px-4 max-w-[95%] sm:max-w-[90%]">
-                    <DelegationPanel
-                      delegations={delegations[activeSessionId].tasks}
-                      sessionId={activeSessionId}
-                      onCancel={(sid) => send({ type: 'delegation_cancel', sessionId: sid })}
-                    />
-                  </div>
-                )}
                 <div ref={messagesEndRef} />
               </div>
 
