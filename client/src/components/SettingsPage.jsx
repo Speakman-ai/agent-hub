@@ -1,176 +1,333 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
-import { getConnectionConfig, saveConnectionConfig, testConnection, getApiBase } from '../utils/connection.js';
-import { Settings as SettingsIcon, Link, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, RefreshCw, User } from 'lucide-react';
+import { saveConnectionConfig, testConnection } from '../utils/connection.js';
+import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, switchOrg } from '../utils/orgs.js';
+import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft } from 'lucide-react';
 
-function ConnectionSection() {
-  const [config, setConfig] = useState(() => getConnectionConfig());
+function OrganizationsSection() {
+  const [orgsState, setOrgsState] = useState(() => getOrgs());
+  const [expandedOrgId, setExpandedOrgId] = useState(null);
+  const [editForm, setEditForm] = useState({});
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
-  const [saved, setSaved] = useState(false);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [newForm, setNewForm] = useState({ name: '', mode: 'local', color: '#6366f1', remoteUrl: '', apiKey: '' });
 
-  const handleModeChange = (mode) => {
-    setConfig((prev) => ({ ...prev, mode }));
+  const activeOrg = getActiveOrg();
+  const orgs = orgsState?.orgs || [];
+  const inputClass = 'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+  const labelClass = 'block text-xs text-gray-400 mb-1';
+
+  const COLOR_OPTIONS = ['#6366f1', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6'];
+
+  const refreshOrgs = () => setOrgsState(getOrgs());
+
+  const handleExpand = (orgId) => {
+    if (expandedOrgId === orgId) {
+      setExpandedOrgId(null);
+      return;
+    }
+    const org = orgs.find((o) => o.id === orgId);
+    setEditForm({ name: org.name, mode: org.mode, color: org.color, remoteUrl: org.remoteUrl || '', apiKey: org.apiKey || '' });
+    setExpandedOrgId(orgId);
     setTestResult(null);
   };
 
-  const handleSave = () => {
-    saveConnectionConfig(config);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const handleSaveEdit = (orgId) => {
+    updateOrg(orgId, editForm);
+    refreshOrgs();
+    setExpandedOrgId(null);
+    // If it's the active org, reload to pick up connection changes
+    if (activeOrg?.id === orgId) {
+      window.location.reload();
+    }
   };
 
-  const handleTest = async () => {
-    if (!config.remoteUrl) {
+  const handleDelete = (orgId) => {
+    if (deleteOrg(orgId)) {
+      refreshOrgs();
+      setExpandedOrgId(null);
+      // If we deleted the active org, the deleteOrg function switched to another — reload
+      if (activeOrg?.id === orgId) {
+        window.location.reload();
+      }
+    }
+  };
+
+  const handleSwitch = (orgId) => {
+    switchOrg(orgId);
+    window.location.reload();
+  };
+
+  const handleTest = async (url, apiKey) => {
+    if (!url) {
       setTestResult({ ok: false, message: 'Enter a server URL first.' });
       return;
     }
     setTesting(true);
     setTestResult(null);
-    const result = await testConnection(config.remoteUrl, config.apiKey);
+    const result = await testConnection(url, apiKey);
     setTestResult(result);
     setTesting(false);
   };
 
-  const handleSaveAndReload = () => {
-    saveConnectionConfig(config);
-    window.location.reload();
+  const handleCreateOrg = () => {
+    if (!newForm.name.trim()) return;
+    createOrg(newForm);
+    refreshOrgs();
+    setShowNewForm(false);
+    setNewForm({ name: '', mode: 'local', color: '#6366f1', remoteUrl: '', apiKey: '' });
   };
 
-  const inputClass = 'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
-  const labelClass = 'block text-xs text-gray-400 mb-1';
+  const renderModeToggle = (mode, onChange) => (
+    <div className="flex gap-3">
+      <button
+        onClick={() => onChange('local')}
+        className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
+          mode === 'local'
+            ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+            : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+        }`}
+      >
+        <div className="text-base mb-1 flex items-center gap-1.5"><Monitor size={18} /> Local</div>
+        <div className="text-xs text-gray-500">Server runs on this machine</div>
+      </button>
+      <button
+        onClick={() => onChange('remote')}
+        className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
+          mode === 'remote'
+            ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+            : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+        }`}
+      >
+        <div className="text-base mb-1 flex items-center gap-1.5"><Cloud size={18} /> Remote</div>
+        <div className="text-xs text-gray-500">Connect to a remote server</div>
+      </button>
+    </div>
+  );
+
+  const renderRemoteFields = (form, setForm, showTest = true) => (
+    <div className="space-y-3 mt-3">
+      <div>
+        <label className={labelClass}>Server URL</label>
+        <input
+          value={form.remoteUrl}
+          onChange={(e) => setForm((prev) => ({ ...prev, remoteUrl: e.target.value }))}
+          className={inputClass}
+          placeholder="https://my-server.example.com:3051"
+        />
+      </div>
+      <div>
+        <label className={labelClass}>API Key (optional)</label>
+        <input
+          type="password"
+          value={form.apiKey}
+          onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
+          className={inputClass}
+          placeholder="Enter API key if server requires authentication"
+        />
+      </div>
+      {showTest && (
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => handleTest(form.remoteUrl, form.apiKey)}
+            disabled={testing}
+            className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              {testing ? <><Loader2 size={14} className="animate-spin" /> Testing...</> : <><Plug size={14} /> Test</>}
+            </span>
+          </button>
+          {testResult && (
+            <span className={`text-sm ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+              {testResult.ok ? '✓' : '✕'} {testResult.message}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-semibold mb-4">Connection</h3>
+        <h3 className="text-lg font-semibold mb-4">Organizations</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Connect to a local server (default) or a remote Agent Hub instance.
-          Remote mode lets you run the server on a cloud machine and connect from anywhere.
+          Organizations are connection profiles. Each org points to a different Agent Hub server (local or remote).
+          Switching orgs changes which server the client talks to.
         </p>
       </div>
 
-      {/* Mode toggle */}
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">Connection Mode</h4>
-        <div className="flex gap-3">
-          <button
-            onClick={() => handleModeChange('local')}
-            className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
-              config.mode === 'local'
-                ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
-            }`}
-          >
-            <div className="text-base mb-1 flex items-center gap-1.5"><Monitor size={18} /> Local</div>
-            <div className="text-xs text-gray-500">Server runs on this machine</div>
-          </button>
-          <button
-            onClick={() => handleModeChange('remote')}
-            className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
-              config.mode === 'remote'
-                ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
-            }`}
-          >
-            <div className="text-base mb-1 flex items-center gap-1.5"><Cloud size={18} /> Remote</div>
-            <div className="text-xs text-gray-500">Connect to a remote server</div>
-          </button>
-        </div>
-      </div>
+      {/* Org list */}
+      <div className="space-y-3">
+        {orgs.map((org) => {
+          const isActive = activeOrg?.id === org.id;
+          const isExpanded = expandedOrgId === org.id;
 
-      {/* Remote config */}
-      {config.mode === 'remote' && (
-        <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-          <h4 className="text-sm font-medium text-gray-300">Remote Server</h4>
-
-          <div>
-            <label className={labelClass}>Server URL</label>
-            <input
-              value={config.remoteUrl}
-              onChange={(e) => setConfig((prev) => ({ ...prev, remoteUrl: e.target.value }))}
-              className={inputClass}
-              placeholder="https://my-server.example.com:3051"
-            />
-            <p className="text-xs text-gray-600 mt-1">
-              Full URL of the remote Agent Hub server (include port if non-standard).
-            </p>
-          </div>
-
-          <div>
-            <label className={labelClass}>API Key (optional)</label>
-            <input
-              type="password"
-              value={config.apiKey}
-              onChange={(e) => setConfig((prev) => ({ ...prev, apiKey: e.target.value }))}
-              className={inputClass}
-              placeholder="Enter API key if server requires authentication"
-            />
-            <p className="text-xs text-gray-600 mt-1">
-              Set <code className="text-gray-400">AGENT_HUB_API_KEY</code> on the remote server to require auth.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3 pt-2">
-            <button
-              onClick={handleTest}
-              disabled={testing}
-              className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
-            >
-              <span className="flex items-center gap-1.5">{testing ? <><Loader2 size={14} className="animate-spin" /> Testing...</> : <><Plug size={14} /> Test Connection</>}</span>
-            </button>
-
-            {testResult && (
-              <span className={`text-sm ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
-                {testResult.ok ? '✓' : '✕'} {testResult.message}
-              </span>
-            )}
-          </div>
-
-          {testResult?.ok && testResult.serverInfo && (
-            <div className="bg-gray-900 rounded-lg p-3 text-xs space-y-1">
-              <div className="text-gray-400">
-                Server: <span className="text-gray-300">v{testResult.serverInfo.version}</span>
-                {' · '}
-                <span className="text-gray-300">{testResult.serverInfo.projects} projects</span>
-                {' · '}
-                <span className="text-gray-300">{testResult.serverInfo.agents} agents</span>
-                {' · '}
-                Auth: <span className={testResult.serverInfo.authRequired ? 'text-amber-400' : 'text-gray-500'}>
-                  {testResult.serverInfo.authRequired ? 'required' : 'disabled'}
-                </span>
+          return (
+            <div key={org.id} className="bg-gray-800 rounded-xl overflow-hidden">
+              {/* Org row */}
+              <div
+                className="flex items-center gap-3 p-4 cursor-pointer hover:bg-gray-750 transition-colors"
+                onClick={() => handleExpand(org.id)}
+              >
+                <span
+                  className="w-4 h-4 rounded flex-shrink-0"
+                  style={{ backgroundColor: org.color }}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-sm text-white">{org.name}</span>
+                    <span className="flex items-center gap-1 text-xs text-gray-500">
+                      {org.mode === 'remote' ? <Cloud size={12} /> : <Monitor size={12} />}
+                      {org.mode}
+                    </span>
+                    {isActive && (
+                      <span className="text-xs bg-emerald-900/50 text-emerald-400 px-1.5 py-0.5 rounded">
+                        Active
+                      </span>
+                    )}
+                  </div>
+                  {org.mode === 'remote' && org.remoteUrl && (
+                    <p className="text-xs text-gray-500 truncate mt-0.5 font-mono">{org.remoteUrl}</p>
+                  )}
+                </div>
+                {!isActive && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleSwitch(org.id); }}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1"
+                  >
+                    <ArrowRightLeft size={12} /> Switch
+                  </button>
+                )}
+                <span className="text-gray-600 text-xs">{isExpanded ? '▲' : '▼'}</span>
               </div>
-            </div>
-          )}
-        </div>
-      )}
 
-      {/* Save / Apply */}
-      <div className="bg-gray-800 rounded-xl p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            {saved && <span className="text-xs text-emerald-400">✓ Saved</span>}
+              {/* Expanded edit form */}
+              {isExpanded && (
+                <div className="border-t border-gray-700 p-4 space-y-4">
+                  <div>
+                    <label className={labelClass}>Name</label>
+                    <input
+                      value={editForm.name || ''}
+                      onChange={(e) => setEditForm((prev) => ({ ...prev, name: e.target.value }))}
+                      className={inputClass}
+                    />
+                  </div>
+
+                  <div>
+                    <label className={labelClass}>Color</label>
+                    <div className="flex gap-2">
+                      {COLOR_OPTIONS.map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => setEditForm((prev) => ({ ...prev, color: c }))}
+                          className={`w-7 h-7 rounded-lg transition-all ${
+                            editForm.color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-800' : 'hover:scale-110'
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className={labelClass}>Connection Mode</label>
+                    {renderModeToggle(editForm.mode, (mode) => {
+                      setEditForm((prev) => ({ ...prev, mode }));
+                      setTestResult(null);
+                    })}
+                  </div>
+
+                  {editForm.mode === 'remote' && renderRemoteFields(editForm, setEditForm)}
+
+                  <div className="flex items-center justify-between pt-2">
+                    <button
+                      onClick={() => handleDelete(org.id)}
+                      disabled={orgs.length <= 1}
+                      className="text-xs text-red-400 hover:text-red-300 disabled:text-gray-600 disabled:cursor-not-allowed flex items-center gap-1 transition-colors"
+                    >
+                      <Trash2 size={12} /> Delete
+                    </button>
+                    <button
+                      onClick={() => handleSaveEdit(org.id)}
+                      className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+                    >
+                      Save Changes
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Add Organization */}
+      {showNewForm ? (
+        <div className="bg-gray-800 rounded-xl p-4 space-y-4 border border-dashed border-gray-600">
+          <h4 className="text-sm font-medium text-gray-300">New Organization</h4>
+          <div>
+            <label className={labelClass}>Name</label>
+            <input
+              value={newForm.name}
+              onChange={(e) => setNewForm((prev) => ({ ...prev, name: e.target.value }))}
+              className={inputClass}
+              placeholder="e.g. Work, Production, Home Lab"
+            />
           </div>
-          <div className="flex gap-2">
+
+          <div>
+            <label className={labelClass}>Color</label>
+            <div className="flex gap-2">
+              {COLOR_OPTIONS.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setNewForm((prev) => ({ ...prev, color: c }))}
+                  className={`w-7 h-7 rounded-lg transition-all ${
+                    newForm.color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-800' : 'hover:scale-110'
+                  }`}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className={labelClass}>Connection Mode</label>
+            {renderModeToggle(newForm.mode, (mode) => {
+              setNewForm((prev) => ({ ...prev, mode }));
+              setTestResult(null);
+            })}
+          </div>
+
+          {newForm.mode === 'remote' && renderRemoteFields(newForm, setNewForm)}
+
+          <div className="flex gap-2 pt-1">
             <button
-              onClick={handleSave}
-              className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+              onClick={() => setShowNewForm(false)}
+              className="bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm px-4 py-2 rounded-lg transition-colors"
             >
-              Save
+              Cancel
             </button>
             <button
-              onClick={handleSaveAndReload}
-              className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+              onClick={handleCreateOrg}
+              disabled={!newForm.name.trim()}
+              className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm px-4 py-2 rounded-lg transition-colors disabled:cursor-not-allowed"
             >
-              Save & Reconnect
+              Create Organization
             </button>
           </div>
         </div>
-        <p className="text-xs text-gray-600 mt-2">
-          Changing connection mode requires a page reload to reconnect WebSocket and API clients.
-        </p>
-      </div>
+      ) : (
+        <button
+          onClick={() => setShowNewForm(true)}
+          className="w-full py-3 rounded-xl border border-dashed border-gray-700 hover:border-gray-500 text-gray-400 hover:text-gray-200 text-sm transition-colors flex items-center justify-center gap-2"
+        >
+          <Plus size={16} /> Add Organization
+        </button>
+      )}
     </div>
   );
 }
@@ -1777,7 +1934,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange }) 
 
   const tabs = [
     { id: 'general', icon: <SettingsIcon size={16} />, text: 'General' },
-    { id: 'connection', icon: <Link size={16} />, text: 'Connection' },
+    { id: 'orgs', icon: <Building2 size={16} />, text: 'Organizations' },
     { id: 'agents', icon: <Bot size={16} />, text: 'Agents' },
     { id: 'heartbeats', icon: <HeartPulse size={16} />, text: 'Heartbeats' },
     { id: 'crons', icon: <Clock size={16} />, text: 'Cron Jobs' },
@@ -1808,7 +1965,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange }) 
         </div>
 
         {tab === 'general' && <GeneralSection />}
-        {tab === 'connection' && <ConnectionSection />}
+        {tab === 'orgs' && <OrganizationsSection />}
         {tab === 'heartbeats' && <HeartbeatSection />}
         {tab === 'crons' && <CronSection />}
         {tab === 'slack' && <SlackSection />}

@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { Bot, Rocket } from 'lucide-react';
+import { Bot, Rocket, Monitor, Cloud, Loader2, Plug } from 'lucide-react';
+import { getApiBase } from '../utils/connection.js';
+import { createOrg, switchOrg, getOrgs } from '../utils/orgs.js';
+import { testConnection } from '../utils/connection.js';
 
-const API_BASE = '/api';
-
-const STEP_LABELS = ['Welcome', 'Configure Claude', 'First Project'];
+const STEP_LABELS = ['Welcome', 'Organization', 'Configure Claude', 'First Project'];
 
 function StepIndicator({ currentStep }) {
   return (
@@ -73,16 +74,50 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
+  // Org step state
+  const [orgName, setOrgName] = useState('Personal');
+  const [orgMode, setOrgMode] = useState('local');
+  const [orgRemoteUrl, setOrgRemoteUrl] = useState('');
+  const [orgApiKey, setOrgApiKey] = useState('');
+  const [orgTesting, setOrgTesting] = useState(false);
+  const [orgTestResult, setOrgTestResult] = useState(null);
+
   const claudeEngine = setupStatus?.engines?.['claude-code'] || {};
 
   const [claudePath, setClaudePath] = useState(claudeEngine.path || '');
   const [claudeEnabled, setClaudeEnabled] = useState(claudeEngine.available || false);
 
+  const handleOrgContinue = () => {
+    if (!orgName.trim()) return;
+    // Create org and switch to it (syncs connection config)
+    const org = createOrg({
+      name: orgName.trim(),
+      mode: orgMode,
+      remoteUrl: orgRemoteUrl,
+      apiKey: orgApiKey,
+      color: '#6366f1',
+    });
+    switchOrg(org.id);
+    setStep(3);
+  };
+
+  const handleOrgTest = async () => {
+    if (!orgRemoteUrl) {
+      setOrgTestResult({ ok: false, message: 'Enter a server URL first.' });
+      return;
+    }
+    setOrgTesting(true);
+    setOrgTestResult(null);
+    const result = await testConnection(orgRemoteUrl, orgApiKey);
+    setOrgTestResult(result);
+    setOrgTesting(false);
+  };
+
   const handleSaveAndContinue = async () => {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/setup/configure`, {
+      const res = await fetch(`${getApiBase()}/setup/configure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -93,7 +128,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
         const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error(err.error || `Configuration failed: ${res.status}`);
       }
-      setStep(3);
+      setStep(4);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -117,8 +152,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
                 Welcome to Agent Hub
               </h1>
               <p className="text-gray-400 text-sm leading-relaxed max-w-md mx-auto">
-                Let's get you set up. First, we'll check which AI coding tools
-                you have installed.
+                Let's get you set up. First, we'll configure your organization profile.
               </p>
             </div>
             <button
@@ -130,8 +164,120 @@ export default function SetupWizard({ onComplete, setupStatus }) {
           </div>
         )}
 
-        {/* Step 2: CLI Setup */}
+        {/* Step 2: Organization */}
         {step === 2 && (
+          <div className="space-y-5">
+            <div className="text-center mb-2">
+              <h1 className="text-xl font-bold text-white mb-1">
+                Create Your Organization
+              </h1>
+              <p className="text-gray-400 text-sm">
+                An organization is a connection profile. You can add more later.
+              </p>
+            </div>
+
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1">Organization Name</label>
+                <input
+                  type="text"
+                  value={orgName}
+                  onChange={(e) => setOrgName(e.target.value)}
+                  placeholder="Personal"
+                  className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-2">Connection Mode</label>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => { setOrgMode('local'); setOrgTestResult(null); }}
+                    className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
+                      orgMode === 'local'
+                        ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                        : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+                    }`}
+                  >
+                    <div className="text-base mb-1 flex items-center gap-1.5"><Monitor size={18} /> Local</div>
+                    <div className="text-xs text-gray-500">Server on this machine</div>
+                  </button>
+                  <button
+                    onClick={() => { setOrgMode('remote'); setOrgTestResult(null); }}
+                    className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
+                      orgMode === 'remote'
+                        ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                        : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+                    }`}
+                  >
+                    <div className="text-base mb-1 flex items-center gap-1.5"><Cloud size={18} /> Remote</div>
+                    <div className="text-xs text-gray-500">Connect to a remote server</div>
+                  </button>
+                </div>
+              </div>
+
+              {orgMode === 'remote' && (
+                <div className="space-y-3 pt-1">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1">Server URL</label>
+                    <input
+                      type="text"
+                      value={orgRemoteUrl}
+                      onChange={(e) => setOrgRemoteUrl(e.target.value)}
+                      placeholder="https://my-server.example.com:3051"
+                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1">API Key (optional)</label>
+                    <input
+                      type="password"
+                      value={orgApiKey}
+                      onChange={(e) => setOrgApiKey(e.target.value)}
+                      placeholder="Enter API key if required"
+                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
+                    />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleOrgTest}
+                      disabled={orgTesting}
+                      className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {orgTesting ? <><Loader2 size={14} className="animate-spin" /> Testing...</> : <><Plug size={14} /> Test Connection</>}
+                      </span>
+                    </button>
+                    {orgTestResult && (
+                      <span className={`text-sm ${orgTestResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {orgTestResult.ok ? '✓' : '✕'} {orgTestResult.message}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setStep(1)}
+                className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleOrgContinue}
+                disabled={!orgName.trim()}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors disabled:cursor-not-allowed"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: CLI Setup */}
+        {step === 3 && (
           <div className="space-y-5">
             <div className="text-center mb-2">
               <h1 className="text-xl font-bold text-white mb-1">
@@ -198,7 +344,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
             {/* Actions */}
             <div className="flex gap-3 pt-1">
               <button
-                onClick={() => setStep(1)}
+                onClick={() => setStep(2)}
                 className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
               >
                 Back
@@ -220,8 +366,8 @@ export default function SetupWizard({ onComplete, setupStatus }) {
           </div>
         )}
 
-        {/* Step 3: Create First Project */}
-        {step === 3 && (
+        {/* Step 4: Create First Project */}
+        {step === 4 && (
           <div className="text-center space-y-6">
             <div className="text-gray-300">
               <Rocket size={48} />

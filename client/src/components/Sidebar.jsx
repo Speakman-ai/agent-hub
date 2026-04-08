@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Bot, Building2, BookOpen, Settings } from 'lucide-react';
+import { Building2, BookOpen, Settings } from 'lucide-react';
+import OrgSwitcher from './OrgSwitcher.jsx';
 
 export default function Sidebar({
   projects = [],
@@ -49,15 +50,9 @@ export default function Sidebar({
 
   return (
     <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full electron-no-drag">
-      {/* Header */}
+      {/* Header — Org Switcher */}
       <div className="p-4 border-b border-gray-800">
-        <h1
-          className="text-lg font-bold flex items-center gap-2 cursor-pointer hover:text-gray-300 transition-colors"
-          onClick={() => onNavigate('chat')}
-        >
-          <Bot size={20} />
-          Agent Hub
-        </h1>
+        <OrgSwitcher onNavigateSettings={() => onNavigate('settings')} />
       </div>
 
       {/* Projects & Agents */}

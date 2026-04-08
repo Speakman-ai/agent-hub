@@ -15,6 +15,8 @@ import SetupWizard from './components/SetupWizard.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 import { MessageCircle, Info, CheckCircle, AlertTriangle } from 'lucide-react';
+import { migrateFromLegacy } from './utils/orgs.js';
+import { getApiBase } from './utils/connection.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -540,10 +542,15 @@ export default function App() {
     });
   }, []);
 
+  // Migrate legacy connection config to org system on first load
+  useEffect(() => {
+    migrateFromLegacy();
+  }, []);
+
   // Check setup status + load projects on mount
   useEffect(() => {
     // Check first-run status
-    fetch('/api/setup/status')
+    fetch(`${getApiBase()}/setup/status`)
       .then((r) => r.json())
       .then((status) => {
         setSetupStatus(status);

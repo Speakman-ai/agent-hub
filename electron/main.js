@@ -270,14 +270,12 @@ function buildMenu() {
 app.whenReady().then(async () => {
   buildMenu();
 
-  if (isRemoteMode()) {
-    console.log('[electron] Remote mode — skipping local server');
-  } else {
-    try {
-      await startServer();
-    } catch (err) {
-      console.error('Failed to start server, opening window anyway:', err.message);
-    }
+  // Always start the local server — it's lightweight and ensures switching
+  // from a remote org to a local org works without an app restart.
+  try {
+    await startServer();
+  } catch (err) {
+    console.error('Failed to start server, opening window anyway:', err.message);
   }
 
   createWindow();
