@@ -107,9 +107,12 @@ const ENGINE_BADGES = {
   'claude-code': { icon: 'purple', label: 'Claude Code' },
 };
 
-function ChatMessage({ message, agentColor, onDequeue }) {
+function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
   const isUser = message.role === 'user';
   const isQueued = message.queued;
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(message.content);
+  const editRef = React.useRef(null);
   const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;
   const modelLabel = !isUser && message.model ? message.model.replace('claude-', '').replace('-', ' ') : null;
 
@@ -169,6 +172,18 @@ function ChatMessage({ message, agentColor, onDequeue }) {
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400/50 animate-pulse" />
               Queued
             </span>
+            {onEditQueued && !editing && (
+              <button
+                onClick={() => {
+                  setEditValue(message.content);
+                  setEditing(true);
+                  requestAnimationFrame(() => editRef.current?.focus());
+                }}
+                className="text-xs text-blue-400/50 hover:text-blue-300 transition-colors"
+              >
+                Edit
+              </button>
+            )}
             {onDequeue && (
               <button
                 onClick={() => onDequeue(message.id)}
@@ -183,15 +198,64 @@ function ChatMessage({ message, agentColor, onDequeue }) {
         {/* Render image attachments */}
         <MessageAttachments attachments={message.attachments} />
 
-        <div className={isUser ? 'text-white' : 'markdown-content text-gray-200'}>
-          {isUser ? (
-            displayContent ? <p className="whitespace-pre-wrap">{displayContent}</p> : null
-          ) : (
-            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={components}>
-              {message.content}
-            </ReactMarkdown>
-          )}
-        </div>
+        {/* Editable queued message */}
+        {isQueued && editing ? (
+          <div className="space-y-2">
+            <textarea
+              ref={editRef}
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  if (editValue.trim() && editValue !== message.content) {
+                    onEditQueued(message.id, editValue.trim());
+                  }
+                  setEditing(false);
+                }
+                if (e.key === 'Escape') {
+                  setEditing(false);
+                  setEditValue(message.content);
+                }
+              }}
+              rows={Math.min(editValue.split('\n').length, 6)}
+              className="w-full bg-gray-900/80 border border-blue-500/40 rounded-lg px-3 py-2 text-sm text-white resize-none focus:outline-none focus:border-blue-400/60"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  if (editValue.trim() && editValue !== message.content) {
+                    onEditQueued(message.id, editValue.trim());
+                  }
+                  setEditing(false);
+                }}
+                className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2.5 py-1 rounded-md transition-colors"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => {
+                  setEditing(false);
+                  setEditValue(message.content);
+                }}
+                className="text-xs text-gray-400 hover:text-gray-200 px-2.5 py-1 transition-colors"
+              >
+                Cancel
+              </button>
+              <span className="text-[10px] text-gray-600 ml-auto">Enter to save · Esc to cancel</span>
+            </div>
+          </div>
+        ) : (
+          <div className={isUser ? 'text-white' : 'markdown-content text-gray-200'}>
+            {isUser ? (
+              displayContent ? <p className="whitespace-pre-wrap">{displayContent}</p> : null
+            ) : (
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={components}>
+                {message.content}
+              </ReactMarkdown>
+            )}
+          </div>
+        )}
         <div
           className={`text-xs mt-1 ${isUser ? 'text-blue-300' : 'text-gray-600'}`}
         >

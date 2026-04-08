@@ -520,6 +520,12 @@ const stmts = {
   getMaxQueuePosition: db.prepare(
     'SELECT MAX(position) as max_pos FROM message_queue WHERE session_id = ?'
   ),
+  updateQueueMessage: db.prepare(
+    'UPDATE message_queue SET content = ? WHERE id = ?'
+  ),
+  updateMessageContent: db.prepare(
+    'UPDATE messages SET content = ? WHERE id = ?'
+  ),
   getAllQueuedSessions: db.prepare(
     'SELECT DISTINCT session_id FROM message_queue'
   ),

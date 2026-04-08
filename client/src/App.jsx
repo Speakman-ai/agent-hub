@@ -508,6 +508,13 @@ export default function App() {
           return { ...prev, [data.sessionId]: q };
         });
         break;
+
+      case 'queue_item_edited':
+        // Update the message content in local state to reflect the edit
+        setMessages((prev) =>
+          prev.map((m) => m.id === data.messageId ? { ...m, content: data.content } : m)
+        );
+        break;
     }
   }, []);
 
@@ -786,6 +793,16 @@ export default function App() {
     }
   };
 
+  const handleEditQueuedMessage = (messageId, content) => {
+    if (activeSessionId) {
+      send({ type: 'edit_queue_item', sessionId: activeSessionId, messageId, content });
+      // Optimistically update local message content
+      setMessages((prev) =>
+        prev.map((m) => m.id === messageId ? { ...m, content } : m)
+      );
+    }
+  };
+
   const handleSend = async (content, images = []) => {
     let sessionId = activeSessionId;
     if (!sessionId) {
@@ -962,6 +979,7 @@ export default function App() {
                         message={{ ...msg, queued: queuedIds.has(msg.id) }}
                         agentColor={activeAgent?.color}
                         onDequeue={queuedIds.has(msg.id) ? handleDequeue : undefined}
+                        onEditQueued={queuedIds.has(msg.id) ? handleEditQueuedMessage : undefined}
                       />
                     )
                   );
