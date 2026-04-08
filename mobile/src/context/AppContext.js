@@ -2,7 +2,7 @@ import React, { createContext, useState, useCallback, useEffect, useContext, use
 import { api } from '../utils/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { loadOrgs, migrateFromLegacy } from '../utils/orgs';
-import { loadConnectionConfig } from '../utils/config';
+import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
 
 const AppContext = createContext(null);
 
@@ -425,7 +425,7 @@ export function AppProvider({ children }) {
 
   // Load sessions when agent changes
   useEffect(() => {
-    if (!activeAgentId) return;
+    if (!activeAgentId || !getApiBaseUrl()) return;
     api.getSessions(activeAgentId).then((data) => {
       setSessions(data);
       if (data.length > 0) {
@@ -445,7 +445,7 @@ export function AppProvider({ children }) {
 
   // Load skills for /slash-command autocomplete when agent changes
   useEffect(() => {
-    if (!activeAgentId) {
+    if (!activeAgentId || !getApiBaseUrl()) {
       setSkills([]);
       return;
     }
