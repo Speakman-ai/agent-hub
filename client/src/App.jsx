@@ -14,7 +14,7 @@ import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
-import { MessageCircle, Info, CheckCircle, AlertTriangle } from 'lucide-react';
+import { MessageCircle, Info, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { migrateFromLegacy, getActiveOrg, getOrgs } from './utils/orgs.js';
 import { getApiBase, getAuthHeaders } from './utils/connection.js';
 
@@ -68,6 +68,8 @@ export default function App() {
   // First-run setup
   const [setupStatus, setSetupStatus] = useState(null);
   const [showSetup, setShowSetup] = useState(false);
+  // Loading state — true until org/switch + project load completes
+  const [initializing, setInitializing] = useState(true);
   // Toast notifications (e.g., babysit events)
   const [toasts, setToasts] = useState([]);
   const activeRoomIdRef = useRef(activeRoomId);
@@ -612,6 +614,8 @@ export default function App() {
         }
       } catch (err) {
         console.error('[Init] Failed to load projects:', err);
+      } finally {
+        setInitializing(false);
       }
     };
 
@@ -889,6 +893,24 @@ export default function App() {
 
   const isElectron = !!window.electronAPI?.isElectron;
   const isMac = window.electronAPI?.platform === 'darwin';
+
+  // Show loading spinner while connecting to the server and loading org data
+  if (initializing) {
+    const activeOrg = getActiveOrg();
+    return (
+      <div className="flex flex-col h-screen bg-gray-950 text-gray-100 items-center justify-center gap-4">
+        <Loader2 size={32} className="animate-spin text-indigo-400" />
+        <div className="text-center">
+          <p className="text-sm text-gray-400">Connecting to server{activeOrg?.mode === 'remote' ? '...' : '...'}</p>
+          {activeOrg && (
+            <p className="text-xs text-gray-600 mt-1">
+              {activeOrg.name}{activeOrg.mode === 'remote' ? ' (remote)' : ''}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
