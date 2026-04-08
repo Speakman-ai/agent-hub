@@ -46,7 +46,8 @@
         "zip"
       ],
       "icon": null,
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "x64ArchFiles": "**/better-sqlite3/build/Release/test_extension.node"
     },
     "linux": {
       "target": [

@@ -24,12 +24,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
 // ─── Load optional config.json ───────────────────────────────────
+// Prefer the data-dir copy (writable, persists across app reinstalls).
+// Fall back to the bundled copy in this directory for dev.
+const DATA_DIR = process.env.AGENT_HUB_DATA_DIR || __dirname;
+export const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 let fileConfig = {};
 try {
-  const raw = readFileSync(path.join(__dirname, 'config.json'), 'utf-8');
-  fileConfig = JSON.parse(raw);
+  fileConfig = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
 } catch {
-  // No config.json — that's fine, defaults will be used.
+  // Try the bundled copy as a fallback (dev or first run in prod).
+  try {
+    fileConfig = JSON.parse(readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
+  } catch {
+    // No config.json anywhere — defaults will be used.
+  }
 }
 
 /**
