@@ -1929,8 +1929,13 @@ function ConfigBackupSection({ onAgentsChange }) {
   );
 }
 
-export default function SettingsPage({ projects = [], agents, onAgentsChange }) {
-  const [tab, setTab] = useState('general');
+export default function SettingsPage({ projects = [], agents, onAgentsChange, initialTab }) {
+  const [tab, setTab] = useState(initialTab || 'general');
+
+  // When navigating directly to a specific tab (e.g. from OrgSwitcher)
+  useEffect(() => {
+    if (initialTab) setTab(initialTab);
+  }, [initialTab]);
 
   const tabs = [
     { id: 'general', icon: <SettingsIcon size={16} />, text: 'General' },

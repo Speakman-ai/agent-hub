@@ -52,7 +52,7 @@ export default function Sidebar({
     <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full electron-no-drag">
       {/* Header — Org Switcher */}
       <div className="p-4 border-b border-gray-800">
-        <OrgSwitcher onNavigateSettings={() => onNavigate('settings')} />
+        <OrgSwitcher onNavigateSettings={() => onNavigate('settings:orgs')} />
       </div>
 
       {/* Projects & Agents */}

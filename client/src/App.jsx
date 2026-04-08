@@ -933,8 +933,8 @@ export default function App() {
           onWorktreeChange={handleWorktreeChange}
         />
 
-        {currentView === 'settings' ? (
-          <SettingsPage projects={projects} agents={agents} onAgentsChange={refreshAgents} />
+        {currentView.startsWith('settings') ? (
+          <SettingsPage projects={projects} agents={agents} onAgentsChange={refreshAgents} initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined} />
         ) : currentView === 'skills' ? (
           <SkillsPage agents={agents} />
         ) : currentView === 'room' && activeRoom ? (
