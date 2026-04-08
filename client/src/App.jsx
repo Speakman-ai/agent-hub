@@ -14,6 +14,7 @@ import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
+import { MessageCircle, Info, CheckCircle, AlertTriangle } from 'lucide-react';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -251,7 +252,7 @@ export default function App() {
               {
                 id: data.messageId || `err-${Date.now()}`,
                 role: 'assistant',
-                content: `⚠️ Error: ${data.error}`,
+                content: `Error: ${data.error}`,
                 created_at: new Date().toISOString(),
               },
             ]);
@@ -312,7 +313,7 @@ export default function App() {
               agent_id: data.agentId,
               agent_name: data.agentName,
               agent_color: null,
-              content: `⚠️ Error: ${data.error}`,
+              content: `Error: ${data.error}`,
               created_at: new Date().toISOString(),
             },
           ]);
@@ -934,7 +935,7 @@ export default function App() {
               <div className="mx-auto">
                 {messages.length === 0 && !thinking && !streamingContent && (
                   <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
-                    <span className="text-5xl mb-4">💬</span>
+                    <MessageCircle size={48} className="mb-4 text-gray-600" />
                     <p className="text-lg">Start a conversation</p>
                     {activeAgent && (
                       <p className="text-sm mt-1">with {activeAgent.name}</p>
@@ -1098,16 +1099,16 @@ function Toast({ toast, onDismiss }) {
     error: 'bg-red-900/90 border-red-700 text-red-100',
   };
   const icons = {
-    info: '👶',
-    success: '✅',
-    error: '⚠️',
+    info: <Info size={18} />,
+    success: <CheckCircle size={18} />,
+    error: <AlertTriangle size={18} />,
   };
 
   return (
     <div
       className={`${colors[toast.type] || colors.info} border rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm flex items-start gap-2.5 animate-slide-in`}
     >
-      <span className="text-lg flex-shrink-0">{icons[toast.type] || '💬'}</span>
+      <span className="flex-shrink-0">{icons[toast.type] || <Info size={18} />}</span>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium">{toast.message}</p>
       </div>

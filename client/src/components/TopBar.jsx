@@ -3,7 +3,7 @@ import { formatSessionExport, copyToClipboard } from '../utils/export.js';
 import { api } from '../utils/api.js';
 
 const ENGINE_OPTIONS = [
-  { id: 'claude-code', label: 'Claude Code', emoji: '🟣', color: '#8B5CF6' },
+  { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
 ];
 
 const ENGINE_MODELS = {
@@ -145,7 +145,7 @@ export default function TopBar({
               onClick={() => setMobileMenuOpen((v) => !v)}
               className="flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors border border-gray-700"
             >
-              <span>{currentEngine.emoji}</span>
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: currentEngine.color }} />
               <span className="text-gray-300">{currentModel.short}</span>
               <svg xmlns="http://www.w3.org/2000/svg" className={`h-3 w-3 text-gray-500 transition-transform ${mobileMenuOpen ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
                 <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 11.586l4.293-4.293a1 1 0 111.414 1.414l-5 5a1 1 0 01-1.414 0l-5-5a1 1 0 010-1.414z" clipRule="evenodd" />

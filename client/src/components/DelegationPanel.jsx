@@ -1,6 +1,7 @@
 import React, { useState, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Loader2, GitFork, AlertTriangle } from 'lucide-react';
 
 /**
  * DelegationPanel — shows inline below a lead agent's message when
@@ -29,7 +30,7 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
   const statusIcon = (status) => {
     switch (status) {
       case 'pending':
-        return <span className="text-gray-500">⏳</span>;
+        return <Loader2 size={14} className="animate-spin text-gray-500" />;
       case 'running':
         return (
           <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
@@ -53,7 +54,7 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
         className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-800/50 hover:bg-gray-800/80 transition-colors"
       >
         <div className="flex items-center gap-2 text-sm">
-          <span className="text-base">🔀</span>
+          <GitFork size={16} />
           <span className="font-medium text-gray-300">
             Delegation
           </span>
@@ -128,7 +129,7 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
                   )}
                   {d.status === 'error' && d.error && (
                     <div className="bg-red-900/20 border border-red-800/30 rounded-lg p-3 text-sm text-red-300">
-                      ⚠️ {d.error}
+                      <span className="flex items-center gap-1"><AlertTriangle size={14} /> {d.error}</span>
                     </div>
                   )}
                   {d.status === 'pending' && (

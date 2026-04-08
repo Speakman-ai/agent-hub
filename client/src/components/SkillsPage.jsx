@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
+import { BookOpen, Loader2, Save, Puzzle, ClipboardList, FileText, Pencil, PenLine } from 'lucide-react';
 
 function SkillCard({ skill, agentId }) {
   const [expanded, setExpanded] = useState(false);
@@ -96,7 +97,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
         className="p-3 cursor-pointer hover:bg-gray-750 transition-colors flex items-center justify-between"
         onClick={() => setExpanded(!expanded)}
       >
-        <span className="text-sm font-medium text-gray-300">📄 {filename}</span>
+        <span className="text-sm font-medium text-gray-300 flex items-center gap-1.5"><FileText size={14} /> {filename}</span>
         <span className="text-gray-500 text-xs">{expanded ? '▲' : '▼'}</span>
       </div>
       {expanded && (
@@ -113,7 +114,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
                   : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
               }`}
             >
-              {editing ? '📝 Editing' : '✏️ Edit'}
+              <span className="flex items-center gap-1">{editing ? <><PenLine size={12} /> Editing</> : <><Pencil size={12} /> Edit</>}</span>
             </button>
             {editing && (
               <button
@@ -121,7 +122,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
                 disabled={saving}
                 className="text-xs bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800 px-2.5 py-1 rounded-md transition-colors disabled:opacity-50"
               >
-                {saving ? '⏳ Saving...' : '💾 Save'}
+                <span className="flex items-center gap-1">{saving ? <><Loader2 size={12} className="animate-spin" /> Saving...</> : <><Save size={12} /> Save</>}</span>
               </button>
             )}
           </div>
@@ -180,7 +181,7 @@ export default function SkillsPage({ agents }) {
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
-        <h2 className="text-2xl font-bold mb-6">📚 Skills & Context</h2>
+        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><BookOpen size={20} /> Skills & Context</h2>
 
         {/* Agent tabs */}
         <div className="flex gap-1.5 sm:gap-2 mb-6 overflow-x-auto pb-1 -mx-1 px-1">
@@ -208,7 +209,7 @@ export default function SkillsPage({ agents }) {
             {/* Skills Section */}
             <div className="mb-8">
               <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                🧩 Skills
+                <Puzzle size={18} /> Skills
                 <span className="text-xs text-gray-500 font-normal">
                   ({skills.length} installed)
                 </span>
@@ -241,7 +242,7 @@ export default function SkillsPage({ agents }) {
             {/* Context Files Section */}
             <div>
               <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                📋 Context Files
+                <ClipboardList size={18} /> Context Files
                 <span className="text-xs text-gray-500 font-normal">
                   (workspace identity)
                 </span>

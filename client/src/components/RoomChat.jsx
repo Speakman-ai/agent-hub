@@ -2,6 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
 import { formatRoomExport, copyToClipboard } from '../utils/export.js';
+import { Building2 } from 'lucide-react';
 
 /**
  * RoomChat — conference room group chat with multiple agents.
@@ -198,7 +199,7 @@ export default function RoomChat({
       {/* Room header */}
       <div className="border-b border-gray-800 px-4 py-3 flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <span className="text-lg">🏢</span>
+          <Building2 size={18} />
           <div className="min-w-0">
             <h2 className="text-sm font-semibold truncate">{room.name}</h2>
             <div className="flex items-center gap-1.5 mt-0.5">
@@ -401,7 +402,7 @@ export default function RoomChat({
         <div className="max-w-4xl mx-auto">
           {roomMessages.length === 0 && !roomThinking && !roomStreaming && (
             <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
-              <span className="text-5xl mb-4">🏢</span>
+              <Building2 size={48} className="mb-4 text-gray-600" />
               <p className="text-lg">Conference Room</p>
               <p className="text-sm mt-1">
                 {room.agents?.length > 0

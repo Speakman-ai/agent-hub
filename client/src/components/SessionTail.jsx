@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
+import { Bot, Zap, FileText, PenLine, Pencil, Search, FolderSearch, Globe, SearchCode, ListChecks, BookOpen, Wrench, MessageCircle, AlertTriangle } from 'lucide-react';
 
 /**
  * SessionTail
@@ -170,7 +171,7 @@ function eventsToBlocks(events) {
 // ─── Sub-components ────────────────────────────────────────────────────
 
 const ENGINE_BADGES = {
-  'claude-code': { emoji: '🟣', label: 'Claude Code' },
+  'claude-code': { icon: <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />, label: 'Claude Code' },
 };
 
 // Shared markdown renderer config — used by both TextBubble (rich timeline)
@@ -198,7 +199,7 @@ function Header({ agentColor, engine, model, streaming, createdAt }) {
       <span className="text-gray-500 font-medium">Assistant</span>
       {badge && (
         <span className="text-gray-600 flex items-center gap-1" title={badge.label}>
-          <span className="text-[10px]">{badge.emoji}</span>
+          {badge.icon}
           <span className="hidden sm:inline">{badge.label}</span>
         </span>
       )}
@@ -236,7 +237,7 @@ function ThinkingBlock({ text }) {
         className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-900/60"
       >
         <span>{open ? '▼' : '▶'}</span>
-        <span>💭 thinking</span>
+        <span className="flex items-center gap-1"><MessageCircle size={12} /> thinking</span>
         <span className="text-gray-600 truncate flex-1 text-left">
           {!open && text.slice(0, 80)}
         </span>
@@ -252,22 +253,22 @@ function ThinkingBlock({ text }) {
 
 // Tool styling — color stripe by category. Falls back to gray for unknown tools.
 const TOOL_STYLES = {
-  Bash:      { color: 'border-emerald-700/60 bg-emerald-950/30', icon: '⚡' },
-  Read:      { color: 'border-blue-700/60 bg-blue-950/30',       icon: '📄' },
-  Write:     { color: 'border-rose-700/60 bg-rose-950/30',       icon: '✍️' },
-  Edit:      { color: 'border-amber-700/60 bg-amber-950/30',     icon: '✏️' },
-  Grep:      { color: 'border-purple-700/60 bg-purple-950/30',   icon: '🔍' },
-  Glob:      { color: 'border-purple-700/60 bg-purple-950/30',   icon: '🗂' },
-  WebFetch:  { color: 'border-cyan-700/60 bg-cyan-950/30',       icon: '🌐' },
-  WebSearch: { color: 'border-cyan-700/60 bg-cyan-950/30',       icon: '🔎' },
-  Task:      { color: 'border-indigo-700/60 bg-indigo-950/30',   icon: '🤖' },
-  TodoWrite: { color: 'border-gray-700/60 bg-gray-900/40',       icon: '✓' },
-  NotebookEdit: { color: 'border-amber-700/60 bg-amber-950/30',  icon: '📓' },
+  Bash:      { color: 'border-emerald-700/60 bg-emerald-950/30', icon: <Zap size={16} /> },
+  Read:      { color: 'border-blue-700/60 bg-blue-950/30',       icon: <FileText size={16} /> },
+  Write:     { color: 'border-rose-700/60 bg-rose-950/30',       icon: <PenLine size={16} /> },
+  Edit:      { color: 'border-amber-700/60 bg-amber-950/30',     icon: <Pencil size={16} /> },
+  Grep:      { color: 'border-purple-700/60 bg-purple-950/30',   icon: <Search size={16} /> },
+  Glob:      { color: 'border-purple-700/60 bg-purple-950/30',   icon: <FolderSearch size={16} /> },
+  WebFetch:  { color: 'border-cyan-700/60 bg-cyan-950/30',       icon: <Globe size={16} /> },
+  WebSearch: { color: 'border-cyan-700/60 bg-cyan-950/30',       icon: <SearchCode size={16} /> },
+  Task:      { color: 'border-indigo-700/60 bg-indigo-950/30',   icon: <Bot size={16} /> },
+  TodoWrite: { color: 'border-gray-700/60 bg-gray-900/40',       icon: <ListChecks size={16} /> },
+  NotebookEdit: { color: 'border-amber-700/60 bg-amber-950/30',  icon: <BookOpen size={16} /> },
 };
 
 function ToolCard({ use, result }) {
   const [open, setOpen] = useState(false);
-  const style = TOOL_STYLES[use.tool] || { color: 'border-gray-700/60 bg-gray-900/40', icon: '🔧' };
+  const style = TOOL_STYLES[use.tool] || { color: 'border-gray-700/60 bg-gray-900/40', icon: <Wrench size={16} /> };
   const summary = summarizeToolInput(use.tool, use.input);
   const errored = result?.isError;
   const stillRunning = !result;
@@ -278,7 +279,7 @@ function ToolCard({ use, result }) {
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-black/20"
       >
-        <span className="text-base flex-shrink-0">{style.icon}</span>
+        <span className="flex-shrink-0">{style.icon}</span>
         <span className="font-mono font-semibold text-gray-200 flex-shrink-0">{use.tool}</span>
         <span className="text-gray-400 truncate flex-1 font-mono">{summary}</span>
         {stillRunning && (
@@ -373,7 +374,7 @@ function ResultFooter({ result }) {
   if (parts.length === 0) return null;
   return (
     <div className="flex items-center gap-2 text-[10px] text-gray-600 font-mono pt-1 border-t border-gray-800/50">
-      <span>{result.isError ? '⚠ error' : '✓ done'}</span>
+      <span className="flex items-center gap-1">{result.isError ? <><AlertTriangle size={10} /> error</> : <><ListChecks size={10} /> done</>}</span>
       <span>·</span>
       <span>{parts.join(' · ')}</span>
     </div>
@@ -383,7 +384,7 @@ function ResultFooter({ result }) {
 function ErrorBlock({ message }) {
   return (
     <div className="bg-red-950/40 border border-red-800/60 rounded-lg px-3 py-2 text-xs text-red-300 whitespace-pre-wrap">
-      ⚠ {message}
+      <span className="flex items-center gap-1"><AlertTriangle size={12} /> {message}</span>
     </div>
   );
 }

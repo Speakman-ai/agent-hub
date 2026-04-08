@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Bot, Building2, BookOpen, Settings } from 'lucide-react';
 
 export default function Sidebar({
   projects = [],
@@ -54,7 +55,7 @@ export default function Sidebar({
           className="text-lg font-bold flex items-center gap-2 cursor-pointer hover:text-gray-300 transition-colors"
           onClick={() => onNavigate('chat')}
         >
-          <span className="text-2xl">🤖</span>
+          <Bot size={20} />
           Agent Hub
         </h1>
       </div>
@@ -76,7 +77,7 @@ export default function Sidebar({
             </button>
           )}
 
-          {projects.map((project) => {
+          {projects.map((project, index) => {
             const activeAgents = project.agents.filter((a) => a.active !== false);
             if (activeAgents.length === 0) return null;
 
@@ -85,6 +86,7 @@ export default function Sidebar({
 
             return (
               <div key={project.id} className="mb-1">
+                {index > 0 && <div className="border-t border-gray-800/50 my-2 mx-2" />}
                 {/* Project header */}
                 <button
                   onClick={(e) => {
@@ -150,10 +152,14 @@ export default function Sidebar({
                                 {indent > 0 && (
                                   <span className="absolute -left-3 top-1/2 w-2 border-t border-gray-700" />
                                 )}
-                                <span
-                                  className={`block ${isLead ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
-                                  style={{ backgroundColor: agent.color }}
-                                />
+                                {agent.avatar ? (
+                                  <img src={agent.avatar} alt="" className="w-5 h-5 rounded-full object-cover" />
+                                ) : (
+                                  <span
+                                    className={`block ${isLead ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
+                                    style={{ backgroundColor: agent.color }}
+                                  />
+                                )}
                                 {isRecent(agent.lastActivity) && (
                                   <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-500 rounded-full border border-gray-900" />
                                 )}
@@ -256,7 +262,7 @@ export default function Sidebar({
                               : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
                           }`}
                         >
-                          <span className="flex-shrink-0">🏢</span>
+                          <Building2 size={14} className="flex-shrink-0" />
                           <span className="truncate">Conference Room</span>
                           <span className="text-gray-600 text-xs ml-auto">{projectRoom.agents?.length || 0}</span>
                         </button>
@@ -295,7 +301,7 @@ export default function Sidebar({
                   }}
                   className="flex-1 text-left px-3 py-2.5 flex items-center gap-2 min-w-0"
                 >
-                  <span className="text-sm flex-shrink-0">🏢</span>
+                  <Building2 size={14} className="flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <span className="truncate text-sm font-medium block">{room.name}</span>
                     <div className="flex items-center gap-1 mt-0.5">
@@ -349,7 +355,7 @@ export default function Sidebar({
               : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
           }`}
         >
-          📚 Skills
+          <span className="flex items-center gap-2"><BookOpen size={16} /><span>Skills</span></span>
         </button>
         <button
           onClick={() => onNavigate('settings')}
@@ -359,7 +365,7 @@ export default function Sidebar({
               : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
           }`}
         >
-          ⚙️ Settings
+          <span className="flex items-center gap-2"><Settings size={16} /><span>Settings</span></span>
         </button>
       </div>
     </div>

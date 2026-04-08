@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Bot, Rocket } from 'lucide-react';
 
 const API_BASE = '/api';
 
@@ -108,8 +109,8 @@ export default function SetupWizard({ onComplete, setupStatus }) {
         {/* Step 1: Welcome */}
         {step === 1 && (
           <div className="text-center space-y-6">
-            <div className="text-6xl">
-              <span role="img" aria-label="robot">🤖</span>
+            <div className="text-gray-300">
+              <Bot size={64} />
             </div>
             <div>
               <h1 className="text-2xl font-bold text-white mb-3">
@@ -145,7 +146,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg">🟣</span>
+                  <span className="w-4 h-4 rounded-full bg-purple-500 inline-block" />
                   <span className="font-medium text-white text-sm">Claude Code</span>
                 </div>
                 <ToggleSwitch enabled={claudeEnabled} onChange={setClaudeEnabled} />
@@ -222,8 +223,8 @@ export default function SetupWizard({ onComplete, setupStatus }) {
         {/* Step 3: Create First Project */}
         {step === 3 && (
           <div className="text-center space-y-6">
-            <div className="text-5xl">
-              <span role="img" aria-label="rocket">🚀</span>
+            <div className="text-gray-300">
+              <Rocket size={48} />
             </div>
             <div>
               <h1 className="text-xl font-bold text-white mb-2">

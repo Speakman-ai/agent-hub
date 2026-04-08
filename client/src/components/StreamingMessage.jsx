@@ -33,7 +33,7 @@ function CodeBlock({ children, className }) {
 }
 
 const ENGINE_BADGES = {
-  'claude-code': { emoji: '🟣', label: 'Claude Code' },
+  'claude-code': { icon: 'purple', label: 'Claude Code' },
 };
 
 function StreamingMessage({ content, agentColor, engine }) {
@@ -62,7 +62,7 @@ function StreamingMessage({ content, agentColor, engine }) {
           <span className="text-xs text-gray-500 font-medium">Assistant</span>
           {engineBadge && (
             <span className="text-xs text-gray-600 flex items-center gap-1" title={engineBadge.label}>
-              <span className="text-[10px]">{engineBadge.emoji}</span>
+              <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />
               <span className="hidden sm:inline">{engineBadge.label}</span>
             </span>
           )}

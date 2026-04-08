@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
-import { getConnectionConfig, saveConnectionConfig, testConnection } from '../utils/connection.js';
+import { getConnectionConfig, saveConnectionConfig, testConnection, getApiBase } from '../utils/connection.js';
+import { Settings as SettingsIcon, Link, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, RefreshCw, User } from 'lucide-react';
 
 function ConnectionSection() {
   const [config, setConfig] = useState(() => getConnectionConfig());
@@ -62,7 +63,7 @@ function ConnectionSection() {
                 : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
             }`}
           >
-            <div className="text-base mb-1">🏠 Local</div>
+            <div className="text-base mb-1 flex items-center gap-1.5"><Monitor size={18} /> Local</div>
             <div className="text-xs text-gray-500">Server runs on this machine</div>
           </button>
           <button
@@ -73,7 +74,7 @@ function ConnectionSection() {
                 : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
             }`}
           >
-            <div className="text-base mb-1">☁️ Remote</div>
+            <div className="text-base mb-1 flex items-center gap-1.5"><Cloud size={18} /> Remote</div>
             <div className="text-xs text-gray-500">Connect to a remote server</div>
           </button>
         </div>
@@ -117,7 +118,7 @@ function ConnectionSection() {
               disabled={testing}
               className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
             >
-              {testing ? '⏳ Testing...' : '🔌 Test Connection'}
+              <span className="flex items-center gap-1.5">{testing ? <><Loader2 size={14} className="animate-spin" /> Testing...</> : <><Plug size={14} /> Test Connection</>}</span>
             </button>
 
             {testResult && (
@@ -378,7 +379,7 @@ function HeartbeatSection() {
                   disabled={running[hb.agentId]}
                   className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                 >
-                  {running[hb.agentId] ? '⏳' : '▶'}
+                  {running[hb.agentId] ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                 </button>
                 <button
                   onClick={() => toggleHeartbeat(hb.agentId, hb.heartbeat.enabled)}
@@ -671,7 +672,7 @@ function CronSection() {
                               }`}>
                                 {log.status === 'success' ? '✓ Success' :
                                  log.status === 'error' ? '✗ Error' :
-                                 log.status === 'running' ? '⏳ Running' : log.status}
+                                 log.status === 'running' ? 'Running' : log.status}
                               </span>
                               <span className="text-xs text-gray-500">
                                 {new Date(log.timestamp).toLocaleString()}
@@ -708,7 +709,7 @@ function CronSection() {
                   disabled={running[cronJob.id]}
                   className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                 >
-                  {running[cronJob.id] ? '⏳' : '▶'}
+                  {running[cronJob.id] ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                 </button>
                 <button
                   onClick={() => toggleCron(cronJob)}
@@ -805,7 +806,7 @@ function SlackSection() {
           disabled={restarting}
           className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
         >
-          {restarting ? '⏳ Restarting...' : '🔄 Restart All'}
+          <span className="flex items-center gap-1.5">{restarting ? <><Loader2 size={14} className="animate-spin" /> Restarting...</> : <><RefreshCw size={14} /> Restart All</>}</span>
         </button>
       </div>
 
@@ -909,6 +910,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     engine: 'claude-code',
     projectId: projects[0]?.id || '',
     color: '#6b7280',
+    avatar: '',
     systemPrompt: '',
     heartbeat: { enabled: false, interval: '', prompt: '' },
   });
@@ -962,7 +964,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
       const created = await api.createAgent(newForm);
       setAgents((prev) => [...prev, created]);
       setShowNew(false);
-      setNewForm({ id: '', name: '', engine: 'claude-code', projectId: projects[0]?.id || '', color: '#6b7280', systemPrompt: '', heartbeat: { enabled: false, interval: '', prompt: '' } });
+      setNewForm({ id: '', name: '', engine: 'claude-code', projectId: projects[0]?.id || '', color: '#6b7280', avatar: '', systemPrompt: '', heartbeat: { enabled: false, interval: '', prompt: '' } });
       if (onAgentsChange) onAgentsChange();
     } catch (e) {
       console.error('Failed to create agent:', e);
@@ -1052,6 +1054,54 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                 />
                 <span className="text-xs text-gray-400 font-mono">{newForm.color}</span>
               </div>
+            </div>
+          </div>
+          <div>
+            <label className={labelClass}>Avatar</label>
+            <div className="flex items-center gap-3">
+              {newForm.avatar ? (
+                <img
+                  src={`${getApiBase()}${newForm.avatar}`}
+                  alt="Avatar"
+                  className="w-12 h-12 rounded-full object-cover border border-gray-700"
+                />
+              ) : (
+                <div className="w-12 h-12 rounded-full border border-gray-700 bg-gray-900 flex items-center justify-center">
+                  <User size={20} className="text-gray-600" />
+                </div>
+              )}
+              <label className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors cursor-pointer">
+                Upload
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const formData = new FormData();
+                    formData.append('image', file);
+                    try {
+                      const res = await fetch(`${getApiBase()}/api/upload`, {
+                        method: 'POST',
+                        body: formData,
+                      });
+                      const data = await res.json();
+                      if (data.url) setNewForm({ ...newForm, avatar: data.url });
+                    } catch (err) {
+                      console.error('Avatar upload failed:', err);
+                    }
+                  }}
+                />
+              </label>
+              {newForm.avatar && (
+                <button
+                  onClick={() => setNewForm({ ...newForm, avatar: '' })}
+                  className="text-xs text-gray-500 hover:text-red-400"
+                >
+                  Remove
+                </button>
+              )}
             </div>
           </div>
           <div>
@@ -1229,6 +1279,54 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                           className="w-10 h-10 rounded border border-gray-700 cursor-pointer bg-transparent"
                         />
                         <span className="text-xs text-gray-400 font-mono">{edit.color || agent.color}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Avatar</label>
+                      <div className="flex items-center gap-3">
+                        {(edit.avatar || agent.avatar) ? (
+                          <img
+                            src={`${getApiBase()}${edit.avatar || agent.avatar}`}
+                            alt="Avatar"
+                            className="w-12 h-12 rounded-full object-cover border border-gray-700"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 rounded-full border border-gray-700 bg-gray-900 flex items-center justify-center">
+                            <User size={20} className="text-gray-600" />
+                          </div>
+                        )}
+                        <label className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors cursor-pointer">
+                          Upload
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              const formData = new FormData();
+                              formData.append('image', file);
+                              try {
+                                const res = await fetch(`${getApiBase()}/api/upload`, {
+                                  method: 'POST',
+                                  body: formData,
+                                });
+                                const data = await res.json();
+                                if (data.url) setEdit(agent.id, 'avatar', data.url);
+                              } catch (err) {
+                                console.error('Avatar upload failed:', err);
+                              }
+                            }}
+                          />
+                        </label>
+                        {(edit.avatar || agent.avatar) && (
+                          <button
+                            onClick={() => setEdit(agent.id, 'avatar', '')}
+                            className="text-xs text-gray-500 hover:text-red-400"
+                          >
+                            Remove
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1678,14 +1776,14 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange }) 
   const [tab, setTab] = useState('general');
 
   const tabs = [
-    { id: 'general', label: '⚙️ General' },
-    { id: 'connection', label: '🔗 Connection' },
-    { id: 'agents', label: '🤖 Agents' },
-    { id: 'heartbeats', label: '💓 Heartbeats' },
-    { id: 'crons', label: '⏰ Cron Jobs' },
-    { id: 'slack', label: '💬 Slack' },
-    { id: 'usage', label: '📊 Usage' },
-    { id: 'backup', label: '💾 Backup' },
+    { id: 'general', icon: <SettingsIcon size={16} />, text: 'General' },
+    { id: 'connection', icon: <Link size={16} />, text: 'Connection' },
+    { id: 'agents', icon: <Bot size={16} />, text: 'Agents' },
+    { id: 'heartbeats', icon: <HeartPulse size={16} />, text: 'Heartbeats' },
+    { id: 'crons', icon: <Clock size={16} />, text: 'Cron Jobs' },
+    { id: 'slack', icon: <MessageSquare size={16} />, text: 'Slack' },
+    { id: 'usage', icon: <BarChart3 size={16} />, text: 'Usage' },
+    { id: 'backup', icon: <HardDrive size={16} />, text: 'Backup' },
   ];
 
   return (
@@ -1704,7 +1802,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange }) 
                   : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
               }`}
             >
-              {t.label}
+              <span className="flex items-center gap-1.5">{t.icon}<span>{t.text}</span></span>
             </button>
           ))}
         </div>
