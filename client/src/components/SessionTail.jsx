@@ -177,12 +177,20 @@ const ENGINE_BADGES = {
 // Shared markdown renderer config — used by both TextBubble (rich timeline)
 // and LegacyAssistantBubble (pre-stream-json messages). Keeps multiline code
 // blocks rendered as proper <pre> elements with syntax highlighting.
+function extractText(node) {
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (node?.props?.children) return extractText(node.props.children);
+  return '';
+}
+
 const MARKDOWN_COMPONENTS = {
   code({ inline, className, children, ...props }) {
-    if (!inline && String(children).includes('\n')) {
+    if (!inline && extractText(children).includes('\n')) {
       return (
         <pre className="bg-gray-950 rounded p-2 overflow-x-auto text-xs my-2">
-          <code className={className}>{String(children).replace(/\n$/, '')}</code>
+          <code className={className}>{children}</code>
         </pre>
       );
     }

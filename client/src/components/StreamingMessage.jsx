@@ -3,16 +3,24 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 
+function extractText(node) {
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (node?.props?.children) return extractText(node.props.children);
+  return '';
+}
+
 function CodeBlock({ children, className }) {
   const [copied, setCopied] = useState(false);
-  const code = String(children).replace(/\n$/, '');
+  const plainText = extractText(children).replace(/\n$/, '');
   const language = className?.replace('language-', '') || '';
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(code);
+    navigator.clipboard.writeText(plainText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [code]);
+  }, [plainText]);
 
   return (
     <div className="relative group my-2">
@@ -26,7 +34,7 @@ function CodeBlock({ children, className }) {
         </button>
       </div>
       <pre className="!rounded-t-none !mt-0 overflow-x-auto">
-        <code className={className}>{code}</code>
+        <code className={className}>{children}</code>
       </pre>
     </div>
   );
@@ -40,7 +48,7 @@ function StreamingMessage({ content, agentColor, engine }) {
   const engineBadge = engine ? ENGINE_BADGES[engine] : null;
   const components = {
     code({ node, inline, className, children, ...props }) {
-      if (!inline && String(children).includes('\n')) {
+      if (!inline && extractText(children).includes('\n')) {
         return <CodeBlock className={className}>{children}</CodeBlock>;
       }
       return (
