@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
-import { BookOpen, Loader2, Save, Puzzle, ClipboardList, FileText, Pencil, PenLine } from 'lucide-react';
+import { BookOpen, Loader2, Save, Puzzle, ClipboardList, FileText, Pencil, PenLine, Globe } from 'lucide-react';
 
 function SkillCard({ skill, agentId }) {
   const [expanded, setExpanded] = useState(false);
@@ -207,37 +207,55 @@ export default function SkillsPage({ agents }) {
         {activeAgent && (
           <>
             {/* Skills Section */}
-            <div className="mb-8">
-              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <Puzzle size={18} /> Skills
-                <span className="text-xs text-gray-500 font-normal">
-                  ({skills.length} installed)
-                </span>
-              </h3>
-              {loadingSkills ? (
-                <p className="text-sm text-gray-500">Loading skills...</p>
-              ) : skills.length === 0 ? (
-                <div className="bg-gray-800 rounded-xl p-6 text-center">
-                  <p className="text-gray-500 text-sm">No skills installed</p>
-                  <p className="text-gray-600 text-xs mt-1">
-                    Add skills to{' '}
-                    <code className="bg-gray-900 px-1 rounded">
-                      {activeAgent.workspace}/skills/
-                    </code>
-                  </p>
+            {(() => {
+              const projectSkills = skills.filter((s) => s.source !== 'default');
+              const defaultSkills = skills.filter((s) => s.source === 'default');
+              return (
+                <div className="mb-8">
+                  <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                    <Puzzle size={18} /> Skills
+                    <span className="text-xs text-gray-500 font-normal">
+                      ({skills.length} total)
+                    </span>
+                  </h3>
+                  {loadingSkills ? (
+                    <p className="text-sm text-gray-500">Loading skills...</p>
+                  ) : skills.length === 0 ? (
+                    <div className="bg-gray-800 rounded-xl p-6 text-center">
+                      <p className="text-gray-500 text-sm">No skills installed</p>
+                      <p className="text-gray-600 text-xs mt-1">
+                        Add skills to{' '}
+                        <code className="bg-gray-900 px-1 rounded">
+                          {activeAgent.workspace}/skills/
+                        </code>
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      {projectSkills.length > 0 && (
+                        <div className="space-y-2 mb-6">
+                          {projectSkills.map((skill) => (
+                            <SkillCard key={skill.id} skill={skill} agentId={activeAgentId} />
+                          ))}
+                        </div>
+                      )}
+                      {defaultSkills.length > 0 && (
+                        <div>
+                          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                            <Globe size={12} /> Default Skills
+                          </h4>
+                          <div className="space-y-2">
+                            {defaultSkills.map((skill) => (
+                              <SkillCard key={skill.id} skill={skill} agentId={activeAgentId} />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  {skills.map((skill) => (
-                    <SkillCard
-                      key={skill.id}
-                      skill={skill}
-                      agentId={activeAgentId}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
+              );
+            })()}
 
             {/* Context Files Section */}
             <div>
