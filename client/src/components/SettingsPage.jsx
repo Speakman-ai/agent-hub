@@ -44,8 +44,8 @@ function OrganizationsSection() {
     }
   };
 
-  const handleDelete = (orgId) => {
-    if (deleteOrg(orgId)) {
+  const handleDelete = async (orgId) => {
+    if (await deleteOrg(orgId)) {
       refreshOrgs();
       setExpandedOrgId(null);
       // If we deleted the active org, the deleteOrg function switched to another — reload
@@ -55,8 +55,8 @@ function OrganizationsSection() {
     }
   };
 
-  const handleSwitch = (orgId) => {
-    switchOrg(orgId);
+  const handleSwitch = async (orgId) => {
+    await switchOrg(orgId);
     window.location.reload();
   };
 

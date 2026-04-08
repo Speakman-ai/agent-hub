@@ -23,12 +23,12 @@ export default function OrgSwitcher({ onNavigateSettings }) {
 
   const orgs = state?.orgs || [];
 
-  const handleSwitch = (orgId) => {
+  const handleSwitch = async (orgId) => {
     if (orgId === activeOrg.id) {
       setOpen(false);
       return;
     }
-    switchOrg(orgId);
+    await switchOrg(orgId);
     window.location.reload();
   };
 

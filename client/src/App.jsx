@@ -15,7 +15,7 @@ import SetupWizard from './components/SetupWizard.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 import { MessageCircle, Info, CheckCircle, AlertTriangle } from 'lucide-react';
-import { migrateFromLegacy } from './utils/orgs.js';
+import { migrateFromLegacy, getActiveOrg } from './utils/orgs.js';
 import { getApiBase } from './utils/connection.js';
 
 export default function App() {
@@ -542,9 +542,18 @@ export default function App() {
     });
   }, []);
 
-  // Migrate legacy connection config to org system on first load
+  // Migrate legacy connection config to org system on first load,
+  // then ensure the server is pointed at the active org's data directory
   useEffect(() => {
     migrateFromLegacy();
+    const activeOrg = getActiveOrg();
+    if (activeOrg && activeOrg.mode !== 'remote') {
+      fetch(`${getApiBase()}/org/switch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: activeOrg.id }),
+      }).catch(() => {}); // server may not support it yet
+    }
   }, []);
 
   // Check setup status + load projects on mount

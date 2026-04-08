@@ -1,13 +1,13 @@
 /**
  * Organization (connection profile) management.
  *
- * Orgs are purely client-side — each org is a named connection profile
- * (local or remote) stored in localStorage. Switching orgs syncs the
- * active org's connection fields into `connection.js` via saveConnectionConfig(),
- * so getApiBase(), getWsUrl(), getAuthHeaders() all work unchanged.
+ * Each org is a named connection profile stored in localStorage.
+ * Switching orgs syncs connection fields into `connection.js` and
+ * tells the server to switch its data directory (each org gets
+ * an isolated database and projects.json).
  */
 
-import { getConnectionConfig, saveConnectionConfig } from './connection.js';
+import { getConnectionConfig, saveConnectionConfig, getApiBase, getAuthHeaders } from './connection.js';
 
 const STORAGE_KEY = 'agent-hub-orgs';
 
@@ -51,12 +51,30 @@ export function getActiveOrg() {
   return state.orgs.find((o) => o.id === state.activeOrgId) || state.orgs[0] || null;
 }
 
-/** Switch to a different org by ID. Syncs connection config. */
-export function switchOrg(orgId) {
+/**
+ * Switch to a different org by ID.
+ * For local orgs, tells the server to switch its data directory first.
+ * Returns a promise — await it before reloading the page.
+ */
+export async function switchOrg(orgId) {
   const state = getOrgs();
   if (!state) return;
   const org = state.orgs.find((o) => o.id === orgId);
   if (!org) return;
+
+  // For local orgs, tell the server to switch data directories
+  if (org.mode !== 'remote') {
+    try {
+      await fetch(`${getApiBase()}/org/switch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ orgId }),
+      });
+    } catch (err) {
+      console.warn('[Orgs] Server switch failed:', err.message);
+    }
+  }
+
   state.activeOrgId = orgId;
   saveOrgs(state);
   syncToConnection(org);
@@ -101,16 +119,29 @@ export function updateOrg(orgId, updates) {
 }
 
 /** Delete an org. Cannot delete the last one. Returns true if deleted. */
-export function deleteOrg(orgId) {
+export async function deleteOrg(orgId) {
   const state = getOrgs();
   if (!state || state.orgs.length <= 1) return false;
   state.orgs = state.orgs.filter((o) => o.id !== orgId);
   // If we deleted the active org, switch to the first remaining
   if (state.activeOrgId === orgId) {
-    state.activeOrgId = state.orgs[0].id;
-    syncToConnection(state.orgs[0]);
+    const newActive = state.orgs[0];
+    state.activeOrgId = newActive.id;
+    saveOrgs(state);
+    syncToConnection(newActive);
+    // Tell server to switch data directory
+    if (newActive.mode !== 'remote') {
+      try {
+        await fetch(`${getApiBase()}/org/switch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ orgId: newActive.id }),
+        });
+      } catch {}
+    }
+  } else {
+    saveOrgs(state);
   }
-  saveOrgs(state);
   return true;
 }
 
@@ -123,7 +154,7 @@ export function migrateFromLegacy() {
   if (getOrgs()) return; // already migrated
   const conn = getConnectionConfig();
   const org = {
-    id: uid(),
+    id: 'default', // Special ID — maps to the server's original data directory
     name: 'Default',
     mode: conn.mode || 'local',
     color: '#6366f1',
