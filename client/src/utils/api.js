@@ -186,4 +186,12 @@ export const api = {
   // Clone from GitHub
   cloneRepo: (url, targetDir) =>
     fetchJSON('/projects/clone', { method: 'POST', body: JSON.stringify({ url, targetDir }) }),
+
+  // Background tasks
+  getTasks: (limit = 50) => fetchJSON(`/tasks?limit=${limit}`),
+  getTask: (taskId) => fetchJSON(`/tasks/${taskId}`),
+  createTask: (agentId, prompt) =>
+    fetchJSON('/tasks', { method: 'POST', body: JSON.stringify({ agentId, prompt }) }),
+  stopTask: (taskId) =>
+    fetchJSON(`/tasks/${taskId}/stop`, { method: 'POST' }),
 };

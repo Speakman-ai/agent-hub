@@ -5,15 +5,26 @@ import config from './config.js';
 let db;
 let stmts;
 
+// Registry of opened db handles, keyed by dataDir. We deliberately keep prior
+// connections open across org switches so in-flight CLI streams (which captured
+// a reference to the old `stmts` object before the switch) can finish writing
+// to their original database. Closing on switch would invalidate their prepared
+// statements and crash the server with "database is closed" / FK errors.
+const dbRegistry = new Map(); // dataDir -> { db, stmts }
+
 /**
- * Initialize (or re-initialize) the database at the given data directory.
- * Creates tables, runs migrations, and prepares all statements.
- * Safe to call multiple times — closes the previous connection first.
+ * Initialize (or switch to) the database at the given data directory.
+ * Creates tables, runs migrations, and prepares all statements on first use.
+ * Subsequent calls for the same dataDir reuse the cached handle. Switching to
+ * a different dataDir does NOT close the previous one.
  */
 function initDb(dataDir) {
-  // Close existing connection if any
-  if (db) {
-    try { db.close(); } catch {}
+  // Reuse a previously opened handle if we have one for this dir.
+  const cached = dbRegistry.get(dataDir);
+  if (cached) {
+    db = cached.db;
+    stmts = cached.stmts;
+    return;
   }
 
   const dbPath = path.join(dataDir, 'agent-hub.db');
@@ -185,6 +196,18 @@ function initDb(dataDir) {
     CREATE INDEX IF NOT EXISTS idx_delegations_session ON delegations(session_id);
     CREATE INDEX IF NOT EXISTS idx_delegations_parent ON delegations(parent_message_id);
 
+    CREATE TABLE IF NOT EXISTS background_tasks (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','error')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_background_tasks_status ON background_tasks(status, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS message_queue (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -332,6 +355,22 @@ function initDb(dataDir) {
     ),
     updateSessionWorktreePath: db.prepare(
       "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, updated_at = datetime('now') WHERE id = ?"
+    ),
+
+    // Background tasks
+    insertBackgroundTask: db.prepare(
+      `INSERT INTO background_tasks (id, session_id, agent_id, prompt) VALUES (?, ?, ?, ?)`
+    ),
+    updateBackgroundTaskStatus: db.prepare(
+      `UPDATE background_tasks SET status = ?, completed_at = datetime('now') WHERE id = ?`
+    ),
+    getBackgroundTask: db.prepare('SELECT * FROM background_tasks WHERE id = ?'),
+    getBackgroundTaskBySession: db.prepare('SELECT * FROM background_tasks WHERE session_id = ?'),
+    getBackgroundTasks: db.prepare(
+      'SELECT * FROM background_tasks ORDER BY created_at DESC LIMIT ?'
+    ),
+    getRunningBackgroundTasks: db.prepare(
+      `SELECT * FROM background_tasks WHERE status = 'running' ORDER BY created_at DESC`
     ),
 
     // Active tasks
@@ -541,9 +580,17 @@ function initDb(dataDir) {
       'SELECT DISTINCT session_id FROM message_queue'
     ),
   };
+
+  // Cache for future switches.
+  dbRegistry.set(dataDir, { db, stmts });
+}
+
+/** Return the currently active stmts object (live, not pinned). */
+function getActiveStmts() {
+  return stmts;
 }
 
 // Initialize on import with default config
 initDb(config.dataDir);
 
-export { db, stmts, initDb };
+export { db, stmts, initDb, getActiveStmts };

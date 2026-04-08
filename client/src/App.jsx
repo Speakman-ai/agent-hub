@@ -485,6 +485,20 @@ export default function App() {
       case 'clone-error':
         window.dispatchEvent(new CustomEvent('clone-ws', { detail: data }));
         break;
+      case 'task_complete': {
+        const taskStatus = data.status === 'done' ? 'success' : 'error';
+        const taskMsg = data.status === 'done'
+          ? `Background task completed${data.preview ? ': ' + data.preview.substring(0, 80) + '...' : ''}`
+          : 'Background task failed';
+        setToasts((prev) => [...prev, {
+          id: `task-${data.taskId}-${Date.now()}`,
+          type: taskStatus,
+          message: taskMsg,
+          duration: 15000,
+        }]);
+        window.dispatchEvent(new CustomEvent('task-complete', { detail: data }));
+        break;
+      }
       case 'babysit_complete': {
         const toast = {
           id: `babysit-done-${Date.now()}`,
@@ -865,6 +879,22 @@ export default function App() {
     });
   };
 
+  const handleBackgroundSend = async (content) => {
+    if (!activeAgentId || !content.trim()) return;
+    try {
+      const result = await api.createTask(activeAgentId, content.trim());
+      // Add a toast notification
+      setToasts((prev) => [...prev, {
+        id: `bg-task-${result.taskId}`,
+        type: 'info',
+        message: `Background task started — check back later for results`,
+        duration: 5000,
+      }]);
+    } catch (err) {
+      console.error('Failed to create background task:', err);
+    }
+  };
+
   const isProcessing = thinking || !!streamingContent;
 
   const isElectron = !!window.electronAPI?.isElectron;
@@ -1070,6 +1100,7 @@ export default function App() {
             {/* Input */}
             <MessageInput
               onSend={handleSend}
+              onBackgroundSend={handleBackgroundSend}
               onCancel={handleCancel}
               disabled={!activeAgentId || !connected}
               isProcessing={isProcessing}
