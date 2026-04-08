@@ -16,7 +16,7 @@ import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 import { MessageCircle, Info, CheckCircle, AlertTriangle } from 'lucide-react';
 import { migrateFromLegacy, getActiveOrg, getOrgs } from './utils/orgs.js';
-import { getApiBase } from './utils/connection.js';
+import { getApiBase, getAuthHeaders } from './utils/connection.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -561,55 +561,61 @@ export default function App() {
     });
   }, []);
 
-  // Migrate legacy connection config to org system on first load,
-  // then ensure the server is pointed at the active org's data directory
+  // Migrate legacy connection config, ensure the server is pointed at the
+  // active org's data directory, THEN load projects/setup status.
+  // Sequential: org/switch must complete before we fetch data, otherwise
+  // the server might still be pointed at the previous org.
   useEffect(() => {
     migrateFromLegacy();
-    const activeOrg = getActiveOrg();
-    if (activeOrg && activeOrg.mode !== 'remote') {
-      fetch(`${getApiBase()}/org/switch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: activeOrg.id }),
-      }).catch(() => {}); // server may not support it yet
-    }
-  }, []);
 
-  // Check setup status + load projects on mount
-  useEffect(() => {
-    // Check first-run status
-    fetch(`${getApiBase()}/setup/status`, { headers: getAuthHeaders() })
-      .then((r) => r.json())
-      .then((status) => {
+    const init = async () => {
+      // Step 1: Tell the server which org to serve (local AND remote servers)
+      const activeOrg = getActiveOrg();
+      if (activeOrg) {
+        try {
+          await fetch(`${getApiBase()}/org/switch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ orgId: activeOrg.id }),
+          });
+        } catch {} // server may not support it yet
+      }
+
+      // Step 2: Check setup status
+      try {
+        const statusRes = await fetch(`${getApiBase()}/setup/status`, { headers: getAuthHeaders() });
+        const status = await statusRes.json();
         setSetupStatus(status);
         if (status.firstRun) {
-          // Only show the full setup wizard on a true first run (no orgs yet).
-          // If orgs already exist, the empty state just means this org has no
-          // projects — open the project wizard instead so we don't re-run org
-          // creation and end up making a duplicate org every time.
           if (!getOrgs()) {
             setShowSetup(true);
           } else {
             setShowWizard(true);
           }
         }
-      })
-      .catch(() => {}); // server may not have endpoint yet — ignore
+      } catch {} // server may not have endpoint yet
 
-    api.getProjects().then((data) => {
-      setProjects(data);
-      const flat = data.flatMap((p) =>
-        p.agents.map((a) => ({ ...a, projectId: p.id, projectName: p.name, cwd: p.cwd, ahw: p.ahw }))
-      );
-      setAgents(flat);
-      const storedId = localStorage.getItem('activeAgentId');
-      const storedAgentExists = storedId && flat.some((a) => a.id === storedId);
-      if (storedAgentExists) {
-        setActiveAgentId(storedId);
-      } else if (flat.length > 0) {
-        setActiveAgentId(flat[0].id);
+      // Step 3: Load projects (after org switch is confirmed)
+      try {
+        const data = await api.getProjects();
+        setProjects(data);
+        const flat = data.flatMap((p) =>
+          p.agents.map((a) => ({ ...a, projectId: p.id, projectName: p.name, cwd: p.cwd, ahw: p.ahw }))
+        );
+        setAgents(flat);
+        const storedId = localStorage.getItem('activeAgentId');
+        const storedAgentExists = storedId && flat.some((a) => a.id === storedId);
+        if (storedAgentExists) {
+          setActiveAgentId(storedId);
+        } else if (flat.length > 0) {
+          setActiveAgentId(flat[0].id);
+        }
+      } catch (err) {
+        console.error('[Init] Failed to load projects:', err);
       }
-    });
+    };
+
+    init();
   }, []);
 
   // Load sessions when agent changes

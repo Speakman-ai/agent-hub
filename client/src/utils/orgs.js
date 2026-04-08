@@ -53,7 +53,8 @@ export function getActiveOrg() {
 
 /**
  * Switch to a different org by ID.
- * For local orgs, tells the server to switch its data directory first.
+ * Updates the connection config FIRST (so subsequent API calls target the
+ * correct server), then tells that server to switch its data directory.
  * Returns a promise — await it before reloading the page.
  */
 export async function switchOrg(orgId) {
@@ -62,22 +63,24 @@ export async function switchOrg(orgId) {
   const org = state.orgs.find((o) => o.id === orgId);
   if (!org) return;
 
-  // For local orgs, tell the server to switch data directories
-  if (org.mode !== 'remote') {
-    try {
-      await fetch(`${getApiBase()}/org/switch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ orgId }),
-      });
-    } catch (err) {
-      console.warn('[Orgs] Server switch failed:', err.message);
-    }
-  }
-
+  // Update connection config BEFORE making any API calls so getApiBase()
+  // returns the TARGET server URL, not the previous one.
   state.activeOrgId = orgId;
   saveOrgs(state);
   syncToConnection(org);
+
+  // Tell the target server to switch to this org's data directory.
+  // This applies to both local and remote servers — both need to know
+  // which org's data to serve.
+  try {
+    await fetch(`${getApiBase()}/org/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify({ orgId }),
+    });
+  } catch (err) {
+    console.warn('[Orgs] Server switch failed:', err.message);
+  }
 }
 
 /** Create a new org and add it to the list. Returns the new org. */
