@@ -149,7 +149,8 @@ function normalizeClaude(raw) {
       // for live streaming; the canonical record comes from `assistant` events.
       const ev = raw.event;
       if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-        return [{ type: 'assistant_text', text: ev.delta.text ?? '', partial: true }];
+        const deltaText = typeof ev.delta.text === 'string' ? ev.delta.text : JSON.stringify(ev.delta.text ?? '');
+        return [{ type: 'assistant_text', text: deltaText, partial: true }];
       }
       return [];
     }

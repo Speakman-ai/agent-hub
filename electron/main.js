@@ -175,6 +175,17 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  // Intercept all navigation — markdown links use <a href> which triggers
+  // will-navigate rather than window.open. Prevent in-app navigation for
+  // any external URL (keep localhost for the app itself).
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const appOrigin = isDev ? 'http://localhost:3050' : `http://localhost:${port}`;
+    if (!url.startsWith(appOrigin)) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });

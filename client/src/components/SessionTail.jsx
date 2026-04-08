@@ -188,6 +188,13 @@ const MARKDOWN_COMPONENTS = {
     }
     return <code className={className} {...props}>{children}</code>;
   },
+  a({ href, children, ...props }) {
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+        {children}
+      </a>
+    );
+  },
 };
 
 function Header({ agentColor, engine, model, streaming, createdAt }) {

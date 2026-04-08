@@ -127,6 +127,13 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
         </code>
       );
     },
+    a({ href, children, ...props }) {
+      return (
+        <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+          {children}
+        </a>
+      );
+    },
   };
 
   // Don't show "(image attached)" as text if it was auto-generated and there are actual attachments
