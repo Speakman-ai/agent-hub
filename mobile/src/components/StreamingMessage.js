@@ -4,8 +4,8 @@ import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 
 const ENGINE_BADGES = {
-  'claude-code': { emoji: '🟣', label: 'Claude Code' },
-  'cursor-agent': { emoji: '🟢', label: 'Cursor Agent' },
+  'claude-code': { color: '#8B5CF6', label: 'Claude Code' },
+  'cursor-agent': { color: '#10B981', label: 'Cursor Agent' },
 };
 
 const markdownStyles = {
@@ -61,9 +61,10 @@ function StreamingMessage({ content, agentColor, engine }) {
           <View style={[styles.headerDot, { backgroundColor: agentColor }]} />
           <Text style={styles.headerLabel}>Assistant</Text>
           {engineBadge && (
-            <Text style={styles.engineBadge}>
-              {engineBadge.emoji} {engineBadge.label}
-            </Text>
+            <View style={styles.engineBadgeRow}>
+              <View style={[styles.engineDot, { backgroundColor: engineBadge.color }]} />
+              <Text style={styles.engineBadge}>{engineBadge.label}</Text>
+            </View>
           )}
           <View style={styles.streamingBadge}>
             <View style={styles.streamingDot} />
@@ -106,6 +107,16 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.gray500,
     fontWeight: '500',
+  },
+  engineBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  engineDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   engineBadge: {
     fontSize: 10,

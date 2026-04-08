@@ -7,6 +7,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import TopBar from '../components/TopBar';
@@ -15,8 +16,10 @@ import StreamingMessage from '../components/StreamingMessage';
 import ThinkingIndicator from '../components/ThinkingIndicator';
 import MessageInput from '../components/MessageInput';
 import AgentSwitcher from '../components/AgentSwitcher';
+import DelegationPanel from '../components/DelegationPanel';
+import SessionTail from '../components/SessionTail';
 
-export default function ChatScreen({ navigation }) {
+export default function ChatScreen() {
   const {
     agents,
     activeAgent,
@@ -31,6 +34,14 @@ export default function ChatScreen({ navigation }) {
     handleSend,
     handleCancel,
     skills,
+    delegations,
+    messageQueues,
+    eventsByMessage,
+    handleDequeue,
+    handleEditQueuedMessage,
+    handleDelegationCancel,
+    handleEventsLoaded,
+    activeSessionId,
   } = useApp();
 
   const flatListRef = useRef(null);
@@ -45,6 +56,9 @@ export default function ChatScreen({ navigation }) {
     }
   }, [messages, thinking, streamingContent]);
 
+  const queuedIds = new Set((messageQueues[activeSessionId] || []).map((q) => q.id));
+  const activeDelegation = delegations[activeSessionId];
+
   // Build list data: messages + thinking + streaming indicators
   const listData = [
     ...messages.map((msg) => ({ type: 'message', key: msg.id, data: msg })),
@@ -54,17 +68,35 @@ export default function ChatScreen({ navigation }) {
     ...(streamingContent
       ? [{ type: 'streaming', key: 'streaming', data: { content: streamingContent, engine: streamingEngine } }]
       : []),
+    ...(activeDelegation?.tasks?.length > 0
+      ? [{ type: 'delegation', key: 'delegation', data: activeDelegation }]
+      : []),
   ];
 
   const renderItem = ({ item }) => {
     switch (item.type) {
-      case 'message':
+      case 'message': {
+        const msg = item.data;
+        const isQueued = queuedIds.has(msg.id);
         return (
-          <ChatMessage
-            message={item.data}
-            agentColor={activeAgent?.color}
-          />
+          <View>
+            <ChatMessage
+              message={{ ...msg, queued: isQueued }}
+              agentColor={activeAgent?.color}
+              onDequeue={isQueued ? handleDequeue : undefined}
+              onEditQueued={isQueued ? handleEditQueuedMessage : undefined}
+            />
+            {msg.role === 'assistant' && (
+              <SessionTail
+                message={msg}
+                events={eventsByMessage[msg.id]}
+                agentColor={activeAgent?.color}
+                onEventsLoaded={handleEventsLoaded}
+              />
+            )}
+          </View>
         );
+      }
       case 'thinking':
         return <ThinkingIndicator agentColor={activeAgent?.color} />;
       case 'streaming':
@@ -75,6 +107,16 @@ export default function ChatScreen({ navigation }) {
             engine={item.data.engine}
           />
         );
+      case 'delegation':
+        return (
+          <View style={{ paddingHorizontal: 12 }}>
+            <DelegationPanel
+              delegations={item.data.tasks}
+              sessionId={activeSessionId}
+              onCancel={handleDelegationCancel}
+            />
+          </View>
+        );
       default:
         return null;
     }
@@ -82,7 +124,6 @@ export default function ChatScreen({ navigation }) {
 
   const renderEmpty = () => (
     <View style={styles.emptyContainer}>
-      <Text style={styles.emptyEmoji}>💬</Text>
       <Text style={styles.emptyTitle}>Start a conversation</Text>
       {activeAgent && (
         <Text style={styles.emptySubtitle}>with {activeAgent.name}</Text>
@@ -94,8 +135,8 @@ export default function ChatScreen({ navigation }) {
   );
 
   return (
-    <View style={styles.container}>
-      <TopBar navigation={navigation} />
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <TopBar />
 
       <KeyboardAvoidingView
         style={styles.flex}
@@ -126,6 +167,7 @@ export default function ChatScreen({ navigation }) {
           isProcessing={isProcessing}
           agentColor={activeAgent?.color}
           skills={skills}
+          queueLength={(messageQueues[activeSessionId] || []).length}
         />
       </KeyboardAvoidingView>
 
@@ -136,7 +178,7 @@ export default function ChatScreen({ navigation }) {
         onSelect={(id) => setActiveAgentId(id)}
         onClose={() => setShowSwitcher(false)}
       />
-    </View>
+    </SafeAreaView>
   );
 }
 

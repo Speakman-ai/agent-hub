@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import {
   View,
   Text,
@@ -10,10 +10,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
+import { SidebarContext } from '../context/SidebarContext';
 
 const ENGINE_OPTIONS = [
-  { id: 'claude-code', label: 'Claude Code', emoji: '🟣', color: '#8B5CF6' },
-  { id: 'cursor-agent', label: 'Cursor Agent', emoji: '🟢', color: '#10B981' },
+  { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
+  { id: 'cursor-agent', label: 'Cursor Agent', color: '#10B981' },
 ];
 
 const ENGINE_MODELS = {
@@ -35,7 +36,7 @@ const ENGINE_MODELS = {
   ],
 };
 
-export default function TopBar({ navigation }) {
+export default function TopBar() {
   const {
     activeAgent,
     connected,
@@ -46,6 +47,7 @@ export default function TopBar({ navigation }) {
     handleModelChange,
     handleNewSession,
   } = useApp();
+  const { openSidebar } = useContext(SidebarContext);
 
   const [showPicker, setShowPicker] = useState(false);
 
@@ -58,7 +60,7 @@ export default function TopBar({ navigation }) {
       <View style={styles.left}>
         <TouchableOpacity
           style={styles.menuButton}
-          onPress={() => navigation.openDrawer()}
+          onPress={openSidebar}
         >
           <Ionicons name="menu" size={24} color={colors.gray400} />
         </TouchableOpacity>
@@ -79,7 +81,7 @@ export default function TopBar({ navigation }) {
             style={styles.engineButton}
             onPress={() => setShowPicker(true)}
           >
-            <Text style={styles.engineEmoji}>{currentEngine.emoji}</Text>
+            <View style={[styles.engineDotSmall, { backgroundColor: currentEngine.color }]} />
             <Text style={styles.engineLabel}>{currentModel.short}</Text>
             <Ionicons name="chevron-down" size={12} color={colors.gray500} />
           </TouchableOpacity>
@@ -140,9 +142,10 @@ export default function TopBar({ navigation }) {
                   setShowPicker(false);
                 }}
               >
-                <Text style={styles.pickerItemLabel}>
-                  {eng.emoji} {eng.label}
-                </Text>
+                <View style={styles.pickerItemRow}>
+                  <View style={[styles.engineDotSmall, { backgroundColor: eng.color }]} />
+                  <Text style={styles.pickerItemLabel}>{eng.label}</Text>
+                </View>
                 {eng.id === sessionEngine && (
                   <Text style={styles.pickerCheck}>✓</Text>
                 )}
@@ -237,8 +240,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  engineEmoji: {
-    fontSize: 12,
+  engineDotSmall: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   engineLabel: {
     fontSize: 12,
@@ -304,6 +309,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     paddingHorizontal: 12,
     paddingVertical: 6,
+  },
+  pickerItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   pickerItem: {
     flexDirection: 'row',

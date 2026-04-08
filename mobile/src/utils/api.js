@@ -1,9 +1,12 @@
-import { API_BASE_URL } from './config';
+import { getApiBaseUrl, getAuthHeaders } from './config';
 
 async function fetchJSON(url, options = {}) {
-  const res = await fetch(`${API_BASE_URL}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
+  const base = getApiBaseUrl();
+  if (!base) throw new Error('No server configured');
+  const authHeaders = getAuthHeaders();
+  const res = await fetch(`${base}${url}`, {
     ...options,
+    headers: { 'Content-Type': 'application/json', ...authHeaders, ...(options.headers || {}) },
   });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
@@ -46,11 +49,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  deleteAgent: (agentId) =>
-    fetch(`${API_BASE_URL}/agents/${agentId}`, { method: 'DELETE' }).then((res) => {
+  deleteAgent: (agentId) => {
+    const base = getApiBaseUrl();
+    const authHeaders = getAuthHeaders();
+    return fetch(`${base}/agents/${agentId}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders },
+    }).then((res) => {
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       return null;
-    }),
+    });
+  },
+
+  // Projects
+  getProjects: () => fetchJSON('/projects'),
+
+  // Usage
+  getUsage: () => fetchJSON('/usage'),
+
+  // Config
+  getConfig: () => fetchJSON('/config'),
+  updateConfig: (data) => fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
+  exportConfig: () => fetchJSON('/config/export'),
+  importConfig: (data) => fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
 
   // Heartbeats
   getHeartbeats: () => fetchJSON('/heartbeats'),
@@ -93,6 +114,7 @@ export const api = {
   removeRoomAgent: (roomId, agentId) =>
     fetchJSON(`/rooms/${roomId}/agents/${agentId}`, { method: 'DELETE' }),
   getRoomMessages: (roomId) => fetchJSON(`/rooms/${roomId}/messages`),
+  summarizeRoom: (roomId) => fetchJSON(`/rooms/${roomId}/summarize`, { method: 'POST' }),
 
   // Skills & Context
   getSkills: (agentId) => fetchJSON(`/agents/${agentId}/skills`),
@@ -117,4 +139,14 @@ export const api = {
     fetchJSON('/slack/restart', { method: 'POST' }),
   getSlackMessages: (agentId, limit = 50) =>
     fetchJSON(`/slack/messages?${agentId ? `agentId=${agentId}&` : ''}limit=${limit}`),
+
+  // Message events (for session timeline)
+  getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
+
+  // Delegations
+  getDelegations: (messageId) => fetchJSON(`/delegations/${messageId}`),
+  getSessionDelegations: (sessionId) => fetchJSON(`/sessions/${sessionId}/delegations`),
+
+  // Queue
+  getSessionQueue: (sessionId) => fetchJSON(`/sessions/${sessionId}/queue`),
 };

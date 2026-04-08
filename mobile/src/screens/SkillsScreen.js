@@ -121,7 +121,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
               onPress={() => setEditing(!editing)}
             >
               <Text style={[styles.editButtonText, editing && styles.editButtonTextActive]}>
-                {editing ? '📝 Editing' : '✏️ Edit'}
+                {editing ? 'Editing' : 'Edit'}
               </Text>
             </TouchableOpacity>
             {editing && (
@@ -131,7 +131,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
                 disabled={saving}
               >
                 <Text style={styles.saveButtonText}>
-                  {saving ? '⏳ Saving...' : '💾 Save'}
+                  {saving ? 'Saving...' : 'Save'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -250,7 +250,7 @@ export default function SkillsScreen() {
             {/* Context Files section */}
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>📋 Context Files</Text>
+                <Text style={styles.sectionTitle}>Context Files</Text>
                 <Text style={styles.sectionCount}>(workspace identity)</Text>
               </View>
               {loadingContext ? (

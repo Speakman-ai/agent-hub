@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { colors } from '../theme/colors';
 
-export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills }) {
+export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength }) {
   const [value, setValue] = useState('');
   const [images, setImages] = useState([]); // [{id, uri, name, base64}]
   const inputRef = useRef(null);
@@ -213,6 +213,11 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
             activeOpacity={0.7}
           >
             <Ionicons name="send" size={18} color={colors.white} />
+            {isProcessing && queueLength > 0 && (
+              <View style={styles.queueBadge}>
+                <Text style={styles.queueBadgeText}>{queueLength}</Text>
+              </View>
+            )}
           </TouchableOpacity>
         )}
       </View>
@@ -347,5 +352,22 @@ const styles = StyleSheet.create({
     backgroundColor: colors.red600,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  queueBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: colors.red600,
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  queueBadgeText: {
+    color: colors.white,
+    fontSize: 9,
+    fontWeight: 'bold',
   },
 });

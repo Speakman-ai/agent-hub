@@ -1,13 +1,13 @@
 import React, { memo, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions, TextInput } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
-import { API_BASE_URL } from '../utils/config';
+import { getApiBaseUrl } from '../utils/config';
 
 const ENGINE_BADGES = {
-  'claude-code': { emoji: '🟣', label: 'Claude Code' },
-  'cursor-agent': { emoji: '🟢', label: 'Cursor Agent' },
+  'claude-code': { color: '#8B5CF6', label: 'Claude Code' },
+  'cursor-agent': { color: '#10B981', label: 'Cursor Agent' },
 };
 
 const markdownStyles = {
@@ -141,7 +141,7 @@ function MessageAttachments({ attachments }) {
   if (parsed.length === 0) return null;
 
   const getDisplayUrl = (img) => {
-    if (img.url) return `${API_BASE_URL.replace('/api', '')}${img.url}`;
+    if (img.url) return `${getApiBaseUrl().replace('/api', '')}${img.url}`;
     if (img.dataUrl) return img.dataUrl;
     return null;
   };
@@ -200,7 +200,10 @@ const imageStyles = StyleSheet.create({
   },
 });
 
-function ChatMessage({ message, agentColor }) {
+function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
+  const isQueued = message.queued;
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(message.content);
   const isUser = message.role === 'user';
   const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;
   const modelLabel = !isUser && message.model
@@ -217,7 +220,7 @@ function ChatMessage({ message, agentColor }) {
       <View
         style={[
           styles.bubble,
-          isUser ? styles.bubbleUser : styles.bubbleAssistant,
+          isUser ? (isQueued ? styles.bubbleQueued : styles.bubbleUser) : styles.bubbleAssistant,
         ]}
       >
         {/* Assistant header */}
@@ -226,9 +229,10 @@ function ChatMessage({ message, agentColor }) {
             <View style={[styles.headerDot, { backgroundColor: agentColor }]} />
             <Text style={styles.headerLabel}>Assistant</Text>
             {engineBadge && (
-              <Text style={styles.engineBadge}>
-                {engineBadge.emoji} {engineBadge.label}
-              </Text>
+              <View style={styles.engineBadgeRow}>
+                <View style={[styles.engineDot, { backgroundColor: engineBadge.color }]} />
+                <Text style={styles.engineBadge}>{engineBadge.label}</Text>
+              </View>
             )}
             {modelLabel && (
               <Text style={styles.modelLabel}>· {modelLabel}</Text>
@@ -241,7 +245,48 @@ function ChatMessage({ message, agentColor }) {
 
         {/* Content */}
         {isUser ? (
-          displayContent ? <Text style={styles.userText}>{displayContent}</Text> : null
+          <>
+            {isQueued && (
+              <View style={styles.queuedBadge}>
+                <View style={styles.queuedDot} />
+                <Text style={styles.queuedText}>Queued</Text>
+              </View>
+            )}
+            {editing ? (
+              <View style={styles.editContainer}>
+                <TextInput
+                  style={styles.editInput}
+                  value={editText}
+                  onChangeText={setEditText}
+                  multiline
+                  autoFocus
+                />
+                <View style={styles.editActions}>
+                  <TouchableOpacity
+                    style={styles.editSaveBtn}
+                    onPress={() => { onEditQueued?.(message.id, editText); setEditing(false); }}
+                  >
+                    <Text style={styles.editSaveBtnText}>Save</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setEditing(false); setEditText(message.content); }}>
+                    <Text style={styles.editCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              displayContent ? <Text style={styles.userText}>{displayContent}</Text> : null
+            )}
+            {isQueued && !editing && (
+              <View style={styles.queuedActions}>
+                <TouchableOpacity onPress={() => setEditing(true)}>
+                  <Text style={styles.queuedActionText}>Edit</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => onDequeue?.(message.id)}>
+                  <Text style={[styles.queuedActionText, { color: colors.red400 }]}>Remove</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </>
         ) : (
           <Markdown style={markdownStyles}>{message.content}</Markdown>
         )}
@@ -299,6 +344,16 @@ const styles = StyleSheet.create({
     color: colors.gray500,
     fontWeight: '500',
   },
+  engineBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  engineDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
   engineBadge: {
     fontSize: 10,
     color: colors.gray600,
@@ -321,6 +376,75 @@ const styles = StyleSheet.create({
   },
   timestampAssistant: {
     color: colors.gray600,
+  },
+  bubbleQueued: {
+    backgroundColor: 'rgba(59, 130, 246, 0.3)',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.3)',
+    borderBottomRightRadius: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  queuedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  queuedDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.blue400,
+  },
+  queuedText: {
+    fontSize: 10,
+    color: colors.blue400,
+    fontWeight: '600',
+  },
+  queuedActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 6,
+  },
+  queuedActionText: {
+    fontSize: 11,
+    color: colors.gray400,
+  },
+  editContainer: {
+    marginTop: 4,
+  },
+  editInput: {
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.4)',
+    borderRadius: 8,
+    padding: 8,
+    color: colors.white,
+    fontSize: 14,
+    minHeight: 40,
+    maxHeight: 120,
+  },
+  editActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 6,
+    alignItems: 'center',
+  },
+  editSaveBtn: {
+    backgroundColor: colors.blue600,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  editSaveBtnText: {
+    color: colors.white,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  editCancelText: {
+    color: colors.gray500,
+    fontSize: 12,
   },
 });
 

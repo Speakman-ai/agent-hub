@@ -1,5 +1,5 @@
 import { useRef, useCallback, useEffect, useState } from 'react';
-import { WS_URL } from '../utils/config';
+import { getWsUrl } from '../utils/config';
 
 const RECONNECT_DELAY = 2000;
 const MAX_RECONNECT_DELAY = 30000;
@@ -18,8 +18,16 @@ export function useWebSocket(onMessage) {
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
+    const url = getWsUrl();
+    if (!url) {
+      // No server configured yet — don't attempt connection
+      setConnected(false);
+      setReconnecting(false);
+      return;
+    }
+
     setReconnecting(true);
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(url);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -70,6 +78,19 @@ export function useWebSocket(onMessage) {
     };
   }, []);
 
+  const reconnect = useCallback(() => {
+    clearTimeout(reconnectTimer.current);
+    clearInterval(pingTimer.current);
+    if (wsRef.current) {
+      wsRef.current.onclose = null; // prevent auto-reconnect
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setConnected(false);
+    reconnectDelay.current = RECONNECT_DELAY;
+    connect();
+  }, [connect]);
+
   useEffect(() => {
     connect();
     return () => {
@@ -87,5 +108,5 @@ export function useWebSocket(onMessage) {
     return false;
   }, []);
 
-  return { send, connected, reconnecting };
+  return { send, connected, reconnecting, reconnect };
 }

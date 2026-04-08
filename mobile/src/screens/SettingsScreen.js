@@ -14,6 +14,468 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
+import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, testConnection, loadOrgs } from '../utils/orgs';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as DocumentPicker from 'expo-document-picker';
+
+// ─── Organizations (Server Connections) Tab ──────────────────
+function OrganizationsSection() {
+  const { handleSwitchOrg } = useApp();
+  const [orgsState, setOrgsState] = useState(() => getOrgs());
+  const [expandedOrgId, setExpandedOrgId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [newForm, setNewForm] = useState({ name: '', color: '#6366f1', remoteUrl: '', apiKey: '' });
+
+  const orgs = orgsState?.orgs || [];
+  const activeOrg = getActiveOrg();
+
+  const COLORS = ['#6366f1', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6'];
+
+  const refreshOrgs = async () => {
+    await loadOrgs();
+    setOrgsState(getOrgs());
+  };
+
+  const handleExpand = (orgId) => {
+    if (expandedOrgId === orgId) {
+      setExpandedOrgId(null);
+      return;
+    }
+    const org = orgs.find((o) => o.id === orgId);
+    if (org) {
+      setEditForm({ name: org.name, color: org.color, remoteUrl: org.remoteUrl || '', apiKey: org.apiKey || '' });
+      setExpandedOrgId(orgId);
+      setTestResult(null);
+    }
+  };
+
+  const handleTest = async (url, apiKey) => {
+    setTesting(true);
+    setTestResult(null);
+    const result = await testConnection(url, apiKey);
+    setTestResult(result);
+    setTesting(false);
+  };
+
+  const handleSave = async () => {
+    if (!editForm.name?.trim()) return;
+    await updateOrg(expandedOrgId, editForm);
+    await refreshOrgs();
+    if (activeOrg?.id === expandedOrgId) {
+      await handleSwitchOrg(expandedOrgId);
+    }
+    setExpandedOrgId(null);
+  };
+
+  const handleDelete = async (orgId) => {
+    if (orgs.length <= 1) {
+      Alert.alert('Cannot Delete', 'You must have at least one server connection.');
+      return;
+    }
+    Alert.alert('Delete Server', 'Are you sure?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete', style: 'destructive',
+        onPress: async () => {
+          const wasActive = activeOrg?.id === orgId;
+          await deleteOrg(orgId);
+          await refreshOrgs();
+          if (wasActive) {
+            const newOrgs = getOrgs();
+            if (newOrgs?.orgs?.[0]) await handleSwitchOrg(newOrgs.orgs[0].id);
+          }
+          setExpandedOrgId(null);
+        },
+      },
+    ]);
+  };
+
+  const handleCreate = async () => {
+    if (!newForm.name?.trim() || !newForm.remoteUrl?.trim()) {
+      Alert.alert('Missing Fields', 'Name and Server URL are required.');
+      return;
+    }
+    await createOrg(newForm);
+    await refreshOrgs();
+    setNewForm({ name: '', color: '#6366f1', remoteUrl: '', apiKey: '' });
+    setShowNewForm(false);
+  };
+
+  const handleSwitch = async (orgId) => {
+    await handleSwitchOrg(orgId);
+    await refreshOrgs();
+  };
+
+  const renderColorPicker = (selectedColor, onSelect) => (
+    <View style={styles.colorRow}>
+      {COLORS.map((c) => (
+        <TouchableOpacity
+          key={c}
+          style={[styles.colorBtn, { backgroundColor: c }, selectedColor === c && styles.colorBtnSelected]}
+          onPress={() => onSelect(c)}
+        />
+      ))}
+    </View>
+  );
+
+  const renderForm = (form, setForm, onTest) => (
+    <View style={styles.orgForm}>
+      <Text style={styles.inputLabel}>Name</Text>
+      <TextInput
+        style={styles.textInput}
+        value={form.name}
+        onChangeText={(v) => setForm((f) => ({ ...f, name: v }))}
+        placeholder="e.g. Production, Home Lab"
+        placeholderTextColor={colors.gray600}
+      />
+      <Text style={[styles.inputLabel, { marginTop: 12 }]}>Color</Text>
+      {renderColorPicker(form.color, (c) => setForm((f) => ({ ...f, color: c })))}
+      <Text style={[styles.inputLabel, { marginTop: 12 }]}>Server URL</Text>
+      <TextInput
+        style={styles.textInput}
+        value={form.remoteUrl}
+        onChangeText={(v) => setForm((f) => ({ ...f, remoteUrl: v }))}
+        placeholder="https://my-server.example.com:3051"
+        placeholderTextColor={colors.gray600}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="url"
+      />
+      <Text style={[styles.inputLabel, { marginTop: 12 }]}>API Key (optional)</Text>
+      <TextInput
+        style={styles.textInput}
+        value={form.apiKey}
+        onChangeText={(v) => setForm((f) => ({ ...f, apiKey: v }))}
+        placeholder="Enter API key if required"
+        placeholderTextColor={colors.gray600}
+        secureTextEntry
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+      <TouchableOpacity
+        style={styles.testBtn}
+        onPress={() => onTest(form.remoteUrl, form.apiKey)}
+        disabled={testing || !form.remoteUrl}
+      >
+        <Text style={styles.testBtnText}>{testing ? 'Testing...' : 'Test Connection'}</Text>
+      </TouchableOpacity>
+      {testResult && (
+        <Text style={[styles.testResultText, { color: testResult.ok ? colors.emerald400 : colors.red400 }]}>
+          {testResult.ok ? '✓ ' : '✕ '}{testResult.message}
+        </Text>
+      )}
+    </View>
+  );
+
+  return (
+    <View>
+      <Text style={styles.sectionTitle}>Server Connections</Text>
+      <Text style={styles.sectionDesc}>Manage your remote Agent Hub server connections.</Text>
+
+      {orgs.map((org) => {
+        const isActive = org.id === activeOrg?.id;
+        const isExpanded = expandedOrgId === org.id;
+
+        return (
+          <View key={org.id} style={styles.orgCard}>
+            <TouchableOpacity style={styles.orgCardHeader} onPress={() => handleExpand(org.id)}>
+              <View style={[styles.orgCardDot, { backgroundColor: org.color }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.orgCardName}>{org.name}</Text>
+                {org.remoteUrl ? (
+                  <Text style={styles.orgCardUrl} numberOfLines={1}>{org.remoteUrl}</Text>
+                ) : (
+                  <Text style={[styles.orgCardUrl, { color: colors.yellow400 }]}>No URL configured</Text>
+                )}
+              </View>
+              {isActive && (
+                <View style={styles.activeBadge}>
+                  <Text style={styles.activeBadgeText}>Active</Text>
+                </View>
+              )}
+              {!isActive && (
+                <TouchableOpacity style={styles.switchBtn} onPress={() => handleSwitch(org.id)}>
+                  <Text style={styles.switchBtnText}>Switch</Text>
+                </TouchableOpacity>
+              )}
+              <Text style={styles.expandChevron}>{isExpanded ? '▴' : '▾'}</Text>
+            </TouchableOpacity>
+
+            {isExpanded && (
+              <View style={styles.orgCardExpanded}>
+                {renderForm(editForm, setEditForm, handleTest)}
+                <View style={styles.orgCardActions}>
+                  <TouchableOpacity
+                    style={[styles.deleteBtn, orgs.length <= 1 && { opacity: 0.3 }]}
+                    onPress={() => handleDelete(org.id)}
+                    disabled={orgs.length <= 1}
+                  >
+                    <Text style={styles.deleteBtnText}>Delete</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+                    <Text style={styles.saveBtnText}>Save Changes</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </View>
+        );
+      })}
+
+      {/* Add new org */}
+      {showNewForm ? (
+        <View style={styles.newOrgCard}>
+          {renderForm(newForm, setNewForm, handleTest)}
+          <View style={styles.orgCardActions}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowNewForm(false)}>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.saveBtn, (!newForm.name?.trim() || !newForm.remoteUrl?.trim()) && { opacity: 0.4 }]}
+              onPress={handleCreate}
+              disabled={!newForm.name?.trim() || !newForm.remoteUrl?.trim()}
+            >
+              <Text style={styles.saveBtnText}>Create</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : (
+        <TouchableOpacity style={styles.addOrgBtn} onPress={() => setShowNewForm(true)}>
+          <Text style={styles.addOrgBtnText}>+ Add Server</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
+// ─── Usage Analytics Tab ─────────────────────────────────────
+function UsageSection() {
+  const [usage, setUsage] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.getUsage()
+      .then(setUsage)
+      .catch(() => setUsage(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const fmtCost = (c) => `$${Number(c || 0).toFixed(2)}`;
+  const fmtDuration = (ms) => {
+    if (!ms) return '0s';
+    const s = ms / 1000;
+    if (s < 60) return `${Math.round(s)}s`;
+    if (s < 3600) return `${(s / 60).toFixed(1)}m`;
+    return `${(s / 3600).toFixed(1)}h`;
+  };
+
+  if (loading) return <Text style={styles.emptyText}>Loading usage data...</Text>;
+  if (!usage || !usage.totals) return <Text style={styles.emptyText}>No usage data available yet.</Text>;
+
+  const maxDailyCost = Math.max(...(usage.byDay || []).map((d) => d.cost || 0), 0.01);
+
+  return (
+    <View>
+      <Text style={styles.sectionTitle}>Usage Analytics</Text>
+
+      {/* Summary cards */}
+      <View style={styles.usageGrid}>
+        <View style={styles.usageCard}>
+          <Text style={[styles.usageValue, { color: colors.emerald400 }]}>{fmtCost(usage.totals.total_cost)}</Text>
+          <Text style={styles.usageLabel}>Total Cost</Text>
+        </View>
+        <View style={styles.usageCard}>
+          <Text style={[styles.usageValue, { color: colors.blue400 }]}>{fmtDuration(usage.totals.total_duration_ms)}</Text>
+          <Text style={styles.usageLabel}>Total Time</Text>
+        </View>
+        <View style={styles.usageCard}>
+          <Text style={styles.usageValue}>{usage.totals.total_turns || 0}</Text>
+          <Text style={styles.usageLabel}>Turns</Text>
+        </View>
+        <View style={styles.usageCard}>
+          <Text style={styles.usageValue}>{usage.totals.count || 0}</Text>
+          <Text style={styles.usageLabel}>Messages</Text>
+        </View>
+      </View>
+
+      {/* By Agent */}
+      {usage.byAgent?.length > 0 && (
+        <View style={{ marginTop: 20 }}>
+          <Text style={styles.subsectionTitle}>By Agent</Text>
+          {usage.byAgent.map((a) => (
+            <View key={a.agent_id} style={styles.agentUsageRow}>
+              <View style={[styles.agentUsageDot, { backgroundColor: a.agent_color || colors.gray500 }]} />
+              <Text style={styles.agentUsageName} numberOfLines={1}>{a.agent_name}</Text>
+              <Text style={[styles.agentUsageStat, { color: colors.emerald400 }]}>{fmtCost(a.total_cost)}</Text>
+              <Text style={styles.agentUsageStat}>{fmtDuration(a.total_duration_ms)}</Text>
+              <Text style={styles.agentUsageStat}>{a.count || 0}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Daily Cost Chart */}
+      {usage.byDay?.length > 0 && (
+        <View style={{ marginTop: 20 }}>
+          <Text style={styles.subsectionTitle}>Daily Cost (30 days)</Text>
+          {usage.byDay.map((d) => (
+            <View key={d.day} style={styles.dailyRow}>
+              <Text style={styles.dailyDate}>{d.day.slice(5)}</Text>
+              <View style={styles.dailyBarContainer}>
+                <View style={[styles.dailyBar, { flex: Math.max((d.cost || 0) / maxDailyCost, 0.01) }]} />
+              </View>
+              <Text style={styles.dailyCost}>{fmtCost(d.cost)}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Recent Sessions */}
+      {usage.recentSessions?.length > 0 && (
+        <View style={{ marginTop: 20 }}>
+          <Text style={styles.subsectionTitle}>Recent Sessions</Text>
+          {usage.recentSessions.slice(0, 10).map((s) => (
+            <View key={s.id} style={styles.recentSessionRow}>
+              <View style={[styles.agentUsageDot, { backgroundColor: s.agent_color || colors.gray500 }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.recentSessionName} numberOfLines={1}>{s.session_name}</Text>
+                <Text style={styles.recentSessionAgent}>{s.agent_name} · {s.message_count} msgs</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={[styles.agentUsageStat, { color: colors.emerald400 }]}>{fmtCost(s.cost)}</Text>
+                <Text style={styles.recentSessionAgent}>{fmtDuration(s.duration_ms)}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ─── Config Backup Tab ───────────────────────────────────────
+function ConfigBackupSection() {
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [importError, setImportError] = useState(null);
+  const [preview, setPreview] = useState(null);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const data = await api.exportConfig();
+      const json = JSON.stringify(data, null, 2);
+      const filename = `agent-hub-export-${new Date().toISOString().split('T')[0]}.json`;
+      const filePath = `${FileSystem.cacheDirectory}${filename}`;
+      await FileSystem.writeAsStringAsync(filePath, json);
+      await Sharing.shareAsync(filePath, { mimeType: 'application/json', dialogTitle: 'Export Agent Hub Config' });
+    } catch (err) {
+      Alert.alert('Export Failed', err.message);
+    }
+    setExporting(false);
+  };
+
+  const handlePickFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: 'application/json' });
+      if (result.canceled) return;
+      const file = result.assets?.[0];
+      if (!file) return;
+      const content = await FileSystem.readAsStringAsync(file.uri);
+      const data = JSON.parse(content);
+      if (!data.version || ![1, 2].includes(data.version)) {
+        setImportError('Invalid export file — missing or unsupported version.');
+        return;
+      }
+      setPreview(data);
+      setImportError(null);
+      setImportResult(null);
+    } catch (err) {
+      setImportError('Failed to read file: ' + err.message);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!preview) return;
+    setImporting(true);
+    setImportError(null);
+    try {
+      const result = await api.importConfig(preview);
+      setImportResult(result);
+      setPreview(null);
+    } catch (err) {
+      setImportError('Import failed: ' + err.message);
+    }
+    setImporting(false);
+  };
+
+  return (
+    <View>
+      <Text style={styles.sectionTitle}>Config Backup</Text>
+
+      {/* Export */}
+      <View style={styles.backupCard}>
+        <Text style={styles.backupCardTitle}>Export</Text>
+        <Text style={styles.backupCardDesc}>
+          Download all agents, crons, rooms, and configuration as a JSON file.
+        </Text>
+        <TouchableOpacity style={styles.saveBtn} onPress={handleExport} disabled={exporting}>
+          <Text style={styles.saveBtnText}>{exporting ? 'Exporting...' : 'Share Export File'}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Import */}
+      <View style={[styles.backupCard, { marginTop: 16 }]}>
+        <Text style={styles.backupCardTitle}>Import</Text>
+        <Text style={styles.backupCardDesc}>
+          Restore configuration from a previously exported JSON file.
+        </Text>
+
+        {!preview ? (
+          <TouchableOpacity style={styles.testBtn} onPress={handlePickFile}>
+            <Text style={styles.testBtnText}>Choose File</Text>
+          </TouchableOpacity>
+        ) : (
+          <View>
+            <View style={styles.previewCard}>
+              <Text style={styles.previewTitle}>Import Preview</Text>
+              {preview.agents && <Text style={styles.previewLine}>Agents: {Array.isArray(preview.agents) ? preview.agents.length : 0}</Text>}
+              {preview.crons && <Text style={styles.previewLine}>Crons: {Array.isArray(preview.crons) ? preview.crons.length : 0}</Text>}
+              {preview.rooms && <Text style={styles.previewLine}>Rooms: {Array.isArray(preview.rooms) ? preview.rooms.length : 0}</Text>}
+              {preview.projects && <Text style={styles.previewLine}>Projects: {Array.isArray(preview.projects) ? preview.projects.length : 0}</Text>}
+              {preview.exportedAt && <Text style={styles.previewLine}>Exported: {new Date(preview.exportedAt).toLocaleString()}</Text>}
+            </View>
+            <View style={styles.orgCardActions}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setPreview(null)}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleImport} disabled={importing}>
+                <Text style={styles.saveBtnText}>{importing ? 'Importing...' : 'Import'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {importResult && (
+          <View style={styles.successBox}>
+            <Text style={styles.successText}>✓ {importResult.message || 'Import complete'}</Text>
+          </View>
+        )}
+
+        {importError && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorBoxText}>✕ {importError}</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
 
 // ─── Heartbeats Tab ─────────────────────────────────────────
 function HeartbeatSection() {
@@ -97,7 +559,7 @@ function HeartbeatSection() {
                   disabled={running[hb.agentId]}
                 >
                   <Text style={styles.smallButtonText}>
-                    {running[hb.agentId] ? '⏳' : '▶'}
+                    {running[hb.agentId] ? '...' : 'Run'}
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -378,7 +840,7 @@ function CronSection() {
                               }}>
                                 {log.status === 'success' ? '✓ Success' :
                                  log.status === 'error' ? '✗ Error' :
-                                 log.status === 'running' ? '⏳ Running' : log.status}
+                                 log.status === 'running' ? 'Running' : log.status}
                               </Text>
                               <Text style={{ fontSize: 10, color: colors.gray500 }}>
                                 {new Date(log.timestamp).toLocaleString()}
@@ -417,7 +879,7 @@ function CronSection() {
                   disabled={running[cronJob.id]}
                 >
                   <Text style={styles.smallButtonText}>
-                    {running[cronJob.id] ? '⏳' : '▶'}
+                    {running[cronJob.id] ? '...' : 'Run'}
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -513,7 +975,7 @@ function SlackSection() {
           disabled={restarting}
         >
           <Text style={styles.headerButtonText}>
-            {restarting ? '⏳ Restarting...' : '🔄 Restart All'}
+            {restarting ? 'Restarting...' : 'Restart All'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -866,13 +1328,16 @@ function AgentConfigSection() {
 
 // ─── Main Settings Screen ───────────────────────────────────
 export default function SettingsScreen() {
-  const [tab, setTab] = useState('heartbeats');
+  const [tab, setTab] = useState('orgs');
 
   const tabs = [
-    { id: 'heartbeats', label: '💓 Heartbeats' },
-    { id: 'crons', label: '⏰ Crons' },
-    { id: 'slack', label: '💬 Slack' },
-    { id: 'agents', label: '🤖 Agents' },
+    { id: 'orgs', label: 'Servers' },
+    { id: 'usage', label: 'Usage' },
+    { id: 'heartbeats', label: 'Heartbeats' },
+    { id: 'crons', label: 'Crons' },
+    { id: 'slack', label: 'Slack' },
+    { id: 'agents', label: 'Agents' },
+    { id: 'config', label: 'Backup' },
   ];
 
   return (
@@ -900,10 +1365,13 @@ export default function SettingsScreen() {
           ))}
         </ScrollView>
 
+        {tab === 'orgs' && <OrganizationsSection />}
+        {tab === 'usage' && <UsageSection />}
         {tab === 'heartbeats' && <HeartbeatSection />}
         {tab === 'crons' && <CronSection />}
         {tab === 'slack' && <SlackSection />}
         {tab === 'agents' && <AgentConfigSection />}
+        {tab === 'config' && <ConfigBackupSection />}
       </ScrollView>
     </SafeAreaView>
   );
@@ -1278,5 +1746,344 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 14,
     color: colors.gray500,
+  },
+  // ─── Organizations styles ─────────────────
+  sectionDesc: {
+    fontSize: 13,
+    color: colors.gray500,
+    marginBottom: 16,
+  },
+  orgCard: {
+    backgroundColor: colors.gray800,
+    borderRadius: 12,
+    marginBottom: 10,
+    overflow: 'hidden',
+  },
+  orgCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 14,
+  },
+  orgCardDot: {
+    width: 16,
+    height: 16,
+    borderRadius: 5,
+  },
+  orgCardName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.white,
+  },
+  orgCardUrl: {
+    fontSize: 11,
+    color: colors.gray500,
+    marginTop: 1,
+  },
+  activeBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  activeBadgeText: {
+    fontSize: 11,
+    color: colors.emerald400,
+    fontWeight: '600',
+  },
+  switchBtn: {
+    backgroundColor: colors.gray700,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
+  switchBtnText: {
+    fontSize: 11,
+    color: colors.gray300,
+    fontWeight: '500',
+  },
+  expandChevron: {
+    color: colors.gray500,
+    fontSize: 12,
+    marginLeft: 4,
+  },
+  orgCardExpanded: {
+    borderTopWidth: 1,
+    borderTopColor: colors.gray700,
+    padding: 14,
+  },
+  orgForm: {},
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.gray400,
+    marginBottom: 6,
+  },
+  textInput: {
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: colors.white,
+  },
+  colorRow: {
+    flexDirection: 'row',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  colorBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+  },
+  colorBtnSelected: {
+    borderWidth: 2,
+    borderColor: colors.white,
+  },
+  testBtn: {
+    marginTop: 12,
+    backgroundColor: colors.gray700,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  testBtnText: {
+    fontSize: 13,
+    color: colors.gray300,
+    fontWeight: '500',
+  },
+  testResultText: {
+    fontSize: 12,
+    marginTop: 8,
+  },
+  orgCardActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 16,
+    gap: 10,
+  },
+  deleteBtn: {
+    backgroundColor: colors.red600,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  deleteBtnText: {
+    color: colors.white,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  saveBtn: {
+    backgroundColor: colors.blue600,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    flex: 1,
+    alignItems: 'center',
+  },
+  saveBtnText: {
+    color: colors.white,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  cancelBtn: {
+    backgroundColor: colors.gray700,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  cancelBtnText: {
+    color: colors.gray300,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  newOrgCard: {
+    backgroundColor: colors.gray800,
+    borderWidth: 1,
+    borderStyle: 'dotted',
+    borderColor: colors.gray600,
+    borderRadius: 12,
+    padding: 14,
+    marginTop: 6,
+  },
+  addOrgBtn: {
+    borderWidth: 1,
+    borderStyle: 'dotted',
+    borderColor: colors.gray700,
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  addOrgBtnText: {
+    fontSize: 14,
+    color: colors.gray500,
+    fontWeight: '500',
+  },
+  // ─── Usage styles ─────────────────────────
+  subsectionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.gray400,
+    marginBottom: 10,
+  },
+  usageGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 10,
+  },
+  usageCard: {
+    backgroundColor: colors.gray800,
+    borderRadius: 10,
+    padding: 14,
+    flexBasis: '46%',
+    flexGrow: 1,
+  },
+  usageValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: colors.white,
+  },
+  usageLabel: {
+    fontSize: 11,
+    color: colors.gray500,
+    marginTop: 2,
+  },
+  agentUsageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+  },
+  agentUsageDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  agentUsageName: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.gray300,
+  },
+  agentUsageStat: {
+    fontSize: 12,
+    color: colors.gray400,
+    fontFamily: 'monospace',
+    minWidth: 50,
+    textAlign: 'right',
+  },
+  dailyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  dailyDate: {
+    fontSize: 11,
+    color: colors.gray500,
+    width: 40,
+    fontFamily: 'monospace',
+  },
+  dailyBarContainer: {
+    flex: 1,
+    height: 14,
+    backgroundColor: colors.gray800,
+    borderRadius: 3,
+    overflow: 'hidden',
+    flexDirection: 'row',
+  },
+  dailyBar: {
+    height: 14,
+    backgroundColor: 'rgba(16, 185, 129, 0.5)',
+    borderRadius: 3,
+  },
+  dailyCost: {
+    fontSize: 11,
+    color: colors.emerald400,
+    width: 50,
+    textAlign: 'right',
+    fontFamily: 'monospace',
+  },
+  recentSessionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+  },
+  recentSessionName: {
+    fontSize: 13,
+    color: colors.gray200,
+    fontWeight: '500',
+  },
+  recentSessionAgent: {
+    fontSize: 11,
+    color: colors.gray500,
+    marginTop: 1,
+  },
+  // ─── Config Backup styles ─────────────────
+  backupCard: {
+    backgroundColor: colors.gray800,
+    borderRadius: 12,
+    padding: 16,
+  },
+  backupCardTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.white,
+    marginBottom: 6,
+  },
+  backupCardDesc: {
+    fontSize: 12,
+    color: colors.gray500,
+    marginBottom: 12,
+  },
+  previewCard: {
+    backgroundColor: colors.gray900,
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 10,
+  },
+  previewTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.gray300,
+    marginBottom: 8,
+  },
+  previewLine: {
+    fontSize: 12,
+    color: colors.gray400,
+    marginBottom: 3,
+  },
+  successBox: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 12,
+  },
+  successText: {
+    color: colors.emerald400,
+    fontSize: 13,
+  },
+  errorBox: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 12,
+  },
+  errorBoxText: {
+    color: colors.red400,
+    fontSize: 13,
   },
 });
