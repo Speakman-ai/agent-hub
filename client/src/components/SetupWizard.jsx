@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Bot, Rocket, Monitor, Cloud, Loader2, Plug } from 'lucide-react';
 import { getApiBase } from '../utils/connection.js';
-import { createOrg, switchOrg, getOrgs } from '../utils/orgs.js';
+import { createOrg, switchOrg, getOrgs, getActiveOrg, updateOrg } from '../utils/orgs.js';
 import { testConnection } from '../utils/connection.js';
 
 const STEP_LABELS = ['Welcome', 'Organization', 'Configure Claude', 'First Project'];
@@ -89,15 +89,26 @@ export default function SetupWizard({ onComplete, setupStatus }) {
 
   const handleOrgContinue = () => {
     if (!orgName.trim()) return;
-    // Create org and switch to it (syncs connection config)
-    const org = createOrg({
-      name: orgName.trim(),
-      mode: orgMode,
-      remoteUrl: orgRemoteUrl,
-      apiKey: orgApiKey,
-      color: '#6366f1',
-    });
-    switchOrg(org.id);
+    // If an org already exists (e.g. the legacy-migrated "Default"), update it
+    // in place so first-run setup doesn't leave a stale duplicate behind.
+    const existing = getActiveOrg();
+    if (existing) {
+      updateOrg(existing.id, {
+        name: orgName.trim(),
+        mode: orgMode,
+        remoteUrl: orgRemoteUrl,
+        apiKey: orgApiKey,
+      });
+    } else {
+      const org = createOrg({
+        name: orgName.trim(),
+        mode: orgMode,
+        remoteUrl: orgRemoteUrl,
+        apiKey: orgApiKey,
+        color: '#6366f1',
+      });
+      switchOrg(org.id);
+    }
     setStep(3);
   };
 

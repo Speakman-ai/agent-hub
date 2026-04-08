@@ -15,7 +15,7 @@ import SetupWizard from './components/SetupWizard.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 import { MessageCircle, Info, CheckCircle, AlertTriangle } from 'lucide-react';
-import { migrateFromLegacy, getActiveOrg } from './utils/orgs.js';
+import { migrateFromLegacy, getActiveOrg, getOrgs } from './utils/orgs.js';
 import { getApiBase } from './utils/connection.js';
 
 export default function App() {
@@ -563,7 +563,17 @@ export default function App() {
       .then((r) => r.json())
       .then((status) => {
         setSetupStatus(status);
-        if (status.firstRun) setShowSetup(true);
+        if (status.firstRun) {
+          // Only show the full setup wizard on a true first run (no orgs yet).
+          // If orgs already exist, the empty state just means this org has no
+          // projects — open the project wizard instead so we don't re-run org
+          // creation and end up making a duplicate org every time.
+          if (!getOrgs()) {
+            setShowSetup(true);
+          } else {
+            setShowWizard(true);
+          }
+        }
       })
       .catch(() => {}); // server may not have endpoint yet — ignore
 
