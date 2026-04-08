@@ -47,8 +47,8 @@ export function saveConnectionConfig(config) {
 export function getApiBase() {
   const config = getConnectionConfig();
   if (config.mode === 'remote' && config.remoteUrl) {
-    // Strip trailing slash from the URL
-    const base = config.remoteUrl.replace(/\/+$/, '');
+    // Strip trailing whitespace and slashes from the URL
+    const base = config.remoteUrl.trim().replace(/\/+$/, '');
     return `${base}/api`;
   }
   return '/api'; // local mode — same-origin
@@ -60,6 +60,7 @@ export function getWsUrl() {
   if (config.mode === 'remote' && config.remoteUrl) {
     // Convert http(s) to ws(s)
     let wsUrl = config.remoteUrl
+      .trim()
       .replace(/\/+$/, '')
       .replace(/^http/, 'ws');
     if (config.apiKey) {
@@ -82,7 +83,7 @@ export function getAuthHeaders() {
 
 /** Test connection to a remote server. Returns { ok, message, serverInfo? }. */
 export async function testConnection(url, apiKey) {
-  const base = url.replace(/\/+$/, '');
+  const base = url.trim().replace(/\/+$/, '');
   const headers = {};
   if (apiKey) headers['X-API-Key'] = apiKey;
 
