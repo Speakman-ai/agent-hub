@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-
-const API_BASE = '/api';
+import { getApiBase, getAuthHeaders, getConnectionConfig } from '../utils/connection.js';
+import ServerBrowser from './ServerBrowser.jsx';
 
 const COLOR_PRESETS = [
   '#6366F1', '#8B5CF6', '#EC4899', '#EF4444',
@@ -102,8 +102,14 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
   const [activeTab, setActiveTab] = useState('SOUL.md');
   const [creating, setCreating] = useState(false);
 
+  const [showBrowser, setShowBrowser] = useState(false);
+
   const analyzeIdRef = useRef(null);
   const terminalRef = useRef(null);
+
+  // Determine if we're in remote mode (server browser needed)
+  const isRemote = getConnectionConfig().mode === 'remote';
+  const isElectronLocal = window.electronAPI?.isElectron && !isRemote;
 
   // Auto-derive name and id from path
   useEffect(() => {
@@ -187,9 +193,9 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
     setAnalysisError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/projects/analyze`, {
+      const res = await fetch(`${getApiBase()}/projects/analyze`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ cwd: path }),
       });
       if (!res.ok) {
@@ -208,9 +214,9 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
     setCreating(true);
     try {
       const agents = (analysisResult?.agents || []).filter((_, i) => selectedAgents[i]);
-      const res = await fetch(`${API_BASE}/projects/onboard`, {
+      const res = await fetch(`${getApiBase()}/projects/onboard`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           project: { id: projectId, name, cwd: path, color },
           agents,
@@ -270,16 +276,26 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                   className="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
                   autoFocus
                 />
-                {window.electronAPI?.isElectron && (
+                {isElectronLocal ? (
                   <button
                     onClick={async () => {
                       const dir = await window.electronAPI.selectDirectory();
                       if (dir) setPath(dir);
                     }}
                     className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
-                    title="Browse..."
+                    title="Browse local filesystem..."
                   >
-                    📂 Browse
+                    <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                    Browse
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setShowBrowser(true)}
+                    className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
+                    title={isRemote ? 'Browse remote server filesystem...' : 'Browse server filesystem...'}
+                  >
+                    <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                    Browse{isRemote ? ' Server' : ''}
                   </button>
                 )}
               </div>
@@ -591,6 +607,13 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
             </div>
           </div>
         )}
+        {/* Server-side directory browser modal */}
+        <ServerBrowser
+          isOpen={showBrowser}
+          onClose={() => setShowBrowser(false)}
+          onSelect={(dir) => setPath(dir)}
+          initialPath={path || ''}
+        />
       </div>
     </div>
   );

@@ -179,4 +179,7 @@ export const api = {
   exportConfig: () => fetchJSON('/config/export'),
   importConfig: (data) =>
     fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Directory browsing (server-side)
+  browse: (path) => fetchJSON(`/browse?path=${encodeURIComponent(path || '')}`),
 };
