@@ -480,6 +480,11 @@ export default function App() {
       case 'analyze-error':
         window.dispatchEvent(new CustomEvent('analyze-ws', { detail: data }));
         break;
+      case 'clone-progress':
+      case 'clone-complete':
+      case 'clone-error':
+        window.dispatchEvent(new CustomEvent('clone-ws', { detail: data }));
+        break;
       case 'babysit_complete': {
         const toast = {
           id: `babysit-done-${Date.now()}`,

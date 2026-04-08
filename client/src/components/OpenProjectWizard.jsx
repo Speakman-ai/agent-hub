@@ -81,13 +81,25 @@ function StepIndicator({ currentStep }) {
 export default function OpenProjectWizard({ onClose, onProjectCreated }) {
   const [step, setStep] = useState(1);
 
-  // Step 1 state
+  // Step 1 mode: 'local' or 'clone'
+  const [sourceMode, setSourceMode] = useState('local');
+
+  // Step 1 state (shared)
   const [path, setPath] = useState('');
   const [name, setName] = useState('');
   const [projectId, setProjectId] = useState('');
   const [color, setColor] = useState(COLOR_PRESETS[0]);
   const [nameManuallyEdited, setNameManuallyEdited] = useState(false);
   const [idManuallyEdited, setIdManuallyEdited] = useState(false);
+
+  // Clone-specific state
+  const [cloneUrl, setCloneUrl] = useState('');
+  const [cloneTarget, setCloneTarget] = useState('');
+  const [cloning, setCloning] = useState(false);
+  const [cloneLog, setCloneLog] = useState([]);
+  const [cloneError, setCloneError] = useState(null);
+  const [showTargetBrowser, setShowTargetBrowser] = useState(false);
+  const cloneIdRef = useRef(null);
 
   // Step 2 state
   const [analyzing, setAnalyzing] = useState(false);
@@ -111,16 +123,18 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
   const isRemote = getConnectionConfig().mode === 'remote';
   const isElectronLocal = window.electronAPI?.isElectron && !isRemote;
 
-  // Auto-derive name and id from path
+  // Auto-derive name and id from path or clone URL
   useEffect(() => {
     if (!nameManuallyEdited) {
-      const derived = deriveNameFromPath(path);
-      setName(derived);
+      const source = sourceMode === 'clone'
+        ? cloneUrl.replace(/\.git$/, '').split('/').pop() || ''
+        : deriveNameFromPath(path);
+      setName(source);
       if (!idManuallyEdited) {
-        setProjectId(deriveIdFromName(derived));
+        setProjectId(deriveIdFromName(source));
       }
     }
-  }, [path, nameManuallyEdited, idManuallyEdited]);
+  }, [path, cloneUrl, sourceMode, nameManuallyEdited, idManuallyEdited]);
 
   // Auto-derive id from name
   useEffect(() => {
@@ -134,7 +148,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
     if (terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
-  }, [progressText]);
+  }, [progressText, cloneLog]);
 
   // Escape key closes modal
   useEffect(() => {
@@ -183,6 +197,60 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
     window.addEventListener('analyze-ws', handler);
     return () => window.removeEventListener('analyze-ws', handler);
   }, []);
+
+  // WebSocket events for clone
+  useEffect(() => {
+    const handler = (e) => {
+      const data = e.detail;
+      if (data.cloneId !== cloneIdRef.current) return;
+      if (data.type === 'clone-progress') {
+        setCloneLog((prev) => [...prev.slice(-29), data.message]);
+      }
+      if (data.type === 'clone-complete') {
+        setCloning(false);
+        setPath(data.path);
+        // Auto-proceed to analyze after successful clone
+        setCloneLog((prev) => [...prev, '✓ Clone complete! Starting analysis...']);
+      }
+      if (data.type === 'clone-error') {
+        setCloning(false);
+        setCloneError(data.error || 'Clone failed.');
+      }
+    };
+    window.addEventListener('clone-ws', handler);
+    return () => window.removeEventListener('clone-ws', handler);
+  }, []);
+
+  const handleClone = useCallback(async () => {
+    setCloning(true);
+    setCloneLog([]);
+    setCloneError(null);
+
+    try {
+      const res = await fetch(`${getApiBase()}/projects/clone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ url: cloneUrl, targetDir: cloneTarget || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        // 409 = directory already exists, offer to use it
+        if (res.status === 409 && data.existingPath) {
+          setCloning(false);
+          setPath(data.existingPath);
+          setCloneError(null);
+          setCloneLog([`Repository already cloned at ${data.existingPath}. Using existing directory.`]);
+          return;
+        }
+        throw new Error(data.error || `Clone request failed: ${res.status}`);
+      }
+      cloneIdRef.current = data.cloneId;
+      setCloneLog(['Starting git clone...']);
+    } catch (err) {
+      setCloning(false);
+      setCloneError(err.message);
+    }
+  }, [cloneUrl, cloneTarget]);
 
   const handleAnalyze = useCallback(async () => {
     setStep(2);
@@ -262,45 +330,155 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
 
         <StepIndicator currentStep={step} />
 
-        {/* Step 1: Select Folder */}
+        {/* Step 1: Select Folder or Clone */}
         {step === 1 && (
           <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Project Path</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={path}
-                  onChange={(e) => setPath(e.target.value)}
-                  placeholder="/path/to/your/project"
-                  className="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
-                  autoFocus
-                />
-                {isElectronLocal ? (
-                  <button
-                    onClick={async () => {
-                      const dir = await window.electronAPI.selectDirectory();
-                      if (dir) setPath(dir);
-                    }}
-                    className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
-                    title="Browse local filesystem..."
-                  >
-                    <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
-                    Browse
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => setShowBrowser(true)}
-                    className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
-                    title={isRemote ? 'Browse remote server filesystem...' : 'Browse server filesystem...'}
-                  >
-                    <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
-                    Browse{isRemote ? ' Server' : ''}
-                  </button>
-                )}
-              </div>
+            {/* Source mode toggle */}
+            <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
+              <button
+                onClick={() => setSourceMode('local')}
+                className={`flex-1 px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                  sourceMode === 'local'
+                    ? 'bg-gray-700 text-white'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                Local Directory
+              </button>
+              <button
+                onClick={() => setSourceMode('clone')}
+                className={`flex-1 px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                  sourceMode === 'clone'
+                    ? 'bg-gray-700 text-white'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor"><path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
+                Clone from GitHub
+              </button>
             </div>
 
+            {/* Local directory mode */}
+            {sourceMode === 'local' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Project Path</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={path}
+                    onChange={(e) => setPath(e.target.value)}
+                    placeholder="/path/to/your/project"
+                    className="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
+                    autoFocus
+                  />
+                  {isElectronLocal ? (
+                    <button
+                      onClick={async () => {
+                        const dir = await window.electronAPI.selectDirectory();
+                        if (dir) setPath(dir);
+                      }}
+                      className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
+                      title="Browse local filesystem..."
+                    >
+                      <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                      Browse
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setShowBrowser(true)}
+                      className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
+                      title={isRemote ? 'Browse remote server filesystem...' : 'Browse server filesystem...'}
+                    >
+                      <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                      Browse{isRemote ? ' Server' : ''}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Clone from GitHub mode */}
+            {sourceMode === 'clone' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Repository URL</label>
+                  <input
+                    type="text"
+                    value={cloneUrl}
+                    onChange={(e) => setCloneUrl(e.target.value)}
+                    placeholder="https://github.com/org/repo or git@github.com:org/repo.git"
+                    className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors font-mono"
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                    Clone Into <span className="text-gray-500 font-normal">(optional — defaults to ~/projects)</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={cloneTarget}
+                      onChange={(e) => setCloneTarget(e.target.value)}
+                      placeholder="~/projects"
+                      className="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
+                    />
+                    {isElectronLocal ? (
+                      <button
+                        onClick={async () => {
+                          const dir = await window.electronAPI.selectDirectory();
+                          if (dir) setCloneTarget(dir);
+                        }}
+                        className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
+                      >
+                        <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                        Browse
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setShowTargetBrowser(true)}
+                        className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
+                      >
+                        <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                        Browse{isRemote ? ' Server' : ''}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Clone progress */}
+                {(cloning || cloneLog.length > 0) && (
+                  <div
+                    ref={terminalRef}
+                    className="bg-gray-950 font-mono text-xs text-green-400 p-3 rounded-lg max-h-32 overflow-y-auto whitespace-pre-wrap"
+                  >
+                    {cloneLog.map((line, i) => (
+                      <div key={i} className={i === cloneLog.length - 1 && cloning ? 'text-green-300' : 'text-green-400/60'}>
+                        {i === cloneLog.length - 1 && cloning ? '▸ ' : '  '}{line}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Clone error */}
+                {cloneError && (
+                  <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-sm text-red-300">
+                    {cloneError}
+                  </div>
+                )}
+
+                {/* Clone success: show resolved path */}
+                {!cloning && path && sourceMode === 'clone' && !cloneError && cloneLog.length > 0 && (
+                  <div className="bg-emerald-900/20 border border-emerald-700/50 rounded-lg p-3 text-sm text-emerald-300 flex items-center gap-2">
+                    <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                    Cloned to: <span className="font-mono text-xs">{path}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Shared fields: Name, ID, Color */}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">Name</label>
@@ -364,13 +542,31 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
             </div>
 
             <div className="pt-2">
-              <button
-                onClick={handleAnalyze}
-                disabled={!path.trim()}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-4 rounded-lg text-sm transition-colors disabled:cursor-not-allowed"
-              >
-                Analyze Project
-              </button>
+              {sourceMode === 'local' ? (
+                <button
+                  onClick={handleAnalyze}
+                  disabled={!path.trim()}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-4 rounded-lg text-sm transition-colors disabled:cursor-not-allowed"
+                >
+                  Analyze Project
+                </button>
+              ) : !path ? (
+                <button
+                  onClick={handleClone}
+                  disabled={!cloneUrl.trim() || cloning}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-4 rounded-lg text-sm transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {cloning && <Spinner size={4} />}
+                  {cloning ? 'Cloning...' : 'Clone Repository'}
+                </button>
+              ) : (
+                <button
+                  onClick={handleAnalyze}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2.5 px-4 rounded-lg text-sm transition-colors"
+                >
+                  Analyze Project
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -607,12 +803,18 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
             </div>
           </div>
         )}
-        {/* Server-side directory browser modal */}
+        {/* Server-side directory browser modals */}
         <ServerBrowser
           isOpen={showBrowser}
           onClose={() => setShowBrowser(false)}
           onSelect={(dir) => setPath(dir)}
           initialPath={path || ''}
+        />
+        <ServerBrowser
+          isOpen={showTargetBrowser}
+          onClose={() => setShowTargetBrowser(false)}
+          onSelect={(dir) => setCloneTarget(dir)}
+          initialPath={cloneTarget || ''}
         />
       </div>
     </div>

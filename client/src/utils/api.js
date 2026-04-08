@@ -182,4 +182,8 @@ export const api = {
 
   // Directory browsing (server-side)
   browse: (path) => fetchJSON(`/browse?path=${encodeURIComponent(path || '')}`),
+
+  // Clone from GitHub
+  cloneRepo: (url, targetDir) =>
+    fetchJSON('/projects/clone', { method: 'POST', body: JSON.stringify({ url, targetDir }) }),
 };
