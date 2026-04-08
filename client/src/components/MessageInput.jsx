@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 
-export default function MessageInput({ onSend, onBackgroundSend, onCancel, disabled, isProcessing, queueLength = 0, agentColor, skills }) {
+export default function MessageInput({ onSend, onCancel, disabled, isProcessing, queueLength = 0, agentColor, skills }) {
   const [value, setValue] = useState('');
   const [images, setImages] = useState([]); // [{id, name, dataUrl}]
   const [dragOver, setDragOver] = useState(false);
@@ -146,14 +146,6 @@ export default function MessageInput({ onSend, onBackgroundSend, onCancel, disab
     closeSlash();
   };
 
-  const handleBackgroundSubmit = () => {
-    const trimmed = value.trim();
-    if (!trimmed || disabled || !onBackgroundSend) return;
-    onBackgroundSend(trimmed);
-    setValue('');
-    setImages([]);
-    closeSlash();
-  };
 
   const handleKeyDown = (e) => {
     // Slash-command autocomplete navigation
@@ -352,19 +344,6 @@ export default function MessageInput({ onSend, onBackgroundSend, onCancel, disab
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-            </svg>
-          </button>
-        )}
-        {/* Background send button */}
-        {onBackgroundSend && value.trim() && !isProcessing && (
-          <button
-            onClick={handleBackgroundSubmit}
-            disabled={disabled || !value.trim()}
-            className="px-3 py-3 rounded-xl font-medium text-gray-400 hover:text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-700 active:scale-95"
-            title="Run in background (close browser, check back later)"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
             </svg>
           </button>
         )}

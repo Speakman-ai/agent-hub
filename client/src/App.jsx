@@ -879,22 +879,6 @@ export default function App() {
     });
   };
 
-  const handleBackgroundSend = async (content) => {
-    if (!activeAgentId || !content.trim()) return;
-    try {
-      const result = await api.createTask(activeAgentId, content.trim());
-      // Add a toast notification
-      setToasts((prev) => [...prev, {
-        id: `bg-task-${result.taskId}`,
-        type: 'info',
-        message: `Background task started — check back later for results`,
-        duration: 5000,
-      }]);
-    } catch (err) {
-      console.error('Failed to create background task:', err);
-    }
-  };
-
   const isProcessing = thinking || !!streamingContent;
 
   const isElectron = !!window.electronAPI?.isElectron;
@@ -1100,7 +1084,6 @@ export default function App() {
             {/* Input */}
             <MessageInput
               onSend={handleSend}
-              onBackgroundSend={handleBackgroundSend}
               onCancel={handleCancel}
               disabled={!activeAgentId || !connected}
               isProcessing={isProcessing}
