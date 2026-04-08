@@ -578,7 +578,7 @@ export default function App() {
   // Check setup status + load projects on mount
   useEffect(() => {
     // Check first-run status
-    fetch(`${getApiBase()}/setup/status`)
+    fetch(`${getApiBase()}/setup/status`, { headers: getAuthHeaders() })
       .then((r) => r.json())
       .then((status) => {
         setSetupStatus(status);

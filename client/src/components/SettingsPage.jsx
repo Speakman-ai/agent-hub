@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
-import { saveConnectionConfig, testConnection } from '../utils/connection.js';
+import { saveConnectionConfig, testConnection, getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, switchOrg } from '../utils/orgs.js';
 import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft } from 'lucide-react';
 
@@ -1241,6 +1241,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     try {
                       const res = await fetch(`${getApiBase()}/api/upload`, {
                         method: 'POST',
+                        headers: getAuthHeaders(),
                         body: formData,
                       });
                       const data = await res.json();
@@ -1466,6 +1467,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                               try {
                                 const res = await fetch(`${getApiBase()}/api/upload`, {
                                   method: 'POST',
+                                  headers: getAuthHeaders(),
                                   body: formData,
                                 });
                                 const data = await res.json();

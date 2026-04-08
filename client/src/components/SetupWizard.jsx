@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Bot, Rocket, Monitor, Cloud, Loader2, Plug } from 'lucide-react';
-import { getApiBase } from '../utils/connection.js';
+import { getApiBase, getAuthHeaders } from '../utils/connection.js';
 import { createOrg, switchOrg, getOrgs, getActiveOrg, updateOrg } from '../utils/orgs.js';
 import { testConnection } from '../utils/connection.js';
 
@@ -130,7 +130,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
     try {
       const res = await fetch(`${getApiBase()}/setup/configure`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           claudeBin: claudeEnabled ? claudePath : '',
         }),
