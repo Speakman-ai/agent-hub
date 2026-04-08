@@ -97,6 +97,10 @@ const config = {
   /** Conference room per-agent timeout (ms) */
   conferenceTimeoutMs: resolveInt(null, 'conferenceTimeoutMs', 10 * 60 * 1000),
 
+  // ── Auth ───────────────────────────────────────────────────────
+  /** Optional API key for securing remote access */
+  apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
+
   // ── Slack ──────────────────────────────────────────────────────
   slackWebhookUrl: process.env.SLACK_WEBHOOK_URL || fileConfig.slackWebhookUrl || null,
 

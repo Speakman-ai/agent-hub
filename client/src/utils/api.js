@@ -1,9 +1,15 @@
-const API_BASE = '/api';
+import { getApiBase, getAuthHeaders } from './connection.js';
 
 async function fetchJSON(url, options = {}) {
-  const res = await fetch(`${API_BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
+  const base = getApiBase();
+  const authHeaders = getAuthHeaders();
+  const res = await fetch(`${base}${url}`, {
     ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders,
+      ...options.headers,
+    },
   });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
@@ -18,7 +24,10 @@ export const api = {
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteProject: (projectId) =>
-    fetch(`${API_BASE}/projects/${projectId}`, { method: 'DELETE' }).then((res) => {
+    fetch(`${getApiBase()}/projects/${projectId}`, {
+      method: 'DELETE',
+      headers: { ...getAuthHeaders() },
+    }).then((res) => {
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       return null;
     }),
@@ -69,7 +78,10 @@ export const api = {
       body: JSON.stringify(data),
     }),
   deleteAgent: (agentId) =>
-    fetch(`${API_BASE}/agents/${agentId}`, { method: 'DELETE' }).then((res) => {
+    fetch(`${getApiBase()}/agents/${agentId}`, {
+      method: 'DELETE',
+      headers: { ...getAuthHeaders() },
+    }).then((res) => {
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       return null;
     }),
@@ -117,6 +129,8 @@ export const api = {
   getRoomMessages: (roomId) => fetchJSON(`/rooms/${roomId}/messages`),
   summarizeRoom: (roomId) =>
     fetchJSON(`/rooms/${roomId}/summarize`, { method: 'POST' }),
+  getProjectRoom: (projectId) =>
+    fetchJSON(`/projects/${projectId}/room`),
 
   // Usage
   getUsage: () => fetchJSON('/usage'),

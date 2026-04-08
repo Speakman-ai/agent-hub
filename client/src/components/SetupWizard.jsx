@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 
 const API_BASE = '/api';
 
-const STEP_LABELS = ['Welcome', 'Configure Tools', 'First Project'];
+const STEP_LABELS = ['Welcome', 'Configure Claude', 'First Project'];
 
 function StepIndicator({ currentStep }) {
   return (
@@ -73,14 +73,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   const [error, setError] = useState(null);
 
   const claudeEngine = setupStatus?.engines?.['claude-code'] || {};
-  const cursorEngine = setupStatus?.engines?.['cursor-agent'] || {};
 
   const [claudePath, setClaudePath] = useState(claudeEngine.path || '');
-  const [cursorPath, setCursorPath] = useState(cursorEngine.path || '');
   const [claudeEnabled, setClaudeEnabled] = useState(claudeEngine.available || false);
-  const [cursorEnabled, setCursorEnabled] = useState(cursorEngine.available || false);
-
-  const atLeastOneEnabled = claudeEnabled || cursorEnabled;
 
   const handleSaveAndContinue = async () => {
     setSaving(true);
@@ -91,7 +86,6 @@ export default function SetupWizard({ onComplete, setupStatus }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           claudeBin: claudeEnabled ? claudePath : '',
-          cursorBin: cursorEnabled ? cursorPath : '',
         }),
       });
       if (!res.ok) {
@@ -143,7 +137,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
                 Configure Your Tools
               </h1>
               <p className="text-gray-400 text-sm">
-                Agent Hub works with Claude Code and Cursor Agent. Enable at least one.
+                Agent Hub uses Claude Code to power your AI agents. Let's make sure it's set up.
               </p>
             </div>
 
@@ -186,49 +180,10 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               </div>
             </div>
 
-            {/* Cursor Agent Card */}
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg">🟢</span>
-                  <span className="font-medium text-white text-sm">Cursor Agent</span>
-                </div>
-                <ToggleSwitch enabled={cursorEnabled} onChange={setCursorEnabled} />
-              </div>
-              <div className="flex items-center gap-1.5 text-xs">
-                {cursorEngine.available ? (
-                  <>
-                    <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span className="text-emerald-400">Detected at {cursorEngine.path}</span>
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-3.5 h-3.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                    <span className="text-red-400">Not found</span>
-                  </>
-                )}
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">Binary Path</label>
-                <input
-                  type="text"
-                  value={cursorPath}
-                  onChange={(e) => setCursorPath(e.target.value)}
-                  placeholder="/usr/local/bin/agent"
-                  disabled={!cursorEnabled}
-                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-mono"
-                />
-              </div>
-            </div>
-
-            {/* Warning if neither enabled */}
-            {!atLeastOneEnabled && (
+            {/* Warning if not enabled */}
+            {!claudeEnabled && (
               <p className="text-yellow-400 text-xs text-center">
-                You must enable at least one tool to continue.
+                Claude Code must be enabled to continue.
               </p>
             )}
 
@@ -249,7 +204,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               </button>
               <button
                 onClick={handleSaveAndContinue}
-                disabled={!atLeastOneEnabled || saving}
+                disabled={!claudeEnabled || saving}
                 className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {saving && (

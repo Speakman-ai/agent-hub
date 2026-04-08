@@ -1,6 +1,6 @@
 import { useRef, useCallback, useEffect, useState } from 'react';
+import { getWsUrl } from '../utils/connection.js';
 
-const WS_URL = `ws://${window.location.hostname}:3051`;
 const RECONNECT_DELAY = 2000;
 const MAX_RECONNECT_DELAY = 30000;
 const PING_INTERVAL = 30000;
@@ -19,7 +19,7 @@ export function useWebSocket(onMessage) {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     setReconnecting(true);
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(getWsUrl());
     wsRef.current = ws;
 
     ws.onopen = () => {

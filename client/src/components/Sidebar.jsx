@@ -239,18 +239,45 @@ export default function Sidebar({
 
                       return topLevel.map((agent) => renderAgent(agent, 0));
                     })()}
+
+                    {/* Project conference room */}
+                    {(() => {
+                      const projectRoom = rooms.find((r) => r.project_id === project.id);
+                      if (!projectRoom) return null;
+                      return (
+                        <button
+                          onClick={() => {
+                            onSelectRoom(projectRoom.id);
+                            onNavigate('room');
+                          }}
+                          className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                            activeRoomId === projectRoom.id && currentView === 'room'
+                              ? 'bg-gray-800 text-white'
+                              : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                          }`}
+                        >
+                          <span className="flex-shrink-0">🏢</span>
+                          <span className="truncate">Conference Room</span>
+                          <span className="text-gray-600 text-xs ml-auto">{projectRoom.agents?.length || 0}</span>
+                        </button>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
             );
           })}
 
-          {/* Conference Rooms */}
+          {/* Ad-hoc Conference Rooms (not tied to a project) */}
+          {(() => {
+            const adHocRooms = rooms.filter((r) => !r.project_id);
+            if (adHocRooms.length === 0 && !onNewRoom) return null;
+            return (
           <div className="mt-4">
             <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
               Conference Rooms
             </div>
-            {rooms.map((room) => (
+            {adHocRooms.map((room) => (
               <div
                 key={room.id}
                 onMouseEnter={() => setHoveredRoom(room.id)}
@@ -307,6 +334,8 @@ export default function Sidebar({
               + New Room
             </button>
           </div>
+            );
+          })()}
         </div>
       </div>
 

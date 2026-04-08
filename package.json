@@ -13,10 +13,14 @@
     "install:all": "npm install && cd server && npm install && cd ../client && npm install && cd ../mobile && npm install",
     "dev:mobile": "cd mobile && expo start",
     "mobile": "cd mobile && expo start",
-    "electron:dev": "NODE_ENV=development concurrently \"npm run dev:server\" \"npm run dev:client\" \"sleep 3 && npx electron .\"",
+    "electron:dev": "NODE_ENV=development concurrently \"npm run dev:client\" \"sleep 3 && npx electron .\"",
     "electron:build": "npm run build && npx electron-builder --mac",
     "electron:start": "npx electron .",
-    "electron:pack": "npm run build && npx electron-builder --dir"
+    "electron:pack": "npm run build && npx electron-builder --dir",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
   },
   "build": {
     "appId": "com.agenthub.app",
@@ -30,29 +34,37 @@
       "client/dist/**/*",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "server/node_modules",
-        "to": "server/node_modules",
-        "filter": ["**/*"]
-      }
+    "asarUnpack": [
+      "server/**/*",
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/bindings/**/*",
+      "node_modules/file-uri-to-path/**/*"
     ],
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": null,
       "category": "public.app-category.developer-tools"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Development"
     },
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     }
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
-    "electron": "^35.0.0",
+    "electron": "^35.7.5",
     "electron-builder": "^26.0.0"
   }
 }

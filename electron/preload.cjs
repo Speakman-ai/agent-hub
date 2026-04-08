@@ -14,4 +14,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** Platform string (darwin, win32, linux). */
   platform: process.platform,
+
+  /** Read the connection config from the main process (file-backed). */
+  getConnectionConfig: () => ipcRenderer.sendSync('get-connection-config'),
+
+  /** Save connection config to the main process (file-backed). */
+  saveConnectionConfig: (config) => ipcRenderer.sendSync('save-connection-config', config),
 });

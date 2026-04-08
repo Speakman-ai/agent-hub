@@ -10,37 +10,87 @@ import { app, BrowserWindow, dialog, ipcMain, shell, Menu } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { fork } from 'child_process';
-import { mkdirSync } from 'fs';
+import { mkdirSync, createWriteStream, readFileSync, writeFileSync, existsSync } from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const isDev = process.env.NODE_ENV === 'development';
 
-// Use platform-appropriate user data directory
-const USER_DATA = path.join(app.getPath('userData'), 'data');
+// Use platform-appropriate user data directory.
+// In dev, use the repo's server/ dir so we share config with `npm run dev:server`.
+const USER_DATA = isDev
+  ? path.join(ROOT, 'server')
+  : path.join(app.getPath('userData'), 'data');
 
 let mainWindow = null;
 let serverProcess = null;
+
+// ─── Connection config (file-backed for Electron) ───────────────
+
+const CONNECTION_CONFIG_PATH = path.join(USER_DATA, 'connection.json');
+
+function readConnectionConfig() {
+  try {
+    if (existsSync(CONNECTION_CONFIG_PATH)) {
+      return JSON.parse(readFileSync(CONNECTION_CONFIG_PATH, 'utf-8'));
+    }
+  } catch {}
+  return { mode: 'local', remoteUrl: '', apiKey: '' };
+}
+
+function writeConnectionConfig(config) {
+  mkdirSync(path.dirname(CONNECTION_CONFIG_PATH), { recursive: true });
+  writeFileSync(CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
+}
+
+function isRemoteMode() {
+  const config = readConnectionConfig();
+  return config.mode === 'remote' && !!config.remoteUrl;
+}
 
 // ─── Server boot ─────────────────────────────────────────────────
 
 function startServer() {
   return new Promise((resolve, reject) => {
-    const serverEntry = path.join(ROOT, 'server', 'index.js');
+    const serverEntry = path.join(ROOT, 'server', 'index.js').replace('app.asar', 'app.asar.unpacked');
 
     // Ensure the user data directory exists
     mkdirSync(USER_DATA, { recursive: true });
 
+    // Tee server output to a log file so users can `tail -f` it
+    const logPath = path.join(USER_DATA, 'server.log');
+    const logStream = createWriteStream(logPath, { flags: 'a' });
+    logStream.write(`\n----- ${new Date().toISOString()} server starting -----\n`);
+    console.log('[server] Logging to', logPath);
+
+    // When launched from Finder, Electron's PATH is minimal and lacks
+    // Homebrew / user-local bin dirs. The `claude` CLI uses
+    // `#!/usr/bin/env node`, so without these on PATH it fails with
+    // "env: node: No such file or directory". Prepend the common dirs.
+    const extraPaths = [
+      '/opt/homebrew/bin',
+      '/opt/homebrew/sbin',
+      '/usr/local/bin',
+      '/usr/local/sbin',
+      path.join(process.env.HOME || '', '.local/bin'),
+      path.join(process.env.HOME || '', '.nvm/versions/node/current/bin'),
+    ].filter(Boolean);
+    const mergedPath = [...extraPaths, process.env.PATH || '']
+      .filter(Boolean)
+      .join(':');
+
     // Set env so the server knows to serve the built client
     const env = {
       ...process.env,
+      PATH: mergedPath,
+      ELECTRON_RUN_AS_NODE: '1',
       ELECTRON: '1',
       AGENT_HUB_DATA_DIR: USER_DATA,
       AGENT_HUB_SERVE_CLIENT: isDev ? '' : path.join(ROOT, 'client', 'dist'),
     };
 
     serverProcess = fork(serverEntry, [], {
-      cwd: ROOT,
+      cwd: path.dirname(serverEntry),
       env,
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
     });
@@ -50,6 +100,7 @@ function startServer() {
     serverProcess.stdout?.on('data', (data) => {
       const text = data.toString();
       console.log('[server]', text.trimEnd());
+      logStream.write(text);
       // Detect the "listening on port" message
       if (!started && text.includes('listening')) {
         started = true;
@@ -58,7 +109,9 @@ function startServer() {
     });
 
     serverProcess.stderr?.on('data', (data) => {
-      console.error('[server:err]', data.toString().trimEnd());
+      const text = data.toString();
+      console.error('[server:err]', text.trimEnd());
+      logStream.write(text);
     });
 
     serverProcess.on('error', (err) => {
@@ -101,8 +154,13 @@ function createWindow() {
   });
 
   const port = process.env.AGENT_HUB_PORT || 3051;
+  const connConfig = readConnectionConfig();
 
-  if (isDev) {
+  if (connConfig.mode === 'remote' && connConfig.remoteUrl) {
+    // Remote mode — load the remote server's UI directly
+    mainWindow.loadURL(connConfig.remoteUrl.replace(/\/+$/, ''));
+    console.log('[electron] Loading remote URL:', connConfig.remoteUrl);
+  } else if (isDev) {
     // In dev, the Vite dev server runs on 3050 and proxies /api to 3051
     mainWindow.loadURL('http://localhost:3050');
     mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -123,6 +181,16 @@ function createWindow() {
 }
 
 // ─── IPC handlers ────────────────────────────────────────────────
+
+// Connection config IPC — file-backed persistence for remote mode
+ipcMain.on('get-connection-config', (event) => {
+  event.returnValue = readConnectionConfig();
+});
+
+ipcMain.on('save-connection-config', (event, config) => {
+  writeConnectionConfig(config);
+  event.returnValue = true;
+});
 
 // Native directory picker — called from the OpenProjectWizard
 ipcMain.handle('select-directory', async () => {
@@ -191,10 +259,14 @@ function buildMenu() {
 app.whenReady().then(async () => {
   buildMenu();
 
-  try {
-    await startServer();
-  } catch (err) {
-    console.error('Failed to start server, opening window anyway:', err.message);
+  if (isRemoteMode()) {
+    console.log('[electron] Remote mode — skipping local server');
+  } else {
+    try {
+      await startServer();
+    } catch (err) {
+      console.error('Failed to start server, opening window anyway:', err.message);
+    }
   }
 
   createWindow();

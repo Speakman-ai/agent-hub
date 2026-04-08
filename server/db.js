@@ -59,6 +59,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS rooms (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    project_id TEXT,
     max_turns INTEGER NOT NULL DEFAULT 10,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -242,6 +243,13 @@ try {
   db.prepare('SELECT max_turns FROM rooms LIMIT 1').get();
 } catch {
   db.exec('ALTER TABLE rooms ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 10');
+}
+
+// Migration: add project_id to rooms (links room to a project)
+try {
+  db.prepare('SELECT project_id FROM rooms LIMIT 1').get();
+} catch {
+  db.exec('ALTER TABLE rooms ADD COLUMN project_id TEXT');
 }
 
 // Migration: add attachments column to messages (JSON array of image metadata)
@@ -429,6 +437,12 @@ const stmts = {
   getRoom: db.prepare('SELECT * FROM rooms WHERE id = ?'),
   createRoom: db.prepare(
     'INSERT INTO rooms (id, name) VALUES (?, ?)'
+  ),
+  createProjectRoom: db.prepare(
+    'INSERT INTO rooms (id, name, project_id) VALUES (?, ?, ?)'
+  ),
+  getRoomByProjectId: db.prepare(
+    'SELECT * FROM rooms WHERE project_id = ? LIMIT 1'
   ),
   updateRoomName: db.prepare(
     "UPDATE rooms SET name = ?, updated_at = datetime('now') WHERE id = ?"

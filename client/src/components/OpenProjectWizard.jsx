@@ -92,6 +92,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
   // Step 2 state
   const [analyzing, setAnalyzing] = useState(false);
   const [progressText, setProgressText] = useState('');
+  const [progressLog, setProgressLog] = useState([]); // recent activity messages
   const [analysisResult, setAnalysisResult] = useState(null);
   const [analysisError, setAnalysisError] = useState(null);
 
@@ -144,15 +145,24 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
       const data = e.detail;
       if (data.analyzeId !== analyzeIdRef.current) return;
       if (data.type === 'analyze-progress') {
-        setProgressText((prev) => prev + (data.chunk || data.text || ''));
+        if (data.message) {
+          setProgressLog((prev) => [...prev.slice(-19), data.message]);
+        } else if (data.chunk || data.text) {
+          setProgressText((prev) => prev + (data.chunk || data.text || ''));
+        }
       }
       if (data.type === 'analyze-complete') {
         setAnalyzing(false);
-        setAnalysisResult(data.result);
+        // Normalize: server prompt produces `suggestedAgents`; older code expected `agents`.
+        const normalized = {
+          ...data.result,
+          agents: data.result?.agents || data.result?.suggestedAgents || [],
+        };
+        setAnalysisResult(normalized);
         // Initialize step 3 state from result
-        if (data.result?.agents) {
+        if (normalized.agents.length) {
           const agentMap = {};
-          data.result.agents.forEach((a, i) => { agentMap[i] = true; });
+          normalized.agents.forEach((a, i) => { agentMap[i] = true; });
           setSelectedAgents(agentMap);
         }
         if (data.result?.contextFiles) {
@@ -172,6 +182,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
     setStep(2);
     setAnalyzing(true);
     setProgressText('');
+    setProgressLog([]);
     setAnalysisResult(null);
     setAnalysisError(null);
 
@@ -363,7 +374,15 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                 ref={terminalRef}
                 className="bg-gray-950 font-mono text-xs text-green-400 p-4 rounded-lg max-h-64 overflow-y-auto whitespace-pre-wrap"
               >
-                {progressText || (analyzing ? 'Waiting for output...' : '')}
+                {progressLog.length > 0 ? (
+                  progressLog.map((line, i) => (
+                    <div key={i} className={i === progressLog.length - 1 ? 'text-green-300' : 'text-green-400/60'}>
+                      {i === progressLog.length - 1 && analyzing ? '▸ ' : '  '}{line}
+                    </div>
+                  ))
+                ) : (
+                  progressText || (analyzing ? 'Waiting for Claude to start...' : '')
+                )}
               </div>
             </div>
 

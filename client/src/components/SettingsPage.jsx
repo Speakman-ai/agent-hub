@@ -1,6 +1,178 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
+import { getConnectionConfig, saveConnectionConfig, testConnection } from '../utils/connection.js';
+
+function ConnectionSection() {
+  const [config, setConfig] = useState(() => getConnectionConfig());
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [saved, setSaved] = useState(false);
+
+  const handleModeChange = (mode) => {
+    setConfig((prev) => ({ ...prev, mode }));
+    setTestResult(null);
+  };
+
+  const handleSave = () => {
+    saveConnectionConfig(config);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleTest = async () => {
+    if (!config.remoteUrl) {
+      setTestResult({ ok: false, message: 'Enter a server URL first.' });
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    const result = await testConnection(config.remoteUrl, config.apiKey);
+    setTestResult(result);
+    setTesting(false);
+  };
+
+  const handleSaveAndReload = () => {
+    saveConnectionConfig(config);
+    window.location.reload();
+  };
+
+  const inputClass = 'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+  const labelClass = 'block text-xs text-gray-400 mb-1';
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold mb-4">Connection</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Connect to a local server (default) or a remote Agent Hub instance.
+          Remote mode lets you run the server on a cloud machine and connect from anywhere.
+        </p>
+      </div>
+
+      {/* Mode toggle */}
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <h4 className="text-sm font-medium text-gray-300">Connection Mode</h4>
+        <div className="flex gap-3">
+          <button
+            onClick={() => handleModeChange('local')}
+            className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
+              config.mode === 'local'
+                ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+            }`}
+          >
+            <div className="text-base mb-1">🏠 Local</div>
+            <div className="text-xs text-gray-500">Server runs on this machine</div>
+          </button>
+          <button
+            onClick={() => handleModeChange('remote')}
+            className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
+              config.mode === 'remote'
+                ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+            }`}
+          >
+            <div className="text-base mb-1">☁️ Remote</div>
+            <div className="text-xs text-gray-500">Connect to a remote server</div>
+          </button>
+        </div>
+      </div>
+
+      {/* Remote config */}
+      {config.mode === 'remote' && (
+        <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+          <h4 className="text-sm font-medium text-gray-300">Remote Server</h4>
+
+          <div>
+            <label className={labelClass}>Server URL</label>
+            <input
+              value={config.remoteUrl}
+              onChange={(e) => setConfig((prev) => ({ ...prev, remoteUrl: e.target.value }))}
+              className={inputClass}
+              placeholder="https://my-server.example.com:3051"
+            />
+            <p className="text-xs text-gray-600 mt-1">
+              Full URL of the remote Agent Hub server (include port if non-standard).
+            </p>
+          </div>
+
+          <div>
+            <label className={labelClass}>API Key (optional)</label>
+            <input
+              type="password"
+              value={config.apiKey}
+              onChange={(e) => setConfig((prev) => ({ ...prev, apiKey: e.target.value }))}
+              className={inputClass}
+              placeholder="Enter API key if server requires authentication"
+            />
+            <p className="text-xs text-gray-600 mt-1">
+              Set <code className="text-gray-400">AGENT_HUB_API_KEY</code> on the remote server to require auth.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3 pt-2">
+            <button
+              onClick={handleTest}
+              disabled={testing}
+              className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+            >
+              {testing ? '⏳ Testing...' : '🔌 Test Connection'}
+            </button>
+
+            {testResult && (
+              <span className={`text-sm ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                {testResult.ok ? '✓' : '✕'} {testResult.message}
+              </span>
+            )}
+          </div>
+
+          {testResult?.ok && testResult.serverInfo && (
+            <div className="bg-gray-900 rounded-lg p-3 text-xs space-y-1">
+              <div className="text-gray-400">
+                Server: <span className="text-gray-300">v{testResult.serverInfo.version}</span>
+                {' · '}
+                <span className="text-gray-300">{testResult.serverInfo.projects} projects</span>
+                {' · '}
+                <span className="text-gray-300">{testResult.serverInfo.agents} agents</span>
+                {' · '}
+                Auth: <span className={testResult.serverInfo.authRequired ? 'text-amber-400' : 'text-gray-500'}>
+                  {testResult.serverInfo.authRequired ? 'required' : 'disabled'}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Save / Apply */}
+      <div className="bg-gray-800 rounded-xl p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {saved && <span className="text-xs text-emerald-400">✓ Saved</span>}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleSave}
+              className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+            >
+              Save
+            </button>
+            <button
+              onClick={handleSaveAndReload}
+              className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+            >
+              Save & Reconnect
+            </button>
+          </div>
+        </div>
+        <p className="text-xs text-gray-600 mt-2">
+          Changing connection mode requires a page reload to reconnect WebSocket and API clients.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function GeneralSection() {
   const [config, setConfig] = useState(null);
@@ -1507,6 +1679,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange }) 
 
   const tabs = [
     { id: 'general', label: '⚙️ General' },
+    { id: 'connection', label: '🔗 Connection' },
     { id: 'agents', label: '🤖 Agents' },
     { id: 'heartbeats', label: '💓 Heartbeats' },
     { id: 'crons', label: '⏰ Cron Jobs' },
@@ -1537,6 +1710,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange }) 
         </div>
 
         {tab === 'general' && <GeneralSection />}
+        {tab === 'connection' && <ConnectionSection />}
         {tab === 'heartbeats' && <HeartbeatSection />}
         {tab === 'crons' && <CronSection />}
         {tab === 'slack' && <SlackSection />}
