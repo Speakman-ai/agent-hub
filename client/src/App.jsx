@@ -571,9 +571,10 @@ export default function App() {
     migrateFromLegacy();
 
     const init = async () => {
-      // Step 1: Tell the server which org to serve (local AND remote servers)
+      // Step 1: For local orgs, tell the local server which org's data to serve.
+      // Remote servers manage their own org state — just fetch from them directly.
       const activeOrg = getActiveOrg();
-      if (activeOrg) {
+      if (activeOrg && activeOrg.mode !== 'remote') {
         try {
           await fetch(`${getApiBase()}/org/switch`, {
             method: 'POST',

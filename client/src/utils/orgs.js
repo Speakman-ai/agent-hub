@@ -69,17 +69,19 @@ export async function switchOrg(orgId) {
   saveOrgs(state);
   syncToConnection(org);
 
-  // Tell the target server to switch to this org's data directory.
-  // This applies to both local and remote servers — both need to know
-  // which org's data to serve.
-  try {
-    await fetch(`${getApiBase()}/org/switch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({ orgId }),
-    });
-  } catch (err) {
-    console.warn('[Orgs] Server switch failed:', err.message);
+  // For local orgs, tell the local server to switch its data directory.
+  // Remote servers manage their own org state — don't send client-side
+  // org IDs to them (it would create empty data directories).
+  if (org.mode !== 'remote') {
+    try {
+      await fetch(`${getApiBase()}/org/switch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ orgId }),
+      });
+    } catch (err) {
+      console.warn('[Orgs] Server switch failed:', err.message);
+    }
   }
 }
 
