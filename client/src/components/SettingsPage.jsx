@@ -1579,8 +1579,53 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600';
   const labelClass = 'block text-xs text-gray-400 mb-1';
 
+  const [projectReviewers, setProjectReviewers] = useState(() => {
+    const map = {};
+    projects.forEach(p => { map[p.id] = p.defaultReviewer || ''; });
+    return map;
+  });
+  const [projectReviewerSaved, setProjectReviewerSaved] = useState({});
+
+  const saveProjectReviewer = async (projectId) => {
+    try {
+      await api.updateProject(projectId, { defaultReviewer: projectReviewers[projectId] });
+      setProjectReviewerSaved(prev => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setProjectReviewerSaved(prev => ({ ...prev, [projectId]: false })), 2000);
+    } catch {}
+  };
+
   return (
     <div>
+      {/* Project-level settings */}
+      {projects.length > 0 && (
+        <div className="mb-6">
+          <h3 className="text-lg font-semibold mb-3">Project Settings</h3>
+          <div className="space-y-2">
+            {projects.map(p => (
+              <div key={p.id} className="bg-gray-800 rounded-xl p-3 flex items-center gap-3">
+                <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color }} />
+                <span className="text-sm font-medium flex-shrink-0">{p.name}</span>
+                <div className="flex items-center gap-2 flex-1">
+                  <label className="text-xs text-gray-400 flex-shrink-0">Default PR Reviewer:</label>
+                  <input
+                    value={projectReviewers[p.id] || ''}
+                    onChange={e => setProjectReviewers(prev => ({ ...prev, [p.id]: e.target.value }))}
+                    placeholder="github-username"
+                    className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1"
+                  />
+                  <button
+                    onClick={() => saveProjectReviewer(p.id)}
+                    className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
+                  >
+                    {projectReviewerSaved[p.id] ? 'Saved' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold">Agent Configurations</h3>
         <button
@@ -1931,6 +1976,16 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                       onChange={(e) => setEdit(agent.id, 'systemPrompt', e.target.value)}
                       rows={4}
                       className={inputClass + ' resize-none'}
+                    />
+                  </div>
+
+                  <div>
+                    <label className={labelClass}>PR Reviewer (GitHub username — overrides project default)</label>
+                    <input
+                      value={edit.reviewer || ''}
+                      onChange={(e) => setEdit(agent.id, 'reviewer', e.target.value)}
+                      placeholder="github-username"
+                      className={inputClass}
                     />
                   </div>
 
