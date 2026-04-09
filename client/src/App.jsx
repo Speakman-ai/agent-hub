@@ -12,6 +12,7 @@ import RoomChat from './components/RoomChat.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
+import KanbanBoard from './components/KanbanBoard.jsx';
 import WikiBrowser from './components/WikiBrowser.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
@@ -77,6 +78,8 @@ export default function App() {
   const [initializing, setInitializing] = useState(true);
   // Toast notifications (e.g., babysit events)
   const [toasts, setToasts] = useState([]);
+  // Kanban board refresh trigger
+  const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   const activeRoomIdRef = useRef(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
 
@@ -546,6 +549,10 @@ export default function App() {
 
       case 'cron_session_update':
         api.getCronSessions().then(setCronSessions).catch(() => {});
+        break;
+
+      case 'kanban_update':
+        setKanbanRefreshKey((k) => k + 1);
         break;
 
       case 'wiki_update':
@@ -1029,7 +1036,14 @@ export default function App() {
           onWorktreeChange={handleWorktreeChange}
         />
 
-        {currentView.startsWith('settings') ? (
+        {currentView.startsWith('kanban:') ? (
+          <KanbanBoard
+            projectId={currentView.split(':')[1]}
+            project={projects.find((p) => p.id === currentView.split(':')[1])}
+            agents={agents}
+            refreshKey={kanbanRefreshKey}
+          />
+        ) : currentView.startsWith('settings') ? (
           <SettingsPage projects={projects} agents={agents} onAgentsChange={refreshAgents} initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined} />
         ) : currentView === 'wiki' && wikiProjectId ? (
           <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />

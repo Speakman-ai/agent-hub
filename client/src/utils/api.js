@@ -190,6 +190,21 @@ export const api = {
   cloneRepo: (url, targetDir) =>
     fetchJSON('/projects/clone', { method: 'POST', body: JSON.stringify({ url, targetDir }) }),
 
+  // Kanban Board
+  getBoard: (projectId) => fetchJSON(`/projects/${projectId}/board`),
+  createCard: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/board/cards`, { method: 'POST', body: JSON.stringify(data) }),
+  updateCard: (projectId, cardId, data) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'PUT', body: JSON.stringify(data) }),
+  moveCard: (projectId, cardId, data) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/move`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteCard: (projectId, cardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'DELETE' }),
+  getCardComments: (projectId, cardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`),
+  addCardComment: (projectId, cardId, data) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`, { method: 'POST', body: JSON.stringify(data) }),
+
   // Webhooks
   getWebhooks: () => fetchJSON('/api/webhooks'),
   getProjectWebhooks: (projectId) => fetchJSON(`/api/webhooks/project/${projectId}`),

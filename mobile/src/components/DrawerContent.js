@@ -275,31 +275,42 @@ export default function DrawerContent({ navigation }) {
               return (
                 <View key={project.id}>
                   {index > 0 && <View style={styles.projectDivider} />}
-                  <TouchableOpacity
-                    style={styles.projectHeader}
-                    onPress={() => {
-                      if (projectAgents.length === 1) {
-                        handleAgentSelect(projectAgents[0].id);
-                      } else {
-                        setCollapsedProjects((prev) => ({
-                          ...prev,
-                          [project.id]: !prev[project.id],
-                        }));
-                      }
-                    }}
-                  >
-                    <View
-                      style={[styles.projectDot, { backgroundColor: project.color || '#6366f1' }]}
-                    />
-                    <Text style={styles.projectName} numberOfLines={1}>
-                      {project.name}
-                    </Text>
-                    {projectAgents.length > 1 && (
-                      <Text style={styles.collapseIcon}>
-                        {isCollapsed ? '\u25B8' : '\u25BE'}
+                  <View style={styles.projectHeaderRow}>
+                    <TouchableOpacity
+                      style={[styles.projectHeader, { flex: 1 }]}
+                      onPress={() => {
+                        if (projectAgents.length === 1) {
+                          handleAgentSelect(projectAgents[0].id);
+                        } else {
+                          setCollapsedProjects((prev) => ({
+                            ...prev,
+                            [project.id]: !prev[project.id],
+                          }));
+                        }
+                      }}
+                    >
+                      <View
+                        style={[styles.projectDot, { backgroundColor: project.color || '#6366f1' }]}
+                      />
+                      <Text style={styles.projectName} numberOfLines={1}>
+                        {project.name}
                       </Text>
-                    )}
-                  </TouchableOpacity>
+                      {projectAgents.length > 1 && (
+                        <Text style={styles.collapseIcon}>
+                          {isCollapsed ? '\u25B8' : '\u25BE'}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.boardButton}
+                      onPress={() => {
+                        navigation.navigate('Kanban', { projectId: project.id, project });
+                        navigation.closeDrawer();
+                      }}
+                    >
+                      <Text style={styles.boardButtonText}>{'\u25A6'} Board</Text>
+                    </TouchableOpacity>
+                  </View>
 
                   {!isCollapsed && projectAgents.map((agent) => renderAgentRow(agent))}
                 </View>
@@ -528,6 +539,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: colors.gray300,
+  },
+  projectHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  boardButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginRight: 8,
+  },
+  boardButtonText: {
+    fontSize: 11,
+    color: colors.gray500,
+    fontWeight: '500',
   },
   projectDivider: {
     borderTopWidth: 1,

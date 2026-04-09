@@ -160,6 +160,37 @@ export const api = {
   // Queue
   getSessionQueue: (sessionId) => fetchJSON(`/sessions/${sessionId}/queue`),
 
+  // Kanban Board
+  getProjectBoard: (projectId) => fetchJSON(`/projects/${projectId}/board`),
+  createKanbanCard: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/board/cards`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
+  updateKanbanCard: (projectId, cardId, data) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
+  moveKanbanCard: (projectId, cardId, data) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
+  deleteKanbanCard: (projectId, cardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'DELETE' }),
+  getCardComments: (projectId, cardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`),
+  addCardComment: (projectId, cardId, data) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
+
   // Wiki
   getWikiPages: (projectId) => fetchJSON(`/projects/${projectId}/wiki`),
   getWikiPage: (projectId, slug) => fetchJSON(`/projects/${projectId}/wiki/${slug}`),

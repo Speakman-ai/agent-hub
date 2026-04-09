@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Building2, BookOpen, Settings, Clock, FileText } from 'lucide-react';
+import { Building2, BookOpen, Settings, Clock, LayoutGrid, FileText } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
 
 export default function Sidebar({
@@ -132,33 +132,42 @@ export default function Sidebar({
               <div key={project.id} className="mb-1">
                 {index > 0 && <div className="border-t border-gray-800/50 my-2 mx-2" />}
                 {/* Project header */}
-                <button
-                  onClick={(e) => {
-                    // If project only has one agent, select it directly
-                    if (activeAgents.length === 1) {
-                      onSelectAgent(activeAgents[0].id);
-                      onNavigate('chat');
-                    } else {
-                      toggleProjectCollapse(project.id, e);
-                    }
-                  }}
-                  className={`w-full text-left px-2 py-2 rounded-lg flex items-center gap-2 transition-colors ${
-                    isActiveProject && currentView === 'chat'
-                      ? 'text-white'
-                      : 'text-gray-400 hover:text-gray-200'
-                  }`}
-                >
-                  <span
-                    className="w-2.5 h-2.5 rounded-sm block flex-shrink-0"
-                    style={{ backgroundColor: project.color }}
-                  />
-                  <span className="flex-1 truncate text-sm font-medium">{project.name}</span>
-                  {activeAgents.length > 1 && (
-                    <span className="text-gray-600 text-xs">
-                      {isCollapsed ? '▸' : '▾'}
-                    </span>
-                  )}
-                </button>
+                <div className="group flex items-center">
+                  <button
+                    onClick={(e) => {
+                      // If project only has one agent, select it directly
+                      if (activeAgents.length === 1) {
+                        onSelectAgent(activeAgents[0].id);
+                        onNavigate('chat');
+                      } else {
+                        toggleProjectCollapse(project.id, e);
+                      }
+                    }}
+                    className={`flex-1 text-left px-2 py-2 rounded-lg flex items-center gap-2 transition-colors ${
+                      isActiveProject && currentView === 'chat'
+                        ? 'text-white'
+                        : 'text-gray-400 hover:text-gray-200'
+                    }`}
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-sm block flex-shrink-0"
+                      style={{ backgroundColor: project.color }}
+                    />
+                    <span className="flex-1 truncate text-sm font-medium">{project.name}</span>
+                    {activeAgents.length > 1 && (
+                      <span className="text-gray-600 text-xs">
+                        {isCollapsed ? '▸' : '▾'}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onNavigate('kanban:' + project.id); }}
+                    className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-300 transition-opacity p-0.5"
+                    title="Board"
+                  >
+                    <LayoutGrid size={14} />
+                  </button>
+                </div>
 
                 {/* Agents within project (auto-expand if single agent) */}
                 {(!isCollapsed || activeAgents.length === 1) && (

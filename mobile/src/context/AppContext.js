@@ -46,6 +46,8 @@ export function AppProvider({ children }) {
   const [eventsByMessage, setEventsByMessage] = useState({});
   // Cron-linked sessions
   const [cronSessions, setCronSessions] = useState([]);
+  // Kanban board refresh trigger
+  const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSessionIdRef = useRef(activeSessionId);
@@ -381,6 +383,10 @@ export function AppProvider({ children }) {
             prev.map((m) => (m.id === data.messageId ? { ...m, content: data.content } : m))
           );
         }
+        break;
+
+      case 'kanban_update':
+        setKanbanRefreshKey((k) => (k || 0) + 1);
         break;
     }
   }, []);
@@ -739,6 +745,7 @@ export function AppProvider({ children }) {
     handleDelegationCancel,
     handleEventsLoaded,
     cronSessions,
+    kanbanRefreshKey,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

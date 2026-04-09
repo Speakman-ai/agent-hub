@@ -12,6 +12,7 @@ import ChatScreen from './src/screens/ChatScreen';
 import SkillsScreen from './src/screens/SkillsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
+import KanbanScreen from './src/screens/KanbanScreen';
 import WikiScreen from './src/screens/WikiScreen';
 import DrawerContent from './src/components/DrawerContent';
 import { colors } from './src/theme/colors';
@@ -89,11 +90,11 @@ function AppContent() {
 
   // Navigation helper for DrawerContent compatibility
   const navigation = useRef({
-    navigate: (screen) => {
+    navigate: (screen, params) => {
       closeSidebar();
       setTimeout(() => {
         if (navigationRef.current) {
-          navigationRef.current.navigate(screen);
+          navigationRef.current.navigate(screen, params);
         }
       }, 50);
     },
@@ -120,6 +121,7 @@ function AppContent() {
             <Stack.Screen name="Skills" component={SkillsScreen} />
             <Stack.Screen name="Settings" component={SettingsScreen} />
             <Stack.Screen name="Rooms" component={RoomsScreen} />
+            <Stack.Screen name="Kanban" component={KanbanScreen} />
             <Stack.Screen name="Wiki" component={WikiScreen} />
           </Stack.Navigator>
         </NavigationContainer>

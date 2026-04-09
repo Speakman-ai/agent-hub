@@ -228,6 +228,60 @@ function initDb(dataDir) {
       last_used TEXT
     );
 
+    -- Kanban boards: one per project
+    CREATE TABLE IF NOT EXISTS kanban_boards (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_kanban_boards_project ON kanban_boards(project_id);
+
+    -- Kanban columns: ordered lanes within a board
+    CREATE TABLE IF NOT EXISTS kanban_columns (
+      id TEXT PRIMARY KEY,
+      board_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      color TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (board_id) REFERENCES kanban_boards(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_kanban_columns_board ON kanban_columns(board_id);
+
+    -- Kanban cards: tasks on the board
+    CREATE TABLE IF NOT EXISTS kanban_cards (
+      id TEXT PRIMARY KEY,
+      column_id TEXT NOT NULL,
+      board_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low','medium','high','urgent')),
+      assignee TEXT,
+      labels TEXT,
+      session_id TEXT,
+      github_issue_url TEXT,
+      created_by TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (column_id) REFERENCES kanban_columns(id) ON DELETE CASCADE,
+      FOREIGN KEY (board_id) REFERENCES kanban_boards(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_kanban_cards_column ON kanban_cards(column_id);
+    CREATE INDEX IF NOT EXISTS idx_kanban_cards_board ON kanban_cards(board_id);
+
+    -- Kanban card comments
+    CREATE TABLE IF NOT EXISTS kanban_card_comments (
+      id TEXT PRIMARY KEY,
+      card_id TEXT NOT NULL,
+      author TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (card_id) REFERENCES kanban_cards(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_card_comments(card_id);
+
     CREATE TABLE IF NOT EXISTS webhook_configs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id TEXT NOT NULL,
@@ -680,6 +734,39 @@ function initDb(dataDir) {
     updateDeviceTokenLastUsed: db.prepare(
       "UPDATE device_tokens SET last_used = datetime('now') WHERE token = ?"
     ),
+
+    // Kanban boards
+    getKanbanBoard: db.prepare('SELECT * FROM kanban_boards WHERE project_id = ? LIMIT 1'),
+    getKanbanBoardById: db.prepare('SELECT * FROM kanban_boards WHERE id = ?'),
+    createKanbanBoard: db.prepare('INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)'),
+    deleteKanbanBoard: db.prepare('DELETE FROM kanban_boards WHERE id = ?'),
+
+    // Kanban columns
+    getKanbanColumns: db.prepare('SELECT * FROM kanban_columns WHERE board_id = ? ORDER BY position ASC'),
+    createKanbanColumn: db.prepare('INSERT INTO kanban_columns (id, board_id, name, position, color) VALUES (?, ?, ?, ?, ?)'),
+    updateKanbanColumn: db.prepare("UPDATE kanban_columns SET name = ?, position = ?, color = ? WHERE id = ?"),
+    deleteKanbanColumn: db.prepare('DELETE FROM kanban_columns WHERE id = ?'),
+
+    // Kanban cards
+    getKanbanCards: db.prepare('SELECT * FROM kanban_cards WHERE board_id = ? ORDER BY position ASC'),
+    getKanbanCardsByColumn: db.prepare('SELECT * FROM kanban_cards WHERE column_id = ? ORDER BY position ASC'),
+    getKanbanCard: db.prepare('SELECT * FROM kanban_cards WHERE id = ?'),
+    createKanbanCard: db.prepare(
+      `INSERT INTO kanban_cards (id, column_id, board_id, title, description, priority, assignee, labels, session_id, github_issue_url, created_by, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ),
+    updateKanbanCard: db.prepare(
+      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, updated_at = datetime('now') WHERE id = ?`
+    ),
+    moveKanbanCard: db.prepare(
+      `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`
+    ),
+    deleteKanbanCard: db.prepare('DELETE FROM kanban_cards WHERE id = ?'),
+
+    // Kanban card comments
+    getKanbanCardComments: db.prepare('SELECT * FROM kanban_card_comments WHERE card_id = ? ORDER BY created_at ASC'),
+    createKanbanCardComment: db.prepare('INSERT INTO kanban_card_comments (id, card_id, author, content) VALUES (?, ?, ?, ?)'),
+    deleteKanbanCardComment: db.prepare('DELETE FROM kanban_card_comments WHERE id = ?'),
 
     // Webhook configs
     getWebhookConfigs: db.prepare('SELECT * FROM webhook_configs ORDER BY created_at DESC'),
