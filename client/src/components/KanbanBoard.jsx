@@ -161,7 +161,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
         githubIssueUrl: detailForm.github_issue_url,
       });
       fetchBoard();
-      setSelectedCard((prev) => ({ ...prev, ...detailForm }));
+      setSelectedCard(null);
     } catch (err) {
       console.error('Failed to save card:', err);
     } finally {
@@ -510,7 +510,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                         setAssigning(true);
                         try {
                           const result = await api.assignCard(projectId, selectedCard.id, agent.id);
-                          setSelectedCard((prev) => ({ ...prev, ...result.card, session_id: result.sessionId }));
+                          setSelectedCard(null);
                           fetchBoard();
                           if (onNavigateToSession) {
                             onNavigateToSession(agent.id, result.sessionId);
