@@ -782,6 +782,7 @@ function initDb(dataDir) {
     moveKanbanCard: db.prepare(
       `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`
     ),
+    getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
     deleteKanbanCard: db.prepare('DELETE FROM kanban_cards WHERE id = ?'),
 
     // Kanban card comments

@@ -1498,6 +1498,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     heartbeat: { enabled: false, interval: '', prompt: '' },
   });
 
+
   useEffect(() => {
     setAgents(initialAgents);
   }, [initialAgents]);

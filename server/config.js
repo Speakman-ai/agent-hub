@@ -107,6 +107,10 @@ const config = {
   /** Conference room per-agent timeout (ms) */
   conferenceTimeoutMs: resolveInt(null, 'conferenceTimeoutMs', 10 * 60 * 1000),
 
+  // ── GitHub ─────────────────────────────────────────────────────
+  /** Fallback PR reviewer when no agent or project reviewer is set */
+  defaultReviewer: resolve('AGENT_HUB_DEFAULT_REVIEWER', 'defaultReviewer', null),
+
   // ── Auth ───────────────────────────────────────────────────────
   /** Optional API key for securing remote access */
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
