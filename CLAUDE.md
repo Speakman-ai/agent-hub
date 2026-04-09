@@ -85,6 +85,29 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Slack Bot Framework**: `@slack/bolt` for multi-agent Slack integration
 - **Cron Scheduling**: `node-cron` for automated task execution
 
+## Git Workflow — Worktree-First Development
+
+**All feature work MUST happen in worktrees. Never commit directly to main.**
+
+### Standard Flow
+1. **Start a feature** → use the `using-git-worktrees` skill to create a worktree with a descriptive branch name (e.g., `feature/webhooks`, `fix/scroll-bug`)
+2. **Work entirely in the worktree** — all edits, builds, and tests happen there
+3. **Commit to the feature branch** — not to main
+4. **Push the branch and open a PR** via `gh pr create`
+5. **Merge to main via the PR** — main only receives merged, reviewed code
+
+### Rules
+- When the user says "commit and push", commit to the **current feature branch** and push it — do NOT push to main
+- When the user says "make a PR", push the feature branch and create a PR against main
+- If no worktree exists yet for the current task, create one before making changes
+- Sub-agents (delegated work) must edit files in the **worktree directory**, not the main repo
+- The server's `ensureWorktree()` already creates per-session worktrees for chat — this workflow applies to development sessions
+
+### What NOT to Do
+- `git push origin main` for feature work
+- Editing files in the main repo and copying them around
+- Committing directly to main (only merge commits from PRs)
+
 ## Development Notes
 
 - The server runs as an ES module (`"type": "module"`)
@@ -92,3 +115,12 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - WebSocket handles chat streaming, cancellation, and real-time updates
 - Agent configurations are stored in `server/agents.json` and auto-saved
 - No README files exist - this CLAUDE.md serves as the primary documentation
+
+## Deployment
+
+### EC2 Server
+- **Host**: `18.219.58.197` (user: `agenthub`, SSH via `ubuntu`)
+- **Nginx** reverse proxy on port 80 → localhost:3051
+- **PM2** manages the Node.js process
+- **Port 3051** is localhost-only — all external traffic goes through Nginx
+- Deploy: `ssh → git pull → npm run build → pm2 restart agent-hub`
