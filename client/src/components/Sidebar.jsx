@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Building2, BookOpen, Settings, Clock } from 'lucide-react';
+import { Building2, BookOpen, Settings, Clock, FileText } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
 
 export default function Sidebar({
@@ -22,6 +22,7 @@ export default function Sidebar({
   onDeleteRoom,
   onOpenProject,
   cronSessions = [],
+  wikiProjectId,
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [hoveredRoom, setHoveredRoom] = useState(null);
@@ -311,6 +312,19 @@ export default function Sidebar({
                         </button>
                       );
                     })()}
+
+                    {/* Project wiki */}
+                    <button
+                      onClick={() => onNavigate('wiki', project.id)}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                        currentView === 'wiki' && wikiProjectId === project.id
+                          ? 'bg-gray-800 text-white'
+                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                      }`}
+                    >
+                      <FileText size={14} className="flex-shrink-0" />
+                      <span className="truncate">Wiki</span>
+                    </button>
                   </div>
                 )}
               </div>

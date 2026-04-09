@@ -159,4 +159,16 @@ export const api = {
 
   // Queue
   getSessionQueue: (sessionId) => fetchJSON(`/sessions/${sessionId}/queue`),
+
+  // Wiki
+  getWikiPages: (projectId) => fetchJSON(`/projects/${projectId}/wiki`),
+  getWikiPage: (projectId, slug) => fetchJSON(`/projects/${projectId}/wiki/${slug}`),
+  searchWiki: (projectId, query) => fetchJSON(`/projects/${projectId}/wiki?q=${encodeURIComponent(query)}`),
+  getWikiPagesByCategory: (projectId, category) => fetchJSON(`/projects/${projectId}/wiki?category=${encodeURIComponent(category)}`),
+  createWikiPage: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/wiki`, { method: 'POST', body: JSON.stringify(data) }),
+  updateWikiPage: (projectId, slug, data) =>
+    fetchJSON(`/projects/${projectId}/wiki/${slug}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteWikiPage: (projectId, slug) =>
+    fetchJSON(`/projects/${projectId}/wiki/${slug}`, { method: 'DELETE' }),
 };
