@@ -327,6 +327,31 @@ function initDb(dataDir) {
     CREATE INDEX IF NOT EXISTS idx_webhook_logs_config ON webhook_logs(webhook_config_id);
     CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at DESC);
 
+    -- Skill registry: central catalog of available skills
+    CREATE TABLE IF NOT EXISTS skill_registry (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'general',
+      author TEXT,
+      source_url TEXT,
+      repo_url TEXT,
+      version TEXT,
+      install_count INTEGER NOT NULL DEFAULT 0,
+      content TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_skill_registry_category ON skill_registry(category);
+
+    -- Per-agent skill overrides (enable/disable specific skills)
+    CREATE TABLE IF NOT EXISTS agent_skill_overrides (
+      agent_id TEXT NOT NULL,
+      skill_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (agent_id, skill_id)
+    );
+
     -- Wiki pages: per-project knowledge base with full-text search
     CREATE TABLE IF NOT EXISTS wiki_pages (
       id TEXT PRIMARY KEY,
@@ -465,6 +490,31 @@ function initDb(dataDir) {
       config.defaultCwd,
       0
     );
+  }
+
+  // Seed skill registry if empty
+  const skillCount = db.prepare('SELECT COUNT(*) as count FROM skill_registry').get();
+  if (skillCount.count === 0) {
+    const insertSkill = db.prepare(
+      `INSERT INTO skill_registry (id, name, description, category, author, content) VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    const seedSkills = [
+      ['code-review', 'Code Review', 'Review code for bugs, security issues, and best practices', 'development', 'agent-hub', '---\nname: code-review\ndescription: Review code for bugs, security issues, and best practices\n---\n\nReview the code changes for:\n- Bugs and logic errors\n- Security vulnerabilities\n- Performance issues\n- Code style and readability\n- Missing error handling\n\nProvide specific, actionable feedback with line references.'],
+      ['test-generator', 'Test Generator', 'Generate unit and integration tests for existing code', 'development', 'agent-hub', '---\nname: test-generator\ndescription: Generate unit and integration tests for existing code\n---\n\nGenerate comprehensive tests:\n- Unit tests for individual functions\n- Integration tests for API endpoints\n- Edge cases and error scenarios\n- Use the project\'s existing test framework'],
+      ['api-docs', 'API Documentation', 'Generate OpenAPI/REST documentation from code', 'documentation', 'agent-hub', '---\nname: api-docs\ndescription: Generate OpenAPI/REST documentation from code\n---\n\nScan the codebase for API endpoints and generate documentation:\n- Endpoint URLs, methods, and descriptions\n- Request/response schemas with examples\n- Authentication requirements\n- Error codes and messages'],
+      ['changelog', 'Changelog Generator', 'Generate changelogs from git history', 'documentation', 'agent-hub', '---\nname: changelog\ndescription: Generate changelogs from git history\n---\n\nGenerate a changelog from recent git commits:\n- Group by type (features, fixes, breaking changes)\n- Include PR references\n- Write for end users, not developers'],
+      ['dependency-audit', 'Dependency Audit', 'Check for outdated, vulnerable, or unused dependencies', 'automation', 'agent-hub', '---\nname: dependency-audit\ndescription: Check for outdated, vulnerable, or unused dependencies\n---\n\nAudit project dependencies:\n- Check for known vulnerabilities\n- Identify outdated packages\n- Find unused dependencies\n- Suggest updates with breaking change warnings'],
+      ['db-migrate', 'Database Migration', 'Generate and review database migrations', 'development', 'agent-hub', '---\nname: db-migrate\ndescription: Generate and review database migrations\n---\n\nHelp with database schema changes:\n- Generate migration files\n- Review migrations for safety (data loss, locking)\n- Verify rollback procedures\n- Check index coverage'],
+      ['perf-profiler', 'Performance Profiler', 'Profile code and identify performance bottlenecks', 'development', 'agent-hub', '---\nname: perf-profiler\ndescription: Profile code and identify performance bottlenecks\n---\n\nAnalyze code for performance:\n- Identify N+1 queries\n- Find memory leaks\n- Spot unnecessary re-renders\n- Suggest caching strategies\n- Benchmark critical paths'],
+      ['refactor', 'Refactor Assistant', 'Suggest and implement code refactoring improvements', 'development', 'agent-hub', '---\nname: refactor\ndescription: Suggest and implement code refactoring improvements\n---\n\nAnalyze code for refactoring opportunities:\n- Extract reusable functions/components\n- Simplify complex logic\n- Apply design patterns\n- Reduce duplication\n- Improve naming'],
+      ['git-hooks', 'Git Hooks Setup', 'Configure pre-commit, pre-push, and other git hooks', 'git', 'agent-hub', '---\nname: git-hooks\ndescription: Configure pre-commit, pre-push, and other git hooks\n---\n\nSet up git hooks for the project:\n- Pre-commit: lint, format, type-check\n- Pre-push: run tests\n- Commit-msg: enforce conventional commits\n- Use husky or simple shell scripts'],
+      ['env-setup', 'Environment Setup', 'Generate and validate environment configuration', 'automation', 'agent-hub', '---\nname: env-setup\ndescription: Generate and validate environment configuration\n---\n\nHelp with environment setup:\n- Generate .env.example from code references\n- Validate required env vars are set\n- Document each variable\'s purpose\n- Detect hardcoded secrets'],
+      ['incident-response', 'Incident Response', 'Diagnose production issues from logs and metrics', 'monitoring', 'agent-hub', '---\nname: incident-response\ndescription: Diagnose production issues from logs and metrics\n---\n\nHelp diagnose production issues:\n- Analyze error logs and stack traces\n- Check recent deployments\n- Identify root cause\n- Suggest immediate fixes\n- Draft incident report'],
+      ['pr-description', 'PR Description Writer', 'Generate detailed PR descriptions from diffs', 'git', 'agent-hub', '---\nname: pr-description\ndescription: Generate detailed PR descriptions from diffs\n---\n\nGenerate a PR description:\n- Summary of changes\n- Motivation and context\n- Testing instructions\n- Screenshots if UI changes\n- Breaking changes'],
+    ];
+    for (const [id, name, desc, cat, author, content] of seedSkills) {
+      insertSkill.run(id, name, desc, cat, author, content);
+    }
   }
 
   // Prepared statements
@@ -824,6 +874,27 @@ function initDb(dataDir) {
     updateWikiPage: db.prepare("UPDATE wiki_pages SET title = ?, content = ?, category = ?, updated_by = ?, updated_at = datetime('now') WHERE project_id = ? AND slug = ?"),
     deleteWikiPage: db.prepare('DELETE FROM wiki_pages WHERE project_id = ? AND slug = ?'),
     getWikiPagesByCategory: db.prepare('SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at FROM wiki_pages WHERE project_id = ? AND category = ? ORDER BY updated_at DESC'),
+
+    // Skill registry
+    getSkillRegistry: db.prepare('SELECT * FROM skill_registry ORDER BY install_count DESC, name ASC'),
+    getSkillRegistryByCategory: db.prepare('SELECT * FROM skill_registry WHERE category = ? ORDER BY install_count DESC, name ASC'),
+    getSkillRegistryItem: db.prepare('SELECT * FROM skill_registry WHERE id = ?'),
+    searchSkillRegistry: db.prepare("SELECT * FROM skill_registry WHERE name LIKE ? OR description LIKE ? ORDER BY install_count DESC"),
+    createSkillRegistryItem: db.prepare(
+      `INSERT INTO skill_registry (id, name, description, category, author, source_url, repo_url, version, content)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ),
+    deleteSkillRegistryItem: db.prepare('DELETE FROM skill_registry WHERE id = ?'),
+    incrementSkillInstallCount: db.prepare('UPDATE skill_registry SET install_count = install_count + 1 WHERE id = ?'),
+    getSkillRegistryCount: db.prepare('SELECT COUNT(*) as count FROM skill_registry'),
+
+    // Agent skill overrides
+    getAgentSkillOverrides: db.prepare('SELECT * FROM agent_skill_overrides WHERE agent_id = ?'),
+    upsertAgentSkillOverride: db.prepare(
+      `INSERT INTO agent_skill_overrides (agent_id, skill_id, enabled) VALUES (?, ?, ?)
+       ON CONFLICT(agent_id, skill_id) DO UPDATE SET enabled = excluded.enabled`
+    ),
+    deleteAgentSkillOverride: db.prepare('DELETE FROM agent_skill_overrides WHERE agent_id = ? AND skill_id = ?'),
   };
 
   // Cache for future switches.

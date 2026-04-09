@@ -1052,7 +1052,7 @@ export default function App() {
         ) : currentView === 'wiki' && wikiProjectId ? (
           <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
         ) : currentView === 'skills' ? (
-          <SkillsPage agents={agents} />
+          <SkillsPage agents={agents} projects={projects} />
         ) : currentView === 'room' && activeRoom ? (
           <RoomChat
             room={activeRoom}
