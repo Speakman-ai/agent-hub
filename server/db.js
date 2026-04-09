@@ -227,6 +227,33 @@ function initDb(dataDir) {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       last_used TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS webhook_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL,
+      repo_url TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      events TEXT NOT NULL DEFAULT '{}',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_configs_project ON webhook_configs(project_id);
+
+    CREATE TABLE IF NOT EXISTS webhook_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      webhook_config_id INTEGER NOT NULL,
+      event_type TEXT NOT NULL,
+      action TEXT,
+      delivery_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','success','error','skipped')),
+      result TEXT,
+      duration_ms INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (webhook_config_id) REFERENCES webhook_configs(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_logs_config ON webhook_logs(webhook_config_id);
+    CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at DESC);
   `);
 
   // Migration: add next_run_at to crons (last_run already exists)
@@ -625,6 +652,18 @@ function initDb(dataDir) {
     updateDeviceTokenLastUsed: db.prepare(
       "UPDATE device_tokens SET last_used = datetime('now') WHERE token = ?"
     ),
+
+    // Webhook configs
+    getWebhookConfigs: db.prepare('SELECT * FROM webhook_configs ORDER BY created_at DESC'),
+    getWebhookConfigsByProject: db.prepare('SELECT * FROM webhook_configs WHERE project_id = ? ORDER BY created_at DESC'),
+    getWebhookConfig: db.prepare('SELECT * FROM webhook_configs WHERE id = ?'),
+    createWebhookConfig: db.prepare('INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled) VALUES (?, ?, ?, ?, ?)'),
+    updateWebhookConfig: db.prepare("UPDATE webhook_configs SET repo_url = ?, events = ?, enabled = ?, updated_at = datetime('now') WHERE id = ?"),
+    deleteWebhookConfig: db.prepare('DELETE FROM webhook_configs WHERE id = ?'),
+    addWebhookLog: db.prepare('INSERT INTO webhook_logs (webhook_config_id, event_type, action, delivery_id, status) VALUES (?, ?, ?, ?, ?)'),
+    updateWebhookLog: db.prepare('UPDATE webhook_logs SET status = ?, result = ?, duration_ms = ? WHERE id = ?'),
+    getWebhookLogs: db.prepare('SELECT * FROM webhook_logs WHERE webhook_config_id = ? ORDER BY created_at DESC LIMIT ?'),
+    getRecentWebhookLogs: db.prepare('SELECT wl.*, wc.repo_url FROM webhook_logs wl JOIN webhook_configs wc ON wl.webhook_config_id = wc.id ORDER BY wl.created_at DESC LIMIT ?'),
   };
 
   // Cache for future switches.

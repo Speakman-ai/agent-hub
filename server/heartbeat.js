@@ -66,7 +66,7 @@ function persistLastRun(kind, id, when = new Date()) {
  * @param {string} [systemPrompt]
  * @param {{ timeoutMs?: number }} [options]
  */
-function runClaude(prompt, cwd, systemPrompt, options = {}) {
+export function runClaude(prompt, cwd, systemPrompt, options = {}) {
   return new Promise((resolve, reject) => {
     const args = ['--print', '--permission-mode', 'bypassPermissions'];
     if (systemPrompt) {

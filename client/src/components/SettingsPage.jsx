@@ -3,7 +3,7 @@ import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import { saveConnectionConfig, testConnection, getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, switchOrg } from '../utils/orgs.js';
-import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft } from 'lucide-react';
+import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft, Webhook } from 'lucide-react';
 
 function OrganizationsSection() {
   const [orgsState, setOrgsState] = useState(() => getOrgs());
@@ -890,6 +890,299 @@ function CronSection() {
         ))}
         {crons.length === 0 && (
           <p className="text-sm text-gray-500">No cron jobs configured</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WebhookSection() {
+  const [webhooks, setWebhooks] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [webhookLogs, setWebhookLogs] = useState({});
+  const [expandedWebhook, setExpandedWebhook] = useState(null);
+  const [copiedField, setCopiedField] = useState(null);
+  const [registering, setRegistering] = useState({});
+  const [projects, setProjects] = useState([]);
+  const [form, setForm] = useState({
+    projectId: '',
+    repoUrl: '',
+    events: {
+      'pull_request.opened': { enabled: true, prompt: 'Review this pull request for code quality, bugs, security issues, and style. Post your review as a GitHub comment using `gh pr review`.' },
+      'issues.opened': { enabled: false, prompt: 'Triage this issue: read the content, add appropriate labels, and suggest an approach in a comment using `gh issue comment`.' },
+      'push': { enabled: false, prompt: 'Review the pushed commits and check if any introduce obvious bugs or break tests.' },
+      'check_suite.completed': { enabled: false, prompt: 'CI failed. Read the check run logs with `gh run view`, identify the issue, and open a fix PR.' },
+    },
+  });
+
+  const refreshLogs = async (list) => {
+    const entries = await Promise.all(
+      (list || webhooks).map(async (w) => {
+        try {
+          const logs = await api.getWebhookLogs(w.id, 5);
+          return [w.id, logs];
+        } catch { return [w.id, []]; }
+      })
+    );
+    setWebhookLogs(Object.fromEntries(entries));
+  };
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [wh, proj] = await Promise.all([api.getWebhooks(), api.getProjects()]);
+        setWebhooks(wh);
+        setProjects(proj);
+        await refreshLogs(wh);
+      } catch (e) { console.error(e); }
+    };
+    load();
+    const pollId = setInterval(load, 60000);
+    return () => clearInterval(pollId);
+  }, []);
+
+  const copyToClipboard = (text, field) => {
+    navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
+  };
+
+  const createWebhook = async (e) => {
+    e.preventDefault();
+    const enabledEvents = {};
+    Object.entries(form.events).forEach(([key, val]) => {
+      if (val.enabled) enabledEvents[key] = val;
+    });
+    const created = await api.createWebhook({
+      projectId: form.projectId,
+      repoUrl: form.repoUrl,
+      events: enabledEvents
+    });
+    setWebhooks(prev => [...prev, created]);
+    setShowForm(false);
+  };
+
+  const toggleWebhook = async (wh) => {
+    const updated = await api.updateWebhook(wh.id, { enabled: !wh.enabled });
+    setWebhooks(prev => prev.map(w => w.id === updated.id ? updated : w));
+  };
+
+  const deleteWebhook = async (id) => {
+    await api.deleteWebhook(id);
+    setWebhooks(prev => prev.filter(w => w.id !== id));
+  };
+
+  const registerOnGitHub = async (wh) => {
+    setRegistering(prev => ({ ...prev, [wh.id]: true }));
+    try {
+      const result = await api.registerWebhook(wh.id, window.location.origin);
+      alert(`Webhook registered on GitHub! Hook ID: ${result.hookId}`);
+    } catch (err) {
+      alert(`Failed: ${err.message}`);
+    }
+    setRegistering(prev => ({ ...prev, [wh.id]: false }));
+  };
+
+  const statusColor = (s) => s === 'success' ? 'bg-emerald-500' : s === 'error' ? 'bg-red-500' : s === 'running' ? 'bg-blue-500' : 'bg-gray-600';
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold">GitHub Webhooks</h3>
+        <button
+          onClick={() => setShowForm(!showForm)}
+          className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors"
+        >
+          {showForm ? 'Cancel' : '+ New Webhook'}
+        </button>
+      </div>
+
+      {showForm && (
+        <form onSubmit={createWebhook} className="bg-gray-800 rounded-xl p-4 mb-4 space-y-3">
+          <select
+            value={form.projectId}
+            onChange={(e) => setForm({ ...form, projectId: e.target.value })}
+            required
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+          >
+            <option value="">Select Project</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <input
+            value={form.repoUrl}
+            onChange={(e) => setForm({ ...form, repoUrl: e.target.value })}
+            placeholder="Repository URL (e.g. https://github.com/owner/repo)"
+            required
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+          />
+
+          <div className="space-y-2">
+            <p className="text-xs text-gray-400 font-medium">Events to handle:</p>
+            {Object.entries(form.events).map(([eventKey, eventConfig]) => (
+              <div key={eventKey} className="bg-gray-900 rounded-lg p-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={eventConfig.enabled}
+                    onChange={() => setForm({
+                      ...form,
+                      events: {
+                        ...form.events,
+                        [eventKey]: { ...eventConfig, enabled: !eventConfig.enabled }
+                      }
+                    })}
+                    className="rounded border-gray-600"
+                  />
+                  <span className="text-sm font-mono text-gray-300">{eventKey}</span>
+                </label>
+                {eventConfig.enabled && (
+                  <textarea
+                    value={eventConfig.prompt}
+                    onChange={(e) => setForm({
+                      ...form,
+                      events: {
+                        ...form.events,
+                        [eventKey]: { ...eventConfig, prompt: e.target.value }
+                      }
+                    })}
+                    rows={2}
+                    className="w-full mt-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-300 focus:outline-none focus:border-gray-600 resize-none"
+                    placeholder="Agent prompt for this event..."
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+
+          <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+            Create Webhook
+          </button>
+        </form>
+      )}
+
+      <div className="space-y-3">
+        {webhooks.map(wh => {
+          const events = JSON.parse(wh.events || '{}');
+          const enabledEvents = Object.entries(events).filter(([, v]) => v.enabled);
+          const project = projects.find(p => p.id === wh.project_id);
+          const logs = webhookLogs[wh.id] || [];
+          const isExpanded = expandedWebhook === wh.id;
+
+          return (
+            <div key={wh.id} className="bg-gray-800 rounded-xl p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium text-sm">{wh.repo_url.replace(/https?:\/\/github\.com\//, '')}</span>
+                    {project && (
+                      <span className="text-xs bg-gray-700 px-1.5 py-0.5 rounded text-gray-400">
+                        {project.name}
+                      </span>
+                    )}
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${wh.enabled ? 'bg-emerald-900/40 text-emerald-400' : 'bg-gray-700 text-gray-500'}`}>
+                      {wh.enabled ? 'active' : 'disabled'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {enabledEvents.length} event{enabledEvents.length !== 1 ? 's' : ''}: {enabledEvents.map(([k]) => k).join(', ')}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1">
+                  {logs.slice(0, 5).map(log => (
+                    <div
+                      key={log.id}
+                      title={`${log.event_type} — ${log.status}${log.duration_ms ? ` (${(log.duration_ms / 1000).toFixed(1)}s)` : ''}`}
+                      className={`w-2 h-2 rounded-full ${statusColor(log.status)}`}
+                    />
+                  ))}
+                  <button
+                    onClick={() => toggleWebhook(wh)}
+                    className={`ml-2 text-xs px-2 py-1 rounded transition-colors ${wh.enabled ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-emerald-800 hover:bg-emerald-700 text-emerald-300'}`}
+                  >
+                    {wh.enabled ? 'Disable' : 'Enable'}
+                  </button>
+                  <button
+                    onClick={() => setExpandedWebhook(isExpanded ? null : wh.id)}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors text-gray-300"
+                  >
+                    {isExpanded ? 'Hide' : 'Setup'}
+                  </button>
+                  <button
+                    onClick={() => deleteWebhook(wh.id)}
+                    className="text-xs bg-red-900/40 hover:bg-red-800/60 px-2 py-1 rounded transition-colors text-red-400"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+
+              {isExpanded && (
+                <div className="mt-3 space-y-3 border-t border-gray-700 pt-3">
+                  <div className="space-y-2">
+                    <p className="text-xs text-gray-400 font-medium">Webhook Setup</p>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 text-xs bg-gray-900 px-2 py-1.5 rounded font-mono text-gray-300 truncate">
+                        {`${window.location.origin}/api/webhooks/github`}
+                      </code>
+                      <button
+                        onClick={() => copyToClipboard(`${window.location.origin}/api/webhooks/github`, `url-${wh.id}`)}
+                        className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-gray-300"
+                      >
+                        {copiedField === `url-${wh.id}` ? 'Copied' : 'Copy URL'}
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 text-xs bg-gray-900 px-2 py-1.5 rounded font-mono text-gray-300 truncate">
+                        {wh.secret}
+                      </code>
+                      <button
+                        onClick={() => copyToClipboard(wh.secret, `secret-${wh.id}`)}
+                        className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-gray-300"
+                      >
+                        {copiedField === `secret-${wh.id}` ? 'Copied' : 'Copy Secret'}
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => registerOnGitHub(wh)}
+                      disabled={registering[wh.id]}
+                      className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-1.5 rounded text-white transition-colors"
+                    >
+                      {registering[wh.id] ? 'Registering...' : 'Auto-Register on GitHub'}
+                    </button>
+                  </div>
+
+                  <div className="space-y-1">
+                    <p className="text-xs text-gray-400 font-medium">Event Handlers</p>
+                    {enabledEvents.map(([eventKey, eventConfig]) => (
+                      <div key={eventKey} className="bg-gray-900 rounded-lg p-2">
+                        <span className="text-xs font-mono text-emerald-400">{eventKey}</span>
+                        <p className="text-xs text-gray-500 mt-0.5 truncate">{eventConfig.prompt}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {logs.length > 0 && (
+                    <div className="space-y-1">
+                      <p className="text-xs text-gray-400 font-medium">Recent Activity</p>
+                      {logs.map(log => (
+                        <div key={log.id} className="flex items-center gap-2 text-xs">
+                          <div className={`w-2 h-2 rounded-full shrink-0 ${statusColor(log.status)}`} />
+                          <span className="font-mono text-gray-400">{log.event_type}</span>
+                          <span className="text-gray-600">{log.duration_ms ? `${(log.duration_ms / 1000).toFixed(1)}s` : '...'}</span>
+                          <span className="text-gray-600 ml-auto">{new Date(log.created_at).toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {webhooks.length === 0 && !showForm && (
+          <p className="text-sm text-gray-500 text-center py-4">
+            No webhooks configured. Create one to receive GitHub events.
+          </p>
         )}
       </div>
     </div>
@@ -1945,6 +2238,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
     { id: 'agents', icon: <Bot size={16} />, text: 'Agents' },
     { id: 'heartbeats', icon: <HeartPulse size={16} />, text: 'Heartbeats' },
     { id: 'crons', icon: <Clock size={16} />, text: 'Cron Jobs' },
+    { id: 'webhooks', icon: <Webhook size={16} />, text: 'Webhooks' },
     { id: 'slack', icon: <MessageSquare size={16} />, text: 'Slack' },
     { id: 'usage', icon: <BarChart3 size={16} />, text: 'Usage' },
     { id: 'backup', icon: <HardDrive size={16} />, text: 'Backup' },
@@ -1975,6 +2269,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
         {tab === 'orgs' && <OrganizationsSection />}
         {tab === 'heartbeats' && <HeartbeatSection />}
         {tab === 'crons' && <CronSection />}
+        {tab === 'webhooks' && <WebhookSection />}
         {tab === 'slack' && <SlackSection />}
         {tab === 'agents' && <AgentConfigSection agents={agents} projects={projects} onAgentsChange={onAgentsChange} />}
         {tab === 'usage' && <UsageSection />}

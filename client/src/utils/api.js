@@ -190,6 +190,15 @@ export const api = {
   cloneRepo: (url, targetDir) =>
     fetchJSON('/projects/clone', { method: 'POST', body: JSON.stringify({ url, targetDir }) }),
 
+  // Webhooks
+  getWebhooks: () => fetchJSON('/api/webhooks'),
+  getProjectWebhooks: (projectId) => fetchJSON(`/api/webhooks/project/${projectId}`),
+  createWebhook: (data) => fetchJSON('/api/webhooks', { method: 'POST', body: JSON.stringify(data) }),
+  updateWebhook: (id, data) => fetchJSON(`/api/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteWebhook: (id) => fetchJSON(`/api/webhooks/${id}`, { method: 'DELETE' }),
+  getWebhookLogs: (id, limit = 20) => fetchJSON(`/api/webhooks/${id}/logs?limit=${limit}`),
+  registerWebhook: (id, serverUrl) => fetchJSON(`/api/webhooks/${id}/register`, { method: 'POST', body: JSON.stringify({ serverUrl }) }),
+
   // Background tasks
   getTasks: (limit = 50) => fetchJSON(`/tasks?limit=${limit}`),
   getTask: (taskId) => fetchJSON(`/tasks/${taskId}`),
