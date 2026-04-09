@@ -1,18 +1,17 @@
 /**
- * Shared git worktree utilities for Agent Hub.
+ * Clone-based workspace isolation for Agent Hub.
  *
- * Background processes (heartbeats, crons, conference rooms, delegation) use
- * `getOrCreateProcessWorktree()` to get an isolated working directory so they
- * don't mutate the main repo's checked-out branch — which would interfere with
- * editors like Cursor that are watching project.cwd.
- *
- * Interactive chat sessions continue to use `ensureSessionWorktree()` (moved
- * here from index.js) for per-session isolation.
+ * Instead of creating git worktrees inside the user's project directory,
+ * we clone into ~/.agent-hub/workspaces/<project-slug>/<purpose>/
+ * giving complete isolation with zero footprint in user projects.
  */
 
 import { execSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { existsSync, mkdirSync, cpSync, rmSync, readdirSync, statSync } from 'fs';
 import path from 'path';
+import { homedir } from 'os';
+
+const WORKSPACES_ROOT = path.join(homedir(), '.agent-hub', 'workspaces');
 
 /**
  * Check if a directory is inside a git repo.
@@ -27,170 +26,241 @@ export function isGitRepo(dir) {
 }
 
 /**
- * Ensure the .worktrees directory exists and is gitignored.
+ * Get the remote origin URL for a git repo, or null.
  */
-function ensureWorktreesRoot(projectCwd) {
-  const worktreesRoot = path.join(projectCwd, '.worktrees');
-  if (!existsSync(worktreesRoot)) {
-    mkdirSync(worktreesRoot, { recursive: true });
-    const gitignorePath = path.join(projectCwd, '.gitignore');
-    try {
-      const existing = existsSync(gitignorePath)
-        ? readFileSync(gitignorePath, 'utf8')
-        : '';
-      if (!existing.includes('.worktrees')) {
-        const newline = existing.endsWith('\n') ? '' : '\n';
-        writeFileSync(gitignorePath, existing + newline + '.worktrees/\n');
-      }
-    } catch (err) {
-      console.warn('Could not update .gitignore for .worktrees:', err.message);
-    }
+function getRemoteUrl(cwd) {
+  try {
+    return execSync('git remote get-url origin', { cwd, stdio: 'pipe' }).toString().trim();
+  } catch {
+    return null;
   }
-  return worktreesRoot;
 }
 
 /**
- * Create or reuse a worktree for a background process.
+ * Derive a short, filesystem-safe project slug from a path.
+ * e.g., /Users/ryan/Desktop/agent-hub → agent-hub
+ */
+function projectSlug(projectCwd) {
+  return path.basename(projectCwd).replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
+/**
+ * Ensure the workspaces root and project subdirectory exist.
+ */
+function ensureWorkspaceDir(projectCwd) {
+  const dir = path.join(WORKSPACES_ROOT, projectSlug(projectCwd));
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+/**
+ * Get the default branch name (main or master).
+ */
+function getDefaultBranch(cwd) {
+  try {
+    const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd, stdio: 'pipe' })
+      .toString().trim();
+    return ref.replace('refs/remotes/origin/', '');
+  } catch {
+    try {
+      execSync('git rev-parse --verify main', { cwd, stdio: 'pipe' });
+      return 'main';
+    } catch {
+      return 'master';
+    }
+  }
+}
+
+/**
+ * Fallback: copy the project directory for non-git projects.
+ */
+function copyFallback(projectCwd, destDir) {
+  try {
+    if (!existsSync(destDir)) {
+      mkdirSync(destDir, { recursive: true });
+    }
+    cpSync(projectCwd, destDir, {
+      recursive: true,
+      filter: (src) => {
+        const base = path.basename(src);
+        return !['node_modules', '.git', '.worktrees', 'dist', 'build'].includes(base);
+      },
+    });
+    console.log(`[Workspace] Created copy fallback: ${destDir}`);
+    return destDir;
+  } catch (err) {
+    console.error(`[Workspace] Copy fallback failed:`, err.message);
+    return projectCwd;
+  }
+}
+
+/**
+ * Create or reuse an isolated workspace clone for a background process.
  *
  * Keys are stable identifiers like "heartbeat-{agentId}", "cron-{cronId}",
  * "room-{roomId}-{agentId}".  Repeated calls with the same key reuse the
- * existing worktree, avoiding proliferation.
+ * existing clone, syncing it with a fetch+reset.
  *
- * Falls back to projectCwd when the directory isn't a git repo or creation
- * fails — identical to existing behavior.
+ * Falls back to projectCwd when the directory isn't a git repo or creation fails.
  *
  * @param {string} projectCwd  The project's main working directory
  * @param {string} processKey  Stable key identifying the background process
- * @returns {string} Worktree directory path (or projectCwd as fallback)
+ * @returns {string} Workspace directory path (or projectCwd as fallback)
  */
 export function getOrCreateProcessWorktree(projectCwd, processKey) {
   if (!isGitRepo(projectCwd)) {
     return projectCwd;
   }
 
-  ensureWorktreesRoot(projectCwd);
-
+  const wsDir = ensureWorkspaceDir(projectCwd);
   const safeName = processKey.replace(/[^a-zA-Z0-9_-]/g, '-');
-  const worktreeDir = path.join(projectCwd, '.worktrees', safeName);
-  const branchName = `agent-hub/bg/${safeName}`;
+  const cloneDir = path.join(wsDir, safeName);
 
-  // Already exists on disk — reuse
-  if (existsSync(worktreeDir)) {
-    return worktreeDir;
-  }
-
-  try {
-    execSync(
-      `git worktree add -b "${branchName}" "${worktreeDir}" HEAD`,
-      { cwd: projectCwd, stdio: 'pipe' }
-    );
-  } catch {
-    // Branch may already exist (e.g., server restart) — try without -b
-    if (!existsSync(worktreeDir)) {
-      try {
-        execSync(
-          `git worktree add "${worktreeDir}" "${branchName}"`,
-          { cwd: projectCwd, stdio: 'pipe' }
-        );
-      } catch (err) {
-        console.error(`[Worktree] Failed to create bg worktree "${processKey}":`, err.message);
-        return projectCwd;
-      }
+  // Already exists — sync and reuse
+  if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
+    try {
+      execSync('git fetch origin --quiet', { cwd: cloneDir, stdio: 'pipe', timeout: 30000 });
+      const defaultBranch = getDefaultBranch(projectCwd);
+      execSync(`git reset --hard origin/${defaultBranch}`, { cwd: cloneDir, stdio: 'pipe' });
+    } catch (err) {
+      console.warn(`[Workspace] Sync failed for "${safeName}", reusing as-is:`, err.message);
     }
+    return cloneDir;
   }
 
-  console.log(`[Worktree] Created bg worktree: ${worktreeDir} (branch: ${branchName})`);
-  return worktreeDir;
+  // Create a fresh shallow clone
+  try {
+    const remoteUrl = getRemoteUrl(projectCwd);
+    if (remoteUrl) {
+      execSync(
+        `git clone --depth 1 --quiet "${remoteUrl}" "${cloneDir}"`,
+        { cwd: projectCwd, stdio: 'pipe', timeout: 60000 }
+      );
+    } else {
+      execSync(
+        `git clone --depth 1 --quiet "${projectCwd}" "${cloneDir}"`,
+        { stdio: 'pipe', timeout: 60000 }
+      );
+    }
+    console.log(`[Workspace] Created clone: ${cloneDir}`);
+    return cloneDir;
+  } catch (err) {
+    console.error(`[Workspace] Failed to create clone "${safeName}":`, err.message);
+    return copyFallback(projectCwd, cloneDir);
+  }
 }
 
 /**
- * Ensure a session-specific worktree exists.
- *
- * Moved from index.js — identical logic but accepts a `persistFn` callback
- * so the caller can write the worktree path to the DB without this module
- * needing to know about `stmts`.
+ * Create or reuse an isolated workspace clone for a chat session.
  *
  * @param {object} session       Session row from DB
  * @param {string} projectCwd    Project's main working directory
  * @param {string} agentId       Agent identifier (for the branch name)
- * @param {function} persistFn   (worktreePath, branchName, sessionId) => void
- * @returns {string} Worktree directory path (or projectCwd as fallback)
+ * @param {function} persistFn   (workspacePath, branchName, sessionId) => void
+ * @returns {string} Workspace directory path (or projectCwd as fallback)
  */
-export function ensureSessionWorktree(session, projectCwd, agentId, persistFn) {
+export function ensureSessionWorkspace(session, projectCwd, agentId, persistFn) {
+  // Already created and still on disk — reuse
   if (session.worktree_path && existsSync(session.worktree_path)) {
     return session.worktree_path;
   }
 
   if (!isGitRepo(projectCwd)) {
-    console.warn(`Worktree requested but ${projectCwd} is not a git repo — falling back`);
+    console.warn(`Workspace requested but ${projectCwd} is not a git repo — falling back`);
     return projectCwd;
   }
 
-  ensureWorktreesRoot(projectCwd);
-
+  const wsDir = ensureWorkspaceDir(projectCwd);
   const shortId = session.id.slice(0, 8);
   const safeName = `session-${shortId}`;
-  const worktreeDir = path.join(projectCwd, '.worktrees', safeName);
+  const cloneDir = path.join(wsDir, safeName);
   const branchName = `agent-hub/${agentId}/${safeName}`;
 
-  try {
-    execSync(
-      `git worktree add -b "${branchName}" "${worktreeDir}" HEAD`,
-      { cwd: projectCwd, stdio: 'pipe' }
-    );
-  } catch {
-    if (!existsSync(worktreeDir)) {
-      try {
-        execSync(
-          `git worktree add "${worktreeDir}" "${branchName}"`,
-          { cwd: projectCwd, stdio: 'pipe' }
-        );
-      } catch (err) {
-        console.error('Failed to create worktree:', err.message);
-        return projectCwd;
-      }
-    }
+  if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
+    // Clone exists from a previous attempt — reuse
+    persistFn(cloneDir, branchName, session.id);
+    return cloneDir;
   }
 
-  persistFn(worktreeDir, branchName, session.id);
-  console.log(`Created worktree for session ${shortId}: ${worktreeDir} (branch: ${branchName})`);
-  return worktreeDir;
+  try {
+    const remoteUrl = getRemoteUrl(projectCwd);
+    if (remoteUrl) {
+      execSync(
+        `git clone --depth 1 --quiet "${remoteUrl}" "${cloneDir}"`,
+        { cwd: projectCwd, stdio: 'pipe', timeout: 60000 }
+      );
+    } else {
+      execSync(
+        `git clone --depth 1 --quiet "${projectCwd}" "${cloneDir}"`,
+        { stdio: 'pipe', timeout: 60000 }
+      );
+    }
+
+    // Create the feature branch
+    execSync(`git checkout -b "${branchName}"`, { cwd: cloneDir, stdio: 'pipe' });
+
+    persistFn(cloneDir, branchName, session.id);
+    console.log(`[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})`);
+    return cloneDir;
+  } catch (err) {
+    console.error(`[Workspace] Failed to create session clone:`, err.message);
+    return projectCwd;
+  }
 }
 
 /**
- * Remove stale background worktrees that haven't been modified recently.
- * Only targets bg worktrees (not session-* ones, which are managed by session
- * delete in index.js).
+ * Remove a workspace directory (e.g., on session delete).
+ * Simple rm -rf — no git worktree bookkeeping needed.
+ *
+ * @param {string} workspacePath  The workspace directory to remove
+ */
+export function removeWorkspace(workspacePath) {
+  if (!workspacePath || !existsSync(workspacePath)) return;
+
+  // Safety: only remove paths under our managed root
+  if (!workspacePath.startsWith(WORKSPACES_ROOT)) {
+    console.warn(`[Workspace] Refusing to remove path outside managed root: ${workspacePath}`);
+    return;
+  }
+
+  try {
+    rmSync(workspacePath, { recursive: true, force: true });
+    console.log(`[Workspace] Removed: ${workspacePath}`);
+  } catch (err) {
+    console.error(`[Workspace] Failed to remove ${workspacePath}:`, err.message);
+  }
+}
+
+/**
+ * Remove stale background clones that haven't been modified recently.
+ * Only targets non-session clones (session clones are managed via session delete).
  *
  * @param {string} projectCwd  Project's main working directory
  * @param {number} maxAgeMs    Max age in ms before cleanup (default 24h)
  */
-export function cleanupStaleWorktrees(projectCwd, maxAgeMs = 24 * 60 * 60 * 1000) {
-  if (!isGitRepo(projectCwd)) return;
-  const worktreesRoot = path.join(projectCwd, '.worktrees');
-  if (!existsSync(worktreesRoot)) return;
+export function cleanupStaleWorkspaces(projectCwd, maxAgeMs = 24 * 60 * 60 * 1000) {
+  const wsDir = path.join(WORKSPACES_ROOT, projectSlug(projectCwd));
+  if (!existsSync(wsDir)) return;
 
   try {
-    const entries = readdirSync(worktreesRoot);
+    const entries = readdirSync(wsDir);
     const now = Date.now();
     for (const entry of entries) {
-      // Skip session worktrees — those are managed via session delete
-      if (entry.startsWith('session-')) continue;
-      const fullPath = path.join(worktreesRoot, entry);
+      if (entry.startsWith('session-')) continue; // Managed by session delete
+      const fullPath = path.join(wsDir, entry);
       try {
         const stat = statSync(fullPath);
         if (now - stat.mtimeMs > maxAgeMs) {
-          execSync(`git worktree remove "${fullPath}" --force`, {
-            cwd: projectCwd,
-            stdio: 'pipe',
-          });
-          console.log(`[Worktree] Cleaned up stale bg worktree: ${entry}`);
+          rmSync(fullPath, { recursive: true, force: true });
+          console.log(`[Workspace] Cleaned up stale clone: ${entry}`);
         }
       } catch (err) {
-        console.warn(`[Worktree] Cleanup failed for ${entry}:`, err.message);
+        console.warn(`[Workspace] Cleanup failed for ${entry}:`, err.message);
       }
     }
   } catch (err) {
-    console.error('[Worktree] Cleanup scan failed:', err.message);
+    console.error('[Workspace] Cleanup scan failed:', err.message);
   }
 }
