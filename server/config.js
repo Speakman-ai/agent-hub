@@ -98,6 +98,8 @@ const config = {
   // ── Timeouts ───────────────────────────────────────────────────
   /** Default heartbeat / cron timeout (ms) */
   defaultTimeoutMs:   resolveInt(null, 'defaultTimeoutMs',  5 * 60 * 1000),
+  /** Docs agent heartbeat timeout (ms) — docs agents do more work */
+  docsTimeoutMs:      resolveInt(null, 'docsTimeoutMs',     10 * 60 * 1000),
   /** Babysit cron timeout (ms) */
   babysitTimeoutMs:   resolveInt(null, 'babysitTimeoutMs',  15 * 60 * 1000),
   /** Slack response timeout (ms) */

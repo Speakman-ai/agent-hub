@@ -196,7 +196,10 @@ export async function runHeartbeat(agent) {
 
   try {
     const heartbeatCwd = getOrCreateProcessWorktree(agent.cwd, `heartbeat-${agent.id}`);
-    const result = await runClaude(agent.heartbeat.prompt, heartbeatCwd, agent.systemPrompt);
+    // Docs agents do more work (read git log, check wiki, write pages) — give them more time
+    const isDocsAgent = agent.role === 'docs';
+    const timeoutMs = agent.heartbeat.timeoutMs || (isDocsAgent ? config.docsTimeoutMs : config.defaultTimeoutMs);
+    const result = await runClaude(agent.heartbeat.prompt, heartbeatCwd, agent.systemPrompt, { timeoutMs });
     stmts.updateHeartbeatLog.run(result, 'success', logId);
     console.log(`[Heartbeat] ${agent.name} completed successfully`);
 
