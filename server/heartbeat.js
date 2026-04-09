@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { stmts } from './db.js';
+import { db, stmts } from './db.js';
 import config from './config.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
 
@@ -10,6 +10,9 @@ const SLACK_WEBHOOK_URL = config.slackWebhookUrl;
 
 // Track scheduled tasks so we can stop/restart them
 const scheduledTasks = new Map();
+
+// Track which agents have a heartbeat currently running (prevent double-launch)
+const runningHeartbeats = new Set();
 
 // Optional callback for babysit-complete events (set by index.js).
 let onBabysitComplete = null;
@@ -189,6 +192,13 @@ async function sendPushNotifications(cronName, result, sessionId, cronId) {
 export async function runHeartbeat(agent) {
   if (!agent.heartbeat?.prompt) return null;
 
+  // Prevent double-launch — skip if this agent already has a heartbeat running
+  if (runningHeartbeats.has(agent.id)) {
+    console.log(`[Heartbeat] Skipping ${agent.name} — already running`);
+    return null;
+  }
+  runningHeartbeats.add(agent.id);
+
   console.log(`[Heartbeat] Running for ${agent.name}...`);
   persistLastRun('heartbeat', agent.id);
   const logEntry = stmts.addHeartbeatLog.run(agent.id, agent.heartbeat.prompt, 'running');
@@ -211,6 +221,7 @@ export async function runHeartbeat(agent) {
     console.error(`[Heartbeat] ${agent.name} failed:`, errorMsg);
     return { id: logId, status: 'error', result: errorMsg };
   } finally {
+    runningHeartbeats.delete(agent.id);
     // Refresh next-run from the live task so the DB reflects the upcoming fire.
     const task = scheduledTasks.get(`heartbeat:${agent.id}`);
     if (task) persistNextRun('heartbeat', agent.id, task);
@@ -347,6 +358,19 @@ export function scheduleAll(agents) {
   for (const [key, task] of scheduledTasks) {
     task.stop();
     scheduledTasks.delete(key);
+  }
+
+  // Clean up stale "running" heartbeat logs from previous server crashes/restarts.
+  // These will never complete, so mark them as errors.
+  try {
+    const cleaned = db.prepare(
+      `UPDATE heartbeat_logs SET status = 'error', result = 'Server restarted — run abandoned' WHERE status = 'running'`
+    ).run();
+    if (cleaned.changes > 0) {
+      console.log(`[Heartbeat] Cleaned up ${cleaned.changes} stale "running" log(s) from previous boot`);
+    }
+  } catch (err) {
+    console.error('[Heartbeat] Failed to clean stale logs:', err.message);
   }
 
   const now = Date.now();

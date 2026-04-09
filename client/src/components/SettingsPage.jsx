@@ -431,6 +431,8 @@ function HeartbeatSection() {
   const [expandedAgent, setExpandedAgent] = useState(null);
   const [logs, setLogs] = useState({});
   const [running, setRunning] = useState({});
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ interval: '', prompt: '' });
   // Tick every 30s so the "next run in Xm" badges decrement live without
   // hitting the network. Server is re-polled every 60s for fresh state.
   const [, setTick] = useState(0);
@@ -477,12 +479,61 @@ function HeartbeatSection() {
     setTimeout(() => setRunning((prev) => ({ ...prev, [agentId]: false })), 3000);
   };
 
+  const startEdit = (hb) => {
+    setEditingId(hb.agentId);
+    setEditForm({ interval: hb.heartbeat.interval || '', prompt: hb.heartbeat.prompt || '' });
+  };
+
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    await api.updateHeartbeat(editingId, { interval: editForm.interval, prompt: editForm.prompt });
+    setHeartbeats((prev) =>
+      prev.map((h) =>
+        h.agentId === editingId
+          ? { ...h, heartbeat: { ...h.heartbeat, interval: editForm.interval, prompt: editForm.prompt } }
+          : h
+      )
+    );
+    setEditingId(null);
+  };
+
   return (
     <div>
       <h3 className="text-lg font-semibold mb-4">Agent Heartbeats</h3>
       <div className="space-y-3">
         {heartbeats.map((hb) => (
           <div key={hb.agentId} className="bg-gray-800 rounded-xl overflow-hidden">
+            {editingId === hb.agentId ? (
+              <form onSubmit={saveEdit} className="p-4 space-y-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: hb.color }} />
+                  <span className="font-medium text-sm">{hb.agentName}</span>
+                </div>
+                <input
+                  value={editForm.interval}
+                  onChange={(e) => setEditForm({ ...editForm, interval: e.target.value })}
+                  placeholder="Cron schedule (e.g. 0 */12 * * *)"
+                  required
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                />
+                <textarea
+                  value={editForm.prompt}
+                  onChange={(e) => setEditForm({ ...editForm, prompt: e.target.value })}
+                  placeholder="Heartbeat prompt"
+                  required
+                  rows={4}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 resize-none"
+                />
+                <div className="flex gap-2">
+                  <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors">
+                    Save
+                  </button>
+                  <button type="button" onClick={() => setEditingId(null)} className="bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1.5 rounded-lg transition-colors">
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
             <div className="flex items-center gap-3 p-4">
               <span
                 className="w-3 h-3 rounded-full flex-shrink-0"
@@ -532,6 +583,12 @@ function HeartbeatSection() {
               </div>
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <button
+                  onClick={() => startEdit(hb)}
+                  className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
                   onClick={() => triggerRun(hb.agentId)}
                   disabled={running[hb.agentId]}
                   className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
@@ -556,6 +613,7 @@ function HeartbeatSection() {
                 </button>
               </div>
             </div>
+            )}
 
             {expandedAgent === hb.agentId && (
               <div className="border-t border-gray-700 p-4 max-h-64 overflow-y-auto">
