@@ -11,7 +11,7 @@ const PRIORITY_STYLES = {
 
 const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
 
-export default function KanbanBoard({ projectId, project, agents = [], refreshKey }) {
+export default function KanbanBoard({ projectId, project, agents = [], refreshKey, onNavigateToSession }) {
   const [board, setBoard] = useState(null);
   const [columns, setColumns] = useState([]);
   const [cards, setCards] = useState([]);
@@ -34,6 +34,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
   const [newComment, setNewComment] = useState('');
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [assigning, setAssigning] = useState(false);
 
   const addTitleRef = useRef(null);
 
@@ -333,7 +334,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                           )}
                           <div className="flex items-center gap-2 mt-2 flex-wrap">
                             {card.assignee && (
-                              <span className="text-xs text-gray-400">{card.assignee}</span>
+                              <span className={`text-xs ${card.session_id ? 'text-indigo-400' : 'text-gray-400'}`}>
+                                {card.session_id ? '● ' : ''}{card.assignee}
+                              </span>
                             )}
                             {card.labels &&
                               card.labels.split(',').filter(Boolean).map((label) => (
@@ -469,16 +472,63 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
 
               {/* Assignee */}
               <label className="block text-xs text-gray-500 mb-1">Assignee</label>
-              <select
-                value={detailForm.assignee}
-                onChange={(e) => setDetailForm((f) => ({ ...f, assignee: e.target.value }))}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500 mb-4"
-              >
-                <option value="">Unassigned</option>
-                {agents.map((a) => (
-                  <option key={a.id} value={a.name}>{a.name}</option>
-                ))}
-              </select>
+              {selectedCard?.session_id ? (
+                <div className="mb-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-sm text-white">{detailForm.assignee || 'Assigned'}</span>
+                    <span className="text-xs bg-emerald-900/40 text-emerald-400 px-2 py-0.5 rounded">Session active</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const agent = agents.find((a) => a.name === selectedCard.assignee);
+                      if (agent && onNavigateToSession) {
+                        onNavigateToSession(agent.id, selectedCard.session_id);
+                      }
+                    }}
+                    className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    Open Session
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 mb-4">
+                  <select
+                    value={detailForm.assignee}
+                    onChange={(e) => setDetailForm((f) => ({ ...f, assignee: e.target.value }))}
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                  >
+                    <option value="">Unassigned</option>
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.name}>{a.name}</option>
+                    ))}
+                  </select>
+                  {detailForm.assignee && (
+                    <button
+                      onClick={async () => {
+                        const agent = agents.find((a) => a.name === detailForm.assignee);
+                        if (!agent) return;
+                        setAssigning(true);
+                        try {
+                          const result = await api.assignCard(projectId, selectedCard.id, agent.id);
+                          setSelectedCard((prev) => ({ ...prev, ...result.card, session_id: result.sessionId }));
+                          fetchBoard();
+                          if (onNavigateToSession) {
+                            onNavigateToSession(agent.id, result.sessionId);
+                          }
+                        } catch (err) {
+                          console.error('Failed to assign card:', err);
+                        } finally {
+                          setAssigning(false);
+                        }
+                      }}
+                      disabled={assigning}
+                      className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
+                    >
+                      {assigning ? 'Starting...' : 'Assign & Start'}
+                    </button>
+                  )}
+                </div>
+              )}
 
               {/* Labels */}
               <label className="block text-xs text-gray-500 mb-1">Labels (comma separated)</label>

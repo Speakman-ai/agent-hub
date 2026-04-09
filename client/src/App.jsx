@@ -1042,6 +1042,11 @@ export default function App() {
             project={projects.find((p) => p.id === currentView.split(':')[1])}
             agents={agents}
             refreshKey={kanbanRefreshKey}
+            onNavigateToSession={(agentId, sessionId) => {
+              setActiveAgentId(agentId);
+              setActiveSessionId(sessionId);
+              setCurrentView('chat');
+            }}
           />
         ) : currentView.startsWith('settings') ? (
           <SettingsPage projects={projects} agents={agents} onAgentsChange={refreshAgents} initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined} />

@@ -198,6 +198,8 @@ export const api = {
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'PUT', body: JSON.stringify(data) }),
   moveCard: (projectId, cardId, data) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/move`, { method: 'POST', body: JSON.stringify(data) }),
+  assignCard: (projectId, cardId, agentId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, { method: 'POST', body: JSON.stringify({ agentId }) }),
   deleteCard: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'DELETE' }),
   getCardComments: (projectId, cardId) =>
