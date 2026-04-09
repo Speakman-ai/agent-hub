@@ -26,6 +26,8 @@ export default function Sidebar({
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [hoveredRoom, setHoveredRoom] = useState(null);
+  const [newRoomName, setNewRoomName] = useState('');
+  const [showNewRoomInput, setShowNewRoomInput] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [collapsedAgents, setCollapsedAgents] = useState({});
 
@@ -400,12 +402,36 @@ export default function Sidebar({
                 )}
               </div>
             ))}
-            <button
-              onClick={onNewRoom}
-              className="text-xs text-gray-600 hover:text-gray-400 px-3 py-1 transition-colors"
-            >
-              + New Room
-            </button>
+            {showNewRoomInput ? (
+              <input
+                autoFocus
+                value={newRoomName}
+                onChange={(e) => setNewRoomName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && newRoomName.trim()) {
+                    onNewRoom(newRoomName.trim());
+                    setNewRoomName('');
+                    setShowNewRoomInput(false);
+                  } else if (e.key === 'Escape') {
+                    setNewRoomName('');
+                    setShowNewRoomInput(false);
+                  }
+                }}
+                onBlur={() => {
+                  setNewRoomName('');
+                  setShowNewRoomInput(false);
+                }}
+                placeholder="Room name..."
+                className="w-full text-xs bg-gray-800 text-gray-200 px-3 py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            ) : (
+              <button
+                onClick={() => setShowNewRoomInput(true)}
+                className="text-xs text-gray-600 hover:text-gray-400 px-3 py-1 transition-colors"
+              >
+                + New Room
+              </button>
+            )}
           </div>
             );
           })()}

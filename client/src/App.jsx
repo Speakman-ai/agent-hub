@@ -774,8 +774,7 @@ export default function App() {
     api.getRoomMessages(activeRoomId).then(setRoomMessages).catch(console.error);
   }, [activeRoomId]);
 
-  const handleNewRoom = async () => {
-    const name = prompt('Room name:');
+  const handleNewRoom = async (name) => {
     if (!name?.trim()) return;
     const room = await api.createRoom(name.trim());
     setRooms((prev) => [room, ...prev]);
