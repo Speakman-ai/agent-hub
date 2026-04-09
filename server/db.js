@@ -282,6 +282,24 @@ function initDb(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_card_comments(card_id);
 
+    -- Kanban epics: grouping layer above cards
+    CREATE TABLE IF NOT EXISTS kanban_epics (
+      id TEXT PRIMARY KEY,
+      board_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      color TEXT NOT NULL DEFAULT '#6366F1',
+      autonomous INTEGER NOT NULL DEFAULT 0,
+      autonomous_interval INTEGER NOT NULL DEFAULT 5,
+      autonomous_max_concurrent INTEGER NOT NULL DEFAULT 2,
+      autonomous_max_iterations INTEGER NOT NULL DEFAULT 3,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (board_id) REFERENCES kanban_boards(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_kanban_epics_board ON kanban_epics(board_id);
+
     CREATE TABLE IF NOT EXISTS webhook_configs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id TEXT NOT NULL,
@@ -411,6 +429,9 @@ function initDb(dataDir) {
   } catch {
     db.exec('ALTER TABLE sessions ADD COLUMN cron_id INTEGER');
   }
+
+  // Migrate: add epic_id to kanban_cards if not present
+  try { db.exec('ALTER TABLE kanban_cards ADD COLUMN epic_id TEXT'); } catch(e) { /* already exists */ }
 
   // Migration: create wiki FTS5 index if wiki_pages table exists
   try {
@@ -756,7 +777,7 @@ function initDb(dataDir) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
     updateKanbanCard: db.prepare(
-      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, updated_at = datetime('now') WHERE id = ?`
+      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, epic_id = ?, updated_at = datetime('now') WHERE id = ?`
     ),
     moveKanbanCard: db.prepare(
       `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`
@@ -767,6 +788,20 @@ function initDb(dataDir) {
     getKanbanCardComments: db.prepare('SELECT * FROM kanban_card_comments WHERE card_id = ? ORDER BY created_at ASC'),
     createKanbanCardComment: db.prepare('INSERT INTO kanban_card_comments (id, card_id, author, content) VALUES (?, ?, ?, ?)'),
     deleteKanbanCardComment: db.prepare('DELETE FROM kanban_card_comments WHERE id = ?'),
+
+    // Kanban epics
+    getKanbanEpics: db.prepare('SELECT * FROM kanban_epics WHERE board_id = ? ORDER BY position ASC'),
+    getKanbanEpic: db.prepare('SELECT * FROM kanban_epics WHERE id = ?'),
+    createKanbanEpic: db.prepare(
+      `INSERT INTO kanban_epics (id, board_id, name, description, color, position) VALUES (?, ?, ?, ?, ?, ?)`
+    ),
+    updateKanbanEpic: db.prepare(
+      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_max_iterations = ?, updated_at = datetime('now') WHERE id = ?`
+    ),
+    deleteKanbanEpic: db.prepare('DELETE FROM kanban_epics WHERE id = ?'),
+    getKanbanCardsByEpic: db.prepare('SELECT * FROM kanban_cards WHERE epic_id = ? ORDER BY position ASC'),
+    updateKanbanCardEpic: db.prepare('UPDATE kanban_cards SET epic_id = ?, updated_at = datetime(\'now\') WHERE id = ?'),
+    getAutonomousEpic: db.prepare('SELECT * FROM kanban_epics WHERE board_id = ? AND autonomous = 1 LIMIT 1'),
 
     // Webhook configs
     getWebhookConfigs: db.prepare('SELECT * FROM webhook_configs ORDER BY created_at DESC'),

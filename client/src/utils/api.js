@@ -207,6 +207,17 @@ export const api = {
   addCardComment: (projectId, cardId, data) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`, { method: 'POST', body: JSON.stringify(data) }),
 
+  // Epics
+  getEpics: (projectId) => fetchJSON(`/projects/${projectId}/board/epics`),
+  createEpic: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/board/epics`, { method: 'POST', body: JSON.stringify(data) }),
+  updateEpic: (projectId, epicId, data) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteEpic: (projectId, epicId) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'DELETE' }),
+  linkCardToEpic: (projectId, cardId, epicId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/epic`, { method: 'POST', body: JSON.stringify({ epicId }) }),
+
   // Webhooks
   getWebhooks: () => fetchJSON('/api/webhooks'),
   getProjectWebhooks: (projectId) => fetchJSON(`/api/webhooks/project/${projectId}`),

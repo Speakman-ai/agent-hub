@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, GripVertical, MoreHorizontal, X, MessageSquare, ExternalLink, Trash2 } from 'lucide-react';
+import { Plus, GripVertical, MoreHorizontal, X, MessageSquare, ExternalLink, Trash2, Zap, Target, ChevronDown, Settings } from 'lucide-react';
 import { api } from '../utils/api.js';
 
 const PRIORITY_STYLES = {
@@ -10,6 +10,18 @@ const PRIORITY_STYLES = {
 };
 
 const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
+
+const EPIC_COLORS = [
+  '#6366F1', // indigo
+  '#8B5CF6', // violet
+  '#EC4899', // pink
+  '#EF4444', // red
+  '#F97316', // orange
+  '#EAB308', // yellow
+  '#22C55E', // green
+  '#06B6D4', // cyan
+  '#3B82F6', // blue
+];
 
 export default function KanbanBoard({ projectId, project, agents = [], refreshKey, onNavigateToSession }) {
   const [board, setBoard] = useState(null);
@@ -36,6 +48,13 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [assigning, setAssigning] = useState(false);
 
+  // Epics
+  const [epics, setEpics] = useState([]);
+  const [selectedEpicId, setSelectedEpicId] = useState(null);
+  const [showEpicForm, setShowEpicForm] = useState(false);
+  const [epicForm, setEpicForm] = useState({ name: '', description: '', color: '#6366F1' });
+  const [editingEpic, setEditingEpic] = useState(null);
+
   const addTitleRef = useRef(null);
 
   const fetchBoard = useCallback(async () => {
@@ -45,6 +64,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
       setBoard(data.board);
       setColumns(data.columns);
       setCards(data.cards);
+      setEpics(data.epics || []);
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -76,6 +96,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
   const cardsForColumn = (columnId) =>
     cards
       .filter((c) => c.column_id === columnId)
+      .filter((c) => !selectedEpicId || c.epic_id === selectedEpicId)
       .sort((a, b) => a.position - b.position);
 
   // --- Drag and Drop ---
@@ -92,7 +113,6 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
   };
 
   const handleDragLeave = (e, columnId) => {
-    // Only clear if we're truly leaving the column
     if (e.currentTarget && !e.currentTarget.contains(e.relatedTarget)) {
       setDragOverColumn(null);
     }
@@ -108,7 +128,6 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
     const card = cards.find((c) => c.id === cardId || c.id === Number(cardId));
     if (!card || card.column_id === columnId) return;
 
-    // Optimistic update
     const colCards = cardsForColumn(columnId);
     const newPosition = colCards.length;
     setCards((prev) =>
@@ -133,12 +152,16 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
   const handleAddCard = async (columnId) => {
     if (!newCardTitle.trim()) return;
     try {
-      await api.createCard(projectId, {
+      const payload = {
         title: newCardTitle.trim(),
         priority: newCardPriority,
         columnId,
         createdBy: 'user',
-      });
+      };
+      if (selectedEpicId) {
+        payload.epicId = selectedEpicId;
+      }
+      await api.createCard(projectId, payload);
       setNewCardTitle('');
       setNewCardPriority('medium');
       setAddingInColumn(null);
@@ -205,10 +228,75 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
       assignee: card.assignee || '',
       labels: card.labels || '',
       github_issue_url: card.github_issue_url || '',
+      epic_id: card.epic_id || '',
     });
     setConfirmDelete(false);
     setNewComment('');
   };
+
+  // --- Epic CRUD ---
+  const handleCreateEpic = async () => {
+    if (!epicForm.name.trim()) return;
+    try {
+      await api.createEpic(projectId, epicForm);
+      setEpicForm({ name: '', description: '', color: '#6366F1' });
+      setShowEpicForm(false);
+      fetchBoard();
+    } catch (err) {
+      console.error('Failed to create epic:', err);
+    }
+  };
+
+  const handleUpdateEpic = async () => {
+    if (!editingEpic) return;
+    try {
+      await api.updateEpic(projectId, editingEpic.id, epicForm);
+      setEditingEpic(null);
+      setEpicForm({ name: '', description: '', color: '#6366F1' });
+      fetchBoard();
+    } catch (err) {
+      console.error('Failed to update epic:', err);
+    }
+  };
+
+  const handleDeleteEpic = async (epicId) => {
+    try {
+      await api.deleteEpic(projectId, epicId);
+      if (selectedEpicId === epicId) setSelectedEpicId(null);
+      setEditingEpic(null);
+      fetchBoard();
+    } catch (err) {
+      console.error('Failed to delete epic:', err);
+    }
+  };
+
+  const handleLinkCardEpic = async (epicId) => {
+    if (!selectedCard) return;
+    try {
+      await api.linkCardToEpic(projectId, selectedCard.id, epicId || null);
+      setDetailForm((f) => ({ ...f, epic_id: epicId || '' }));
+      fetchBoard();
+    } catch (err) {
+      console.error('Failed to link epic:', err);
+    }
+  };
+
+  const openEpicEdit = (epic, e) => {
+    e.stopPropagation();
+    setEditingEpic(epic);
+    setEpicForm({
+      name: epic.name,
+      description: epic.description || '',
+      color: epic.color || '#6366F1',
+      autonomous: epic.autonomous || 0,
+      autonomous_interval: epic.autonomous_interval || 5,
+      autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
+      autonomous_max_iterations: epic.autonomous_max_iterations || 3,
+    });
+    setShowEpicForm(false);
+  };
+
+  const epicCardCount = (epicId) => cards.filter((c) => c.epic_id === epicId).length;
 
   if (loading) {
     return (
@@ -255,7 +343,6 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
         </div>
         <button
           onClick={() => {
-            // Open add form in the first non-backlog column, or first column
             const target = columns.find((c) => c.name.toLowerCase() !== 'backlog') || columns[0];
             if (target) setAddingInColumn(target.id);
           }}
@@ -265,6 +352,206 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
           Add Card
         </button>
       </div>
+
+      {/* Epic Bar */}
+      <div className="px-6 py-2 border-b border-gray-800/50 flex items-center gap-2 overflow-x-auto scrollbar-thin">
+        {/* All filter pill */}
+        <button
+          onClick={() => setSelectedEpicId(null)}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
+            !selectedEpicId
+              ? 'bg-gray-700 text-white ring-1 ring-gray-500'
+              : 'bg-gray-800/60 text-gray-400 hover:text-gray-300 hover:bg-gray-800'
+          }`}
+        >
+          All
+        </button>
+
+        {epics.map((epic) => {
+          const isActive = selectedEpicId === epic.id;
+          const count = epicCardCount(epic.id);
+          return (
+            <div key={epic.id} className="relative flex items-center group">
+              <button
+                onClick={() => setSelectedEpicId(isActive ? null : epic.id)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
+                  isActive
+                    ? 'text-white ring-2 ring-offset-1 ring-offset-gray-900'
+                    : 'text-gray-400 hover:text-gray-200 bg-gray-800/60 hover:bg-gray-800'
+                }`}
+                style={isActive ? { backgroundColor: epic.color + '30', ringColor: epic.color } : {}}
+              >
+                <span
+                  className="w-2 h-2 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: epic.color }}
+                />
+                {epic.name}
+                <span className="text-gray-500 ml-0.5">{count}</span>
+                {epic.autonomous === 1 && (
+                  <span className="relative flex h-2 w-2 ml-0.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={(e) => openEpicEdit(epic, e)}
+                className="ml-0.5 p-0.5 text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <Settings size={12} />
+              </button>
+            </div>
+          );
+        })}
+
+        {/* + Epic button */}
+        <button
+          onClick={() => {
+            setShowEpicForm(true);
+            setEditingEpic(null);
+            setEpicForm({ name: '', description: '', color: '#6366F1' });
+          }}
+          className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800/60 whitespace-nowrap transition-colors"
+        >
+          <Plus size={12} />
+          Epic
+        </button>
+      </div>
+
+      {/* Epic Create/Edit Form (inline dropdown) */}
+      {(showEpicForm || editingEpic) && (
+        <div className="px-6 py-3 border-b border-gray-800/50 bg-gray-850">
+          <div className="max-w-md space-y-3">
+            <div className="flex items-center gap-2 mb-1">
+              <Target size={14} className="text-gray-400" />
+              <span className="text-sm font-medium text-gray-300">
+                {editingEpic ? 'Edit Epic' : 'New Epic'}
+              </span>
+            </div>
+
+            <input
+              type="text"
+              value={epicForm.name}
+              onChange={(e) => setEpicForm((f) => ({ ...f, name: e.target.value }))}
+              placeholder="Epic name..."
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-500"
+              autoFocus
+            />
+
+            <input
+              type="text"
+              value={epicForm.description}
+              onChange={(e) => setEpicForm((f) => ({ ...f, description: e.target.value }))}
+              placeholder="Description (optional)"
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-500"
+            />
+
+            {/* Color picker */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-gray-500 mr-1">Color</span>
+              {EPIC_COLORS.map((color) => (
+                <button
+                  key={color}
+                  onClick={() => setEpicForm((f) => ({ ...f, color }))}
+                  className={`w-5 h-5 rounded-full transition-all ${
+                    epicForm.color === color ? 'ring-2 ring-white ring-offset-1 ring-offset-gray-900 scale-110' : 'hover:scale-110'
+                  }`}
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+            </div>
+
+            {/* Autonomous toggle */}
+            {editingEpic && (
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <button
+                    onClick={() => setEpicForm((f) => ({ ...f, autonomous: f.autonomous ? 0 : 1 }))}
+                    className={`relative w-8 h-4.5 rounded-full transition-colors ${
+                      epicForm.autonomous ? 'bg-emerald-600' : 'bg-gray-700'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${
+                        epicForm.autonomous ? 'translate-x-3.5' : ''
+                      }`}
+                    />
+                  </button>
+                  <Zap size={14} className={epicForm.autonomous ? 'text-emerald-400' : 'text-gray-500'} />
+                  <span className={`text-sm ${epicForm.autonomous ? 'text-emerald-400' : 'text-gray-400'}`}>
+                    Autonomous Mode
+                  </span>
+                </label>
+
+                {epicForm.autonomous === 1 && (
+                  <div className="flex items-center gap-3 pl-6">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-0.5">Interval (min)</label>
+                      <input
+                        type="number"
+                        value={epicForm.autonomous_interval || 5}
+                        onChange={(e) => setEpicForm((f) => ({ ...f, autonomous_interval: parseInt(e.target.value) || 5 }))}
+                        min={1}
+                        className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-0.5">Max concurrent</label>
+                      <input
+                        type="number"
+                        value={epicForm.autonomous_max_concurrent || 2}
+                        onChange={(e) => setEpicForm((f) => ({ ...f, autonomous_max_concurrent: parseInt(e.target.value) || 2 }))}
+                        min={1}
+                        max={5}
+                        className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-0.5">Max iterations</label>
+                      <input
+                        type="number"
+                        value={epicForm.autonomous_max_iterations || 3}
+                        onChange={(e) => setEpicForm((f) => ({ ...f, autonomous_max_iterations: parseInt(e.target.value) || 3 }))}
+                        min={1}
+                        max={10}
+                        className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={editingEpic ? handleUpdateEpic : handleCreateEpic}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition-colors"
+              >
+                {editingEpic ? 'Save' : 'Create'}
+              </button>
+              <button
+                onClick={() => {
+                  setShowEpicForm(false);
+                  setEditingEpic(null);
+                  setEpicForm({ name: '', description: '', color: '#6366F1' });
+                }}
+                className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs rounded transition-colors"
+              >
+                Cancel
+              </button>
+              {editingEpic && (
+                <button
+                  onClick={() => handleDeleteEpic(editingEpic.id)}
+                  className="px-3 py-1.5 text-red-500 hover:text-red-400 text-xs transition-colors ml-auto"
+                >
+                  Delete Epic
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Board */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden p-4">
@@ -299,59 +586,79 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
 
                 {/* Cards */}
                 <div className="flex-1 overflow-y-auto px-2 py-1 space-y-2">
-                  {colCards.map((card) => (
-                    <div
-                      key={card.id}
-                      draggable
-                      onDragStart={(e) => handleDragStart(e, card.id)}
-                      onDragEnd={handleDragEnd}
-                      onClick={() => openDetail(card)}
-                      className={`rounded-lg p-3 bg-gray-800 border border-gray-700 hover:border-gray-600 cursor-grab active:cursor-grabbing transition-colors ${
-                        dragCardId === card.id ? 'opacity-50' : ''
-                      }`}
-                    >
-                      <div className="flex items-start gap-2">
-                        <GripVertical size={14} className="text-gray-600 mt-0.5 flex-shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-sm font-medium text-white truncate">
-                              {card.title}
-                            </span>
-                          </div>
-                          {card.priority && (
-                            <span
-                              className={`inline-block text-xs px-1.5 py-0.5 rounded-full mb-1 ${
-                                PRIORITY_STYLES[card.priority] || PRIORITY_STYLES.medium
-                              }`}
-                            >
-                              {card.priority}
-                            </span>
-                          )}
-                          {card.description && (
-                            <p className="text-xs text-gray-500 line-clamp-2 mt-1">
-                              {card.description}
-                            </p>
-                          )}
-                          <div className="flex items-center gap-2 mt-2 flex-wrap">
-                            {card.assignee && (
-                              <span className={`text-xs ${card.session_id ? 'text-indigo-400' : 'text-gray-400'}`}>
-                                {card.session_id ? '● ' : ''}{card.assignee}
+                  {colCards.map((card) => {
+                    const cardEpic = card.epic_id ? epics.find((e) => e.id === card.epic_id) : null;
+                    return (
+                      <div
+                        key={card.id}
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, card.id)}
+                        onDragEnd={handleDragEnd}
+                        onClick={() => openDetail(card)}
+                        className={`rounded-lg p-3 bg-gray-800 border border-gray-700 hover:border-gray-600 cursor-grab active:cursor-grabbing transition-colors ${
+                          dragCardId === card.id ? 'opacity-50' : ''
+                        }`}
+                      >
+                        <div className="flex items-start gap-2">
+                          <GripVertical size={14} className="text-gray-600 mt-0.5 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-sm font-medium text-white truncate">
+                                {card.title}
                               </span>
-                            )}
-                            {card.labels &&
-                              card.labels.split(',').filter(Boolean).map((label) => (
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                              {card.priority && (
                                 <span
-                                  key={label}
-                                  className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded"
+                                  className={`inline-block text-xs px-1.5 py-0.5 rounded-full ${
+                                    PRIORITY_STYLES[card.priority] || PRIORITY_STYLES.medium
+                                  }`}
                                 >
-                                  {label.trim()}
+                                  {card.priority}
                                 </span>
-                              ))}
+                              )}
+                              {cardEpic && (
+                                <span
+                                  className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full"
+                                  style={{
+                                    backgroundColor: cardEpic.color + '20',
+                                    color: cardEpic.color,
+                                  }}
+                                >
+                                  <span
+                                    className="w-1.5 h-1.5 rounded-full"
+                                    style={{ backgroundColor: cardEpic.color }}
+                                  />
+                                  {cardEpic.name}
+                                </span>
+                              )}
+                            </div>
+                            {card.description && (
+                              <p className="text-xs text-gray-500 line-clamp-2 mt-1">
+                                {card.description}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-2 mt-2 flex-wrap">
+                              {card.assignee && (
+                                <span className={`text-xs ${card.session_id ? 'text-indigo-400' : 'text-gray-400'}`}>
+                                  {card.session_id ? '● ' : ''}{card.assignee}
+                                </span>
+                              )}
+                              {card.labels &&
+                                card.labels.split(',').filter(Boolean).map((label) => (
+                                  <span
+                                    key={label}
+                                    className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded"
+                                  >
+                                    {label.trim()}
+                                  </span>
+                                ))}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
                   {/* Inline add form */}
                   {addingInColumn === col.id && (
@@ -539,6 +846,19 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                 placeholder="bug, feature, docs"
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500 mb-4"
               />
+
+              {/* Epic */}
+              <label className="block text-xs text-gray-500 mb-1">Epic</label>
+              <select
+                value={detailForm.epic_id}
+                onChange={(e) => handleLinkCardEpic(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500 mb-4"
+              >
+                <option value="">None</option>
+                {epics.map((e) => (
+                  <option key={e.id} value={e.id}>{e.name}</option>
+                ))}
+              </select>
 
               {/* GitHub URL */}
               <label className="block text-xs text-gray-500 mb-1">GitHub URL</label>
