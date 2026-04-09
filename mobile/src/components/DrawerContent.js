@@ -395,6 +395,16 @@ export default function DrawerContent({ navigation }) {
         <TouchableOpacity
           style={styles.navButton}
           onPress={() => {
+            const pid = projects?.[0]?.id;
+            if (pid) navigation.navigate('Wiki', { projectId: pid });
+            navigation.closeDrawer();
+          }}
+        >
+          <Text style={styles.navButtonText}>Wiki</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => {
             navigation.navigate('Skills');
             navigation.closeDrawer();
           }}

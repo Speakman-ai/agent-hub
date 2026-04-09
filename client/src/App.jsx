@@ -12,6 +12,7 @@ import RoomChat from './components/RoomChat.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
+import WikiBrowser from './components/WikiBrowser.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 import { MessageCircle, Info, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
@@ -61,6 +62,8 @@ export default function App() {
   const [roomProcessing, setRoomProcessing] = useState(false);
   // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
   const [delegations, setDelegations] = useState({});
+  // Wiki state
+  const [wikiProjectId, setWikiProjectId] = useState(null);
   // Cron-linked sessions (scheduled tasks)
   const [cronSessions, setCronSessions] = useState([]);
   // Skills for the active agent (for /slash-command autocomplete)
@@ -544,6 +547,14 @@ export default function App() {
       case 'cron_session_update':
         api.getCronSessions().then(setCronSessions).catch(() => {});
         break;
+
+      case 'wiki_update':
+        window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
+        break;
+
+      case 'wiki_delete':
+        window.dispatchEvent(new CustomEvent('wiki_delete', { detail: data }));
+        break;
     }
   }, []);
 
@@ -977,8 +988,9 @@ export default function App() {
           }}
           onNewSession={handleNewSession}
           onDeleteSession={handleDeleteSession}
-          onNavigate={(view) => {
+          onNavigate={(view, extra) => {
             setCurrentView(view);
+            if (view === 'wiki' && extra) setWikiProjectId(extra);
             setSidebarOpen(false);
           }}
           currentView={currentView}
@@ -994,6 +1006,7 @@ export default function App() {
           onDeleteRoom={handleDeleteRoom}
           onOpenProject={() => setShowWizard(true)}
           cronSessions={cronSessions}
+          wikiProjectId={wikiProjectId}
         />
       </div>
 
@@ -1018,6 +1031,8 @@ export default function App() {
 
         {currentView.startsWith('settings') ? (
           <SettingsPage projects={projects} agents={agents} onAgentsChange={refreshAgents} initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined} />
+        ) : currentView === 'wiki' && wikiProjectId ? (
+          <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
         ) : currentView === 'skills' ? (
           <SkillsPage agents={agents} />
         ) : currentView === 'room' && activeRoom ? (

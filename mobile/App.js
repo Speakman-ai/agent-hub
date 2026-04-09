@@ -12,6 +12,7 @@ import ChatScreen from './src/screens/ChatScreen';
 import SkillsScreen from './src/screens/SkillsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
+import WikiScreen from './src/screens/WikiScreen';
 import DrawerContent from './src/components/DrawerContent';
 import { colors } from './src/theme/colors';
 
@@ -100,11 +101,11 @@ function AppContent() {
   }).current;
   // Keep closeSidebar reference current
   navigation.closeDrawer = closeSidebar;
-  navigation.navigate = (screen) => {
+  navigation.navigate = (screen, params) => {
     closeSidebar();
     setTimeout(() => {
       if (navigationRef.current) {
-        navigationRef.current.navigate(screen);
+        navigationRef.current.navigate(screen, params);
       }
     }, 50);
   };
@@ -119,6 +120,7 @@ function AppContent() {
             <Stack.Screen name="Skills" component={SkillsScreen} />
             <Stack.Screen name="Settings" component={SettingsScreen} />
             <Stack.Screen name="Rooms" component={RoomsScreen} />
+            <Stack.Screen name="Wiki" component={WikiScreen} />
           </Stack.Navigator>
         </NavigationContainer>
 

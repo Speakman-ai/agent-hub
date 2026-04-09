@@ -254,6 +254,22 @@ function initDb(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS idx_webhook_logs_config ON webhook_logs(webhook_config_id);
     CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at DESC);
+
+    -- Wiki pages: per-project knowledge base with full-text search
+    CREATE TABLE IF NOT EXISTS wiki_pages (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'general',
+      updated_by TEXT NOT NULL DEFAULT 'user',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(project_id, slug)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wiki_project ON wiki_pages(project_id);
+    CREATE INDEX IF NOT EXISTS idx_wiki_category ON wiki_pages(project_id, category);
   `);
 
   // Migration: add next_run_at to crons (last_run already exists)
@@ -340,6 +356,18 @@ function initDb(dataDir) {
     db.prepare('SELECT cron_id FROM sessions LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE sessions ADD COLUMN cron_id INTEGER');
+  }
+
+  // Migration: create wiki FTS5 index if wiki_pages table exists
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS wiki_pages_fts USING fts5(
+        title, content, slug UNINDEXED, project_id UNINDEXED,
+        content_rowid='rowid'
+      );
+    `);
+  } catch (e) {
+    console.warn('[wiki] FTS5 creation failed (may already exist):', e.message);
   }
 
   // Seed default crons if table is empty
@@ -664,6 +692,15 @@ function initDb(dataDir) {
     updateWebhookLog: db.prepare('UPDATE webhook_logs SET status = ?, result = ?, duration_ms = ? WHERE id = ?'),
     getWebhookLogs: db.prepare('SELECT * FROM webhook_logs WHERE webhook_config_id = ? ORDER BY created_at DESC LIMIT ?'),
     getRecentWebhookLogs: db.prepare('SELECT wl.*, wc.repo_url FROM webhook_logs wl JOIN webhook_configs wc ON wl.webhook_config_id = wc.id ORDER BY wl.created_at DESC LIMIT ?'),
+
+    // Wiki pages
+    getWikiPages: db.prepare('SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at FROM wiki_pages WHERE project_id = ? ORDER BY updated_at DESC'),
+    getWikiPage: db.prepare('SELECT * FROM wiki_pages WHERE project_id = ? AND slug = ?'),
+    getWikiPageById: db.prepare('SELECT * FROM wiki_pages WHERE id = ?'),
+    createWikiPage: db.prepare('INSERT INTO wiki_pages (id, project_id, title, slug, content, category, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+    updateWikiPage: db.prepare("UPDATE wiki_pages SET title = ?, content = ?, category = ?, updated_by = ?, updated_at = datetime('now') WHERE project_id = ? AND slug = ?"),
+    deleteWikiPage: db.prepare('DELETE FROM wiki_pages WHERE project_id = ? AND slug = ?'),
+    getWikiPagesByCategory: db.prepare('SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at FROM wiki_pages WHERE project_id = ? AND category = ? ORDER BY updated_at DESC'),
   };
 
   // Cache for future switches.
