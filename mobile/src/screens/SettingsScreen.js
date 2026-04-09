@@ -8,6 +8,8 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -1342,37 +1344,47 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.pageTitle}>Settings</Text>
-
-        {/* Tab bar */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
         <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.tabBar}
-          contentContainerStyle={styles.tabBarContent}
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
         >
-          {tabs.map((t) => (
-            <TouchableOpacity
-              key={t.id}
-              style={[styles.tabItem, tab === t.id && styles.tabItemActive]}
-              onPress={() => setTab(t.id)}
-            >
-              <Text style={[styles.tabItemText, tab === t.id && styles.tabItemTextActive]}>
-                {t.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+          <Text style={styles.pageTitle}>Settings</Text>
 
-        {tab === 'orgs' && <OrganizationsSection />}
-        {tab === 'usage' && <UsageSection />}
-        {tab === 'heartbeats' && <HeartbeatSection />}
-        {tab === 'crons' && <CronSection />}
-        {tab === 'slack' && <SlackSection />}
-        {tab === 'agents' && <AgentConfigSection />}
-        {tab === 'config' && <ConfigBackupSection />}
-      </ScrollView>
+          {/* Tab bar */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.tabBar}
+            contentContainerStyle={styles.tabBarContent}
+          >
+            {tabs.map((t) => (
+              <TouchableOpacity
+                key={t.id}
+                style={[styles.tabItem, tab === t.id && styles.tabItemActive]}
+                onPress={() => setTab(t.id)}
+              >
+                <Text style={[styles.tabItemText, tab === t.id && styles.tabItemTextActive]}>
+                  {t.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          {tab === 'orgs' && <OrganizationsSection />}
+          {tab === 'usage' && <UsageSection />}
+          {tab === 'heartbeats' && <HeartbeatSection />}
+          {tab === 'crons' && <CronSection />}
+          {tab === 'slack' && <SlackSection />}
+          {tab === 'agents' && <AgentConfigSection />}
+          {tab === 'config' && <ConfigBackupSection />}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

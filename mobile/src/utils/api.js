@@ -140,6 +140,16 @@ export const api = {
   getSlackMessages: (agentId, limit = 50) =>
     fetchJSON(`/slack/messages?${agentId ? `agentId=${agentId}&` : ''}limit=${limit}`),
 
+  // Devices (push notifications)
+  registerDevice: (token, platform = 'ios') =>
+    fetchJSON('/devices', {
+      method: 'POST',
+      body: JSON.stringify({ token, platform }),
+    }),
+
+  // Cron sessions
+  getCronSessions: () => fetchJSON('/sessions/cron'),
+
   // Message events (for session timeline)
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
 

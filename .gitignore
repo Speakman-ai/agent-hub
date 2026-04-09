@@ -39,3 +39,6 @@ server/uploads/
 .DS_Store
 Thumbs.db
 .worktrees/
+release/
+server/connection.json
+server/server.log

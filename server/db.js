@@ -219,6 +219,14 @@ function initDb(dataDir) {
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_message_queue_session ON message_queue(session_id, position ASC);
+
+    CREATE TABLE IF NOT EXISTS device_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token TEXT NOT NULL UNIQUE,
+      platform TEXT NOT NULL DEFAULT 'ios',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_used TEXT
+    );
   `);
 
   // Migration: add next_run_at to crons (last_run already exists)
@@ -298,6 +306,13 @@ function initDb(dataDir) {
     db.prepare('SELECT attachments FROM room_messages LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE room_messages ADD COLUMN attachments TEXT');
+  }
+
+  // Migration: add cron_id to sessions (links session to a cron job)
+  try {
+    db.prepare('SELECT cron_id FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN cron_id INTEGER');
   }
 
   // Seed default crons if table is empty
@@ -578,6 +593,37 @@ function initDb(dataDir) {
     ),
     getAllQueuedSessions: db.prepare(
       'SELECT DISTINCT session_id FROM message_queue'
+    ),
+
+    // Cron sessions
+    getSessionByCronId: db.prepare(
+      'SELECT * FROM sessions WHERE cron_id = ? LIMIT 1'
+    ),
+    getAllCronSessions: db.prepare(
+      `SELECT s.*, c.name as cron_name, c.schedule as cron_schedule
+       FROM sessions s JOIN crons c ON s.cron_id = c.id
+       ORDER BY s.updated_at DESC`
+    ),
+    updateSessionCronId: db.prepare(
+      'UPDATE sessions SET cron_id = ? WHERE id = ?'
+    ),
+
+    // Device tokens (push notifications)
+    registerDeviceToken: db.prepare(
+      `INSERT INTO device_tokens (token, platform, last_used)
+       VALUES (?, ?, datetime('now'))
+       ON CONFLICT(token) DO UPDATE SET
+         platform = excluded.platform,
+         last_used = datetime('now')`
+    ),
+    removeDeviceToken: db.prepare(
+      'DELETE FROM device_tokens WHERE token = ?'
+    ),
+    getAllDeviceTokens: db.prepare(
+      'SELECT * FROM device_tokens'
+    ),
+    updateDeviceTokenLastUsed: db.prepare(
+      "UPDATE device_tokens SET last_used = datetime('now') WHERE token = ?"
     ),
   };
 

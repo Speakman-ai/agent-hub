@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import { spawn } from 'child_process';
+import { v4 as uuidv4 } from 'uuid';
 import { stmts } from './db.js';
 import config from './config.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
@@ -13,6 +14,10 @@ const scheduledTasks = new Map();
 // Optional callback for babysit-complete events (set by index.js).
 let onBabysitComplete = null;
 export function setOnBabysitComplete(fn) { onBabysitComplete = fn; }
+
+// Optional callback for cron session updates (set by index.js).
+let onCronSessionUpdate = null;
+export function setOnCronSessionUpdate(fn) { onCronSessionUpdate = fn; }
 
 /**
  * Format a Date as an ISO string suitable for SQLite TEXT columns.
@@ -139,6 +144,46 @@ async function notifySlack(agentName, result) {
 }
 
 /**
+ * Send push notifications to all registered mobile devices via Expo's push API.
+ */
+async function sendPushNotifications(cronName, result, sessionId, cronId) {
+  const tokens = stmts.getAllDeviceTokens.all();
+  if (!tokens.length) return;
+
+  const body = result.length > 200 ? result.slice(0, 200) + '...' : result;
+
+  const messages = tokens.map(t => ({
+    to: t.token,
+    sound: 'default',
+    title: `Cron: ${cronName}`,
+    body,
+    data: { sessionId, cronId: String(cronId) },
+  }));
+
+  // Expo supports batches of 100
+  for (let i = 0; i < messages.length; i += 100) {
+    const chunk = messages.slice(i, i + 100);
+    try {
+      const resp = await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(chunk),
+      });
+      const data = await resp.json();
+      if (data.data) {
+        data.data.forEach((receipt, idx) => {
+          if (receipt.status === 'error' && receipt.details?.error === 'DeviceNotRegistered') {
+            stmts.removeDeviceToken.run(chunk[idx].to);
+          }
+        });
+      }
+    } catch (err) {
+      console.error('[push] Failed to send:', err.message);
+    }
+  }
+}
+
+/**
  * Execute a heartbeat for an agent
  */
 export async function runHeartbeat(agent) {
@@ -189,6 +234,37 @@ export async function runCronJob(cronJob) {
     stmts.updateCronResult.run(result, cronJob.id);
     stmts.updateCronLog.run(result, 'success', durationMs, logId);
     console.log(`[Cron] "${cronJob.name}" completed successfully (${durationMs}ms)`);
+
+    // ── Save result to a dedicated cron session ─────────────────
+    try {
+      let session = stmts.getSessionByCronId.get(cronJob.id);
+      if (!session) {
+        const sessionId = uuidv4();
+        const sessionName = `Cron: ${cronJob.name}`;
+        stmts.createSession.run(sessionId, '_cron', sessionName, 'claude-code', 'claude-opus-4-6', 0);
+        stmts.updateSessionCronId.run(cronJob.id, sessionId);
+        session = stmts.getSession.get(sessionId);
+      }
+      // Add the result as an assistant message
+      const msgId = uuidv4();
+      stmts.addMessage.run(msgId, session.id, 'assistant', result, 'claude-code', null, null);
+      stmts.touchSession.run(session.id);
+
+      // Send push notifications to registered mobile devices
+      await sendPushNotifications(cronJob.name, result, session.id, cronJob.id);
+
+      // Broadcast WebSocket event so clients can update their sidebar
+      if (onCronSessionUpdate) {
+        onCronSessionUpdate({
+          type: 'cron_session_update',
+          sessionId: session.id,
+          cronId: cronJob.id,
+          cronName: cronJob.name,
+        });
+      }
+    } catch (err) {
+      console.error(`[Cron] Failed to save session/push for "${cronJob.name}":`, err.message);
+    }
 
     // ── Babysit auto-termination ────────────────────────────────
     // If this is a [babysit] cron and the agent reported completion,

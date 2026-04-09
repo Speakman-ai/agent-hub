@@ -61,6 +61,8 @@ export default function App() {
   const [roomProcessing, setRoomProcessing] = useState(false);
   // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
   const [delegations, setDelegations] = useState({});
+  // Cron-linked sessions (scheduled tasks)
+  const [cronSessions, setCronSessions] = useState([]);
   // Skills for the active agent (for /slash-command autocomplete)
   const [skills, setSkills] = useState([]);
   // Open Project wizard
@@ -538,6 +540,10 @@ export default function App() {
           prev.map((m) => m.id === data.messageId ? { ...m, content: data.content } : m)
         );
         break;
+
+      case 'cron_session_update':
+        api.getCronSessions().then(setCronSessions).catch(() => {});
+        break;
     }
   }, []);
 
@@ -731,6 +737,15 @@ export default function App() {
   useEffect(() => {
     refreshRooms();
   }, [refreshRooms]);
+
+  // ─── Cron sessions (scheduled tasks) ───────────────────
+  const refreshCronSessions = useCallback(() => {
+    api.getCronSessions().then(setCronSessions).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshCronSessions();
+  }, [refreshCronSessions]);
 
   // Load room messages when active room changes
   useEffect(() => {
@@ -978,6 +993,7 @@ export default function App() {
           onNewRoom={handleNewRoom}
           onDeleteRoom={handleDeleteRoom}
           onOpenProject={() => setShowWizard(true)}
+          cronSessions={cronSessions}
         />
       </div>
 

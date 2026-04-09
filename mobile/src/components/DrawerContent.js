@@ -14,6 +14,18 @@ import { getOrgs, getActiveOrg } from '../utils/orgs';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 
+function humanSchedule(cron) {
+  if (!cron) return '';
+  const p = cron.split(' ');
+  if (p[0].startsWith('*/') && p[1] === '*') return `every ${p[0].slice(2)}m`;
+  if (p[0] === '0' && p[1].startsWith('*/')) return `every ${p[1].slice(2)}h`;
+  if (p[0] === '0' && /^\d+$/.test(p[1]) && p[2] === '*') {
+    const h = parseInt(p[1]);
+    return `daily ${h > 12 ? h - 12 : h}${h >= 12 ? 'pm' : 'am'}`;
+  }
+  return cron;
+}
+
 export default function DrawerContent({ navigation }) {
   const {
     agents,
@@ -30,6 +42,7 @@ export default function DrawerContent({ navigation }) {
     activeRoomId,
     setActiveRoomId,
     refreshRooms,
+    cronSessions,
   } = useApp();
 
   const [collapsedAgents, setCollapsedAgents] = useState({});
@@ -71,6 +84,12 @@ export default function DrawerContent({ navigation }) {
         onPress: () => handleDeleteSession(sessionId),
       },
     ]);
+  };
+
+  const handleCronSessionSelect = (sessionId) => {
+    setActiveSessionId(sessionId);
+    navigation.navigate('Chat');
+    navigation.closeDrawer();
   };
 
   // Agents that belong to a known project
@@ -212,6 +231,37 @@ export default function DrawerContent({ navigation }) {
 
       {/* Agents grouped by Project */}
       <ScrollView style={styles.agentList}>
+        {cronSessions.length > 0 && (
+          <View style={{ marginBottom: 16 }}>
+            <Text style={styles.sectionLabel}>SCHEDULED TASKS</Text>
+            {cronSessions.map((cs) => (
+              <TouchableOpacity
+                key={cs.id}
+                style={[
+                  styles.agentItem,
+                  activeSessionId === cs.id && styles.agentItemActive,
+                ]}
+                onPress={() => handleCronSessionSelect(cs.id)}
+              >
+                <View style={styles.agentInfo}>
+                  <Text
+                    style={[
+                      styles.agentName,
+                      activeSessionId === cs.id && styles.agentNameActive,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {cs.cron_name || cs.name}
+                  </Text>
+                  <Text style={styles.cronScheduleText}>
+                    {humanSchedule(cs.cron_schedule)}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         {projects.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>PROJECTS</Text>
@@ -524,6 +574,11 @@ const styles = StyleSheet.create({
     color: colors.white,
   },
   agentLastMessage: {
+    fontSize: 11,
+    color: colors.gray600,
+    marginTop: 2,
+  },
+  cronScheduleText: {
     fontSize: 11,
     color: colors.gray600,
     marginTop: 2,

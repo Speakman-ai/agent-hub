@@ -5,8 +5,9 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { AppProvider } from './src/context/AppContext';
+import { AppProvider, useApp } from './src/context/AppContext';
 import { SidebarContext } from './src/context/SidebarContext';
+import { useNotifications } from './src/hooks/useNotifications';
 import ChatScreen from './src/screens/ChatScreen';
 import SkillsScreen from './src/screens/SkillsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
@@ -37,6 +38,15 @@ function AppContent() {
   const slideAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const overlayAnim = useRef(new Animated.Value(0)).current;
   const navigationRef = useRef(null);
+  const { setActiveSessionId } = useApp();
+
+  // Push notifications — tap navigates to the relevant session
+  useNotifications(useCallback((sessionId) => {
+    setActiveSessionId(sessionId);
+    if (navigationRef.current) {
+      navigationRef.current.navigate('Chat');
+    }
+  }, [setActiveSessionId]));
 
   const openSidebar = useCallback(() => {
     sidebarOpenRef.current = true;

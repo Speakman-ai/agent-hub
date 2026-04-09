@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Building2, BookOpen, Settings } from 'lucide-react';
+import { Building2, BookOpen, Settings, Clock } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
 
 export default function Sidebar({
@@ -21,6 +21,7 @@ export default function Sidebar({
   onNewRoom,
   onDeleteRoom,
   onOpenProject,
+  cronSessions = [],
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [hoveredRoom, setHoveredRoom] = useState(null);
@@ -43,6 +44,18 @@ export default function Sidebar({
     return Date.now() - d.getTime() < 30 * 60 * 1000;
   };
 
+  function humanSchedule(cron) {
+    if (!cron) return '';
+    const p = cron.split(' ');
+    if (p[0].startsWith('*/') && p[1] === '*') return `every ${p[0].slice(2)}m`;
+    if (p[0] === '0' && p[1].startsWith('*/')) return `every ${p[1].slice(2)}h`;
+    if (p[0] === '0' && /^\d+$/.test(p[1]) && p[2] === '*') {
+      const h = parseInt(p[1]);
+      return `daily ${h > 12 ? h - 12 : h}${h >= 12 ? 'pm' : 'am'}`;
+    }
+    return cron;
+  }
+
   // Find which project the active agent belongs to
   const activeProject = projects.find((p) =>
     p.agents.some((a) => a.id === activeAgentId)
@@ -58,6 +71,41 @@ export default function Sidebar({
       {/* Projects & Agents */}
       <div className="flex-1 overflow-y-auto">
         <div className="p-3">
+          {cronSessions.length > 0 && (
+            <div className="mb-4">
+              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2 flex items-center gap-1.5">
+                <Clock size={12} />
+                Scheduled Tasks
+              </div>
+              {cronSessions.map((cs) => {
+                const isRunning = !!activeTaskSessionIds[cs.id];
+                return (
+                  <button
+                    key={cs.id}
+                    onClick={() => {
+                      onSelectSession(cs.id);
+                      onNavigate('chat');
+                    }}
+                    className={`w-full text-left px-3 py-2 rounded-lg mb-0.5 flex items-center gap-2 transition-colors ${
+                      activeSessionId === cs.id && currentView === 'chat'
+                        ? 'bg-gray-800 text-white'
+                        : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+                    }`}
+                  >
+                    {isRunning && (
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
+                        title="Task running"
+                      />
+                    )}
+                    <span className="flex-1 truncate text-sm">{cs.cron_name}</span>
+                    <span className="text-xs text-gray-600 flex-shrink-0">{humanSchedule(cs.cron_schedule)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
             Projects
           </div>

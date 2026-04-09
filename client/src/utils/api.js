@@ -98,6 +98,9 @@ export const api = {
   runHeartbeat: (agentId) =>
     fetchJSON(`/heartbeats/${agentId}/run`, { method: 'POST' }),
 
+  // Cron Sessions
+  getCronSessions: () => fetchJSON('/sessions/cron'),
+
   // Crons
   getCrons: () => fetchJSON('/crons'),
   getCronLogs: (id, limit = 3) =>

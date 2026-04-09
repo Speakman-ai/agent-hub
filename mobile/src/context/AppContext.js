@@ -44,6 +44,8 @@ export function AppProvider({ children }) {
   const [messageQueues, setMessageQueues] = useState({});
   // Session events: { [messageId]: [{ seq, event }] }
   const [eventsByMessage, setEventsByMessage] = useState({});
+  // Cron-linked sessions
+  const [cronSessions, setCronSessions] = useState([]);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSessionIdRef = useRef(activeSessionId);
@@ -354,6 +356,11 @@ export function AppProvider({ children }) {
         }
         break;
 
+      // Cron session updates
+      case 'cron_session_update':
+        api.getCronSessions().then(setCronSessions).catch(() => {});
+        break;
+
       // Queue events
       case 'queue_updated':
         setMessageQueues((prev) => ({
@@ -408,14 +415,16 @@ export function AppProvider({ children }) {
         reconnect();
       }
       try {
-        const [agentData, projectData, roomData] = await Promise.all([
+        const [agentData, projectData, roomData, cronSessionData] = await Promise.all([
           api.getAgents(),
           api.getProjects().catch(() => []),
           api.getRooms().catch(() => []),
+          api.getCronSessions().catch(() => []),
         ]);
         setAgents(agentData);
         setProjects(projectData);
         setRooms(roomData);
+        setCronSessions(cronSessionData);
         if (agentData.length > 0) setActiveAgentId(agentData[0].id);
       } catch (err) {
         console.error('Failed to load initial data:', err);
@@ -516,18 +525,21 @@ export function AppProvider({ children }) {
     setDelegations({});
     setMessageQueues({});
     setEventsByMessage({});
+    setCronSessions([]);
     // Reconnect WebSocket to new org
     reconnect();
     // Reload data
     try {
-      const [agentData, projectData, roomData] = await Promise.all([
+      const [agentData, projectData, roomData, cronSessionData] = await Promise.all([
         api.getAgents(),
         api.getProjects().catch(() => []),
         api.getRooms().catch(() => []),
+        api.getCronSessions().catch(() => []),
       ]);
       setAgents(agentData);
       setProjects(projectData);
       setRooms(roomData);
+      setCronSessions(cronSessionData);
       if (agentData.length > 0) setActiveAgentId(agentData[0].id);
     } catch (err) {
       console.error('Failed to load data after org switch:', err);
@@ -726,6 +738,7 @@ export function AppProvider({ children }) {
     handleEditQueuedMessage,
     handleDelegationCancel,
     handleEventsLoaded,
+    cronSessions,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
