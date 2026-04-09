@@ -155,7 +155,7 @@ export default function Sidebar({
                     />
                     <span className="flex-1 truncate text-sm font-medium">{project.name}</span>
                     {activeAgents.length > 1 && (
-                      <span className="text-gray-600 text-xs">
+                      <span className="text-gray-600 text-base">
                         {isCollapsed ? '▸' : '▾'}
                       </span>
                     )}
@@ -186,6 +186,7 @@ export default function Sidebar({
                       const renderAgent = (agent, indent = 0) => {
                         const isActive = activeAgentId === agent.id;
                         const subs = subAgentMap[agent.id] || [];
+                        const isTopLevel = agent.role === 'lead' || agent.role === 'docs' || subs.length > 0;
                         const isLead = agent.role === 'lead' || subs.length > 0;
 
                         return (
@@ -209,7 +210,7 @@ export default function Sidebar({
                                   <img src={agent.avatar} alt="" className="w-5 h-5 rounded-full object-cover" />
                                 ) : (
                                   <span
-                                    className={`block ${isLead ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
+                                    className={`block ${isTopLevel ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
                                     style={{ backgroundColor: agent.color }}
                                   />
                                 )}
@@ -224,7 +225,7 @@ export default function Sidebar({
                               {isActive && (
                                 <button
                                   onClick={(e) => toggleAgentCollapse(agent.id, e)}
-                                  className="text-gray-500 hover:text-gray-300 text-xs"
+                                  className="text-gray-500 hover:text-gray-300 text-base"
                                 >
                                   {collapsedAgents[agent.id] ? '▸' : '▾'}
                                 </button>

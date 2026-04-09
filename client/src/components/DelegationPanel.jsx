@@ -76,7 +76,7 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
               Cancel
             </button>
           )}
-          <span className="text-gray-600 text-xs">
+          <span className="text-gray-600 text-base">
             {collapsed ? '▸' : '▾'}
           </span>
         </div>
@@ -100,7 +100,7 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
                   {d.agentName}
                 </span>
                 {statusIcon(d.status)}
-                <span className="text-gray-600 text-xs ml-1">
+                <span className="text-gray-600 text-base ml-1">
                   {expandedAgents[d.delegationId] ? '▾' : '▸'}
                 </span>
               </button>

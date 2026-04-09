@@ -98,7 +98,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
         onClick={() => setExpanded(!expanded)}
       >
         <span className="text-sm font-medium text-gray-300 flex items-center gap-1.5"><FileText size={14} /> {filename}</span>
-        <span className="text-gray-500 text-xs">{expanded ? '▲' : '▼'}</span>
+        <span className="text-gray-500 text-base">{expanded ? '▲' : '▼'}</span>
       </div>
       {expanded && (
         <div className="border-t border-gray-700 p-4">
