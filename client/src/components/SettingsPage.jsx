@@ -3,7 +3,7 @@ import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import { saveConnectionConfig, testConnection, getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, switchOrg } from '../utils/orgs.js';
-import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft, Webhook } from 'lucide-react';
+import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, Pencil, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft, Webhook } from 'lucide-react';
 
 function OrganizationsSection() {
   const [orgsState, setOrgsState] = useState(() => getOrgs());
@@ -607,6 +607,8 @@ function CronSection() {
   const [, setTick] = useState(0);
   const [cronLogs, setCronLogs] = useState({});       // { [cronId]: log[] }
   const [expandedLog, setExpandedLog] = useState(null); // "cronId:logId"
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
     name: '',
     schedule: '',
@@ -688,6 +690,24 @@ function CronSection() {
     setForm({ name: '', schedule: '', prompt: '', cwd: '/home/ryan', enabled: true });
   };
 
+  const startEditing = (cronJob) => {
+    setEditingId(cronJob.id);
+    setEditForm({
+      name: cronJob.name,
+      schedule: cronJob.schedule,
+      prompt: cronJob.prompt,
+      cwd: cronJob.cwd || '',
+    });
+  };
+
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    const updated = await api.updateCron(editingId, editForm);
+    setCrons((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+    setEditingId(null);
+    setEditForm({});
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -745,6 +765,53 @@ function CronSection() {
       <div className="space-y-3">
         {crons.map((cronJob) => (
           <div key={cronJob.id} className="bg-gray-800 rounded-xl p-4">
+            {editingId === cronJob.id ? (
+              <form onSubmit={saveEdit} className="space-y-3">
+                <input
+                  value={editForm.name}
+                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                  placeholder="Name"
+                  required
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                />
+                <input
+                  value={editForm.schedule}
+                  onChange={(e) => setEditForm({ ...editForm, schedule: e.target.value })}
+                  placeholder="Cron schedule (e.g. */30 * * * *)"
+                  required
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                />
+                <textarea
+                  value={editForm.prompt}
+                  onChange={(e) => setEditForm({ ...editForm, prompt: e.target.value })}
+                  placeholder="Prompt"
+                  required
+                  rows={3}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 resize-none"
+                />
+                <input
+                  value={editForm.cwd}
+                  onChange={(e) => setEditForm({ ...editForm, cwd: e.target.value })}
+                  placeholder="Working directory"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingId(null)}
+                    className="bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
             <div className="flex items-center gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -879,6 +946,13 @@ function CronSection() {
                   {cronJob.enabled ? 'ON' : 'OFF'}
                 </button>
                 <button
+                  onClick={() => startEditing(cronJob)}
+                  className="text-xs text-gray-500 hover:text-blue-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                  title="Edit"
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
                   onClick={() => deleteCron(cronJob.id)}
                   className="text-xs text-gray-500 hover:text-red-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                 >
@@ -886,6 +960,7 @@ function CronSection() {
                 </button>
               </div>
             </div>
+            )}
           </div>
         ))}
         {crons.length === 0 && (
