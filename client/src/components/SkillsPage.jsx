@@ -92,7 +92,7 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
                 <Trash2 size={14} />
               </button>
             )}
-            <span className="text-gray-500 text-lg leading-none">{expanded ? '▲' : '▼'}</span>
+            <span className="text-gray-500 text-2xl leading-none">{expanded ? '▲' : '▼'}</span>
           </div>
         </div>
       </div>
@@ -148,7 +148,7 @@ function RegistryCard({ skill, installedIds, onInstall }) {
             >
               {isInstalled ? 'Installed' : <><Download size={12} /> Install</>}
             </button>
-            <span className="text-gray-500 text-lg leading-none">{expanded ? '▲' : '▼'}</span>
+            <span className="text-gray-500 text-2xl leading-none">{expanded ? '▲' : '▼'}</span>
           </div>
         </div>
       </div>
@@ -205,7 +205,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
         onClick={() => setExpanded(!expanded)}
       >
         <span className="text-sm font-medium text-gray-300 flex items-center gap-1.5"><FileText size={14} /> {filename}</span>
-        <span className="text-gray-500 text-lg leading-none">{expanded ? '▲' : '▼'}</span>
+        <span className="text-gray-500 text-2xl leading-none">{expanded ? '▲' : '▼'}</span>
       </div>
       {expanded && (
         <div className="border-t border-gray-700 p-4">

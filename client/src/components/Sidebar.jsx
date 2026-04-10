@@ -157,7 +157,7 @@ export default function Sidebar({
                     />
                     <span className="flex-1 truncate text-sm font-medium">{project.name}</span>
                     {activeAgents.length > 1 && (
-                      <span className="text-gray-500 text-lg leading-none">
+                      <span className="text-gray-500 text-2xl leading-none">
                         {isCollapsed ? '▸' : '▾'}
                       </span>
                     )}
@@ -227,7 +227,7 @@ export default function Sidebar({
                               {isActive && (
                                 <button
                                   onClick={(e) => toggleAgentCollapse(agent.id, e)}
-                                  className="text-gray-500 hover:text-gray-300 text-lg leading-none"
+                                  className="text-gray-500 hover:text-gray-300 text-2xl leading-none"
                                 >
                                   {collapsedAgents[agent.id] ? '▸' : '▾'}
                                 </button>
