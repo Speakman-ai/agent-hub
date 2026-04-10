@@ -90,23 +90,30 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 **All feature work MUST happen in worktrees. Never commit directly to main.**
 
 ### Standard Flow
-1. **Start a feature** → use the `using-git-worktrees` skill to create a worktree with a descriptive branch name (e.g., `feature/webhooks`, `fix/scroll-bug`)
-2. **Work entirely in the worktree** — all edits, builds, and tests happen there
-3. **Commit to the feature branch** — not to main
-4. **Push the branch and open a PR** via `gh pr create`
-5. **Merge to main via the PR** — main only receives merged, reviewed code
+1. **Pull from main** → `git checkout main && git pull origin main` to get the latest
+2. **Create a feature branch** → `git checkout -b feature/<short-description>`
+3. **Build the environment** → `npm install` (or equivalent) if needed
+4. **Implement** — all edits, builds, and tests happen on the feature branch
+5. **Commit** to the feature branch — not to main
+6. **Push** the branch: `git push -u origin <branch-name>`
+7. **Open a PR** via `gh pr create`
+8. **Wait for checks to pass** and for the lead agent to review
+9. **Resolve any review comments** — fix, commit, push, repeat until clean
+10. **Human merges** — do NOT merge PRs yourself. A human will merge once satisfied.
 
 ### Rules
 - When the user says "commit and push", commit to the **current feature branch** and push it — do NOT push to main
 - When the user says "make a PR", push the feature branch and create a PR against main
 - If no worktree exists yet for the current task, create one before making changes
 - Sub-agents (delegated work) must edit files in the **worktree directory**, not the main repo
-- The server's `ensureWorktree()` already creates per-session worktrees for chat — this workflow applies to development sessions
+- **Never merge your own PR** — only humans merge to main
+- If you are the lead implementing a change, start a **separate self-review session** to review your own PR
 
 ### What NOT to Do
 - `git push origin main` for feature work
 - Editing files in the main repo and copying them around
 - Committing directly to main (only merge commits from PRs)
+- Merging PRs — leave that for the human
 
 ## Development Notes
 
