@@ -251,7 +251,7 @@ function ThinkingBlock({ text }) {
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-900/60"
       >
-        <span className="text-2xl leading-none">{open ? '▼' : '▶'}</span>
+        <span className="text-2xl leading-none flex items-center">{open ? '▼' : '▶'}</span>
         <span className="flex items-center gap-1"><MessageCircle size={12} /> thinking</span>
         <span className="text-gray-600 truncate flex-1 text-left">
           {!open && text.slice(0, 80)}
@@ -303,7 +303,7 @@ function ToolCard({ use, result }) {
         {errored && (
           <span className="text-red-400 text-[10px] uppercase tracking-wide">error</span>
         )}
-        <span className="text-gray-500 text-2xl leading-none">{open ? '▼' : '▶'}</span>
+        <span className="text-gray-500 text-2xl leading-none flex items-center">{open ? '▼' : '▶'}</span>
       </button>
       {open && (
         <div className="border-t border-black/30 p-3 space-y-2">
