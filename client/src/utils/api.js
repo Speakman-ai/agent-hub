@@ -243,13 +243,13 @@ export const api = {
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/epic`, { method: 'POST', body: JSON.stringify({ epicId }) }),
 
   // Webhooks
-  getWebhooks: () => fetchJSON('/api/webhooks'),
-  getProjectWebhooks: (projectId) => fetchJSON(`/api/webhooks/project/${projectId}`),
-  createWebhook: (data) => fetchJSON('/api/webhooks', { method: 'POST', body: JSON.stringify(data) }),
-  updateWebhook: (id, data) => fetchJSON(`/api/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteWebhook: (id) => fetchJSON(`/api/webhooks/${id}`, { method: 'DELETE' }),
-  getWebhookLogs: (id, limit = 20) => fetchJSON(`/api/webhooks/${id}/logs?limit=${limit}`),
-  registerWebhook: (id, serverUrl) => fetchJSON(`/api/webhooks/${id}/register`, { method: 'POST', body: JSON.stringify({ serverUrl }) }),
+  getWebhooks: () => fetchJSON('/webhooks'),
+  getProjectWebhooks: (projectId) => fetchJSON(`/webhooks/project/${projectId}`),
+  createWebhook: (data) => fetchJSON('/webhooks', { method: 'POST', body: JSON.stringify(data) }),
+  updateWebhook: (id, data) => fetchJSON(`/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteWebhook: (id) => fetchJSON(`/webhooks/${id}`, { method: 'DELETE' }),
+  getWebhookLogs: (id, limit = 20) => fetchJSON(`/webhooks/${id}/logs?limit=${limit}`),
+  registerWebhook: (id, serverUrl) => fetchJSON(`/webhooks/${id}/register`, { method: 'POST', body: JSON.stringify({ serverUrl }) }),
 
   // Background tasks
   getTasks: (limit = 50) => fetchJSON(`/tasks?limit=${limit}`),

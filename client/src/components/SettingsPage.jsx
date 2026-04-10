@@ -1063,10 +1063,10 @@ function WebhookSection() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [wh, proj] = await Promise.all([api.getWebhooks(), api.getProjects()]);
+        const [wh, proj] = await Promise.all([api.getWebhooks().catch(() => []), api.getProjects()]);
         setWebhooks(wh);
         setProjects(proj);
-        await refreshLogs(wh);
+        if (wh.length) await refreshLogs(wh);
       } catch (e) { console.error(e); }
     };
     load();
