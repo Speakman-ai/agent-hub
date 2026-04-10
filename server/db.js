@@ -458,6 +458,9 @@ function initDb(dataDir) {
   // Migrate: add epic_id to kanban_cards if not present
   try { db.exec('ALTER TABLE kanban_cards ADD COLUMN epic_id TEXT'); } catch(e) { /* already exists */ }
 
+  // Migrate: add documented flag to kanban_cards for incremental wiki backfill
+  try { db.exec('ALTER TABLE kanban_cards ADD COLUMN documented INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
+
   // Migration: create wiki FTS5 index if wiki_pages table exists
   try {
     db.exec(`
@@ -833,6 +836,13 @@ function initDb(dataDir) {
       `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`
     ),
     getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
+    getNextUndocumentedCard: db.prepare(
+      `SELECT c.*, col.name as column_name FROM kanban_cards c
+       JOIN kanban_columns col ON c.column_id = col.id
+       WHERE c.board_id = ? AND col.name = 'Done' AND c.documented = 0
+       ORDER BY c.updated_at ASC LIMIT 1`
+    ),
+    markCardDocumented: db.prepare('UPDATE kanban_cards SET documented = 1, updated_at = datetime(\'now\') WHERE id = ?'),
     deleteKanbanCard: db.prepare('DELETE FROM kanban_cards WHERE id = ?'),
 
     // Kanban card comments
