@@ -361,12 +361,15 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
             onChange={(e) => setSelectedEpicId(e.target.value || null)}
             className="appearance-none bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-md pl-3 pr-8 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer"
           >
-            <option value="">All cards ({cards.length})</option>
-            {epics.map((epic) => (
-              <option key={epic.id} value={epic.id}>
-                {epic.autonomous === 1 ? '⚡ ' : ''}{epic.name} ({epicCardCount(epic.id)})
-              </option>
-            ))}
+            <option value="">All Epics ({epics.length})</option>
+            {epics.map((epic) => {
+              const count = epicCardCount(epic.id);
+              return (
+                <option key={epic.id} value={epic.id}>
+                  {epic.autonomous === 1 ? '⚡ ' : ''}{epic.name}{count > 0 ? ` (${count})` : ''}
+                </option>
+              );
+            })}
           </select>
           <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
         </div>
