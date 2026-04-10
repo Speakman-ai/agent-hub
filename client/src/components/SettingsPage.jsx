@@ -201,7 +201,7 @@ function OrganizationsSection() {
                     <ArrowRightLeft size={12} /> Switch
                   </button>
                 )}
-                <span className="text-gray-600 text-base">{isExpanded ? '▲' : '▼'}</span>
+                <span className="text-gray-600 text-lg leading-none">{isExpanded ? '▲' : '▼'}</span>
               </div>
 
               {/* Expanded edit form */}
@@ -609,7 +609,7 @@ function HeartbeatSection() {
                   onClick={() => loadLogs(hb.agentId)}
                   className="text-xs text-gray-400 hover:text-white px-2 py-2 sm:py-1 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                 >
-                  <span className="text-base">{expandedAgent === hb.agentId ? '▲' : '▼'}</span>
+                  <span className="text-lg leading-none">{expandedAgent === hb.agentId ? '▲' : '▼'}</span>
                 </button>
               </div>
             </div>
