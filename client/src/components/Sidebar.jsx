@@ -188,7 +188,7 @@ export default function Sidebar({
                       const renderAgent = (agent, indent = 0) => {
                         const isActive = activeAgentId === agent.id;
                         const subs = subAgentMap[agent.id] || [];
-                        const isTopLevel = agent.role === 'lead' || agent.role === 'docs' || subs.length > 0;
+                        const isTopLevel = agent.role === 'lead' || agent.role === 'docs' || agent.role === 'intake' || subs.length > 0;
                         const isLead = agent.role === 'lead' || subs.length > 0;
 
                         return (
