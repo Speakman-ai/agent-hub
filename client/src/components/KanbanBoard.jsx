@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, GripVertical, MoreHorizontal, X, MessageSquare, ExternalLink, Trash2, Zap, Target, ChevronDown, Settings } from 'lucide-react';
+import { Plus, GripVertical, MoreHorizontal, X, MessageSquare, ExternalLink, Trash2, Zap, Target, ChevronDown, Settings, Search } from 'lucide-react';
 import { api } from '../utils/api.js';
 
 const PRIORITY_STYLES = {
@@ -48,6 +48,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [assigning, setAssigning] = useState(false);
 
+  // Search
+  const [searchQuery, setSearchQuery] = useState('');
+
   // Epics
   const [epics, setEpics] = useState([]);
   const [selectedEpicId, setSelectedEpicId] = useState(null);
@@ -93,11 +96,14 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
       .catch(() => setComments([]));
   }, [selectedCard, projectId]);
 
-  const cardsForColumn = (columnId) =>
-    cards
+  const cardsForColumn = (columnId) => {
+    const q = searchQuery.toLowerCase().trim();
+    return cards
       .filter((c) => c.column_id === columnId)
       .filter((c) => !selectedEpicId || c.epic_id === selectedEpicId)
+      .filter((c) => !q || c.title.toLowerCase().includes(q) || (c.description || '').toLowerCase().includes(q) || (c.labels || '').toLowerCase().includes(q) || (c.assignee || '').toLowerCase().includes(q))
       .sort((a, b) => a.position - b.position);
+  };
 
   // --- Drag and Drop ---
   const handleDragStart = (e, cardId) => {
@@ -353,8 +359,28 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
         </button>
       </div>
 
-      {/* Epic Dropdown Bar */}
+      {/* Epic Dropdown Bar + Search */}
       <div className="px-6 py-2 border-b border-gray-800/50 flex items-center gap-3">
+        {/* Search */}
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search cards..."
+            className="bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-md pl-8 pr-3 py-1.5 w-48 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 placeholder-gray-500"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+
         <div className="relative">
           <select
             value={selectedEpicId || ''}
