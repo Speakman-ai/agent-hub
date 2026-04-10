@@ -499,16 +499,6 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                 {epicForm.autonomous === 1 && (
                   <div className="flex items-center gap-3 pl-6">
                     <div>
-                      <label className="block text-xs text-gray-500 mb-0.5">Interval (min)</label>
-                      <input
-                        type="number"
-                        value={epicForm.autonomous_interval || 5}
-                        onChange={(e) => setEpicForm((f) => ({ ...f, autonomous_interval: parseInt(e.target.value) || 5 }))}
-                        min={1}
-                        className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500"
-                      />
-                    </div>
-                    <div>
                       <label className="block text-xs text-gray-500 mb-0.5">Max concurrent</label>
                       <input
                         type="number"
