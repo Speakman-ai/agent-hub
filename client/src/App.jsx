@@ -61,6 +61,7 @@ export default function App() {
   const [roomStreaming, setRoomStreaming] = useState(null);
   const [roomThinking, setRoomThinking] = useState(null);
   const [roomProcessing, setRoomProcessing] = useState(false);
+  const [roomQueueLength, setRoomQueueLength] = useState(0);
   // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
   const [delegations, setDelegations] = useState({});
   // Wiki state
@@ -331,10 +332,19 @@ export default function App() {
           ]);
         }
         break;
+      case 'room_queue_updated':
+        if (data.roomId === activeRoomIdRef.current) {
+          setRoomQueueLength(data.queue?.length || data.queueLength || 0);
+        }
+        break;
       case 'room_round_done':
       case 'room_cancelled':
         if (data.roomId === activeRoomIdRef.current) {
-          setRoomProcessing(false);
+          // Don't reset roomProcessing if there are queued messages about to drain —
+          // prevents UI flicker between queued message rounds (Bugbot fix)
+          if (!data.queueLength) {
+            setRoomProcessing(false);
+          }
           setRoomThinking(null);
           setRoomStreaming(null);
         }
@@ -769,6 +779,8 @@ export default function App() {
   useEffect(() => {
     if (!activeRoomId) {
       setRoomMessages([]);
+      setRoomQueueLength(0);
+      setRoomProcessing(false);
       return;
     }
     api.getRoomMessages(activeRoomId).then(setRoomMessages).catch(console.error);
@@ -1062,6 +1074,7 @@ export default function App() {
             roomStreaming={roomStreaming}
             roomThinking={roomThinking}
             roomProcessing={roomProcessing}
+            roomQueueLength={roomQueueLength}
             onRoomUpdated={handleRoomUpdated}
           />
         ) : (

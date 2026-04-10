@@ -16,6 +16,7 @@ export default function RoomChat({
   roomStreaming,
   roomThinking,
   roomProcessing,
+  roomQueueLength = 0,
   onRoomUpdated,
 }) {
   const [input, setInput] = useState('');
@@ -161,7 +162,7 @@ export default function RoomChat({
 
   const handleSend = (e) => {
     e.preventDefault();
-    if (!input.trim() || roomProcessing) return;
+    if (!input.trim()) return;
     closeMention();
     send({
       type: 'room_chat',
@@ -518,6 +519,11 @@ export default function RoomChat({
               ))}
             </div>
           )}
+          {roomProcessing && roomQueueLength > 0 && (
+            <div className="text-xs text-amber-400/80 px-1 mb-1">
+              {roomQueueLength} message{roomQueueLength > 1 ? 's' : ''} queued — will be sent after agents finish
+            </div>
+          )}
           <form onSubmit={handleSend} className="flex gap-2">
             <input
               ref={inputRef}
@@ -530,31 +536,32 @@ export default function RoomChat({
               }}
               placeholder={
                 roomProcessing
-                  ? 'Agents are responding...'
+                  ? 'Type to queue a message while agents respond...'
                   : room.agents?.length > 0
                   ? 'Message the room — type @ to mention an agent'
                   : 'Add agents to start chatting'
               }
-              disabled={roomProcessing || !room.agents?.length}
+              disabled={!room.agents?.length}
               className="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 focus:outline-none focus:border-gray-500 disabled:opacity-50"
             />
-            {roomProcessing ? (
-              <button
-                type="button"
-                onClick={handleCancel}
-                className="bg-red-600/80 hover:bg-red-600 text-white px-4 py-3 rounded-xl text-sm transition-colors"
-              >
-                Cancel
-              </button>
-            ) : (
+            <div className="flex gap-1">
+              {roomProcessing && (
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="bg-red-600/80 hover:bg-red-600 text-white px-4 py-3 rounded-xl text-sm transition-colors"
+                >
+                  Cancel
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={!input.trim() || !room.agents?.length}
                 className="bg-blue-600 hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 text-white px-4 py-3 rounded-xl text-sm transition-colors"
               >
-                Send
+                {roomProcessing ? 'Queue' : 'Send'}
               </button>
-            )}
+            </div>
           </form>
         </div>
       </div>
