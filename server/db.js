@@ -461,6 +461,9 @@ function initDb(dataDir) {
   // Migrate: add documented flag to kanban_cards for incremental wiki backfill
   try { db.exec('ALTER TABLE kanban_cards ADD COLUMN documented INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
 
+  // Migrate: add autonomous_iterations counter for dispatch loop tracking
+  try { db.exec('ALTER TABLE kanban_cards ADD COLUMN autonomous_iterations INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
+
   // Migration: create wiki FTS5 index if wiki_pages table exists
   try {
     db.exec(`
@@ -863,6 +866,22 @@ function initDb(dataDir) {
     getKanbanCardsByEpic: db.prepare('SELECT * FROM kanban_cards WHERE epic_id = ? ORDER BY position ASC'),
     updateKanbanCardEpic: db.prepare('UPDATE kanban_cards SET epic_id = ?, updated_at = datetime(\'now\') WHERE id = ?'),
     getAutonomousEpic: db.prepare('SELECT * FROM kanban_epics WHERE board_id = ? AND autonomous = 1 LIMIT 1'),
+    getEligibleAutonomousCards: db.prepare(
+      `SELECT c.* FROM kanban_cards c
+       JOIN kanban_columns col ON c.column_id = col.id
+       WHERE c.epic_id = ? AND col.name IN ('Backlog', 'To Do')
+       AND (c.assignee IS NULL OR c.assignee = '')
+       AND c.autonomous_iterations < ?
+       ORDER BY
+         CASE c.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+         c.position ASC`
+    ),
+    incrementCardIterations: db.prepare(
+      `UPDATE kanban_cards SET autonomous_iterations = autonomous_iterations + 1, updated_at = datetime('now') WHERE id = ?`
+    ),
+    resetCardIterations: db.prepare(
+      `UPDATE kanban_cards SET autonomous_iterations = 0, updated_at = datetime('now') WHERE id = ?`
+    ),
 
     // Webhook configs
     getWebhookConfigs: db.prepare('SELECT * FROM webhook_configs ORDER BY created_at DESC'),
