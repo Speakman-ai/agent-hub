@@ -353,56 +353,40 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
         </button>
       </div>
 
-      {/* Epic Bar */}
-      <div className="px-6 py-2 border-b border-gray-800/50 flex items-center gap-2 overflow-x-auto scrollbar-thin">
-        {/* All filter pill */}
-        <button
-          onClick={() => setSelectedEpicId(null)}
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
-            !selectedEpicId
-              ? 'bg-gray-700 text-white ring-1 ring-gray-500'
-              : 'bg-gray-800/60 text-gray-400 hover:text-gray-300 hover:bg-gray-800'
-          }`}
-        >
-          All
-        </button>
+      {/* Epic Dropdown Bar */}
+      <div className="px-6 py-2 border-b border-gray-800/50 flex items-center gap-3">
+        <div className="relative">
+          <select
+            value={selectedEpicId || ''}
+            onChange={(e) => setSelectedEpicId(e.target.value || null)}
+            className="appearance-none bg-gray-800 border border-gray-700 text-sm text-gray-200 rounded-md pl-3 pr-8 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer"
+          >
+            <option value="">All cards ({cards.length})</option>
+            {epics.map((epic) => (
+              <option key={epic.id} value={epic.id}>
+                {epic.autonomous === 1 ? '⚡ ' : ''}{epic.name} ({epicCardCount(epic.id)})
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+        </div>
 
-        {epics.map((epic) => {
-          const isActive = selectedEpicId === epic.id;
-          const count = epicCardCount(epic.id);
-          return (
-            <div key={epic.id} className="relative flex items-center group">
-              <button
-                onClick={() => setSelectedEpicId(isActive ? null : epic.id)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
-                  isActive
-                    ? 'text-white ring-2 ring-offset-1 ring-offset-gray-900'
-                    : 'text-gray-400 hover:text-gray-200 bg-gray-800/60 hover:bg-gray-800'
-                }`}
-                style={isActive ? { backgroundColor: epic.color + '30', ringColor: epic.color } : {}}
-              >
-                <span
-                  className="w-2 h-2 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: epic.color }}
-                />
-                {epic.name}
-                <span className="text-gray-500 ml-0.5">{count}</span>
-                {epic.autonomous === 1 && (
-                  <span className="relative flex h-2 w-2 ml-0.5">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-                  </span>
-                )}
-              </button>
+        {/* Selected epic color dot + edit button */}
+        {selectedEpicId && (() => {
+          const epic = epics.find(e => e.id === selectedEpicId);
+          return epic ? (
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: epic.color }} />
               <button
                 onClick={(e) => openEpicEdit(epic, e)}
-                className="ml-0.5 p-0.5 text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity"
+                className="p-1 text-gray-500 hover:text-gray-300 rounded hover:bg-gray-800 transition-colors"
+                title="Edit epic"
               >
-                <Settings size={12} />
+                <Settings size={14} />
               </button>
             </div>
-          );
-        })}
+          ) : null;
+        })()}
 
         {/* + Epic button */}
         <button
@@ -411,10 +395,10 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
             setEditingEpic(null);
             setEpicForm({ name: '', description: '', color: '#6366F1' });
           }}
-          className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800/60 whitespace-nowrap transition-colors"
+          className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 whitespace-nowrap transition-colors"
         >
           <Plus size={12} />
-          Epic
+          New Epic
         </button>
       </div>
 
