@@ -37,6 +37,8 @@ export default function RoomChat({
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionStart, setMentionStart] = useState(null); // cursor position of the '@'
 
+  const programmaticScrollRef = useRef(false);
+
   const checkNearBottom = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return true;
@@ -45,6 +47,7 @@ export default function RoomChat({
   }, []);
 
   const handleScrollEvent = useCallback(() => {
+    if (programmaticScrollRef.current) return;
     const nearBottom = checkNearBottom();
     isNearBottomRef.current = nearBottom;
     setShowScrollBtn(!nearBottom);
@@ -52,16 +55,47 @@ export default function RoomChat({
 
   const scrollToBottom = useCallback((instant) => {
     if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
-    scrollRafRef.current = requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({
-        behavior: instant ? 'instant' : 'smooth',
+    const el = scrollContainerRef.current;
+    if (instant && el) {
+      programmaticScrollRef.current = true;
+      el.scrollTop = el.scrollHeight;
+      requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+        isNearBottomRef.current = true;
+        setShowScrollBtn(false);
       });
+      return;
+    }
+    programmaticScrollRef.current = true;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      setTimeout(() => {
+        programmaticScrollRef.current = false;
+        isNearBottomRef.current = true;
+        setShowScrollBtn(false);
+      }, 200);
     });
   }, []);
 
   useLayoutEffect(() => {
     if (initialScrollRef.current || isNearBottomRef.current) {
       scrollToBottom(initialScrollRef.current);
+    }
+    if (initialScrollRef.current) {
+      const timer = setTimeout(() => {
+        const el = scrollContainerRef.current;
+        if (el) {
+          programmaticScrollRef.current = true;
+          el.scrollTop = el.scrollHeight;
+          requestAnimationFrame(() => {
+            programmaticScrollRef.current = false;
+            isNearBottomRef.current = true;
+            setShowScrollBtn(false);
+          });
+        }
+      }, 100);
+      initialScrollRef.current = false;
+      return () => clearTimeout(timer);
     }
     initialScrollRef.current = false;
   }, [roomMessages, roomStreaming, roomThinking, scrollToBottom]);

@@ -98,6 +98,10 @@ export default function App() {
   const isNearBottomRef = useRef(true);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
+  // Tracks whether a programmatic scroll is in progress so we don't
+  // interpret the resulting scroll events as the user scrolling away.
+  const programmaticScrollRef = useRef(false);
+
   const checkNearBottom = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return true;
@@ -106,6 +110,10 @@ export default function App() {
   }, []);
 
   const handleScrollEvent = useCallback(() => {
+    // Ignore scroll events caused by our own programmatic scrolling —
+    // these would otherwise flip isNearBottomRef to false mid-animation
+    // and break auto-follow.
+    if (programmaticScrollRef.current) return;
     const nearBottom = checkNearBottom();
     isNearBottomRef.current = nearBottom;
     setShowScrollBtn(!nearBottom);
@@ -113,10 +121,33 @@ export default function App() {
 
   const scrollToBottom = useCallback((instant) => {
     if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
-    scrollRafRef.current = requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({
-        behavior: instant ? 'instant' : 'smooth',
+    const el = scrollContainerRef.current;
+    if (instant && el) {
+      // For initial/instant scrolls, set scrollTop directly — more
+      // reliable than scrollIntoView when the DOM is still laying out.
+      programmaticScrollRef.current = true;
+      el.scrollTop = el.scrollHeight;
+      // Clear the flag after the browser has finished processing the scroll,
+      // and mark us as "at the bottom" so auto-follow resumes.
+      requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+        isNearBottomRef.current = true;
+        setShowScrollBtn(false);
       });
+      return;
+    }
+    // For smooth scrolls (live streaming), use scrollIntoView with the
+    // programmatic guard so the animation doesn't break isNearBottomRef.
+    programmaticScrollRef.current = true;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      // Smooth scroll takes time; clear after a generous window and
+      // restore near-bottom state so auto-follow continues.
+      setTimeout(() => {
+        programmaticScrollRef.current = false;
+        isNearBottomRef.current = true;
+        setShowScrollBtn(false);
+      }, 200);
     });
   }, []);
 
@@ -124,6 +155,25 @@ export default function App() {
   useLayoutEffect(() => {
     if (initialScrollRef.current || isNearBottomRef.current) {
       scrollToBottom(initialScrollRef.current);
+    }
+    if (initialScrollRef.current) {
+      // Schedule a second scroll for content that renders late (images, code
+      // blocks, lazy-loaded components). This catches cases where the first
+      // scroll fires before the full height is known.
+      const timer = setTimeout(() => {
+        const el = scrollContainerRef.current;
+        if (el) {
+          programmaticScrollRef.current = true;
+          el.scrollTop = el.scrollHeight;
+          requestAnimationFrame(() => {
+            programmaticScrollRef.current = false;
+            isNearBottomRef.current = true;
+            setShowScrollBtn(false);
+          });
+        }
+      }, 100);
+      initialScrollRef.current = false;
+      return () => clearTimeout(timer);
     }
     initialScrollRef.current = false;
   }, [messages, thinking, streamingContent, scrollToBottom]);
