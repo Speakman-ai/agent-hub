@@ -464,6 +464,33 @@ function initDb(dataDir) {
   // Migrate: add autonomous_iterations counter for dispatch loop tracking
   try { db.exec('ALTER TABLE kanban_cards ADD COLUMN autonomous_iterations INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
 
+  // Migrate: active_room_tasks + room_message_queue for conference room persistence
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS active_room_tasks (
+      room_id TEXT PRIMARY KEY,
+      agent_id TEXT,
+      agent_name TEXT,
+      agent_color TEXT,
+      message_id TEXT,
+      streamed_output TEXT NOT NULL DEFAULT '',
+      queue_json TEXT,
+      turn_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','error','cancelled')),
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS room_message_queue (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_room_message_queue ON room_message_queue(room_id, position ASC);
+  `);
+
   // Migration: create wiki FTS5 index if wiki_pages table exists
   try {
     db.exec(`
@@ -724,6 +751,48 @@ function initDb(dataDir) {
     ),
     addRoomMessage: db.prepare(
       'INSERT INTO room_messages (id, room_id, role, agent_id, agent_name, agent_color, content, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ),
+
+    // Active room tasks (DB-backed persistence for reconnection)
+    getActiveRoomTask: db.prepare('SELECT * FROM active_room_tasks WHERE room_id = ?'),
+    getAllActiveRoomTasks: db.prepare(
+      "SELECT * FROM active_room_tasks WHERE status = 'running' ORDER BY started_at ASC"
+    ),
+    insertActiveRoomTask: db.prepare(
+      `INSERT OR REPLACE INTO active_room_tasks
+        (room_id, agent_id, agent_name, agent_color, message_id, queue_json, turn_count, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'running')`
+    ),
+    updateActiveRoomTaskAgent: db.prepare(
+      "UPDATE active_room_tasks SET agent_id = ?, agent_name = ?, agent_color = ?, message_id = ?, streamed_output = '', turn_count = ?, updated_at = datetime('now') WHERE room_id = ?"
+    ),
+    appendActiveRoomTaskOutput: db.prepare(
+      "UPDATE active_room_tasks SET streamed_output = ?, updated_at = datetime('now') WHERE room_id = ?"
+    ),
+    deleteActiveRoomTask: db.prepare('DELETE FROM active_room_tasks WHERE room_id = ?'),
+    deleteAllActiveRoomTasks: db.prepare('DELETE FROM active_room_tasks'),
+
+    // Room message queue
+    enqueueRoomMessage: db.prepare(
+      'INSERT INTO room_message_queue (id, room_id, content, position) VALUES (?, ?, ?, ?)'
+    ),
+    getQueuedRoomMessages: db.prepare(
+      'SELECT * FROM room_message_queue WHERE room_id = ? ORDER BY position ASC'
+    ),
+    getNextQueuedRoomMessage: db.prepare(
+      'SELECT * FROM room_message_queue WHERE room_id = ? ORDER BY position ASC LIMIT 1'
+    ),
+    dequeueRoomMessage: db.prepare(
+      'DELETE FROM room_message_queue WHERE id = ?'
+    ),
+    clearRoomQueue: db.prepare(
+      'DELETE FROM room_message_queue WHERE room_id = ?'
+    ),
+    getMaxRoomQueuePosition: db.prepare(
+      'SELECT MAX(position) as max_pos FROM room_message_queue WHERE room_id = ?'
+    ),
+    getAllQueuedRooms: db.prepare(
+      'SELECT DISTINCT room_id FROM room_message_queue'
     ),
 
     // Slack messages
