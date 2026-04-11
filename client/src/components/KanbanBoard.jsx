@@ -304,7 +304,8 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
     setShowEpicForm(false);
   };
 
-  const epicCardCount = (epicId) => cards.filter((c) => c.epic_id === epicId).length;
+  const doneColumnIds = new Set(columns.filter((c) => c.name.toLowerCase() === 'done').map((c) => c.id));
+  const epicCardCount = (epicId) => cards.filter((c) => c.epic_id === epicId && !doneColumnIds.has(c.column_id)).length;
 
   if (loading) {
     return (
