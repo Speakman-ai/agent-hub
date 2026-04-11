@@ -121,7 +121,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - SQLite WAL mode enabled for concurrent access
 - WebSocket handles chat streaming, cancellation, and real-time updates
 - Agent configurations are stored in `server/agents.json` and auto-saved
-- No README files exist - this CLAUDE.md serves as the primary documentation
+- See `README.md` for general project documentation; this CLAUDE.md provides AI agent-specific guidance
 
 ## Deployment
 
