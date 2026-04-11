@@ -10,7 +10,15 @@
  *   node migrate-to-projects.js --apply      # actually do it
  */
 
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, readdirSync, statSync } from 'fs';
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  copyFileSync,
+  existsSync,
+  readdirSync,
+  statSync,
+} from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -26,7 +34,15 @@ const agentsPath = path.join(__dirname, 'agents.json');
 const agents = JSON.parse(readFileSync(agentsPath, 'utf-8'));
 
 // Shared context files that live at project level
-const SHARED_FILES = ['AGENTS.md', 'SOUL.md', 'USER.md', 'TOOLS.md', 'MEMORY.md', 'HEARTBEAT.md', 'CLAUDE.md'];
+const SHARED_FILES = [
+  'AGENTS.md',
+  'SOUL.md',
+  'USER.md',
+  'TOOLS.md',
+  'MEMORY.md',
+  'HEARTBEAT.md',
+  'CLAUDE.md',
+];
 // Agent-specific file
 const AGENT_FILES = ['IDENTITY.md'];
 // Directories to copy at project level
@@ -36,7 +52,9 @@ const SHARED_DIRS = ['skills', 'memory'];
 let config = {};
 try {
   config = JSON.parse(readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
-} catch { /* ok */ }
+} catch {
+  /* ok */
+}
 const defaultCwd = config.defaultCwd || process.env.HOME || '/home/user';
 
 /**
@@ -161,7 +179,9 @@ for (const [projectId, meta] of projectMap) {
           }
         }
       }
-    } catch { /* ok */ }
+    } catch {
+      /* ok */
+    }
   }
 
   // Process each agent
@@ -217,7 +237,9 @@ for (const [projectId, meta] of projectMap) {
 // ─── Write projects.json ─────────────────────────────────────────
 const outputPath = path.join(__dirname, 'projects.json');
 console.log(`\nWriting ${outputPath}`);
-console.log(`  ${projects.length} projects, ${projects.reduce((n, p) => n + p.agents.length, 0)} agents total`);
+console.log(
+  `  ${projects.length} projects, ${projects.reduce((n, p) => n + p.agents.length, 0)} agents total`,
+);
 
 if (!dryRun) {
   writeFileSync(outputPath, JSON.stringify(projects, null, 2) + '\n');

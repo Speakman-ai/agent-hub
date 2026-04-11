@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { api } from '../utils/api.js';
 
 function FolderIcon() {
@@ -98,7 +98,13 @@ export default function ServerBrowser({ isOpen, onClose, onSelect, initialPath }
             className="text-gray-400 hover:text-white transition-colors"
             aria-label="Close"
           >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
@@ -135,7 +141,13 @@ export default function ServerBrowser({ isOpen, onClose, onSelect, initialPath }
             disabled={!parentPath}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:bg-gray-800 disabled:text-gray-600 border border-gray-700 rounded-lg text-sm text-gray-300 transition-colors disabled:cursor-not-allowed"
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
             </svg>
             Parent
@@ -158,30 +170,41 @@ export default function ServerBrowser({ isOpen, onClose, onSelect, initialPath }
                 fill="none"
                 viewBox="0 0 24 24"
               >
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                />
               </svg>
             </div>
           )}
 
-          {error && !loading && (
-            <div className="px-4 py-3 text-sm text-red-400">{error}</div>
-          )}
+          {error && !loading && <div className="px-4 py-3 text-sm text-red-400">{error}</div>}
 
           {!loading && !error && entries.length === 0 && (
             <div className="px-4 py-3 text-sm text-gray-500">No subdirectories</div>
           )}
 
-          {!loading && !error && entries.map((entry) => (
-            <button
-              key={entry.path}
-              onClick={() => navigateTo(entry.path)}
-              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors text-left"
-            >
-              <FolderIcon />
-              <span className="truncate">{entry.name}</span>
-            </button>
-          ))}
+          {!loading &&
+            !error &&
+            entries.map((entry) => (
+              <button
+                key={entry.path}
+                onClick={() => navigateTo(entry.path)}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 transition-colors text-left"
+              >
+                <FolderIcon />
+                <span className="truncate">{entry.name}</span>
+              </button>
+            ))}
         </div>
       </div>
     </div>

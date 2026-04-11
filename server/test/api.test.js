@@ -7,7 +7,14 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { getRequest, createProject, createAgent, createSession, createWikiPage, createCard } from './helpers.js';
+import {
+  getRequest,
+  createProject,
+  createAgent,
+  createSession,
+  createWikiPage,
+  createCard,
+} from './helpers.js';
 
 let request;
 
@@ -48,18 +55,12 @@ describe('Projects', () => {
     });
 
     it('rejects invalid project ID', async () => {
-      await request
-        .post('/api/projects')
-        .send({ id: 'invalid id!', name: 'Bad' })
-        .expect(400);
+      await request.post('/api/projects').send({ id: 'invalid id!', name: 'Bad' }).expect(400);
     });
 
     it('rejects duplicate project ID', async () => {
       const proj = await createProject();
-      await request
-        .post('/api/projects')
-        .send({ id: proj.id, name: 'Duplicate' })
-        .expect(409);
+      await request.post('/api/projects').send({ id: proj.id, name: 'Duplicate' }).expect(409);
     });
 
     it('creates project with commands', async () => {
@@ -69,7 +70,12 @@ describe('Projects', () => {
           id: 'proj-with-cmds',
           name: 'Cmds Project',
           cwd: '/tmp',
-          commands: { install: 'npm install', build: 'npm run build', test: 'npm test', lint: 'npm run lint' },
+          commands: {
+            install: 'npm install',
+            build: 'npm run build',
+            test: 'npm test',
+            lint: 'npm run lint',
+          },
         })
         .expect(201);
 
@@ -122,10 +128,7 @@ describe('Projects', () => {
     });
 
     it('returns 404 for nonexistent project', async () => {
-      await request
-        .patch('/api/projects/does-not-exist')
-        .send({ name: 'Nope' })
-        .expect(404);
+      await request.patch('/api/projects/does-not-exist').send({ name: 'Nope' }).expect(404);
     });
   });
 
@@ -170,19 +173,13 @@ describe('Agents', () => {
 
     it('rejects invalid agent ID', async () => {
       const proj = await createProject();
-      await request
-        .post('/api/agents')
-        .send({ id: 'bad id!', projectId: proj.id })
-        .expect(400);
+      await request.post('/api/agents').send({ id: 'bad id!', projectId: proj.id }).expect(400);
     });
 
     it('rejects duplicate agent ID', async () => {
       const agent = await createAgent();
       const proj = await createProject();
-      await request
-        .post('/api/agents')
-        .send({ id: agent.id, projectId: proj.id })
-        .expect(409);
+      await request.post('/api/agents').send({ id: agent.id, projectId: proj.id }).expect(409);
     });
   });
 
@@ -547,10 +544,11 @@ describe('Wiki', () => {
     });
 
     it('searches wiki pages by query', async () => {
-      await createWikiPage(testProject.id, { title: 'Unique Search Term XYZ', content: 'Findable content' });
-      const res = await request
-        .get(`/api/projects/${testProject.id}/wiki?q=XYZ`)
-        .expect(200);
+      await createWikiPage(testProject.id, {
+        title: 'Unique Search Term XYZ',
+        content: 'Findable content',
+      });
+      const res = await request.get(`/api/projects/${testProject.id}/wiki?q=XYZ`).expect(200);
 
       expect(res.body.length).toBeGreaterThanOrEqual(1);
     });
@@ -568,9 +566,7 @@ describe('Wiki', () => {
     });
 
     it('returns 404 for nonexistent page', async () => {
-      await request
-        .get(`/api/projects/${testProject.id}/wiki/does-not-exist`)
-        .expect(404);
+      await request.get(`/api/projects/${testProject.id}/wiki/does-not-exist`).expect(404);
     });
   });
 
@@ -589,22 +585,16 @@ describe('Wiki', () => {
   describe('DELETE /api/projects/:projectId/wiki/:slug', () => {
     it('deletes a wiki page', async () => {
       const page = await createWikiPage(testProject.id, { title: 'Delete Me' });
-      await request
-        .delete(`/api/projects/${testProject.id}/wiki/${page.slug}`)
-        .expect(200);
+      await request.delete(`/api/projects/${testProject.id}/wiki/${page.slug}`).expect(200);
 
       // Verify deleted
-      await request
-        .get(`/api/projects/${testProject.id}/wiki/${page.slug}`)
-        .expect(404);
+      await request.get(`/api/projects/${testProject.id}/wiki/${page.slug}`).expect(404);
     });
   });
 
   describe('GET /api/projects/:projectId/wiki/categories', () => {
     it('returns list of valid categories', async () => {
-      const res = await request
-        .get(`/api/projects/${testProject.id}/wiki/categories`)
-        .expect(200);
+      const res = await request.get(`/api/projects/${testProject.id}/wiki/categories`).expect(200);
 
       expect(Array.isArray(res.body)).toBe(true);
       expect(res.body).toContain('general');
@@ -731,10 +721,7 @@ describe('Rooms', () => {
 
   describe('CRUD lifecycle', () => {
     it('creates and gets a room', async () => {
-      const createRes = await request
-        .post('/api/rooms')
-        .send({ name: 'Test Room' })
-        .expect(200);
+      const createRes = await request.post('/api/rooms').send({ name: 'Test Room' }).expect(200);
 
       expect(createRes.body).toHaveProperty('id');
       const id = createRes.body.id;
@@ -775,9 +762,7 @@ describe('Rooms', () => {
       expect(getRes.body.agents.some((a) => a.id === agent.id)).toBe(true);
 
       // Remove agent
-      await request
-        .delete(`/api/rooms/${room.body.id}/agents/${agent.id}`)
-        .expect(200);
+      await request.delete(`/api/rooms/${room.body.id}/agents/${agent.id}`).expect(200);
     });
   });
 });
@@ -851,10 +836,7 @@ describe('Device Tokens', () => {
   });
 
   it('rejects registration without token', async () => {
-    await request
-      .post('/api/devices')
-      .send({ platform: 'ios' })
-      .expect(400);
+    await request.post('/api/devices').send({ platform: 'ios' }).expect(400);
   });
 });
 

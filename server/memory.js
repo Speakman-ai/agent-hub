@@ -30,7 +30,9 @@ export function getMemoryContext(workspace) {
       if (memory.trim()) {
         parts.push(`## MEMORY.md (Long-term)\n${memory}`);
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
 
   // Read today's daily note
@@ -41,7 +43,9 @@ export function getMemoryContext(workspace) {
       if (content.trim()) {
         parts.push(`## Today's Notes (${today()})\n${content}`);
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
 
   // Read yesterday's daily note
@@ -52,7 +56,9 @@ export function getMemoryContext(workspace) {
       if (content.trim()) {
         parts.push(`## Yesterday's Notes (${yesterday()})\n${content}`);
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
 
   return parts.length > 0 ? parts.join('\n\n') : '';
@@ -108,7 +114,9 @@ export function getMemoryData(workspace) {
   if (existsSync(memoryPath)) {
     try {
       memory = readFileSync(memoryPath, 'utf-8');
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
 
   const dailyNotes = [];
@@ -116,7 +124,7 @@ export function getMemoryData(workspace) {
   if (existsSync(memoryDir)) {
     try {
       const files = readdirSync(memoryDir)
-        .filter(f => f.endsWith('.md'))
+        .filter((f) => f.endsWith('.md'))
         .sort()
         .reverse()
         .slice(0, 14); // Last 14 days
@@ -124,9 +132,13 @@ export function getMemoryData(workspace) {
         try {
           const content = readFileSync(path.join(memoryDir, file), 'utf-8');
           dailyNotes.push({ date: file.replace('.md', ''), content });
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
 
   return { memory, dailyNotes };

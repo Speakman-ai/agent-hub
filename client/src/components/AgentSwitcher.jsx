@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 export default function AgentSwitcher({ agents, onSelect, onClose }) {
   const [query, setQuery] = useState('');
@@ -8,8 +8,8 @@ export default function AgentSwitcher({ agents, onSelect, onClose }) {
     inputRef.current?.focus();
   }, []);
 
-  const filtered = agents.filter((a) =>
-    a.active !== false && a.name.toLowerCase().includes(query.toLowerCase())
+  const filtered = agents.filter(
+    (a) => a.active !== false && a.name.toLowerCase().includes(query.toLowerCase()),
   );
 
   const handleKeyDown = (e) => {
@@ -55,9 +55,7 @@ export default function AgentSwitcher({ agents, onSelect, onClose }) {
                 style={{ backgroundColor: agent.color }}
               />
               <div>
-                <span className="text-sm font-medium text-gray-200">
-                  {agent.name}
-                </span>
+                <span className="text-sm font-medium text-gray-200">{agent.name}</span>
                 <span className="text-xs text-gray-500 ml-2">{agent.engine}</span>
               </div>
             </button>

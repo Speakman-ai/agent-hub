@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
 import ChatMessage from './components/ChatMessage.jsx';
@@ -193,11 +193,9 @@ export default function App() {
   // WebSocket handler
   const handleWsMessage = useCallback((data) => {
     // Is this event for the session the user is currently viewing?
-    const forActiveSession =
-      data.sessionId && data.sessionId === activeSessionIdRef.current;
+    const forActiveSession = data.sessionId && data.sessionId === activeSessionIdRef.current;
     // 'message' events use message.session_id rather than top-level sessionId.
-    const msgForActiveSession =
-      data.message?.session_id === activeSessionIdRef.current;
+    const msgForActiveSession = data.message?.session_id === activeSessionIdRef.current;
 
     switch (data.type) {
       case 'active-tasks-snapshot': {
@@ -296,9 +294,7 @@ export default function App() {
         break;
       case 'session-updated':
         setSessions((prev) =>
-          prev.map((s) =>
-            s.id === data.session.id ? { ...s, name: data.session.name } : s
-          )
+          prev.map((s) => (s.id === data.session.id ? { ...s, name: data.session.name } : s)),
         );
         break;
       case 'error':
@@ -446,8 +442,14 @@ export default function App() {
                 ...existing,
                 tasks: existing.tasks.map((t) =>
                   t.agentId === data.agentId
-                    ? { ...t, delegationId: data.delegationId, agentName: data.agentName, agentColor: data.agentColor, status: 'running' }
-                    : t
+                    ? {
+                        ...t,
+                        delegationId: data.delegationId,
+                        agentName: data.agentName,
+                        agentColor: data.agentColor,
+                        status: 'running',
+                      }
+                    : t,
                 ),
               },
             };
@@ -465,8 +467,14 @@ export default function App() {
                 ...existing,
                 tasks: existing.tasks.map((t) =>
                   t.agentId === data.agentId
-                    ? { ...t, agentName: data.agentName, agentColor: data.agentColor, content: data.content, status: 'running' }
-                    : t
+                    ? {
+                        ...t,
+                        agentName: data.agentName,
+                        agentColor: data.agentColor,
+                        content: data.content,
+                        status: 'running',
+                      }
+                    : t,
                 ),
               },
             };
@@ -485,7 +493,7 @@ export default function App() {
                 tasks: existing.tasks.map((t) =>
                   t.agentId === data.agentId
                     ? { ...t, status: 'done', output: data.output, content: '' }
-                    : t
+                    : t,
                 ),
               },
             };
@@ -502,9 +510,7 @@ export default function App() {
               [data.sessionId]: {
                 ...existing,
                 tasks: existing.tasks.map((t) =>
-                  t.agentId === data.agentId
-                    ? { ...t, status: 'error', error: data.error }
-                    : t
+                  t.agentId === data.agentId ? { ...t, status: 'error', error: data.error } : t,
                 ),
               },
             };
@@ -526,7 +532,7 @@ export default function App() {
                 tasks: existing.tasks.map((t) =>
                   t.status === 'running' || t.status === 'pending'
                     ? { ...t, status: 'cancelled' }
-                    : t
+                    : t,
                 ),
               },
             };
@@ -561,7 +567,11 @@ export default function App() {
         if (data.agentId) {
           setActiveBabysits((prev) => ({
             ...prev,
-            [data.agentId]: { cronId: data.cronId, prNumber: data.prNumber, repoSlug: data.repoSlug },
+            [data.agentId]: {
+              cronId: data.cronId,
+              prNumber: data.prNumber,
+              repoSlug: data.repoSlug,
+            },
           }));
         }
         const toast = {
@@ -585,15 +595,19 @@ export default function App() {
         break;
       case 'task_complete': {
         const taskStatus = data.status === 'done' ? 'success' : 'error';
-        const taskMsg = data.status === 'done'
-          ? `Background task completed${data.preview ? ': ' + data.preview.substring(0, 80) + '...' : ''}`
-          : 'Background task failed';
-        setToasts((prev) => [...prev, {
-          id: `task-${data.taskId}-${Date.now()}`,
-          type: taskStatus,
-          message: taskMsg,
-          duration: 15000,
-        }]);
+        const taskMsg =
+          data.status === 'done'
+            ? `Background task completed${data.preview ? ': ' + data.preview.substring(0, 80) + '...' : ''}`
+            : 'Background task failed';
+        setToasts((prev) => [
+          ...prev,
+          {
+            id: `task-${data.taskId}-${Date.now()}`,
+            type: taskStatus,
+            message: taskMsg,
+            duration: 15000,
+          },
+        ]);
         window.dispatchEvent(new CustomEvent('task-complete', { detail: data }));
         break;
       }
@@ -603,7 +617,10 @@ export default function App() {
           setActiveBabysits((prev) => {
             const next = { ...prev };
             for (const [agentId, info] of Object.entries(next)) {
-              if (info.cronId === data.cronId) { delete next[agentId]; break; }
+              if (info.cronId === data.cronId) {
+                delete next[agentId];
+                break;
+              }
             }
             return next;
           });
@@ -617,7 +634,9 @@ export default function App() {
         setToasts((prev) => [...prev, toast]);
         // Babysit cron has been deleted server-side — notify settings page
         // by dispatching a custom event that SettingsPage can listen for.
-        window.dispatchEvent(new CustomEvent('babysit-cleaned', { detail: { cronId: data.cronId } }));
+        window.dispatchEvent(
+          new CustomEvent('babysit-cleaned', { detail: { cronId: data.cronId } }),
+        );
         break;
       }
 
@@ -641,12 +660,15 @@ export default function App() {
       case 'queue_item_edited':
         // Update the message content in local state to reflect the edit
         setMessages((prev) =>
-          prev.map((m) => m.id === data.messageId ? { ...m, content: data.content } : m)
+          prev.map((m) => (m.id === data.messageId ? { ...m, content: data.content } : m)),
         );
         break;
 
       case 'cron_session_update':
-        api.getCronSessions().then(setCronSessions).catch(() => {});
+        api
+          .getCronSessions()
+          .then(setCronSessions)
+          .catch(() => {});
         break;
 
       case 'kanban_update':
@@ -662,14 +684,18 @@ export default function App() {
         break;
 
       case 'lead_review':
-        setActiveReviews(prev => ({
+        setActiveReviews((prev) => ({
           ...prev,
-          [data.reviewerAgent]: { prUrl: data.prUrl, cardTitle: data.cardTitle, sessionId: data.sessionId },
+          [data.reviewerAgent]: {
+            prUrl: data.prUrl,
+            cardTitle: data.cardTitle,
+            sessionId: data.sessionId,
+          },
         }));
         break;
 
       case 'lead_review_complete':
-        setActiveReviews(prev => {
+        setActiveReviews((prev) => {
           const next = { ...prev };
           // Remove by matching agentId — the lead_review event uses agent name as key, but we also check by agentId
           for (const [key, val] of Object.entries(next)) {
@@ -697,7 +723,13 @@ export default function App() {
     api.getProjects().then((data) => {
       setProjects(data);
       const flat = data.flatMap((p) =>
-        p.agents.map((a) => ({ ...a, projectId: p.id, projectName: p.name, cwd: p.cwd, ahw: p.ahw }))
+        p.agents.map((a) => ({
+          ...a,
+          projectId: p.id,
+          projectName: p.name,
+          cwd: p.cwd,
+          ahw: p.ahw,
+        })),
       );
       setAgents(flat);
     });
@@ -726,7 +758,9 @@ export default function App() {
 
       // Step 2: Check setup status
       try {
-        const statusRes = await fetch(`${getApiBase()}/setup/status`, { headers: getAuthHeaders() });
+        const statusRes = await fetch(`${getApiBase()}/setup/status`, {
+          headers: getAuthHeaders(),
+        });
         const status = await statusRes.json();
         setSetupStatus(status);
         if (status.firstRun) {
@@ -743,7 +777,13 @@ export default function App() {
         const data = await api.getProjects();
         setProjects(data);
         const flat = data.flatMap((p) =>
-          p.agents.map((a) => ({ ...a, projectId: p.id, projectName: p.name, cwd: p.cwd, ahw: p.ahw }))
+          p.agents.map((a) => ({
+            ...a,
+            projectId: p.id,
+            projectName: p.name,
+            cwd: p.cwd,
+            ahw: p.ahw,
+          })),
         );
         setAgents(flat);
         const storedId = localStorage.getItem('activeAgentId');
@@ -777,7 +817,7 @@ export default function App() {
       } else {
         setActiveSessionId(null);
         setMessages([]);
-        setSessionEngine(agents.find(a => a.id === activeAgentId)?.engine || 'claude-code');
+        setSessionEngine(agents.find((a) => a.id === activeAgentId)?.engine || 'claude-code');
         setSessionModel('claude-opus-4-6');
         setSessionWorktree(true);
         setSessionAskMode(false);
@@ -791,7 +831,8 @@ export default function App() {
       setSkills([]);
       return;
     }
-    api.getSkills(activeAgentId)
+    api
+      .getSkills(activeAgentId)
       .then(setSkills)
       .catch(() => setSkills([]));
   }, [activeAgentId]);
@@ -877,7 +918,10 @@ export default function App() {
 
   // ─── Cron sessions (scheduled tasks) ───────────────────
   const refreshCronSessions = useCallback(() => {
-    api.getCronSessions().then(setCronSessions).catch(() => {});
+    api
+      .getCronSessions()
+      .then(setCronSessions)
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -948,11 +992,11 @@ export default function App() {
     if (activeSessionId) {
       const updated = await api.setSessionEngine(activeSessionId, engine);
       setSessions((prev) =>
-        prev.map((s) => (s.id === updated.id ? { ...s, engine: updated.engine } : s))
+        prev.map((s) => (s.id === updated.id ? { ...s, engine: updated.engine } : s)),
       );
       const modelUpdated = await api.setSessionModel(activeSessionId, defaultModel);
       setSessions((prev) =>
-        prev.map((s) => (s.id === modelUpdated.id ? { ...s, model: modelUpdated.model } : s))
+        prev.map((s) => (s.id === modelUpdated.id ? { ...s, model: modelUpdated.model } : s)),
       );
     }
   };
@@ -962,7 +1006,7 @@ export default function App() {
     if (activeSessionId) {
       const updated = await api.setSessionModel(activeSessionId, model);
       setSessions((prev) =>
-        prev.map((s) => (s.id === updated.id ? { ...s, model: updated.model } : s))
+        prev.map((s) => (s.id === updated.id ? { ...s, model: updated.model } : s)),
       );
     }
   };
@@ -972,7 +1016,7 @@ export default function App() {
     if (activeSessionId) {
       const updated = await api.setSessionWorktree(activeSessionId, enabled);
       setSessions((prev) =>
-        prev.map((s) => (s.id === updated.id ? { ...s, use_worktree: updated.use_worktree } : s))
+        prev.map((s) => (s.id === updated.id ? { ...s, use_worktree: updated.use_worktree } : s)),
       );
     }
   };
@@ -982,7 +1026,7 @@ export default function App() {
     if (activeSessionId) {
       const updated = await api.setSessionAskMode(activeSessionId, enabled);
       setSessions((prev) =>
-        prev.map((s) => (s.id === updated.id ? { ...s, ask_mode: updated.ask_mode } : s))
+        prev.map((s) => (s.id === updated.id ? { ...s, ask_mode: updated.ask_mode } : s)),
       );
     }
   };
@@ -998,9 +1042,7 @@ export default function App() {
 
   const handleRenameSession = async (sessionId, newName) => {
     await api.renameSession(sessionId, newName);
-    setSessions((prev) =>
-      prev.map((s) => (s.id === sessionId ? { ...s, name: newName } : s))
-    );
+    setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, name: newName } : s)));
   };
 
   const handleCancel = () => {
@@ -1024,16 +1066,16 @@ export default function App() {
     if (activeSessionId) {
       send({ type: 'edit_queue_item', sessionId: activeSessionId, messageId, content });
       // Optimistically update local message content
-      setMessages((prev) =>
-        prev.map((m) => m.id === messageId ? { ...m, content } : m)
-      );
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, content } : m)));
     }
   };
 
   const handleSend = async (content, images = [], { interrupt = false } = {}) => {
     let sessionId = activeSessionId;
     if (!sessionId) {
-      const session = await api.createSession(activeAgentId, undefined, { askMode: sessionAskMode });
+      const session = await api.createSession(activeAgentId, undefined, {
+        askMode: sessionAskMode,
+      });
       setSessions((prev) => [session, ...prev]);
       setActiveSessionId(session.id);
       sessionId = session.id;
@@ -1051,7 +1093,7 @@ export default function App() {
             }
             // Images use the existing data-URL upload
             return api.uploadImage(img.dataUrl, img.name);
-          })
+          }),
         );
       } catch (err) {
         console.error('Media upload failed:', err);
@@ -1081,10 +1123,13 @@ export default function App() {
       <div className="flex flex-col h-screen bg-gray-950 text-gray-100 items-center justify-center gap-4">
         <Loader2 size={32} className="animate-spin text-indigo-400" />
         <div className="text-center">
-          <p className="text-sm text-gray-400">Connecting to server{activeOrg?.mode === 'remote' ? '...' : '...'}</p>
+          <p className="text-sm text-gray-400">
+            Connecting to server{activeOrg?.mode === 'remote' ? '...' : '...'}
+          </p>
           {activeOrg && (
             <p className="text-xs text-gray-600 mt-1">
-              {activeOrg.name}{activeOrg.mode === 'remote' ? ' (remote)' : ''}
+              {activeOrg.name}
+              {activeOrg.mode === 'remote' ? ' (remote)' : ''}
             </p>
           )}
         </div>
@@ -1110,287 +1155,298 @@ export default function App() {
       )}
 
       <div className="flex flex-1 min-h-0">
-      {/* Mobile sidebar overlay */}
-      {sidebarOpen && (
+        {/* Mobile sidebar overlay */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 bg-black/50 z-40 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
+
+        {/* Sidebar */}
         <div
-          className="fixed inset-0 bg-black/50 z-40 md:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
-      {/* Sidebar */}
-      <div
-        className={`fixed md:relative z-50 md:z-auto transition-transform duration-200 ${
-          sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-        }`}
-      >
-        <Sidebar
-          projects={projects}
-          agents={agents}
-          activeAgentId={activeAgentId}
-          onSelectAgent={(id) => {
-            setActiveAgentId(id);
-            setSidebarOpen(false);
-          }}
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          onSelectSession={(id) => {
-            setActiveSessionId(id);
-            setActiveRoomId(null);
-            setSidebarOpen(false);
-          }}
-          onNewSession={handleNewSession}
-          onDeleteSession={handleDeleteSession}
-          onRenameSession={handleRenameSession}
-          onNavigate={(view, extra) => {
-            setCurrentView(view);
-            if (view === 'wiki' && extra) setWikiProjectId(extra);
-            setSidebarOpen(false);
-          }}
-          currentView={currentView}
-          activeTaskSessionIds={activeTasks}
-          rooms={rooms}
-          activeRoomId={activeRoomId}
-          onSelectRoom={(id) => {
-            setActiveRoomId(id);
-            setActiveSessionId(null);
-            setSidebarOpen(false);
-          }}
-          onNewRoom={handleNewRoom}
-          onDeleteRoom={handleDeleteRoom}
-          onOpenProject={() => setShowWizard(true)}
-          cronSessions={cronSessions}
-          wikiProjectId={wikiProjectId}
-          activeBabysits={activeBabysits}
-          activeReviews={activeReviews}
-        />
-      </div>
-
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Top bar */}
-        <TopBar
-          agent={activeAgent}
-          connected={connected}
-          reconnecting={reconnecting}
-          onNewSession={handleNewSession}
-          onNavigate={setCurrentView}
-          onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-          sessionEngine={sessionEngine}
-          onEngineChange={handleEngineChange}
-          sessionModel={sessionModel}
-          onModelChange={handleModelChange}
-          messages={messages}
-          activeSessionId={activeSessionId}
-          sessionWorktree={sessionWorktree}
-          onWorktreeChange={handleWorktreeChange}
-          sessionAskMode={sessionAskMode}
-          onAskModeChange={handleAskModeChange}
-        />
-
-        {currentView.startsWith('kanban:') ? (
-          <KanbanBoard
-            projectId={currentView.split(':')[1]}
-            project={projects.find((p) => p.id === currentView.split(':')[1])}
+          className={`fixed md:relative z-50 md:z-auto transition-transform duration-200 ${
+            sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+          }`}
+        >
+          <Sidebar
+            projects={projects}
             agents={agents}
-            refreshKey={kanbanRefreshKey}
-            onNavigateToSession={(agentId, sessionId) => {
-              setActiveAgentId(agentId);
-              setActiveSessionId(sessionId);
-              setCurrentView('chat');
+            activeAgentId={activeAgentId}
+            onSelectAgent={(id) => {
+              setActiveAgentId(id);
+              setSidebarOpen(false);
             }}
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={(id) => {
+              setActiveSessionId(id);
+              setActiveRoomId(null);
+              setSidebarOpen(false);
+            }}
+            onNewSession={handleNewSession}
+            onDeleteSession={handleDeleteSession}
+            onRenameSession={handleRenameSession}
+            onNavigate={(view, extra) => {
+              setCurrentView(view);
+              if (view === 'wiki' && extra) setWikiProjectId(extra);
+              setSidebarOpen(false);
+            }}
+            currentView={currentView}
+            activeTaskSessionIds={activeTasks}
+            rooms={rooms}
+            activeRoomId={activeRoomId}
+            onSelectRoom={(id) => {
+              setActiveRoomId(id);
+              setActiveSessionId(null);
+              setSidebarOpen(false);
+            }}
+            onNewRoom={handleNewRoom}
+            onDeleteRoom={handleDeleteRoom}
+            onOpenProject={() => setShowWizard(true)}
+            cronSessions={cronSessions}
+            wikiProjectId={wikiProjectId}
+            activeBabysits={activeBabysits}
+            activeReviews={activeReviews}
           />
-        ) : currentView.startsWith('settings') ? (
-          <SettingsPage projects={projects} agents={agents} onAgentsChange={refreshAgents} initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined} />
-        ) : currentView === 'wiki' && wikiProjectId ? (
-          <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
-        ) : currentView === 'skills' ? (
-          <SkillsPage agents={agents} projects={projects} />
-        ) : currentView === 'room' && activeRoom ? (
-          <RoomChat
-            room={activeRoom}
-            agents={agents}
-            send={send}
-            roomMessages={roomMessages}
-            roomStreaming={roomStreaming}
-            roomThinking={roomThinking}
-            roomProcessing={roomProcessing}
-            roomQueueLength={roomQueueLength}
-            onRoomUpdated={handleRoomUpdated}
+        </div>
+
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Top bar */}
+          <TopBar
+            agent={activeAgent}
+            connected={connected}
+            reconnecting={reconnecting}
+            onNewSession={handleNewSession}
+            onNavigate={setCurrentView}
+            onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+            sessionEngine={sessionEngine}
+            onEngineChange={handleEngineChange}
+            sessionModel={sessionModel}
+            onModelChange={handleModelChange}
+            messages={messages}
+            activeSessionId={activeSessionId}
+            sessionWorktree={sessionWorktree}
+            onWorktreeChange={handleWorktreeChange}
+            sessionAskMode={sessionAskMode}
+            onAskModeChange={handleAskModeChange}
           />
-        ) : (
-          <>
-            {/* Messages */}
-            <div
-              ref={scrollContainerRef}
-              onScroll={handleScrollEvent}
-              className="flex-1 overflow-y-auto p-3 md:p-6 relative"
-            >
-              <div className="mx-auto">
-                {messages.length === 0 && !thinking && !streamingContent && (
-                  <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
-                    <MessageCircle size={48} className="mb-4 text-gray-600" />
-                    <p className="text-lg">Start a conversation</p>
-                    {activeAgent && (
-                      <p className="text-sm mt-1">with {activeAgent.name}</p>
-                    )}
-                    <p className="text-xs text-gray-700 mt-4 hidden sm:block">
-                      Ctrl+K to switch agents · Esc to cancel
-                    </p>
-                  </div>
-                )}
-                {(() => {
-                  const queuedIds = new Set((messageQueues[activeSessionId] || []).map((q) => q.id));
-                  // Render non-queued messages inline, queued messages stick to bottom
-                  const nonQueued = messages.filter((msg) => !queuedIds.has(msg.id));
-                  const queued = messages.filter((msg) => queuedIds.has(msg.id));
-                  return (
-                    <>
-                      {nonQueued.map((msg) =>
-                        msg.role === 'assistant' ? (
+
+          {currentView.startsWith('kanban:') ? (
+            <KanbanBoard
+              projectId={currentView.split(':')[1]}
+              project={projects.find((p) => p.id === currentView.split(':')[1])}
+              agents={agents}
+              refreshKey={kanbanRefreshKey}
+              onNavigateToSession={(agentId, sessionId) => {
+                setActiveAgentId(agentId);
+                setActiveSessionId(sessionId);
+                setCurrentView('chat');
+              }}
+            />
+          ) : currentView.startsWith('settings') ? (
+            <SettingsPage
+              projects={projects}
+              agents={agents}
+              onAgentsChange={refreshAgents}
+              initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined}
+            />
+          ) : currentView === 'wiki' && wikiProjectId ? (
+            <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
+          ) : currentView === 'skills' ? (
+            <SkillsPage agents={agents} projects={projects} />
+          ) : currentView === 'room' && activeRoom ? (
+            <RoomChat
+              room={activeRoom}
+              agents={agents}
+              send={send}
+              roomMessages={roomMessages}
+              roomStreaming={roomStreaming}
+              roomThinking={roomThinking}
+              roomProcessing={roomProcessing}
+              roomQueueLength={roomQueueLength}
+              onRoomUpdated={handleRoomUpdated}
+            />
+          ) : (
+            <>
+              {/* Messages */}
+              <div
+                ref={scrollContainerRef}
+                onScroll={handleScrollEvent}
+                className="flex-1 overflow-y-auto p-3 md:p-6 relative"
+              >
+                <div className="mx-auto">
+                  {messages.length === 0 && !thinking && !streamingContent && (
+                    <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
+                      <MessageCircle size={48} className="mb-4 text-gray-600" />
+                      <p className="text-lg">Start a conversation</p>
+                      {activeAgent && <p className="text-sm mt-1">with {activeAgent.name}</p>}
+                      <p className="text-xs text-gray-700 mt-4 hidden sm:block">
+                        Ctrl+K to switch agents · Esc to cancel
+                      </p>
+                    </div>
+                  )}
+                  {(() => {
+                    const queuedIds = new Set(
+                      (messageQueues[activeSessionId] || []).map((q) => q.id),
+                    );
+                    // Render non-queued messages inline, queued messages stick to bottom
+                    const nonQueued = messages.filter((msg) => !queuedIds.has(msg.id));
+                    const queued = messages.filter((msg) => queuedIds.has(msg.id));
+                    return (
+                      <>
+                        {nonQueued.map((msg) =>
+                          msg.role === 'assistant' ? (
+                            <SessionTail
+                              key={msg.id}
+                              message={msg}
+                              events={eventsByMessage[msg.id]}
+                              agentColor={activeAgent?.color}
+                              onEventsLoaded={handleEventsLoaded}
+                            />
+                          ) : (
+                            <ChatMessage
+                              key={msg.id}
+                              message={msg}
+                              agentColor={activeAgent?.color}
+                            />
+                          ),
+                        )}
+                        {thinking && !streamingMsgId && (
+                          <ThinkingIndicator agentColor={activeAgent?.color} />
+                        )}
+                        {streamingMsgId && (
                           <SessionTail
-                            key={msg.id}
-                            message={msg}
-                            events={eventsByMessage[msg.id]}
+                            key={streamingMsgId}
+                            message={{
+                              id: streamingMsgId,
+                              role: 'assistant',
+                              engine: streamingEngine,
+                              model: sessionModel,
+                              content: streamingContent,
+                            }}
+                            events={eventsByMessage[streamingMsgId]}
                             agentColor={activeAgent?.color}
-                            onEventsLoaded={handleEventsLoaded}
+                            streaming
                           />
-                        ) : (
+                        )}
+                        {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
+                        {delegations[activeSessionId] &&
+                          delegations[activeSessionId].tasks.length > 0 && (
+                            <div className="px-4 max-w-[95%] sm:max-w-[90%]">
+                              <DelegationPanel
+                                delegations={delegations[activeSessionId].tasks}
+                                sessionId={activeSessionId}
+                                onCancel={(sid) =>
+                                  send({ type: 'delegation_cancel', sessionId: sid })
+                                }
+                              />
+                            </div>
+                          )}
+                        {/* Queued messages always render at the very bottom */}
+                        {queued.map((msg) => (
                           <ChatMessage
                             key={msg.id}
-                            message={msg}
+                            message={{ ...msg, queued: true }}
                             agentColor={activeAgent?.color}
+                            onDequeue={handleDequeue}
+                            onEditQueued={handleEditQueuedMessage}
                           />
-                        )
-                      )}
-                      {thinking && !streamingMsgId && (
-                        <ThinkingIndicator agentColor={activeAgent?.color} />
-                      )}
-                      {streamingMsgId && (
-                        <SessionTail
-                          key={streamingMsgId}
-                          message={{
-                            id: streamingMsgId,
-                            role: 'assistant',
-                            engine: streamingEngine,
-                            model: sessionModel,
-                            content: streamingContent,
-                          }}
-                          events={eventsByMessage[streamingMsgId]}
-                          agentColor={activeAgent?.color}
-                          streaming
-                        />
-                      )}
-                      {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
-                      {delegations[activeSessionId] && delegations[activeSessionId].tasks.length > 0 && (
-                        <div className="px-4 max-w-[95%] sm:max-w-[90%]">
-                          <DelegationPanel
-                            delegations={delegations[activeSessionId].tasks}
-                            sessionId={activeSessionId}
-                            onCancel={(sid) => send({ type: 'delegation_cancel', sessionId: sid })}
-                          />
-                        </div>
-                      )}
-                      {/* Queued messages always render at the very bottom */}
-                      {queued.map((msg) => (
-                        <ChatMessage
-                          key={msg.id}
-                          message={{ ...msg, queued: true }}
-                          agentColor={activeAgent?.color}
-                          onDequeue={handleDequeue}
-                          onEditQueued={handleEditQueuedMessage}
-                        />
-                      ))}
-                    </>
-                  );
-                })()}
-                <div ref={messagesEndRef} />
+                        ))}
+                      </>
+                    );
+                  })()}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                {/* Scroll to bottom button */}
+                {showScrollBtn && (
+                  <button
+                    onClick={() => scrollToBottom(false)}
+                    className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
+                    style={{ width: 'fit-content', display: 'flex' }}
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M19 14l-7 7m0 0l-7-7m7 7V3"
+                      />
+                    </svg>
+                    Scroll to bottom
+                  </button>
+                )}
               </div>
 
-              {/* Scroll to bottom button */}
-              {showScrollBtn && (
-                <button
-                  onClick={() => scrollToBottom(false)}
-                  className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
-                  style={{ width: 'fit-content', display: 'flex' }}
-                >
-                  <svg
-                    className="w-3.5 h-3.5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2.5}
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                  </svg>
-                  Scroll to bottom
-                </button>
-              )}
-            </div>
+              {/* Input */}
+              <MessageInput
+                onSend={handleSend}
+                onCancel={handleCancel}
+                disabled={!activeAgentId || !connected}
+                isProcessing={isProcessing}
+                queueLength={(messageQueues[activeSessionId] || []).length}
+                agentColor={activeAgent?.color}
+                skills={skills}
+                askMode={sessionAskMode}
+              />
+            </>
+          )}
+        </div>
 
-            {/* Input */}
-            <MessageInput
-              onSend={handleSend}
-              onCancel={handleCancel}
-              disabled={!activeAgentId || !connected}
-              isProcessing={isProcessing}
-              queueLength={(messageQueues[activeSessionId] || []).length}
-              agentColor={activeAgent?.color}
-              skills={skills}
-              askMode={sessionAskMode}
-            />
-          </>
+        {/* Agent Switcher Modal */}
+        {showSwitcher && (
+          <AgentSwitcher
+            agents={agents}
+            onSelect={(id) => {
+              setActiveAgentId(id);
+              setCurrentView('chat');
+            }}
+            onClose={() => setShowSwitcher(false)}
+          />
+        )}
+
+        {/* First-run setup wizard */}
+        {showSetup && setupStatus && (
+          <SetupWizard
+            setupStatus={setupStatus}
+            onComplete={() => {
+              setShowSetup(false);
+              setShowWizard(true); // immediately open the Open Project wizard
+            }}
+          />
+        )}
+
+        {/* Open Project wizard */}
+        {showWizard && (
+          <OpenProjectWizard
+            onClose={() => setShowWizard(false)}
+            onProjectCreated={() => {
+              setShowWizard(false);
+              refreshAgents();
+            }}
+          />
+        )}
+
+        {/* Toast notifications (babysit events, etc.) */}
+        {toasts.length > 0 && (
+          <div className="fixed top-4 right-4 z-[60] flex flex-col gap-2 max-w-sm">
+            {toasts.map((toast) => (
+              <Toast
+                key={toast.id}
+                toast={toast}
+                onDismiss={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}
+              />
+            ))}
+          </div>
         )}
       </div>
-
-      {/* Agent Switcher Modal */}
-      {showSwitcher && (
-        <AgentSwitcher
-          agents={agents}
-          onSelect={(id) => {
-            setActiveAgentId(id);
-            setCurrentView('chat');
-          }}
-          onClose={() => setShowSwitcher(false)}
-        />
-      )}
-
-      {/* First-run setup wizard */}
-      {showSetup && setupStatus && (
-        <SetupWizard
-          setupStatus={setupStatus}
-          onComplete={() => {
-            setShowSetup(false);
-            setShowWizard(true); // immediately open the Open Project wizard
-          }}
-        />
-      )}
-
-      {/* Open Project wizard */}
-      {showWizard && (
-        <OpenProjectWizard
-          onClose={() => setShowWizard(false)}
-          onProjectCreated={() => {
-            setShowWizard(false);
-            refreshAgents();
-          }}
-        />
-      )}
-
-      {/* Toast notifications (babysit events, etc.) */}
-      {toasts.length > 0 && (
-        <div className="fixed top-4 right-4 z-[60] flex flex-col gap-2 max-w-sm">
-          {toasts.map((toast) => (
-            <Toast
-              key={toast.id}
-              toast={toast}
-              onDismiss={() =>
-                setToasts((prev) => prev.filter((t) => t.id !== toast.id))
-              }
-            />
-          ))}
-        </div>
-      )}
-      </div>{/* close flex row wrapper */}
+      {/* close flex row wrapper */}
     </div>
   );
 }

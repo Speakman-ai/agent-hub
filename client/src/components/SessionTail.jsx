@@ -1,10 +1,25 @@
-import React, { memo, useState, useCallback, useEffect, useMemo } from 'react';
+import { memo, useState, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
-import { Bot, Zap, FileText, PenLine, Pencil, Search, FolderSearch, Globe, SearchCode, ListChecks, BookOpen, Wrench, MessageCircle, AlertTriangle } from 'lucide-react';
+import {
+  Bot,
+  Zap,
+  FileText,
+  PenLine,
+  Pencil,
+  Search,
+  FolderSearch,
+  Globe,
+  SearchCode,
+  ListChecks,
+  BookOpen,
+  Wrench,
+  MessageCircle,
+  AlertTriangle,
+} from 'lucide-react';
 
 /**
  * SessionTail
@@ -31,17 +46,23 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded })
   useEffect(() => {
     if (events !== undefined || streaming || !messageId) return;
     let cancelled = false;
-    api.getMessageEvents(messageId)
+    api
+      .getMessageEvents(messageId)
       .then((rows) => {
         if (cancelled) return;
         // API returns [{ id, seq, event_type, event, timestamp }, ...]
-        onEventsLoaded?.(messageId, rows.map((r) => ({ seq: r.seq, event: r.event })));
+        onEventsLoaded?.(
+          messageId,
+          rows.map((r) => ({ seq: r.seq, event: r.event })),
+        );
       })
       .catch(() => {
         // Empty array signals "we tried, nothing here" so we don't loop.
         if (!cancelled) onEventsLoaded?.(messageId, []);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [messageId, events, streaming, onEventsLoaded]);
 
   const blocks = useMemo(() => eventsToBlocks(events ?? []), [events]);
@@ -72,9 +93,11 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded })
             waiting indicator until the first session-event arrives. */}
         {streaming && blocks.length === 0 && (
           <div className="mt-2">
-            {message?.content
-              ? <TextBubble text={message.content} />
-              : <span className="text-xs text-gray-500 italic">Waiting for first event…</span>}
+            {message?.content ? (
+              <TextBubble text={message.content} />
+            ) : (
+              <span className="text-xs text-gray-500 italic">Waiting for first event…</span>
+            )}
           </div>
         )}
 
@@ -171,7 +194,10 @@ function eventsToBlocks(events) {
 // ─── Sub-components ────────────────────────────────────────────────────
 
 const ENGINE_BADGES = {
-  'claude-code': { icon: <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />, label: 'Claude Code' },
+  'claude-code': {
+    icon: <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />,
+    label: 'Claude Code',
+  },
 };
 
 // Shared markdown renderer config — used by both TextBubble (rich timeline)
@@ -194,7 +220,11 @@ const MARKDOWN_COMPONENTS = {
         </pre>
       );
     }
-    return <code className={className} {...props}>{children}</code>;
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
   },
   a({ href, children, ...props }) {
     return (
@@ -252,7 +282,9 @@ function ThinkingBlock({ text }) {
         className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-900/60"
       >
         <span className="text-2xl leading-none flex items-center">{open ? '▼' : '▶'}</span>
-        <span className="flex items-center gap-1"><MessageCircle size={12} /> thinking</span>
+        <span className="flex items-center gap-1">
+          <MessageCircle size={12} /> thinking
+        </span>
         <span className="text-gray-600 truncate flex-1 text-left">
           {!open && text.slice(0, 80)}
         </span>
@@ -268,28 +300,33 @@ function ThinkingBlock({ text }) {
 
 // Tool styling — color stripe by category. Falls back to gray for unknown tools.
 const TOOL_STYLES = {
-  Bash:      { color: 'border-emerald-700/60 bg-emerald-950/30', icon: <Zap size={16} /> },
-  Read:      { color: 'border-blue-700/60 bg-blue-950/30',       icon: <FileText size={16} /> },
-  Write:     { color: 'border-rose-700/60 bg-rose-950/30',       icon: <PenLine size={16} /> },
-  Edit:      { color: 'border-amber-700/60 bg-amber-950/30',     icon: <Pencil size={16} /> },
-  Grep:      { color: 'border-purple-700/60 bg-purple-950/30',   icon: <Search size={16} /> },
-  Glob:      { color: 'border-purple-700/60 bg-purple-950/30',   icon: <FolderSearch size={16} /> },
-  WebFetch:  { color: 'border-cyan-700/60 bg-cyan-950/30',       icon: <Globe size={16} /> },
-  WebSearch: { color: 'border-cyan-700/60 bg-cyan-950/30',       icon: <SearchCode size={16} /> },
-  Task:      { color: 'border-indigo-700/60 bg-indigo-950/30',   icon: <Bot size={16} /> },
-  TodoWrite: { color: 'border-gray-700/60 bg-gray-900/40',       icon: <ListChecks size={16} /> },
-  NotebookEdit: { color: 'border-amber-700/60 bg-amber-950/30',  icon: <BookOpen size={16} /> },
+  Bash: { color: 'border-emerald-700/60 bg-emerald-950/30', icon: <Zap size={16} /> },
+  Read: { color: 'border-blue-700/60 bg-blue-950/30', icon: <FileText size={16} /> },
+  Write: { color: 'border-rose-700/60 bg-rose-950/30', icon: <PenLine size={16} /> },
+  Edit: { color: 'border-amber-700/60 bg-amber-950/30', icon: <Pencil size={16} /> },
+  Grep: { color: 'border-purple-700/60 bg-purple-950/30', icon: <Search size={16} /> },
+  Glob: { color: 'border-purple-700/60 bg-purple-950/30', icon: <FolderSearch size={16} /> },
+  WebFetch: { color: 'border-cyan-700/60 bg-cyan-950/30', icon: <Globe size={16} /> },
+  WebSearch: { color: 'border-cyan-700/60 bg-cyan-950/30', icon: <SearchCode size={16} /> },
+  Task: { color: 'border-indigo-700/60 bg-indigo-950/30', icon: <Bot size={16} /> },
+  TodoWrite: { color: 'border-gray-700/60 bg-gray-900/40', icon: <ListChecks size={16} /> },
+  NotebookEdit: { color: 'border-amber-700/60 bg-amber-950/30', icon: <BookOpen size={16} /> },
 };
 
 function ToolCard({ use, result }) {
   const [open, setOpen] = useState(false);
-  const style = TOOL_STYLES[use.tool] || { color: 'border-gray-700/60 bg-gray-900/40', icon: <Wrench size={16} /> };
+  const style = TOOL_STYLES[use.tool] || {
+    color: 'border-gray-700/60 bg-gray-900/40',
+    icon: <Wrench size={16} />,
+  };
   const summary = summarizeToolInput(use.tool, use.input);
   const errored = result?.isError;
   const stillRunning = !result;
 
   return (
-    <div className={`border rounded-lg overflow-hidden ${style.color} ${errored ? 'border-red-700/80' : ''}`}>
+    <div
+      className={`border rounded-lg overflow-hidden ${style.color} ${errored ? 'border-red-700/80' : ''}`}
+    >
       <button
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-black/20"
@@ -300,10 +337,10 @@ function ToolCard({ use, result }) {
         {stillRunning && (
           <span className="text-emerald-400 text-[10px] animate-pulse">running…</span>
         )}
-        {errored && (
-          <span className="text-red-400 text-[10px] uppercase tracking-wide">error</span>
-        )}
-        <span className="text-gray-500 text-2xl leading-none flex items-center">{open ? '▼' : '▶'}</span>
+        {errored && <span className="text-red-400 text-[10px] uppercase tracking-wide">error</span>}
+        <span className="text-gray-500 text-2xl leading-none flex items-center">
+          {open ? '▼' : '▶'}
+        </span>
       </button>
       {open && (
         <div className="border-t border-black/30 p-3 space-y-2">
@@ -318,7 +355,9 @@ function ToolCard({ use, result }) {
               <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">
                 {errored ? 'error' : 'result'}
               </div>
-              <pre className={`text-xs rounded p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-96 ${errored ? 'bg-red-950/40 text-red-300' : 'bg-black/30 text-gray-300'}`}>
+              <pre
+                className={`text-xs rounded p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-96 ${errored ? 'bg-red-950/40 text-red-300' : 'bg-black/30 text-gray-300'}`}
+              >
                 {result.output || '(empty)'}
               </pre>
             </div>
@@ -368,7 +407,11 @@ function formatToolInput(input) {
 function TextBubble({ text }) {
   return (
     <div className="markdown-content text-gray-200 text-sm leading-relaxed">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MARKDOWN_COMPONENTS}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={MARKDOWN_COMPONENTS}
+      >
         {text}
       </ReactMarkdown>
     </div>
@@ -389,7 +432,17 @@ function ResultFooter({ result }) {
   if (parts.length === 0) return null;
   return (
     <div className="flex items-center gap-2 text-[10px] text-gray-600 font-mono pt-1 border-t border-gray-800/50">
-      <span className="flex items-center gap-1">{result.isError ? <><AlertTriangle size={10} /> error</> : <><ListChecks size={10} /> done</>}</span>
+      <span className="flex items-center gap-1">
+        {result.isError ? (
+          <>
+            <AlertTriangle size={10} /> error
+          </>
+        ) : (
+          <>
+            <ListChecks size={10} /> done
+          </>
+        )}
+      </span>
       <span>·</span>
       <span>{parts.join(' · ')}</span>
     </div>
@@ -399,7 +452,9 @@ function ResultFooter({ result }) {
 function ErrorBlock({ message }) {
   return (
     <div className="bg-red-950/40 border border-red-800/60 rounded-lg px-3 py-2 text-xs text-red-300 whitespace-pre-wrap">
-      <span className="flex items-center gap-1"><AlertTriangle size={12} /> {message}</span>
+      <span className="flex items-center gap-1">
+        <AlertTriangle size={12} /> {message}
+      </span>
     </div>
   );
 }
@@ -428,7 +483,11 @@ function LegacyAssistantBubble({ message, agentColor }) {
           createdAt={message.created_at}
         />
         <div className="markdown-content text-gray-200 mt-1">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MARKDOWN_COMPONENTS}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+            components={MARKDOWN_COMPONENTS}
+          >
             {message.content}
           </ReactMarkdown>
         </div>

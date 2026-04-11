@@ -2,10 +2,21 @@ import { db, stmts } from './db.js';
 import crypto from 'crypto';
 
 // Valid categories
-const CATEGORIES = ['general', 'api-docs', 'architecture', 'conventions', 'test-patterns', 'troubleshooting', 'onboarding'];
+const CATEGORIES = [
+  'general',
+  'api-docs',
+  'architecture',
+  'conventions',
+  'test-patterns',
+  'troubleshooting',
+  'onboarding',
+];
 
 function slugify(title) {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 /**
@@ -25,7 +36,10 @@ export function getPage(projectId, slug) {
 /**
  * Create a new wiki page
  */
-export function createPage(projectId, { title, content = '', category = 'general', updatedBy = 'user' }) {
+export function createPage(
+  projectId,
+  { title, content = '', category = 'general', updatedBy = 'user' },
+) {
   const id = crypto.randomUUID();
   const slug = slugify(title);
 
@@ -39,8 +53,12 @@ export function createPage(projectId, { title, content = '', category = 'general
 
   // Update FTS index
   try {
-    db.prepare('INSERT INTO wiki_pages_fts (rowid, title, content, slug, project_id) VALUES ((SELECT rowid FROM wiki_pages WHERE id = ?), ?, ?, ?, ?)').run(id, title, content, slug, projectId);
-  } catch { /* FTS table might not exist yet */ }
+    db.prepare(
+      'INSERT INTO wiki_pages_fts (rowid, title, content, slug, project_id) VALUES ((SELECT rowid FROM wiki_pages WHERE id = ?), ?, ?, ?, ?)',
+    ).run(id, title, content, slug, projectId);
+  } catch {
+    /* FTS table might not exist yet */
+  }
 
   return { id, slug, title, content, category, updatedBy };
 }
@@ -67,7 +85,15 @@ export function updatePage(projectId, slug, { title, content, category, updatedB
   if (newSlug !== slug) {
     // Need to delete + recreate since slug is part of the unique constraint
     db.prepare('DELETE FROM wiki_pages WHERE project_id = ? AND slug = ?').run(projectId, slug);
-    stmts.createWikiPage.run(existing.id, projectId, newTitle, newSlug, newContent, newCategory, updatedBy);
+    stmts.createWikiPage.run(
+      existing.id,
+      projectId,
+      newTitle,
+      newSlug,
+      newContent,
+      newCategory,
+      updatedBy,
+    );
   } else {
     stmts.updateWikiPage.run(newTitle, newContent, newCategory, updatedBy, projectId, slug);
   }
@@ -77,11 +103,22 @@ export function updatePage(projectId, slug, { title, content, category, updatedB
     const rowid = db.prepare('SELECT rowid FROM wiki_pages WHERE id = ?').get(existing.id)?.rowid;
     if (rowid) {
       db.prepare('DELETE FROM wiki_pages_fts WHERE rowid = ?').run(rowid);
-      db.prepare('INSERT INTO wiki_pages_fts (rowid, title, content, slug, project_id) VALUES (?, ?, ?, ?, ?)').run(rowid, newTitle, newContent, newSlug, projectId);
+      db.prepare(
+        'INSERT INTO wiki_pages_fts (rowid, title, content, slug, project_id) VALUES (?, ?, ?, ?, ?)',
+      ).run(rowid, newTitle, newContent, newSlug, projectId);
     }
-  } catch { /* FTS might not exist */ }
+  } catch {
+    /* FTS might not exist */
+  }
 
-  return { id: existing.id, slug: newSlug, title: newTitle, content: newContent, category: newCategory, updatedBy };
+  return {
+    id: existing.id,
+    slug: newSlug,
+    title: newTitle,
+    content: newContent,
+    category: newCategory,
+    updatedBy,
+  };
 }
 
 /**
@@ -95,7 +132,9 @@ export function deletePage(projectId, slug) {
   try {
     const rowid = db.prepare('SELECT rowid FROM wiki_pages WHERE id = ?').get(existing.id)?.rowid;
     if (rowid) db.prepare('DELETE FROM wiki_pages_fts WHERE rowid = ?').run(rowid);
-  } catch { /* skip */ }
+  } catch {
+    /* skip */
+  }
 
   stmts.deleteWikiPage.run(projectId, slug);
   return true;
@@ -109,7 +148,9 @@ export function searchPages(projectId, query, limit = 10) {
 
   try {
     // FTS5 search with ranking
-    const results = db.prepare(`
+    const results = db
+      .prepare(
+        `
       SELECT wp.id, wp.project_id, wp.title, wp.slug, wp.category, wp.updated_by,
              wp.created_at, wp.updated_at,
              snippet(wiki_pages_fts, 1, '<mark>', '</mark>', '...', 40) as snippet,
@@ -119,17 +160,23 @@ export function searchPages(projectId, query, limit = 10) {
       WHERE wiki_pages_fts MATCH ? AND wp.project_id = ?
       ORDER BY rank
       LIMIT ?
-    `).all(query, projectId, limit);
+    `,
+      )
+      .all(query, projectId, limit);
     return results;
   } catch {
     // Fallback to LIKE search if FTS fails
-    const results = db.prepare(`
+    const results = db
+      .prepare(
+        `
       SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at
       FROM wiki_pages
       WHERE project_id = ? AND (title LIKE ? OR content LIKE ?)
       ORDER BY updated_at DESC
       LIMIT ?
-    `).all(projectId, `%${query}%`, `%${query}%`, limit);
+    `,
+      )
+      .all(projectId, `%${query}%`, `%${query}%`, limit);
     return results;
   }
 }
@@ -141,7 +188,7 @@ export function getWikiContext(projectId) {
   const pages = listPages(projectId);
   if (pages.length === 0) return '';
 
-  const lines = pages.map(p => `- **${p.title}** (${p.category}) — updated ${p.updated_at}`);
+  const lines = pages.map((p) => `- **${p.title}** (${p.category}) — updated ${p.updated_at}`);
   return `## Project Wiki (${pages.length} pages)\nUse the \`wiki_search\` skill to query relevant pages.\n${lines.join('\n')}`;
 }
 

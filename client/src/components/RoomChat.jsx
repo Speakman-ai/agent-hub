@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
 import { formatRoomExport, copyToClipboard } from '../utils/export.js';
@@ -107,11 +107,10 @@ export default function RoomChat({
   }, [room.id]);
 
   // Filtered agents for autocomplete
-  const mentionAgents = room.agents?.filter((a) =>
-    mentionQuery === null
-      ? false
-      : a.name.toLowerCase().includes(mentionQuery.toLowerCase())
-  ) || [];
+  const mentionAgents =
+    room.agents?.filter((a) =>
+      mentionQuery === null ? false : a.name.toLowerCase().includes(mentionQuery.toLowerCase()),
+    ) || [];
 
   // Reset index when filtered list changes
   useEffect(() => {
@@ -135,20 +134,23 @@ export default function RoomChat({
     setMentionIndex(0);
   }, []);
 
-  const insertMention = useCallback((agentName) => {
-    if (mentionStart === null) return;
-    const before = input.slice(0, mentionStart);
-    const after = input.slice(inputRef.current?.selectionStart || input.length);
-    const newInput = `${before}@${agentName} ${after}`;
-    setInput(newInput);
-    closeMention();
-    // Restore focus and cursor position after React re-render
-    requestAnimationFrame(() => {
-      const pos = before.length + agentName.length + 2; // +2 for @ and space
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(pos, pos);
-    });
-  }, [input, mentionStart, closeMention]);
+  const insertMention = useCallback(
+    (agentName) => {
+      if (mentionStart === null) return;
+      const before = input.slice(0, mentionStart);
+      const after = input.slice(inputRef.current?.selectionStart || input.length);
+      const newInput = `${before}@${agentName} ${after}`;
+      setInput(newInput);
+      closeMention();
+      // Restore focus and cursor position after React re-render
+      requestAnimationFrame(() => {
+        const pos = before.length + agentName.length + 2; // +2 for @ and space
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(pos, pos);
+      });
+    },
+    [input, mentionStart, closeMention],
+  );
 
   const handleInputChange = (e) => {
     const val = e.target.value;
@@ -261,16 +263,46 @@ export default function RoomChat({
                 title="Export conversation"
               >
                 {exportState === 'copied' ? (
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-emerald-400" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-4 w-4 text-emerald-400"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                      clipRule="evenodd"
+                    />
                   </svg>
                 ) : exportState === 'summarizing' ? (
-                  <svg className="h-4 w-4 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  <svg
+                    className="h-4 w-4 animate-spin text-blue-400"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
                   </svg>
                 ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-4 w-4"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
                     <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
                     <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
                   </svg>
@@ -290,7 +322,12 @@ export default function RoomChat({
                     }}
                     className="w-full text-left px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-4 w-4 text-gray-500"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
                       <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
                       <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
                     </svg>
@@ -314,8 +351,17 @@ export default function RoomChat({
                     disabled={exportState === 'summarizing'}
                     className="w-full text-left px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2 disabled:opacity-50"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-4 w-4 text-gray-500"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
+                        clipRule="evenodd"
+                      />
                     </svg>
                     Copy Summary
                   </button>
@@ -349,10 +395,7 @@ export default function RoomChat({
                   key={a.id}
                   className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-1.5 text-sm"
                 >
-                  <span
-                    className="w-2.5 h-2.5 rounded-full"
-                    style={{ backgroundColor: a.color }}
-                  />
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: a.color }} />
                   <span>{a.name}</span>
                   <button
                     onClick={() => handleRemoveAgent(a.id)}
@@ -555,7 +598,8 @@ export default function RoomChat({
           )}
           {roomProcessing && roomQueueLength > 0 && (
             <div className="text-xs text-amber-400/80 px-1 mb-1">
-              {roomQueueLength} message{roomQueueLength > 1 ? 's' : ''} queued — will be sent after agents finish
+              {roomQueueLength} message{roomQueueLength > 1 ? 's' : ''} queued — will be sent after
+              agents finish
             </div>
           )}
           <form onSubmit={handleSend} className="flex gap-2">
@@ -572,8 +616,8 @@ export default function RoomChat({
                 roomProcessing
                   ? 'Type to queue a message while agents respond...'
                   : room.agents?.length > 0
-                  ? 'Message the room — type @ to mention an agent'
-                  : 'Add agents to start chatting'
+                    ? 'Message the room — type @ to mention an agent'
+                    : 'Add agents to start chatting'
               }
               disabled={!room.agents?.length}
               className="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 focus:outline-none focus:border-gray-500 disabled:opacity-50"
@@ -620,16 +664,10 @@ function RenderMentions({ text, roomAgents }) {
   return parts.map((part, i) => {
     const match = part.match(/^@(.+)$/i);
     if (match) {
-      const agent = roomAgents.find(
-        (a) => a.name.toLowerCase() === match[1].toLowerCase()
-      );
+      const agent = roomAgents.find((a) => a.name.toLowerCase() === match[1].toLowerCase());
       if (agent) {
         return (
-          <span
-            key={i}
-            className="font-semibold"
-            style={{ color: agent.color }}
-          >
+          <span key={i} className="font-semibold" style={{ color: agent.color }}>
             {part}
           </span>
         );
@@ -649,9 +687,7 @@ function RoomMessage({ message, roomAgents }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-xs font-semibold text-gray-400">You</span>
-            <span className="text-xs text-gray-600">
-              {relativeTime(message.created_at)}
-            </span>
+            <span className="text-xs text-gray-600">{relativeTime(message.created_at)}</span>
           </div>
           <div className="text-sm text-gray-200 whitespace-pre-wrap">
             <RenderMentions text={message.content} roomAgents={roomAgents} />
@@ -669,15 +705,10 @@ function RoomMessage({ message, roomAgents }) {
       />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
-          <span
-            className="text-xs font-semibold"
-            style={{ color: message.agent_color || '#666' }}
-          >
+          <span className="text-xs font-semibold" style={{ color: message.agent_color || '#666' }}>
             {message.agent_name || 'Agent'}
           </span>
-          <span className="text-xs text-gray-600">
-            {relativeTime(message.created_at)}
-          </span>
+          <span className="text-xs text-gray-600">{relativeTime(message.created_at)}</span>
         </div>
         <div className="text-sm text-gray-300 whitespace-pre-wrap">
           <RenderMentions text={message.content} roomAgents={roomAgents} />

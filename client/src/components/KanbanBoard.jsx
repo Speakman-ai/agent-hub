@@ -1,5 +1,18 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, GripVertical, MoreHorizontal, X, MessageSquare, ExternalLink, Trash2, Zap, Target, ChevronDown, Settings, Search, GitPullRequest } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Plus,
+  GripVertical,
+  X,
+  MessageSquare,
+  ExternalLink,
+  Trash2,
+  Zap,
+  Target,
+  ChevronDown,
+  Settings,
+  Search,
+  GitPullRequest,
+} from 'lucide-react';
 import { api } from '../utils/api.js';
 
 const PRIORITY_STYLES = {
@@ -23,8 +36,14 @@ const EPIC_COLORS = [
   '#3B82F6', // blue
 ];
 
-export default function KanbanBoard({ projectId, project, agents = [], refreshKey, onNavigateToSession }) {
-  const [board, setBoard] = useState(null);
+export default function KanbanBoard({
+  projectId,
+  project,
+  agents = [],
+  refreshKey,
+  onNavigateToSession,
+}) {
+  const [_board, setBoard] = useState(null);
   const [columns, setColumns] = useState([]);
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -91,7 +110,8 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
   // Load comments when card selected
   useEffect(() => {
     if (!selectedCard) return;
-    api.getCardComments(projectId, selectedCard.id)
+    api
+      .getCardComments(projectId, selectedCard.id)
       .then(setComments)
       .catch(() => setComments([]));
   }, [selectedCard, projectId]);
@@ -101,7 +121,14 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
     return cards
       .filter((c) => c.column_id === columnId)
       .filter((c) => !selectedEpicId || c.epic_id === selectedEpicId)
-      .filter((c) => !q || c.title.toLowerCase().includes(q) || (c.description || '').toLowerCase().includes(q) || (c.labels || '').toLowerCase().includes(q) || (c.assignee || '').toLowerCase().includes(q))
+      .filter(
+        (c) =>
+          !q ||
+          c.title.toLowerCase().includes(q) ||
+          (c.description || '').toLowerCase().includes(q) ||
+          (c.labels || '').toLowerCase().includes(q) ||
+          (c.assignee || '').toLowerCase().includes(q),
+      )
       .sort((a, b) => a.position - b.position);
   };
 
@@ -118,7 +145,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
     setDragOverColumn(columnId);
   };
 
-  const handleDragLeave = (e, columnId) => {
+  const handleDragLeave = (e, _columnId) => {
     if (e.currentTarget && !e.currentTarget.contains(e.relatedTarget)) {
       setDragOverColumn(null);
     }
@@ -138,8 +165,8 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
     const newPosition = colCards.length;
     setCards((prev) =>
       prev.map((c) =>
-        c.id === card.id ? { ...c, column_id: columnId, position: newPosition } : c
-      )
+        c.id === card.id ? { ...c, column_id: columnId, position: newPosition } : c,
+      ),
     );
 
     try {
@@ -304,8 +331,11 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
     setShowEpicForm(false);
   };
 
-  const doneColumnIds = new Set(columns.filter((c) => c.name.toLowerCase() === 'done').map((c) => c.id));
-  const epicCardCount = (epicId) => cards.filter((c) => c.epic_id === epicId && !doneColumnIds.has(c.column_id)).length;
+  const doneColumnIds = new Set(
+    columns.filter((c) => c.name.toLowerCase() === 'done').map((c) => c.id),
+  );
+  const epicCardCount = (epicId) =>
+    cards.filter((c) => c.epic_id === epicId && !doneColumnIds.has(c.column_id)).length;
 
   if (loading) {
     return (
@@ -322,7 +352,10 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
           <p className="mb-2">Failed to load board</p>
           <p className="text-sm text-gray-600">{error}</p>
           <button
-            onClick={() => { setLoading(true); fetchBoard(); }}
+            onClick={() => {
+              setLoading(true);
+              fetchBoard();
+            }}
             className="mt-4 px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-300 transition-colors"
           >
             Retry
@@ -343,9 +376,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
               style={{ backgroundColor: project.color }}
             />
           )}
-          <h1 className="text-lg font-semibold text-white">
-            {project?.name || 'Project'} Board
-          </h1>
+          <h1 className="text-lg font-semibold text-white">{project?.name || 'Project'} Board</h1>
           <span className="text-sm text-gray-500">
             {cards.length} card{cards.length !== 1 ? 's' : ''}
           </span>
@@ -395,30 +426,39 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
               const count = epicCardCount(epic.id);
               return (
                 <option key={epic.id} value={epic.id}>
-                  {epic.autonomous === 1 ? '⚡ ' : ''}{epic.name}{count > 0 ? ` (${count})` : ''}
+                  {epic.autonomous === 1 ? '⚡ ' : ''}
+                  {epic.name}
+                  {count > 0 ? ` (${count})` : ''}
                 </option>
               );
             })}
           </select>
-          <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+          <ChevronDown
+            size={14}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+          />
         </div>
 
         {/* Selected epic color dot + edit button */}
-        {selectedEpicId && (() => {
-          const epic = epics.find(e => e.id === selectedEpicId);
-          return epic ? (
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: epic.color }} />
-              <button
-                onClick={(e) => openEpicEdit(epic, e)}
-                className="p-1 text-gray-500 hover:text-gray-300 rounded hover:bg-gray-800 transition-colors"
-                title="Edit epic"
-              >
-                <Settings size={14} />
-              </button>
-            </div>
-          ) : null;
-        })()}
+        {selectedEpicId &&
+          (() => {
+            const epic = epics.find((e) => e.id === selectedEpicId);
+            return epic ? (
+              <div className="flex items-center gap-2">
+                <span
+                  className="w-2.5 h-2.5 rounded-full"
+                  style={{ backgroundColor: epic.color }}
+                />
+                <button
+                  onClick={(e) => openEpicEdit(epic, e)}
+                  className="p-1 text-gray-500 hover:text-gray-300 rounded hover:bg-gray-800 transition-colors"
+                  title="Edit epic"
+                >
+                  <Settings size={14} />
+                </button>
+              </div>
+            ) : null;
+          })()}
 
         {/* + Epic button */}
         <button
@@ -470,7 +510,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                   key={color}
                   onClick={() => setEpicForm((f) => ({ ...f, color }))}
                   className={`w-5 h-5 rounded-full transition-all ${
-                    epicForm.color === color ? 'ring-2 ring-white ring-offset-1 ring-offset-gray-900 scale-110' : 'hover:scale-110'
+                    epicForm.color === color
+                      ? 'ring-2 ring-white ring-offset-1 ring-offset-gray-900 scale-110'
+                      : 'hover:scale-110'
                   }`}
                   style={{ backgroundColor: color }}
                 />
@@ -493,8 +535,13 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                       }`}
                     />
                   </button>
-                  <Zap size={14} className={epicForm.autonomous ? 'text-emerald-400' : 'text-gray-500'} />
-                  <span className={`text-sm ${epicForm.autonomous ? 'text-emerald-400' : 'text-gray-400'}`}>
+                  <Zap
+                    size={14}
+                    className={epicForm.autonomous ? 'text-emerald-400' : 'text-gray-500'}
+                  />
+                  <span
+                    className={`text-sm ${epicForm.autonomous ? 'text-emerald-400' : 'text-gray-400'}`}
+                  >
                     Autonomous Mode
                   </span>
                 </label>
@@ -506,7 +553,12 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                       <input
                         type="number"
                         value={epicForm.autonomous_max_concurrent || 2}
-                        onChange={(e) => setEpicForm((f) => ({ ...f, autonomous_max_concurrent: parseInt(e.target.value) || 2 }))}
+                        onChange={(e) =>
+                          setEpicForm((f) => ({
+                            ...f,
+                            autonomous_max_concurrent: parseInt(e.target.value) || 2,
+                          }))
+                        }
                         min={1}
                         max={5}
                         className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500"
@@ -517,7 +569,12 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                       <input
                         type="number"
                         value={epicForm.autonomous_max_iterations || 3}
-                        onChange={(e) => setEpicForm((f) => ({ ...f, autonomous_max_iterations: parseInt(e.target.value) || 3 }))}
+                        onChange={(e) =>
+                          setEpicForm((f) => ({
+                            ...f,
+                            autonomous_max_iterations: parseInt(e.target.value) || 3,
+                          }))
+                        }
                         min={1}
                         max={10}
                         className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500"
@@ -583,9 +640,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                   style={{ borderColor: col.color || '#6b7280' }}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-gray-300">
-                      {col.name}
-                    </span>
+                    <span className="text-sm font-semibold text-gray-300">{col.name}</span>
                     <span className="text-xs text-gray-500">({colCards.length})</span>
                   </div>
                 </div>
@@ -654,24 +709,30 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                                   className="text-xs text-gray-500 hover:text-indigo-400 flex items-center gap-1"
                                   title={card.pr_url}
                                 >
-                                  <GitPullRequest size={12} />
-                                  #{card.pr_url.match(/\d+$/)?.[0] || 'PR'}
+                                  <GitPullRequest size={12} />#
+                                  {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
                                 </a>
                               )}
                               {card.assignee && (
-                                <span className={`text-xs ${card.session_id ? 'text-indigo-400' : 'text-gray-400'}`}>
-                                  {card.session_id ? '● ' : ''}{card.assignee}
+                                <span
+                                  className={`text-xs ${card.session_id ? 'text-indigo-400' : 'text-gray-400'}`}
+                                >
+                                  {card.session_id ? '● ' : ''}
+                                  {card.assignee}
                                 </span>
                               )}
                               {card.labels &&
-                                card.labels.split(',').filter(Boolean).map((label) => (
-                                  <span
-                                    key={label}
-                                    className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded"
-                                  >
-                                    {label.trim()}
-                                  </span>
-                                ))}
+                                card.labels
+                                  .split(',')
+                                  .filter(Boolean)
+                                  .map((label) => (
+                                    <span
+                                      key={label}
+                                      className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded"
+                                    >
+                                      {label.trim()}
+                                    </span>
+                                  ))}
                             </div>
                           </div>
                         </div>
@@ -704,7 +765,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                           className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none"
                         >
                           {PRIORITIES.map((p) => (
-                            <option key={p} value={p}>{p}</option>
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
                           ))}
                         </select>
                         <button
@@ -714,7 +777,10 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                           Add
                         </button>
                         <button
-                          onClick={() => { setAddingInColumn(null); setNewCardTitle(''); }}
+                          onClick={() => {
+                            setAddingInColumn(null);
+                            setNewCardTitle('');
+                          }}
                           className="text-gray-500 hover:text-gray-300"
                         >
                           <X size={14} />
@@ -748,10 +814,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
       {selectedCard && (
         <div className="fixed inset-0 z-50 flex justify-end">
           {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/50"
-            onClick={() => setSelectedCard(null)}
-          />
+          <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedCard(null)} />
           {/* Panel */}
           <div className="relative w-full max-w-lg bg-gray-900 border-l border-gray-800 overflow-y-auto">
             <div className="p-6">
@@ -792,7 +855,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500 mb-4"
               >
                 {PRIORITIES.map((p) => (
-                  <option key={p} value={p}>{p}</option>
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
                 ))}
               </select>
 
@@ -802,7 +867,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                 <div className="mb-4">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-sm text-white">{detailForm.assignee || 'Assigned'}</span>
-                    <span className="text-xs bg-emerald-900/40 text-emerald-400 px-2 py-0.5 rounded">Session active</span>
+                    <span className="text-xs bg-emerald-900/40 text-emerald-400 px-2 py-0.5 rounded">
+                      Session active
+                    </span>
                   </div>
                   <button
                     onClick={() => {
@@ -825,7 +892,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                   >
                     <option value="">Unassigned</option>
                     {agents.map((a) => (
-                      <option key={a.id} value={a.name}>{a.name}</option>
+                      <option key={a.id} value={a.name}>
+                        {a.name}
+                      </option>
                     ))}
                   </select>
                   {detailForm.assignee && (
@@ -875,7 +944,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
               >
                 <option value="">None</option>
                 {epics.map((e) => (
-                  <option key={e.id} value={e.id}>{e.name}</option>
+                  <option key={e.id} value={e.id}>
+                    {e.name}
+                  </option>
                 ))}
               </select>
 
@@ -885,7 +956,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                 <input
                   type="text"
                   value={detailForm.github_issue_url}
-                  onChange={(e) => setDetailForm((f) => ({ ...f, github_issue_url: e.target.value }))}
+                  onChange={(e) =>
+                    setDetailForm((f) => ({ ...f, github_issue_url: e.target.value }))
+                  }
                   placeholder="https://github.com/..."
                   className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
                 />

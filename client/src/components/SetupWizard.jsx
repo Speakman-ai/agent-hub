@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Bot, Rocket, Monitor, Cloud, Loader2, Plug } from 'lucide-react';
 import { getApiBase, getAuthHeaders } from '../utils/connection.js';
-import { createOrg, switchOrg, getOrgs, getActiveOrg, updateOrg } from '../utils/orgs.js';
+import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs.js';
 import { testConnection } from '../utils/connection.js';
 
 const STEP_LABELS = ['Welcome', 'Organization', 'Configure Claude', 'First Project'];
@@ -16,7 +16,9 @@ function StepIndicator({ currentStep }) {
         return (
           <div key={label} className="flex items-center gap-2">
             {i > 0 && (
-              <div className={`w-8 h-px ${isCompleted || isActive ? 'bg-emerald-500' : 'bg-gray-600'}`} />
+              <div
+                className={`w-8 h-px ${isCompleted || isActive ? 'bg-emerald-500' : 'bg-gray-600'}`}
+              />
             )}
             <div className="flex items-center gap-1.5">
               <div
@@ -24,12 +26,18 @@ function StepIndicator({ currentStep }) {
                   isCompleted
                     ? 'bg-emerald-500 border-emerald-500 text-white'
                     : isActive
-                    ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10'
-                    : 'border-gray-600 text-gray-500 bg-transparent'
+                      ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10'
+                      : 'border-gray-600 text-gray-500 bg-transparent'
                 }`}
               >
                 {isCompleted ? (
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                  <svg
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={3}
+                  >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                   </svg>
                 ) : (
@@ -159,11 +167,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               <Bot size={64} />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white mb-3">
-                Welcome to Agent Hub
-              </h1>
+              <h1 className="text-2xl font-bold text-white mb-3">Welcome to Agent Hub</h1>
               <p className="text-gray-400 text-sm leading-relaxed max-w-md mx-auto">
-                Let's get you set up. First, we'll configure your organization profile.
+                Let&apos;s get you set up. First, we&apos;ll configure your organization profile.
               </p>
             </div>
             <button
@@ -179,9 +185,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
         {step === 2 && (
           <div className="space-y-5">
             <div className="text-center mb-2">
-              <h1 className="text-xl font-bold text-white mb-1">
-                Create Your Organization
-              </h1>
+              <h1 className="text-xl font-bold text-white mb-1">Create Your Organization</h1>
               <p className="text-gray-400 text-sm">
                 An organization is a connection profile. You can add more later.
               </p>
@@ -189,7 +193,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
 
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-4">
               <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">Organization Name</label>
+                <label className="block text-xs font-medium text-gray-400 mb-1">
+                  Organization Name
+                </label>
                 <input
                   type="text"
                   value={orgName}
@@ -200,28 +206,40 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-gray-400 mb-2">Connection Mode</label>
+                <label className="block text-xs font-medium text-gray-400 mb-2">
+                  Connection Mode
+                </label>
                 <div className="flex gap-3">
                   <button
-                    onClick={() => { setOrgMode('local'); setOrgTestResult(null); }}
+                    onClick={() => {
+                      setOrgMode('local');
+                      setOrgTestResult(null);
+                    }}
                     className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
                       orgMode === 'local'
                         ? 'border-blue-500 bg-blue-500/10 text-blue-400'
                         : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
                     }`}
                   >
-                    <div className="text-base mb-1 flex items-center gap-1.5"><Monitor size={18} /> Local</div>
+                    <div className="text-base mb-1 flex items-center gap-1.5">
+                      <Monitor size={18} /> Local
+                    </div>
                     <div className="text-xs text-gray-500">Server on this machine</div>
                   </button>
                   <button
-                    onClick={() => { setOrgMode('remote'); setOrgTestResult(null); }}
+                    onClick={() => {
+                      setOrgMode('remote');
+                      setOrgTestResult(null);
+                    }}
                     className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
                       orgMode === 'remote'
                         ? 'border-blue-500 bg-blue-500/10 text-blue-400'
                         : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
                     }`}
                   >
-                    <div className="text-base mb-1 flex items-center gap-1.5"><Cloud size={18} /> Remote</div>
+                    <div className="text-base mb-1 flex items-center gap-1.5">
+                      <Cloud size={18} /> Remote
+                    </div>
                     <div className="text-xs text-gray-500">Connect to a remote server</div>
                   </button>
                 </div>
@@ -230,7 +248,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               {orgMode === 'remote' && (
                 <div className="space-y-3 pt-1">
                   <div>
-                    <label className="block text-xs font-medium text-gray-400 mb-1">Server URL</label>
+                    <label className="block text-xs font-medium text-gray-400 mb-1">
+                      Server URL
+                    </label>
                     <input
                       type="text"
                       value={orgRemoteUrl}
@@ -240,7 +260,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-gray-400 mb-1">API Key (optional)</label>
+                    <label className="block text-xs font-medium text-gray-400 mb-1">
+                      API Key (optional)
+                    </label>
                     <input
                       type="password"
                       value={orgApiKey}
@@ -256,11 +278,21 @@ export default function SetupWizard({ onComplete, setupStatus }) {
                       className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
                     >
                       <span className="flex items-center gap-1.5">
-                        {orgTesting ? <><Loader2 size={14} className="animate-spin" /> Testing...</> : <><Plug size={14} /> Test Connection</>}
+                        {orgTesting ? (
+                          <>
+                            <Loader2 size={14} className="animate-spin" /> Testing...
+                          </>
+                        ) : (
+                          <>
+                            <Plug size={14} /> Test Connection
+                          </>
+                        )}
                       </span>
                     </button>
                     {orgTestResult && (
-                      <span className={`text-sm ${orgTestResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                      <span
+                        className={`text-sm ${orgTestResult.ok ? 'text-emerald-400' : 'text-red-400'}`}
+                      >
                         {orgTestResult.ok ? '✓' : '✕'} {orgTestResult.message}
                       </span>
                     )}
@@ -291,11 +323,10 @@ export default function SetupWizard({ onComplete, setupStatus }) {
         {step === 3 && (
           <div className="space-y-5">
             <div className="text-center mb-2">
-              <h1 className="text-xl font-bold text-white mb-1">
-                Configure Your Tools
-              </h1>
+              <h1 className="text-xl font-bold text-white mb-1">Configure Your Tools</h1>
               <p className="text-gray-400 text-sm">
-                Agent Hub uses Claude Code to power your AI agents. Let's make sure it's set up.
+                Agent Hub uses Claude Code to power your AI agents. Let&apos;s make sure it&apos;s
+                set up.
               </p>
             </div>
 
@@ -311,14 +342,26 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               <div className="flex items-center gap-1.5 text-xs">
                 {claudeEngine.available ? (
                   <>
-                    <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                    <svg
+                      className="w-3.5 h-3.5 text-emerald-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                    >
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
                     <span className="text-emerald-400">Detected at {claudeEngine.path}</span>
                   </>
                 ) : (
                   <>
-                    <svg className="w-3.5 h-3.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <svg
+                      className="w-3.5 h-3.5 text-red-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                    >
                       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                     </svg>
                     <span className="text-red-400">Not found</span>
@@ -366,9 +409,25 @@ export default function SetupWizard({ onComplete, setupStatus }) {
                 className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {saving && (
-                  <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  <svg
+                    className="animate-spin h-4 w-4 text-white"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
                   </svg>
                 )}
                 {saving ? 'Saving...' : 'Save & Continue'}
@@ -384,11 +443,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               <Rocket size={48} />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-white mb-2">
-                Open Your First Project
-              </h1>
+              <h1 className="text-xl font-bold text-white mb-2">Open Your First Project</h1>
               <p className="text-gray-400 text-sm leading-relaxed max-w-sm mx-auto">
-                Point Agent Hub at a code repository and we'll set up AI agents for it.
+                Point Agent Hub at a code repository and we&apos;ll set up AI agents for it.
               </p>
             </div>
             <div className="flex flex-col items-center gap-3">
@@ -396,8 +453,18 @@ export default function SetupWizard({ onComplete, setupStatus }) {
                 onClick={onComplete}
                 className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-2.5 rounded-lg transition-colors flex items-center gap-2"
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                  />
                 </svg>
                 Open Project
               </button>

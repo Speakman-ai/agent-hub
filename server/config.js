@@ -59,51 +59,60 @@ function resolveInt(envKey, fileKey, fallback) {
 
 const config = {
   // ── Server ─────────────────────────────────────────────────────
-  port:       resolveInt('AGENT_HUB_PORT', 'port', 3051),
-  host:       resolve('AGENT_HUB_HOST', 'host', '0.0.0.0'),
+  port: resolveInt('AGENT_HUB_PORT', 'port', 3051),
+  host: resolve('AGENT_HUB_HOST', 'host', '0.0.0.0'),
 
   // ── CLI binary paths ───────────────────────────────────────────
-  claudeBin:  resolve('CLAUDE_BIN', 'claudeBin', '/usr/local/bin/claude'),
-  cursorBin:  resolve('CURSOR_BIN', 'cursorBin', '/usr/local/bin/agent'),
+  claudeBin: resolve('CLAUDE_BIN', 'claudeBin', '/usr/local/bin/claude'),
+  cursorBin: resolve('CURSOR_BIN', 'cursorBin', '/usr/local/bin/agent'),
 
   // ── Directories ────────────────────────────────────────────────
   /** Fallback cwd when an agent has no cwd set */
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME),
 
   /** Where data files live (projects.json, db, etc.) */
-  dataDir:    resolve('AGENT_HUB_DATA_DIR', 'dataDir', __dirname),
+  dataDir: resolve('AGENT_HUB_DATA_DIR', 'dataDir', __dirname),
 
   /** Base directory for project ahw directories */
-  projectsDir: resolve('AGENT_HUB_PROJECTS_DIR', 'projectsDir',
-    path.join(HOME, '.openclaw', 'projects')),
+  projectsDir: resolve(
+    'AGENT_HUB_PROJECTS_DIR',
+    'projectsDir',
+    path.join(HOME, '.openclaw', 'projects'),
+  ),
 
   // ── Models ─────────────────────────────────────────────────────
   defaultModel: resolve(null, 'defaultModel', 'claude-opus-4-6'),
 
   engineDefaultModels: fileConfig.engineDefaultModels || {
-    'claude-code':   'claude-opus-4-6',
-    'cursor-agent':  'gpt-5.3-codex-high',
+    'claude-code': 'claude-opus-4-6',
+    'cursor-agent': 'gpt-5.3-codex-high',
   },
 
   engineValidModels: fileConfig.engineValidModels || {
     'claude-code': ['claude-opus-4-6', 'claude-sonnet-4-6'],
     'cursor-agent': [
-      'gpt-5.3-codex-high', 'gpt-5.3-codex', 'gpt-5.3-codex-low', 'gpt-5.3-codex-fast',
-      'gpt-5.2-codex-high', 'gpt-5.2-codex',
+      'gpt-5.3-codex-high',
+      'gpt-5.3-codex',
+      'gpt-5.3-codex-low',
+      'gpt-5.3-codex-fast',
+      'gpt-5.2-codex-high',
+      'gpt-5.2-codex',
       'gpt-5.1-codex-max-high',
-      'composer-2', 'composer-2-fast', 'auto',
+      'composer-2',
+      'composer-2-fast',
+      'auto',
     ],
   },
 
   // ── Timeouts ───────────────────────────────────────────────────
   /** Default heartbeat / cron timeout (ms) */
-  defaultTimeoutMs:   resolveInt(null, 'defaultTimeoutMs',  5 * 60 * 1000),
+  defaultTimeoutMs: resolveInt(null, 'defaultTimeoutMs', 5 * 60 * 1000),
   /** Docs agent heartbeat timeout (ms) — docs agents do more work */
-  docsTimeoutMs:      resolveInt(null, 'docsTimeoutMs',     10 * 60 * 1000),
+  docsTimeoutMs: resolveInt(null, 'docsTimeoutMs', 10 * 60 * 1000),
   /** Babysit cron timeout (ms) */
-  babysitTimeoutMs:   resolveInt(null, 'babysitTimeoutMs',  15 * 60 * 1000),
+  babysitTimeoutMs: resolveInt(null, 'babysitTimeoutMs', 15 * 60 * 1000),
   /** Slack response timeout (ms) */
-  slackTimeoutMs:     resolveInt(null, 'slackTimeoutMs',    5 * 60 * 1000),
+  slackTimeoutMs: resolveInt(null, 'slackTimeoutMs', 5 * 60 * 1000),
   /** Conference room per-agent timeout (ms) */
   conferenceTimeoutMs: resolveInt(null, 'conferenceTimeoutMs', 10 * 60 * 1000),
 

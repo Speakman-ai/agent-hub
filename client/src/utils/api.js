@@ -19,8 +19,7 @@ export const api = {
   // Projects
   getProjects: () => fetchJSON('/projects'),
   getProject: (projectId) => fetchJSON(`/projects/${projectId}`),
-  createProject: (data) =>
-    fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
+  createProject: (data) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteProject: (projectId) =>
@@ -44,8 +43,7 @@ export const api = {
   summarizeSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST' }),
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
-  deleteSession: (sessionId) =>
-    fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
+  deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
     fetchJSON(`/sessions/${sessionId}`, {
       method: 'PATCH',
@@ -100,32 +98,25 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(config),
     }),
-  runHeartbeat: (agentId) =>
-    fetchJSON(`/heartbeats/${agentId}/run`, { method: 'POST' }),
+  runHeartbeat: (agentId) => fetchJSON(`/heartbeats/${agentId}/run`, { method: 'POST' }),
 
   // Cron Sessions
   getCronSessions: () => fetchJSON('/sessions/cron'),
 
   // Crons
   getCrons: () => fetchJSON('/crons'),
-  getCronLogs: (id, limit = 3) =>
-    fetchJSON(`/crons/${id}/logs?limit=${limit}`),
-  createCron: (data) =>
-    fetchJSON('/crons', { method: 'POST', body: JSON.stringify(data) }),
+  getCronLogs: (id, limit = 3) => fetchJSON(`/crons/${id}/logs?limit=${limit}`),
+  createCron: (data) => fetchJSON('/crons', { method: 'POST', body: JSON.stringify(data) }),
   updateCron: (id, data) =>
     fetchJSON(`/crons/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteCron: (id) =>
-    fetchJSON(`/crons/${id}`, { method: 'DELETE' }),
-  runCron: (id) =>
-    fetchJSON(`/crons/${id}/run`, { method: 'POST' }),
+  deleteCron: (id) => fetchJSON(`/crons/${id}`, { method: 'DELETE' }),
+  runCron: (id) => fetchJSON(`/crons/${id}/run`, { method: 'POST' }),
 
   // Rooms
   getRooms: () => fetchJSON('/rooms'),
   getRoom: (id) => fetchJSON(`/rooms/${id}`),
-  createRoom: (name) =>
-    fetchJSON('/rooms', { method: 'POST', body: JSON.stringify({ name }) }),
-  deleteRoom: (id) =>
-    fetchJSON(`/rooms/${id}`, { method: 'DELETE' }),
+  createRoom: (name) => fetchJSON('/rooms', { method: 'POST', body: JSON.stringify({ name }) }),
+  deleteRoom: (id) => fetchJSON(`/rooms/${id}`, { method: 'DELETE' }),
   renameRoom: (id, name) =>
     fetchJSON(`/rooms/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
   updateRoom: (id, data) =>
@@ -135,10 +126,8 @@ export const api = {
   removeRoomAgent: (roomId, agentId) =>
     fetchJSON(`/rooms/${roomId}/agents/${agentId}`, { method: 'DELETE' }),
   getRoomMessages: (roomId) => fetchJSON(`/rooms/${roomId}/messages`),
-  summarizeRoom: (roomId) =>
-    fetchJSON(`/rooms/${roomId}/summarize`, { method: 'POST' }),
-  getProjectRoom: (projectId) =>
-    fetchJSON(`/projects/${projectId}/room`),
+  summarizeRoom: (roomId) => fetchJSON(`/rooms/${roomId}/summarize`, { method: 'POST' }),
+  getProjectRoom: (projectId) => fetchJSON(`/projects/${projectId}/room`),
 
   // Usage
   getUsage: () => fetchJSON('/usage'),
@@ -164,18 +153,22 @@ export const api = {
   getRegistrySkill: (id) => fetchJSON(`/skills/registry/${id}`),
   addToRegistry: (data) =>
     fetchJSON('/skills/registry', { method: 'POST', body: JSON.stringify(data) }),
-  removeFromRegistry: (id) =>
-    fetchJSON(`/skills/registry/${id}`, { method: 'DELETE' }),
+  removeFromRegistry: (id) => fetchJSON(`/skills/registry/${id}`, { method: 'DELETE' }),
   installSkill: (projectId, skillId) =>
-    fetchJSON(`/projects/${projectId}/skills/install`, { method: 'POST', body: JSON.stringify({ skillId }) }),
+    fetchJSON(`/projects/${projectId}/skills/install`, {
+      method: 'POST',
+      body: JSON.stringify({ skillId }),
+    }),
   uninstallSkill: (projectId, skillId) =>
     fetchJSON(`/projects/${projectId}/skills/${skillId}`, { method: 'DELETE' }),
   importGithubSkill: (url) =>
     fetchJSON('/skills/import-github', { method: 'POST', body: JSON.stringify({ url }) }),
   toggleSkill: (agentId, skillId, enabled) =>
-    fetchJSON(`/agents/${agentId}/skills/${skillId}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
-  getSkillOverrides: (agentId) =>
-    fetchJSON(`/agents/${agentId}/skills/overrides`),
+    fetchJSON(`/agents/${agentId}/skills/${skillId}/toggle`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  getSkillOverrides: (agentId) => fetchJSON(`/agents/${agentId}/skills/overrides`),
 
   // Upload
   uploadImage: (dataUrl, filename) =>
@@ -205,8 +198,7 @@ export const api = {
 
   // Slack
   getSlackStatus: () => fetchJSON('/slack/status'),
-  restartSlack: () =>
-    fetchJSON('/slack/restart', { method: 'POST' }),
+  restartSlack: () => fetchJSON('/slack/restart', { method: 'POST' }),
   getSlackMessages: (agentId, limit = 50) =>
     fetchJSON(`/slack/messages?${agentId ? `agentId=${agentId}&` : ''}limit=${limit}`),
 
@@ -223,8 +215,7 @@ export const api = {
 
   // Config settings
   getConfig: () => fetchJSON('/config'),
-  updateConfig: (data) =>
-    fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
+  updateConfig: (data) => fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
 
   // Per-project export/import
   exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),
@@ -248,34 +239,53 @@ export const api = {
   createCard: (projectId, data) =>
     fetchJSON(`/projects/${projectId}/board/cards`, { method: 'POST', body: JSON.stringify(data) }),
   updateCard: (projectId, cardId, data) =>
-    fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'PUT', body: JSON.stringify(data) }),
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   moveCard: (projectId, cardId, data) =>
-    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/move`, { method: 'POST', body: JSON.stringify(data) }),
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/move`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   assignCard: (projectId, cardId, agentId) =>
-    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, { method: 'POST', body: JSON.stringify({ agentId }) }),
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    }),
   deleteCard: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'DELETE' }),
   getCardComments: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`),
   addCardComment: (projectId, cardId, data) =>
-    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`, { method: 'POST', body: JSON.stringify(data) }),
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   // Epics
   getEpics: (projectId) => fetchJSON(`/projects/${projectId}/board/epics`),
   createEpic: (projectId, data) =>
     fetchJSON(`/projects/${projectId}/board/epics`, { method: 'POST', body: JSON.stringify(data) }),
   updateEpic: (projectId, epicId, data) =>
-    fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'PUT', body: JSON.stringify(data) }),
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   deleteEpic: (projectId, epicId) =>
     fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'DELETE' }),
   linkCardToEpic: (projectId, cardId, epicId) =>
-    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/epic`, { method: 'POST', body: JSON.stringify({ epicId }) }),
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/epic`, {
+      method: 'POST',
+      body: JSON.stringify({ epicId }),
+    }),
 
   // Webhooks
   getWebhooks: () => fetchJSON('/webhooks'),
   getProjectWebhooks: (projectId) => fetchJSON(`/webhooks/project/${projectId}`),
   createWebhook: (data) => fetchJSON('/webhooks', { method: 'POST', body: JSON.stringify(data) }),
-  updateWebhook: (id, data) => fetchJSON(`/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  updateWebhook: (id, data) =>
+    fetchJSON(`/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteWebhook: (id) => fetchJSON(`/webhooks/${id}`, { method: 'DELETE' }),
   getWebhookLogs: (id, limit = 20) => fetchJSON(`/webhooks/${id}/logs?limit=${limit}`),
   registerWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'POST' }),
@@ -287,6 +297,5 @@ export const api = {
   getTask: (taskId) => fetchJSON(`/tasks/${taskId}`),
   createTask: (agentId, prompt) =>
     fetchJSON('/tasks', { method: 'POST', body: JSON.stringify({ agentId, prompt }) }),
-  stopTask: (taskId) =>
-    fetchJSON(`/tasks/${taskId}/stop`, { method: 'POST' }),
+  stopTask: (taskId) => fetchJSON(`/tasks/${taskId}/stop`, { method: 'POST' }),
 };

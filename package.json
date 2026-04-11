@@ -19,7 +19,12 @@
     "electron:pack": "npm run build && npx electron-builder --dir",
     "postinstall": "electron-builder install-app-deps",
     "test": "cd server && npx vitest run",
-    "test:watch": "cd server && npx vitest"
+    "test:watch": "cd server && npx vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write 'server/**/*.js' 'client/src/**/*.{js,jsx}'",
+    "format:check": "prettier --check 'server/**/*.js' 'client/src/**/*.{js,jsx}'",
+    "prepare": "husky"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0"
@@ -65,10 +70,29 @@
       ]
     }
   },
+  "lint-staged": {
+    "server/**/*.js": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "client/src/**/*.{js,jsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ]
+  },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "concurrently": "^8.2.2",
     "electron": "^35.7.5",
     "electron-builder": "^26.0.0",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^17.4.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "prettier": "^3.8.2",
     "supertest": "^7.2.2",
     "vitest": "^4.1.4"
   }

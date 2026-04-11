@@ -82,7 +82,13 @@ export default function humanCron(expression) {
   }
 
   // Monthly: 0 9 1 * *
-  if (/^\d+$/.test(minute) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && month === '*' && dow === '*') {
+  if (
+    /^\d+$/.test(minute) &&
+    /^\d+$/.test(hour) &&
+    /^\d+$/.test(dom) &&
+    month === '*' &&
+    dow === '*'
+  ) {
     return `${ordinal(parseInt(dom))} of every month at ${formatHour(parseInt(hour), parseInt(minute))}`;
   }
 

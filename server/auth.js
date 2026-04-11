@@ -27,7 +27,9 @@ export function authMiddleware(req, res, next) {
   const provided = req.headers['x-api-key'] || req.query.apiKey;
 
   if (!provided) {
-    return res.status(401).json({ error: 'API key required. Set X-API-Key header or ?apiKey= query param.' });
+    return res
+      .status(401)
+      .json({ error: 'API key required. Set X-API-Key header or ?apiKey= query param.' });
   }
 
   if (provided !== apiKey) {

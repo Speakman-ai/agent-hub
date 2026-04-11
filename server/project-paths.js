@@ -32,11 +32,11 @@ export function resolveProjectPaths(project, agent) {
     agentDir,
 
     // Shared context files (project level)
-    soulMd:    dataDir ? path.join(dataDir, 'SOUL.md') : '',
-    agentsMd:  dataDir ? path.join(dataDir, 'AGENTS.md') : '',
-    userMd:    dataDir ? path.join(dataDir, 'USER.md') : '',
-    toolsMd:   dataDir ? path.join(dataDir, 'TOOLS.md') : '',
-    memoryMd:  dataDir ? path.join(dataDir, 'MEMORY.md') : '',
+    soulMd: dataDir ? path.join(dataDir, 'SOUL.md') : '',
+    agentsMd: dataDir ? path.join(dataDir, 'AGENTS.md') : '',
+    userMd: dataDir ? path.join(dataDir, 'USER.md') : '',
+    toolsMd: dataDir ? path.join(dataDir, 'TOOLS.md') : '',
+    memoryMd: dataDir ? path.join(dataDir, 'MEMORY.md') : '',
 
     // Shared directories (project level)
     skillsDir: dataDir ? path.join(dataDir, 'skills') : '',

@@ -64,7 +64,11 @@ function ImageLightbox({ src, alt, onClose }) {
 }
 
 const VIDEO_CONTENT_TYPES = new Set([
-  'video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'video/x-msvideo',
+  'video/x-matroska',
 ]);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv']);
 
@@ -151,17 +155,29 @@ function MessageAttachments({ attachments }) {
                   className="max-h-48 max-w-xs rounded-lg"
                   muted
                   preload="metadata"
-                  onLoadedMetadata={(e) => { e.target.currentTime = 0.5; }}
+                  onLoadedMetadata={(e) => {
+                    e.target.currentTime = 0.5;
+                  }}
                 />
                 <div className="absolute inset-0 flex items-center justify-center bg-black/30 hover:bg-black/20 transition-colors">
                   <div className="w-10 h-10 bg-white/90 rounded-full flex items-center justify-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-900 ml-0.5" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-5 w-5 text-gray-900 ml-0.5"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"
+                        clipRule="evenodd"
+                      />
                     </svg>
                   </div>
                 </div>
                 <span className="absolute bottom-1 right-1 text-[10px] text-white bg-black/60 px-1.5 py-0.5 rounded">
-                  {(att.filename || att.originalName || '').split('.').pop()?.toUpperCase() || 'VIDEO'}
+                  {(att.filename || att.originalName || '').split('.').pop()?.toUpperCase() ||
+                    'VIDEO'}
                 </span>
               </div>
             );
@@ -204,10 +220,11 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
   const [editValue, setEditValue] = useState(message.content);
   const editRef = React.useRef(null);
   const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;
-  const modelLabel = !isUser && message.model ? message.model.replace('claude-', '').replace('-', ' ') : null;
+  const modelLabel =
+    !isUser && message.model ? message.model.replace('claude-', '').replace('-', ' ') : null;
 
   const components = {
-    code({ node, inline, className, children, ...props }) {
+    code({ node: _node, inline, className, children, ...props }) {
       if (!inline && extractText(children).includes('\n')) {
         return <CodeBlock className={className}>{children}</CodeBlock>;
       }
@@ -228,7 +245,11 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
 
   // Don't show "(image attached)" as text if it was auto-generated and there are actual attachments
   const displayContent = useMemo(() => {
-    if ((message.content === '(image attached)' || message.content === '(media attached)') && message.attachments) return '';
+    if (
+      (message.content === '(image attached)' || message.content === '(media attached)') &&
+      message.attachments
+    )
+      return '';
     return message.content;
   }, [message.content, message.attachments]);
 
@@ -247,20 +268,18 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
       >
         {!isUser && (
           <div className="flex items-center gap-2 mb-1">
-            <span
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: agentColor }}
-            />
+            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: agentColor }} />
             <span className="text-xs text-gray-500 font-medium">Assistant</span>
             {engineBadge && (
-              <span className="text-xs text-gray-600 flex items-center gap-1" title={engineBadge.label}>
+              <span
+                className="text-xs text-gray-600 flex items-center gap-1"
+                title={engineBadge.label}
+              >
                 <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />
                 <span className="hidden sm:inline">{engineBadge.label}</span>
               </span>
             )}
-            {modelLabel && (
-              <span className="text-xs text-gray-600">· {modelLabel}</span>
-            )}
+            {modelLabel && <span className="text-xs text-gray-600">· {modelLabel}</span>}
           </div>
         )}
 
@@ -298,7 +317,12 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
         {isInterrupted && (
           <div className="flex items-center gap-2 mb-1.5">
             <span className="text-xs text-amber-300/70 font-medium flex items-center gap-1">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
                 <path d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
               Interrupted
@@ -353,23 +377,29 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
               >
                 Cancel
               </button>
-              <span className="text-[10px] text-gray-600 ml-auto">Enter to save · Esc to cancel</span>
+              <span className="text-[10px] text-gray-600 ml-auto">
+                Enter to save · Esc to cancel
+              </span>
             </div>
           </div>
         ) : (
           <div className={isUser ? 'text-white' : 'markdown-content text-gray-200'}>
             {isUser ? (
-              displayContent ? <p className="whitespace-pre-wrap">{displayContent}</p> : null
+              displayContent ? (
+                <p className="whitespace-pre-wrap">{displayContent}</p>
+              ) : null
             ) : (
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={components}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
+                components={components}
+              >
                 {message.content}
               </ReactMarkdown>
             )}
           </div>
         )}
-        <div
-          className={`text-xs mt-1 ${isUser ? 'text-blue-300' : 'text-gray-600'}`}
-        >
+        <div className={`text-xs mt-1 ${isUser ? 'text-blue-300' : 'text-gray-600'}`}>
           {message.created_at && relativeTime(message.created_at)}
         </div>
       </div>

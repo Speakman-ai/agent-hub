@@ -1,6 +1,15 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 
-export default function MessageInput({ onSend, onCancel, disabled, isProcessing, queueLength = 0, agentColor, skills, askMode }) {
+export default function MessageInput({
+  onSend,
+  onCancel,
+  disabled,
+  isProcessing,
+  queueLength = 0,
+  agentColor,
+  skills,
+  askMode,
+}) {
   const [value, setValue] = useState('');
   const [images, setImages] = useState([]); // [{id, name, dataUrl, file?, type?}]
   const [dragOver, setDragOver] = useState(false);
@@ -8,16 +17,15 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
   const fileInputRef = useRef(null);
 
   // Slash-command autocomplete state
-  const [slashQuery, setSlashQuery] = useState(null);   // null = closed, string = filter
-  const [slashIndex, setSlashIndex] = useState(0);       // highlighted item
-  const [slashStart, setSlashStart] = useState(null);    // cursor pos of the '/'
+  const [slashQuery, setSlashQuery] = useState(null); // null = closed, string = filter
+  const [slashIndex, setSlashIndex] = useState(0); // highlighted item
+  const [slashStart, setSlashStart] = useState(null); // cursor pos of the '/'
   const popupRef = useRef(null);
 
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height =
-        Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
     }
   }, [value]);
 
@@ -34,11 +42,13 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     slashQuery === null
       ? false
       : (s.name || s.id || '').toLowerCase().includes(slashQuery.toLowerCase()) ||
-        (s.description || '').toLowerCase().includes(slashQuery.toLowerCase())
+        (s.description || '').toLowerCase().includes(slashQuery.toLowerCase()),
   );
 
   // Reset index when query changes
-  useEffect(() => { setSlashIndex(0); }, [slashQuery]);
+  useEffect(() => {
+    setSlashIndex(0);
+  }, [slashQuery]);
 
   // Keep highlighted item scrolled into view
   useEffect(() => {
@@ -54,20 +64,23 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     setSlashIndex(0);
   }, []);
 
-  const insertSkill = useCallback((skillId) => {
-    if (slashStart === null) return;
-    const before = value.slice(0, slashStart);
-    const cursorPos = textareaRef.current?.selectionStart || value.length;
-    const after = value.slice(cursorPos);
-    const newValue = `${before}/${skillId} ${after}`;
-    setValue(newValue);
-    closeSlash();
-    requestAnimationFrame(() => {
-      const pos = before.length + skillId.length + 2; // / + name + space
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(pos, pos);
-    });
-  }, [value, slashStart, closeSlash]);
+  const insertSkill = useCallback(
+    (skillId) => {
+      if (slashStart === null) return;
+      const before = value.slice(0, slashStart);
+      const cursorPos = textareaRef.current?.selectionStart || value.length;
+      const after = value.slice(cursorPos);
+      const newValue = `${before}/${skillId} ${after}`;
+      setValue(newValue);
+      closeSlash();
+      requestAnimationFrame(() => {
+        const pos = before.length + skillId.length + 2; // / + name + space
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(pos, pos);
+      });
+    },
+    [value, slashStart, closeSlash],
+  );
 
   // ── Image helpers (unchanged) ─────────────────────────────────
 
@@ -92,42 +105,45 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     });
   }, []);
 
-  const addImageFiles = useCallback(async (files) => {
-    const mediaFiles = Array.from(files).filter(
-      (f) => f.type.startsWith('image/') || f.type.startsWith('video/')
-    );
-    if (mediaFiles.length === 0) return;
+  const addImageFiles = useCallback(
+    async (files) => {
+      const mediaFiles = Array.from(files).filter(
+        (f) => f.type.startsWith('image/') || f.type.startsWith('video/'),
+      );
+      if (mediaFiles.length === 0) return;
 
-    const newImages = [];
-    for (const file of mediaFiles) {
-      if (file.type.startsWith('video/')) {
-        // Videos: keep the raw File object for binary upload (no base64)
-        const previewUrl = URL.createObjectURL(file);
-        newImages.push({
-          id: crypto.randomUUID(),
-          name: file.name,
-          dataUrl: previewUrl,
-          file, // raw File for upload
-          type: 'video',
-        });
-      } else {
-        // Images: read as data URL and resize
-        const dataUrl = await new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.readAsDataURL(file);
-        });
-        const resized = await resizeImage(dataUrl);
-        newImages.push({
-          id: crypto.randomUUID(),
-          name: file.name,
-          dataUrl: resized,
-          type: 'image',
-        });
+      const newImages = [];
+      for (const file of mediaFiles) {
+        if (file.type.startsWith('video/')) {
+          // Videos: keep the raw File object for binary upload (no base64)
+          const previewUrl = URL.createObjectURL(file);
+          newImages.push({
+            id: crypto.randomUUID(),
+            name: file.name,
+            dataUrl: previewUrl,
+            file, // raw File for upload
+            type: 'video',
+          });
+        } else {
+          // Images: read as data URL and resize
+          const dataUrl = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.readAsDataURL(file);
+          });
+          const resized = await resizeImage(dataUrl);
+          newImages.push({
+            id: crypto.randomUUID(),
+            name: file.name,
+            dataUrl: resized,
+            type: 'image',
+          });
+        }
       }
-    }
-    setImages((prev) => [...prev, ...newImages]);
-  }, [resizeImage]);
+      setImages((prev) => [...prev, ...newImages]);
+    },
+    [resizeImage],
+  );
 
   const removeImage = useCallback((id) => {
     setImages((prev) => {
@@ -178,7 +194,6 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     closeSlash();
   };
 
-
   const handleKeyDown = (e) => {
     // Slash-command autocomplete navigation
     if (slashQuery !== null && filteredSkills.length > 0) {
@@ -215,19 +230,22 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
   };
 
   // Handle paste for screenshots
-  const handlePaste = useCallback((e) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
+  const handlePaste = useCallback(
+    (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
 
-    const mediaItems = Array.from(items).filter(
-      (item) => item.type.startsWith('image/') || item.type.startsWith('video/')
-    );
-    if (mediaItems.length === 0) return;
+      const mediaItems = Array.from(items).filter(
+        (item) => item.type.startsWith('image/') || item.type.startsWith('video/'),
+      );
+      if (mediaItems.length === 0) return;
 
-    e.preventDefault();
-    const files = mediaItems.map((item) => item.getAsFile()).filter(Boolean);
-    addImageFiles(files);
-  }, [addImageFiles]);
+      e.preventDefault();
+      const files = mediaItems.map((item) => item.getAsFile()).filter(Boolean);
+      addImageFiles(files);
+    },
+    [addImageFiles],
+  );
 
   // Drag and drop handlers
   const handleDragOver = useCallback((e) => {
@@ -242,21 +260,27 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     setDragOver(false);
   }, []);
 
-  const handleDrop = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(false);
-    if (e.dataTransfer?.files) {
-      addImageFiles(e.dataTransfer.files);
-    }
-  }, [addImageFiles]);
+  const handleDrop = useCallback(
+    (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOver(false);
+      if (e.dataTransfer?.files) {
+        addImageFiles(e.dataTransfer.files);
+      }
+    },
+    [addImageFiles],
+  );
 
-  const handleFileSelect = useCallback((e) => {
-    if (e.target.files) {
-      addImageFiles(e.target.files);
-      e.target.value = '';
-    }
-  }, [addImageFiles]);
+  const handleFileSelect = useCallback(
+    (e) => {
+      if (e.target.files) {
+        addImageFiles(e.target.files);
+        e.target.value = '';
+      }
+    },
+    [addImageFiles],
+  );
 
   return (
     <div
@@ -270,8 +294,17 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
       {/* Ask mode indicator */}
       {askMode && (
         <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-blue-900/20 border border-blue-800/40 rounded-lg text-xs text-blue-400">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-3.5 w-3.5 flex-shrink-0"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+          >
+            <path
+              fillRule="evenodd"
+              d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z"
+              clipRule="evenodd"
+            />
           </svg>
           <span>Ask mode — read-only, no file changes or commands</span>
         </div>
@@ -286,11 +319,22 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
                 <div className="h-16 w-20 rounded-lg border border-gray-700 bg-gray-800 flex items-center justify-center overflow-hidden relative">
                   <video src={img.dataUrl} className="h-full w-full object-cover" muted />
                   <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white/80" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-6 w-6 text-white/80"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"
+                        clipRule="evenodd"
+                      />
                     </svg>
                   </div>
-                  <span className="absolute bottom-0.5 left-0.5 text-[9px] text-white/70 bg-black/60 px-1 rounded">{img.name?.split('.').pop()?.toUpperCase()}</span>
+                  <span className="absolute bottom-0.5 left-0.5 text-[9px] text-white/70 bg-black/60 px-1 rounded">
+                    {img.name?.split('.').pop()?.toUpperCase()}
+                  </span>
                 </div>
               ) : (
                 <img
@@ -318,7 +362,13 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
             className="absolute bottom-full mb-1 left-0 w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-10 max-h-64 overflow-y-auto"
           >
             <div className="px-3 py-1.5 text-[11px] text-gray-500 border-b border-gray-700 flex items-center gap-1.5">
-              <svg className="w-3 h-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <svg
+                className="w-3 h-3 flex-shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
               Skills
@@ -347,9 +397,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
                 <div className="min-w-0">
                   <span className="font-medium">{skill.name || skill.id}</span>
                   {skill.description && (
-                    <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">
-                      {skill.description}
-                    </p>
+                    <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{skill.description}</p>
                   )}
                 </div>
               </button>
@@ -364,8 +412,17 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
           className="px-2 py-3 text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-30"
           title="Attach image or video (or paste/drop)"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z" clipRule="evenodd" />
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-5 w-5"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+          >
+            <path
+              fillRule="evenodd"
+              d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z"
+              clipRule="evenodd"
+            />
           </svg>
         </button>
         <input
@@ -388,8 +445,12 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
             disabled
               ? 'Waiting...'
               : askMode
-                ? (window.innerWidth < 640 ? 'Ask a question...' : 'Ask a question... (read-only mode)')
-                : (window.innerWidth < 640 ? 'Message...' : 'Type a message... (paste or drop images/videos)')
+                ? window.innerWidth < 640
+                  ? 'Ask a question...'
+                  : 'Ask a question... (read-only mode)'
+                : window.innerWidth < 640
+                  ? 'Message...'
+                  : 'Type a message... (paste or drop images/videos)'
           }
           disabled={disabled && !isProcessing}
           rows={1}
@@ -401,8 +462,17 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
             className="px-3 py-3 rounded-xl font-medium text-white bg-red-600 hover:bg-red-500 transition-all active:scale-95"
             title="Cancel (Esc)"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path
+                fillRule="evenodd"
+                d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                clipRule="evenodd"
+              />
             </svg>
           </button>
         )}
@@ -414,7 +484,12 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
             className="px-3 py-3 rounded-xl font-medium text-white bg-amber-600 hover:bg-amber-500 transition-all active:scale-95 flex items-center gap-1.5"
             title="Interrupt agent and send this message (Enter)"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
               <path d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
             {queueLength > 0 && (
@@ -433,7 +508,12 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
           >
             {isProcessing ? (
               <div className="flex items-center gap-1.5">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-5 w-5"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
                   <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
                 </svg>
                 {queueLength > 0 && (
@@ -441,7 +521,12 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
                 )}
               </div>
             ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
                 <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
               </svg>
             )}

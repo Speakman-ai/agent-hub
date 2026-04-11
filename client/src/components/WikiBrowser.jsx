@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { BookOpen, Search, Plus, Trash2, Pencil, Save, X } from 'lucide-react';
 import { getAuthHeaders } from '../utils/connection.js';
@@ -27,11 +27,7 @@ const CATEGORY_COLORS = {
 function getCategoryBadge(category) {
   const colors = CATEGORY_COLORS[category] || 'bg-gray-600 text-gray-200';
   const label = CATEGORIES.find((c) => c.value === category)?.label || category;
-  return (
-    <span className={`text-xs px-1.5 py-0.5 rounded ${colors}`}>
-      {label}
-    </span>
-  );
+  return <span className={`text-xs px-1.5 py-0.5 rounded ${colors}`}>{label}</span>;
 }
 
 function relativeTime(dateStr) {
@@ -62,44 +58,52 @@ export default function WikiBrowser({ projectId, apiBase }) {
   const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
   const [editCategory, setEditCategory] = useState('general');
-  const [loading, setLoading] = useState(false);
+  const [_loading, setLoading] = useState(false);
   const [hoveredSlug, setHoveredSlug] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const searchTimerRef = useRef(null);
 
-  const fetchPages = useCallback(async (query = '', category = '') => {
-    if (!projectId) return;
-    try {
-      const params = new URLSearchParams();
-      if (query) params.set('q', query);
-      if (category && category !== 'all') params.set('category', category);
-      const qs = params.toString();
-      const url = `${apiBase}/projects/${projectId}/wiki${qs ? '?' + qs : ''}`;
-      const res = await fetch(url, { headers: getAuthHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        setPages(data);
+  const fetchPages = useCallback(
+    async (query = '', category = '') => {
+      if (!projectId) return;
+      try {
+        const params = new URLSearchParams();
+        if (query) params.set('q', query);
+        if (category && category !== 'all') params.set('category', category);
+        const qs = params.toString();
+        const url = `${apiBase}/projects/${projectId}/wiki${qs ? '?' + qs : ''}`;
+        const res = await fetch(url, { headers: getAuthHeaders() });
+        if (res.ok) {
+          const data = await res.json();
+          setPages(data);
+        }
+      } catch (err) {
+        console.error('Failed to fetch wiki pages:', err);
       }
-    } catch (err) {
-      console.error('Failed to fetch wiki pages:', err);
-    }
-  }, [projectId, apiBase]);
+    },
+    [projectId, apiBase],
+  );
 
-  const fetchPage = useCallback(async (slug) => {
-    if (!projectId || !slug) return;
-    try {
-      setLoading(true);
-      const res = await fetch(`${apiBase}/projects/${projectId}/wiki/${slug}`, { headers: getAuthHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        setSelectedPage(data);
+  const fetchPage = useCallback(
+    async (slug) => {
+      if (!projectId || !slug) return;
+      try {
+        setLoading(true);
+        const res = await fetch(`${apiBase}/projects/${projectId}/wiki/${slug}`, {
+          headers: getAuthHeaders(),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setSelectedPage(data);
+        }
+      } catch (err) {
+        console.error('Failed to fetch wiki page:', err);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      console.error('Failed to fetch wiki page:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId, apiBase]);
+    },
+    [projectId, apiBase],
+  );
 
   // Initial fetch
   useEffect(() => {
@@ -251,7 +255,10 @@ export default function WikiBrowser({ projectId, apiBase }) {
 
           {/* Search */}
           <div className="relative">
-            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+            <Search
+              size={14}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500"
+            />
             <input
               type="text"
               value={searchQuery}
@@ -312,13 +319,9 @@ export default function WikiBrowser({ projectId, apiBase }) {
                     <div className="text-sm font-medium truncate">{page.title}</div>
                     <div className="flex items-center gap-2 mt-1">
                       {getCategoryBadge(page.category)}
-                      <span className="text-xs text-gray-500">
-                        {relativeTime(page.updated_at)}
-                      </span>
+                      <span className="text-xs text-gray-500">{relativeTime(page.updated_at)}</span>
                       {page.updated_by && (
-                        <span className="text-xs text-gray-600 truncate">
-                          {page.updated_by}
-                        </span>
+                        <span className="text-xs text-gray-600 truncate">{page.updated_by}</span>
                       )}
                     </div>
                   </div>
@@ -434,9 +437,7 @@ export default function WikiBrowser({ projectId, apiBase }) {
                       Updated {relativeTime(selectedPage.updated_at)}
                     </span>
                     {selectedPage.updated_by && (
-                      <span className="text-xs text-gray-500">
-                        by {selectedPage.updated_by}
-                      </span>
+                      <span className="text-xs text-gray-500">by {selectedPage.updated_by}</span>
                     )}
                   </div>
                 </div>
@@ -461,8 +462,8 @@ export default function WikiBrowser({ projectId, apiBase }) {
             <BookOpen size={48} className="mb-4" />
             <p className="text-lg font-medium text-gray-400 mb-2">Project Wiki</p>
             <p className="text-sm text-center max-w-md">
-              A shared knowledge base for your team and agents. Document APIs, architecture decisions,
-              conventions, troubleshooting guides, and onboarding notes.
+              A shared knowledge base for your team and agents. Document APIs, architecture
+              decisions, conventions, troubleshooting guides, and onboarding notes.
             </p>
             {pages.length === 0 && (
               <button

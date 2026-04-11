@@ -16,11 +16,15 @@ const runningHeartbeats = new Set();
 
 // Optional callback for babysit-complete events (set by index.js).
 let onBabysitComplete = null;
-export function setOnBabysitComplete(fn) { onBabysitComplete = fn; }
+export function setOnBabysitComplete(fn) {
+  onBabysitComplete = fn;
+}
 
 // Optional callback for cron session updates (set by index.js).
 let onCronSessionUpdate = null;
-export function setOnCronSessionUpdate(fn) { onCronSessionUpdate = fn; }
+export function setOnCronSessionUpdate(fn) {
+  onCronSessionUpdate = fn;
+}
 
 /**
  * Format a Date as an ISO string suitable for SQLite TEXT columns.
@@ -125,9 +129,17 @@ async function notifySlack(agentName, result) {
   // Skip "all clear" type responses
   const lowerResult = result.toLowerCase();
   const allClearPatterns = [
-    'no open pr', 'no failing', 'all clear', 'nothing to report',
-    'no issues', 'everything looks good', 'no alerts', 'all checks pass',
-    'no action needed', 'no stale', '0 open pull request',
+    'no open pr',
+    'no failing',
+    'all clear',
+    'nothing to report',
+    'no issues',
+    'everything looks good',
+    'no alerts',
+    'all checks pass',
+    'no action needed',
+    'no stale',
+    '0 open pull request',
   ];
   if (allClearPatterns.some((p) => lowerResult.includes(p)) && result.length < 200) {
     return;
@@ -155,7 +167,7 @@ async function sendPushNotifications(cronName, result, sessionId, cronId) {
 
   const body = result.length > 200 ? result.slice(0, 200) + '...' : result;
 
-  const messages = tokens.map(t => ({
+  const messages = tokens.map((t) => ({
     to: t.token,
     sound: 'default',
     title: `Cron: ${cronName}`,
@@ -208,8 +220,11 @@ export async function runHeartbeat(agent) {
     const heartbeatCwd = getOrCreateProcessWorktree(agent.cwd, `heartbeat-${agent.id}`);
     // Docs agents do more work (read git log, check wiki, write pages) — give them more time
     const isDocsAgent = agent.role === 'docs';
-    const timeoutMs = agent.heartbeat.timeoutMs || (isDocsAgent ? config.docsTimeoutMs : config.defaultTimeoutMs);
-    const result = await runClaude(agent.heartbeat.prompt, heartbeatCwd, agent.systemPrompt, { timeoutMs });
+    const timeoutMs =
+      agent.heartbeat.timeoutMs || (isDocsAgent ? config.docsTimeoutMs : config.defaultTimeoutMs);
+    const result = await runClaude(agent.heartbeat.prompt, heartbeatCwd, agent.systemPrompt, {
+      timeoutMs,
+    });
     stmts.updateHeartbeatLog.run(result, 'success', logId);
     console.log(`[Heartbeat] ${agent.name} completed successfully`);
 
@@ -255,7 +270,14 @@ export async function runCronJob(cronJob) {
       if (!session) {
         const sessionId = uuidv4();
         const sessionName = `Cron: ${cronJob.name}`;
-        stmts.createSession.run(sessionId, '_cron', sessionName, 'claude-code', 'claude-opus-4-6', 0);
+        stmts.createSession.run(
+          sessionId,
+          '_cron',
+          sessionName,
+          'claude-code',
+          'claude-opus-4-6',
+          0,
+        );
         stmts.updateSessionCronId.run(cronJob.id, sessionId);
         session = stmts.getSession.get(sessionId);
       }
@@ -302,7 +324,7 @@ export async function runCronJob(cronJob) {
       if (SLACK_WEBHOOK_URL) {
         await notifySlack(
           `Babysit Complete`,
-          `PR ${prInfo.repoSlug || ''}#${prInfo.prNumber || '?'} is green and ready to merge.\n${result.substring(0, 500)}`
+          `PR ${prInfo.repoSlug || ''}#${prInfo.prNumber || '?'} is green and ready to merge.\n${result.substring(0, 500)}`,
         ).catch(() => {});
       }
 
@@ -321,8 +343,8 @@ export async function runCronJob(cronJob) {
     // Notify for cron results too
     if (SLACK_WEBHOOK_URL && !cronJob.name.includes('[babysit]')) {
       const lowerResult = result.toLowerCase();
-      const allClear = ['no open', 'nothing to', 'all clear', 'no dependabot'].some(
-        (p) => lowerResult.includes(p)
+      const allClear = ['no open', 'nothing to', 'all clear', 'no dependabot'].some((p) =>
+        lowerResult.includes(p),
       );
       if (!allClear || result.length > 200) {
         await notifySlack(`Cron: ${cronJob.name}`, result);
@@ -341,7 +363,9 @@ export async function runCronJob(cronJob) {
     const task = scheduledTasks.get(`cron:${cronJob.id}`);
     if (task) persistNextRun('cron', cronJob.id, task);
     // Keep only the last 100 logs per cron
-    try { stmts.pruneCronLogs.run(cronJob.id, cronJob.id); } catch {}
+    try {
+      stmts.pruneCronLogs.run(cronJob.id, cronJob.id);
+    } catch {}
   }
 }
 
@@ -363,11 +387,15 @@ export function scheduleAll(agents) {
   // Clean up stale "running" heartbeat logs from previous server crashes/restarts.
   // These will never complete, so mark them as errors.
   try {
-    const cleaned = db.prepare(
-      `UPDATE heartbeat_logs SET status = 'error', result = 'Server restarted — run abandoned' WHERE status = 'running'`
-    ).run();
+    const cleaned = db
+      .prepare(
+        `UPDATE heartbeat_logs SET status = 'error', result = 'Server restarted — run abandoned' WHERE status = 'running'`,
+      )
+      .run();
     if (cleaned.changes > 0) {
-      console.log(`[Heartbeat] Cleaned up ${cleaned.changes} stale "running" log(s) from previous boot`);
+      console.log(
+        `[Heartbeat] Cleaned up ${cleaned.changes} stale "running" log(s) from previous boot`,
+      );
     }
   } catch (err) {
     console.error('[Heartbeat] Failed to clean stale logs:', err.message);
@@ -380,7 +408,9 @@ export function scheduleAll(agents) {
   for (const agent of agents) {
     if (agent.heartbeat?.enabled && agent.heartbeat?.interval) {
       if (!cron.validate(agent.heartbeat.interval)) {
-        console.error(`[Heartbeat] Invalid cron expression for ${agent.name}: ${agent.heartbeat.interval}`);
+        console.error(
+          `[Heartbeat] Invalid cron expression for ${agent.name}: ${agent.heartbeat.interval}`,
+        );
         continue;
       }
       const task = cron.schedule(agent.heartbeat.interval, () => {
@@ -394,7 +424,9 @@ export function scheduleAll(agents) {
       const prevNext = state?.next_run_at ? Date.parse(state.next_run_at) : NaN;
       if (Number.isFinite(prevNext) && prevNext < now) {
         const lateBySec = Math.round((now - prevNext) / 1000);
-        console.log(`[Heartbeat] ${agent.name} missed a run (was due ${lateBySec}s ago) — catching up`);
+        console.log(
+          `[Heartbeat] ${agent.name} missed a run (was due ${lateBySec}s ago) — catching up`,
+        );
         missed.push(() => runHeartbeat(agent));
       }
 
@@ -402,16 +434,16 @@ export function scheduleAll(agents) {
       persistNextRun('heartbeat', agent.id, task);
     } else {
       // Heartbeat disabled — clear any stale state.
-      try { stmts.deleteHeartbeatState.run(agent.id); } catch {}
+      try {
+        stmts.deleteHeartbeatState.run(agent.id);
+      } catch {}
     }
   }
 
   // Clean up disabled babysit crons left over from previous runs.
   // These are ephemeral — once done, they should be deleted.
   try {
-    const stale = stmts.getCrons.all().filter(
-      (c) => !c.enabled && c.name.includes('[babysit]')
-    );
+    const stale = stmts.getCrons.all().filter((c) => !c.enabled && c.name.includes('[babysit]'));
     for (const c of stale) {
       stmts.deleteCron.run(c.id);
       console.log(`[Babysit] Cleaned up stale disabled cron "${c.name}" (id=${c.id})`);
@@ -442,7 +474,9 @@ export function scheduleAll(agents) {
       const prevNext = cronJob.next_run_at ? Date.parse(cronJob.next_run_at) : NaN;
       if (Number.isFinite(prevNext) && prevNext < now) {
         const lateBySec = Math.round((now - prevNext) / 1000);
-        console.log(`[Cron] "${cronJob.name}" missed a run (was due ${lateBySec}s ago) — catching up`);
+        console.log(
+          `[Cron] "${cronJob.name}" missed a run (was due ${lateBySec}s ago) — catching up`,
+        );
         missed.push(() => {
           const fresh = stmts.getCron.get(cronJob.id);
           if (fresh && fresh.enabled) return runCronJob(fresh);
@@ -452,7 +486,9 @@ export function scheduleAll(agents) {
       persistNextRun('cron', cronJob.id, task);
     } else {
       // Disabled — clear any persisted next_run_at.
-      try { stmts.updateCronNextRun.run(null, cronJob.id); } catch {}
+      try {
+        stmts.updateCronNextRun.run(null, cronJob.id);
+      } catch {}
     }
   }
 
@@ -464,7 +500,11 @@ export function scheduleAll(agents) {
     console.log(`[Scheduler] Replaying ${missed.length} missed run(s) in 5s...`);
     setTimeout(() => {
       for (const fn of missed) {
-        try { fn(); } catch (err) { console.error('[Scheduler] Catch-up run failed:', err.message); }
+        try {
+          fn();
+        } catch (err) {
+          console.error('[Scheduler] Catch-up run failed:', err.message);
+        }
       }
     }, 5000);
   }
@@ -493,7 +533,9 @@ export function rescheduleCron(cronJob) {
     console.log(`[Cron] Rescheduled "${cronJob.name}": ${cronJob.schedule}`);
   } else {
     // Disabled or invalid — clear next_run_at so we don't falsely catch up later.
-    try { stmts.updateCronNextRun.run(null, cronJob.id); } catch {}
+    try {
+      stmts.updateCronNextRun.run(null, cronJob.id);
+    } catch {}
   }
 }
 
@@ -508,7 +550,11 @@ export function rescheduleHeartbeat(agent) {
     scheduledTasks.delete(key);
   }
 
-  if (agent.heartbeat?.enabled && agent.heartbeat?.interval && cron.validate(agent.heartbeat.interval)) {
+  if (
+    agent.heartbeat?.enabled &&
+    agent.heartbeat?.interval &&
+    cron.validate(agent.heartbeat.interval)
+  ) {
     const task = cron.schedule(agent.heartbeat.interval, () => {
       runHeartbeat(agent);
     });
@@ -517,6 +563,8 @@ export function rescheduleHeartbeat(agent) {
     console.log(`[Heartbeat] Rescheduled ${agent.name}: ${agent.heartbeat.interval}`);
   } else {
     // Disabled — clear persisted state so it doesn't trigger a catch-up next boot.
-    try { stmts.deleteHeartbeatState.run(agent.id); } catch {}
+    try {
+      stmts.deleteHeartbeatState.run(agent.id);
+    } catch {}
   }
 }

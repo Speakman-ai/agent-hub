@@ -1,4 +1,4 @@
-import React, { memo, useState, useCallback } from 'react';
+import { memo, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -47,7 +47,7 @@ const ENGINE_BADGES = {
 function StreamingMessage({ content, agentColor, engine }) {
   const engineBadge = engine ? ENGINE_BADGES[engine] : null;
   const components = {
-    code({ node, inline, className, children, ...props }) {
+    code({ node: _node, inline, className, children, ...props }) {
       if (!inline && extractText(children).includes('\n')) {
         return <CodeBlock className={className}>{children}</CodeBlock>;
       }
@@ -70,13 +70,13 @@ function StreamingMessage({ content, agentColor, engine }) {
     <div className="flex justify-start mb-4">
       <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
         <div className="flex items-center gap-2 mb-1">
-          <span
-            className="w-2 h-2 rounded-full"
-            style={{ backgroundColor: agentColor }}
-          />
+          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: agentColor }} />
           <span className="text-xs text-gray-500 font-medium">Assistant</span>
           {engineBadge && (
-            <span className="text-xs text-gray-600 flex items-center gap-1" title={engineBadge.label}>
+            <span
+              className="text-xs text-gray-600 flex items-center gap-1"
+              title={engineBadge.label}
+            >
               <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />
               <span className="hidden sm:inline">{engineBadge.label}</span>
             </span>
@@ -87,7 +87,11 @@ function StreamingMessage({ content, agentColor, engine }) {
           </span>
         </div>
         <div className="markdown-content text-gray-200">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={components}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+            components={components}
+          >
             {content}
           </ReactMarkdown>
         </div>

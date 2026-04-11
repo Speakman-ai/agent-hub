@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Building2, ChevronDown, Monitor, Cloud, Check, Settings } from 'lucide-react';
 import { getOrgs, getActiveOrg, switchOrg } from '../utils/orgs.js';
 
@@ -76,11 +76,7 @@ export default function OrgSwitcher({ onNavigateSettings }) {
                   </span>
                   <span className="flex-1 text-left truncate">{org.name}</span>
                   <span className="flex items-center gap-1.5 text-xs text-gray-500">
-                    {org.mode === 'remote' ? (
-                      <Cloud size={12} />
-                    ) : (
-                      <Monitor size={12} />
-                    )}
+                    {org.mode === 'remote' ? <Cloud size={12} /> : <Monitor size={12} />}
                   </span>
                   {isActive && <Check size={14} className="text-emerald-400 flex-shrink-0" />}
                 </button>

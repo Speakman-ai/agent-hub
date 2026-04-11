@@ -22,7 +22,7 @@ export function formatSessionExport({ agent, messages, sessionEngine }) {
   lines.push('');
 
   for (const msg of messages) {
-    const label = msg.role === 'user' ? 'User' : (agent?.name || 'Assistant');
+    const label = msg.role === 'user' ? 'User' : agent?.name || 'Assistant';
     lines.push(`**${label}:**`);
     lines.push(msg.content);
     lines.push('');
@@ -50,7 +50,7 @@ export function formatRoomExport({ room, messages }) {
   lines.push('');
 
   for (const msg of messages) {
-    const label = msg.role === 'user' ? 'User' : (msg.agent_name || 'Agent');
+    const label = msg.role === 'user' ? 'User' : msg.agent_name || 'Agent';
     lines.push(`**${label}:**`);
     lines.push(msg.content);
     lines.push('');

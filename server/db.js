@@ -378,29 +378,29 @@ function initDb(dataDir) {
 
   // Migrations: add engine columns if missing
   try {
-    db.prepare("SELECT engine FROM sessions LIMIT 1").get();
+    db.prepare('SELECT engine FROM sessions LIMIT 1').get();
   } catch {
     db.exec("ALTER TABLE sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude-code'");
   }
   try {
-    db.prepare("SELECT engine FROM messages LIMIT 1").get();
+    db.prepare('SELECT engine FROM messages LIMIT 1').get();
   } catch {
-    db.exec("ALTER TABLE messages ADD COLUMN engine TEXT");
+    db.exec('ALTER TABLE messages ADD COLUMN engine TEXT');
   }
   try {
-    db.prepare("SELECT model FROM sessions LIMIT 1").get();
+    db.prepare('SELECT model FROM sessions LIMIT 1').get();
   } catch {
     db.exec("ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT 'claude-opus-4-6'");
   }
   try {
-    db.prepare("SELECT model FROM messages LIMIT 1").get();
+    db.prepare('SELECT model FROM messages LIMIT 1').get();
   } catch {
-    db.exec("ALTER TABLE messages ADD COLUMN model TEXT");
+    db.exec('ALTER TABLE messages ADD COLUMN model TEXT');
   }
   try {
-    db.prepare("SELECT engine_session_id FROM sessions LIMIT 1").get();
+    db.prepare('SELECT engine_session_id FROM sessions LIMIT 1').get();
   } catch {
-    db.exec("ALTER TABLE sessions ADD COLUMN engine_session_id TEXT");
+    db.exec('ALTER TABLE sessions ADD COLUMN engine_session_id TEXT');
   }
 
   // Migration: add worktree columns to sessions
@@ -456,19 +456,39 @@ function initDb(dataDir) {
   }
 
   // Migrate: add epic_id to kanban_cards if not present
-  try { db.exec('ALTER TABLE kanban_cards ADD COLUMN epic_id TEXT'); } catch(e) { /* already exists */ }
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN epic_id TEXT');
+  } catch (_e) {
+    /* already exists */
+  }
 
   // Migrate: add documented flag to kanban_cards for incremental wiki backfill
-  try { db.exec('ALTER TABLE kanban_cards ADD COLUMN documented INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN documented INTEGER NOT NULL DEFAULT 0');
+  } catch (_e) {
+    /* already exists */
+  }
 
   // Migrate: add autonomous_iterations counter for dispatch loop tracking
-  try { db.exec('ALTER TABLE kanban_cards ADD COLUMN autonomous_iterations INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN autonomous_iterations INTEGER NOT NULL DEFAULT 0');
+  } catch (_e) {
+    /* already exists */
+  }
 
   // Migrate: add ask_mode to sessions (read-only mode toggle)
-  try { db.exec('ALTER TABLE sessions ADD COLUMN ask_mode INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN ask_mode INTEGER NOT NULL DEFAULT 0');
+  } catch (_e) {
+    /* already exists */
+  }
 
   // Migrate: add pr_url to kanban_cards for review-column trigger
-  try { db.exec('ALTER TABLE kanban_cards ADD COLUMN pr_url TEXT'); } catch(e) { /* already exists */ }
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN pr_url TEXT');
+  } catch (_e) {
+    /* already exists */
+  }
 
   // Migrate: active_room_tasks + room_message_queue for conference room persistence
   db.exec(`
@@ -513,21 +533,21 @@ function initDb(dataDir) {
   const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get();
   if (cronCount.count === 0) {
     const insertCron = db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO crons (name, schedule, prompt, cwd, enabled) VALUES (?, ?, ?, ?, ?)',
     );
     insertCron.run(
       'dependabot-merger',
       '0 */6 * * *',
       'Check all repos (mcsteen/surveytracker, speakmanra/relic-book, speakmanra/homeinspector, speakmanra/pipeline-engine) for open Dependabot PRs using gh CLI. If any have passing CI, merge them with gh pr merge --squash.',
       config.defaultCwd,
-      1
+      1,
     );
     insertCron.run(
       'job-search-monitor',
       '0 8 * * 1-5',
       'Search for senior full-stack software engineer remote jobs. Check Gmail for any job application responses. Search LinkedIn for new postings matching: Python, Django, TypeScript, React, AWS, healthcare. Summarize findings.',
       config.defaultCwd,
-      0
+      0,
     );
   }
 
@@ -535,21 +555,105 @@ function initDb(dataDir) {
   const skillCount = db.prepare('SELECT COUNT(*) as count FROM skill_registry').get();
   if (skillCount.count === 0) {
     const insertSkill = db.prepare(
-      `INSERT INTO skill_registry (id, name, description, category, author, content) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO skill_registry (id, name, description, category, author, content) VALUES (?, ?, ?, ?, ?, ?)`,
     );
     const seedSkills = [
-      ['code-review', 'Code Review', 'Review code for bugs, security issues, and best practices', 'development', 'agent-hub', '---\nname: code-review\ndescription: Review code for bugs, security issues, and best practices\n---\n\nReview the code changes for:\n- Bugs and logic errors\n- Security vulnerabilities\n- Performance issues\n- Code style and readability\n- Missing error handling\n\nProvide specific, actionable feedback with line references.'],
-      ['test-generator', 'Test Generator', 'Generate unit and integration tests for existing code', 'development', 'agent-hub', '---\nname: test-generator\ndescription: Generate unit and integration tests for existing code\n---\n\nGenerate comprehensive tests:\n- Unit tests for individual functions\n- Integration tests for API endpoints\n- Edge cases and error scenarios\n- Use the project\'s existing test framework'],
-      ['api-docs', 'API Documentation', 'Generate OpenAPI/REST documentation from code', 'documentation', 'agent-hub', '---\nname: api-docs\ndescription: Generate OpenAPI/REST documentation from code\n---\n\nScan the codebase for API endpoints and generate documentation:\n- Endpoint URLs, methods, and descriptions\n- Request/response schemas with examples\n- Authentication requirements\n- Error codes and messages'],
-      ['changelog', 'Changelog Generator', 'Generate changelogs from git history', 'documentation', 'agent-hub', '---\nname: changelog\ndescription: Generate changelogs from git history\n---\n\nGenerate a changelog from recent git commits:\n- Group by type (features, fixes, breaking changes)\n- Include PR references\n- Write for end users, not developers'],
-      ['dependency-audit', 'Dependency Audit', 'Check for outdated, vulnerable, or unused dependencies', 'automation', 'agent-hub', '---\nname: dependency-audit\ndescription: Check for outdated, vulnerable, or unused dependencies\n---\n\nAudit project dependencies:\n- Check for known vulnerabilities\n- Identify outdated packages\n- Find unused dependencies\n- Suggest updates with breaking change warnings'],
-      ['db-migrate', 'Database Migration', 'Generate and review database migrations', 'development', 'agent-hub', '---\nname: db-migrate\ndescription: Generate and review database migrations\n---\n\nHelp with database schema changes:\n- Generate migration files\n- Review migrations for safety (data loss, locking)\n- Verify rollback procedures\n- Check index coverage'],
-      ['perf-profiler', 'Performance Profiler', 'Profile code and identify performance bottlenecks', 'development', 'agent-hub', '---\nname: perf-profiler\ndescription: Profile code and identify performance bottlenecks\n---\n\nAnalyze code for performance:\n- Identify N+1 queries\n- Find memory leaks\n- Spot unnecessary re-renders\n- Suggest caching strategies\n- Benchmark critical paths'],
-      ['refactor', 'Refactor Assistant', 'Suggest and implement code refactoring improvements', 'development', 'agent-hub', '---\nname: refactor\ndescription: Suggest and implement code refactoring improvements\n---\n\nAnalyze code for refactoring opportunities:\n- Extract reusable functions/components\n- Simplify complex logic\n- Apply design patterns\n- Reduce duplication\n- Improve naming'],
-      ['git-hooks', 'Git Hooks Setup', 'Configure pre-commit, pre-push, and other git hooks', 'git', 'agent-hub', '---\nname: git-hooks\ndescription: Configure pre-commit, pre-push, and other git hooks\n---\n\nSet up git hooks for the project:\n- Pre-commit: lint, format, type-check\n- Pre-push: run tests\n- Commit-msg: enforce conventional commits\n- Use husky or simple shell scripts'],
-      ['env-setup', 'Environment Setup', 'Generate and validate environment configuration', 'automation', 'agent-hub', '---\nname: env-setup\ndescription: Generate and validate environment configuration\n---\n\nHelp with environment setup:\n- Generate .env.example from code references\n- Validate required env vars are set\n- Document each variable\'s purpose\n- Detect hardcoded secrets'],
-      ['incident-response', 'Incident Response', 'Diagnose production issues from logs and metrics', 'monitoring', 'agent-hub', '---\nname: incident-response\ndescription: Diagnose production issues from logs and metrics\n---\n\nHelp diagnose production issues:\n- Analyze error logs and stack traces\n- Check recent deployments\n- Identify root cause\n- Suggest immediate fixes\n- Draft incident report'],
-      ['pr-description', 'PR Description Writer', 'Generate detailed PR descriptions from diffs', 'git', 'agent-hub', '---\nname: pr-description\ndescription: Generate detailed PR descriptions from diffs\n---\n\nGenerate a PR description:\n- Summary of changes\n- Motivation and context\n- Testing instructions\n- Screenshots if UI changes\n- Breaking changes'],
+      [
+        'code-review',
+        'Code Review',
+        'Review code for bugs, security issues, and best practices',
+        'development',
+        'agent-hub',
+        '---\nname: code-review\ndescription: Review code for bugs, security issues, and best practices\n---\n\nReview the code changes for:\n- Bugs and logic errors\n- Security vulnerabilities\n- Performance issues\n- Code style and readability\n- Missing error handling\n\nProvide specific, actionable feedback with line references.',
+      ],
+      [
+        'test-generator',
+        'Test Generator',
+        'Generate unit and integration tests for existing code',
+        'development',
+        'agent-hub',
+        "---\nname: test-generator\ndescription: Generate unit and integration tests for existing code\n---\n\nGenerate comprehensive tests:\n- Unit tests for individual functions\n- Integration tests for API endpoints\n- Edge cases and error scenarios\n- Use the project's existing test framework",
+      ],
+      [
+        'api-docs',
+        'API Documentation',
+        'Generate OpenAPI/REST documentation from code',
+        'documentation',
+        'agent-hub',
+        '---\nname: api-docs\ndescription: Generate OpenAPI/REST documentation from code\n---\n\nScan the codebase for API endpoints and generate documentation:\n- Endpoint URLs, methods, and descriptions\n- Request/response schemas with examples\n- Authentication requirements\n- Error codes and messages',
+      ],
+      [
+        'changelog',
+        'Changelog Generator',
+        'Generate changelogs from git history',
+        'documentation',
+        'agent-hub',
+        '---\nname: changelog\ndescription: Generate changelogs from git history\n---\n\nGenerate a changelog from recent git commits:\n- Group by type (features, fixes, breaking changes)\n- Include PR references\n- Write for end users, not developers',
+      ],
+      [
+        'dependency-audit',
+        'Dependency Audit',
+        'Check for outdated, vulnerable, or unused dependencies',
+        'automation',
+        'agent-hub',
+        '---\nname: dependency-audit\ndescription: Check for outdated, vulnerable, or unused dependencies\n---\n\nAudit project dependencies:\n- Check for known vulnerabilities\n- Identify outdated packages\n- Find unused dependencies\n- Suggest updates with breaking change warnings',
+      ],
+      [
+        'db-migrate',
+        'Database Migration',
+        'Generate and review database migrations',
+        'development',
+        'agent-hub',
+        '---\nname: db-migrate\ndescription: Generate and review database migrations\n---\n\nHelp with database schema changes:\n- Generate migration files\n- Review migrations for safety (data loss, locking)\n- Verify rollback procedures\n- Check index coverage',
+      ],
+      [
+        'perf-profiler',
+        'Performance Profiler',
+        'Profile code and identify performance bottlenecks',
+        'development',
+        'agent-hub',
+        '---\nname: perf-profiler\ndescription: Profile code and identify performance bottlenecks\n---\n\nAnalyze code for performance:\n- Identify N+1 queries\n- Find memory leaks\n- Spot unnecessary re-renders\n- Suggest caching strategies\n- Benchmark critical paths',
+      ],
+      [
+        'refactor',
+        'Refactor Assistant',
+        'Suggest and implement code refactoring improvements',
+        'development',
+        'agent-hub',
+        '---\nname: refactor\ndescription: Suggest and implement code refactoring improvements\n---\n\nAnalyze code for refactoring opportunities:\n- Extract reusable functions/components\n- Simplify complex logic\n- Apply design patterns\n- Reduce duplication\n- Improve naming',
+      ],
+      [
+        'git-hooks',
+        'Git Hooks Setup',
+        'Configure pre-commit, pre-push, and other git hooks',
+        'git',
+        'agent-hub',
+        '---\nname: git-hooks\ndescription: Configure pre-commit, pre-push, and other git hooks\n---\n\nSet up git hooks for the project:\n- Pre-commit: lint, format, type-check\n- Pre-push: run tests\n- Commit-msg: enforce conventional commits\n- Use husky or simple shell scripts',
+      ],
+      [
+        'env-setup',
+        'Environment Setup',
+        'Generate and validate environment configuration',
+        'automation',
+        'agent-hub',
+        "---\nname: env-setup\ndescription: Generate and validate environment configuration\n---\n\nHelp with environment setup:\n- Generate .env.example from code references\n- Validate required env vars are set\n- Document each variable's purpose\n- Detect hardcoded secrets",
+      ],
+      [
+        'incident-response',
+        'Incident Response',
+        'Diagnose production issues from logs and metrics',
+        'monitoring',
+        'agent-hub',
+        '---\nname: incident-response\ndescription: Diagnose production issues from logs and metrics\n---\n\nHelp diagnose production issues:\n- Analyze error logs and stack traces\n- Check recent deployments\n- Identify root cause\n- Suggest immediate fixes\n- Draft incident report',
+      ],
+      [
+        'pr-description',
+        'PR Description Writer',
+        'Generate detailed PR descriptions from diffs',
+        'git',
+        'agent-hub',
+        '---\nname: pr-description\ndescription: Generate detailed PR descriptions from diffs\n---\n\nGenerate a PR description:\n- Summary of changes\n- Motivation and context\n- Testing instructions\n- Screenshots if UI changes\n- Breaking changes',
+      ],
     ];
     for (const [id, name, desc, cat, author, content] of seedSkills) {
       insertSkill.run(id, name, desc, cat, author, content);
@@ -560,148 +664,136 @@ function initDb(dataDir) {
   stmts = {
     // Sessions
     createSession: db.prepare(
-      'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ),
-    getSessions: db.prepare(
-      'SELECT * FROM sessions WHERE agent_id = ? ORDER BY updated_at DESC'
-    ),
+    getSessions: db.prepare('SELECT * FROM sessions WHERE agent_id = ? ORDER BY updated_at DESC'),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
     updateSessionName: db.prepare(
-      "UPDATE sessions SET name = ?, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE sessions SET name = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     deleteSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
-    touchSession: db.prepare(
-      "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?"
-    ),
+    touchSession: db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?"),
 
     // Sessions - engine & model
     updateSessionEngine: db.prepare(
-      "UPDATE sessions SET engine = ?, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE sessions SET engine = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionModel: db.prepare(
-      "UPDATE sessions SET model = ?, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE sessions SET model = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionEngineSessionId: db.prepare(
-      "UPDATE sessions SET engine_session_id = ?, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE sessions SET engine_session_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionWorktree: db.prepare(
-      "UPDATE sessions SET use_worktree = ?, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE sessions SET use_worktree = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionWorktreePath: db.prepare(
-      "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionAskMode: db.prepare(
-      "UPDATE sessions SET ask_mode = ?, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE sessions SET ask_mode = ?, updated_at = datetime('now') WHERE id = ?",
     ),
 
     // Background tasks
     insertBackgroundTask: db.prepare(
-      `INSERT INTO background_tasks (id, session_id, agent_id, prompt) VALUES (?, ?, ?, ?)`
+      `INSERT INTO background_tasks (id, session_id, agent_id, prompt) VALUES (?, ?, ?, ?)`,
     ),
     updateBackgroundTaskStatus: db.prepare(
-      `UPDATE background_tasks SET status = ?, completed_at = datetime('now') WHERE id = ?`
+      `UPDATE background_tasks SET status = ?, completed_at = datetime('now') WHERE id = ?`,
     ),
     getBackgroundTask: db.prepare('SELECT * FROM background_tasks WHERE id = ?'),
     getBackgroundTaskBySession: db.prepare('SELECT * FROM background_tasks WHERE session_id = ?'),
     getBackgroundTasks: db.prepare(
-      'SELECT * FROM background_tasks ORDER BY created_at DESC LIMIT ?'
+      'SELECT * FROM background_tasks ORDER BY created_at DESC LIMIT ?',
     ),
     getRunningBackgroundTasks: db.prepare(
-      `SELECT * FROM background_tasks WHERE status = 'running' ORDER BY created_at DESC`
+      `SELECT * FROM background_tasks WHERE status = 'running' ORDER BY created_at DESC`,
     ),
 
     // Active tasks
     getActiveTask: db.prepare('SELECT * FROM active_tasks WHERE session_id = ?'),
     getAllActiveTasks: db.prepare(
-      "SELECT * FROM active_tasks WHERE status = 'running' ORDER BY started_at ASC"
+      "SELECT * FROM active_tasks WHERE status = 'running' ORDER BY started_at ASC",
     ),
     insertActiveTask: db.prepare(
       `INSERT INTO active_tasks
         (session_id, message_id, agent_id, pid, prompt, engine, model, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'running')`
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'running')`,
     ),
     updateActiveTaskPid: db.prepare(
-      "UPDATE active_tasks SET pid = ?, updated_at = datetime('now') WHERE session_id = ?"
+      "UPDATE active_tasks SET pid = ?, updated_at = datetime('now') WHERE session_id = ?",
     ),
     appendActiveTaskOutput: db.prepare(
-      "UPDATE active_tasks SET streamed_output = ?, updated_at = datetime('now') WHERE session_id = ?"
+      "UPDATE active_tasks SET streamed_output = ?, updated_at = datetime('now') WHERE session_id = ?",
     ),
     deleteActiveTask: db.prepare('DELETE FROM active_tasks WHERE session_id = ?'),
     deleteAllActiveTasks: db.prepare('DELETE FROM active_tasks'),
 
     // Messages
     addMessage: db.prepare(
-      'INSERT INTO messages (id, session_id, role, content, engine, model, attachments) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO messages (id, session_id, role, content, engine, model, attachments) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ),
-    getMessages: db.prepare(
-      'SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC'
-    ),
+    getMessages: db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC'),
     getLastMessage: db.prepare(
-      'SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1'
+      'SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1',
     ),
 
     // Heartbeat logs
     addHeartbeatLog: db.prepare(
-      'INSERT INTO heartbeat_logs (agent_id, prompt, status) VALUES (?, ?, ?)'
+      'INSERT INTO heartbeat_logs (agent_id, prompt, status) VALUES (?, ?, ?)',
     ),
-    updateHeartbeatLog: db.prepare(
-      'UPDATE heartbeat_logs SET result = ?, status = ? WHERE id = ?'
-    ),
+    updateHeartbeatLog: db.prepare('UPDATE heartbeat_logs SET result = ?, status = ? WHERE id = ?'),
     getHeartbeatLogs: db.prepare(
-      'SELECT * FROM heartbeat_logs WHERE agent_id = ? ORDER BY timestamp DESC LIMIT ?'
+      'SELECT * FROM heartbeat_logs WHERE agent_id = ? ORDER BY timestamp DESC LIMIT ?',
     ),
     getLatestHeartbeat: db.prepare(
-      'SELECT * FROM heartbeat_logs WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 1'
+      'SELECT * FROM heartbeat_logs WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 1',
     ),
 
     // Crons
     getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
     getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
     createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO crons (name, schedule, prompt, cwd, enabled) VALUES (?, ?, ?, ?, ?)',
     ),
     updateCron: db.prepare(
-      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ? WHERE id = ?'
+      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ? WHERE id = ?',
     ),
     deleteCron: db.prepare('DELETE FROM crons WHERE id = ?'),
     updateCronResult: db.prepare(
-      "UPDATE crons SET last_run = datetime('now'), last_result = ? WHERE id = ?"
+      "UPDATE crons SET last_run = datetime('now'), last_result = ? WHERE id = ?",
     ),
-    updateCronNextRun: db.prepare(
-      'UPDATE crons SET next_run_at = ? WHERE id = ?'
-    ),
+    updateCronNextRun: db.prepare('UPDATE crons SET next_run_at = ? WHERE id = ?'),
 
     // Cron logs
-    addCronLog: db.prepare(
-      'INSERT INTO cron_logs (cron_id, status) VALUES (?, ?)'
-    ),
+    addCronLog: db.prepare('INSERT INTO cron_logs (cron_id, status) VALUES (?, ?)'),
     updateCronLog: db.prepare(
-      'UPDATE cron_logs SET result = ?, status = ?, duration_ms = ? WHERE id = ?'
+      'UPDATE cron_logs SET result = ?, status = ?, duration_ms = ? WHERE id = ?',
     ),
     getCronLogs: db.prepare(
-      'SELECT * FROM cron_logs WHERE cron_id = ? ORDER BY timestamp DESC LIMIT ?'
+      'SELECT * FROM cron_logs WHERE cron_id = ? ORDER BY timestamp DESC LIMIT ?',
     ),
     pruneCronLogs: db.prepare(
       `DELETE FROM cron_logs WHERE cron_id = ? AND id NOT IN (
          SELECT id FROM cron_logs WHERE cron_id = ? ORDER BY timestamp DESC LIMIT 100
-       )`
+       )`,
     ),
 
     // Session events (stream-json telemetry for chat/heartbeat/cron runs)
     addSessionEvent: db.prepare(
       `INSERT INTO session_events (parent_kind, parent_id, seq, event_type, payload)
-       VALUES (?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?)`,
     ),
     getSessionEvents: db.prepare(
       `SELECT * FROM session_events
        WHERE parent_kind = ? AND parent_id = ?
-       ORDER BY seq ASC`
+       ORDER BY seq ASC`,
     ),
     deleteSessionEvents: db.prepare(
-      'DELETE FROM session_events WHERE parent_kind = ? AND parent_id = ?'
+      'DELETE FROM session_events WHERE parent_kind = ? AND parent_id = ?',
     ),
     countSessionEvents: db.prepare(
-      'SELECT COUNT(*) as count FROM session_events WHERE parent_kind = ? AND parent_id = ?'
+      'SELECT COUNT(*) as count FROM session_events WHERE parent_kind = ? AND parent_id = ?',
     ),
 
     // Heartbeat next-run state (survives server restarts)
@@ -710,170 +802,132 @@ function initDb(dataDir) {
        VALUES (?, ?, ?)
        ON CONFLICT(agent_id) DO UPDATE SET
          next_run_at = COALESCE(excluded.next_run_at, heartbeat_state.next_run_at),
-         last_run_at = COALESCE(excluded.last_run_at, heartbeat_state.last_run_at)`
+         last_run_at = COALESCE(excluded.last_run_at, heartbeat_state.last_run_at)`,
     ),
-    getHeartbeatState: db.prepare(
-      'SELECT * FROM heartbeat_state WHERE agent_id = ?'
-    ),
-    deleteHeartbeatState: db.prepare(
-      'DELETE FROM heartbeat_state WHERE agent_id = ?'
-    ),
+    getHeartbeatState: db.prepare('SELECT * FROM heartbeat_state WHERE agent_id = ?'),
+    deleteHeartbeatState: db.prepare('DELETE FROM heartbeat_state WHERE agent_id = ?'),
 
     // Rooms
     getRooms: db.prepare('SELECT * FROM rooms ORDER BY updated_at DESC'),
     getRoom: db.prepare('SELECT * FROM rooms WHERE id = ?'),
-    createRoom: db.prepare(
-      'INSERT INTO rooms (id, name) VALUES (?, ?)'
-    ),
-    createProjectRoom: db.prepare(
-      'INSERT INTO rooms (id, name, project_id) VALUES (?, ?, ?)'
-    ),
-    getRoomByProjectId: db.prepare(
-      'SELECT * FROM rooms WHERE project_id = ? LIMIT 1'
-    ),
+    createRoom: db.prepare('INSERT INTO rooms (id, name) VALUES (?, ?)'),
+    createProjectRoom: db.prepare('INSERT INTO rooms (id, name, project_id) VALUES (?, ?, ?)'),
+    getRoomByProjectId: db.prepare('SELECT * FROM rooms WHERE project_id = ? LIMIT 1'),
     updateRoomName: db.prepare(
-      "UPDATE rooms SET name = ?, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE rooms SET name = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateRoomMaxTurns: db.prepare(
-      "UPDATE rooms SET max_turns = ?, updated_at = datetime('now') WHERE id = ?"
+      "UPDATE rooms SET max_turns = ?, updated_at = datetime('now') WHERE id = ?",
     ),
-    touchRoom: db.prepare(
-      "UPDATE rooms SET updated_at = datetime('now') WHERE id = ?"
-    ),
+    touchRoom: db.prepare("UPDATE rooms SET updated_at = datetime('now') WHERE id = ?"),
     deleteRoom: db.prepare('DELETE FROM rooms WHERE id = ?'),
 
     // Room agents
-    getRoomAgents: db.prepare(
-      'SELECT * FROM room_agents WHERE room_id = ? ORDER BY position ASC'
-    ),
+    getRoomAgents: db.prepare('SELECT * FROM room_agents WHERE room_id = ? ORDER BY position ASC'),
     addRoomAgent: db.prepare(
       `INSERT OR IGNORE INTO room_agents (room_id, agent_id, position)
-       VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM room_agents WHERE room_id = ?))`
+       VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM room_agents WHERE room_id = ?))`,
     ),
-    removeRoomAgent: db.prepare(
-      'DELETE FROM room_agents WHERE room_id = ? AND agent_id = ?'
-    ),
+    removeRoomAgent: db.prepare('DELETE FROM room_agents WHERE room_id = ? AND agent_id = ?'),
 
     // Room messages
     getRoomMessages: db.prepare(
-      'SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC'
+      'SELECT * FROM room_messages WHERE room_id = ? ORDER BY created_at ASC',
     ),
     addRoomMessage: db.prepare(
-      'INSERT INTO room_messages (id, room_id, role, agent_id, agent_name, agent_color, content, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO room_messages (id, room_id, role, agent_id, agent_name, agent_color, content, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     ),
 
     // Active room tasks (DB-backed persistence for reconnection)
     getActiveRoomTask: db.prepare('SELECT * FROM active_room_tasks WHERE room_id = ?'),
     getAllActiveRoomTasks: db.prepare(
-      "SELECT * FROM active_room_tasks WHERE status = 'running' ORDER BY started_at ASC"
+      "SELECT * FROM active_room_tasks WHERE status = 'running' ORDER BY started_at ASC",
     ),
     insertActiveRoomTask: db.prepare(
       `INSERT OR REPLACE INTO active_room_tasks
         (room_id, agent_id, agent_name, agent_color, message_id, queue_json, turn_count, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'running')`
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'running')`,
     ),
     updateActiveRoomTaskAgent: db.prepare(
-      "UPDATE active_room_tasks SET agent_id = ?, agent_name = ?, agent_color = ?, message_id = ?, streamed_output = '', turn_count = ?, updated_at = datetime('now') WHERE room_id = ?"
+      "UPDATE active_room_tasks SET agent_id = ?, agent_name = ?, agent_color = ?, message_id = ?, streamed_output = '', turn_count = ?, updated_at = datetime('now') WHERE room_id = ?",
     ),
     appendActiveRoomTaskOutput: db.prepare(
-      "UPDATE active_room_tasks SET streamed_output = ?, updated_at = datetime('now') WHERE room_id = ?"
+      "UPDATE active_room_tasks SET streamed_output = ?, updated_at = datetime('now') WHERE room_id = ?",
     ),
     deleteActiveRoomTask: db.prepare('DELETE FROM active_room_tasks WHERE room_id = ?'),
     deleteAllActiveRoomTasks: db.prepare('DELETE FROM active_room_tasks'),
 
     // Room message queue
     enqueueRoomMessage: db.prepare(
-      'INSERT INTO room_message_queue (id, room_id, content, position) VALUES (?, ?, ?, ?)'
+      'INSERT INTO room_message_queue (id, room_id, content, position) VALUES (?, ?, ?, ?)',
     ),
     getQueuedRoomMessages: db.prepare(
-      'SELECT * FROM room_message_queue WHERE room_id = ? ORDER BY position ASC'
+      'SELECT * FROM room_message_queue WHERE room_id = ? ORDER BY position ASC',
     ),
     getNextQueuedRoomMessage: db.prepare(
-      'SELECT * FROM room_message_queue WHERE room_id = ? ORDER BY position ASC LIMIT 1'
+      'SELECT * FROM room_message_queue WHERE room_id = ? ORDER BY position ASC LIMIT 1',
     ),
-    dequeueRoomMessage: db.prepare(
-      'DELETE FROM room_message_queue WHERE id = ?'
-    ),
-    clearRoomQueue: db.prepare(
-      'DELETE FROM room_message_queue WHERE room_id = ?'
-    ),
+    dequeueRoomMessage: db.prepare('DELETE FROM room_message_queue WHERE id = ?'),
+    clearRoomQueue: db.prepare('DELETE FROM room_message_queue WHERE room_id = ?'),
     getMaxRoomQueuePosition: db.prepare(
-      'SELECT MAX(position) as max_pos FROM room_message_queue WHERE room_id = ?'
+      'SELECT MAX(position) as max_pos FROM room_message_queue WHERE room_id = ?',
     ),
-    getAllQueuedRooms: db.prepare(
-      'SELECT DISTINCT room_id FROM room_message_queue'
-    ),
+    getAllQueuedRooms: db.prepare('SELECT DISTINCT room_id FROM room_message_queue'),
 
     // Slack messages
     addSlackMessage: db.prepare(
-      'INSERT INTO slack_messages (agent_id, channel_id, thread_ts, user_id, user_message, bot_response) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO slack_messages (agent_id, channel_id, thread_ts, user_id, user_message, bot_response) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     getSlackMessages: db.prepare(
-      'SELECT * FROM slack_messages WHERE agent_id = ? ORDER BY timestamp DESC LIMIT ?'
+      'SELECT * FROM slack_messages WHERE agent_id = ? ORDER BY timestamp DESC LIMIT ?',
     ),
-    getAllSlackMessages: db.prepare(
-      'SELECT * FROM slack_messages ORDER BY timestamp DESC LIMIT ?'
-    ),
+    getAllSlackMessages: db.prepare('SELECT * FROM slack_messages ORDER BY timestamp DESC LIMIT ?'),
 
     // Delegations
     createDelegation: db.prepare(
       `INSERT INTO delegations (id, session_id, parent_message_id, agent_id, agent_name, task, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending')`
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
     ),
     updateDelegation: db.prepare(
-      `UPDATE delegations SET status = ?, output = ?, error = ?, completed_at = datetime('now') WHERE id = ?`
+      `UPDATE delegations SET status = ?, output = ?, error = ?, completed_at = datetime('now') WHERE id = ?`,
     ),
     getDelegations: db.prepare(
-      'SELECT * FROM delegations WHERE parent_message_id = ? ORDER BY started_at ASC'
+      'SELECT * FROM delegations WHERE parent_message_id = ? ORDER BY started_at ASC',
     ),
     getDelegationsBySession: db.prepare(
-      'SELECT * FROM delegations WHERE session_id = ? ORDER BY started_at DESC'
+      'SELECT * FROM delegations WHERE session_id = ? ORDER BY started_at DESC',
     ),
 
     // Message queue
     enqueueMessage: db.prepare(
-      'INSERT INTO message_queue (id, session_id, agent_id, content, attachments, position) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO message_queue (id, session_id, agent_id, content, attachments, position) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     getQueuedMessages: db.prepare(
-      'SELECT * FROM message_queue WHERE session_id = ? ORDER BY position ASC'
+      'SELECT * FROM message_queue WHERE session_id = ? ORDER BY position ASC',
     ),
     getNextQueuedMessage: db.prepare(
-      'SELECT * FROM message_queue WHERE session_id = ? ORDER BY position ASC LIMIT 1'
+      'SELECT * FROM message_queue WHERE session_id = ? ORDER BY position ASC LIMIT 1',
     ),
-    dequeueMessage: db.prepare(
-      'DELETE FROM message_queue WHERE id = ?'
-    ),
-    clearSessionQueue: db.prepare(
-      'DELETE FROM message_queue WHERE session_id = ?'
-    ),
+    dequeueMessage: db.prepare('DELETE FROM message_queue WHERE id = ?'),
+    clearSessionQueue: db.prepare('DELETE FROM message_queue WHERE session_id = ?'),
     getMaxQueuePosition: db.prepare(
-      'SELECT MAX(position) as max_pos FROM message_queue WHERE session_id = ?'
+      'SELECT MAX(position) as max_pos FROM message_queue WHERE session_id = ?',
     ),
     getMinQueuePosition: db.prepare(
-      'SELECT MIN(position) as min_pos FROM message_queue WHERE session_id = ?'
+      'SELECT MIN(position) as min_pos FROM message_queue WHERE session_id = ?',
     ),
-    updateQueueMessage: db.prepare(
-      'UPDATE message_queue SET content = ? WHERE id = ?'
-    ),
-    updateMessageContent: db.prepare(
-      'UPDATE messages SET content = ? WHERE id = ?'
-    ),
-    getAllQueuedSessions: db.prepare(
-      'SELECT DISTINCT session_id FROM message_queue'
-    ),
+    updateQueueMessage: db.prepare('UPDATE message_queue SET content = ? WHERE id = ?'),
+    updateMessageContent: db.prepare('UPDATE messages SET content = ? WHERE id = ?'),
+    getAllQueuedSessions: db.prepare('SELECT DISTINCT session_id FROM message_queue'),
 
     // Cron sessions
-    getSessionByCronId: db.prepare(
-      'SELECT * FROM sessions WHERE cron_id = ? LIMIT 1'
-    ),
+    getSessionByCronId: db.prepare('SELECT * FROM sessions WHERE cron_id = ? LIMIT 1'),
     getAllCronSessions: db.prepare(
       `SELECT s.*, c.name as cron_name, c.schedule as cron_schedule
        FROM sessions s JOIN crons c ON s.cron_id = c.id
-       ORDER BY s.updated_at DESC`
+       ORDER BY s.updated_at DESC`,
     ),
-    updateSessionCronId: db.prepare(
-      'UPDATE sessions SET cron_id = ? WHERE id = ?'
-    ),
+    updateSessionCronId: db.prepare('UPDATE sessions SET cron_id = ? WHERE id = ?'),
 
     // Device tokens (push notifications)
     registerDeviceToken: db.prepare(
@@ -881,75 +935,99 @@ function initDb(dataDir) {
        VALUES (?, ?, datetime('now'))
        ON CONFLICT(token) DO UPDATE SET
          platform = excluded.platform,
-         last_used = datetime('now')`
+         last_used = datetime('now')`,
     ),
-    removeDeviceToken: db.prepare(
-      'DELETE FROM device_tokens WHERE token = ?'
-    ),
-    getAllDeviceTokens: db.prepare(
-      'SELECT * FROM device_tokens'
-    ),
+    removeDeviceToken: db.prepare('DELETE FROM device_tokens WHERE token = ?'),
+    getAllDeviceTokens: db.prepare('SELECT * FROM device_tokens'),
     updateDeviceTokenLastUsed: db.prepare(
-      "UPDATE device_tokens SET last_used = datetime('now') WHERE token = ?"
+      "UPDATE device_tokens SET last_used = datetime('now') WHERE token = ?",
     ),
 
     // Kanban boards
     getKanbanBoard: db.prepare('SELECT * FROM kanban_boards WHERE project_id = ? LIMIT 1'),
     getKanbanBoardById: db.prepare('SELECT * FROM kanban_boards WHERE id = ?'),
-    createKanbanBoard: db.prepare('INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)'),
+    createKanbanBoard: db.prepare(
+      'INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)',
+    ),
     deleteKanbanBoard: db.prepare('DELETE FROM kanban_boards WHERE id = ?'),
 
     // Kanban columns
     getKanbanColumn: db.prepare('SELECT * FROM kanban_columns WHERE id = ?'),
-    getKanbanColumns: db.prepare('SELECT * FROM kanban_columns WHERE board_id = ? ORDER BY position ASC'),
-    createKanbanColumn: db.prepare('INSERT INTO kanban_columns (id, board_id, name, position, color) VALUES (?, ?, ?, ?, ?)'),
-    updateKanbanColumn: db.prepare("UPDATE kanban_columns SET name = ?, position = ?, color = ? WHERE id = ?"),
+    getKanbanColumns: db.prepare(
+      'SELECT * FROM kanban_columns WHERE board_id = ? ORDER BY position ASC',
+    ),
+    createKanbanColumn: db.prepare(
+      'INSERT INTO kanban_columns (id, board_id, name, position, color) VALUES (?, ?, ?, ?, ?)',
+    ),
+    updateKanbanColumn: db.prepare(
+      'UPDATE kanban_columns SET name = ?, position = ?, color = ? WHERE id = ?',
+    ),
     deleteKanbanColumn: db.prepare('DELETE FROM kanban_columns WHERE id = ?'),
 
     // Kanban cards
-    getKanbanCards: db.prepare('SELECT * FROM kanban_cards WHERE board_id = ? ORDER BY position ASC'),
-    getKanbanCardsByColumn: db.prepare('SELECT * FROM kanban_cards WHERE column_id = ? ORDER BY position ASC'),
+    getKanbanCards: db.prepare(
+      'SELECT * FROM kanban_cards WHERE board_id = ? ORDER BY position ASC',
+    ),
+    getKanbanCardsByColumn: db.prepare(
+      'SELECT * FROM kanban_cards WHERE column_id = ? ORDER BY position ASC',
+    ),
     getKanbanCard: db.prepare('SELECT * FROM kanban_cards WHERE id = ?'),
     createKanbanCard: db.prepare(
       `INSERT INTO kanban_cards (id, column_id, board_id, title, description, priority, assignee, labels, session_id, github_issue_url, created_by, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     updateKanbanCard: db.prepare(
-      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, updated_at = datetime('now') WHERE id = ?`
+      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     moveKanbanCard: db.prepare(
-      `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`
+      `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
-    setCardPrUrl: db.prepare('UPDATE kanban_cards SET pr_url = ?, updated_at = datetime(\'now\') WHERE id = ?'),
+    setCardPrUrl: db.prepare(
+      "UPDATE kanban_cards SET pr_url = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
     getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
     getKanbanCardByPrUrl: db.prepare('SELECT * FROM kanban_cards WHERE pr_url = ? LIMIT 1'),
     getNextUndocumentedCard: db.prepare(
       `SELECT c.*, col.name as column_name FROM kanban_cards c
        JOIN kanban_columns col ON c.column_id = col.id
        WHERE c.board_id = ? AND col.name = 'Done' AND c.documented = 0
-       ORDER BY c.updated_at ASC LIMIT 1`
+       ORDER BY c.updated_at ASC LIMIT 1`,
     ),
-    markCardDocumented: db.prepare('UPDATE kanban_cards SET documented = 1, updated_at = datetime(\'now\') WHERE id = ?'),
+    markCardDocumented: db.prepare(
+      "UPDATE kanban_cards SET documented = 1, updated_at = datetime('now') WHERE id = ?",
+    ),
     deleteKanbanCard: db.prepare('DELETE FROM kanban_cards WHERE id = ?'),
 
     // Kanban card comments
-    getKanbanCardComments: db.prepare('SELECT * FROM kanban_card_comments WHERE card_id = ? ORDER BY created_at ASC'),
-    createKanbanCardComment: db.prepare('INSERT INTO kanban_card_comments (id, card_id, author, content) VALUES (?, ?, ?, ?)'),
+    getKanbanCardComments: db.prepare(
+      'SELECT * FROM kanban_card_comments WHERE card_id = ? ORDER BY created_at ASC',
+    ),
+    createKanbanCardComment: db.prepare(
+      'INSERT INTO kanban_card_comments (id, card_id, author, content) VALUES (?, ?, ?, ?)',
+    ),
     deleteKanbanCardComment: db.prepare('DELETE FROM kanban_card_comments WHERE id = ?'),
 
     // Kanban epics
-    getKanbanEpics: db.prepare('SELECT * FROM kanban_epics WHERE board_id = ? ORDER BY position ASC'),
+    getKanbanEpics: db.prepare(
+      'SELECT * FROM kanban_epics WHERE board_id = ? ORDER BY position ASC',
+    ),
     getKanbanEpic: db.prepare('SELECT * FROM kanban_epics WHERE id = ?'),
     createKanbanEpic: db.prepare(
-      `INSERT INTO kanban_epics (id, board_id, name, description, color, position) VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO kanban_epics (id, board_id, name, description, color, position) VALUES (?, ?, ?, ?, ?, ?)`,
     ),
     updateKanbanEpic: db.prepare(
-      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_max_iterations = ?, updated_at = datetime('now') WHERE id = ?`
+      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_max_iterations = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     deleteKanbanEpic: db.prepare('DELETE FROM kanban_epics WHERE id = ?'),
-    getKanbanCardsByEpic: db.prepare('SELECT * FROM kanban_cards WHERE epic_id = ? ORDER BY position ASC'),
-    updateKanbanCardEpic: db.prepare('UPDATE kanban_cards SET epic_id = ?, updated_at = datetime(\'now\') WHERE id = ?'),
-    getAutonomousEpic: db.prepare('SELECT * FROM kanban_epics WHERE board_id = ? AND autonomous = 1 LIMIT 1'),
+    getKanbanCardsByEpic: db.prepare(
+      'SELECT * FROM kanban_cards WHERE epic_id = ? ORDER BY position ASC',
+    ),
+    updateKanbanCardEpic: db.prepare(
+      "UPDATE kanban_cards SET epic_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    getAutonomousEpic: db.prepare(
+      'SELECT * FROM kanban_epics WHERE board_id = ? AND autonomous = 1 LIMIT 1',
+    ),
     getEligibleAutonomousCards: db.prepare(
       `SELECT c.* FROM kanban_cards c
        JOIN kanban_columns col ON c.column_id = col.id
@@ -958,56 +1036,88 @@ function initDb(dataDir) {
        AND c.autonomous_iterations < ?
        ORDER BY
          CASE c.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
-         c.position ASC`
+         c.position ASC`,
     ),
     incrementCardIterations: db.prepare(
-      `UPDATE kanban_cards SET autonomous_iterations = autonomous_iterations + 1, updated_at = datetime('now') WHERE id = ?`
+      `UPDATE kanban_cards SET autonomous_iterations = autonomous_iterations + 1, updated_at = datetime('now') WHERE id = ?`,
     ),
     resetCardIterations: db.prepare(
-      `UPDATE kanban_cards SET autonomous_iterations = 0, updated_at = datetime('now') WHERE id = ?`
+      `UPDATE kanban_cards SET autonomous_iterations = 0, updated_at = datetime('now') WHERE id = ?`,
     ),
 
     // Webhook configs
     getWebhookConfigs: db.prepare('SELECT * FROM webhook_configs ORDER BY created_at DESC'),
-    getWebhookConfigsByProject: db.prepare('SELECT * FROM webhook_configs WHERE project_id = ? ORDER BY created_at DESC'),
+    getWebhookConfigsByProject: db.prepare(
+      'SELECT * FROM webhook_configs WHERE project_id = ? ORDER BY created_at DESC',
+    ),
     getWebhookConfig: db.prepare('SELECT * FROM webhook_configs WHERE id = ?'),
-    createWebhookConfig: db.prepare('INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled) VALUES (?, ?, ?, ?, ?)'),
-    updateWebhookConfig: db.prepare("UPDATE webhook_configs SET repo_url = ?, events = ?, enabled = ?, updated_at = datetime('now') WHERE id = ?"),
+    createWebhookConfig: db.prepare(
+      'INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled) VALUES (?, ?, ?, ?, ?)',
+    ),
+    updateWebhookConfig: db.prepare(
+      "UPDATE webhook_configs SET repo_url = ?, events = ?, enabled = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
     deleteWebhookConfig: db.prepare('DELETE FROM webhook_configs WHERE id = ?'),
-    addWebhookLog: db.prepare('INSERT INTO webhook_logs (webhook_config_id, event_type, action, delivery_id, status) VALUES (?, ?, ?, ?, ?)'),
-    updateWebhookLog: db.prepare('UPDATE webhook_logs SET status = ?, result = ?, duration_ms = ? WHERE id = ?'),
-    getWebhookLogs: db.prepare('SELECT * FROM webhook_logs WHERE webhook_config_id = ? ORDER BY created_at DESC LIMIT ?'),
-    getRecentWebhookLogs: db.prepare('SELECT wl.*, wc.repo_url FROM webhook_logs wl JOIN webhook_configs wc ON wl.webhook_config_id = wc.id ORDER BY wl.created_at DESC LIMIT ?'),
+    addWebhookLog: db.prepare(
+      'INSERT INTO webhook_logs (webhook_config_id, event_type, action, delivery_id, status) VALUES (?, ?, ?, ?, ?)',
+    ),
+    updateWebhookLog: db.prepare(
+      'UPDATE webhook_logs SET status = ?, result = ?, duration_ms = ? WHERE id = ?',
+    ),
+    getWebhookLogs: db.prepare(
+      'SELECT * FROM webhook_logs WHERE webhook_config_id = ? ORDER BY created_at DESC LIMIT ?',
+    ),
+    getRecentWebhookLogs: db.prepare(
+      'SELECT wl.*, wc.repo_url FROM webhook_logs wl JOIN webhook_configs wc ON wl.webhook_config_id = wc.id ORDER BY wl.created_at DESC LIMIT ?',
+    ),
 
     // Wiki pages
-    getWikiPages: db.prepare('SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at FROM wiki_pages WHERE project_id = ? ORDER BY updated_at DESC'),
+    getWikiPages: db.prepare(
+      'SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at FROM wiki_pages WHERE project_id = ? ORDER BY updated_at DESC',
+    ),
     getWikiPage: db.prepare('SELECT * FROM wiki_pages WHERE project_id = ? AND slug = ?'),
     getWikiPageById: db.prepare('SELECT * FROM wiki_pages WHERE id = ?'),
-    createWikiPage: db.prepare('INSERT INTO wiki_pages (id, project_id, title, slug, content, category, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)'),
-    updateWikiPage: db.prepare("UPDATE wiki_pages SET title = ?, content = ?, category = ?, updated_by = ?, updated_at = datetime('now') WHERE project_id = ? AND slug = ?"),
+    createWikiPage: db.prepare(
+      'INSERT INTO wiki_pages (id, project_id, title, slug, content, category, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ),
+    updateWikiPage: db.prepare(
+      "UPDATE wiki_pages SET title = ?, content = ?, category = ?, updated_by = ?, updated_at = datetime('now') WHERE project_id = ? AND slug = ?",
+    ),
     deleteWikiPage: db.prepare('DELETE FROM wiki_pages WHERE project_id = ? AND slug = ?'),
-    getWikiPagesByCategory: db.prepare('SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at FROM wiki_pages WHERE project_id = ? AND category = ? ORDER BY updated_at DESC'),
+    getWikiPagesByCategory: db.prepare(
+      'SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at FROM wiki_pages WHERE project_id = ? AND category = ? ORDER BY updated_at DESC',
+    ),
 
     // Skill registry
-    getSkillRegistry: db.prepare('SELECT * FROM skill_registry ORDER BY install_count DESC, name ASC'),
-    getSkillRegistryByCategory: db.prepare('SELECT * FROM skill_registry WHERE category = ? ORDER BY install_count DESC, name ASC'),
+    getSkillRegistry: db.prepare(
+      'SELECT * FROM skill_registry ORDER BY install_count DESC, name ASC',
+    ),
+    getSkillRegistryByCategory: db.prepare(
+      'SELECT * FROM skill_registry WHERE category = ? ORDER BY install_count DESC, name ASC',
+    ),
     getSkillRegistryItem: db.prepare('SELECT * FROM skill_registry WHERE id = ?'),
-    searchSkillRegistry: db.prepare("SELECT * FROM skill_registry WHERE name LIKE ? OR description LIKE ? ORDER BY install_count DESC"),
+    searchSkillRegistry: db.prepare(
+      'SELECT * FROM skill_registry WHERE name LIKE ? OR description LIKE ? ORDER BY install_count DESC',
+    ),
     createSkillRegistryItem: db.prepare(
       `INSERT INTO skill_registry (id, name, description, category, author, source_url, repo_url, version, content)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     deleteSkillRegistryItem: db.prepare('DELETE FROM skill_registry WHERE id = ?'),
-    incrementSkillInstallCount: db.prepare('UPDATE skill_registry SET install_count = install_count + 1 WHERE id = ?'),
+    incrementSkillInstallCount: db.prepare(
+      'UPDATE skill_registry SET install_count = install_count + 1 WHERE id = ?',
+    ),
     getSkillRegistryCount: db.prepare('SELECT COUNT(*) as count FROM skill_registry'),
 
     // Agent skill overrides
     getAgentSkillOverrides: db.prepare('SELECT * FROM agent_skill_overrides WHERE agent_id = ?'),
     upsertAgentSkillOverride: db.prepare(
       `INSERT INTO agent_skill_overrides (agent_id, skill_id, enabled) VALUES (?, ?, ?)
-       ON CONFLICT(agent_id, skill_id) DO UPDATE SET enabled = excluded.enabled`
+       ON CONFLICT(agent_id, skill_id) DO UPDATE SET enabled = excluded.enabled`,
     ),
-    deleteAgentSkillOverride: db.prepare('DELETE FROM agent_skill_overrides WHERE agent_id = ? AND skill_id = ?'),
+    deleteAgentSkillOverride: db.prepare(
+      'DELETE FROM agent_skill_overrides WHERE agent_id = ? AND skill_id = ?',
+    ),
   };
 
   // Cache for future switches.

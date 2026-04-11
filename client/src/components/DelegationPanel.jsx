@@ -1,4 +1,4 @@
-import React, { useState, memo } from 'react';
+import { useState, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Loader2, GitFork, AlertTriangle } from 'lucide-react';
@@ -15,7 +15,7 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
   if (!delegations || delegations.length === 0) return null;
 
   const allDone = delegations.every(
-    (d) => d.status === 'done' || d.status === 'error' || d.status === 'cancelled'
+    (d) => d.status === 'done' || d.status === 'error' || d.status === 'cancelled',
   );
   const hasErrors = delegations.some((d) => d.status === 'error');
   const doneCount = delegations.filter((d) => d.status === 'done').length;
@@ -32,9 +32,7 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
       case 'pending':
         return <Loader2 size={14} className="animate-spin text-gray-500" />;
       case 'running':
-        return (
-          <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-        );
+        return <span className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse" />;
       case 'done':
         return <span className="text-emerald-400">✓</span>;
       case 'error':
@@ -55,9 +53,7 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
       >
         <div className="flex items-center gap-2 text-sm">
           <GitFork size={16} />
-          <span className="font-medium text-gray-300">
-            Delegation
-          </span>
+          <span className="font-medium text-gray-300">Delegation</span>
           <span className="text-xs text-gray-500">
             {allDone
               ? `${doneCount}/${delegations.length} complete${hasErrors ? ' (with errors)' : ''}`
@@ -76,9 +72,7 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
               Cancel
             </button>
           )}
-          <span className="text-gray-600 text-base">
-            {collapsed ? '▸' : '▾'}
-          </span>
+          <span className="text-gray-600 text-base">{collapsed ? '▸' : '▾'}</span>
         </div>
       </button>
 
@@ -106,30 +100,26 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
               </button>
 
               {/* Task description */}
-              <p className="text-xs text-gray-500 mt-1 ml-4 line-clamp-2">
-                {d.task}
-              </p>
+              <p className="text-xs text-gray-500 mt-1 ml-4 line-clamp-2">{d.task}</p>
 
               {/* Expanded output */}
               {expandedAgents[d.delegationId] && (
                 <div className="mt-2 ml-4">
                   {d.status === 'running' && d.content && (
                     <div className="bg-gray-900/50 rounded-lg p-3 text-sm text-gray-300 max-h-64 overflow-y-auto markdown-content">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {d.content}
-                      </ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{d.content}</ReactMarkdown>
                     </div>
                   )}
                   {d.status === 'done' && d.output && (
                     <div className="bg-gray-900/50 rounded-lg p-3 text-sm text-gray-300 max-h-64 overflow-y-auto markdown-content">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {d.output}
-                      </ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{d.output}</ReactMarkdown>
                     </div>
                   )}
                   {d.status === 'error' && d.error && (
                     <div className="bg-red-900/20 border border-red-800/30 rounded-lg p-3 text-sm text-red-300">
-                      <span className="flex items-center gap-1"><AlertTriangle size={14} /> {d.error}</span>
+                      <span className="flex items-center gap-1">
+                        <AlertTriangle size={14} /> {d.error}
+                      </span>
                     </div>
                   )}
                   {d.status === 'pending' && (

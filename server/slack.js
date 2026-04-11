@@ -20,7 +20,7 @@ const agentQueues = new Map();
 
 // References to db statements (injected at start)
 let dbStmts = null;
-let agentConfigs = [];
+let _agentConfigs = [];
 
 function loadSlackConfig() {
   try {
@@ -148,7 +148,9 @@ async function handleMessage(account, agent, { client, message, say }) {
   const allowedSubtypes = ['thread_broadcast', 'file_share'];
   if (message.subtype && !allowedSubtypes.includes(message.subtype)) return;
 
-  console.log(`[Slack] Message from ${message.user} in ${message.channel} (subtype: ${message.subtype || 'none'}, files: ${message.files?.length || 0})`);
+  console.log(
+    `[Slack] Message from ${message.user} in ${message.channel} (subtype: ${message.subtype || 'none'}, files: ${message.files?.length || 0})`,
+  );
 
   const channel = message.channel;
   const threadTs = message.thread_ts || message.ts;
@@ -190,7 +192,9 @@ async function handleMessage(account, agent, { client, message, say }) {
       timestamp: message.ts,
       name: 'eyes',
     });
-  } catch { /* ignore reaction errors */ }
+  } catch {
+    /* ignore reaction errors */
+  }
 
   try {
     // Build context for threaded conversations
@@ -229,7 +233,8 @@ async function handleMessage(account, agent, { client, message, say }) {
       if (memoryContext) {
         systemPrompt += '\n\n' + memoryContext;
       }
-      systemPrompt += '\n\n## Memory Instructions\nYou have access to memory files in your workspace. The memory context above shows your current knowledge.\nWhen you learn something important (decisions, preferences, key facts), mention it in your response so it gets logged.';
+      systemPrompt +=
+        '\n\n## Memory Instructions\nYou have access to memory files in your workspace. The memory context above shows your current knowledge.\nWhen you learn something important (decisions, preferences, key facts), mention it in your response so it gets logged.';
     }
 
     // Run agent (respects engine setting)
@@ -237,7 +242,7 @@ async function handleMessage(account, agent, { client, message, say }) {
       systemPrompt,
       prompt,
       agent?.cwd || config.defaultCwd,
-      agent?.engine || 'claude-code'
+      agent?.engine || 'claude-code',
     );
 
     // Only thread if the user started a thread — otherwise reply in channel
@@ -256,7 +261,7 @@ async function handleMessage(account, agent, { client, message, say }) {
           threadTs,
           message.user,
           userText,
-          response
+          response,
         );
       } catch (err) {
         console.error('Failed to log Slack message:', err.message);
@@ -275,10 +280,14 @@ async function handleMessage(account, agent, { client, message, say }) {
     // Remove 👀, add ✅
     try {
       await client.reactions.remove({ channel, timestamp: message.ts, name: 'eyes' });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     try {
       await client.reactions.add({ channel, timestamp: message.ts, name: 'white_check_mark' });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   } catch (err) {
     console.error(`Slack message handler error (${account.name}):`, err.message);
 
@@ -288,15 +297,21 @@ async function handleMessage(account, agent, { client, message, say }) {
         text: `⚠️ Error: ${err.message}`,
         thread_ts: threadTs,
       });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     // Remove 👀, add ❌
     try {
       await client.reactions.remove({ channel, timestamp: message.ts, name: 'eyes' });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     try {
       await client.reactions.add({ channel, timestamp: message.ts, name: 'x' });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -394,7 +409,7 @@ async function stopAllBots() {
 
 export async function startSlack(agents, stmts) {
   dbStmts = stmts;
-  agentConfigs = agents;
+  _agentConfigs = agents;
 
   const config = loadSlackConfig();
   if (!config.accounts || config.accounts.length === 0) {
@@ -405,9 +420,7 @@ export async function startSlack(agents, stmts) {
   console.log(`Starting ${config.accounts.length} Slack bot(s)...`);
 
   // Start all bots concurrently — failures are isolated
-  await Promise.allSettled(
-    config.accounts.map((account) => startBot(account, agents))
-  );
+  await Promise.allSettled(config.accounts.map((account) => startBot(account, agents)));
 
   const connected = [...bots.values()].filter((b) => b.connected).length;
   const total = config.accounts.length;

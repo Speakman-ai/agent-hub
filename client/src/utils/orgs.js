@@ -7,7 +7,12 @@
  * an isolated database and projects.json).
  */
 
-import { getConnectionConfig, saveConnectionConfig, getApiBase, getAuthHeaders } from './connection.js';
+import {
+  getConnectionConfig,
+  saveConnectionConfig,
+  getApiBase,
+  getAuthHeaders,
+} from './connection.js';
 
 const STORAGE_KEY = 'agent-hub-orgs';
 
@@ -86,7 +91,13 @@ export async function switchOrg(orgId) {
 }
 
 /** Create a new org and add it to the list. Returns the new org. */
-export function createOrg({ name, mode = 'local', remoteUrl = '', apiKey = '', color = '#6366f1' }) {
+export function createOrg({
+  name,
+  mode = 'local',
+  remoteUrl = '',
+  apiKey = '',
+  color = '#6366f1',
+}) {
   const org = {
     id: uid(),
     name,

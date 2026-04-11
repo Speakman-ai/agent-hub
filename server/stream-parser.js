@@ -96,13 +96,15 @@ function normalizeClaude(raw) {
   switch (raw.type) {
     case 'system':
       if (raw.subtype === 'init') {
-        return [{
-          type: 'system',
-          sessionId: raw.session_id ?? null,
-          model: raw.model ?? null,
-          cwd: raw.cwd ?? null,
-          tools: Array.isArray(raw.tools) ? raw.tools : [],
-        }];
+        return [
+          {
+            type: 'system',
+            sessionId: raw.session_id ?? null,
+            model: raw.model ?? null,
+            cwd: raw.cwd ?? null,
+            tools: Array.isArray(raw.tools) ? raw.tools : [],
+          },
+        ];
       }
       return [];
 
@@ -149,22 +151,25 @@ function normalizeClaude(raw) {
       // for live streaming; the canonical record comes from `assistant` events.
       const ev = raw.event;
       if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-        const deltaText = typeof ev.delta.text === 'string' ? ev.delta.text : JSON.stringify(ev.delta.text ?? '');
+        const deltaText =
+          typeof ev.delta.text === 'string' ? ev.delta.text : JSON.stringify(ev.delta.text ?? '');
         return [{ type: 'assistant_text', text: deltaText, partial: true }];
       }
       return [];
     }
 
     case 'result':
-      return [{
-        type: 'result',
-        text: raw.result ?? '',
-        durationMs: raw.duration_ms ?? null,
-        costUsd: raw.total_cost_usd ?? null,
-        numTurns: raw.num_turns ?? null,
-        isError: raw.is_error === true,
-        stopReason: raw.stop_reason ?? null,
-      }];
+      return [
+        {
+          type: 'result',
+          text: raw.result ?? '',
+          durationMs: raw.duration_ms ?? null,
+          costUsd: raw.total_cost_usd ?? null,
+          numTurns: raw.num_turns ?? null,
+          isError: raw.is_error === true,
+          stopReason: raw.stop_reason ?? null,
+        },
+      ];
 
     case 'rate_limit_event':
       return []; // Not user-facing
@@ -180,13 +185,15 @@ function normalizeCursor(raw) {
   switch (raw.type) {
     case 'system':
       if (raw.subtype === 'init') {
-        return [{
-          type: 'system',
-          sessionId: raw.session_id ?? null,
-          model: raw.model ?? null,
-          cwd: raw.cwd ?? null,
-          tools: [],
-        }];
+        return [
+          {
+            type: 'system',
+            sessionId: raw.session_id ?? null,
+            model: raw.model ?? null,
+            cwd: raw.cwd ?? null,
+            tools: [],
+          },
+        ];
       }
       return [];
 
@@ -226,12 +233,14 @@ function normalizeCursor(raw) {
       const input = detail.args ?? {};
 
       if (raw.subtype === 'started') {
-        return [{
-          type: 'tool_use',
-          id: callId,
-          tool: toolName,
-          input,
-        }];
+        return [
+          {
+            type: 'tool_use',
+            id: callId,
+            tool: toolName,
+            input,
+          },
+        ];
       }
       if (raw.subtype === 'completed') {
         const result = detail.result ?? {};
@@ -242,7 +251,8 @@ function normalizeCursor(raw) {
         if (success) {
           // Shell-style results
           if (typeof success.stdout === 'string' || typeof success.stderr === 'string') {
-            output = (success.stdout ?? '') + (success.stderr ? '\n[stderr]\n' + success.stderr : '');
+            output =
+              (success.stdout ?? '') + (success.stderr ? '\n[stderr]\n' + success.stderr : '');
             if (typeof success.exitCode === 'number' && success.exitCode !== 0) {
               isError = true;
             }
@@ -255,26 +265,30 @@ function normalizeCursor(raw) {
         } else {
           output = JSON.stringify(result, null, 2);
         }
-        return [{
-          type: 'tool_result',
-          toolUseId: callId,
-          output,
-          isError,
-        }];
+        return [
+          {
+            type: 'tool_result',
+            toolUseId: callId,
+            output,
+            isError,
+          },
+        ];
       }
       return [];
     }
 
     case 'result':
-      return [{
-        type: 'result',
-        text: raw.result ?? '',
-        durationMs: raw.duration_ms ?? null,
-        costUsd: null, // Cursor doesn't report cost in result
-        numTurns: null,
-        isError: raw.is_error === true,
-        stopReason: null,
-      }];
+      return [
+        {
+          type: 'result',
+          text: raw.result ?? '',
+          durationMs: raw.duration_ms ?? null,
+          costUsd: null, // Cursor doesn't report cost in result
+          numTurns: null,
+          isError: raw.is_error === true,
+          stopReason: null,
+        },
+      ];
 
     default:
       return [{ type: 'unknown', text: `unhandled cursor event: ${raw.type}` }];

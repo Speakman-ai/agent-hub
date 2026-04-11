@@ -56,10 +56,7 @@ export function useWebSocket(onMessage) {
       // Reconnect with exponential backoff
       setReconnecting(true);
       reconnectTimer.current = setTimeout(() => {
-        reconnectDelay.current = Math.min(
-          reconnectDelay.current * 1.5,
-          MAX_RECONNECT_DELAY
-        );
+        reconnectDelay.current = Math.min(reconnectDelay.current * 1.5, MAX_RECONNECT_DELAY);
         connect();
       }, reconnectDelay.current);
     };

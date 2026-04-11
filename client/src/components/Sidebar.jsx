@@ -1,11 +1,11 @@
-import React, { useState, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { Building2, BookOpen, Settings, Clock, LayoutGrid, FileText, Eye } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../utils/humanCron.js';
 
 export default function Sidebar({
   projects = [],
-  agents,
+  agents: _agents,
   activeAgentId,
   onSelectAgent,
   sessions,
@@ -57,9 +57,7 @@ export default function Sidebar({
   // humanCron imported from utils/humanCron.js
 
   // Find which project the active agent belongs to
-  const activeProject = projects.find((p) =>
-    p.agents.some((a) => a.id === activeAgentId)
-  );
+  const activeProject = projects.find((p) => p.agents.some((a) => a.id === activeAgentId));
 
   return (
     <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full electron-no-drag">
@@ -99,7 +97,9 @@ export default function Sidebar({
                       />
                     )}
                     <span className="flex-1 truncate text-sm">{cs.cron_name}</span>
-                    <span className="text-xs text-gray-600 flex-shrink-0">{humanCron(cs.cron_schedule)}</span>
+                    <span className="text-xs text-gray-600 flex-shrink-0">
+                      {humanCron(cs.cron_schedule)}
+                    </span>
                   </button>
                 );
               })}
@@ -160,7 +160,10 @@ export default function Sidebar({
                     )}
                   </button>
                   <button
-                    onClick={(e) => { e.stopPropagation(); onNavigate('kanban:' + project.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onNavigate('kanban:' + project.id);
+                    }}
                     className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-300 transition-opacity p-0.5"
                     title="Board"
                   >
@@ -185,11 +188,18 @@ export default function Sidebar({
                       const renderAgent = (agent, indent = 0) => {
                         const isActive = activeAgentId === agent.id;
                         const subs = subAgentMap[agent.id] || [];
-                        const isTopLevel = agent.role === 'lead' || agent.role === 'docs' || agent.role === 'intake' || subs.length > 0;
+                        const isTopLevel =
+                          agent.role === 'lead' ||
+                          agent.role === 'docs' ||
+                          agent.role === 'intake' ||
+                          subs.length > 0;
                         const isLead = agent.role === 'lead' || subs.length > 0;
 
                         return (
-                          <div key={agent.id} style={indent > 0 ? { marginLeft: `${indent * 12}px` } : {}}>
+                          <div
+                            key={agent.id}
+                            style={indent > 0 ? { marginLeft: `${indent * 12}px` } : {}}
+                          >
                             <button
                               onClick={() => {
                                 onSelectAgent(agent.id);
@@ -206,7 +216,11 @@ export default function Sidebar({
                                   <span className="absolute -left-3 top-1/2 w-2 border-t border-gray-700" />
                                 )}
                                 {agent.avatar ? (
-                                  <img src={agent.avatar} alt="" className="w-5 h-5 rounded-full object-cover" />
+                                  <img
+                                    src={agent.avatar}
+                                    alt=""
+                                    className="w-5 h-5 rounded-full object-cover"
+                                  />
                                 ) : (
                                   <span
                                     className={`block ${isTopLevel ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
@@ -230,7 +244,10 @@ export default function Sidebar({
                                   </span>
                                 )}
                                 {activeReviews[agent.name] && (
-                                  <span className="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 animate-pulse" title={`Reviewing: ${activeReviews[agent.name].cardTitle}`}>
+                                  <span
+                                    className="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 animate-pulse"
+                                    title={`Reviewing: ${activeReviews[agent.name].cardTitle}`}
+                                  >
                                     reviewing PR
                                   </span>
                                 )}
@@ -270,7 +287,10 @@ export default function Sidebar({
                                           onKeyDown={(e) => {
                                             if (e.key === 'Enter' && editingSessionName.trim()) {
                                               renameSavedRef.current = true;
-                                              onRenameSession(session.id, editingSessionName.trim());
+                                              onRenameSession(
+                                                session.id,
+                                                editingSessionName.trim(),
+                                              );
                                               setEditingSessionId(null);
                                             } else if (e.key === 'Escape') {
                                               renameSavedRef.current = true;
@@ -282,8 +302,14 @@ export default function Sidebar({
                                               renameSavedRef.current = false;
                                               return;
                                             }
-                                            if (editingSessionName.trim() && editingSessionName.trim() !== session.name) {
-                                              onRenameSession(session.id, editingSessionName.trim());
+                                            if (
+                                              editingSessionName.trim() &&
+                                              editingSessionName.trim() !== session.name
+                                            ) {
+                                              onRenameSession(
+                                                session.id,
+                                                editingSessionName.trim(),
+                                              );
                                             }
                                             setEditingSessionId(null);
                                           }}
@@ -366,7 +392,9 @@ export default function Sidebar({
                         >
                           <Building2 size={14} className="flex-shrink-0" />
                           <span className="truncate">Conference Room</span>
-                          <span className="text-gray-600 text-xs ml-auto">{projectRoom.agents?.length || 0}</span>
+                          <span className="text-gray-600 text-xs ml-auto">
+                            {projectRoom.agents?.length || 0}
+                          </span>
                         </button>
                       );
                     })()}
@@ -394,91 +422,91 @@ export default function Sidebar({
             const adHocRooms = rooms.filter((r) => !r.project_id);
             if (adHocRooms.length === 0 && !onNewRoom) return null;
             return (
-          <div className="mt-4">
-            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
-              Conference Rooms
-            </div>
-            {adHocRooms.map((room) => (
-              <div
-                key={room.id}
-                onMouseEnter={() => setHoveredRoom(room.id)}
-                onMouseLeave={() => setHoveredRoom(null)}
-                className={`group flex items-center rounded-lg mb-0.5 transition-colors ${
-                  activeRoomId === room.id && currentView === 'room'
-                    ? 'bg-gray-800 text-white'
-                    : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-                }`}
-              >
-                <button
-                  onClick={() => {
-                    onSelectRoom(room.id);
-                    onNavigate('room');
-                  }}
-                  className="flex-1 text-left px-3 py-2.5 flex items-center gap-2 min-w-0"
-                >
-                  <Building2 size={14} className="flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <span className="truncate text-sm font-medium block">{room.name}</span>
-                    <div className="flex items-center gap-1 mt-0.5">
-                      {room.agents?.slice(0, 5).map((a) => (
-                        <span
-                          key={a.id}
-                          className="w-2 h-2 rounded-full"
-                          style={{ backgroundColor: a.color }}
-                          title={a.name}
-                        />
-                      ))}
-                      {room.agents?.length > 5 && (
-                        <span className="text-xs text-gray-600">+{room.agents.length - 5}</span>
-                      )}
-                    </div>
-                  </div>
-                </button>
-                {hoveredRoom === room.id && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteRoom(room.id);
-                    }}
-                    className="pr-2 text-gray-600 hover:text-red-400 text-xs"
-                    title="Delete room"
+              <div className="mt-4">
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
+                  Conference Rooms
+                </div>
+                {adHocRooms.map((room) => (
+                  <div
+                    key={room.id}
+                    onMouseEnter={() => setHoveredRoom(room.id)}
+                    onMouseLeave={() => setHoveredRoom(null)}
+                    className={`group flex items-center rounded-lg mb-0.5 transition-colors ${
+                      activeRoomId === room.id && currentView === 'room'
+                        ? 'bg-gray-800 text-white'
+                        : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+                    }`}
                   >
-                    ✕
+                    <button
+                      onClick={() => {
+                        onSelectRoom(room.id);
+                        onNavigate('room');
+                      }}
+                      className="flex-1 text-left px-3 py-2.5 flex items-center gap-2 min-w-0"
+                    >
+                      <Building2 size={14} className="flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <span className="truncate text-sm font-medium block">{room.name}</span>
+                        <div className="flex items-center gap-1 mt-0.5">
+                          {room.agents?.slice(0, 5).map((a) => (
+                            <span
+                              key={a.id}
+                              className="w-2 h-2 rounded-full"
+                              style={{ backgroundColor: a.color }}
+                              title={a.name}
+                            />
+                          ))}
+                          {room.agents?.length > 5 && (
+                            <span className="text-xs text-gray-600">+{room.agents.length - 5}</span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                    {hoveredRoom === room.id && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteRoom(room.id);
+                        }}
+                        className="pr-2 text-gray-600 hover:text-red-400 text-xs"
+                        title="Delete room"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {showNewRoomInput ? (
+                  <input
+                    autoFocus
+                    value={newRoomName}
+                    onChange={(e) => setNewRoomName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newRoomName.trim()) {
+                        onNewRoom(newRoomName.trim());
+                        setNewRoomName('');
+                        setShowNewRoomInput(false);
+                      } else if (e.key === 'Escape') {
+                        setNewRoomName('');
+                        setShowNewRoomInput(false);
+                      }
+                    }}
+                    onBlur={() => {
+                      setNewRoomName('');
+                      setShowNewRoomInput(false);
+                    }}
+                    placeholder="Room name..."
+                    className="w-full text-xs bg-gray-800 text-gray-200 px-3 py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                ) : (
+                  <button
+                    onClick={() => setShowNewRoomInput(true)}
+                    className="text-xs text-gray-600 hover:text-gray-400 px-3 py-1 transition-colors"
+                  >
+                    + New Room
                   </button>
                 )}
               </div>
-            ))}
-            {showNewRoomInput ? (
-              <input
-                autoFocus
-                value={newRoomName}
-                onChange={(e) => setNewRoomName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && newRoomName.trim()) {
-                    onNewRoom(newRoomName.trim());
-                    setNewRoomName('');
-                    setShowNewRoomInput(false);
-                  } else if (e.key === 'Escape') {
-                    setNewRoomName('');
-                    setShowNewRoomInput(false);
-                  }
-                }}
-                onBlur={() => {
-                  setNewRoomName('');
-                  setShowNewRoomInput(false);
-                }}
-                placeholder="Room name..."
-                className="w-full text-xs bg-gray-800 text-gray-200 px-3 py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500"
-              />
-            ) : (
-              <button
-                onClick={() => setShowNewRoomInput(true)}
-                className="text-xs text-gray-600 hover:text-gray-400 px-3 py-1 transition-colors"
-              >
-                + New Room
-              </button>
-            )}
-          </div>
             );
           })()}
         </div>
@@ -494,7 +522,10 @@ export default function Sidebar({
               : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
           }`}
         >
-          <span className="flex items-center gap-2"><BookOpen size={16} /><span>Skills</span></span>
+          <span className="flex items-center gap-2">
+            <BookOpen size={16} />
+            <span>Skills</span>
+          </span>
         </button>
         <button
           onClick={() => onNavigate('settings')}
@@ -504,7 +535,10 @@ export default function Sidebar({
               : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
           }`}
         >
-          <span className="flex items-center gap-2"><Settings size={16} /><span>Settings</span></span>
+          <span className="flex items-center gap-2">
+            <Settings size={16} />
+            <span>Settings</span>
+          </span>
         </button>
       </div>
     </div>

@@ -10,9 +10,9 @@
 const STORAGE_KEY = 'agent-hub-connection';
 
 const DEFAULT_CONFIG = {
-  mode: 'local',        // 'local' | 'remote'
-  remoteUrl: '',        // e.g. 'https://my-server.example.com:3051'
-  apiKey: '',           // optional API key for remote auth
+  mode: 'local', // 'local' | 'remote'
+  remoteUrl: '', // e.g. 'https://my-server.example.com:3051'
+  apiKey: '', // optional API key for remote auth
 };
 
 /** Read the persisted connection config. */
@@ -64,10 +64,7 @@ export function getWsUrl() {
   const config = getConnectionConfig();
   if (config.mode === 'remote' && config.remoteUrl) {
     // Convert http(s) to ws(s)
-    let wsUrl = config.remoteUrl
-      .trim()
-      .replace(/\/+$/, '')
-      .replace(/^http/, 'ws');
+    let wsUrl = config.remoteUrl.trim().replace(/\/+$/, '').replace(/^http/, 'ws');
     if (config.apiKey) {
       wsUrl += `?apiKey=${encodeURIComponent(config.apiKey)}`;
     }

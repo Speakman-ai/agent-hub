@@ -93,12 +93,10 @@ export async function createSession(overrides = {}) {
     const agent = await createAgent();
     agentId = agent.id;
   }
-  const res = await request
-    .post(`/api/agents/${agentId}/sessions`)
-    .send({
-      name: overrides.name || `Test Session`,
-      ...overrides,
-    });
+  const res = await request.post(`/api/agents/${agentId}/sessions`).send({
+    name: overrides.name || `Test Session`,
+    ...overrides,
+  });
   return res.body;
 }
 

@@ -1,10 +1,38 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import humanCron from '../utils/humanCron.js';
-import { saveConnectionConfig, testConnection, getAuthHeaders, getApiBase, getServerBase } from '../utils/connection.js';
-import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, switchOrg } from '../utils/orgs.js';
-import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, Pencil, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft, Webhook, Globe } from 'lucide-react';
+import { testConnection, getAuthHeaders, getApiBase, getServerBase } from '../utils/connection.js';
+import {
+  getOrgs,
+  getActiveOrg,
+  createOrg,
+  updateOrg,
+  deleteOrg,
+  switchOrg,
+} from '../utils/orgs.js';
+import {
+  Settings as SettingsIcon,
+  Building2,
+  Bot,
+  HeartPulse,
+  Clock,
+  MessageSquare,
+  BarChart3,
+  HardDrive,
+  Monitor,
+  Cloud,
+  Loader2,
+  Plug,
+  Play,
+  Pencil,
+  RefreshCw,
+  User,
+  Plus,
+  Trash2,
+  ArrowRightLeft,
+  Webhook,
+} from 'lucide-react';
 
 function OrganizationsSection() {
   const [orgsState, setOrgsState] = useState(() => getOrgs());
@@ -13,14 +41,30 @@ function OrganizationsSection() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [showNewForm, setShowNewForm] = useState(false);
-  const [newForm, setNewForm] = useState({ name: '', mode: 'local', color: '#6366f1', remoteUrl: '', apiKey: '' });
+  const [newForm, setNewForm] = useState({
+    name: '',
+    mode: 'local',
+    color: '#6366f1',
+    remoteUrl: '',
+    apiKey: '',
+  });
 
   const activeOrg = getActiveOrg();
   const orgs = orgsState?.orgs || [];
-  const inputClass = 'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+  const inputClass =
+    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
   const labelClass = 'block text-xs text-gray-400 mb-1';
 
-  const COLOR_OPTIONS = ['#6366f1', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6'];
+  const COLOR_OPTIONS = [
+    '#6366f1',
+    '#ef4444',
+    '#f59e0b',
+    '#10b981',
+    '#3b82f6',
+    '#8b5cf6',
+    '#ec4899',
+    '#14b8a6',
+  ];
 
   const refreshOrgs = () => setOrgsState(getOrgs());
 
@@ -30,7 +74,13 @@ function OrganizationsSection() {
       return;
     }
     const org = orgs.find((o) => o.id === orgId);
-    setEditForm({ name: org.name, mode: org.mode, color: org.color, remoteUrl: org.remoteUrl || '', apiKey: org.apiKey || '' });
+    setEditForm({
+      name: org.name,
+      mode: org.mode,
+      color: org.color,
+      remoteUrl: org.remoteUrl || '',
+      apiKey: org.apiKey || '',
+    });
     setExpandedOrgId(orgId);
     setTestResult(null);
   };
@@ -91,7 +141,9 @@ function OrganizationsSection() {
             : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
         }`}
       >
-        <div className="text-base mb-1 flex items-center gap-1.5"><Monitor size={18} /> Local</div>
+        <div className="text-base mb-1 flex items-center gap-1.5">
+          <Monitor size={18} /> Local
+        </div>
         <div className="text-xs text-gray-500">Server runs on this machine</div>
       </button>
       <button
@@ -102,7 +154,9 @@ function OrganizationsSection() {
             : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
         }`}
       >
-        <div className="text-base mb-1 flex items-center gap-1.5"><Cloud size={18} /> Remote</div>
+        <div className="text-base mb-1 flex items-center gap-1.5">
+          <Cloud size={18} /> Remote
+        </div>
         <div className="text-xs text-gray-500">Connect to a remote server</div>
       </button>
     </div>
@@ -137,7 +191,15 @@ function OrganizationsSection() {
             className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
           >
             <span className="flex items-center gap-1.5">
-              {testing ? <><Loader2 size={14} className="animate-spin" /> Testing...</> : <><Plug size={14} /> Test</>}
+              {testing ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" /> Testing...
+                </>
+              ) : (
+                <>
+                  <Plug size={14} /> Test
+                </>
+              )}
             </span>
           </button>
           {testResult && (
@@ -155,8 +217,8 @@ function OrganizationsSection() {
       <div>
         <h3 className="text-lg font-semibold mb-4">Organizations</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Organizations are connection profiles. Each org points to a different Agent Hub server (local or remote).
-          Switching orgs changes which server the client talks to.
+          Organizations are connection profiles. Each org points to a different Agent Hub server
+          (local or remote). Switching orgs changes which server the client talks to.
         </p>
       </div>
 
@@ -191,18 +253,25 @@ function OrganizationsSection() {
                     )}
                   </div>
                   {org.mode === 'remote' && org.remoteUrl && (
-                    <p className="text-xs text-gray-500 truncate mt-0.5 font-mono">{org.remoteUrl}</p>
+                    <p className="text-xs text-gray-500 truncate mt-0.5 font-mono">
+                      {org.remoteUrl}
+                    </p>
                   )}
                 </div>
                 {!isActive && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleSwitch(org.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSwitch(org.id);
+                    }}
                     className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1"
                   >
                     <ArrowRightLeft size={12} /> Switch
                   </button>
                 )}
-                <span className="text-gray-600 text-2xl leading-none flex items-center">{isExpanded ? '▲' : '▼'}</span>
+                <span className="text-gray-600 text-2xl leading-none flex items-center">
+                  {isExpanded ? '▲' : '▼'}
+                </span>
               </div>
 
               {/* Expanded edit form */}
@@ -225,7 +294,9 @@ function OrganizationsSection() {
                           key={c}
                           onClick={() => setEditForm((prev) => ({ ...prev, color: c }))}
                           className={`w-7 h-7 rounded-lg transition-all ${
-                            editForm.color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-800' : 'hover:scale-110'
+                            editForm.color === c
+                              ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-800'
+                              : 'hover:scale-110'
                           }`}
                           style={{ backgroundColor: c }}
                         />
@@ -287,7 +358,9 @@ function OrganizationsSection() {
                   key={c}
                   onClick={() => setNewForm((prev) => ({ ...prev, color: c }))}
                   className={`w-7 h-7 rounded-lg transition-all ${
-                    newForm.color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-800' : 'hover:scale-110'
+                    newForm.color === c
+                      ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-800'
+                      : 'hover:scale-110'
                   }`}
                   style={{ backgroundColor: c }}
                 />
@@ -341,14 +414,19 @@ function GeneralSection() {
   const [saveStatus, setSaveStatus] = useState(null);
 
   useEffect(() => {
-    api.getConfig().then((data) => {
-      setConfig(data);
-      setEdits({ claudeBin: data.claudeBin, publicUrl: data.publicUrl || '' });
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    api
+      .getConfig()
+      .then((data) => {
+        setConfig(data);
+        setEdits({ claudeBin: data.claudeBin, publicUrl: data.publicUrl || '' });
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
   }, []);
 
-  const isDirty = config && (edits.claudeBin !== config.claudeBin || edits.publicUrl !== (config.publicUrl || ''));
+  const isDirty =
+    config &&
+    (edits.claudeBin !== config.claudeBin || edits.publicUrl !== (config.publicUrl || ''));
 
   const handleSave = async () => {
     setSaving(true);
@@ -365,7 +443,8 @@ function GeneralSection() {
     }
   };
 
-  const inputClass = 'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+  const inputClass =
+    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
   const labelClass = 'block text-xs text-gray-400 mb-1';
 
   if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
@@ -400,7 +479,9 @@ function GeneralSection() {
         <div className="flex items-center justify-between pt-2">
           <div className="flex items-center gap-2">
             {saveStatus === 'saved' && <span className="text-xs text-emerald-400">✓ Saved</span>}
-            {saveStatus === 'error' && <span className="text-xs text-red-400">✕ Failed to save</span>}
+            {saveStatus === 'error' && (
+              <span className="text-xs text-red-400">✕ Failed to save</span>
+            )}
           </div>
           <button
             onClick={handleSave}
@@ -424,8 +505,8 @@ function GeneralSection() {
             placeholder="https://my-server.example.com"
           />
           <p className="text-xs text-gray-600 mt-1">
-            The externally-reachable URL for this server. Used as the callback URL when auto-registering
-            GitHub webhooks. Leave empty if running locally only.
+            The externally-reachable URL for this server. Used as the callback URL when
+            auto-registering GitHub webhooks. Leave empty if running locally only.
           </p>
         </div>
       </div>
@@ -481,10 +562,8 @@ function HeartbeatSection() {
     await api.updateHeartbeat(agentId, { enabled: !current });
     setHeartbeats((prev) =>
       prev.map((h) =>
-        h.agentId === agentId
-          ? { ...h, heartbeat: { ...h.heartbeat, enabled: !current } }
-          : h
-      )
+        h.agentId === agentId ? { ...h, heartbeat: { ...h.heartbeat, enabled: !current } } : h,
+      ),
     );
   };
 
@@ -509,9 +588,12 @@ function HeartbeatSection() {
     setHeartbeats((prev) =>
       prev.map((h) =>
         h.agentId === editingId
-          ? { ...h, heartbeat: { ...h.heartbeat, interval: editForm.interval, prompt: editForm.prompt } }
-          : h
-      )
+          ? {
+              ...h,
+              heartbeat: { ...h.heartbeat, interval: editForm.interval, prompt: editForm.prompt },
+            }
+          : h,
+      ),
     );
     setEditingId(null);
   };
@@ -525,7 +607,10 @@ function HeartbeatSection() {
             {editingId === hb.agentId ? (
               <form onSubmit={saveEdit} className="p-4 space-y-3">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: hb.color }} />
+                  <span
+                    className="w-3 h-3 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: hb.color }}
+                  />
                   <span className="font-medium text-sm">{hb.agentName}</span>
                 </div>
                 <input
@@ -544,94 +629,109 @@ function HeartbeatSection() {
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 resize-none"
                 />
                 <div className="flex gap-2">
-                  <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors">
+                  <button
+                    type="submit"
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+                  >
                     Save
                   </button>
-                  <button type="button" onClick={() => setEditingId(null)} className="bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1.5 rounded-lg transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => setEditingId(null)}
+                    className="bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs px-3 py-1.5 rounded-lg transition-colors"
+                  >
                     Cancel
                   </button>
                 </div>
               </form>
             ) : (
-            <div className="flex items-center gap-3 p-4">
-              <span
-                className="w-3 h-3 rounded-full flex-shrink-0"
-                style={{ backgroundColor: hb.color }}
-              />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-sm">{hb.agentName}</span>
-                  <span className="text-xs text-gray-500 font-mono">
-                    {hb.heartbeat.interval || 'not set'}
-                  </span>
-                  {hb.heartbeat.enabled && hb.state?.next_run_at && (() => {
-                    const { label, overdue } = relativeFuture(hb.state.next_run_at);
-                    return (
-                      <span
-                        title={`Next run: ${new Date(hb.state.next_run_at).toLocaleString()}`}
-                        className={`text-xs px-1.5 py-0.5 rounded font-mono ${
-                          overdue
-                            ? 'bg-amber-900/40 text-amber-400'
-                            : 'bg-gray-700/60 text-gray-400'
-                        }`}
-                      >
-                        {label}
-                      </span>
-                    );
-                  })()}
-                </div>
-                <p className="text-xs text-gray-500 truncate mt-0.5">
-                  {hb.heartbeat.prompt || 'No prompt configured'}
-                </p>
-                {hb.latestLog && (
-                  <p className="text-xs text-gray-600 mt-0.5">
-                    Last run: {relativeTime(hb.latestLog.timestamp)} —{' '}
-                    <span
-                      className={
-                        hb.latestLog.status === 'success'
-                          ? 'text-emerald-500'
-                          : hb.latestLog.status === 'error'
-                          ? 'text-red-400'
-                          : 'text-yellow-400'
-                      }
-                    >
-                      {hb.latestLog.status}
+              <div className="flex items-center gap-3 p-4">
+                <span
+                  className="w-3 h-3 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: hb.color }}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium text-sm">{hb.agentName}</span>
+                    <span className="text-xs text-gray-500 font-mono">
+                      {hb.heartbeat.interval || 'not set'}
                     </span>
+                    {hb.heartbeat.enabled &&
+                      hb.state?.next_run_at &&
+                      (() => {
+                        const { label, overdue } = relativeFuture(hb.state.next_run_at);
+                        return (
+                          <span
+                            title={`Next run: ${new Date(hb.state.next_run_at).toLocaleString()}`}
+                            className={`text-xs px-1.5 py-0.5 rounded font-mono ${
+                              overdue
+                                ? 'bg-amber-900/40 text-amber-400'
+                                : 'bg-gray-700/60 text-gray-400'
+                            }`}
+                          >
+                            {label}
+                          </span>
+                        );
+                      })()}
+                  </div>
+                  <p className="text-xs text-gray-500 truncate mt-0.5">
+                    {hb.heartbeat.prompt || 'No prompt configured'}
                   </p>
-                )}
+                  {hb.latestLog && (
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      Last run: {relativeTime(hb.latestLog.timestamp)} —{' '}
+                      <span
+                        className={
+                          hb.latestLog.status === 'success'
+                            ? 'text-emerald-500'
+                            : hb.latestLog.status === 'error'
+                              ? 'text-red-400'
+                              : 'text-yellow-400'
+                        }
+                      >
+                        {hb.latestLog.status}
+                      </span>
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <button
+                    onClick={() => startEdit(hb)}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    onClick={() => triggerRun(hb.agentId)}
+                    disabled={running[hb.agentId]}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                  >
+                    {running[hb.agentId] ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Play size={14} />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => toggleHeartbeat(hb.agentId, hb.heartbeat.enabled)}
+                    className={`text-xs px-2.5 py-2 sm:py-1 rounded-md transition-colors min-h-[36px] sm:min-h-0 flex items-center ${
+                      hb.heartbeat.enabled
+                        ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                    }`}
+                  >
+                    {hb.heartbeat.enabled ? 'ON' : 'OFF'}
+                  </button>
+                  <button
+                    onClick={() => loadLogs(hb.agentId)}
+                    className="text-xs text-gray-400 hover:text-white px-2 py-2 sm:py-1 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                  >
+                    <span className="text-2xl leading-none flex items-center">
+                      {expandedAgent === hb.agentId ? '▲' : '▼'}
+                    </span>
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-1.5 sm:gap-2">
-                <button
-                  onClick={() => startEdit(hb)}
-                  className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                >
-                  <Pencil size={14} />
-                </button>
-                <button
-                  onClick={() => triggerRun(hb.agentId)}
-                  disabled={running[hb.agentId]}
-                  className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                >
-                  {running[hb.agentId] ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                </button>
-                <button
-                  onClick={() => toggleHeartbeat(hb.agentId, hb.heartbeat.enabled)}
-                  className={`text-xs px-2.5 py-2 sm:py-1 rounded-md transition-colors min-h-[36px] sm:min-h-0 flex items-center ${
-                    hb.heartbeat.enabled
-                      ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                      : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                  }`}
-                >
-                  {hb.heartbeat.enabled ? 'ON' : 'OFF'}
-                </button>
-                <button
-                  onClick={() => loadLogs(hb.agentId)}
-                  className="text-xs text-gray-400 hover:text-white px-2 py-2 sm:py-1 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                >
-                  <span className="text-2xl leading-none flex items-center">{expandedAgent === hb.agentId ? '▲' : '▼'}</span>
-                </button>
-              </div>
-            </div>
             )}
 
             {expandedAgent === hb.agentId && (
@@ -641,25 +741,20 @@ function HeartbeatSection() {
                 ) : (
                   <div className="space-y-2">
                     {(logs[hb.agentId] || []).map((log) => (
-                      <div
-                        key={log.id}
-                        className="bg-gray-900 rounded-lg p-3 text-xs"
-                      >
+                      <div key={log.id} className="bg-gray-900 rounded-lg p-3 text-xs">
                         <div className="flex items-center gap-2 mb-1">
                           <span
                             className={`px-1.5 py-0.5 rounded text-xs ${
                               log.status === 'success'
                                 ? 'bg-emerald-900/50 text-emerald-400'
                                 : log.status === 'error'
-                                ? 'bg-red-900/50 text-red-400'
-                                : 'bg-yellow-900/50 text-yellow-400'
+                                  ? 'bg-red-900/50 text-red-400'
+                                  : 'bg-yellow-900/50 text-yellow-400'
                             }`}
                           >
                             {log.status}
                           </span>
-                          <span className="text-gray-500">
-                            {relativeTime(log.timestamp)}
-                          </span>
+                          <span className="text-gray-500">{relativeTime(log.timestamp)}</span>
                         </div>
                         <pre className="text-gray-300 whitespace-pre-wrap text-xs max-h-32 overflow-y-auto">
                           {log.result || '(running...)'}
@@ -682,7 +777,7 @@ function CronSection() {
   const [running, setRunning] = useState({});
   const [showForm, setShowForm] = useState(false);
   const [, setTick] = useState(0);
-  const [cronLogs, setCronLogs] = useState({});       // { [cronId]: log[] }
+  const [cronLogs, setCronLogs] = useState({}); // { [cronId]: log[] }
   const [expandedLog, setExpandedLog] = useState(null); // "cronId:logId"
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -704,7 +799,7 @@ function CronSection() {
         } catch {
           return [c.id, []];
         }
-      })
+      }),
     );
     setCronLogs(Object.fromEntries(entries));
   };
@@ -798,10 +893,7 @@ function CronSection() {
       </div>
 
       {showForm && (
-        <form
-          onSubmit={createCron}
-          className="bg-gray-800 rounded-xl p-4 mb-4 space-y-3"
-        >
+        <form onSubmit={createCron} className="bg-gray-800 rounded-xl p-4 mb-4 space-y-3">
           <input
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -889,160 +981,175 @@ function CronSection() {
                 </div>
               </form>
             ) : (
-            <div className="flex items-center gap-3">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-sm">{cronJob.name}</span>
-                  <span className="text-xs text-gray-500" title={cronJob.schedule}>
-                    {humanCron(cronJob.schedule)}
-                  </span>
-                  {cronJob.enabled && cronJob.next_run_at && (() => {
-                    const { label, overdue } = relativeFuture(cronJob.next_run_at);
-                    return (
-                      <span
-                        title={`Next run: ${new Date(cronJob.next_run_at).toLocaleString()}`}
-                        className={`text-xs px-1.5 py-0.5 rounded font-mono ${
-                          overdue
-                            ? 'bg-amber-900/40 text-amber-400'
-                            : 'bg-gray-700/60 text-gray-400'
-                        }`}
-                      >
-                        {label}
-                      </span>
-                    );
-                  })()}
-                </div>
-                <p className="text-xs text-gray-500 truncate mt-0.5">
-                  {cronJob.prompt}
-                </p>
-                <p className="text-xs text-gray-600 mt-0.5">
-                  cwd: {cronJob.cwd}
-                  {cronJob.last_run && (
-                    <> · Last: {relativeTime(cronJob.last_run)}</>
-                  )}
-                </p>
-                {/* Recent runs — clickable status dots */}
-                {cronLogs[cronJob.id]?.length > 0 && (
-                  <div className="mt-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-gray-500 mr-0.5">Runs:</span>
-                      {cronLogs[cronJob.id].map((log) => {
-                        const key = `${cronJob.id}:${log.id}`;
-                        const isExpanded = expandedLog === key;
-                        const statusColor =
-                          log.status === 'success'
-                            ? 'bg-emerald-500'
-                            : log.status === 'error'
-                            ? 'bg-red-500'
-                            : log.status === 'running'
-                            ? 'bg-amber-400 animate-pulse'
-                            : 'bg-gray-500';
-                        const durationLabel = log.duration_ms != null
-                          ? `${(log.duration_ms / 1000).toFixed(1)}s`
-                          : '';
+              <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium text-sm">{cronJob.name}</span>
+                    <span className="text-xs text-gray-500" title={cronJob.schedule}>
+                      {humanCron(cronJob.schedule)}
+                    </span>
+                    {cronJob.enabled &&
+                      cronJob.next_run_at &&
+                      (() => {
+                        const { label, overdue } = relativeFuture(cronJob.next_run_at);
                         return (
-                          <button
-                            key={log.id}
-                            onClick={() => setExpandedLog(isExpanded ? null : key)}
-                            title={`${log.status} — ${new Date(log.timestamp).toLocaleString()}${durationLabel ? ` (${durationLabel})` : ''}`}
-                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors ${
-                              isExpanded
-                                ? 'bg-gray-700 ring-1 ring-gray-500'
-                                : 'bg-gray-800 hover:bg-gray-700'
+                          <span
+                            title={`Next run: ${new Date(cronJob.next_run_at).toLocaleString()}`}
+                            className={`text-xs px-1.5 py-0.5 rounded font-mono ${
+                              overdue
+                                ? 'bg-amber-900/40 text-amber-400'
+                                : 'bg-gray-700/60 text-gray-400'
                             }`}
                           >
-                            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`} />
-                            <span className="text-gray-400">{relativeTime(log.timestamp)}</span>
-                          </button>
+                            {label}
+                          </span>
+                        );
+                      })()}
+                  </div>
+                  <p className="text-xs text-gray-500 truncate mt-0.5">{cronJob.prompt}</p>
+                  <p className="text-xs text-gray-600 mt-0.5">
+                    cwd: {cronJob.cwd}
+                    {cronJob.last_run && <> · Last: {relativeTime(cronJob.last_run)}</>}
+                  </p>
+                  {/* Recent runs — clickable status dots */}
+                  {cronLogs[cronJob.id]?.length > 0 && (
+                    <div className="mt-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-gray-500 mr-0.5">Runs:</span>
+                        {cronLogs[cronJob.id].map((log) => {
+                          const key = `${cronJob.id}:${log.id}`;
+                          const isExpanded = expandedLog === key;
+                          const statusColor =
+                            log.status === 'success'
+                              ? 'bg-emerald-500'
+                              : log.status === 'error'
+                                ? 'bg-red-500'
+                                : log.status === 'running'
+                                  ? 'bg-amber-400 animate-pulse'
+                                  : 'bg-gray-500';
+                          const durationLabel =
+                            log.duration_ms != null
+                              ? `${(log.duration_ms / 1000).toFixed(1)}s`
+                              : '';
+                          return (
+                            <button
+                              key={log.id}
+                              onClick={() => setExpandedLog(isExpanded ? null : key)}
+                              title={`${log.status} — ${new Date(log.timestamp).toLocaleString()}${durationLabel ? ` (${durationLabel})` : ''}`}
+                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors ${
+                                isExpanded
+                                  ? 'bg-gray-700 ring-1 ring-gray-500'
+                                  : 'bg-gray-800 hover:bg-gray-700'
+                              }`}
+                            >
+                              <span
+                                className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColor}`}
+                              />
+                              <span className="text-gray-400">{relativeTime(log.timestamp)}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {/* Expanded log result */}
+                      {cronLogs[cronJob.id].map((log) => {
+                        const key = `${cronJob.id}:${log.id}`;
+                        if (expandedLog !== key) return null;
+                        return (
+                          <div
+                            key={`detail-${log.id}`}
+                            className="mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700/50"
+                          >
+                            <div className="flex items-center justify-between mb-1.5">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`text-xs font-medium ${
+                                    log.status === 'success'
+                                      ? 'text-emerald-400'
+                                      : log.status === 'error'
+                                        ? 'text-red-400'
+                                        : log.status === 'running'
+                                          ? 'text-amber-400'
+                                          : 'text-gray-400'
+                                  }`}
+                                >
+                                  {log.status === 'success'
+                                    ? '✓ Success'
+                                    : log.status === 'error'
+                                      ? '✗ Error'
+                                      : log.status === 'running'
+                                        ? 'Running'
+                                        : log.status}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {new Date(log.timestamp).toLocaleString()}
+                                </span>
+                                {log.duration_ms != null && (
+                                  <span className="text-xs text-gray-500 font-mono">
+                                    {(log.duration_ms / 1000).toFixed(1)}s
+                                  </span>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => setExpandedLog(null)}
+                                className="text-xs text-gray-500 hover:text-gray-300"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                            {log.result ? (
+                              <pre className="text-xs text-gray-400 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                                {log.result}
+                              </pre>
+                            ) : (
+                              <p className="text-xs text-gray-600 italic">No output yet</p>
+                            )}
+                          </div>
                         );
                       })}
                     </div>
-                    {/* Expanded log result */}
-                    {cronLogs[cronJob.id].map((log) => {
-                      const key = `${cronJob.id}:${log.id}`;
-                      if (expandedLog !== key) return null;
-                      return (
-                        <div key={`detail-${log.id}`} className="mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700/50">
-                          <div className="flex items-center justify-between mb-1.5">
-                            <div className="flex items-center gap-2">
-                              <span className={`text-xs font-medium ${
-                                log.status === 'success' ? 'text-emerald-400' :
-                                log.status === 'error' ? 'text-red-400' :
-                                log.status === 'running' ? 'text-amber-400' :
-                                'text-gray-400'
-                              }`}>
-                                {log.status === 'success' ? '✓ Success' :
-                                 log.status === 'error' ? '✗ Error' :
-                                 log.status === 'running' ? 'Running' : log.status}
-                              </span>
-                              <span className="text-xs text-gray-500">
-                                {new Date(log.timestamp).toLocaleString()}
-                              </span>
-                              {log.duration_ms != null && (
-                                <span className="text-xs text-gray-500 font-mono">
-                                  {(log.duration_ms / 1000).toFixed(1)}s
-                                </span>
-                              )}
-                            </div>
-                            <button
-                              onClick={() => setExpandedLog(null)}
-                              className="text-xs text-gray-500 hover:text-gray-300"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                          {log.result ? (
-                            <pre className="text-xs text-gray-400 whitespace-pre-wrap max-h-40 overflow-y-auto">
-                              {log.result}
-                            </pre>
-                          ) : (
-                            <p className="text-xs text-gray-600 italic">No output yet</p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+                  <button
+                    onClick={() => triggerRun(cronJob.id)}
+                    disabled={running[cronJob.id]}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                  >
+                    {running[cronJob.id] ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Play size={14} />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => toggleCron(cronJob)}
+                    className={`text-xs px-2.5 py-2 sm:py-1 rounded-md transition-colors min-h-[36px] sm:min-h-0 flex items-center ${
+                      cronJob.enabled
+                        ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                    }`}
+                  >
+                    {cronJob.enabled ? 'ON' : 'OFF'}
+                  </button>
+                  <button
+                    onClick={() => startEditing(cronJob)}
+                    className="text-xs text-gray-500 hover:text-blue-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                    title="Edit"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    onClick={() => deleteCron(cronJob.id)}
+                    className="text-xs text-gray-500 hover:text-red-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-                <button
-                  onClick={() => triggerRun(cronJob.id)}
-                  disabled={running[cronJob.id]}
-                  className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                >
-                  {running[cronJob.id] ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                </button>
-                <button
-                  onClick={() => toggleCron(cronJob)}
-                  className={`text-xs px-2.5 py-2 sm:py-1 rounded-md transition-colors min-h-[36px] sm:min-h-0 flex items-center ${
-                    cronJob.enabled
-                      ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                      : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                  }`}
-                >
-                  {cronJob.enabled ? 'ON' : 'OFF'}
-                </button>
-                <button
-                  onClick={() => startEditing(cronJob)}
-                  className="text-xs text-gray-500 hover:text-blue-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                  title="Edit"
-                >
-                  <Pencil size={14} />
-                </button>
-                <button
-                  onClick={() => deleteCron(cronJob.id)}
-                  className="text-xs text-gray-500 hover:text-red-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
             )}
           </div>
         ))}
-        {crons.length === 0 && (
-          <p className="text-sm text-gray-500">No cron jobs configured</p>
-        )}
+        {crons.length === 0 && <p className="text-sm text-gray-500">No cron jobs configured</p>}
       </div>
     </div>
   );
@@ -1066,11 +1173,17 @@ function WebhookSection() {
       'pull_request.opened': { enabled: true, label: 'PR opened' },
       'pull_request.closed': { enabled: true, label: 'PR closed / merged' },
       'pull_request.synchronize': { enabled: true, label: 'New commits pushed to PR' },
-      'pull_request_review.submitted': { enabled: true, label: 'Review submitted (approve / request changes)' },
-      'pull_request_review_comment.created': { enabled: true, label: 'Inline review comment posted' },
+      'pull_request_review.submitted': {
+        enabled: true,
+        label: 'Review submitted (approve / request changes)',
+      },
+      'pull_request_review_comment.created': {
+        enabled: true,
+        label: 'Inline review comment posted',
+      },
       'check_suite.completed': { enabled: true, label: 'CI checks completed' },
       'issues.opened': { enabled: false, label: 'Issue opened' },
-      'push': { enabled: false, label: 'Push to any branch' },
+      push: { enabled: false, label: 'Push to any branch' },
     },
   });
 
@@ -1080,8 +1193,10 @@ function WebhookSection() {
         try {
           const logs = await api.getWebhookLogs(w.id, 5);
           return [w.id, logs];
-        } catch { return [w.id, []]; }
-      })
+        } catch {
+          return [w.id, []];
+        }
+      }),
     );
     setWebhookLogs(Object.fromEntries(entries));
   };
@@ -1098,7 +1213,9 @@ function WebhookSection() {
         setProjects(proj);
         if (cfg) setServerConfig(cfg);
         if (wh.length) await refreshLogs(wh);
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error(e);
+      }
     };
     load();
     const pollId = setInterval(load, 60000);
@@ -1125,10 +1242,17 @@ function WebhookSection() {
     });
     // If auto-register returned inline registration info, extract the webhook record
     const { registration, ...webhookRecord } = created;
-    setWebhooks(prev => [...prev, webhookRecord]);
+    setWebhooks((prev) => [...prev, webhookRecord]);
     if (registration) {
       if (registration.ok) {
-        setRegStatus(prev => ({ ...prev, [webhookRecord.id]: { registered: true, hooks: [{ id: registration.hookId }], webhookUrl: registration.url } }));
+        setRegStatus((prev) => ({
+          ...prev,
+          [webhookRecord.id]: {
+            registered: true,
+            hooks: [{ id: registration.hookId }],
+            webhookUrl: registration.url,
+          },
+        }));
       }
     }
     setShowForm(false);
@@ -1136,51 +1260,64 @@ function WebhookSection() {
 
   const toggleWebhook = async (wh) => {
     const updated = await api.updateWebhook(wh.id, { enabled: !wh.enabled });
-    setWebhooks(prev => prev.map(w => w.id === updated.id ? updated : w));
+    setWebhooks((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
   };
 
   const deleteWebhook = async (id) => {
     await api.deleteWebhook(id);
-    setWebhooks(prev => prev.filter(w => w.id !== id));
+    setWebhooks((prev) => prev.filter((w) => w.id !== id));
   };
 
   const registerOnGitHub = async (wh) => {
-    setRegistering(prev => ({ ...prev, [wh.id]: true }));
+    setRegistering((prev) => ({ ...prev, [wh.id]: true }));
     try {
       const result = await api.registerWebhook(wh.id);
-      setRegStatus(prev => ({ ...prev, [wh.id]: { registered: true, hooks: [{ id: result.hookId }], webhookUrl: result.url } }));
+      setRegStatus((prev) => ({
+        ...prev,
+        [wh.id]: { registered: true, hooks: [{ id: result.hookId }], webhookUrl: result.url },
+      }));
     } catch (err) {
-      setRegStatus(prev => ({ ...prev, [wh.id]: { registered: false, error: err.message } }));
+      setRegStatus((prev) => ({ ...prev, [wh.id]: { registered: false, error: err.message } }));
     }
-    setRegistering(prev => ({ ...prev, [wh.id]: false }));
+    setRegistering((prev) => ({ ...prev, [wh.id]: false }));
   };
 
   const unregisterFromGitHub = async (wh) => {
-    setRegistering(prev => ({ ...prev, [wh.id]: true }));
+    setRegistering((prev) => ({ ...prev, [wh.id]: true }));
     try {
       await api.unregisterWebhook(wh.id);
-      setRegStatus(prev => ({ ...prev, [wh.id]: { registered: false } }));
+      setRegStatus((prev) => ({ ...prev, [wh.id]: { registered: false } }));
     } catch (err) {
-      setRegStatus(prev => ({ ...prev, [wh.id]: { registered: false, error: err.message } }));
+      setRegStatus((prev) => ({ ...prev, [wh.id]: { registered: false, error: err.message } }));
     }
-    setRegistering(prev => ({ ...prev, [wh.id]: false }));
+    setRegistering((prev) => ({ ...prev, [wh.id]: false }));
   };
 
   const checkRegistration = async (wh) => {
     try {
       const status = await api.getWebhookRegistration(wh.id);
-      setRegStatus(prev => ({ ...prev, [wh.id]: status }));
-    } catch (err) { console.warn('checkRegistration failed:', err); }
+      setRegStatus((prev) => ({ ...prev, [wh.id]: status }));
+    } catch (err) {
+      console.warn('checkRegistration failed:', err);
+    }
   };
 
   /** Resolve the public webhook URL: prefer server-side publicUrl, fall back to client base */
   const getWebhookUrl = () => {
-    if (serverConfig?.publicUrl) return `${serverConfig.publicUrl.replace(/\/+$/, '')}/api/webhooks/github`;
+    if (serverConfig?.publicUrl)
+      return `${serverConfig.publicUrl.replace(/\/+$/, '')}/api/webhooks/github`;
     const base = getServerBase() || window.location.origin;
     return `${base}/api/webhooks/github`;
   };
 
-  const statusColor = (s) => s === 'success' ? 'bg-emerald-500' : s === 'error' ? 'bg-red-500' : s === 'running' ? 'bg-blue-500' : 'bg-gray-600';
+  const statusColor = (s) =>
+    s === 'success'
+      ? 'bg-emerald-500'
+      : s === 'error'
+        ? 'bg-red-500'
+        : s === 'running'
+          ? 'bg-blue-500'
+          : 'bg-gray-600';
 
   return (
     <div>
@@ -1203,7 +1340,11 @@ function WebhookSection() {
             className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
           >
             <option value="">Select Project</option>
-            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
           </select>
           <input
             value={form.repoUrl}
@@ -1216,17 +1357,22 @@ function WebhookSection() {
           <div className="space-y-2">
             <p className="text-xs text-gray-400 font-medium">Events to handle:</p>
             {Object.entries(form.events).map(([eventKey, eventConfig]) => (
-              <label key={eventKey} className="flex items-center gap-3 cursor-pointer bg-gray-900 rounded-lg px-3 py-2.5">
+              <label
+                key={eventKey}
+                className="flex items-center gap-3 cursor-pointer bg-gray-900 rounded-lg px-3 py-2.5"
+              >
                 <input
                   type="checkbox"
                   checked={eventConfig.enabled}
-                  onChange={() => setForm({
-                    ...form,
-                    events: {
-                      ...form.events,
-                      [eventKey]: { ...eventConfig, enabled: !eventConfig.enabled }
-                    }
-                  })}
+                  onChange={() =>
+                    setForm({
+                      ...form,
+                      events: {
+                        ...form.events,
+                        [eventKey]: { ...eventConfig, enabled: !eventConfig.enabled },
+                      },
+                    })
+                  }
                   className="rounded border-gray-600"
                 />
                 <div>
@@ -1247,25 +1393,36 @@ function WebhookSection() {
             <div>
               <span className="text-sm text-gray-300">Auto-register on GitHub</span>
               <p className="text-xs text-gray-500 mt-0.5">
-                {serverConfig?.publicUrl
-                  ? <>Webhook URL: <code className="text-gray-400">{serverConfig.publicUrl.replace(/\/+$/, '')}/api/webhooks/github</code></>
-                  : <span className="text-amber-400">Set a Public URL in General Settings first for reliable webhook delivery</span>
-                }
+                {serverConfig?.publicUrl ? (
+                  <>
+                    Webhook URL:{' '}
+                    <code className="text-gray-400">
+                      {serverConfig.publicUrl.replace(/\/+$/, '')}/api/webhooks/github
+                    </code>
+                  </>
+                ) : (
+                  <span className="text-amber-400">
+                    Set a Public URL in General Settings first for reliable webhook delivery
+                  </span>
+                )}
               </p>
             </div>
           </label>
 
-          <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+          <button
+            type="submit"
+            className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+          >
             {form.autoRegister ? 'Create & Register' : 'Create Webhook'}
           </button>
         </form>
       )}
 
       <div className="space-y-3">
-        {webhooks.map(wh => {
+        {webhooks.map((wh) => {
           const events = JSON.parse(wh.events || '{}');
           const enabledEvents = Object.entries(events).filter(([, v]) => v.enabled);
-          const project = projects.find(p => p.id === wh.project_id);
+          const project = projects.find((p) => p.id === wh.project_id);
           const logs = webhookLogs[wh.id] || [];
           const isExpanded = expandedWebhook === wh.id;
 
@@ -1274,22 +1431,27 @@ function WebhookSection() {
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-medium text-sm">{wh.repo_url.replace(/https?:\/\/github\.com\//, '')}</span>
+                    <span className="font-medium text-sm">
+                      {wh.repo_url.replace(/https?:\/\/github\.com\//, '')}
+                    </span>
                     {project && (
                       <span className="text-xs bg-gray-700 px-1.5 py-0.5 rounded text-gray-400">
                         {project.name}
                       </span>
                     )}
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${wh.enabled ? 'bg-emerald-900/40 text-emerald-400' : 'bg-gray-700 text-gray-500'}`}>
+                    <span
+                      className={`text-xs px-1.5 py-0.5 rounded ${wh.enabled ? 'bg-emerald-900/40 text-emerald-400' : 'bg-gray-700 text-gray-500'}`}
+                    >
                       {wh.enabled ? 'active' : 'disabled'}
                     </span>
                   </div>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    {enabledEvents.length} event{enabledEvents.length !== 1 ? 's' : ''}: {enabledEvents.map(([k]) => k).join(', ')}
+                    {enabledEvents.length} event{enabledEvents.length !== 1 ? 's' : ''}:{' '}
+                    {enabledEvents.map(([k]) => k).join(', ')}
                   </p>
                 </div>
                 <div className="flex items-center gap-1">
-                  {logs.slice(0, 5).map(log => (
+                  {logs.slice(0, 5).map((log) => (
                     <div
                       key={log.id}
                       title={`${log.event_type} — ${log.status}${log.duration_ms ? ` (${(log.duration_ms / 1000).toFixed(1)}s)` : ''}`}
@@ -1334,7 +1496,8 @@ function WebhookSection() {
                     </div>
                     {!serverConfig?.publicUrl && (
                       <p className="text-xs text-amber-400">
-                        No Public URL configured — webhook URL may not be reachable from GitHub. Set it in General Settings.
+                        No Public URL configured — webhook URL may not be reachable from GitHub. Set
+                        it in General Settings.
                       </p>
                     )}
                     <div className="flex items-center gap-2">
@@ -1355,12 +1518,16 @@ function WebhookSection() {
                         <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
                         <span className="text-emerald-400">Registered on GitHub</span>
                         {regStatus[wh.id]?.hooks?.[0]?.id && (
-                          <span className="text-gray-500 font-mono">Hook #{regStatus[wh.id].hooks[0].id}</span>
+                          <span className="text-gray-500 font-mono">
+                            Hook #{regStatus[wh.id].hooks[0].id}
+                          </span>
                         )}
                       </div>
                     )}
                     {regStatus[wh.id]?.error && (
-                      <p className="text-xs text-red-400">Registration error: {regStatus[wh.id].error}</p>
+                      <p className="text-xs text-red-400">
+                        Registration error: {regStatus[wh.id].error}
+                      </p>
                     )}
 
                     <div className="flex items-center gap-2">
@@ -1403,19 +1570,30 @@ function WebhookSection() {
                   <div className="space-y-1">
                     <p className="text-xs text-gray-400 font-medium">Event Handlers</p>
                     {enabledEvents.map(([eventKey]) => (
-                      <span key={eventKey} className="inline-block bg-gray-900 rounded px-2 py-1 text-xs font-mono text-emerald-400 mr-1 mb-1">{eventKey}</span>
+                      <span
+                        key={eventKey}
+                        className="inline-block bg-gray-900 rounded px-2 py-1 text-xs font-mono text-emerald-400 mr-1 mb-1"
+                      >
+                        {eventKey}
+                      </span>
                     ))}
                   </div>
 
                   {logs.length > 0 && (
                     <div className="space-y-1">
                       <p className="text-xs text-gray-400 font-medium">Recent Activity</p>
-                      {logs.map(log => (
+                      {logs.map((log) => (
                         <div key={log.id} className="flex items-center gap-2 text-xs">
-                          <div className={`w-2 h-2 rounded-full shrink-0 ${statusColor(log.status)}`} />
+                          <div
+                            className={`w-2 h-2 rounded-full shrink-0 ${statusColor(log.status)}`}
+                          />
                           <span className="font-mono text-gray-400">{log.event_type}</span>
-                          <span className="text-gray-600">{log.duration_ms ? `${(log.duration_ms / 1000).toFixed(1)}s` : '...'}</span>
-                          <span className="text-gray-600 ml-auto">{new Date(log.created_at).toLocaleString()}</span>
+                          <span className="text-gray-600">
+                            {log.duration_ms ? `${(log.duration_ms / 1000).toFixed(1)}s` : '...'}
+                          </span>
+                          <span className="text-gray-600 ml-auto">
+                            {new Date(log.created_at).toLocaleString()}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -1502,7 +1680,17 @@ function SlackSection() {
           disabled={restarting}
           className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
         >
-          <span className="flex items-center gap-1.5">{restarting ? <><Loader2 size={14} className="animate-spin" /> Restarting...</> : <><RefreshCw size={14} /> Restart All</>}</span>
+          <span className="flex items-center gap-1.5">
+            {restarting ? (
+              <>
+                <Loader2 size={14} className="animate-spin" /> Restarting...
+              </>
+            ) : (
+              <>
+                <RefreshCw size={14} /> Restart All
+              </>
+            )}
+          </span>
         </button>
       </div>
 
@@ -1527,25 +1715,29 @@ function SlackSection() {
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                     <span className="font-medium text-sm">{bot.name}</span>
-                    <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded font-mono truncate max-w-[120px] sm:max-w-none">→ {bot.agentId}</span>
+                    <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded font-mono truncate max-w-[120px] sm:max-w-none">
+                      → {bot.agentId}
+                    </span>
                   </div>
                   {bot.channels && (
-                    <p className="text-xs text-gray-500 mt-0.5">Channels: {bot.channels.join(', ')}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Channels: {bot.channels.join(', ')}
+                    </p>
                   )}
-                  {bot.error && (
-                    <p className="text-xs text-red-400 mt-0.5">{bot.error}</p>
-                  )}
+                  {bot.error && <p className="text-xs text-red-400 mt-0.5">{bot.error}</p>}
                   {bot.lastMessage && (
                     <p className="text-xs text-gray-500 mt-0.5">
                       Last message: {relativeTime(bot.lastMessage)}
                     </p>
                   )}
                 </div>
-                <span className={`text-xs px-2.5 py-1 rounded-md ${
-                  bot.connected
-                    ? 'bg-emerald-800/50 text-emerald-400'
-                    : 'bg-red-900/50 text-red-400'
-                }`}>
+                <span
+                  className={`text-xs px-2.5 py-1 rounded-md ${
+                    bot.connected
+                      ? 'bg-emerald-800/50 text-emerald-400'
+                      : 'bg-red-900/50 text-red-400'
+                  }`}
+                >
                   {bot.connected ? 'Connected' : 'Disconnected'}
                 </span>
               </div>
@@ -1568,9 +1760,7 @@ function SlackSection() {
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-gray-500 font-mono">{msg.agent_id}</span>
                   <span className="text-gray-600">·</span>
-                  <span className="text-gray-500">
-                    {relativeTime(msg.timestamp)}
-                  </span>
+                  <span className="text-gray-500">{relativeTime(msg.timestamp)}</span>
                   <span className="text-gray-600">·</span>
                   <span className="text-gray-600 font-mono">{msg.channel_id}</span>
                 </div>
@@ -1579,8 +1769,7 @@ function SlackSection() {
                   {msg.user_message?.length > 200 ? '...' : ''}
                 </p>
                 <p className="text-gray-300">
-                  <span className="text-gray-500">Bot:</span>{' '}
-                  {msg.bot_response?.substring(0, 300)}
+                  <span className="text-gray-500">Bot:</span> {msg.bot_response?.substring(0, 300)}
                   {msg.bot_response?.length > 300 ? '...' : ''}
                 </p>
               </div>
@@ -1611,7 +1800,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     heartbeat: { enabled: false, interval: '', prompt: '' },
   });
 
-
   useEffect(() => {
     setAgents(initialAgents);
   }, [initialAgents]);
@@ -1631,7 +1819,10 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
 
   const setHeartbeatEdit = (agentId, field, value) => {
     const current = getEdit(agentId);
-    const hb = { ...(current.heartbeat || { enabled: false, interval: '', prompt: '' }), [field]: value };
+    const hb = {
+      ...(current.heartbeat || { enabled: false, interval: '', prompt: '' }),
+      [field]: value,
+    };
     setEdit(agentId, 'heartbeat', hb);
   };
 
@@ -1640,14 +1831,18 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     try {
       const data = edits[agentId];
       if (!data) return;
-      const { id, lastActivity, lastMessage, ...payload } = data;
+      const { id: _id, lastActivity: _lastActivity, lastMessage: _lastMessage, ...payload } = data;
       const updated = await api.updateAgent(agentId, payload);
       setAgents((prev) => prev.map((a) => (a.id === agentId ? { ...a, ...updated } : a)));
-      setEdits((prev) => { const n = { ...prev }; delete n[agentId]; return n; });
+      setEdits((prev) => {
+        const n = { ...prev };
+        delete n[agentId];
+        return n;
+      });
       setSaveStatus((prev) => ({ ...prev, [agentId]: 'saved' }));
       if (onAgentsChange) onAgentsChange();
       setTimeout(() => setSaveStatus((prev) => ({ ...prev, [agentId]: null })), 2000);
-    } catch (e) {
+    } catch (_e) {
       setSaveStatus((prev) => ({ ...prev, [agentId]: 'error' }));
       setTimeout(() => setSaveStatus((prev) => ({ ...prev, [agentId]: null })), 3000);
     } finally {
@@ -1661,7 +1856,16 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
       const created = await api.createAgent(newForm);
       setAgents((prev) => [...prev, created]);
       setShowNew(false);
-      setNewForm({ id: '', name: '', engine: 'claude-code', projectId: projects[0]?.id || '', color: '#6b7280', avatar: '', systemPrompt: '', heartbeat: { enabled: false, interval: '', prompt: '' } });
+      setNewForm({
+        id: '',
+        name: '',
+        engine: 'claude-code',
+        projectId: projects[0]?.id || '',
+        color: '#6b7280',
+        avatar: '',
+        systemPrompt: '',
+        heartbeat: { enabled: false, interval: '', prompt: '' },
+      });
       if (onAgentsChange) onAgentsChange();
     } catch (e) {
       console.error('Failed to create agent:', e);
@@ -1671,7 +1875,9 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   const handleToggleActive = async (agentId, currentlyActive) => {
     try {
       const updated = await api.updateAgent(agentId, { active: !currentlyActive });
-      setAgents((prev) => prev.map((a) => (a.id === agentId ? { ...a, active: updated.active } : a)));
+      setAgents((prev) =>
+        prev.map((a) => (a.id === agentId ? { ...a, active: updated.active } : a)),
+      );
       if (onAgentsChange) onAgentsChange();
     } catch (e) {
       console.error('Failed to toggle agent active state:', e);
@@ -1695,13 +1901,15 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
 
   const [projectReviewers, setProjectReviewers] = useState(() => {
     const map = {};
-    projects.forEach(p => { map[p.id] = p.defaultReviewer || ''; });
+    projects.forEach((p) => {
+      map[p.id] = p.defaultReviewer || '';
+    });
     return map;
   });
   const [projectReviewerSaved, setProjectReviewerSaved] = useState({});
   const [projectCommands, setProjectCommands] = useState(() => {
     const map = {};
-    projects.forEach(p => {
+    projects.forEach((p) => {
       map[p.id] = {
         install: p.commands?.install || '',
         build: p.commands?.build || '',
@@ -1714,7 +1922,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   const [projectCommandsSaved, setProjectCommandsSaved] = useState({});
   const [projectWorkflow, setProjectWorkflow] = useState(() => {
     const map = {};
-    projects.forEach(p => {
+    projects.forEach((p) => {
       map[p.id] = {
         autoMerge: p.githubWorkflow?.autoMerge || false,
         autoReview: p.githubWorkflow?.autoReview !== false, // default true
@@ -1730,8 +1938,8 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   const saveProjectReviewer = async (projectId) => {
     try {
       await api.updateProject(projectId, { defaultReviewer: projectReviewers[projectId] });
-      setProjectReviewerSaved(prev => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setProjectReviewerSaved(prev => ({ ...prev, [projectId]: false })), 2000);
+      setProjectReviewerSaved((prev) => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setProjectReviewerSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
     } catch {}
   };
 
@@ -1746,25 +1954,25 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
           lint: cmds.lint || null,
         },
       });
-      setProjectCommandsSaved(prev => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setProjectCommandsSaved(prev => ({ ...prev, [projectId]: false })), 2000);
+      setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
     } catch {}
   };
 
   const toggleWorkflowSetting = async (projectId, key) => {
     const current = projectWorkflow[projectId] || {};
     const newValue = !current[key];
-    setProjectWorkflow(prev => ({
+    setProjectWorkflow((prev) => ({
       ...prev,
       [projectId]: { ...prev[projectId], [key]: newValue },
     }));
     try {
       await api.updateProject(projectId, { githubWorkflow: { [key]: newValue } });
-      setWorkflowSaved(prev => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setWorkflowSaved(prev => ({ ...prev, [projectId]: false })), 2000);
+      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
     } catch {
       // Revert on failure
-      setProjectWorkflow(prev => ({
+      setProjectWorkflow((prev) => ({
         ...prev,
         [projectId]: { ...prev[projectId], [key]: !newValue },
       }));
@@ -1778,10 +1986,15 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         <div className="mb-6">
           <h3 className="text-lg font-semibold mb-3">Project Settings</h3>
           <div className="space-y-2">
-            {projects.map(p => (
+            {projects.map((p) => (
               <div key={p.id} className="bg-gray-800 rounded-xl p-3 space-y-2">
-                <div className="flex items-center gap-3 cursor-pointer" onClick={() => setExpandedProject(expandedProject === p.id ? null : p.id)}>
-                  <span className="text-2xl flex items-center text-gray-400">{expandedProject === p.id ? '▾' : '▸'}</span>
+                <div
+                  className="flex items-center gap-3 cursor-pointer"
+                  onClick={() => setExpandedProject(expandedProject === p.id ? null : p.id)}
+                >
+                  <span className="text-2xl flex items-center text-gray-400">
+                    {expandedProject === p.id ? '▾' : '▸'}
+                  </span>
                   <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color }} />
                   <span className="text-sm font-medium">{p.name}</span>
                 </div>
@@ -1789,10 +2002,14 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                   <div className="pl-8 space-y-3">
                     {/* PR Reviewer */}
                     <div className="flex items-center gap-2">
-                      <label className="text-xs text-gray-400 flex-shrink-0 w-28">PR Reviewer:</label>
+                      <label className="text-xs text-gray-400 flex-shrink-0 w-28">
+                        PR Reviewer:
+                      </label>
                       <input
                         value={projectReviewers[p.id] || ''}
-                        onChange={e => setProjectReviewers(prev => ({ ...prev, [p.id]: e.target.value }))}
+                        onChange={(e) =>
+                          setProjectReviewers((prev) => ({ ...prev, [p.id]: e.target.value }))
+                        }
                         placeholder="github-username"
                         className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1"
                       />
@@ -1805,17 +2022,31 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     </div>
                     {/* Project Commands */}
                     <div className="space-y-2">
-                      <label className="text-xs text-gray-400 font-semibold">Project Commands</label>
-                      {['install', 'build', 'test', 'lint'].map(cmd => (
+                      <label className="text-xs text-gray-400 font-semibold">
+                        Project Commands
+                      </label>
+                      {['install', 'build', 'test', 'lint'].map((cmd) => (
                         <div key={cmd} className="flex items-center gap-2">
-                          <label className="text-xs text-gray-400 flex-shrink-0 w-28 capitalize">{cmd}:</label>
+                          <label className="text-xs text-gray-400 flex-shrink-0 w-28 capitalize">
+                            {cmd}:
+                          </label>
                           <input
                             value={projectCommands[p.id]?.[cmd] || ''}
-                            onChange={e => setProjectCommands(prev => ({
-                              ...prev,
-                              [p.id]: { ...prev[p.id], [cmd]: e.target.value },
-                            }))}
-                            placeholder={cmd === 'install' ? 'npm ci' : cmd === 'build' ? 'npm run build' : cmd === 'test' ? 'npm test' : 'npm run lint'}
+                            onChange={(e) =>
+                              setProjectCommands((prev) => ({
+                                ...prev,
+                                [p.id]: { ...prev[p.id], [cmd]: e.target.value },
+                              }))
+                            }
+                            placeholder={
+                              cmd === 'install'
+                                ? 'npm ci'
+                                : cmd === 'build'
+                                  ? 'npm run build'
+                                  : cmd === 'test'
+                                    ? 'npm test'
+                                    : 'npm run lint'
+                            }
                             className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1 font-mono"
                           />
                         </div>
@@ -1830,14 +2061,34 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     {/* GitHub Workflow Settings */}
                     <div className="space-y-2">
                       <div className="flex items-center gap-2">
-                        <label className="text-xs text-gray-400 font-semibold">GitHub Workflow</label>
-                        {workflowSaved[p.id] && <span className="text-xs text-emerald-400">Saved</span>}
+                        <label className="text-xs text-gray-400 font-semibold">
+                          GitHub Workflow
+                        </label>
+                        {workflowSaved[p.id] && (
+                          <span className="text-xs text-emerald-400">Saved</span>
+                        )}
                       </div>
                       {[
-                        { key: 'autoReview', label: 'Auto Review', desc: 'Lead agent automatically reviews every PR' },
-                        { key: 'autoMerge', label: 'Auto Merge', desc: 'Lead agent merges approved PRs automatically' },
-                        { key: 'waitForCI', label: 'Wait for CI', desc: 'Wait for all GitHub checks to pass before approving' },
-                        { key: 'waitForResolvedComments', label: 'Wait for Resolved Comments', desc: 'Wait for all review comments to be resolved' },
+                        {
+                          key: 'autoReview',
+                          label: 'Auto Review',
+                          desc: 'Lead agent automatically reviews every PR',
+                        },
+                        {
+                          key: 'autoMerge',
+                          label: 'Auto Merge',
+                          desc: 'Lead agent merges approved PRs automatically',
+                        },
+                        {
+                          key: 'waitForCI',
+                          label: 'Wait for CI',
+                          desc: 'Wait for all GitHub checks to pass before approving',
+                        },
+                        {
+                          key: 'waitForResolvedComments',
+                          label: 'Wait for Resolved Comments',
+                          desc: 'Wait for all review comments to be resolved',
+                        },
                       ].map(({ key, label, desc }) => (
                         <div key={key} className="flex items-center justify-between gap-3">
                           <div className="flex-1 min-w-0">
@@ -1982,7 +2233,9 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
               className={inputClass}
               required
             >
-              <option value="" disabled>Select a project...</option>
+              <option value="" disabled>
+                Select a project...
+              </option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} — {p.cwd}
@@ -2024,7 +2277,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
           const ordered = [];
           for (const lead of leads) {
             ordered.push({ agent: lead, indent: 0, isLead: true });
-            for (const sub of (subsByParent[lead.id] || [])) {
+            for (const sub of subsByParent[lead.id] || []) {
               ordered.push({ agent: sub, indent: 1, isSub: true });
             }
           }
@@ -2079,7 +2332,9 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     )}
                   </div>
                   <p className="text-xs text-gray-500 mt-0.5 truncate">
-                    {agent.projectName && <span className="text-gray-400">{agent.projectName}</span>}
+                    {agent.projectName && (
+                      <span className="text-gray-400">{agent.projectName}</span>
+                    )}
                     {agent.projectName && agent.cwd && <span className="mx-1">·</span>}
                     <span className="font-mono">{agent.cwd}</span>
                   </p>
@@ -2104,9 +2359,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                   {saveStatus[agent.id] === 'error' && (
                     <span className="text-xs text-red-400">✕ Error</span>
                   )}
-                  <span className="text-base text-gray-400">
-                    {isExpanded ? '▲' : '▼'}
-                  </span>
+                  <span className="text-base text-gray-400">{isExpanded ? '▲' : '▼'}</span>
                 </div>
               </div>
 
@@ -2114,7 +2367,9 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                 <div className="border-t border-gray-700 p-4 space-y-3">
                   <div>
                     <label className={labelClass}>ID</label>
-                    <p className="text-sm text-gray-300 font-mono bg-gray-900 rounded-lg px-3 py-2">{agent.id}</p>
+                    <p className="text-sm text-gray-300 font-mono bg-gray-900 rounded-lg px-3 py-2">
+                      {agent.id}
+                    </p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -2148,13 +2403,15 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                           onChange={(e) => setEdit(agent.id, 'color', e.target.value)}
                           className="w-10 h-10 rounded border border-gray-700 cursor-pointer bg-transparent"
                         />
-                        <span className="text-xs text-gray-400 font-mono">{edit.color || agent.color}</span>
+                        <span className="text-xs text-gray-400 font-mono">
+                          {edit.color || agent.color}
+                        </span>
                       </div>
                     </div>
                     <div>
                       <label className={labelClass}>Avatar</label>
                       <div className="flex items-center gap-3">
-                        {(edit.avatar || agent.avatar) ? (
+                        {edit.avatar || agent.avatar ? (
                           <img
                             src={`${getApiBase()}${edit.avatar || agent.avatar}`}
                             alt="Avatar"
@@ -2221,7 +2478,9 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                   </div>
 
                   <div>
-                    <label className={labelClass}>PR Reviewer (GitHub username — overrides project default)</label>
+                    <label className={labelClass}>
+                      PR Reviewer (GitHub username — overrides project default)
+                    </label>
                     <input
                       value={edit.reviewer || ''}
                       onChange={(e) => setEdit(agent.id, 'reviewer', e.target.value)}
@@ -2236,7 +2495,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                       <label className="text-xs text-gray-400 font-medium">Heartbeat</label>
                       <button
                         onClick={() =>
-                          setHeartbeatEdit(agent.id, 'enabled', !(edit.heartbeat?.enabled))
+                          setHeartbeatEdit(agent.id, 'enabled', !edit.heartbeat?.enabled)
                         }
                         className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
                           edit.heartbeat?.enabled
@@ -2249,7 +2508,9 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     </div>
                     <div className="space-y-3">
                       <div>
-                        <label className={labelClass}>Interval (cron expression, e.g. */30 * * * * = every 30 min)</label>
+                        <label className={labelClass}>
+                          Interval (cron expression, e.g. */30 * * * * = every 30 min)
+                        </label>
                         <input
                           value={edit.heartbeat?.interval || ''}
                           onChange={(e) => setHeartbeatEdit(agent.id, 'interval', e.target.value)}
@@ -2300,9 +2561,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
             </div>
           );
         })}
-        {agents.length === 0 && (
-          <p className="text-sm text-gray-500">No agents configured</p>
-        )}
+        {agents.length === 0 && <p className="text-sm text-gray-500">No agents configured</p>}
       </div>
     </div>
   );
@@ -2313,7 +2572,8 @@ function UsageSection() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.getUsage()
+    api
+      .getUsage()
       .then(setUsage)
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -2324,7 +2584,11 @@ function UsageSection() {
   }
 
   if (!usage || !usage.totals) {
-    return <p className="text-sm text-gray-500">No usage data available yet. Usage is tracked from Claude Code stream-json output.</p>;
+    return (
+      <p className="text-sm text-gray-500">
+        No usage data available yet. Usage is tracked from Claude Code stream-json output.
+      </p>
+    );
   }
 
   const { totals, byAgent, byDay, recentSessions } = usage;
@@ -2351,7 +2615,9 @@ function UsageSection() {
           </div>
           <div className="bg-gray-800 rounded-xl p-4">
             <p className="text-xs text-gray-500 uppercase tracking-wider">Total Time</p>
-            <p className="text-2xl font-bold text-blue-400 mt-1">{fmtDuration(totals.total_duration_ms)}</p>
+            <p className="text-2xl font-bold text-blue-400 mt-1">
+              {fmtDuration(totals.total_duration_ms)}
+            </p>
           </div>
           <div className="bg-gray-800 rounded-xl p-4">
             <p className="text-xs text-gray-500 uppercase tracking-wider">Turns</p>
@@ -2384,12 +2650,19 @@ function UsageSection() {
                   <tr key={row.agent_id} className="border-b border-gray-700/50 last:border-0">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: row.agent_color }} />
+                        <span
+                          className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: row.agent_color }}
+                        />
                         <span className="font-medium">{row.agent_name}</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-right text-emerald-400 font-mono">{fmtCost(row.total_cost)}</td>
-                    <td className="px-4 py-3 text-right text-gray-400 font-mono">{fmtDuration(row.total_duration_ms)}</td>
+                    <td className="px-4 py-3 text-right text-emerald-400 font-mono">
+                      {fmtCost(row.total_cost)}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-400 font-mono">
+                      {fmtDuration(row.total_duration_ms)}
+                    </td>
                     <td className="px-4 py-3 text-right text-gray-400">{row.total_turns}</td>
                     <td className="px-4 py-3 text-right text-gray-400">{row.count}</td>
                   </tr>
@@ -2439,15 +2712,21 @@ function UsageSection() {
             <div className="divide-y divide-gray-700/50">
               {recentSessions.map((s) => (
                 <div key={s.id} className="px-4 py-3 flex items-center gap-3">
-                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: s.agent_color }} />
+                  <span
+                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: s.agent_color }}
+                  />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{s.session_name}</p>
                     <p className="text-xs text-gray-500">
                       {s.agent_name} · {s.message_count} message{s.message_count !== 1 ? 's' : ''}
-                      {' · '}{fmtDuration(s.duration_ms)}
+                      {' · '}
+                      {fmtDuration(s.duration_ms)}
                     </p>
                   </div>
-                  <span className="text-sm text-emerald-400 font-mono flex-shrink-0">{fmtCost(s.cost)}</span>
+                  <span className="text-sm text-emerald-400 font-mono flex-shrink-0">
+                    {fmtCost(s.cost)}
+                  </span>
                 </div>
               ))}
             </div>
@@ -2479,8 +2758,10 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const proj = projects.find(p => p.id === selectedProjectId);
-      const safeName = (proj?.name || selectedProjectId).replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
+      const proj = projects.find((p) => p.id === selectedProjectId);
+      const safeName = (proj?.name || selectedProjectId)
+        .replace(/[^a-zA-Z0-9-_]/g, '-')
+        .toLowerCase();
       a.download = `${safeName}-export-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(a);
       a.click();
@@ -2506,7 +2787,9 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
         if (data.version === 3 && data.type === 'project') {
           setPreview(data);
         } else if (data.version === 1 || data.version === 2) {
-          setImportError('This is a legacy full-instance export. Per-project import requires a v3 project export file.');
+          setImportError(
+            'This is a legacy full-instance export. Per-project import requires a v3 project export file.',
+          );
           setPreview(null);
         } else {
           setImportError('Invalid export file');
@@ -2548,8 +2831,8 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
     <div>
       <h3 className="text-lg font-semibold mb-4">Export / Import Project</h3>
       <p className="text-sm text-gray-400 mb-6">
-        Export a project with its agents, kanban board, wiki, crons, rooms, and webhooks.
-        Import into an existing project on another instance to replicate your setup.
+        Export a project with its agents, kanban board, wiki, crons, rooms, and webhooks. Import
+        into an existing project on another instance to replicate your setup.
       </p>
 
       {/* Export */}
@@ -2562,8 +2845,10 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
             className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
           >
             <option value="">Select a project...</option>
-            {projects.map(p => (
-              <option key={p.id} value={p.id}>{p.name}</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
             ))}
           </select>
           <button
@@ -2580,7 +2865,8 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
       <div className="bg-gray-800/50 rounded-lg p-4">
         <h4 className="font-medium mb-3">Import Project</h4>
         <p className="text-sm text-gray-400 mb-3">
-          Upload a project export file. Agents and settings are overwritten; crons, rooms, wiki, and webhooks are merged. Kanban boards are only created if no board exists yet.
+          Upload a project export file. Agents and settings are overwritten; crons, rooms, wiki, and
+          webhooks are merged. Kanban boards are only created if no board exists yet.
         </p>
 
         {!preview && (
@@ -2598,7 +2884,9 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
         {preview && (
           <div className="mt-3">
             <div className="bg-gray-900 rounded-lg p-3 mb-3 text-sm">
-              <p className="text-gray-300 mb-2 font-medium">Project: <span className="text-white">{preview.project?.name}</span></p>
+              <p className="text-gray-300 mb-2 font-medium">
+                Project: <span className="text-white">{preview.project?.name}</span>
+              </p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-400">
                 <span>Agents:</span>
                 <span className="text-white">{preview.project?.agents?.length || 0}</span>
@@ -2615,7 +2903,9 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
                 {preview.exportedAt && (
                   <>
                     <span>Exported:</span>
-                    <span className="text-white">{new Date(preview.exportedAt).toLocaleString()}</span>
+                    <span className="text-white">
+                      {new Date(preview.exportedAt).toLocaleString()}
+                    </span>
                   </>
                 )}
               </div>
@@ -2629,8 +2919,10 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
                 className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
               >
                 <option value="">Select target project...</option>
-                {projects.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
                 ))}
               </select>
             </div>
@@ -2713,7 +3005,10 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
                   : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
               }`}
             >
-              <span className="flex items-center gap-1.5">{t.icon}<span>{t.text}</span></span>
+              <span className="flex items-center gap-1.5">
+                {t.icon}
+                <span>{t.text}</span>
+              </span>
             </button>
           ))}
         </div>
@@ -2724,9 +3019,13 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
         {tab === 'crons' && <CronSection />}
         {tab === 'webhooks' && <WebhookSection />}
         {tab === 'slack' && <SlackSection />}
-        {tab === 'agents' && <AgentConfigSection agents={agents} projects={projects} onAgentsChange={onAgentsChange} />}
+        {tab === 'agents' && (
+          <AgentConfigSection agents={agents} projects={projects} onAgentsChange={onAgentsChange} />
+        )}
         {tab === 'usage' && <UsageSection />}
-        {tab === 'backup' && <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />}
+        {tab === 'backup' && (
+          <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />
+        )}
       </div>
     </div>
   );

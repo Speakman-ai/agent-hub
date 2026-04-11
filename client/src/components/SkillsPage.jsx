@@ -1,9 +1,26 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
-import { BookOpen, Loader2, Save, Puzzle, ClipboardList, FileText, Pencil, PenLine, Globe, Download, Trash2, ExternalLink, Search, ToggleLeft, ToggleRight, Package, X } from 'lucide-react';
+import {
+  BookOpen,
+  Loader2,
+  Save,
+  Puzzle,
+  ClipboardList,
+  FileText,
+  Pencil,
+  PenLine,
+  Download,
+  Trash2,
+  ExternalLink,
+  Search,
+  ToggleLeft,
+  ToggleRight,
+  Package,
+  X,
+} from 'lucide-react';
 
 const CATEGORIES = [
   { id: 'all', label: 'All', color: 'gray' },
@@ -26,11 +43,7 @@ const CATEGORY_COLORS = {
 
 function CategoryBadge({ category }) {
   const cls = CATEGORY_COLORS[category] || CATEGORY_COLORS.general;
-  return (
-    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${cls}`}>
-      {category}
-    </span>
-  );
+  return <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${cls}`}>{category}</span>;
 }
 
 function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstalled }) {
@@ -38,11 +51,14 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
   const [fullContent, setFullContent] = useState(skill.content || null);
   const [loading, setLoading] = useState(false);
 
-  const override = overrides?.find(o => o.skill_id === skill.id);
+  const override = overrides?.find((o) => o.skill_id === skill.id);
   const isEnabled = override ? !!override.enabled : true;
 
   const handleExpand = async () => {
-    if (expanded) { setExpanded(false); return; }
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
     if (!fullContent && agentId) {
       setLoading(true);
       try {
@@ -59,14 +75,19 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
 
   return (
     <div className={`bg-gray-800 rounded-xl overflow-hidden ${!isEnabled ? 'opacity-50' : ''}`}>
-      <div className="p-4 cursor-pointer hover:bg-gray-750 transition-colors" onClick={handleExpand}>
+      <div
+        className="p-4 cursor-pointer hover:bg-gray-750 transition-colors"
+        onClick={handleExpand}
+      >
         <div className="flex items-center justify-between gap-2">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <h4 className="font-medium text-sm text-gray-100">{skill.name}</h4>
               <CategoryBadge category={skill.category || 'general'} />
               {skill.source === 'default' && (
-                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-500">built-in</span>
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-500">
+                  built-in
+                </span>
               )}
             </div>
             {skill.description && (
@@ -76,23 +97,35 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
           <div className="flex items-center gap-2 flex-shrink-0">
             {onToggle && (
               <button
-                onClick={(e) => { e.stopPropagation(); onToggle(skill.id, !isEnabled); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggle(skill.id, !isEnabled);
+                }}
                 className="text-gray-400 hover:text-white transition-colors"
                 title={isEnabled ? 'Disable for this agent' : 'Enable for this agent'}
               >
-                {isEnabled ? <ToggleRight size={20} className="text-emerald-400" /> : <ToggleLeft size={20} />}
+                {isEnabled ? (
+                  <ToggleRight size={20} className="text-emerald-400" />
+                ) : (
+                  <ToggleLeft size={20} />
+                )}
               </button>
             )}
             {onUninstall && isInstalled && skill.source !== 'default' && (
               <button
-                onClick={(e) => { e.stopPropagation(); onUninstall(skill.id); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUninstall(skill.id);
+                }}
                 className="text-gray-500 hover:text-red-400 transition-colors"
                 title="Uninstall"
               >
                 <Trash2 size={14} />
               </button>
             )}
-            <span className="text-gray-500 text-2xl leading-none flex items-center">{expanded ? '▲' : '▼'}</span>
+            <span className="text-gray-500 text-2xl leading-none flex items-center">
+              {expanded ? '▲' : '▼'}
+            </span>
           </div>
         </div>
       </div>
@@ -119,7 +152,10 @@ function RegistryCard({ skill, installedIds, onInstall }) {
 
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
-      <div className="p-4 cursor-pointer hover:bg-gray-750 transition-colors" onClick={() => setExpanded(!expanded)}>
+      <div
+        className="p-4 cursor-pointer hover:bg-gray-750 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
         <div className="flex items-center justify-between gap-2">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
@@ -146,9 +182,17 @@ function RegistryCard({ skill, installedIds, onInstall }) {
                   : 'bg-indigo-600 text-white hover:bg-indigo-500'
               }`}
             >
-              {isInstalled ? 'Installed' : <><Download size={12} /> Install</>}
+              {isInstalled ? (
+                'Installed'
+              ) : (
+                <>
+                  <Download size={12} /> Install
+                </>
+              )}
             </button>
-            <span className="text-gray-500 text-2xl leading-none flex items-center">{expanded ? '▲' : '▼'}</span>
+            <span className="text-gray-500 text-2xl leading-none flex items-center">
+              {expanded ? '▲' : '▼'}
+            </span>
           </div>
         </div>
       </div>
@@ -159,12 +203,18 @@ function RegistryCard({ skill, installedIds, onInstall }) {
               {skill.content || ''}
             </ReactMarkdown>
           </div>
-          {skill.author && (
-            <p className="text-xs text-gray-500 mt-3">Author: {skill.author}</p>
-          )}
+          {skill.author && <p className="text-xs text-gray-500 mt-3">Author: {skill.author}</p>}
           {skill.source_url && (
             <p className="text-xs text-gray-500">
-              Source: <a href={skill.source_url} target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">{skill.source_url}</a>
+              Source:{' '}
+              <a
+                href={skill.source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-indigo-400 hover:underline"
+              >
+                {skill.source_url}
+              </a>
             </p>
           )}
         </div>
@@ -204,19 +254,38 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
         className="p-3 cursor-pointer hover:bg-gray-750 transition-colors flex items-center justify-between"
         onClick={() => setExpanded(!expanded)}
       >
-        <span className="text-sm font-medium text-gray-300 flex items-center gap-1.5"><FileText size={14} /> {filename}</span>
-        <span className="text-gray-500 text-2xl leading-none flex items-center">{expanded ? '▲' : '▼'}</span>
+        <span className="text-sm font-medium text-gray-300 flex items-center gap-1.5">
+          <FileText size={14} /> {filename}
+        </span>
+        <span className="text-gray-500 text-2xl leading-none flex items-center">
+          {expanded ? '▲' : '▼'}
+        </span>
       </div>
       {expanded && (
         <div className="border-t border-gray-700 p-4">
           <div className="flex items-center gap-2 mb-3">
             <button
-              onClick={(e) => { e.stopPropagation(); setEditing(!editing); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditing(!editing);
+              }}
               className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                editing ? 'bg-blue-800/50 text-blue-400' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                editing
+                  ? 'bg-blue-800/50 text-blue-400'
+                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
               }`}
             >
-              <span className="flex items-center gap-1">{editing ? <><PenLine size={12} /> Editing</> : <><Pencil size={12} /> Edit</>}</span>
+              <span className="flex items-center gap-1">
+                {editing ? (
+                  <>
+                    <PenLine size={12} /> Editing
+                  </>
+                ) : (
+                  <>
+                    <Pencil size={12} /> Edit
+                  </>
+                )}
+              </span>
             </button>
             {editing && (
               <button
@@ -224,7 +293,17 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
                 disabled={saving}
                 className="text-xs bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800 px-2.5 py-1 rounded-md transition-colors disabled:opacity-50"
               >
-                <span className="flex items-center gap-1">{saving ? <><Loader2 size={12} className="animate-spin" /> Saving...</> : <><Save size={12} /> Save</>}</span>
+                <span className="flex items-center gap-1">
+                  {saving ? (
+                    <>
+                      <Loader2 size={12} className="animate-spin" /> Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save size={12} /> Save
+                    </>
+                  )}
+                </span>
               </button>
             )}
           </div>
@@ -269,11 +348,21 @@ function ImportGithubModal({ onClose, onImported }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-800 rounded-xl p-6 w-full max-w-lg mx-4" onClick={e => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+      onClick={onClose}
+    >
+      <div
+        className="bg-gray-800 rounded-xl p-6 w-full max-w-lg mx-4"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold flex items-center gap-2"><ExternalLink size={18} /> Import from GitHub</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white"><X size={18} /></button>
+          <h3 className="text-lg font-semibold flex items-center gap-2">
+            <ExternalLink size={18} /> Import from GitHub
+          </h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white">
+            <X size={18} />
+          </button>
         </div>
         <p className="text-xs text-gray-400 mb-4">
           Paste a GitHub URL to a SKILL.md file, a repo URL, or a raw file URL.
@@ -281,15 +370,20 @@ function ImportGithubModal({ onClose, onImported }) {
         <input
           type="text"
           value={url}
-          onChange={e => setUrl(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleImport()}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleImport()}
           placeholder="https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md"
           className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-indigo-500 mb-3"
           autoFocus
         />
         {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors">Cancel</button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
           <button
             onClick={handleImport}
             disabled={loading || !url.trim()}
@@ -322,7 +416,7 @@ export default function SkillsPage({ agents, projects }) {
   // Derive the project from the active agent
   const currentProjectId = (() => {
     if (!activeAgent || !projects) return null;
-    const proj = projects.find(p => p.agents?.some(a => a.id === activeAgentId));
+    const proj = projects.find((p) => p.agents?.some((a) => a.id === activeAgentId));
     return proj?.id || projects[0]?.id || null;
   })();
 
@@ -332,9 +426,20 @@ export default function SkillsPage({ agents, projects }) {
     setLoadingSkills(true);
     setLoadingContext(true);
 
-    api.getSkills(activeAgentId).then(setSkills).catch(() => setSkills([])).finally(() => setLoadingSkills(false));
-    api.getContext(activeAgentId).then(setContext).catch(() => setContext({})).finally(() => setLoadingContext(false));
-    api.getSkillOverrides(activeAgentId).then(setOverrides).catch(() => setOverrides([]));
+    api
+      .getSkills(activeAgentId)
+      .then(setSkills)
+      .catch(() => setSkills([]))
+      .finally(() => setLoadingSkills(false));
+    api
+      .getContext(activeAgentId)
+      .then(setContext)
+      .catch(() => setContext({}))
+      .finally(() => setLoadingContext(false));
+    api
+      .getSkillOverrides(activeAgentId)
+      .then(setOverrides)
+      .catch(() => setOverrides([]));
   }, [activeAgentId]);
 
   // Load registry
@@ -342,65 +447,80 @@ export default function SkillsPage({ agents, projects }) {
     if (activeTab !== 'registry') return;
     setLoadingRegistry(true);
     const cat = categoryFilter === 'all' ? undefined : categoryFilter;
-    api.getRegistry(cat, searchQuery || undefined)
+    api
+      .getRegistry(cat, searchQuery || undefined)
       .then(setRegistry)
       .catch(() => setRegistry([]))
       .finally(() => setLoadingRegistry(false));
   }, [activeTab, categoryFilter, searchQuery]);
 
-  const handleToggle = useCallback(async (skillId, enabled) => {
-    try {
-      await api.toggleSkill(activeAgentId, skillId, enabled);
-      setOverrides(prev => {
-        const existing = prev.findIndex(o => o.skill_id === skillId);
-        if (existing >= 0) {
-          const updated = [...prev];
-          updated[existing] = { ...updated[existing], enabled: enabled ? 1 : 0 };
-          return updated;
-        }
-        return [...prev, { agent_id: activeAgentId, skill_id: skillId, enabled: enabled ? 1 : 0 }];
-      });
-    } catch (err) {
-      console.error('Failed to toggle skill:', err);
-    }
-  }, [activeAgentId]);
+  const handleToggle = useCallback(
+    async (skillId, enabled) => {
+      try {
+        await api.toggleSkill(activeAgentId, skillId, enabled);
+        setOverrides((prev) => {
+          const existing = prev.findIndex((o) => o.skill_id === skillId);
+          if (existing >= 0) {
+            const updated = [...prev];
+            updated[existing] = { ...updated[existing], enabled: enabled ? 1 : 0 };
+            return updated;
+          }
+          return [
+            ...prev,
+            { agent_id: activeAgentId, skill_id: skillId, enabled: enabled ? 1 : 0 },
+          ];
+        });
+      } catch (err) {
+        console.error('Failed to toggle skill:', err);
+      }
+    },
+    [activeAgentId],
+  );
 
-  const handleInstall = useCallback(async (skillId) => {
-    if (!currentProjectId) return;
-    try {
-      await api.installSkill(currentProjectId, skillId);
-      // Refresh installed skills
-      const updated = await api.getSkills(activeAgentId);
-      setSkills(updated);
-      // Refresh registry to update install count
-      const cat = categoryFilter === 'all' ? undefined : categoryFilter;
-      const reg = await api.getRegistry(cat, searchQuery || undefined);
-      setRegistry(reg);
-    } catch (err) {
-      console.error('Failed to install skill:', err);
-    }
-  }, [currentProjectId, activeAgentId, categoryFilter, searchQuery]);
+  const handleInstall = useCallback(
+    async (skillId) => {
+      if (!currentProjectId) return;
+      try {
+        await api.installSkill(currentProjectId, skillId);
+        // Refresh installed skills
+        const updated = await api.getSkills(activeAgentId);
+        setSkills(updated);
+        // Refresh registry to update install count
+        const cat = categoryFilter === 'all' ? undefined : categoryFilter;
+        const reg = await api.getRegistry(cat, searchQuery || undefined);
+        setRegistry(reg);
+      } catch (err) {
+        console.error('Failed to install skill:', err);
+      }
+    },
+    [currentProjectId, activeAgentId, categoryFilter, searchQuery],
+  );
 
-  const handleUninstall = useCallback(async (skillId) => {
-    if (!currentProjectId) return;
-    try {
-      await api.uninstallSkill(currentProjectId, skillId);
-      setSkills(prev => prev.filter(s => s.id !== skillId));
-    } catch (err) {
-      console.error('Failed to uninstall:', err);
-    }
-  }, [currentProjectId]);
+  const handleUninstall = useCallback(
+    async (skillId) => {
+      if (!currentProjectId) return;
+      try {
+        await api.uninstallSkill(currentProjectId, skillId);
+        setSkills((prev) => prev.filter((s) => s.id !== skillId));
+      } catch (err) {
+        console.error('Failed to uninstall:', err);
+      }
+    },
+    [currentProjectId],
+  );
 
   const handleContextSaved = (filename, newContent) => {
     setContext((prev) => ({ ...prev, [filename]: newContent }));
   };
 
-  const installedIds = new Set(skills.map(s => s.id));
+  const installedIds = new Set(skills.map((s) => s.id));
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
-        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><BookOpen size={20} /> Skills & Context</h2>
+        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
+          <BookOpen size={20} /> Skills & Context
+        </h2>
 
         {/* Tabs: Installed | Registry */}
         <div className="flex items-center gap-1 mb-6 border-b border-gray-700 pb-0">
@@ -412,7 +532,9 @@ export default function SkillsPage({ agents, projects }) {
                 : 'border-transparent text-gray-400 hover:text-white'
             }`}
           >
-            <span className="flex items-center gap-1.5"><Puzzle size={14} /> Installed</span>
+            <span className="flex items-center gap-1.5">
+              <Puzzle size={14} /> Installed
+            </span>
           </button>
           <button
             onClick={() => setActiveTab('registry')}
@@ -422,7 +544,9 @@ export default function SkillsPage({ agents, projects }) {
                 : 'border-transparent text-gray-400 hover:text-white'
             }`}
           >
-            <span className="flex items-center gap-1.5"><Package size={14} /> Registry</span>
+            <span className="flex items-center gap-1.5">
+              <Package size={14} /> Registry
+            </span>
           </button>
         </div>
 
@@ -440,7 +564,10 @@ export default function SkillsPage({ agents, projects }) {
                       : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
                   }`}
                 >
-                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: agent.color }} />
+                  <span
+                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: agent.color }}
+                  />
                   {agent.name}
                 </button>
               ))}
@@ -452,7 +579,9 @@ export default function SkillsPage({ agents, projects }) {
                 <div className="mb-8">
                   <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
                     <Puzzle size={18} /> Skills
-                    <span className="text-xs text-gray-500 font-normal">({skills.length} total)</span>
+                    <span className="text-xs text-gray-500 font-normal">
+                      ({skills.length} total)
+                    </span>
                   </h3>
                   {loadingSkills ? (
                     <p className="text-sm text-gray-500">Loading skills...</p>
@@ -460,8 +589,17 @@ export default function SkillsPage({ agents, projects }) {
                     <div className="bg-gray-800 rounded-xl p-6 text-center">
                       <p className="text-gray-500 text-sm">No skills installed</p>
                       <p className="text-gray-600 text-xs mt-1">
-                        Browse the <button onClick={() => setActiveTab('registry')} className="text-indigo-400 hover:underline">Registry</button> to install skills, or add them to{' '}
-                        <code className="bg-gray-900 px-1 rounded">{activeAgent.workspace}/skills/</code>
+                        Browse the{' '}
+                        <button
+                          onClick={() => setActiveTab('registry')}
+                          className="text-indigo-400 hover:underline"
+                        >
+                          Registry
+                        </button>{' '}
+                        to install skills, or add them to{' '}
+                        <code className="bg-gray-900 px-1 rounded">
+                          {activeAgent.workspace}/skills/
+                        </code>
                       </p>
                     </div>
                   ) : (
@@ -521,22 +659,27 @@ export default function SkillsPage({ agents, projects }) {
             {/* Search + Filter bar */}
             <div className="flex flex-col sm:flex-row gap-3 mb-6">
               <div className="relative flex-1">
-                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                <Search
+                  size={14}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"
+                />
                 <input
                   type="text"
                   value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
+                  onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search skills..."
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-indigo-500"
                 />
               </div>
               <select
                 value={categoryFilter}
-                onChange={e => setCategoryFilter(e.target.value)}
+                onChange={(e) => setCategoryFilter(e.target.value)}
                 className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-indigo-500"
               >
-                {CATEGORIES.map(c => (
-                  <option key={c.id} value={c.id}>{c.label}</option>
+                {CATEGORIES.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
                 ))}
               </select>
               <button
@@ -555,11 +698,13 @@ export default function SkillsPage({ agents, projects }) {
             ) : registry.length === 0 ? (
               <div className="bg-gray-800 rounded-xl p-8 text-center">
                 <p className="text-gray-500 text-sm">No skills found</p>
-                <p className="text-gray-600 text-xs mt-1">Try a different search or import from GitHub</p>
+                <p className="text-gray-600 text-xs mt-1">
+                  Try a different search or import from GitHub
+                </p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {registry.map(skill => (
+                {registry.map((skill) => (
                   <RegistryCard
                     key={skill.id}
                     skill={skill}
@@ -577,7 +722,7 @@ export default function SkillsPage({ agents, projects }) {
         <ImportGithubModal
           onClose={() => setShowImport(false)}
           onImported={(newSkill) => {
-            setRegistry(prev => [newSkill, ...prev]);
+            setRegistry((prev) => [newSkill, ...prev]);
           }}
         />
       )}

@@ -61,7 +61,8 @@ function ensureWorkspaceDir(projectCwd) {
 function getDefaultBranch(cwd) {
   try {
     const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd, stdio: 'pipe' })
-      .toString().trim();
+      .toString()
+      .trim();
     return ref.replace('refs/remotes/origin/', '');
   } catch {
     try {
@@ -78,7 +79,8 @@ function getDefaultBranch(cwd) {
  * Returns the install command or null if no Node.js project detected.
  */
 function detectInstallCommand(dir) {
-  if (existsSync(path.join(dir, 'bun.lockb')) || existsSync(path.join(dir, 'bun.lock'))) return 'bun install --frozen-lockfile';
+  if (existsSync(path.join(dir, 'bun.lockb')) || existsSync(path.join(dir, 'bun.lock')))
+    return 'bun install --frozen-lockfile';
   if (existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm install --frozen-lockfile';
   if (existsSync(path.join(dir, 'yarn.lock'))) return 'yarn install --frozen-lockfile';
   if (existsSync(path.join(dir, 'package-lock.json'))) return 'npm ci';
@@ -232,15 +234,16 @@ export function getOrCreateProcessWorktree(projectCwd, processKey, installComman
   try {
     const remoteUrl = getRemoteUrl(projectCwd);
     if (remoteUrl) {
-      execSync(
-        `git clone --depth 1 --quiet "${remoteUrl}" "${cloneDir}"`,
-        { cwd: projectCwd, stdio: 'pipe', timeout: 60000 }
-      );
+      execSync(`git clone --depth 1 --quiet "${remoteUrl}" "${cloneDir}"`, {
+        cwd: projectCwd,
+        stdio: 'pipe',
+        timeout: 60000,
+      });
     } else {
-      execSync(
-        `git clone --depth 1 --quiet "${projectCwd}" "${cloneDir}"`,
-        { stdio: 'pipe', timeout: 60000 }
-      );
+      execSync(`git clone --depth 1 --quiet "${projectCwd}" "${cloneDir}"`, {
+        stdio: 'pipe',
+        timeout: 60000,
+      });
     }
     setupDependencies(projectCwd, cloneDir, installCommand);
     console.log(`[Workspace] Created clone: ${cloneDir}`);
@@ -288,15 +291,16 @@ export function ensureSessionWorkspace(session, projectCwd, agentId, persistFn, 
   try {
     const remoteUrl = getRemoteUrl(projectCwd);
     if (remoteUrl) {
-      execSync(
-        `git clone --depth 1 --quiet "${remoteUrl}" "${cloneDir}"`,
-        { cwd: projectCwd, stdio: 'pipe', timeout: 60000 }
-      );
+      execSync(`git clone --depth 1 --quiet "${remoteUrl}" "${cloneDir}"`, {
+        cwd: projectCwd,
+        stdio: 'pipe',
+        timeout: 60000,
+      });
     } else {
-      execSync(
-        `git clone --depth 1 --quiet "${projectCwd}" "${cloneDir}"`,
-        { stdio: 'pipe', timeout: 60000 }
-      );
+      execSync(`git clone --depth 1 --quiet "${projectCwd}" "${cloneDir}"`, {
+        stdio: 'pipe',
+        timeout: 60000,
+      });
     }
 
     // Create the feature branch

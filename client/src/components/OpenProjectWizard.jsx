@@ -1,10 +1,16 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { getApiBase, getAuthHeaders, getConnectionConfig } from '../utils/connection.js';
 import ServerBrowser from './ServerBrowser.jsx';
 
 const COLOR_PRESETS = [
-  '#6366F1', '#8B5CF6', '#EC4899', '#EF4444',
-  '#F59E0B', '#10B981', '#06B6D4', '#6B7280',
+  '#6366F1',
+  '#8B5CF6',
+  '#EC4899',
+  '#EF4444',
+  '#F59E0B',
+  '#10B981',
+  '#06B6D4',
+  '#6B7280',
 ];
 
 const CONTEXT_FILE_TABS = ['SOUL.md', 'AGENTS.md', 'USER.md', 'TOOLS.md', 'MEMORY.md'];
@@ -16,7 +22,10 @@ function deriveNameFromPath(path) {
 }
 
 function deriveIdFromName(name) {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 function Spinner({ size = 5 }) {
@@ -28,7 +37,11 @@ function Spinner({ size = 5 }) {
       viewBox="0 0 24 24"
     >
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+      />
     </svg>
   );
 }
@@ -43,7 +56,9 @@ function StepIndicator({ currentStep }) {
         return (
           <div key={label} className="flex items-center gap-2">
             {i > 0 && (
-              <div className={`w-8 h-px ${isCompleted || isActive ? 'bg-emerald-500' : 'bg-gray-600'}`} />
+              <div
+                className={`w-8 h-px ${isCompleted || isActive ? 'bg-emerald-500' : 'bg-gray-600'}`}
+              />
             )}
             <div className="flex items-center gap-1.5">
               <div
@@ -51,12 +66,18 @@ function StepIndicator({ currentStep }) {
                   isCompleted
                     ? 'bg-emerald-500 border-emerald-500 text-white'
                     : isActive
-                    ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10'
-                    : 'border-gray-600 text-gray-500 bg-transparent'
+                      ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10'
+                      : 'border-gray-600 text-gray-500 bg-transparent'
                 }`}
               >
                 {isCompleted ? (
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                  <svg
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={3}
+                  >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                   </svg>
                 ) : (
@@ -126,9 +147,13 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
   // Auto-derive name and id from path or clone URL
   useEffect(() => {
     if (!nameManuallyEdited) {
-      const source = sourceMode === 'clone'
-        ? cloneUrl.replace(/\.git$/, '').split('/').pop() || ''
-        : deriveNameFromPath(path);
+      const source =
+        sourceMode === 'clone'
+          ? cloneUrl
+              .replace(/\.git$/, '')
+              .split('/')
+              .pop() || ''
+          : deriveNameFromPath(path);
       setName(source);
       if (!idManuallyEdited) {
         setProjectId(deriveIdFromName(source));
@@ -182,7 +207,9 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
         // Initialize step 3 state from result
         if (normalized.agents.length) {
           const agentMap = {};
-          normalized.agents.forEach((a, i) => { agentMap[i] = true; });
+          normalized.agents.forEach((a, i) => {
+            agentMap[i] = true;
+          });
           setSelectedAgents(agentMap);
         }
         if (data.result?.contextFiles) {
@@ -239,7 +266,9 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
           setCloning(false);
           setPath(data.existingPath);
           setCloneError(null);
-          setCloneLog([`Repository already cloned at ${data.existingPath}. Using existing directory.`]);
+          setCloneLog([
+            `Repository already cloned at ${data.existingPath}. Using existing directory.`,
+          ]);
           return;
         }
         throw new Error(data.error || `Clone request failed: ${res.status}`);
@@ -304,7 +333,17 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
     } finally {
       setCreating(false);
     }
-  }, [analysisResult, selectedAgents, contextFiles, projectId, name, path, color, onProjectCreated, onClose]);
+  }, [
+    analysisResult,
+    selectedAgents,
+    contextFiles,
+    projectId,
+    name,
+    path,
+    color,
+    onProjectCreated,
+    onClose,
+  ]);
 
   const handleBackdropClick = (e) => {
     if (e.target === e.currentTarget) onClose();
@@ -322,7 +361,13 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
           className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors"
           aria-label="Close"
         >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg
+            className="w-5 h-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
@@ -344,7 +389,19 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                     : 'text-gray-400 hover:text-gray-200'
                 }`}
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                  />
+                </svg>
                 Local Directory
               </button>
               <button
@@ -355,7 +412,12 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                     : 'text-gray-400 hover:text-gray-200'
                 }`}
               >
-                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor"><path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
+                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
+                  <path
+                    fillRule="evenodd"
+                    d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                  />
+                </svg>
                 Clone from GitHub
               </button>
             </div>
@@ -382,16 +444,44 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                       className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
                       title="Browse local filesystem..."
                     >
-                      <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                      <svg
+                        className="w-4 h-4 inline mr-1"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                        />
+                      </svg>
                       Browse
                     </button>
                   ) : (
                     <button
                       onClick={() => setShowBrowser(true)}
                       className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
-                      title={isRemote ? 'Browse remote server filesystem...' : 'Browse server filesystem...'}
+                      title={
+                        isRemote
+                          ? 'Browse remote server filesystem...'
+                          : 'Browse server filesystem...'
+                      }
                     >
-                      <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                      <svg
+                        className="w-4 h-4 inline mr-1"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                        />
+                      </svg>
                       Browse{isRemote ? ' Server' : ''}
                     </button>
                   )}
@@ -403,7 +493,9 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
             {sourceMode === 'clone' && (
               <div className="space-y-3">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Repository URL</label>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                    Repository URL
+                  </label>
                   <input
                     type="text"
                     value={cloneUrl}
@@ -415,7 +507,10 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Clone Into <span className="text-gray-500 font-normal">(optional — defaults to ~/projects)</span>
+                    Clone Into{' '}
+                    <span className="text-gray-500 font-normal">
+                      (optional — defaults to ~/projects)
+                    </span>
                   </label>
                   <div className="flex gap-2">
                     <input
@@ -433,7 +528,19 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                         }}
                         className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
                       >
-                        <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                        <svg
+                          className="w-4 h-4 inline mr-1"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={2}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                          />
+                        </svg>
                         Browse
                       </button>
                     ) : (
@@ -441,7 +548,19 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                         onClick={() => setShowTargetBrowser(true)}
                         className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-sm text-gray-200 transition-colors flex-shrink-0"
                       >
-                        <svg className="w-4 h-4 inline mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+                        <svg
+                          className="w-4 h-4 inline mr-1"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={2}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                          />
+                        </svg>
                         Browse{isRemote ? ' Server' : ''}
                       </button>
                     )}
@@ -455,8 +574,16 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                     className="bg-gray-950 font-mono text-xs text-green-400 p-3 rounded-lg max-h-32 overflow-y-auto whitespace-pre-wrap"
                   >
                     {cloneLog.map((line, i) => (
-                      <div key={i} className={i === cloneLog.length - 1 && cloning ? 'text-green-300' : 'text-green-400/60'}>
-                        {i === cloneLog.length - 1 && cloning ? '▸ ' : '  '}{line}
+                      <div
+                        key={i}
+                        className={
+                          i === cloneLog.length - 1 && cloning
+                            ? 'text-green-300'
+                            : 'text-green-400/60'
+                        }
+                      >
+                        {i === cloneLog.length - 1 && cloning ? '▸ ' : '  '}
+                        {line}
                       </div>
                     ))}
                   </div>
@@ -470,12 +597,24 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                 )}
 
                 {/* Clone success: show resolved path */}
-                {!cloning && path && sourceMode === 'clone' && !cloneError && cloneLog.length > 0 && (
-                  <div className="bg-emerald-900/20 border border-emerald-700/50 rounded-lg p-3 text-sm text-emerald-300 flex items-center gap-2">
-                    <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
-                    Cloned to: <span className="font-mono text-xs">{path}</span>
-                  </div>
-                )}
+                {!cloning &&
+                  path &&
+                  sourceMode === 'clone' &&
+                  !cloneError &&
+                  cloneLog.length > 0 && (
+                    <div className="bg-emerald-900/20 border border-emerald-700/50 rounded-lg p-3 text-sm text-emerald-300 flex items-center gap-2">
+                      <svg
+                        className="w-4 h-4 flex-shrink-0"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                      Cloned to: <span className="font-mono text-xs">{path}</span>
+                    </div>
+                  )}
               </div>
             )}
 
@@ -517,14 +656,22 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                     key={c}
                     onClick={() => setColor(c)}
                     className={`w-8 h-8 rounded-full transition-all ${
-                      color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-900 scale-110' : 'hover:scale-105'
+                      color === c
+                        ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-900 scale-110'
+                        : 'hover:scale-105'
                     }`}
                     style={{ backgroundColor: c }}
                     aria-label={`Color ${c}`}
                   />
                 ))}
                 <label className="relative w-8 h-8 rounded-full overflow-hidden cursor-pointer border-2 border-dashed border-gray-500 hover:border-gray-400 transition-colors flex items-center justify-center">
-                  <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <svg
+                    className="w-4 h-4 text-gray-400"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                   </svg>
                   <input
@@ -580,22 +727,30 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
               <div className="flex items-center gap-2 mb-2">
                 {analyzing && <Spinner />}
                 <span className="text-sm font-medium text-gray-300">
-                  {analyzing ? 'Analyzing project...' : analysisError ? 'Analysis failed' : 'Analysis complete'}
+                  {analyzing
+                    ? 'Analyzing project...'
+                    : analysisError
+                      ? 'Analysis failed'
+                      : 'Analysis complete'}
                 </span>
               </div>
               <div
                 ref={terminalRef}
                 className="bg-gray-950 font-mono text-xs text-green-400 p-4 rounded-lg max-h-64 overflow-y-auto whitespace-pre-wrap"
               >
-                {progressLog.length > 0 ? (
-                  progressLog.map((line, i) => (
-                    <div key={i} className={i === progressLog.length - 1 ? 'text-green-300' : 'text-green-400/60'}>
-                      {i === progressLog.length - 1 && analyzing ? '▸ ' : '  '}{line}
-                    </div>
-                  ))
-                ) : (
-                  progressText || (analyzing ? 'Waiting for Claude to start...' : '')
-                )}
+                {progressLog.length > 0
+                  ? progressLog.map((line, i) => (
+                      <div
+                        key={i}
+                        className={
+                          i === progressLog.length - 1 ? 'text-green-300' : 'text-green-400/60'
+                        }
+                      >
+                        {i === progressLog.length - 1 && analyzing ? '▸ ' : '  '}
+                        {line}
+                      </div>
+                    ))
+                  : progressText || (analyzing ? 'Waiting for Claude to start...' : '')}
               </div>
             </div>
 
@@ -606,7 +761,10 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                   {analysisError}
                 </div>
                 <button
-                  onClick={() => { setStep(1); setAnalysisError(null); }}
+                  onClick={() => {
+                    setStep(1);
+                    setAnalysisError(null);
+                  }}
                   className="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
                 >
                   Back
@@ -648,10 +806,14 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                     <h4 className="text-sm font-medium text-gray-300 mb-2">Agent Team</h4>
                     <div className="space-y-2">
                       {analysisResult.agents.map((agent, i) => {
-                        const isLead = agent.role === 'lead' || (i === 0 && analysisResult.agents.length > 1);
+                        const isLead =
+                          agent.role === 'lead' || (i === 0 && analysisResult.agents.length > 1);
                         const isSub = !isLead && analysisResult.agents.length > 1;
                         return (
-                          <div key={i} className={`bg-gray-800 rounded-lg p-3 border ${isLead ? 'border-amber-600/50' : 'border-gray-700'} ${isSub ? 'ml-6' : ''}`}>
+                          <div
+                            key={i}
+                            className={`bg-gray-800 rounded-lg p-3 border ${isLead ? 'border-amber-600/50' : 'border-gray-700'} ${isSub ? 'ml-6' : ''}`}
+                          >
                             <div className="flex items-center gap-2 mb-1">
                               {isSub && <span className="text-gray-600 text-xs">└</span>}
                               <span className="font-medium text-sm text-white">{agent.name}</span>
@@ -678,7 +840,11 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
 
                 <div className="flex gap-3 pt-1">
                   <button
-                    onClick={() => { setStep(1); setAnalysisResult(null); setProgressText(''); }}
+                    onClick={() => {
+                      setStep(1);
+                      setAnalysisResult(null);
+                      setProgressText('');
+                    }}
                     className="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
                   >
                     Back
@@ -704,23 +870,24 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                 <h4 className="text-sm font-medium text-gray-300 mb-2">Agent Team</h4>
                 <div className="space-y-2">
                   {analysisResult.agents.map((agent, i) => {
-                    const isLead = agent.role === 'lead' || (i === 0 && analysisResult.agents.length > 1);
+                    const isLead =
+                      agent.role === 'lead' || (i === 0 && analysisResult.agents.length > 1);
                     const isSub = !isLead && analysisResult.agents.length > 1;
                     return (
                       <label
                         key={i}
                         className={`flex items-start gap-3 bg-gray-800 rounded-lg p-3 border cursor-pointer transition-colors ${isSub ? 'ml-6' : ''} ${
                           selectedAgents[i]
-                            ? isLead ? 'border-amber-600/50' : 'border-emerald-600'
+                            ? isLead
+                              ? 'border-amber-600/50'
+                              : 'border-emerald-600'
                             : 'border-gray-700 opacity-60'
                         }`}
                       >
                         <input
                           type="checkbox"
                           checked={!!selectedAgents[i]}
-                          onChange={() =>
-                            setSelectedAgents((prev) => ({ ...prev, [i]: !prev[i] }))
-                          }
+                          onChange={() => setSelectedAgents((prev) => ({ ...prev, [i]: !prev[i] }))}
                           className="mt-0.5 accent-emerald-500"
                         />
                         <div className="flex-1 min-w-0">
@@ -788,7 +955,10 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
             {/* Actions */}
             <div className="flex gap-3 pt-1">
               <button
-                onClick={() => { setStep(2); setAnalysisError(null); }}
+                onClick={() => {
+                  setStep(2);
+                  setAnalysisError(null);
+                }}
                 className="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
               >
                 Back
