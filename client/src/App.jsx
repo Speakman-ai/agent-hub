@@ -40,6 +40,7 @@ export default function App() {
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-6');
   const [sessionWorktree, setSessionWorktree] = useState(true);
+  const [sessionAskMode, setSessionAskMode] = useState(false);
   const [currentView, setCurrentView] = useState('chat');
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -772,12 +773,14 @@ export default function App() {
         setSessionEngine(data[0].engine || activeAgent?.engine || 'claude-code');
         setSessionModel(data[0].model || 'claude-opus-4-6');
         setSessionWorktree(data[0].use_worktree !== 0);
+        setSessionAskMode(data[0].ask_mode !== 0);
       } else {
         setActiveSessionId(null);
         setMessages([]);
         setSessionEngine(agents.find(a => a.id === activeAgentId)?.engine || 'claude-code');
         setSessionModel('claude-opus-4-6');
         setSessionWorktree(true);
+        setSessionAskMode(false);
       }
     });
   }, [activeAgentId]);
@@ -804,6 +807,7 @@ export default function App() {
       setSessionModel(session.model);
     }
     setSessionWorktree(session?.use_worktree !== 0);
+    setSessionAskMode(session?.ask_mode !== 0);
   }, [activeSessionId, sessions]);
 
   // Load messages when session changes
@@ -922,12 +926,13 @@ export default function App() {
 
   const handleNewSession = async () => {
     if (!activeAgentId) return;
-    const session = await api.createSession(activeAgentId);
+    const session = await api.createSession(activeAgentId, undefined, { askMode: sessionAskMode });
     setSessions((prev) => [session, ...prev]);
     setActiveSessionId(session.id);
     setSessionEngine(session.engine || activeAgent?.engine || 'claude-code');
     setSessionModel(session.model || 'claude-opus-4-6');
     setSessionWorktree(session.use_worktree !== 0);
+    setSessionAskMode(session.ask_mode !== 0);
     setMessages([]);
     setCurrentView('chat');
   };
@@ -968,6 +973,16 @@ export default function App() {
       const updated = await api.setSessionWorktree(activeSessionId, enabled);
       setSessions((prev) =>
         prev.map((s) => (s.id === updated.id ? { ...s, use_worktree: updated.use_worktree } : s))
+      );
+    }
+  };
+
+  const handleAskModeChange = async (enabled) => {
+    setSessionAskMode(enabled);
+    if (activeSessionId) {
+      const updated = await api.setSessionAskMode(activeSessionId, enabled);
+      setSessions((prev) =>
+        prev.map((s) => (s.id === updated.id ? { ...s, ask_mode: updated.ask_mode } : s))
       );
     }
   };
@@ -1018,7 +1033,7 @@ export default function App() {
   const handleSend = async (content, images = [], { interrupt = false } = {}) => {
     let sessionId = activeSessionId;
     if (!sessionId) {
-      const session = await api.createSession(activeAgentId);
+      const session = await api.createSession(activeAgentId, undefined, { askMode: sessionAskMode });
       setSessions((prev) => [session, ...prev]);
       setActiveSessionId(session.id);
       sessionId = session.id;
@@ -1161,6 +1176,8 @@ export default function App() {
           activeSessionId={activeSessionId}
           sessionWorktree={sessionWorktree}
           onWorktreeChange={handleWorktreeChange}
+          sessionAskMode={sessionAskMode}
+          onAskModeChange={handleAskModeChange}
         />
 
         {currentView.startsWith('kanban:') ? (
@@ -1312,6 +1329,7 @@ export default function App() {
               queueLength={(messageQueues[activeSessionId] || []).length}
               agentColor={activeAgent?.color}
               skills={skills}
+              askMode={sessionAskMode}
             />
           </>
         )}

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 
-export default function MessageInput({ onSend, onCancel, disabled, isProcessing, queueLength = 0, agentColor, skills }) {
+export default function MessageInput({ onSend, onCancel, disabled, isProcessing, queueLength = 0, agentColor, skills, askMode }) {
   const [value, setValue] = useState('');
   const [images, setImages] = useState([]); // [{id, name, dataUrl}]
   const [dragOver, setDragOver] = useState(false);
@@ -235,6 +235,16 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* Ask mode indicator */}
+      {askMode && (
+        <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-blue-900/20 border border-blue-800/40 rounded-lg text-xs text-blue-400">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+          </svg>
+          <span>Ask mode — read-only, no file changes or commands</span>
+        </div>
+      )}
+
       {/* Image previews */}
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2 px-1">
@@ -333,7 +343,9 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
           placeholder={
             disabled
               ? 'Waiting...'
-              : window.innerWidth < 640 ? 'Message...' : 'Type a message... (paste or drop images)'
+              : askMode
+                ? (window.innerWidth < 640 ? 'Ask a question...' : 'Ask a question... (read-only mode)')
+                : (window.innerWidth < 640 ? 'Message...' : 'Type a message... (paste or drop images)')
           }
           disabled={disabled && !isProcessing}
           rows={1}

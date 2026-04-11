@@ -464,6 +464,9 @@ function initDb(dataDir) {
   // Migrate: add autonomous_iterations counter for dispatch loop tracking
   try { db.exec('ALTER TABLE kanban_cards ADD COLUMN autonomous_iterations INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
 
+  // Migrate: add ask_mode to sessions (read-only mode toggle)
+  try { db.exec('ALTER TABLE sessions ADD COLUMN ask_mode INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
+
   // Migrate: add pr_url to kanban_cards for review-column trigger
   try { db.exec('ALTER TABLE kanban_cards ADD COLUMN pr_url TEXT'); } catch(e) { /* already exists */ }
 
@@ -557,7 +560,7 @@ function initDb(dataDir) {
   stmts = {
     // Sessions
     createSession: db.prepare(
-      'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ),
     getSessions: db.prepare(
       'SELECT * FROM sessions WHERE agent_id = ? ORDER BY updated_at DESC'
@@ -586,6 +589,9 @@ function initDb(dataDir) {
     ),
     updateSessionWorktreePath: db.prepare(
       "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, updated_at = datetime('now') WHERE id = ?"
+    ),
+    updateSessionAskMode: db.prepare(
+      "UPDATE sessions SET ask_mode = ?, updated_at = datetime('now') WHERE id = ?"
     ),
 
     // Background tasks

@@ -35,10 +35,10 @@ export const api = {
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`),
-  createSession: (agentId, name) =>
+  createSession: (agentId, name, { askMode } = {}) =>
     fetchJSON(`/agents/${agentId}/sessions`, {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, ask_mode: askMode || false }),
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
   summarizeSession: (sessionId) =>
@@ -63,6 +63,11 @@ export const api = {
     }),
   setSessionWorktree: (sessionId, enabled) =>
     fetchJSON(`/sessions/${sessionId}/worktree`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  setSessionAskMode: (sessionId, enabled) =>
+    fetchJSON(`/sessions/${sessionId}/ask-mode`, {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
