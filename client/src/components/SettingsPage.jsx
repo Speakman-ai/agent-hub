@@ -1587,12 +1587,42 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     return map;
   });
   const [projectReviewerSaved, setProjectReviewerSaved] = useState({});
+  const [projectCommands, setProjectCommands] = useState(() => {
+    const map = {};
+    projects.forEach(p => {
+      map[p.id] = {
+        install: p.commands?.install || '',
+        build: p.commands?.build || '',
+        test: p.commands?.test || '',
+        lint: p.commands?.lint || '',
+      };
+    });
+    return map;
+  });
+  const [projectCommandsSaved, setProjectCommandsSaved] = useState({});
+  const [expandedProject, setExpandedProject] = useState(null);
 
   const saveProjectReviewer = async (projectId) => {
     try {
       await api.updateProject(projectId, { defaultReviewer: projectReviewers[projectId] });
       setProjectReviewerSaved(prev => ({ ...prev, [projectId]: true }));
       setTimeout(() => setProjectReviewerSaved(prev => ({ ...prev, [projectId]: false })), 2000);
+    } catch {}
+  };
+
+  const saveProjectCommands = async (projectId) => {
+    try {
+      const cmds = projectCommands[projectId] || {};
+      await api.updateProject(projectId, {
+        commands: {
+          install: cmds.install || null,
+          build: cmds.build || null,
+          test: cmds.test || null,
+          lint: cmds.lint || null,
+        },
+      });
+      setProjectCommandsSaved(prev => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setProjectCommandsSaved(prev => ({ ...prev, [projectId]: false })), 2000);
     } catch {}
   };
 
@@ -1604,24 +1634,56 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
           <h3 className="text-lg font-semibold mb-3">Project Settings</h3>
           <div className="space-y-2">
             {projects.map(p => (
-              <div key={p.id} className="bg-gray-800 rounded-xl p-3 flex items-center gap-3">
-                <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color }} />
-                <span className="text-sm font-medium flex-shrink-0">{p.name}</span>
-                <div className="flex items-center gap-2 flex-1">
-                  <label className="text-xs text-gray-400 flex-shrink-0">Default PR Reviewer:</label>
-                  <input
-                    value={projectReviewers[p.id] || ''}
-                    onChange={e => setProjectReviewers(prev => ({ ...prev, [p.id]: e.target.value }))}
-                    placeholder="github-username"
-                    className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1"
-                  />
-                  <button
-                    onClick={() => saveProjectReviewer(p.id)}
-                    className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
-                  >
-                    {projectReviewerSaved[p.id] ? 'Saved' : 'Save'}
-                  </button>
+              <div key={p.id} className="bg-gray-800 rounded-xl p-3 space-y-2">
+                <div className="flex items-center gap-3 cursor-pointer" onClick={() => setExpandedProject(expandedProject === p.id ? null : p.id)}>
+                  <span className="text-2xl flex items-center text-gray-400">{expandedProject === p.id ? '▾' : '▸'}</span>
+                  <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color }} />
+                  <span className="text-sm font-medium">{p.name}</span>
                 </div>
+                {expandedProject === p.id && (
+                  <div className="pl-8 space-y-3">
+                    {/* PR Reviewer */}
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-gray-400 flex-shrink-0 w-28">PR Reviewer:</label>
+                      <input
+                        value={projectReviewers[p.id] || ''}
+                        onChange={e => setProjectReviewers(prev => ({ ...prev, [p.id]: e.target.value }))}
+                        placeholder="github-username"
+                        className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1"
+                      />
+                      <button
+                        onClick={() => saveProjectReviewer(p.id)}
+                        className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
+                      >
+                        {projectReviewerSaved[p.id] ? 'Saved' : 'Save'}
+                      </button>
+                    </div>
+                    {/* Project Commands */}
+                    <div className="space-y-2">
+                      <label className="text-xs text-gray-400 font-semibold">Project Commands</label>
+                      {['install', 'build', 'test', 'lint'].map(cmd => (
+                        <div key={cmd} className="flex items-center gap-2">
+                          <label className="text-xs text-gray-400 flex-shrink-0 w-28 capitalize">{cmd}:</label>
+                          <input
+                            value={projectCommands[p.id]?.[cmd] || ''}
+                            onChange={e => setProjectCommands(prev => ({
+                              ...prev,
+                              [p.id]: { ...prev[p.id], [cmd]: e.target.value },
+                            }))}
+                            placeholder={cmd === 'install' ? 'npm ci' : cmd === 'build' ? 'npm run build' : cmd === 'test' ? 'npm test' : 'npm run lint'}
+                            className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1 font-mono"
+                          />
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => saveProjectCommands(p.id)}
+                        className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
+                      >
+                        {projectCommandsSaved[p.id] ? 'Saved' : 'Save Commands'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

@@ -98,8 +98,9 @@ function detectInstallCommand(dir) {
  *
  * @param {string} sourceDir  The original project directory (with node_modules)
  * @param {string} cloneDir   The cloned workspace directory
+ * @param {string|null} installCommand  Optional project-level install command (from project.commands.install)
  */
-function setupDependencies(sourceDir, cloneDir) {
+function setupDependencies(sourceDir, cloneDir, installCommand) {
   // Collect node_modules paths from the source (depth 0 and 1 subdirectories)
   const nodeModulesDirs = [];
 
@@ -154,7 +155,8 @@ function setupDependencies(sourceDir, cloneDir) {
   }
 
   // No node_modules in source — try running install in the clone (async, non-blocking)
-  const installCmd = detectInstallCommand(cloneDir);
+  // Prefer the project-level install command, fall back to auto-detection
+  const installCmd = installCommand || detectInstallCommand(cloneDir);
   if (installCmd) {
     console.log(`[Workspace] No node_modules in source — running "${installCmd}" in clone`);
     exec(installCmd, { cwd: cloneDir, timeout: 120000 }, (err) => {
@@ -203,7 +205,7 @@ function copyFallback(projectCwd, destDir) {
  * @param {string} processKey  Stable key identifying the background process
  * @returns {string} Workspace directory path (or projectCwd as fallback)
  */
-export function getOrCreateProcessWorktree(projectCwd, processKey) {
+export function getOrCreateProcessWorktree(projectCwd, processKey, installCommand) {
   if (!isGitRepo(projectCwd)) {
     return projectCwd;
   }
@@ -222,7 +224,7 @@ export function getOrCreateProcessWorktree(projectCwd, processKey) {
       console.warn(`[Workspace] Sync failed for "${safeName}", reusing as-is:`, err.message);
     }
     // Ensure dependencies are still linked (symlinks may have been cleaned up)
-    setupDependencies(projectCwd, cloneDir);
+    setupDependencies(projectCwd, cloneDir, installCommand);
     return cloneDir;
   }
 
@@ -240,7 +242,7 @@ export function getOrCreateProcessWorktree(projectCwd, processKey) {
         { stdio: 'pipe', timeout: 60000 }
       );
     }
-    setupDependencies(projectCwd, cloneDir);
+    setupDependencies(projectCwd, cloneDir, installCommand);
     console.log(`[Workspace] Created clone: ${cloneDir}`);
     return cloneDir;
   } catch (err) {
@@ -256,9 +258,10 @@ export function getOrCreateProcessWorktree(projectCwd, processKey) {
  * @param {string} projectCwd    Project's main working directory
  * @param {string} agentId       Agent identifier (for the branch name)
  * @param {function} persistFn   (workspacePath, branchName, sessionId) => void
+ * @param {string|null} installCommand  Optional project-level install command
  * @returns {string} Workspace directory path (or projectCwd as fallback)
  */
-export function ensureSessionWorkspace(session, projectCwd, agentId, persistFn) {
+export function ensureSessionWorkspace(session, projectCwd, agentId, persistFn, installCommand) {
   // Already created and still on disk — reuse
   if (session.worktree_path && existsSync(session.worktree_path)) {
     return session.worktree_path;
@@ -277,7 +280,7 @@ export function ensureSessionWorkspace(session, projectCwd, agentId, persistFn) 
 
   if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
     // Clone exists from a previous attempt — reuse
-    setupDependencies(projectCwd, cloneDir);
+    setupDependencies(projectCwd, cloneDir, installCommand);
     persistFn(cloneDir, branchName, session.id);
     return cloneDir;
   }
@@ -299,7 +302,7 @@ export function ensureSessionWorkspace(session, projectCwd, agentId, persistFn) 
     // Create the feature branch
     execSync(`git checkout -b "${branchName}"`, { cwd: cloneDir, stdio: 'pipe' });
 
-    setupDependencies(projectCwd, cloneDir);
+    setupDependencies(projectCwd, cloneDir, installCommand);
     persistFn(cloneDir, branchName, session.id);
     console.log(`[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})`);
     return cloneDir;

@@ -289,6 +289,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
           project: { id: projectId, name, cwd: path, color },
           agents,
           contextFiles,
+          commands: analysisResult?.commands || null,
         }),
       });
       if (!res.ok) {
