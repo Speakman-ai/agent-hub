@@ -1043,9 +1043,13 @@ function WebhookSection() {
     repoUrl: '',
     events: {
       'pull_request.opened': { enabled: true, prompt: 'Review this pull request for code quality, bugs, security issues, and style. Post your review as a GitHub comment using `gh pr review`.' },
+      'pull_request.closed': { enabled: true, prompt: 'PR was closed or merged. Update related tracking and notify the team.' },
+      'pull_request.synchronize': { enabled: true, prompt: 'New commits were pushed to this PR. Re-check for issues if needed.' },
+      'pull_request_review.submitted': { enabled: true, prompt: 'A review was submitted on this PR. Process the feedback and take appropriate action.' },
+      'pull_request_review_comment.created': { enabled: true, prompt: 'A new inline review comment was posted. Read it and respond or fix the issue.' },
       'issues.opened': { enabled: false, prompt: 'Triage this issue: read the content, add appropriate labels, and suggest an approach in a comment using `gh issue comment`.' },
       'push': { enabled: false, prompt: 'Review the pushed commits and check if any introduce obvious bugs or break tests.' },
-      'check_suite.completed': { enabled: false, prompt: 'CI failed. Read the check run logs with `gh run view`, identify the issue, and open a fix PR.' },
+      'check_suite.completed': { enabled: false, prompt: 'CI checks completed. If failed, read the logs with `gh run view`, identify the issue, and fix it.' },
     },
   });
 
