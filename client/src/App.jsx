@@ -77,6 +77,8 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(false);
   // Loading state — true until org/switch + project load completes
   const [initializing, setInitializing] = useState(true);
+  // Active babysit PRs: Map of agentId -> { cronId, prNumber, repoSlug }
+  const [activeBabysits, setActiveBabysits] = useState({});
   // Toast notifications (e.g., babysit events)
   const [toasts, setToasts] = useState([]);
   // Kanban board refresh trigger
@@ -535,7 +537,22 @@ export default function App() {
         break;
 
       // ─── Babysit notifications ─────────────────────────────
+      case 'babysit-snapshot': {
+        // Rebuild babysit map from server snapshot on connect.
+        const next = {};
+        for (const b of data.babysits || []) {
+          next[b.agentId] = { cronId: b.cronId, prNumber: b.prNumber, repoSlug: b.repoSlug };
+        }
+        setActiveBabysits(next);
+        break;
+      }
       case 'babysit_started': {
+        if (data.agentId) {
+          setActiveBabysits((prev) => ({
+            ...prev,
+            [data.agentId]: { cronId: data.cronId, prNumber: data.prNumber, repoSlug: data.repoSlug },
+          }));
+        }
         const toast = {
           id: `babysit-start-${Date.now()}`,
           type: 'info',
@@ -570,6 +587,16 @@ export default function App() {
         break;
       }
       case 'babysit_complete': {
+        // Remove the babysit entry for the agent whose cron just completed.
+        if (data.cronId) {
+          setActiveBabysits((prev) => {
+            const next = { ...prev };
+            for (const [agentId, info] of Object.entries(next)) {
+              if (info.cronId === data.cronId) { delete next[agentId]; break; }
+            }
+            return next;
+          });
+        }
         const toast = {
           id: `babysit-done-${Date.now()}`,
           type: 'success',
@@ -1075,6 +1102,7 @@ export default function App() {
           onOpenProject={() => setShowWizard(true)}
           cronSessions={cronSessions}
           wikiProjectId={wikiProjectId}
+          activeBabysits={activeBabysits}
         />
       </div>
 
