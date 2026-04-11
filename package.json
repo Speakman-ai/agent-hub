@@ -17,7 +17,9 @@
     "electron:build": "npm run build && npx electron-builder --mac",
     "electron:start": "npx electron .",
     "electron:pack": "npm run build && npx electron-builder --dir",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "test": "cd server && npx vitest run",
+    "test:watch": "cd server && npx vitest"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0"
@@ -66,6 +68,8 @@
   "devDependencies": {
     "concurrently": "^8.2.2",
     "electron": "^35.7.5",
-    "electron-builder": "^26.0.0"
+    "electron-builder": "^26.0.0",
+    "supertest": "^7.2.2",
+    "vitest": "^4.1.4"
   }
 }
