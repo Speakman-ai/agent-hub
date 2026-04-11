@@ -24,6 +24,7 @@ export default function Sidebar({
   cronSessions = [],
   wikiProjectId,
   activeBabysits = {},
+  activeReviews = {},
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [hoveredRoom, setHoveredRoom] = useState(null);
@@ -231,6 +232,11 @@ export default function Sidebar({
                                   >
                                     <Eye size={10} className="flex-shrink-0" />
                                     PR #{activeBabysits[agent.id].prNumber}
+                                  </span>
+                                )}
+                                {activeReviews[agent.name] && (
+                                  <span className="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 animate-pulse" title={`Reviewing: ${activeReviews[agent.name].cardTitle}`}>
+                                    reviewing PR
                                   </span>
                                 )}
                               </span>

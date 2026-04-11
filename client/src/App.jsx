@@ -79,6 +79,8 @@ export default function App() {
   const [initializing, setInitializing] = useState(true);
   // Active babysit PRs: Map of agentId -> { cronId, prNumber, repoSlug }
   const [activeBabysits, setActiveBabysits] = useState({});
+  // Active lead reviews: Map of agentId -> { prUrl, cardTitle, sessionId }
+  const [activeReviews, setActiveReviews] = useState({});
   // Toast notifications (e.g., babysit events)
   const [toasts, setToasts] = useState([]);
   // Kanban board refresh trigger
@@ -649,6 +651,24 @@ export default function App() {
       case 'wiki_delete':
         window.dispatchEvent(new CustomEvent('wiki_delete', { detail: data }));
         break;
+
+      case 'lead_review':
+        setActiveReviews(prev => ({
+          ...prev,
+          [data.reviewerAgent]: { prUrl: data.prUrl, cardTitle: data.cardTitle, sessionId: data.sessionId },
+        }));
+        break;
+
+      case 'lead_review_complete':
+        setActiveReviews(prev => {
+          const next = { ...prev };
+          // Remove by matching agentId — the lead_review event uses agent name as key, but we also check by agentId
+          for (const [key, val] of Object.entries(next)) {
+            if (val.sessionId === data.sessionId) delete next[key];
+          }
+          return next;
+        });
+        break;
     }
   }, []);
 
@@ -1103,6 +1123,7 @@ export default function App() {
           cronSessions={cronSessions}
           wikiProjectId={wikiProjectId}
           activeBabysits={activeBabysits}
+          activeReviews={activeReviews}
         />
       </div>
 
