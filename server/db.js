@@ -464,6 +464,9 @@ function initDb(dataDir) {
   // Migrate: add autonomous_iterations counter for dispatch loop tracking
   try { db.exec('ALTER TABLE kanban_cards ADD COLUMN autonomous_iterations INTEGER NOT NULL DEFAULT 0'); } catch(e) { /* already exists */ }
 
+  // Migrate: add pr_url to kanban_cards for review-column trigger
+  try { db.exec('ALTER TABLE kanban_cards ADD COLUMN pr_url TEXT'); } catch(e) { /* already exists */ }
+
   // Migrate: active_room_tasks + room_message_queue for conference room persistence
   db.exec(`
     CREATE TABLE IF NOT EXISTS active_room_tasks (
@@ -888,6 +891,7 @@ function initDb(dataDir) {
     deleteKanbanBoard: db.prepare('DELETE FROM kanban_boards WHERE id = ?'),
 
     // Kanban columns
+    getKanbanColumn: db.prepare('SELECT * FROM kanban_columns WHERE id = ?'),
     getKanbanColumns: db.prepare('SELECT * FROM kanban_columns WHERE board_id = ? ORDER BY position ASC'),
     createKanbanColumn: db.prepare('INSERT INTO kanban_columns (id, board_id, name, position, color) VALUES (?, ?, ?, ?, ?)'),
     updateKanbanColumn: db.prepare("UPDATE kanban_columns SET name = ?, position = ?, color = ? WHERE id = ?"),
@@ -907,6 +911,7 @@ function initDb(dataDir) {
     moveKanbanCard: db.prepare(
       `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`
     ),
+    setCardPrUrl: db.prepare('UPDATE kanban_cards SET pr_url = ?, updated_at = datetime(\'now\') WHERE id = ?'),
     getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
     getNextUndocumentedCard: db.prepare(
       `SELECT c.*, col.name as column_name FROM kanban_cards c
