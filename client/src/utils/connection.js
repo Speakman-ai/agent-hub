@@ -71,7 +71,8 @@ export function getWsUrl() {
     return wsUrl;
   }
   // Local mode — connect to same hostname on server port
-  return `ws://${window.location.hostname}:3051`;
+  const port = import.meta.env.VITE_API_PORT || 3051;
+  return `ws://${window.location.hostname}:${port}`;
 }
 
 /** Get auth headers for API requests. Empty object if no key configured. */

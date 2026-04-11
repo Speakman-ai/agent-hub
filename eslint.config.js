@@ -13,6 +13,9 @@ export default [
       'release/',
       'mobile/',
       'electron/',
+      '.claude/',
+      '.worktrees/',
+      'client/vite.config.js',
       '**/*.cjs',
     ],
   },
@@ -80,6 +83,21 @@ export default [
   {
     files: ['**/*.test.js', '**/__tests__/**/*.js', '**/test/**/*.js'],
     languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      'no-unused-vars': 'off',
+    },
+  },
+
+  // E2E test files — Playwright + Node.js
+  {
+    files: ['e2e/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
       globals: {
         ...globals.node,
       },
