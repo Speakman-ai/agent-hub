@@ -549,7 +549,12 @@ export default function KanbanBoard({
                 {epicForm.autonomous === 1 && (
                   <div className="flex items-center gap-3 pl-6">
                     <div>
-                      <label className="block text-xs text-gray-500 mb-0.5">Max concurrent</label>
+                      <label
+                        className="block text-xs text-gray-500 mb-0.5"
+                        title="Limits cards in both In Progress and Review — new work won't start until PRs are merged"
+                      >
+                        Max concurrent
+                      </label>
                       <input
                         type="number"
                         value={epicForm.autonomous_max_concurrent || 2}
