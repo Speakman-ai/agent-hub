@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Building2, BookOpen, Settings, Clock, LayoutGrid, FileText, Eye } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
+import humanCron from '../utils/humanCron.js';
 
 export default function Sidebar({
   projects = [],
@@ -49,17 +50,7 @@ export default function Sidebar({
     return Date.now() - d.getTime() < 30 * 60 * 1000;
   };
 
-  function humanSchedule(cron) {
-    if (!cron) return '';
-    const p = cron.split(' ');
-    if (p[0].startsWith('*/') && p[1] === '*') return `every ${p[0].slice(2)}m`;
-    if (p[0] === '0' && p[1].startsWith('*/')) return `every ${p[1].slice(2)}h`;
-    if (p[0] === '0' && /^\d+$/.test(p[1]) && p[2] === '*') {
-      const h = parseInt(p[1]);
-      return `daily ${h > 12 ? h - 12 : h}${h >= 12 ? 'pm' : 'am'}`;
-    }
-    return cron;
-  }
+  // humanCron imported from utils/humanCron.js
 
   // Find which project the active agent belongs to
   const activeProject = projects.find((p) =>
@@ -104,7 +95,7 @@ export default function Sidebar({
                       />
                     )}
                     <span className="flex-1 truncate text-sm">{cs.cron_name}</span>
-                    <span className="text-xs text-gray-600 flex-shrink-0">{humanSchedule(cs.cron_schedule)}</span>
+                    <span className="text-xs text-gray-600 flex-shrink-0">{humanCron(cs.cron_schedule)}</span>
                   </button>
                 );
               })}

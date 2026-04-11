@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
+import humanCron from '../utils/humanCron.js';
 import { saveConnectionConfig, testConnection, getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, switchOrg } from '../utils/orgs.js';
 import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, Pencil, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft, Webhook } from 'lucide-react';
@@ -874,8 +875,8 @@ function CronSection() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium text-sm">{cronJob.name}</span>
-                  <span className="text-xs text-gray-500 font-mono">
-                    {cronJob.schedule}
+                  <span className="text-xs text-gray-500" title={cronJob.schedule}>
+                    {humanCron(cronJob.schedule)}
                   </span>
                   {cronJob.enabled && cronJob.next_run_at && (() => {
                     const { label, overdue } = relativeFuture(cronJob.next_run_at);
@@ -2009,7 +2010,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     </div>
                     <div className="space-y-3">
                       <div>
-                        <label className={labelClass}>Interval (cron expression)</label>
+                        <label className={labelClass}>Interval (cron expression, e.g. */30 * * * * = every 30 min)</label>
                         <input
                           value={edit.heartbeat?.interval || ''}
                           onChange={(e) => setHeartbeatEdit(agent.id, 'interval', e.target.value)}
