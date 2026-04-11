@@ -1042,14 +1042,14 @@ function WebhookSection() {
     projectId: '',
     repoUrl: '',
     events: {
-      'pull_request.opened': { enabled: true, prompt: 'Review this pull request for code quality, bugs, security issues, and style. Post your review as a GitHub comment using `gh pr review`.' },
-      'pull_request.closed': { enabled: true, prompt: 'PR was closed or merged. Update related tracking and notify the team.' },
-      'pull_request.synchronize': { enabled: true, prompt: 'New commits were pushed to this PR. Re-check for issues if needed.' },
-      'pull_request_review.submitted': { enabled: true, prompt: 'A review was submitted on this PR. Process the feedback and take appropriate action.' },
-      'pull_request_review_comment.created': { enabled: true, prompt: 'A new inline review comment was posted. Read it and respond or fix the issue.' },
-      'issues.opened': { enabled: false, prompt: 'Triage this issue: read the content, add appropriate labels, and suggest an approach in a comment using `gh issue comment`.' },
-      'push': { enabled: false, prompt: 'Review the pushed commits and check if any introduce obvious bugs or break tests.' },
-      'check_suite.completed': { enabled: false, prompt: 'CI checks completed. If failed, read the logs with `gh run view`, identify the issue, and fix it.' },
+      'pull_request.opened': { enabled: true, label: 'PR opened' },
+      'pull_request.closed': { enabled: true, label: 'PR closed / merged' },
+      'pull_request.synchronize': { enabled: true, label: 'New commits pushed to PR' },
+      'pull_request_review.submitted': { enabled: true, label: 'Review submitted (approve / request changes)' },
+      'pull_request_review_comment.created': { enabled: true, label: 'Inline review comment posted' },
+      'check_suite.completed': { enabled: true, label: 'CI checks completed' },
+      'issues.opened': { enabled: false, label: 'Issue opened' },
+      'push': { enabled: false, label: 'Push to any branch' },
     },
   });
 
@@ -1089,7 +1089,7 @@ function WebhookSection() {
     e.preventDefault();
     const enabledEvents = {};
     Object.entries(form.events).forEach(([key, val]) => {
-      if (val.enabled) enabledEvents[key] = val;
+      if (val.enabled) enabledEvents[key] = { enabled: true };
     });
     const created = await api.createWebhook({
       projectId: form.projectId,
@@ -1157,38 +1157,24 @@ function WebhookSection() {
           <div className="space-y-2">
             <p className="text-xs text-gray-400 font-medium">Events to handle:</p>
             {Object.entries(form.events).map(([eventKey, eventConfig]) => (
-              <div key={eventKey} className="bg-gray-900 rounded-lg p-3">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={eventConfig.enabled}
-                    onChange={() => setForm({
-                      ...form,
-                      events: {
-                        ...form.events,
-                        [eventKey]: { ...eventConfig, enabled: !eventConfig.enabled }
-                      }
-                    })}
-                    className="rounded border-gray-600"
-                  />
+              <label key={eventKey} className="flex items-center gap-3 cursor-pointer bg-gray-900 rounded-lg px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={eventConfig.enabled}
+                  onChange={() => setForm({
+                    ...form,
+                    events: {
+                      ...form.events,
+                      [eventKey]: { ...eventConfig, enabled: !eventConfig.enabled }
+                    }
+                  })}
+                  className="rounded border-gray-600"
+                />
+                <div>
                   <span className="text-sm font-mono text-gray-300">{eventKey}</span>
-                </label>
-                {eventConfig.enabled && (
-                  <textarea
-                    value={eventConfig.prompt}
-                    onChange={(e) => setForm({
-                      ...form,
-                      events: {
-                        ...form.events,
-                        [eventKey]: { ...eventConfig, prompt: e.target.value }
-                      }
-                    })}
-                    rows={2}
-                    className="w-full mt-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-300 focus:outline-none focus:border-gray-600 resize-none"
-                    placeholder="Agent prompt for this event..."
-                  />
-                )}
-              </div>
+                  <span className="text-xs text-gray-500 ml-2">{eventConfig.label}</span>
+                </div>
+              </label>
             ))}
           </div>
 
@@ -1291,11 +1277,8 @@ function WebhookSection() {
 
                   <div className="space-y-1">
                     <p className="text-xs text-gray-400 font-medium">Event Handlers</p>
-                    {enabledEvents.map(([eventKey, eventConfig]) => (
-                      <div key={eventKey} className="bg-gray-900 rounded-lg p-2">
-                        <span className="text-xs font-mono text-emerald-400">{eventKey}</span>
-                        <p className="text-xs text-gray-500 mt-0.5 truncate">{eventConfig.prompt}</p>
-                      </div>
+                    {enabledEvents.map(([eventKey]) => (
+                      <span key={eventKey} className="inline-block bg-gray-900 rounded px-2 py-1 text-xs font-mono text-emerald-400 mr-1 mb-1">{eventKey}</span>
                     ))}
                   </div>
 
