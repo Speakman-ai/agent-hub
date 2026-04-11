@@ -1,5 +1,5 @@
-# Dependencies
-node_modules/
+# Dependencies (no trailing slash — catches both directories and symlinks)
+node_modules
 
 # Database files
 *.db
