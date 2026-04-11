@@ -12,3 +12,4 @@ Check PR status, comments, and latest CI and resolve any issues until the PR is 
 1. Comments: Review every comment (including Bugbot) before acting. Fix only comments you agree with; explain when you disagree or are unsure.
 2. Merge conflicts: When there are conflicts, sync with base branch. Resolve merge conflicts only when intent is clearly the same, otherwise stop and ask for clarification.
 3. CI: Fix CI issues that come up with small scoped fixes. Push them and re-watch CI until mergeable + green + comments triaged.
+4. **Pending checks**: A PR is NOT green until ALL checks have completed. If any check is pending, queued, or in-progress (e.g., Bugbot still running), wait for the next run — do NOT declare the PR ready.
