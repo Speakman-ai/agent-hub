@@ -583,6 +583,17 @@ export default function App() {
         setToasts((prev) => [...prev, toast]);
         break;
       }
+      case 'sessions_resuming': {
+        const count = data.count || 0;
+        const toast = {
+          id: `sessions-resuming-${Date.now()}`,
+          type: 'info',
+          message: `Resuming ${count} interrupted session${count !== 1 ? 's' : ''} after server restart…`,
+          duration: 10000,
+        };
+        setToasts((prev) => [...prev, toast]);
+        break;
+      }
       case 'analyze-progress':
       case 'analyze-complete':
       case 'analyze-error':
