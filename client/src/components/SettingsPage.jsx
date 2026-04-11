@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import humanCron from '../utils/humanCron.js';
-import { saveConnectionConfig, testConnection, getAuthHeaders, getApiBase } from '../utils/connection.js';
+import { saveConnectionConfig, testConnection, getAuthHeaders, getApiBase, getServerBase } from '../utils/connection.js';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, switchOrg } from '../utils/orgs.js';
 import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, Pencil, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft, Webhook } from 'lucide-react';
 
@@ -1246,10 +1246,10 @@ function WebhookSection() {
                     <p className="text-xs text-gray-400 font-medium">Webhook Setup</p>
                     <div className="flex items-center gap-2">
                       <code className="flex-1 text-xs bg-gray-900 px-2 py-1.5 rounded font-mono text-gray-300 truncate">
-                        {`${window.location.origin}/api/webhooks/github`}
+                        {`${getServerBase() || window.location.origin}/api/webhooks/github`}
                       </code>
                       <button
-                        onClick={() => copyToClipboard(`${window.location.origin}/api/webhooks/github`, `url-${wh.id}`)}
+                        onClick={() => copyToClipboard(`${getServerBase() || window.location.origin}/api/webhooks/github`, `url-${wh.id}`)}
                         className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-gray-300"
                       >
                         {copiedField === `url-${wh.id}` ? 'Copied' : 'Copy URL'}
