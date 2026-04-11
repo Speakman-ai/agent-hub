@@ -1039,15 +1039,22 @@ export default function App() {
       sessionId = session.id;
     }
 
-    // Upload images first, then send chat with references
+    // Upload media (images + videos) first, then send chat with references
     let uploadedImages = [];
     if (images.length > 0) {
       try {
         uploadedImages = await Promise.all(
-          images.map((img) => api.uploadImage(img.dataUrl, img.name))
+          images.map((img) => {
+            if (img.type === 'video' && img.file) {
+              // Videos use binary upload to avoid base64 overhead
+              return api.uploadFile(img.file);
+            }
+            // Images use the existing data-URL upload
+            return api.uploadImage(img.dataUrl, img.name);
+          })
         );
       } catch (err) {
-        console.error('Image upload failed:', err);
+        console.error('Media upload failed:', err);
         // Still send the text message even if upload fails
       }
     }

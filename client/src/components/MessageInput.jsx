@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 export default function MessageInput({ onSend, onCancel, disabled, isProcessing, queueLength = 0, agentColor, skills, askMode }) {
   const [value, setValue] = useState('');
-  const [images, setImages] = useState([]); // [{id, name, dataUrl}]
+  const [images, setImages] = useState([]); // [{id, name, dataUrl, file?, type?}]
   const [dragOver, setDragOver] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -93,28 +93,50 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
   }, []);
 
   const addImageFiles = useCallback(async (files) => {
-    const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
-    if (imageFiles.length === 0) return;
+    const mediaFiles = Array.from(files).filter(
+      (f) => f.type.startsWith('image/') || f.type.startsWith('video/')
+    );
+    if (mediaFiles.length === 0) return;
 
     const newImages = [];
-    for (const file of imageFiles) {
-      const dataUrl = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.readAsDataURL(file);
-      });
-      const resized = await resizeImage(dataUrl);
-      newImages.push({
-        id: crypto.randomUUID(),
-        name: file.name,
-        dataUrl: resized,
-      });
+    for (const file of mediaFiles) {
+      if (file.type.startsWith('video/')) {
+        // Videos: keep the raw File object for binary upload (no base64)
+        const previewUrl = URL.createObjectURL(file);
+        newImages.push({
+          id: crypto.randomUUID(),
+          name: file.name,
+          dataUrl: previewUrl,
+          file, // raw File for upload
+          type: 'video',
+        });
+      } else {
+        // Images: read as data URL and resize
+        const dataUrl = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.readAsDataURL(file);
+        });
+        const resized = await resizeImage(dataUrl);
+        newImages.push({
+          id: crypto.randomUUID(),
+          name: file.name,
+          dataUrl: resized,
+          type: 'image',
+        });
+      }
     }
     setImages((prev) => [...prev, ...newImages]);
   }, [resizeImage]);
 
   const removeImage = useCallback((id) => {
-    setImages((prev) => prev.filter((img) => img.id !== id));
+    setImages((prev) => {
+      const removed = prev.find((img) => img.id === id);
+      if (removed?.type === 'video' && removed.dataUrl?.startsWith('blob:')) {
+        URL.revokeObjectURL(removed.dataUrl);
+      }
+      return prev.filter((img) => img.id !== id);
+    });
   }, []);
 
   // ── Input handlers ────────────────────────────────────────────
@@ -142,8 +164,16 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     if ((!trimmed && images.length === 0) || disabled) return;
     // During processing: default is interrupt, shift+enter queues
     const shouldInterrupt = isProcessing && interrupt;
-    onSend(trimmed || '(image attached)', images, { interrupt: shouldInterrupt });
+    const hasVideo = images.some((img) => img.type === 'video');
+    const fallbackText = hasVideo ? '(media attached)' : '(image attached)';
+    onSend(trimmed || fallbackText, images, { interrupt: shouldInterrupt });
     setValue('');
+    // Revoke blob URLs for videos before clearing to prevent memory leaks
+    images.forEach((img) => {
+      if (img.type === 'video' && img.dataUrl?.startsWith('blob:')) {
+        URL.revokeObjectURL(img.dataUrl);
+      }
+    });
     setImages([]);
     closeSlash();
   };
@@ -189,11 +219,13 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     const items = e.clipboardData?.items;
     if (!items) return;
 
-    const imageItems = Array.from(items).filter((item) => item.type.startsWith('image/'));
-    if (imageItems.length === 0) return;
+    const mediaItems = Array.from(items).filter(
+      (item) => item.type.startsWith('image/') || item.type.startsWith('video/')
+    );
+    if (mediaItems.length === 0) return;
 
     e.preventDefault();
-    const files = imageItems.map((item) => item.getAsFile()).filter(Boolean);
+    const files = mediaItems.map((item) => item.getAsFile()).filter(Boolean);
     addImageFiles(files);
   }, [addImageFiles]);
 
@@ -245,16 +277,28 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
         </div>
       )}
 
-      {/* Image previews */}
+      {/* Media previews (images + videos) */}
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2 px-1">
           {images.map((img) => (
             <div key={img.id} className="relative group">
-              <img
-                src={img.dataUrl}
-                alt={img.name}
-                className="h-16 w-16 object-cover rounded-lg border border-gray-700"
-              />
+              {img.type === 'video' ? (
+                <div className="h-16 w-20 rounded-lg border border-gray-700 bg-gray-800 flex items-center justify-center overflow-hidden relative">
+                  <video src={img.dataUrl} className="h-full w-full object-cover" muted />
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white/80" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                  <span className="absolute bottom-0.5 left-0.5 text-[9px] text-white/70 bg-black/60 px-1 rounded">{img.name?.split('.').pop()?.toUpperCase()}</span>
+                </div>
+              ) : (
+                <img
+                  src={img.dataUrl}
+                  alt={img.name}
+                  className="h-16 w-16 object-cover rounded-lg border border-gray-700"
+                />
+              )}
               <button
                 onClick={() => removeImage(img.id)}
                 className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-600 rounded-full flex items-center justify-center text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
@@ -318,7 +362,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled && !isProcessing}
           className="px-2 py-3 text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-30"
-          title="Attach image (or paste/drop)"
+          title="Attach image or video (or paste/drop)"
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z" clipRule="evenodd" />
@@ -327,7 +371,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,video/mp4,video/webm,video/quicktime,video/x-matroska"
           multiple
           className="hidden"
           onChange={handleFileSelect}
@@ -345,7 +389,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
               ? 'Waiting...'
               : askMode
                 ? (window.innerWidth < 640 ? 'Ask a question...' : 'Ask a question... (read-only mode)')
-                : (window.innerWidth < 640 ? 'Message...' : 'Type a message... (paste or drop images)')
+                : (window.innerWidth < 640 ? 'Message...' : 'Type a message... (paste or drop images/videos)')
           }
           disabled={disabled && !isProcessing}
           rows={1}

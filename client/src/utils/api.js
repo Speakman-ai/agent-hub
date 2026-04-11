@@ -184,6 +184,25 @@ export const api = {
       body: JSON.stringify({ dataUrl, filename }),
     }),
 
+  // Binary file upload (for videos and large files — avoids base64 overhead)
+  uploadFile: async (file) => {
+    const { getApiBase } = await import('./connection.js');
+    const base = getApiBase();
+    const resp = await fetch(`${base}/upload/file`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-Filename': file.name || 'upload',
+      },
+      body: file,
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: resp.statusText }));
+      throw new Error(err.error || resp.statusText);
+    }
+    return resp.json();
+  },
+
   // Slack
   getSlackStatus: () => fetchJSON('/slack/status'),
   restartSlack: () =>

@@ -63,8 +63,43 @@ function ImageLightbox({ src, alt, onClose }) {
   );
 }
 
+const VIDEO_CONTENT_TYPES = new Set([
+  'video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska',
+]);
+const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv']);
+
+function isVideoAttachment(att) {
+  if (att.contentType && VIDEO_CONTENT_TYPES.has(att.contentType)) return true;
+  const ext = (att.filename || att.originalName || att.url || '').split('.').pop()?.toLowerCase();
+  return VIDEO_EXTENSIONS.has(ext);
+}
+
+function VideoLightbox({ src, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 cursor-default"
+      onClick={onClose}
+    >
+      <video
+        src={src}
+        controls
+        autoPlay
+        className="max-w-[90vw] max-h-[90vh] rounded-lg shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      />
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center bg-gray-800 rounded-full text-white hover:bg-gray-700 transition-colors"
+      >
+        x
+      </button>
+    </div>
+  );
+}
+
 function MessageAttachments({ attachments }) {
   const [lightboxSrc, setLightboxSrc] = useState(null);
+  const [lightboxType, setLightboxType] = useState('image'); // 'image' | 'video'
 
   const parsed = useMemo(() => {
     if (!attachments) return [];
@@ -81,34 +116,72 @@ function MessageAttachments({ attachments }) {
   // Prefix relative server paths with the server base so images load
   // in remote mode, Electron, and Vite dev proxy.
   const serverBase = getServerBase();
-  const getDisplayUrl = (img) => {
-    if (img.url) {
+  const getDisplayUrl = (att) => {
+    if (att.url) {
       // Relative path like "/uploads/uuid.png" — prefix with server base
-      if (img.url.startsWith('/') && serverBase) return `${serverBase}${img.url}`;
-      return img.url;
+      if (att.url.startsWith('/') && serverBase) return `${serverBase}${att.url}`;
+      return att.url;
     }
-    if (img.dataUrl) return img.dataUrl;
+    if (att.dataUrl) return att.dataUrl;
     return null;
+  };
+
+  const openLightbox = (src, type) => {
+    setLightboxSrc(src);
+    setLightboxType(type);
   };
 
   return (
     <>
       <div className={`flex flex-wrap gap-2 ${parsed.length > 0 ? 'mb-2' : ''}`}>
-        {parsed.map((img, i) => {
-          const src = getDisplayUrl(img);
+        {parsed.map((att, i) => {
+          const src = getDisplayUrl(att);
           if (!src) return null;
+          const isVideo = isVideoAttachment(att);
+
+          if (isVideo) {
+            return (
+              <div
+                key={att.id || i}
+                className="relative max-w-xs rounded-lg border border-gray-600/50 overflow-hidden cursor-pointer hover:brightness-110 transition-all"
+                onClick={() => openLightbox(src, 'video')}
+              >
+                <video
+                  src={src}
+                  className="max-h-48 max-w-xs rounded-lg"
+                  muted
+                  preload="metadata"
+                  onLoadedMetadata={(e) => { e.target.currentTime = 0.5; }}
+                />
+                <div className="absolute inset-0 flex items-center justify-center bg-black/30 hover:bg-black/20 transition-colors">
+                  <div className="w-10 h-10 bg-white/90 rounded-full flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-900 ml-0.5" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                </div>
+                <span className="absolute bottom-1 right-1 text-[10px] text-white bg-black/60 px-1.5 py-0.5 rounded">
+                  {(att.filename || att.originalName || '').split('.').pop()?.toUpperCase() || 'VIDEO'}
+                </span>
+              </div>
+            );
+          }
+
           return (
             <img
-              key={img.id || i}
+              key={att.id || i}
               src={src}
-              alt={img.originalName || img.name || 'attachment'}
+              alt={att.originalName || att.name || 'attachment'}
               className="max-h-48 max-w-xs rounded-lg border border-gray-600/50 cursor-zoom-in hover:brightness-110 transition-all"
-              onClick={() => setLightboxSrc(src)}
+              onClick={() => openLightbox(src, 'image')}
             />
           );
         })}
       </div>
-      {lightboxSrc && (
+      {lightboxSrc && lightboxType === 'video' && (
+        <VideoLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+      )}
+      {lightboxSrc && lightboxType === 'image' && (
         <ImageLightbox
           src={lightboxSrc}
           alt="Full size image"
@@ -155,7 +228,7 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
 
   // Don't show "(image attached)" as text if it was auto-generated and there are actual attachments
   const displayContent = useMemo(() => {
-    if (message.content === '(image attached)' && message.attachments) return '';
+    if ((message.content === '(image attached)' || message.content === '(media attached)') && message.attachments) return '';
     return message.content;
   }, [message.content, message.attachments]);
 
