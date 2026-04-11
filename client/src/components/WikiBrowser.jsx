@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { BookOpen, Search, Plus, Trash2, Pencil, Save, X } from 'lucide-react';
+import { getAuthHeaders } from '../utils/connection.js';
 
 const CATEGORIES = [
   { value: 'all', label: 'All' },
@@ -74,7 +75,7 @@ export default function WikiBrowser({ projectId, apiBase }) {
       if (category && category !== 'all') params.set('category', category);
       const qs = params.toString();
       const url = `${apiBase}/projects/${projectId}/wiki${qs ? '?' + qs : ''}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setPages(data);
@@ -88,7 +89,7 @@ export default function WikiBrowser({ projectId, apiBase }) {
     if (!projectId || !slug) return;
     try {
       setLoading(true);
-      const res = await fetch(`${apiBase}/projects/${projectId}/wiki/${slug}`);
+      const res = await fetch(`${apiBase}/projects/${projectId}/wiki/${slug}`, { headers: getAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         setSelectedPage(data);
@@ -180,7 +181,7 @@ export default function WikiBrowser({ projectId, apiBase }) {
       if (creating) {
         const res = await fetch(`${apiBase}/projects/${projectId}/wiki`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ title: editTitle, content: editContent, category: editCategory }),
         });
         if (res.ok) {
@@ -193,7 +194,7 @@ export default function WikiBrowser({ projectId, apiBase }) {
       } else if (selectedSlug) {
         const res = await fetch(`${apiBase}/projects/${projectId}/wiki/${selectedSlug}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ title: editTitle, content: editContent, category: editCategory }),
         });
         if (res.ok) {
@@ -212,6 +213,7 @@ export default function WikiBrowser({ projectId, apiBase }) {
     try {
       const res = await fetch(`${apiBase}/projects/${projectId}/wiki/${slug}`, {
         method: 'DELETE',
+        headers: getAuthHeaders(),
       });
       if (res.ok) {
         setDeleteConfirm(null);
