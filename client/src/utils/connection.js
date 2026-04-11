@@ -43,15 +43,20 @@ export function saveConnectionConfig(config) {
   return merged;
 }
 
-/** Get the base URL for API calls (e.g. '/api' or 'https://remote:3051/api'). */
-export function getApiBase() {
+/** Get the server base URL without /api (e.g. '' or 'https://remote:3051').
+ *  Used for resolving server-relative paths like /uploads/... */
+export function getServerBase() {
   const config = getConnectionConfig();
   if (config.mode === 'remote' && config.remoteUrl) {
-    // Strip trailing whitespace and slashes from the URL
-    const base = config.remoteUrl.trim().replace(/\/+$/, '');
-    return `${base}/api`;
+    return config.remoteUrl.trim().replace(/\/+$/, '');
   }
-  return '/api'; // local mode — same-origin
+  return ''; // local mode — same-origin, relative paths work
+}
+
+/** Get the base URL for API calls (e.g. '/api' or 'https://remote:3051/api'). */
+export function getApiBase() {
+  const base = getServerBase();
+  return base ? `${base}/api` : '/api';
 }
 
 /** Get the WebSocket URL (e.g. 'ws://localhost:3051' or 'wss://remote:3051?apiKey=xxx'). */

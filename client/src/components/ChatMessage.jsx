@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { relativeTime } from '../utils/time.js';
+import { getServerBase } from '../utils/connection.js';
 
 function extractText(node) {
   if (typeof node === 'string') return node;
@@ -76,9 +77,16 @@ function MessageAttachments({ attachments }) {
 
   if (parsed.length === 0) return null;
 
-  // Build the display URL: prefer the server-hosted /uploads/ path
+  // Build the display URL: prefer the server-hosted /uploads/ path.
+  // Prefix relative server paths with the server base so images load
+  // in remote mode, Electron, and Vite dev proxy.
+  const serverBase = getServerBase();
   const getDisplayUrl = (img) => {
-    if (img.url) return img.url;
+    if (img.url) {
+      // Relative path like "/uploads/uuid.png" — prefix with server base
+      if (img.url.startsWith('/') && serverBase) return `${serverBase}${img.url}`;
+      return img.url;
+    }
     if (img.dataUrl) return img.dataUrl;
     return null;
   };
