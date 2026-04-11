@@ -1113,7 +1113,7 @@ function WebhookSection() {
   const registerOnGitHub = async (wh) => {
     setRegistering(prev => ({ ...prev, [wh.id]: true }));
     try {
-      const result = await api.registerWebhook(wh.id, window.location.origin);
+      const result = await api.registerWebhook(wh.id, getServerBase() || window.location.origin);
       alert(`Webhook registered on GitHub! Hook ID: ${result.hookId}`);
     } catch (err) {
       alert(`Failed: ${err.message}`);
