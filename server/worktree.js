@@ -6,8 +6,8 @@
  * giving complete isolation with zero footprint in user projects.
  */
 
-import { execSync } from 'child_process';
-import { existsSync, mkdirSync, cpSync, rmSync, readdirSync, statSync } from 'fs';
+import { execSync, exec } from 'child_process';
+import { existsSync, mkdirSync, cpSync, rmSync, readdirSync, statSync, symlinkSync } from 'fs';
 import path from 'path';
 import { homedir } from 'os';
 
@@ -74,6 +74,100 @@ function getDefaultBranch(cwd) {
 }
 
 /**
+ * Detect the package manager for a project by checking lock files.
+ * Returns the install command or null if no Node.js project detected.
+ */
+function detectInstallCommand(dir) {
+  if (existsSync(path.join(dir, 'bun.lockb')) || existsSync(path.join(dir, 'bun.lock'))) return 'bun install --frozen-lockfile';
+  if (existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm install --frozen-lockfile';
+  if (existsSync(path.join(dir, 'yarn.lock'))) return 'yarn install --frozen-lockfile';
+  if (existsSync(path.join(dir, 'package-lock.json'))) return 'npm ci';
+  if (existsSync(path.join(dir, 'package.json'))) return 'npm install';
+  return null;
+}
+
+/**
+ * Symlink node_modules from the source project into the clone.
+ *
+ * Scans the source project (up to depth 2) for node_modules directories
+ * and creates symlinks in the clone pointing back to them. This is instant,
+ * uses zero extra disk space, and works for monorepo structures.
+ *
+ * Falls back to running the install command if symlinks can't be created
+ * (e.g., source has no node_modules installed).
+ *
+ * @param {string} sourceDir  The original project directory (with node_modules)
+ * @param {string} cloneDir   The cloned workspace directory
+ */
+function setupDependencies(sourceDir, cloneDir) {
+  // Collect node_modules paths from the source (depth 0 and 1 subdirectories)
+  const nodeModulesDirs = [];
+
+  // Check root level
+  const rootNM = path.join(sourceDir, 'node_modules');
+  if (existsSync(rootNM)) {
+    nodeModulesDirs.push({ relative: 'node_modules', absolute: rootNM });
+  }
+
+  // Check immediate subdirectories (monorepo: client/, server/, mobile/, etc.)
+  try {
+    const entries = readdirSync(sourceDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (['node_modules', '.git', 'dist', 'build', '.worktrees'].includes(entry.name)) continue;
+      const subNM = path.join(sourceDir, entry.name, 'node_modules');
+      if (existsSync(subNM)) {
+        nodeModulesDirs.push({
+          relative: path.join(entry.name, 'node_modules'),
+          absolute: subNM,
+        });
+      }
+    }
+  } catch {
+    // Ignore — subdirectory scan is best-effort
+  }
+
+  if (nodeModulesDirs.length > 0) {
+    // Symlink each node_modules from source into clone
+    let linked = 0;
+    for (const { relative, absolute } of nodeModulesDirs) {
+      const target = path.join(cloneDir, relative);
+      if (existsSync(target)) continue; // Already exists (real or symlink)
+
+      // Ensure parent directory exists in the clone
+      const parentDir = path.dirname(target);
+      if (!existsSync(parentDir)) {
+        mkdirSync(parentDir, { recursive: true });
+      }
+
+      try {
+        symlinkSync(absolute, target, 'junction');
+        linked++;
+      } catch (err) {
+        console.warn(`[Workspace] Failed to symlink ${relative}:`, err.message);
+      }
+    }
+    if (linked > 0) {
+      console.log(`[Workspace] Symlinked ${linked} node_modules from source project`);
+    }
+    return;
+  }
+
+  // No node_modules in source — try running install in the clone (async, non-blocking)
+  const installCmd = detectInstallCommand(cloneDir);
+  if (installCmd) {
+    console.log(`[Workspace] No node_modules in source — running "${installCmd}" in clone`);
+    exec(installCmd, { cwd: cloneDir, timeout: 120000 }, (err) => {
+      if (err) {
+        console.warn(`[Workspace] Install failed in clone:`, err.message);
+      } else {
+        console.log(`[Workspace] Install completed in ${cloneDir}`);
+      }
+    });
+  }
+}
+
+/**
  * Fallback: copy the project directory for non-git projects.
  */
 function copyFallback(projectCwd, destDir) {
@@ -127,6 +221,8 @@ export function getOrCreateProcessWorktree(projectCwd, processKey) {
     } catch (err) {
       console.warn(`[Workspace] Sync failed for "${safeName}", reusing as-is:`, err.message);
     }
+    // Ensure dependencies are still linked (symlinks may have been cleaned up)
+    setupDependencies(projectCwd, cloneDir);
     return cloneDir;
   }
 
@@ -144,6 +240,7 @@ export function getOrCreateProcessWorktree(projectCwd, processKey) {
         { stdio: 'pipe', timeout: 60000 }
       );
     }
+    setupDependencies(projectCwd, cloneDir);
     console.log(`[Workspace] Created clone: ${cloneDir}`);
     return cloneDir;
   } catch (err) {
@@ -180,6 +277,7 @@ export function ensureSessionWorkspace(session, projectCwd, agentId, persistFn) 
 
   if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
     // Clone exists from a previous attempt — reuse
+    setupDependencies(projectCwd, cloneDir);
     persistFn(cloneDir, branchName, session.id);
     return cloneDir;
   }
@@ -201,6 +299,7 @@ export function ensureSessionWorkspace(session, projectCwd, agentId, persistFn) 
     // Create the feature branch
     execSync(`git checkout -b "${branchName}"`, { cwd: cloneDir, stdio: 'pipe' });
 
+    setupDependencies(projectCwd, cloneDir);
     persistFn(cloneDir, branchName, session.id);
     console.log(`[Workspace] Created session clone: ${cloneDir} (branch: ${branchName})`);
     return cloneDir;
