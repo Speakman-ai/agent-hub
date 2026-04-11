@@ -278,7 +278,9 @@ export const api = {
   updateWebhook: (id, data) => fetchJSON(`/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteWebhook: (id) => fetchJSON(`/webhooks/${id}`, { method: 'DELETE' }),
   getWebhookLogs: (id, limit = 20) => fetchJSON(`/webhooks/${id}/logs?limit=${limit}`),
-  registerWebhook: (id, serverUrl) => fetchJSON(`/webhooks/${id}/register`, { method: 'POST', body: JSON.stringify({ serverUrl }) }),
+  registerWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'POST' }),
+  unregisterWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'DELETE' }),
+  getWebhookRegistration: (id) => fetchJSON(`/webhooks/${id}/register`),
 
   // Background tasks
   getTasks: (limit = 50) => fetchJSON(`/tasks?limit=${limit}`),

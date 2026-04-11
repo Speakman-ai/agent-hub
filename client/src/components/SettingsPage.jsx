@@ -4,7 +4,7 @@ import { relativeTime, relativeFuture } from '../utils/time.js';
 import humanCron from '../utils/humanCron.js';
 import { saveConnectionConfig, testConnection, getAuthHeaders, getApiBase, getServerBase } from '../utils/connection.js';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, switchOrg } from '../utils/orgs.js';
-import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, Pencil, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft, Webhook } from 'lucide-react';
+import { Settings as SettingsIcon, Building2, Bot, HeartPulse, Clock, MessageSquare, BarChart3, HardDrive, Monitor, Cloud, Loader2, Plug, Play, Pencil, RefreshCw, User, Plus, Trash2, Check, ArrowRightLeft, Webhook, Globe } from 'lucide-react';
 
 function OrganizationsSection() {
   const [orgsState, setOrgsState] = useState(() => getOrgs());
@@ -343,12 +343,12 @@ function GeneralSection() {
   useEffect(() => {
     api.getConfig().then((data) => {
       setConfig(data);
-      setEdits({ claudeBin: data.claudeBin });
+      setEdits({ claudeBin: data.claudeBin, publicUrl: data.publicUrl || '' });
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
-  const isDirty = config && (edits.claudeBin !== config.claudeBin);
+  const isDirty = config && (edits.claudeBin !== config.claudeBin || edits.publicUrl !== (config.publicUrl || ''));
 
   const handleSave = async () => {
     setSaving(true);
@@ -409,6 +409,24 @@ function GeneralSection() {
           >
             {saving ? 'Saving...' : 'Save'}
           </button>
+        </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <h4 className="text-sm font-medium text-gray-300">GitHub Webhooks</h4>
+
+        <div>
+          <label className={labelClass}>Public URL</label>
+          <input
+            value={edits.publicUrl || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, publicUrl: e.target.value }))}
+            className={inputClass}
+            placeholder="https://my-server.example.com"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            The externally-reachable URL for this server. Used as the callback URL when auto-registering
+            GitHub webhooks. Leave empty if running locally only.
+          </p>
         </div>
       </div>
 
@@ -1037,10 +1055,13 @@ function WebhookSection() {
   const [expandedWebhook, setExpandedWebhook] = useState(null);
   const [copiedField, setCopiedField] = useState(null);
   const [registering, setRegistering] = useState({});
+  const [regStatus, setRegStatus] = useState({}); // { [whId]: { registered, hooks, webhookUrl } }
   const [projects, setProjects] = useState([]);
+  const [serverConfig, setServerConfig] = useState(null); // { publicUrl, ... }
   const [form, setForm] = useState({
     projectId: '',
     repoUrl: '',
+    autoRegister: false,
     events: {
       'pull_request.opened': { enabled: true, label: 'PR opened' },
       'pull_request.closed': { enabled: true, label: 'PR closed / merged' },
@@ -1068,9 +1089,14 @@ function WebhookSection() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [wh, proj] = await Promise.all([api.getWebhooks().catch(() => []), api.getProjects()]);
+        const [wh, proj, cfg] = await Promise.all([
+          api.getWebhooks().catch(() => []),
+          api.getProjects(),
+          api.getConfig().catch(() => null),
+        ]);
         setWebhooks(wh);
         setProjects(proj);
+        if (cfg) setServerConfig(cfg);
         if (wh.length) await refreshLogs(wh);
       } catch (e) { console.error(e); }
     };
@@ -1094,9 +1120,17 @@ function WebhookSection() {
     const created = await api.createWebhook({
       projectId: form.projectId,
       repoUrl: form.repoUrl,
-      events: enabledEvents
+      events: enabledEvents,
+      autoRegister: form.autoRegister,
     });
-    setWebhooks(prev => [...prev, created]);
+    // If auto-register returned inline registration info, extract the webhook record
+    const { registration, ...webhookRecord } = created;
+    setWebhooks(prev => [...prev, webhookRecord]);
+    if (registration) {
+      if (registration.ok) {
+        setRegStatus(prev => ({ ...prev, [webhookRecord.id]: { registered: true, hooks: [{ id: registration.hookId }], webhookUrl: registration.url } }));
+      }
+    }
     setShowForm(false);
   };
 
@@ -1113,12 +1147,37 @@ function WebhookSection() {
   const registerOnGitHub = async (wh) => {
     setRegistering(prev => ({ ...prev, [wh.id]: true }));
     try {
-      const result = await api.registerWebhook(wh.id, getServerBase() || window.location.origin);
-      alert(`Webhook registered on GitHub! Hook ID: ${result.hookId}`);
+      const result = await api.registerWebhook(wh.id);
+      setRegStatus(prev => ({ ...prev, [wh.id]: { registered: true, hooks: [{ id: result.hookId }], webhookUrl: result.url } }));
     } catch (err) {
-      alert(`Failed: ${err.message}`);
+      setRegStatus(prev => ({ ...prev, [wh.id]: { registered: false, error: err.message } }));
     }
     setRegistering(prev => ({ ...prev, [wh.id]: false }));
+  };
+
+  const unregisterFromGitHub = async (wh) => {
+    setRegistering(prev => ({ ...prev, [wh.id]: true }));
+    try {
+      await api.unregisterWebhook(wh.id);
+      setRegStatus(prev => ({ ...prev, [wh.id]: { registered: false } }));
+    } catch (err) {
+      setRegStatus(prev => ({ ...prev, [wh.id]: { registered: false, error: err.message } }));
+    }
+    setRegistering(prev => ({ ...prev, [wh.id]: false }));
+  };
+
+  const checkRegistration = async (wh) => {
+    try {
+      const status = await api.getWebhookRegistration(wh.id);
+      setRegStatus(prev => ({ ...prev, [wh.id]: status }));
+    } catch (err) { console.warn('checkRegistration failed:', err); }
+  };
+
+  /** Resolve the public webhook URL: prefer server-side publicUrl, fall back to client base */
+  const getWebhookUrl = () => {
+    if (serverConfig?.publicUrl) return `${serverConfig.publicUrl.replace(/\/+$/, '')}/api/webhooks/github`;
+    const base = getServerBase() || window.location.origin;
+    return `${base}/api/webhooks/github`;
   };
 
   const statusColor = (s) => s === 'success' ? 'bg-emerald-500' : s === 'error' ? 'bg-red-500' : s === 'running' ? 'bg-blue-500' : 'bg-gray-600';
@@ -1178,8 +1237,26 @@ function WebhookSection() {
             ))}
           </div>
 
+          <label className="flex items-center gap-3 cursor-pointer bg-gray-900 rounded-lg px-3 py-2.5">
+            <input
+              type="checkbox"
+              checked={form.autoRegister}
+              onChange={() => setForm({ ...form, autoRegister: !form.autoRegister })}
+              className="rounded border-gray-600"
+            />
+            <div>
+              <span className="text-sm text-gray-300">Auto-register on GitHub</span>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {serverConfig?.publicUrl
+                  ? <>Webhook URL: <code className="text-gray-400">{serverConfig.publicUrl.replace(/\/+$/, '')}/api/webhooks/github</code></>
+                  : <span className="text-amber-400">Set a Public URL in General Settings first for reliable webhook delivery</span>
+                }
+              </p>
+            </div>
+          </label>
+
           <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
-            Create Webhook
+            {form.autoRegister ? 'Create & Register' : 'Create Webhook'}
           </button>
         </form>
       )}
@@ -1246,15 +1323,20 @@ function WebhookSection() {
                     <p className="text-xs text-gray-400 font-medium">Webhook Setup</p>
                     <div className="flex items-center gap-2">
                       <code className="flex-1 text-xs bg-gray-900 px-2 py-1.5 rounded font-mono text-gray-300 truncate">
-                        {`${getServerBase() || window.location.origin}/api/webhooks/github`}
+                        {getWebhookUrl()}
                       </code>
                       <button
-                        onClick={() => copyToClipboard(`${getServerBase() || window.location.origin}/api/webhooks/github`, `url-${wh.id}`)}
+                        onClick={() => copyToClipboard(getWebhookUrl(), `url-${wh.id}`)}
                         className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-gray-300"
                       >
                         {copiedField === `url-${wh.id}` ? 'Copied' : 'Copy URL'}
                       </button>
                     </div>
+                    {!serverConfig?.publicUrl && (
+                      <p className="text-xs text-amber-400">
+                        No Public URL configured — webhook URL may not be reachable from GitHub. Set it in General Settings.
+                      </p>
+                    )}
                     <div className="flex items-center gap-2">
                       <code className="flex-1 text-xs bg-gray-900 px-2 py-1.5 rounded font-mono text-gray-300 truncate">
                         {wh.secret}
@@ -1266,13 +1348,56 @@ function WebhookSection() {
                         {copiedField === `secret-${wh.id}` ? 'Copied' : 'Copy Secret'}
                       </button>
                     </div>
-                    <button
-                      onClick={() => registerOnGitHub(wh)}
-                      disabled={registering[wh.id]}
-                      className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-1.5 rounded text-white transition-colors"
-                    >
-                      {registering[wh.id] ? 'Registering...' : 'Auto-Register on GitHub'}
-                    </button>
+
+                    {/* Registration status */}
+                    {regStatus[wh.id]?.registered && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                        <span className="text-emerald-400">Registered on GitHub</span>
+                        {regStatus[wh.id]?.hooks?.[0]?.id && (
+                          <span className="text-gray-500 font-mono">Hook #{regStatus[wh.id].hooks[0].id}</span>
+                        )}
+                      </div>
+                    )}
+                    {regStatus[wh.id]?.error && (
+                      <p className="text-xs text-red-400">Registration error: {regStatus[wh.id].error}</p>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      {regStatus[wh.id]?.registered ? (
+                        <>
+                          <button
+                            onClick={() => unregisterFromGitHub(wh)}
+                            disabled={registering[wh.id]}
+                            className="text-xs bg-red-900/40 hover:bg-red-800/60 disabled:opacity-50 px-3 py-1.5 rounded text-red-400 transition-colors"
+                          >
+                            {registering[wh.id] ? 'Removing...' : 'Remove from GitHub'}
+                          </button>
+                          <button
+                            onClick={() => checkRegistration(wh)}
+                            className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1.5 rounded text-gray-300 transition-colors"
+                          >
+                            Refresh Status
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => registerOnGitHub(wh)}
+                            disabled={registering[wh.id]}
+                            className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-1.5 rounded text-white transition-colors"
+                          >
+                            {registering[wh.id] ? 'Registering...' : 'Register on GitHub'}
+                          </button>
+                          <button
+                            onClick={() => checkRegistration(wh)}
+                            className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1.5 rounded text-gray-300 transition-colors"
+                          >
+                            Check Status
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
 
                   <div className="space-y-1">
