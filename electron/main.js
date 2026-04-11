@@ -6,7 +6,7 @@
  * serves the pre-built React client from client/dist.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, shell, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { fork } from 'child_process';
@@ -29,18 +29,44 @@ let serverProcess = null;
 
 const CONNECTION_CONFIG_PATH = path.join(USER_DATA, 'connection.json');
 
+let cachedConnConfig = null;
+
 function readConnectionConfig() {
+  if (cachedConnConfig) return cachedConnConfig;
   try {
     if (existsSync(CONNECTION_CONFIG_PATH)) {
-      return JSON.parse(readFileSync(CONNECTION_CONFIG_PATH, 'utf-8'));
+      cachedConnConfig = JSON.parse(readFileSync(CONNECTION_CONFIG_PATH, 'utf-8'));
+      return cachedConnConfig;
     }
   } catch {}
-  return { mode: 'local', remoteUrl: '', apiKey: '' };
+  cachedConnConfig = { mode: 'local', remoteUrl: '', apiKey: '' };
+  return cachedConnConfig;
 }
 
 function writeConnectionConfig(config) {
   mkdirSync(path.dirname(CONNECTION_CONFIG_PATH), { recursive: true });
   writeFileSync(CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
+  cachedConnConfig = config;
+}
+
+// Inject the configured X-API-Key on every request to the remote host so the
+// initial page load (and all subsequent assets/fetches) is authenticated. The
+// React client also reads the key from localStorage/IPC, but it can't run
+// until the HTML loads — and the HTML load itself needs the header.
+function installRemoteApiKeyInjector() {
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const config = readConnectionConfig();
+    if (config.mode === 'remote' && config.remoteUrl && config.apiKey) {
+      try {
+        const reqHost = new URL(details.url).host;
+        const remoteHost = new URL(config.remoteUrl).host;
+        if (reqHost === remoteHost) {
+          details.requestHeaders['X-API-Key'] = config.apiKey;
+        }
+      } catch {}
+    }
+    callback({ requestHeaders: details.requestHeaders });
+  });
 }
 
 function isRemoteMode() {
@@ -269,6 +295,7 @@ function buildMenu() {
 
 app.whenReady().then(async () => {
   buildMenu();
+  installRemoteApiKeyInjector();
 
   // Always start the local server — it's lightweight and ensures switching
   // from a remote org to a local org works without an app restart.
