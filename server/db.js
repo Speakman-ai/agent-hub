@@ -922,6 +922,7 @@ function initDb(dataDir) {
     ),
     setCardPrUrl: db.prepare('UPDATE kanban_cards SET pr_url = ?, updated_at = datetime(\'now\') WHERE id = ?'),
     getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
+    getKanbanCardByPrUrl: db.prepare('SELECT * FROM kanban_cards WHERE pr_url = ? LIMIT 1'),
     getNextUndocumentedCard: db.prepare(
       `SELECT c.*, col.name as column_name FROM kanban_cards c
        JOIN kanban_columns col ON c.column_id = col.id
