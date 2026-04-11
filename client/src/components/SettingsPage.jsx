@@ -2271,22 +2271,27 @@ function UsageSection() {
   );
 }
 
-function ConfigBackupSection({ onAgentsChange }) {
+function ConfigBackupSection({ projects = [], onAgentsChange }) {
+  const [selectedProjectId, setSelectedProjectId] = useState('');
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [importError, setImportError] = useState(null);
   const [preview, setPreview] = useState(null);
+  const [importTargetId, setImportTargetId] = useState('');
 
   const handleExport = async () => {
+    if (!selectedProjectId) return;
     setExporting(true);
     try {
-      const data = await api.exportConfig();
+      const data = await api.exportProject(selectedProjectId);
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `agent-hub-export-${new Date().toISOString().split('T')[0]}.json`;
+      const proj = projects.find(p => p.id === selectedProjectId);
+      const safeName = (proj?.name || selectedProjectId).replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
+      a.download = `${safeName}-export-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -2308,12 +2313,15 @@ function ConfigBackupSection({ onAgentsChange }) {
     reader.onload = (ev) => {
       try {
         const data = JSON.parse(ev.target.result);
-        if (data.version !== 1 && data.version !== 2) {
-          setImportError('Invalid export file - expected version 1 or 2');
+        if (data.version === 3 && data.type === 'project') {
+          setPreview(data);
+        } else if (data.version === 1 || data.version === 2) {
+          setImportError('This is a legacy full-instance export. Per-project import requires a v3 project export file.');
           setPreview(null);
-          return;
+        } else {
+          setImportError('Invalid export file');
+          setPreview(null);
         }
-        setPreview(data);
       } catch {
         setImportError('Invalid JSON file');
         setPreview(null);
@@ -2323,12 +2331,12 @@ function ConfigBackupSection({ onAgentsChange }) {
   };
 
   const handleImport = async () => {
-    if (!preview) return;
+    if (!preview || !importTargetId) return;
     setImporting(true);
     setImportError(null);
     setImportResult(null);
     try {
-      const result = await api.importConfig(preview);
+      const result = await api.importProject(importTargetId, preview);
       setImportResult(result);
       setPreview(null);
       if (onAgentsChange) onAgentsChange();
@@ -2343,41 +2351,46 @@ function ConfigBackupSection({ onAgentsChange }) {
     setPreview(null);
     setImportResult(null);
     setImportError(null);
+    setImportTargetId('');
   };
 
   return (
     <div>
-      <h3 className="text-lg font-semibold mb-4">Export / Import Configuration</h3>
+      <h3 className="text-lg font-semibold mb-4">Export / Import Project</h3>
       <p className="text-sm text-gray-400 mb-6">
-        Export your Agent Hub configuration (agents, crons, rooms, Slack mappings) as a JSON file.
-        Import it on another instance to replicate your setup. Slack tokens are redacted on export
-        - you'll need to re-enter them manually. Agent workspace directories should be moved separately.
+        Export a project with its agents, kanban board, wiki, crons, rooms, and webhooks.
+        Import into an existing project on another instance to replicate your setup.
       </p>
 
       {/* Export */}
       <div className="bg-gray-800/50 rounded-lg p-4 mb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h4 className="font-medium mb-1">Export Configuration</h4>
-            <p className="text-sm text-gray-400">
-              Downloads agents, crons, rooms, and settings as a single JSON file.
-            </p>
-          </div>
+        <h4 className="font-medium mb-3">Export Project</h4>
+        <div className="flex items-center gap-3">
+          <select
+            value={selectedProjectId}
+            onChange={(e) => setSelectedProjectId(e.target.value)}
+            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+          >
+            <option value="">Select a project...</option>
+            {projects.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
           <button
             onClick={handleExport}
-            disabled={exporting}
+            disabled={exporting || !selectedProjectId}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 disabled:text-gray-400 text-white rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
           >
-            {exporting ? 'Exporting...' : 'Download Export'}
+            {exporting ? 'Exporting...' : 'Export'}
           </button>
         </div>
       </div>
 
       {/* Import */}
       <div className="bg-gray-800/50 rounded-lg p-4">
-        <h4 className="font-medium mb-1">Import Configuration</h4>
+        <h4 className="font-medium mb-3">Import Project</h4>
         <p className="text-sm text-gray-400 mb-3">
-          Upload a previously exported JSON file. Agents are overwritten; crons and rooms are merged by name (duplicates skipped).
+          Upload a project export file. Agents and settings are overwritten; crons, rooms, wiki, and webhooks are merged. Kanban boards are only created if no board exists yet.
         </p>
 
         {!preview && (
@@ -2395,24 +2408,20 @@ function ConfigBackupSection({ onAgentsChange }) {
         {preview && (
           <div className="mt-3">
             <div className="bg-gray-900 rounded-lg p-3 mb-3 text-sm">
-              <p className="text-gray-300 mb-2 font-medium">Preview:</p>
+              <p className="text-gray-300 mb-2 font-medium">Project: <span className="text-white">{preview.project?.name}</span></p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-400">
-                <span>Version:</span>
-                <span className="text-white">v{preview.version}</span>
-                {preview.projects && (
-                  <>
-                    <span>Projects:</span>
-                    <span className="text-white">{preview.projects?.length || 0}</span>
-                  </>
-                )}
                 <span>Agents:</span>
-                <span className="text-white">{preview.agents?.length || (preview.projects?.reduce((n, p) => n + (p.agents?.length || 0), 0) || 0)}</span>
+                <span className="text-white">{preview.project?.agents?.length || 0}</span>
+                <span>Kanban cards:</span>
+                <span className="text-white">{preview.kanban?.cards?.length || 0}</span>
+                <span>Wiki pages:</span>
+                <span className="text-white">{preview.wiki?.length || 0}</span>
                 <span>Crons:</span>
                 <span className="text-white">{preview.crons?.length || 0}</span>
                 <span>Rooms:</span>
                 <span className="text-white">{preview.rooms?.length || 0}</span>
-                <span>Slack accounts:</span>
-                <span className="text-white">{preview.slack?.accounts?.length || 0}</span>
+                <span>Webhooks:</span>
+                <span className="text-white">{preview.webhooks?.length || 0}</span>
                 {preview.exportedAt && (
                   <>
                     <span>Exported:</span>
@@ -2421,10 +2430,25 @@ function ConfigBackupSection({ onAgentsChange }) {
                 )}
               </div>
             </div>
+
+            <div className="mb-3">
+              <label className="block text-sm text-gray-400 mb-1">Import into project:</label>
+              <select
+                value={importTargetId}
+                onChange={(e) => setImportTargetId(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+              >
+                <option value="">Select target project...</option>
+                {projects.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+
             <div className="flex gap-2">
               <button
                 onClick={handleImport}
-                disabled={importing}
+                disabled={importing || !importTargetId}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 disabled:text-gray-400 text-white rounded-lg text-sm font-medium transition-colors"
               >
                 {importing ? 'Importing...' : 'Import'}
@@ -2512,7 +2536,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
         {tab === 'slack' && <SlackSection />}
         {tab === 'agents' && <AgentConfigSection agents={agents} projects={projects} onAgentsChange={onAgentsChange} />}
         {tab === 'usage' && <UsageSection />}
-        {tab === 'backup' && <ConfigBackupSection onAgentsChange={onAgentsChange} />}
+        {tab === 'backup' && <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />}
       </div>
     </div>
   );

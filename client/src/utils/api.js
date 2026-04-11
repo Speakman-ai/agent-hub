@@ -226,7 +226,12 @@ export const api = {
   updateConfig: (data) =>
     fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
 
-  // Config export/import
+  // Per-project export/import
+  exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),
+  importProject: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/import`, { method: 'POST', body: JSON.stringify(data) }),
+
+  // Legacy full-instance export/import
   exportConfig: () => fetchJSON('/config/export'),
   importConfig: (data) =>
     fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
