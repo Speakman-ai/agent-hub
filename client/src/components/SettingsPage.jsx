@@ -1712,6 +1712,19 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     return map;
   });
   const [projectCommandsSaved, setProjectCommandsSaved] = useState({});
+  const [projectWorkflow, setProjectWorkflow] = useState(() => {
+    const map = {};
+    projects.forEach(p => {
+      map[p.id] = {
+        autoMerge: p.githubWorkflow?.autoMerge || false,
+        autoReview: p.githubWorkflow?.autoReview !== false, // default true
+        waitForCI: p.githubWorkflow?.waitForCI || false,
+        waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
+      };
+    });
+    return map;
+  });
+  const [workflowSaved, setWorkflowSaved] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
 
   const saveProjectReviewer = async (projectId) => {
@@ -1736,6 +1749,26 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
       setProjectCommandsSaved(prev => ({ ...prev, [projectId]: true }));
       setTimeout(() => setProjectCommandsSaved(prev => ({ ...prev, [projectId]: false })), 2000);
     } catch {}
+  };
+
+  const toggleWorkflowSetting = async (projectId, key) => {
+    const current = projectWorkflow[projectId] || {};
+    const newValue = !current[key];
+    setProjectWorkflow(prev => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [key]: newValue },
+    }));
+    try {
+      await api.updateProject(projectId, { githubWorkflow: { [key]: newValue } });
+      setWorkflowSaved(prev => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setWorkflowSaved(prev => ({ ...prev, [projectId]: false })), 2000);
+    } catch {
+      // Revert on failure
+      setProjectWorkflow(prev => ({
+        ...prev,
+        [projectId]: { ...prev[projectId], [key]: !newValue },
+      }));
+    }
   };
 
   return (
@@ -1793,6 +1826,38 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                       >
                         {projectCommandsSaved[p.id] ? 'Saved' : 'Save Commands'}
                       </button>
+                    </div>
+                    {/* GitHub Workflow Settings */}
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-gray-400 font-semibold">GitHub Workflow</label>
+                        {workflowSaved[p.id] && <span className="text-xs text-emerald-400">Saved</span>}
+                      </div>
+                      {[
+                        { key: 'autoReview', label: 'Auto Review', desc: 'Lead agent automatically reviews every PR' },
+                        { key: 'autoMerge', label: 'Auto Merge', desc: 'Lead agent merges approved PRs automatically' },
+                        { key: 'waitForCI', label: 'Wait for CI', desc: 'Wait for all GitHub checks to pass before approving' },
+                        { key: 'waitForResolvedComments', label: 'Wait for Resolved Comments', desc: 'Wait for all review comments to be resolved' },
+                      ].map(({ key, label, desc }) => (
+                        <div key={key} className="flex items-center justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <span className="text-sm text-gray-200">{label}</span>
+                            <p className="text-xs text-gray-500 truncate">{desc}</p>
+                          </div>
+                          <button
+                            onClick={() => toggleWorkflowSetting(p.id, key)}
+                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
+                              projectWorkflow[p.id]?.[key] ? 'bg-emerald-600' : 'bg-gray-600'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                                projectWorkflow[p.id]?.[key] ? 'translate-x-4' : 'translate-x-0.5'
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
