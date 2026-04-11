@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Building2, BookOpen, Settings, Clock, LayoutGrid, FileText, Eye } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../utils/humanCron.js';
@@ -13,6 +13,7 @@ export default function Sidebar({
   onSelectSession,
   onNewSession,
   onDeleteSession,
+  onRenameSession,
   onNavigate,
   currentView,
   activeTaskSessionIds = {},
@@ -33,6 +34,9 @@ export default function Sidebar({
   const [showNewRoomInput, setShowNewRoomInput] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [collapsedAgents, setCollapsedAgents] = useState({});
+  const [editingSessionId, setEditingSessionId] = useState(null);
+  const [editingSessionName, setEditingSessionName] = useState('');
+  const renameSavedRef = useRef(false);
 
   const toggleProjectCollapse = (projectId, e) => {
     e.stopPropagation();
@@ -246,6 +250,7 @@ export default function Sidebar({
                               <div className="ml-5 mb-2">
                                 {sessions.map((session) => {
                                   const isRunning = !!activeTaskSessionIds[session.id];
+                                  const isEditing = editingSessionId === session.id;
                                   return (
                                     <div
                                       key={session.id}
@@ -257,22 +262,56 @@ export default function Sidebar({
                                           : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
                                       }`}
                                     >
-                                      <button
-                                        onClick={() => {
-                                          onSelectSession(session.id);
-                                          onNavigate('chat');
-                                        }}
-                                        className="flex-1 text-left px-2 py-2 md:py-1.5 truncate text-xs flex items-center gap-1.5"
-                                      >
-                                        {isRunning && (
-                                          <span
-                                            className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
-                                            title="Task running"
-                                          />
-                                        )}
-                                        <span className="truncate">{session.name}</span>
-                                      </button>
-                                      {hoveredSession === session.id && (
+                                      {isEditing ? (
+                                        <input
+                                          autoFocus
+                                          value={editingSessionName}
+                                          onChange={(e) => setEditingSessionName(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && editingSessionName.trim()) {
+                                              renameSavedRef.current = true;
+                                              onRenameSession(session.id, editingSessionName.trim());
+                                              setEditingSessionId(null);
+                                            } else if (e.key === 'Escape') {
+                                              renameSavedRef.current = true;
+                                              setEditingSessionId(null);
+                                            }
+                                          }}
+                                          onBlur={() => {
+                                            if (renameSavedRef.current) {
+                                              renameSavedRef.current = false;
+                                              return;
+                                            }
+                                            if (editingSessionName.trim() && editingSessionName.trim() !== session.name) {
+                                              onRenameSession(session.id, editingSessionName.trim());
+                                            }
+                                            setEditingSessionId(null);
+                                          }}
+                                          className="flex-1 text-xs bg-gray-700 text-gray-200 px-2 py-1.5 md:py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500 mx-1"
+                                        />
+                                      ) : (
+                                        <button
+                                          onClick={() => {
+                                            onSelectSession(session.id);
+                                            onNavigate('chat');
+                                          }}
+                                          onDoubleClick={(e) => {
+                                            e.stopPropagation();
+                                            setEditingSessionId(session.id);
+                                            setEditingSessionName(session.name);
+                                          }}
+                                          className="flex-1 text-left px-2 py-2 md:py-1.5 truncate text-xs flex items-center gap-1.5"
+                                        >
+                                          {isRunning && (
+                                            <span
+                                              className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
+                                              title="Task running"
+                                            />
+                                          )}
+                                          <span className="truncate">{session.name}</span>
+                                        </button>
+                                      )}
+                                      {hoveredSession === session.id && !isEditing && (
                                         <button
                                           onClick={(e) => {
                                             e.stopPropagation();

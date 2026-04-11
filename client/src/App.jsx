@@ -981,6 +981,13 @@ export default function App() {
     }
   };
 
+  const handleRenameSession = async (sessionId, newName) => {
+    await api.renameSession(sessionId, newName);
+    setSessions((prev) =>
+      prev.map((s) => (s.id === sessionId ? { ...s, name: newName } : s))
+    );
+  };
+
   const handleCancel = () => {
     if (activeSessionId) {
       send({ type: 'cancel', sessionId: activeSessionId });
@@ -1112,6 +1119,7 @@ export default function App() {
           }}
           onNewSession={handleNewSession}
           onDeleteSession={handleDeleteSession}
+          onRenameSession={handleRenameSession}
           onNavigate={(view, extra) => {
             setCurrentView(view);
             if (view === 'wiki' && extra) setWikiProjectId(extra);
