@@ -126,6 +126,7 @@ const ENGINE_BADGES = {
 function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
   const isUser = message.role === 'user';
   const isQueued = message.queued;
+  const isInterrupted = message.interrupted;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(message.content);
   const editRef = React.useRef(null);
@@ -165,7 +166,9 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
           isUser
             ? isQueued
               ? 'bg-blue-600/40 border border-blue-500/30 rounded-2xl rounded-br-md px-4 py-2.5'
-              : 'bg-blue-600 rounded-2xl rounded-br-md px-4 py-2.5'
+              : isInterrupted
+                ? 'bg-amber-600/80 border border-amber-500/30 rounded-2xl rounded-br-md px-4 py-2.5'
+                : 'bg-blue-600 rounded-2xl rounded-br-md px-4 py-2.5'
             : 'bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3'
         }`}
       >
@@ -215,6 +218,18 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
                 ✕ Remove
               </button>
             )}
+          </div>
+        )}
+
+        {/* Interrupted indicator */}
+        {isInterrupted && (
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-xs text-amber-300/70 font-medium flex items-center gap-1">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              Interrupted
+            </span>
           </div>
         )}
 

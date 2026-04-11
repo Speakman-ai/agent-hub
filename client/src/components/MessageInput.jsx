@@ -137,10 +137,12 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     }
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = ({ interrupt = false } = {}) => {
     const trimmed = value.trim();
     if ((!trimmed && images.length === 0) || disabled) return;
-    onSend(trimmed || '(image attached)', images);
+    // During processing: default is interrupt, shift+enter queues
+    const shouldInterrupt = isProcessing && interrupt;
+    onSend(trimmed || '(image attached)', images, { interrupt: shouldInterrupt });
     setValue('');
     setImages([]);
     closeSlash();
@@ -174,7 +176,8 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      // During processing: Enter = interrupt (stop + send), messages are queued by default
+      handleSubmit({ interrupt: isProcessing });
     }
     if (e.key === 'Escape' && isProcessing) {
       onCancel?.();
@@ -347,30 +350,47 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
             </svg>
           </button>
         )}
-        <button
-          onClick={handleSubmit}
-          disabled={disabled || (!value.trim() && images.length === 0)}
-          className="px-4 py-3 rounded-xl font-medium text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:brightness-110 active:scale-95"
-          style={{
-            backgroundColor: disabled ? '#4b5563' : agentColor || '#4F46E5',
-          }}
-          title={isProcessing ? 'Send (will be queued)' : 'Send'}
-        >
-          {isProcessing ? (
-            <div className="flex items-center gap-1.5">
+        {isProcessing && value.trim() ? (
+          /* During processing with text: show Interrupt button (Enter) */
+          <button
+            onClick={() => handleSubmit({ interrupt: true })}
+            disabled={disabled}
+            className="px-3 py-3 rounded-xl font-medium text-white bg-amber-600 hover:bg-amber-500 transition-all active:scale-95 flex items-center gap-1.5"
+            title="Interrupt agent and send this message (Enter)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            {queueLength > 0 && (
+              <span className="text-xs bg-white/20 rounded-full px-1.5">{queueLength}</span>
+            )}
+          </button>
+        ) : (
+          <button
+            onClick={() => handleSubmit()}
+            disabled={disabled || (!value.trim() && images.length === 0)}
+            className="px-4 py-3 rounded-xl font-medium text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:brightness-110 active:scale-95"
+            style={{
+              backgroundColor: disabled ? '#4b5563' : agentColor || '#4F46E5',
+            }}
+            title={isProcessing ? 'Send (will be queued)' : 'Send'}
+          >
+            {isProcessing ? (
+              <div className="flex items-center gap-1.5">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+                </svg>
+                {queueLength > 0 && (
+                  <span className="text-xs bg-white/20 rounded-full px-1.5">{queueLength}</span>
+                )}
+              </div>
+            ) : (
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                 <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
               </svg>
-              {queueLength > 0 && (
-                <span className="text-xs bg-white/20 rounded-full px-1.5">{queueLength}</span>
-              )}
-            </div>
-          ) : (
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-            </svg>
-          )}
-        </button>
+            )}
+          </button>
+        )}
       </div>
 
       {/* Drag overlay hint */}

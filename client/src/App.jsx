@@ -326,6 +326,14 @@ export default function App() {
           }
         }
         break;
+      case 'interrupted':
+        if (forActiveSession) {
+          setThinking(false);
+          setStreamingContent('');
+          setStreamingMsgId(null);
+          setStreamingEngine(null);
+        }
+        break;
 
       // ─── Conference Room events ─────────────────────────────
       case 'room_message':
@@ -1000,7 +1008,7 @@ export default function App() {
     }
   };
 
-  const handleSend = async (content, images = []) => {
+  const handleSend = async (content, images = [], { interrupt = false } = {}) => {
     let sessionId = activeSessionId;
     if (!sessionId) {
       const session = await api.createSession(activeAgentId);
@@ -1028,6 +1036,7 @@ export default function App() {
       sessionId,
       content,
       ...(uploadedImages.length > 0 ? { images: uploadedImages } : {}),
+      ...(interrupt ? { interrupt: true } : {}),
     });
   };
 

@@ -843,6 +843,9 @@ function initDb(dataDir) {
     getMaxQueuePosition: db.prepare(
       'SELECT MAX(position) as max_pos FROM message_queue WHERE session_id = ?'
     ),
+    getMinQueuePosition: db.prepare(
+      'SELECT MIN(position) as min_pos FROM message_queue WHERE session_id = ?'
+    ),
     updateQueueMessage: db.prepare(
       'UPDATE message_queue SET content = ? WHERE id = ?'
     ),
