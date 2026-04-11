@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, GripVertical, MoreHorizontal, X, MessageSquare, ExternalLink, Trash2, Zap, Target, ChevronDown, Settings, Search } from 'lucide-react';
+import { Plus, GripVertical, MoreHorizontal, X, MessageSquare, ExternalLink, Trash2, Zap, Target, ChevronDown, Settings, Search, GitPullRequest } from 'lucide-react';
 import { api } from '../utils/api.js';
 
 const PRIORITY_STYLES = {
@@ -188,6 +188,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
         assignee: detailForm.assignee,
         labels: detailForm.labels,
         githubIssueUrl: detailForm.github_issue_url,
+        prUrl: detailForm.pr_url,
       });
       fetchBoard();
       setSelectedCard(null);
@@ -234,6 +235,7 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
       assignee: card.assignee || '',
       labels: card.labels || '',
       github_issue_url: card.github_issue_url || '',
+      pr_url: card.pr_url || '',
       epic_id: card.epic_id || '',
     });
     setConfirmDelete(false);
@@ -642,6 +644,19 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                               </p>
                             )}
                             <div className="flex items-center gap-2 mt-2 flex-wrap">
+                              {card.pr_url && (
+                                <a
+                                  href={card.pr_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="text-xs text-gray-500 hover:text-indigo-400 flex items-center gap-1"
+                                  title={card.pr_url}
+                                >
+                                  <GitPullRequest size={12} />
+                                  #{card.pr_url.match(/\d+$/)?.[0] || 'PR'}
+                                </a>
+                              )}
                               {card.assignee && (
                                 <span className={`text-xs ${card.session_id ? 'text-indigo-400' : 'text-gray-400'}`}>
                                   {card.session_id ? '● ' : ''}{card.assignee}
@@ -863,9 +878,9 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                 ))}
               </select>
 
-              {/* GitHub URL */}
-              <label className="block text-xs text-gray-500 mb-1">GitHub URL</label>
-              <div className="flex items-center gap-2 mb-6">
+              {/* GitHub Issue URL */}
+              <label className="block text-xs text-gray-500 mb-1">GitHub Issue URL</label>
+              <div className="flex items-center gap-2 mb-3">
                 <input
                   type="text"
                   value={detailForm.github_issue_url}
@@ -876,6 +891,28 @@ export default function KanbanBoard({ projectId, project, agents = [], refreshKe
                 {detailForm.github_issue_url && (
                   <a
                     href={detailForm.github_issue_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-gray-500 hover:text-gray-300"
+                  >
+                    <ExternalLink size={16} />
+                  </a>
+                )}
+              </div>
+
+              {/* PR URL */}
+              <label className="block text-xs text-gray-500 mb-1">Pull Request</label>
+              <div className="flex items-center gap-2 mb-6">
+                <input
+                  type="text"
+                  value={detailForm.pr_url}
+                  onChange={(e) => setDetailForm((f) => ({ ...f, pr_url: e.target.value }))}
+                  placeholder="https://github.com/.../pull/123"
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
+                />
+                {detailForm.pr_url && (
+                  <a
+                    href={detailForm.pr_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-gray-500 hover:text-gray-300"
