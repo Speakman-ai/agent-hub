@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { Building2, BookOpen, Settings, Clock, LayoutGrid, FileText, Eye } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
-import humanCron from '../utils/humanCron.js';
+import humanCron from '../../../shared/utils/humanCron.js';
 
 export default function Sidebar({
   projects = [],

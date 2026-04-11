@@ -16,6 +16,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
+import humanCron from '../../../shared/utils/humanCron';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, testConnection, loadOrgs } from '../utils/orgs';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -532,7 +533,7 @@ function HeartbeatSection() {
               <View style={styles.cardInfo}>
                 <View style={styles.row}>
                   <Text style={styles.cardName}>{hb.agentName}</Text>
-                  <Text style={styles.mono}>{hb.heartbeat.interval || 'not set'}</Text>
+                  <Text style={styles.mono}>{hb.heartbeat.interval ? humanCron(hb.heartbeat.interval) : 'not set'}</Text>
                 </View>
                 <Text style={styles.cardSubtext} numberOfLines={1}>
                   {hb.heartbeat.prompt || 'No prompt configured'}
@@ -774,7 +775,7 @@ function CronSection() {
               <View style={styles.cardInfo}>
                 <View style={styles.row}>
                   <Text style={styles.cardName}>{cronJob.name}</Text>
-                  <Text style={styles.mono}>{cronJob.schedule}</Text>
+                  <Text style={styles.mono}>{humanCron(cronJob.schedule)}</Text>
                 </View>
                 <Text style={styles.cardSubtext} numberOfLines={1}>
                   {cronJob.prompt}

@@ -39,6 +39,12 @@ export default function humanCron(expression) {
     return n === 1 ? 'Every minute' : `Every ${n} minutes`;
   }
 
+  // Specific minutes list: 0,30 * * * * → "Every hour at :00 and :30"
+  if (minute.includes(',') && hour === '*' && dom === '*' && dow === '*') {
+    const mins = minute.split(',').map((m) => `:${String(parseInt(m)).padStart(2, '0')}`);
+    return `Every hour at ${mins.join(' and ')}`;
+  }
+
   // Every hour: 0 * * * *
   if (/^\d+$/.test(minute) && hour === '*' && dom === '*' && dow === '*') {
     const m = parseInt(minute);
@@ -72,6 +78,16 @@ export default function humanCron(expression) {
       return `${describeDow(dow)} at ${timeStr}`;
     }
 
+    // Hour range with step: 0 9-17/2 * * * → "Every 2 hours 9:00 AM - 5:00 PM"
+    if (hour.includes('-') && hour.includes('/')) {
+      const [range, step] = hour.split('/');
+      const [start, end] = range.split('-').map(Number);
+      const n = parseInt(step);
+      const timeRange = `${formatHour(start, m)} - ${formatHour(end, m)}`;
+      if (dow === '*') return `Every ${n} hours ${timeRange}`;
+      return `${describeDow(dow)} every ${n} hours ${timeRange}`;
+    }
+
     // Hour range: 0 9-17 * * *
     if (hour.includes('-') && !hour.includes('/')) {
       const [start, end] = hour.split('-').map(Number);
@@ -81,7 +97,7 @@ export default function humanCron(expression) {
     }
   }
 
-  // Monthly: 0 9 1 * *
+  // Monthly on specific day: 0 9 1 * *
   if (
     /^\d+$/.test(minute) &&
     /^\d+$/.test(hour) &&
@@ -92,6 +108,13 @@ export default function humanCron(expression) {
     return `${ordinal(parseInt(dom))} of every month at ${formatHour(parseInt(hour), parseInt(minute))}`;
   }
 
+  // Yearly / specific month: 0 9 1 6 *
+  if (/^\d+$/.test(minute) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && /^\d+$/.test(month) && dow === '*') {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthName = months[parseInt(month) - 1] || month;
+    return `${monthName} ${ordinal(parseInt(dom))} at ${formatHour(parseInt(hour), parseInt(minute))}`;
+  }
+
   // Fallback — return the raw expression
   return expression;
 }
@@ -99,16 +122,28 @@ export default function humanCron(expression) {
 function describeDow(dow) {
   if (dow === '*') return 'Daily';
   if (dow === '1-5' || dow === 'MON-FRI') return 'Weekdays';
-  if (dow === '0,6' || dow === 'SAT,SUN') return 'Weekends';
+  if (dow === '0,6' || dow === 'SAT,SUN' || dow === '6,0') return 'Weekends';
+
+  // Day range: 1-3 → "Mon - Wed"
+  if (/^\d-\d$/.test(dow)) {
+    const [start, end] = dow.split('-').map(Number);
+    return `${dayName(start)} - ${dayName(end)}`;
+  }
 
   // Single day
   if (/^\d$/.test(dow)) return `${dayName(parseInt(dow))}s`;
 
   // Comma-separated days
   if (dow.includes(',')) {
-    const days = dow.split(',').map((d) => dayName(parseInt(d)));
+    const days = dow.split(',').map((d) => {
+      const n = parseInt(d);
+      return isNaN(n) ? d : dayName(n);
+    });
     return days.join(', ');
   }
+
+  // Named days (MON, TUE, etc.)
+  if (/^[A-Z]{3}$/.test(dow)) return dow.charAt(0) + dow.slice(1).toLowerCase() + 's';
 
   return dow;
 }

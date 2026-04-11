@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
-import humanCron from '../utils/humanCron.js';
+import humanCron from '../../../shared/utils/humanCron.js';
 import { testConnection, getAuthHeaders, getApiBase, getServerBase } from '../utils/connection.js';
 import {
   getOrgs,
@@ -30,8 +30,10 @@ import {
   User,
   Plus,
   Trash2,
+  Check,
   ArrowRightLeft,
   Webhook,
+  Globe,
 } from 'lucide-react';
 
 function OrganizationsSection() {
@@ -653,8 +655,8 @@ function HeartbeatSection() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-sm">{hb.agentName}</span>
-                    <span className="text-xs text-gray-500 font-mono">
-                      {hb.heartbeat.interval || 'not set'}
+                    <span className="text-xs text-gray-500 font-mono" title={hb.heartbeat.interval}>
+                      {hb.heartbeat.interval ? humanCron(hb.heartbeat.interval) : 'not set'}
                     </span>
                     {hb.heartbeat.enabled &&
                       hb.state?.next_run_at &&
