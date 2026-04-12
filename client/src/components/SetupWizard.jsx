@@ -95,27 +95,27 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   const [claudePath, setClaudePath] = useState(claudeEngine.path || '');
   const [claudeEnabled, setClaudeEnabled] = useState(claudeEngine.available || false);
 
-  const handleOrgContinue = () => {
+  const handleOrgContinue = async () => {
     if (!orgName.trim()) return;
     // If an org already exists (e.g. the legacy-migrated "Default"), update it
     // in place so first-run setup doesn't leave a stale duplicate behind.
     const existing = getActiveOrg();
     if (existing) {
-      updateOrg(existing.id, {
+      await updateOrg(existing.id, {
         name: orgName.trim(),
         mode: orgMode,
         remoteUrl: orgRemoteUrl,
         apiKey: orgApiKey,
       });
     } else {
-      const org = createOrg({
+      const org = await createOrg({
         name: orgName.trim(),
         mode: orgMode,
         remoteUrl: orgRemoteUrl,
         apiKey: orgApiKey,
         color: '#6366f1',
       });
-      switchOrg(org.id);
+      await switchOrg(org.id);
     }
     setStep(3);
   };

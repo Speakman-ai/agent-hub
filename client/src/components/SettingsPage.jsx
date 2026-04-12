@@ -79,18 +79,17 @@ function OrganizationsSection() {
       name: org.name,
       mode: org.mode,
       color: org.color,
-      remoteUrl: org.remoteUrl || '',
-      apiKey: org.apiKey || '',
+      remoteUrl: org.remote_url || org.remoteUrl || '',
+      apiKey: org.api_key || org.apiKey || '',
     });
     setExpandedOrgId(orgId);
     setTestResult(null);
   };
 
-  const handleSaveEdit = (orgId) => {
-    updateOrg(orgId, editForm);
+  const handleSaveEdit = async (orgId) => {
+    await updateOrg(orgId, editForm);
     refreshOrgs();
     setExpandedOrgId(null);
-    // If it's the active org, reload to pick up connection changes
     if (activeOrg?.id === orgId) {
       window.location.reload();
     }
@@ -100,7 +99,6 @@ function OrganizationsSection() {
     if (await deleteOrg(orgId)) {
       refreshOrgs();
       setExpandedOrgId(null);
-      // If we deleted the active org, the deleteOrg function switched to another — reload
       if (activeOrg?.id === orgId) {
         window.location.reload();
       }
@@ -124,9 +122,9 @@ function OrganizationsSection() {
     setTesting(false);
   };
 
-  const handleCreateOrg = () => {
+  const handleCreateOrg = async () => {
     if (!newForm.name.trim()) return;
-    createOrg(newForm);
+    await createOrg(newForm);
     refreshOrgs();
     setShowNewForm(false);
     setNewForm({ name: '', mode: 'local', color: '#6366f1', remoteUrl: '', apiKey: '' });

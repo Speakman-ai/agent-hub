@@ -17,7 +17,7 @@ import WikiBrowser from './components/WikiBrowser.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 import { MessageCircle, Info, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
-import { migrateFromLegacy, getActiveOrg, getOrgs } from './utils/orgs.js';
+import { migrateFromLegacy, fetchOrgs, getActiveOrg, getOrgs } from './utils/orgs.js';
 import { getApiBase, getAuthHeaders } from './utils/connection.js';
 
 export default function App() {
@@ -751,18 +751,18 @@ export default function App() {
   // Sequential: org/switch must complete before we fetch data, otherwise
   // the server might still be pointed at the previous org.
   useEffect(() => {
-    migrateFromLegacy();
-
     const init = async () => {
+      // Step 0: Migrate legacy localStorage orgs to server, then fetch org list
+      await migrateFromLegacy();
+      await fetchOrgs();
+
       // Step 1: For local orgs, tell the local server which org's data to serve.
-      // Remote servers manage their own org state — just fetch from them directly.
       const activeOrg = getActiveOrg();
       if (activeOrg && activeOrg.mode !== 'remote') {
         try {
-          await fetch(`${getApiBase()}/org/switch`, {
+          await fetch(`${getApiBase()}/orgs/${activeOrg.id}/switch`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ orgId: activeOrg.id }),
           });
         } catch {} // server may not support it yet
       }

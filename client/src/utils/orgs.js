@@ -1,88 +1,110 @@
 /**
- * Organization (connection profile) management.
+ * Organization management — hybrid approach.
  *
- * Each org is a named connection profile stored in localStorage.
- * Switching orgs syncs connection fields into `connection.js` and
- * tells the server to switch its data directory (each org gets
- * an isolated database and projects.json).
+ * LOCAL orgs: stored on the server in SQLite (survive browser clears).
+ *   These represent data-isolated workspaces on the current server.
+ *
+ * REMOTE orgs: stored in localStorage as connection bookmarks.
+ *   These are pointers to other Agent Hub servers. They must live client-side
+ *   because you need them to know WHERE to connect — the server can't serve
+ *   them if you're not connected to it yet.
+ *
+ * The unified org list shown in the UI is a merge of both sources.
  */
 
-import {
-  getConnectionConfig,
-  saveConnectionConfig,
-  getApiBase,
-  getAuthHeaders,
-} from './connection.js';
+import { getApiBase, getAuthHeaders, saveConnectionConfig } from './connection.js';
 
-const STORAGE_KEY = 'agent-hub-orgs';
+const REMOTE_ORGS_KEY = 'agent-hub-remote-orgs';
 
-/** Generate a short random ID. */
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
+// ─── In-memory cache ──────────────────────────────────────────────
+let _localOrgs = []; // from server
+let _remoteOrgs = []; // from localStorage
+let _activeOrgId = localStorage.getItem('agent-hub-active-org') || null;
+
+/** Get the merged list of all orgs (local + remote). */
+function allOrgs() {
+  return [..._localOrgs, ..._remoteOrgs];
 }
 
-/** Read the full orgs state from localStorage (or null if none). */
-export function getOrgs() {
+// ─── Remote orgs (localStorage) ──────────────────────────────────
+
+function loadRemoteOrgs() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(REMOTE_ORGS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.orgs) && parsed.orgs.length > 0) {
-        return parsed;
-      }
+      _remoteOrgs = JSON.parse(raw);
+      return;
     }
   } catch {}
-  return null;
+  _remoteOrgs = [];
 }
 
-/** Persist the full orgs state. */
-function saveOrgs(state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+function saveRemoteOrgs() {
+  localStorage.setItem(REMOTE_ORGS_KEY, JSON.stringify(_remoteOrgs));
 }
 
-/** Sync an org's connection fields into the shared connection config. */
-function syncToConnection(org) {
-  saveConnectionConfig({
-    mode: org.mode || 'local',
-    remoteUrl: org.remoteUrl || '',
-    apiKey: org.apiKey || '',
-  });
+// ─── Public API ───────────────────────────────────────────────────
+
+/** Fetch local orgs from server + load remote orgs from localStorage. */
+export async function fetchOrgs() {
+  // Load remote orgs from localStorage
+  loadRemoteOrgs();
+
+  // Fetch local orgs from the server
+  try {
+    const res = await fetch(`${getApiBase()}/orgs`, { headers: getAuthHeaders() });
+    if (res.ok) {
+      _localOrgs = await res.json();
+    }
+  } catch {
+    // Server may not be reachable — keep whatever was cached
+  }
+
+  // If no active org set, default to first
+  const merged = allOrgs();
+  if (!_activeOrgId && merged.length > 0) {
+    _activeOrgId = merged[0].id;
+    localStorage.setItem('agent-hub-active-org', _activeOrgId);
+  }
+
+  return { orgs: merged, activeOrgId: _activeOrgId };
 }
 
-/** Get the currently active org, or null. */
+/** Get cached orgs (synchronous). Returns { orgs, activeOrgId } or null. */
+export function getOrgs() {
+  const merged = allOrgs();
+  if (merged.length === 0) return null;
+  return { orgs: merged, activeOrgId: _activeOrgId };
+}
+
+/** Get the active org from cache. */
 export function getActiveOrg() {
-  const state = getOrgs();
-  if (!state) return null;
-  return state.orgs.find((o) => o.id === state.activeOrgId) || state.orgs[0] || null;
+  const merged = allOrgs();
+  if (merged.length === 0) return null;
+  return merged.find((o) => o.id === _activeOrgId) || merged[0] || null;
 }
 
 /**
  * Switch to a different org by ID.
- * Updates the connection config FIRST (so subsequent API calls target the
- * correct server), then tells that server to switch its data directory.
- * Returns a promise — await it before reloading the page.
+ * For local orgs: tells the server to switch data directories.
+ * For remote orgs: updates connection config to point at the remote server.
  */
 export async function switchOrg(orgId) {
-  const state = getOrgs();
-  if (!state) return;
-  const org = state.orgs.find((o) => o.id === orgId);
+  const merged = allOrgs();
+  const org = merged.find((o) => o.id === orgId);
   if (!org) return;
 
-  // Update connection config BEFORE making any API calls so getApiBase()
-  // returns the TARGET server URL, not the previous one.
-  state.activeOrgId = orgId;
-  saveOrgs(state);
+  _activeOrgId = orgId;
+  localStorage.setItem('agent-hub-active-org', orgId);
+
   syncToConnection(org);
 
-  // For local orgs, tell the local server to switch its data directory.
-  // Remote servers manage their own org state — don't send client-side
-  // org IDs to them (it would create empty data directories).
+  // For local orgs, tell the server to switch its data directory
   if (org.mode !== 'remote') {
     try {
-      await fetch(`${getApiBase()}/org/switch`, {
+      await fetch(`${getApiBase()}/orgs/${orgId}/switch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ orgId }),
       });
     } catch (err) {
       console.warn('[Orgs] Server switch failed:', err.message);
@@ -90,93 +112,182 @@ export async function switchOrg(orgId) {
   }
 }
 
-/** Create a new org and add it to the list. Returns the new org. */
-export function createOrg({
+/** Create a new org. Returns the created org. */
+export async function createOrg({
   name,
   mode = 'local',
   remoteUrl = '',
   apiKey = '',
   color = '#6366f1',
 }) {
-  const org = {
-    id: uid(),
-    name,
-    mode,
-    color,
-    remoteUrl,
-    apiKey,
-    createdAt: new Date().toISOString(),
-  };
-
-  const state = getOrgs() || { activeOrgId: null, orgs: [] };
-  state.orgs.push(org);
-  // If this is the first org, make it active
-  if (!state.activeOrgId) {
-    state.activeOrgId = org.id;
-    syncToConnection(org);
+  if (mode === 'remote') {
+    // Remote orgs are stored in localStorage
+    const org = {
+      id: uid(),
+      name,
+      mode: 'remote',
+      color,
+      remote_url: remoteUrl,
+      api_key: apiKey,
+      created_at: new Date().toISOString(),
+    };
+    _remoteOrgs.push(org);
+    saveRemoteOrgs();
+    return org;
   }
-  saveOrgs(state);
+
+  // Local orgs go to the server
+  const res = await fetch(`${getApiBase()}/orgs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ name, mode, color, remoteUrl, apiKey }),
+  });
+  if (!res.ok) throw new Error('Failed to create org');
+  const org = await res.json();
+  await fetchOrgs();
   return org;
 }
 
-/** Update an existing org. If it's the active org, sync connection config. */
-export function updateOrg(orgId, updates) {
-  const state = getOrgs();
-  if (!state) return null;
-  const idx = state.orgs.findIndex((o) => o.id === orgId);
-  if (idx === -1) return null;
-  state.orgs[idx] = { ...state.orgs[idx], ...updates };
-  saveOrgs(state);
-  // If this is the active org, sync connection
-  if (state.activeOrgId === orgId) {
-    syncToConnection(state.orgs[idx]);
+/** Update an existing org. Returns the updated org. */
+export async function updateOrg(orgId, updates) {
+  // Check if it's a remote org
+  const remoteIdx = _remoteOrgs.findIndex((o) => o.id === orgId);
+  if (remoteIdx !== -1) {
+    _remoteOrgs[remoteIdx] = { ..._remoteOrgs[remoteIdx], ...updates };
+    // Normalize field names for remote orgs
+    if (updates.remoteUrl !== undefined) _remoteOrgs[remoteIdx].remote_url = updates.remoteUrl;
+    if (updates.apiKey !== undefined) _remoteOrgs[remoteIdx].api_key = updates.apiKey;
+    saveRemoteOrgs();
+    if (_activeOrgId === orgId) syncToConnection(_remoteOrgs[remoteIdx]);
+    return _remoteOrgs[remoteIdx];
   }
-  return state.orgs[idx];
+
+  // Local org — update on server
+  const res = await fetch(`${getApiBase()}/orgs/${orgId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error('Failed to update org');
+  const org = await res.json();
+  await fetchOrgs();
+  if (_activeOrgId === orgId) syncToConnection(org);
+  return org;
 }
 
-/** Delete an org. Cannot delete the last one. Returns true if deleted. */
+/** Delete an org. Cannot delete the last org overall. Returns true if deleted. */
 export async function deleteOrg(orgId) {
-  const state = getOrgs();
-  if (!state || state.orgs.length <= 1) return false;
-  state.orgs = state.orgs.filter((o) => o.id !== orgId);
-  // If we deleted the active org, switch to the first remaining
-  if (state.activeOrgId === orgId) {
-    const newActive = state.orgs[0];
-    state.activeOrgId = newActive.id;
-    saveOrgs(state);
-    syncToConnection(newActive);
-    // Tell server to switch data directory
-    if (newActive.mode !== 'remote') {
-      try {
-        await fetch(`${getApiBase()}/org/switch`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ orgId: newActive.id }),
-        });
-      } catch {}
-    }
+  const merged = allOrgs();
+  if (merged.length <= 1) return false;
+
+  // Check if it's a remote org
+  const remoteIdx = _remoteOrgs.findIndex((o) => o.id === orgId);
+  if (remoteIdx !== -1) {
+    _remoteOrgs.splice(remoteIdx, 1);
+    saveRemoteOrgs();
   } else {
-    saveOrgs(state);
+    // Local org — delete on server
+    const res = await fetch(`${getApiBase()}/orgs/${orgId}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) return false;
+    await fetchOrgs();
+  }
+
+  // If we deleted the active org, switch to first remaining
+  if (_activeOrgId === orgId) {
+    const remaining = allOrgs()[0];
+    if (remaining) {
+      await switchOrg(remaining.id);
+    }
   }
   return true;
 }
 
 /**
- * Migrate from legacy connection config to org system.
- * Call on first load if getOrgs() returns null.
- * Creates a "Default" org from the existing connection config.
+ * Migrate from legacy localStorage orgs to the hybrid system.
+ * - Local legacy orgs → pushed to server
+ * - Remote legacy orgs → moved to REMOTE_ORGS_KEY localStorage
  */
-export function migrateFromLegacy() {
-  if (getOrgs()) return; // already migrated
-  const conn = getConnectionConfig();
-  const org = {
-    id: 'default', // Special ID — maps to the server's original data directory
-    name: 'Default',
-    mode: conn.mode || 'local',
-    color: '#6366f1',
-    remoteUrl: conn.remoteUrl || '',
-    apiKey: conn.apiKey || '',
-    createdAt: new Date().toISOString(),
-  };
-  saveOrgs({ activeOrgId: org.id, orgs: [org] });
+export async function migrateFromLegacy() {
+  const LEGACY_KEY = 'agent-hub-orgs';
+  const raw = localStorage.getItem(LEGACY_KEY);
+  if (!raw) return;
+
+  try {
+    const legacy = JSON.parse(raw);
+    if (!legacy || !Array.isArray(legacy.orgs) || legacy.orgs.length === 0) return;
+
+    // Check if server already has orgs beyond default — don't double-migrate
+    const serverOrgs = await fetchOrgs();
+    if (serverOrgs && serverOrgs.orgs.length > 1) {
+      localStorage.removeItem(LEGACY_KEY);
+      return;
+    }
+
+    const remotes = [];
+
+    for (const legacyOrg of legacy.orgs) {
+      if (legacyOrg.id === 'default') continue;
+
+      if (legacyOrg.mode === 'remote') {
+        // Remote orgs stay in localStorage (new key)
+        remotes.push({
+          id: legacyOrg.id,
+          name: legacyOrg.name,
+          mode: 'remote',
+          color: legacyOrg.color || '#6366f1',
+          remote_url: legacyOrg.remoteUrl || '',
+          api_key: legacyOrg.apiKey || '',
+          created_at: legacyOrg.createdAt || new Date().toISOString(),
+        });
+      } else {
+        // Local orgs go to the server
+        try {
+          await fetch(`${getApiBase()}/orgs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({
+              id: legacyOrg.id,
+              name: legacyOrg.name,
+              mode: 'local',
+              color: legacyOrg.color || '#6366f1',
+            }),
+          });
+        } catch {}
+      }
+    }
+
+    // Save remote orgs to their new localStorage key
+    if (remotes.length > 0) {
+      _remoteOrgs = remotes;
+      saveRemoteOrgs();
+    }
+
+    // Preserve active org
+    if (legacy.activeOrgId) {
+      _activeOrgId = legacy.activeOrgId;
+      localStorage.setItem('agent-hub-active-org', _activeOrgId);
+    }
+
+    // Remove legacy storage
+    localStorage.removeItem(LEGACY_KEY);
+    await fetchOrgs();
+  } catch {
+    // If migration fails, leave localStorage intact for next attempt
+  }
+}
+
+/** Sync an org's connection fields into the shared connection config. */
+function syncToConnection(org) {
+  saveConnectionConfig({
+    mode: org.mode || 'local',
+    remoteUrl: org.remote_url || org.remoteUrl || '',
+    apiKey: org.api_key || org.apiKey || '',
+  });
+}
+
+function uid() {
+  return Math.random().toString(36).slice(2, 10);
 }
