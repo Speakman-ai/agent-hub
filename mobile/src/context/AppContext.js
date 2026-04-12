@@ -391,6 +391,11 @@ export function AppProvider({ children }) {
         setKanbanRefreshKey((k) => (k || 0) + 1);
         break;
 
+      case 'dispatch_failure':
+        // Refresh kanban to show the failure comment on the card
+        setKanbanRefreshKey((k) => (k || 0) + 1);
+        break;
+
       case 'session_deleted':
         setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
         break;

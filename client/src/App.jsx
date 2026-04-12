@@ -686,6 +686,19 @@ export default function App() {
         setKanbanRefreshKey((k) => k + 1);
         break;
 
+      case 'dispatch_failure': {
+        const toast = {
+          id: `dispatch-failure-${Date.now()}`,
+          type: 'error',
+          message: `Dispatch failed (${data.source}): ${data.cardTitle} — ${data.reason}`,
+          duration: 15000,
+        };
+        setToasts((prev) => [...prev, toast]);
+        // Also refresh kanban to show the new card comment
+        setKanbanRefreshKey((k) => k + 1);
+        break;
+      }
+
       case 'wiki_update':
         window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
         break;
