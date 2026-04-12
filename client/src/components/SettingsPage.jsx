@@ -180,10 +180,13 @@ function OrganizationsSection() {
       <div>
         <label className={labelClass}>API Key (optional)</label>
         <input
-          type="password"
+          type="text"
+          autoComplete="off"
+          data-1p-ignore
+          data-lpignore="true"
           value={form.apiKey}
           onChange={(e) => setForm((prev) => ({ ...prev, apiKey: e.target.value }))}
-          className={inputClass}
+          className={`${inputClass} font-mono text-xs`}
           placeholder="Enter API key if server requires authentication"
         />
       </div>
