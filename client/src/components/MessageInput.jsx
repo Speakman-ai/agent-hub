@@ -1,5 +1,15 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 
+// genId() only works in secure contexts (HTTPS / localhost).
+// Fall back to Math.random-based ID for plain HTTP (e.g. remote EC2 over HTTP).
+const genId = () =>
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+      });
+
 export default function MessageInput({
   onSend,
   onCancel,
@@ -118,7 +128,7 @@ export default function MessageInput({
           // Videos: keep the raw File object for binary upload (no base64)
           const previewUrl = URL.createObjectURL(file);
           newImages.push({
-            id: crypto.randomUUID(),
+            id: genId(),
             name: file.name,
             dataUrl: previewUrl,
             file, // raw File for upload
@@ -133,7 +143,7 @@ export default function MessageInput({
           });
           const resized = await resizeImage(dataUrl);
           newImages.push({
-            id: crypto.randomUUID(),
+            id: genId(),
             name: file.name,
             dataUrl: resized,
             type: 'image',
