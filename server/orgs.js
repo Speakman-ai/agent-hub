@@ -46,6 +46,12 @@ export function initOrgsDb() {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- Tracks which org the server should load on startup
+    CREATE TABLE IF NOT EXISTS active_org (
+      key TEXT PRIMARY KEY DEFAULT 'active' CHECK(key = 'active'),
+      org_id TEXT NOT NULL DEFAULT 'default'
+    );
   `);
 
   // Migration: add position column if missing
@@ -68,6 +74,11 @@ export function initOrgsDb() {
     ),
     delete: orgsDb.prepare('DELETE FROM orgs WHERE id = ?'),
     count: orgsDb.prepare('SELECT COUNT(*) as count FROM orgs'),
+    getActiveOrgId: orgsDb.prepare("SELECT org_id FROM active_org WHERE key = 'active'"),
+    setActiveOrgId: orgsDb.prepare(
+      `INSERT INTO active_org (key, org_id) VALUES ('active', ?)
+       ON CONFLICT(key) DO UPDATE SET org_id = excluded.org_id`,
+    ),
   };
 
   // Seed default org if table is empty
@@ -115,6 +126,17 @@ function seedOrgsFromDisk() {
       // Already exists (shouldn't happen on first seed, but be safe)
     }
   }
+}
+
+/** Get the server's last-active org ID (survives restarts). */
+export function getActiveOrgId() {
+  const row = orgsStmts.getActiveOrgId.get();
+  return row?.org_id || 'default';
+}
+
+/** Set the server's active org ID (persisted across restarts). */
+export function setActiveOrgId(orgId) {
+  orgsStmts.setActiveOrgId.run(orgId);
 }
 
 /** Get all orgs. */

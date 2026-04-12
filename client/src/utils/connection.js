@@ -59,6 +59,12 @@ export function getApiBase() {
   return base ? `${base}/api` : '/api';
 }
 
+/** Get the LOCAL server's API base — always same-origin, ignoring remote config.
+ *  Used for org management which must always talk to the local server. */
+export function getLocalApiBase() {
+  return '/api';
+}
+
 /** Get the WebSocket URL (e.g. 'ws://localhost:3051' or 'wss://remote:3051?apiKey=xxx'). */
 export function getWsUrl() {
   const config = getConnectionConfig();

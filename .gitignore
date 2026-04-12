@@ -11,6 +11,7 @@ client/dist/
 mobile/.expo/
 mobile/android/
 mobile/ios/
+mobile/*.ipa
 
 # Environment & secrets
 .env
