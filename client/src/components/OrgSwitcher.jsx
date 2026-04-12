@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Building2, ChevronDown, Monitor, Cloud, Check, Settings } from 'lucide-react';
 import { getOrgs, getActiveOrg, switchOrg } from '../utils/orgs.js';
+import { reloadForOrgSwitch } from '../utils/connection.js';
 
 export default function OrgSwitcher({ onNavigateSettings }) {
   const [open, setOpen] = useState(false);
@@ -29,7 +30,7 @@ export default function OrgSwitcher({ onNavigateSettings }) {
       return;
     }
     await switchOrg(orgId);
-    window.location.reload();
+    reloadForOrgSwitch();
   };
 
   return (

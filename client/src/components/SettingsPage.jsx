@@ -2,7 +2,13 @@ import { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import humanCron from '../../../shared/utils/humanCron.js';
-import { testConnection, getAuthHeaders, getApiBase, getServerBase } from '../utils/connection.js';
+import {
+  testConnection,
+  getAuthHeaders,
+  getApiBase,
+  getServerBase,
+  reloadForOrgSwitch,
+} from '../utils/connection.js';
 import {
   getOrgs,
   getActiveOrg,
@@ -90,7 +96,7 @@ function OrganizationsSection() {
     refreshOrgs();
     setExpandedOrgId(null);
     if (activeOrg?.id === orgId) {
-      window.location.reload();
+      reloadForOrgSwitch();
     }
   };
 
@@ -99,14 +105,14 @@ function OrganizationsSection() {
       refreshOrgs();
       setExpandedOrgId(null);
       if (activeOrg?.id === orgId) {
-        window.location.reload();
+        reloadForOrgSwitch();
       }
     }
   };
 
   const handleSwitch = async (orgId) => {
     await switchOrg(orgId);
-    window.location.reload();
+    reloadForOrgSwitch();
   };
 
   const handleTest = async (url, apiKey) => {

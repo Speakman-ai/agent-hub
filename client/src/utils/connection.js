@@ -81,6 +81,16 @@ export function getWsUrl() {
   return `ws://${window.location.hostname}:${port}`;
 }
 
+/** Reload the app after an org switch. In Electron, navigates the window
+ *  to the correct URL (local or remote). In the browser, just reloads. */
+export function reloadForOrgSwitch() {
+  if (window.electronAPI?.navigateToOrg) {
+    window.electronAPI.navigateToOrg();
+  } else {
+    window.location.reload();
+  }
+}
+
 /** Get auth headers for API requests. Empty object if no key configured. */
 export function getAuthHeaders() {
   const config = getConnectionConfig();

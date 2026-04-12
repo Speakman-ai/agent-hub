@@ -229,6 +229,21 @@ ipcMain.on('save-connection-config', (event, config) => {
   event.returnValue = true;
 });
 
+// Navigate the window to the correct URL based on current connection config.
+// Called after an org switch so Electron loads the right server.
+ipcMain.on('navigate-to-org', (event) => {
+  if (!mainWindow) return;
+  const config = readConnectionConfig();
+  const port = process.env.AGENT_HUB_PORT || 3051;
+  if (config.mode === 'remote' && config.remoteUrl) {
+    mainWindow.loadURL(config.remoteUrl.replace(/\/+$/, ''));
+  } else if (isDev) {
+    mainWindow.loadURL('http://localhost:3050');
+  } else {
+    mainWindow.loadURL(`http://localhost:${port}`);
+  }
+});
+
 // Native directory picker — called from the OpenProjectWizard
 ipcMain.handle('select-directory', async () => {
   if (!mainWindow) return null;

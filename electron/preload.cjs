@@ -20,4 +20,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** Save connection config to the main process (file-backed). */
   saveConnectionConfig: (config) => ipcRenderer.sendSync('save-connection-config', config),
+
+  /** Navigate the Electron window to the correct URL after an org switch. */
+  navigateToOrg: () => ipcRenderer.send('navigate-to-org'),
 });
