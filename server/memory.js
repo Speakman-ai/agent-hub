@@ -35,11 +35,14 @@ export function getMemoryContext(workspace) {
     }
   }
 
-  // Read today's daily note
+  // Read today's daily note (last 5000 chars if too long)
   const todayPath = path.join(workspace, 'memory', `${today()}.md`);
   if (existsSync(todayPath)) {
     try {
-      const content = readFileSync(todayPath, 'utf-8');
+      let content = readFileSync(todayPath, 'utf-8');
+      if (content.length > 5000) {
+        content = '...(truncated)\n' + content.slice(-5000);
+      }
       if (content.trim()) {
         parts.push(`## Today's Notes (${today()})\n${content}`);
       }
@@ -48,11 +51,14 @@ export function getMemoryContext(workspace) {
     }
   }
 
-  // Read yesterday's daily note
+  // Read yesterday's daily note (last 3000 chars if too long)
   const yesterdayPath = path.join(workspace, 'memory', `${yesterday()}.md`);
   if (existsSync(yesterdayPath)) {
     try {
-      const content = readFileSync(yesterdayPath, 'utf-8');
+      let content = readFileSync(yesterdayPath, 'utf-8');
+      if (content.length > 3000) {
+        content = '...(truncated)\n' + content.slice(-3000);
+      }
       if (content.trim()) {
         parts.push(`## Yesterday's Notes (${yesterday()})\n${content}`);
       }
