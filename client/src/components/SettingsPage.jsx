@@ -507,7 +507,7 @@ function GeneralSection() {
   );
 }
 
-function GitHubSection({ projects = [] }) {
+function GitHubSection({ projects = [], onProjectsChange }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
   const [publicUrl, setPublicUrl] = useState('');
@@ -615,6 +615,7 @@ function GitHubSection({ projects = [] }) {
       await api.updateProject(projectId, { githubWorkflow: { [key]: newValue } });
       setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
       setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
+      if (onProjectsChange) onProjectsChange();
     } catch {
       setProjectWorkflow((prev) => ({
         ...prev,
@@ -628,6 +629,7 @@ function GitHubSection({ projects = [] }) {
       await api.updateProject(projectId, { defaultReviewer: projectReviewers[projectId] });
       setReviewerSaved((prev) => ({ ...prev, [projectId]: true }));
       setTimeout(() => setReviewerSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
+      if (onProjectsChange) onProjectsChange();
     } catch {
       /* ignore */
     }
@@ -3203,7 +3205,9 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
         </div>
 
         {tab === 'general' && <GeneralSection />}
-        {tab === 'github' && <GitHubSection projects={projects} />}
+        {tab === 'github' && (
+          <GitHubSection projects={projects} onProjectsChange={onAgentsChange} />
+        )}
         {tab === 'orgs' && <OrganizationsSection />}
         {tab === 'heartbeats' && <HeartbeatSection />}
         {tab === 'crons' && <CronSection />}
