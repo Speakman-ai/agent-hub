@@ -715,6 +715,13 @@ export default function App() {
           return next;
         });
         break;
+
+      case 'session_deleted':
+        setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
+        if (activeSessionIdRef.current === data.sessionId) {
+          setActiveSessionId(null);
+        }
+        break;
     }
   }, []);
 

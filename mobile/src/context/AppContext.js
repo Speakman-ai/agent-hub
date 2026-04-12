@@ -390,6 +390,10 @@ export function AppProvider({ children }) {
       case 'kanban_update':
         setKanbanRefreshKey((k) => (k || 0) + 1);
         break;
+
+      case 'session_deleted':
+        setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
+        break;
     }
   }, []);
 
