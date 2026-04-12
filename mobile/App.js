@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { View, Animated, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Animated, TouchableOpacity, StyleSheet, ActivityIndicator, Text } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -40,7 +40,7 @@ function AppContent() {
   const slideAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const overlayAnim = useRef(new Animated.Value(0)).current;
   const navigationRef = useRef(null);
-  const { setActiveSessionId } = useApp();
+  const { setActiveSessionId, configReady } = useApp();
 
   // Push notifications — tap navigates to the relevant session
   useNotifications(useCallback((sessionId) => {
@@ -111,6 +111,17 @@ function AppContent() {
     }, 50);
   };
 
+  // Show loading screen while config loads from AsyncStorage
+  if (!configReady) {
+    return (
+      <View style={styles.loadingContainer}>
+        <StatusBar style="light" />
+        <ActivityIndicator size="large" color={colors.blue600} />
+        <Text style={styles.loadingText}>Connecting...</Text>
+      </View>
+    );
+  }
+
   return (
     <SidebarContext.Provider value={{ openSidebar, closeSidebar, toggleSidebar }}>
       <View style={styles.root}>
@@ -170,6 +181,17 @@ export default function App() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.gray950,
+  },
+  loadingText: {
+    color: colors.gray400,
+    marginTop: 12,
+    fontSize: 16,
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,

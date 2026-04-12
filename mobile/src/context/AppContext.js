@@ -48,6 +48,8 @@ export function AppProvider({ children }) {
   const [cronSessions, setCronSessions] = useState([]);
   // Kanban board refresh trigger
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
+  // Config readiness gate — prevents data fetching before AsyncStorage loads
+  const [configReady, setConfigReady] = useState(false);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSessionIdRef = useRef(activeSessionId);
@@ -403,7 +405,7 @@ export function AppProvider({ children }) {
     api.getProjects().then(setProjects).catch(() => setProjects([]));
   }, []);
 
-  // Load agents and projects on mount (after org migration)
+  // Load connection config on mount, then signal readiness
   useEffect(() => {
     (async () => {
       await loadConnectionConfig();
@@ -417,9 +419,19 @@ export function AppProvider({ children }) {
           remoteUrl: activeOrg.remoteUrl,
           apiKey: activeOrg.apiKey || '',
         });
-        // Reconnect WebSocket now that config is loaded
-        reconnect();
       }
+      // Signal that config is loaded — this unblocks data fetching & WebSocket
+      setConfigReady(true);
+      // Always reconnect WebSocket now that config is loaded from AsyncStorage
+      reconnect();
+    })();
+  }, []);
+
+  // Load agents and projects once config is ready
+  useEffect(() => {
+    if (!configReady) return;
+    if (!getApiBaseUrl()) return; // No server configured yet
+    (async () => {
       try {
         const [agentData, projectData, roomData, cronSessionData] = await Promise.all([
           api.getAgents(),
@@ -436,11 +448,11 @@ export function AppProvider({ children }) {
         console.error('Failed to load initial data:', err);
       }
     })();
-  }, []);
+  }, [configReady]);
 
-  // Load sessions when agent changes
+  // Load sessions when agent changes (guarded on configReady)
   useEffect(() => {
-    if (!activeAgentId || !getApiBaseUrl()) return;
+    if (!configReady || !activeAgentId || !getApiBaseUrl()) return;
     api.getSessions(activeAgentId).then((data) => {
       setSessions(data);
       if (data.length > 0) {
@@ -456,18 +468,18 @@ export function AppProvider({ children }) {
         setSessionModel('claude-opus-4-6');
       }
     }).catch((err) => console.error('Failed to load sessions:', err));
-  }, [activeAgentId]);
+  }, [configReady, activeAgentId]);
 
   // Load skills for /slash-command autocomplete when agent changes
   useEffect(() => {
-    if (!activeAgentId || !getApiBaseUrl()) {
+    if (!configReady || !activeAgentId || !getApiBaseUrl()) {
       setSkills([]);
       return;
     }
     api.getSkills(activeAgentId)
       .then(setSkills)
       .catch(() => setSkills([]));
-  }, [activeAgentId]);
+  }, [configReady, activeAgentId]);
 
   // Update session engine/model when session changes
   useEffect(() => {
@@ -698,6 +710,7 @@ export function AppProvider({ children }) {
   const isProcessing = thinking || !!streamingContent;
 
   const value = {
+    configReady,
     agents,
     projects,
     activeAgentId,

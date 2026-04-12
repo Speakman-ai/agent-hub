@@ -91,14 +91,16 @@ export function useWebSocket(onMessage) {
     connect();
   }, [connect]);
 
+  // Don't auto-connect on mount — wait for AppContext to load config
+  // from AsyncStorage and call reconnect() explicitly. This prevents
+  // the race condition where WS connects before auth is available.
   useEffect(() => {
-    connect();
     return () => {
       clearTimeout(reconnectTimer.current);
       clearInterval(pingTimer.current);
       wsRef.current?.close();
     };
-  }, [connect]);
+  }, []);
 
   const send = useCallback((data) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
