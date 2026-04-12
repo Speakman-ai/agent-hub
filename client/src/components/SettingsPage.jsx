@@ -30,10 +30,9 @@ import {
   User,
   Plus,
   Trash2,
-  Check,
   ArrowRightLeft,
   Webhook,
-  Globe,
+  GitBranch,
 } from 'lucide-react';
 
 function OrganizationsSection() {
@@ -422,36 +421,20 @@ function GeneralSection() {
         setConfig(data);
         setEdits({
           claudeBin: data.claudeBin,
-          publicUrl: data.publicUrl || '',
-          botGithubToken: '',
         });
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, []);
 
-  const isDirty =
-    config &&
-    (edits.claudeBin !== config.claudeBin ||
-      edits.publicUrl !== (config.publicUrl || '') ||
-      (edits.botGithubToken && edits.botGithubToken.length > 0));
+  const isDirty = config && edits.claudeBin !== config.claudeBin;
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      // Only send botGithubToken if the user typed a new value
-      const payload = { claudeBin: edits.claudeBin, publicUrl: edits.publicUrl };
-      if (edits.botGithubToken && edits.botGithubToken.length > 0) {
-        payload.botGithubToken = edits.botGithubToken;
-      }
+      const payload = { claudeBin: edits.claudeBin };
       await api.updateConfig(payload);
-      setConfig((prev) => ({
-        ...prev,
-        ...payload,
-        botGithubTokenSet: !!payload.botGithubToken || prev.botGithubTokenSet,
-        botGithubToken: payload.botGithubToken ? '••••••••' : prev.botGithubToken,
-      }));
-      setEdits((prev) => ({ ...prev, botGithubToken: '' }));
+      setConfig((prev) => ({ ...prev, ...payload }));
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(null), 2000);
     } catch {
@@ -512,75 +495,6 @@ function GeneralSection() {
         </div>
       </div>
 
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">GitHub Webhooks</h4>
-
-        <div>
-          <label className={labelClass}>Public URL</label>
-          <input
-            value={edits.publicUrl || ''}
-            onChange={(e) => setEdits((prev) => ({ ...prev, publicUrl: e.target.value }))}
-            className={inputClass}
-            placeholder="https://my-server.example.com"
-          />
-          <p className="text-xs text-gray-600 mt-1">
-            The externally-reachable URL for this server. Used as the callback URL when
-            auto-registering GitHub webhooks. Leave empty if running locally only.
-          </p>
-        </div>
-      </div>
-
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">Bot GitHub Account</h4>
-
-        <div>
-          <label className={labelClass}>Bot Personal Access Token (PAT)</label>
-          <input
-            type="password"
-            value={edits.botGithubToken || ''}
-            onChange={(e) => setEdits((prev) => ({ ...prev, botGithubToken: e.target.value }))}
-            className={inputClass}
-            placeholder={
-              config.botGithubTokenSet
-                ? '••••••••  (token set — enter new value to replace)'
-                : 'ghp_xxxx...'
-            }
-          />
-          <p className="text-xs text-gray-600 mt-1">
-            A GitHub PAT from a dedicated bot account (e.g.{' '}
-            <code className="text-gray-400">agent-hub-bot</code>). Used for formal PR reviews and
-            merges, bypassing GitHub&apos;s same-account review limitation. The bot account needs
-            collaborator access to your repos.
-          </p>
-          {config.botGithubTokenSet && (
-            <div className="mt-2 flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-              <span className="text-xs text-emerald-400">
-                Bot configured{config.botGithubUser ? `: @${config.botGithubUser}` : ''}
-              </span>
-              <button
-                onClick={async () => {
-                  try {
-                    await api.updateConfig({ botGithubToken: '' });
-                    setConfig((prev) => ({
-                      ...prev,
-                      botGithubTokenSet: false,
-                      botGithubUser: null,
-                      botGithubToken: '',
-                    }));
-                  } catch {
-                    /* ignore */
-                  }
-                }}
-                className="text-xs text-red-400 hover:text-red-300 ml-auto"
-              >
-                Remove
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
       <div className="bg-gray-800 rounded-xl p-4 space-y-2">
         <h4 className="text-sm font-medium text-gray-300">Current Config</h4>
         <div className="grid grid-cols-2 gap-2 text-xs">
@@ -590,6 +504,331 @@ function GeneralSection() {
           <span className="text-gray-300 font-mono truncate">{config.defaultCwd}</span>
           <span className="text-gray-500">Default Model</span>
           <span className="text-gray-300 font-mono">{config.defaultModel}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GitHubSection({ projects = [] }) {
+  const [config, setConfig] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [publicUrl, setPublicUrl] = useState('');
+  const [botToken, setBotToken] = useState('');
+  const [saving, setSaving] = useState({});
+  const [saveStatus, setSaveStatus] = useState({});
+
+  // Per-project workflow state
+  const [projectWorkflow, setProjectWorkflow] = useState({});
+  const [projectReviewers, setProjectReviewers] = useState({});
+  const [workflowSaved, setWorkflowSaved] = useState({});
+  const [reviewerSaved, setReviewerSaved] = useState({});
+  const [expandedProject, setExpandedProject] = useState(null);
+
+  useEffect(() => {
+    api
+      .getConfig()
+      .then((data) => {
+        setConfig(data);
+        setPublicUrl(data.publicUrl || '');
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  // Init per-project state when projects arrive
+  useEffect(() => {
+    const wf = {};
+    const rev = {};
+    projects.forEach((p) => {
+      wf[p.id] = {
+        autoMerge: p.githubWorkflow?.autoMerge || false,
+        autoReview: p.githubWorkflow?.autoReview !== false,
+        waitForCI: p.githubWorkflow?.waitForCI || false,
+        waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
+      };
+      rev[p.id] = p.defaultReviewer || '';
+    });
+    setProjectWorkflow(wf);
+    setProjectReviewers(rev);
+  }, [projects]);
+
+  const inputClass =
+    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+  const labelClass = 'block text-xs text-gray-400 mb-1';
+
+  const savePublicUrl = async () => {
+    setSaving((s) => ({ ...s, publicUrl: true }));
+    try {
+      await api.updateConfig({ publicUrl });
+      setConfig((prev) => ({ ...prev, publicUrl }));
+      setSaveStatus((s) => ({ ...s, publicUrl: 'saved' }));
+      setTimeout(() => setSaveStatus((s) => ({ ...s, publicUrl: null })), 2000);
+    } catch {
+      setSaveStatus((s) => ({ ...s, publicUrl: 'error' }));
+      setTimeout(() => setSaveStatus((s) => ({ ...s, publicUrl: null })), 3000);
+    } finally {
+      setSaving((s) => ({ ...s, publicUrl: false }));
+    }
+  };
+
+  const saveBotToken = async () => {
+    setSaving((s) => ({ ...s, bot: true }));
+    try {
+      const payload = botToken.length > 0 ? { botGithubToken: botToken } : {};
+      await api.updateConfig(payload);
+      setConfig((prev) => ({
+        ...prev,
+        botGithubTokenSet: true,
+        botGithubToken: '••••••••',
+      }));
+      setBotToken('');
+      setSaveStatus((s) => ({ ...s, bot: 'saved' }));
+      setTimeout(() => setSaveStatus((s) => ({ ...s, bot: null })), 2000);
+    } catch {
+      setSaveStatus((s) => ({ ...s, bot: 'error' }));
+      setTimeout(() => setSaveStatus((s) => ({ ...s, bot: null })), 3000);
+    } finally {
+      setSaving((s) => ({ ...s, bot: false }));
+    }
+  };
+
+  const removeBotToken = async () => {
+    try {
+      await api.updateConfig({ botGithubToken: '' });
+      setConfig((prev) => ({
+        ...prev,
+        botGithubTokenSet: false,
+        botGithubUser: null,
+        botGithubToken: '',
+      }));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const toggleWorkflowSetting = async (projectId, key) => {
+    const current = projectWorkflow[projectId] || {};
+    const newValue = !current[key];
+    setProjectWorkflow((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [key]: newValue },
+    }));
+    try {
+      await api.updateProject(projectId, { githubWorkflow: { [key]: newValue } });
+      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
+    } catch {
+      setProjectWorkflow((prev) => ({
+        ...prev,
+        [projectId]: { ...prev[projectId], [key]: !newValue },
+      }));
+    }
+  };
+
+  const saveReviewer = async (projectId) => {
+    try {
+      await api.updateProject(projectId, { defaultReviewer: projectReviewers[projectId] });
+      setReviewerSaved((prev) => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setReviewerSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
+  if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold mb-1">GitHub Settings</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Configure GitHub integration — bot authentication, webhook URLs, and per-project PR
+          workflow settings.
+        </p>
+      </div>
+
+      {/* Bot GitHub Account */}
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-medium text-gray-300">Bot GitHub Account</h4>
+          {config.botGithubTokenSet && (
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="text-xs text-emerald-400">
+                Connected{config.botGithubUser ? `: @${config.botGithubUser}` : ''}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <p className="text-xs text-gray-500">
+          A dedicated bot account enables formal PR reviews and merges, bypassing GitHub&apos;s
+          same-account review limitation. The bot account needs collaborator access to your repos.
+        </p>
+
+        <div>
+          <label className={labelClass}>Bot Personal Access Token (PAT)</label>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              value={botToken}
+              onChange={(e) => setBotToken(e.target.value)}
+              className={inputClass}
+              placeholder={
+                config.botGithubTokenSet
+                  ? '••••••••  (token set — enter new value to replace)'
+                  : 'ghp_xxxx...'
+              }
+            />
+            <button
+              onClick={saveBotToken}
+              disabled={!botToken || saving.bot}
+              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
+            >
+              {saving.bot ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          {saveStatus.bot === 'saved' && (
+            <span className="text-xs text-emerald-400 mt-1 block">Token saved</span>
+          )}
+          {config.botGithubTokenSet && (
+            <button
+              onClick={removeBotToken}
+              className="text-xs text-red-400 hover:text-red-300 mt-2"
+            >
+              Remove bot token
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Public URL */}
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <h4 className="text-sm font-medium text-gray-300">Webhook Endpoint</h4>
+        <div>
+          <label className={labelClass}>Public URL</label>
+          <div className="flex gap-2">
+            <input
+              value={publicUrl}
+              onChange={(e) => setPublicUrl(e.target.value)}
+              className={inputClass}
+              placeholder="https://my-server.example.com"
+            />
+            <button
+              onClick={savePublicUrl}
+              disabled={publicUrl === (config.publicUrl || '') || saving.publicUrl}
+              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
+            >
+              {saving.publicUrl ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          <p className="text-xs text-gray-600 mt-1">
+            The externally-reachable URL for this server. Used as the callback URL when
+            auto-registering GitHub webhooks. Leave empty if running locally only.
+          </p>
+          {saveStatus.publicUrl === 'saved' && (
+            <span className="text-xs text-emerald-400 mt-1 block">Saved</span>
+          )}
+        </div>
+      </div>
+
+      {/* Per-Project Workflow Settings */}
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <h4 className="text-sm font-medium text-gray-300">PR Workflow per Project</h4>
+        <p className="text-xs text-gray-500">
+          Control how the lead agent handles PR reviews and merges for each project.
+        </p>
+
+        {projects.length === 0 && (
+          <p className="text-xs text-gray-600 italic">No projects configured yet.</p>
+        )}
+
+        <div className="space-y-2">
+          {projects.map((p) => (
+            <div key={p.id} className="bg-gray-900/50 rounded-lg p-3">
+              <div
+                className="flex items-center gap-3 cursor-pointer"
+                onClick={() => setExpandedProject(expandedProject === p.id ? null : p.id)}
+              >
+                <span className="text-lg text-gray-500">
+                  {expandedProject === p.id ? '▾' : '▸'}
+                </span>
+                <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color }} />
+                <span className="text-sm font-medium">{p.name}</span>
+                {workflowSaved[p.id] && (
+                  <span className="text-xs text-emerald-400 ml-auto">Saved</span>
+                )}
+              </div>
+
+              {expandedProject === p.id && (
+                <div className="pl-8 pt-3 space-y-3">
+                  {/* PR Reviewer */}
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-400 flex-shrink-0 w-28">PR Reviewer:</label>
+                    <input
+                      value={projectReviewers[p.id] || ''}
+                      onChange={(e) =>
+                        setProjectReviewers((prev) => ({ ...prev, [p.id]: e.target.value }))
+                      }
+                      placeholder="github-username"
+                      className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1"
+                    />
+                    <button
+                      onClick={() => saveReviewer(p.id)}
+                      className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
+                    >
+                      {reviewerSaved[p.id] ? 'Saved' : 'Save'}
+                    </button>
+                  </div>
+
+                  {/* Workflow Toggles */}
+                  {[
+                    {
+                      key: 'autoReview',
+                      label: 'Auto Review',
+                      desc: 'Lead agent automatically reviews every PR',
+                    },
+                    {
+                      key: 'autoMerge',
+                      label: 'Auto Merge',
+                      desc: 'Lead agent merges approved PRs automatically',
+                    },
+                    {
+                      key: 'waitForCI',
+                      label: 'Wait for CI',
+                      desc: 'Wait for all GitHub checks to pass before approving',
+                    },
+                    {
+                      key: 'waitForResolvedComments',
+                      label: 'Wait for Resolved Comments',
+                      desc: 'Wait for all review comments to be resolved',
+                    },
+                  ].map(({ key, label, desc }) => (
+                    <div key={key} className="flex items-center justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm text-gray-200">{label}</span>
+                        <p className="text-xs text-gray-500 truncate">{desc}</p>
+                      </div>
+                      <button
+                        onClick={() => toggleWorkflowSetting(p.id, key)}
+                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
+                          projectWorkflow[p.id]?.[key] ? 'bg-emerald-600' : 'bg-gray-600'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                            projectWorkflow[p.id]?.[key] ? 'translate-x-4' : 'translate-x-0.5'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -1969,14 +2208,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600';
   const labelClass = 'block text-xs text-gray-400 mb-1';
 
-  const [projectReviewers, setProjectReviewers] = useState(() => {
-    const map = {};
-    projects.forEach((p) => {
-      map[p.id] = p.defaultReviewer || '';
-    });
-    return map;
-  });
-  const [projectReviewerSaved, setProjectReviewerSaved] = useState({});
   const [projectCommands, setProjectCommands] = useState(() => {
     const map = {};
     projects.forEach((p) => {
@@ -1990,28 +2221,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     return map;
   });
   const [projectCommandsSaved, setProjectCommandsSaved] = useState({});
-  const [projectWorkflow, setProjectWorkflow] = useState(() => {
-    const map = {};
-    projects.forEach((p) => {
-      map[p.id] = {
-        autoMerge: p.githubWorkflow?.autoMerge || false,
-        autoReview: p.githubWorkflow?.autoReview !== false, // default true
-        waitForCI: p.githubWorkflow?.waitForCI || false,
-        waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
-      };
-    });
-    return map;
-  });
-  const [workflowSaved, setWorkflowSaved] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
-
-  const saveProjectReviewer = async (projectId) => {
-    try {
-      await api.updateProject(projectId, { defaultReviewer: projectReviewers[projectId] });
-      setProjectReviewerSaved((prev) => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setProjectReviewerSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
-    } catch {}
-  };
 
   const saveProjectCommands = async (projectId) => {
     try {
@@ -2027,26 +2237,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
       setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: true }));
       setTimeout(() => setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
     } catch {}
-  };
-
-  const toggleWorkflowSetting = async (projectId, key) => {
-    const current = projectWorkflow[projectId] || {};
-    const newValue = !current[key];
-    setProjectWorkflow((prev) => ({
-      ...prev,
-      [projectId]: { ...prev[projectId], [key]: newValue },
-    }));
-    try {
-      await api.updateProject(projectId, { githubWorkflow: { [key]: newValue } });
-      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
-    } catch {
-      // Revert on failure
-      setProjectWorkflow((prev) => ({
-        ...prev,
-        [projectId]: { ...prev[projectId], [key]: !newValue },
-      }));
-    }
   };
 
   return (
@@ -2070,26 +2260,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                 </div>
                 {expandedProject === p.id && (
                   <div className="pl-8 space-y-3">
-                    {/* PR Reviewer */}
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs text-gray-400 flex-shrink-0 w-28">
-                        PR Reviewer:
-                      </label>
-                      <input
-                        value={projectReviewers[p.id] || ''}
-                        onChange={(e) =>
-                          setProjectReviewers((prev) => ({ ...prev, [p.id]: e.target.value }))
-                        }
-                        placeholder="github-username"
-                        className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1"
-                      />
-                      <button
-                        onClick={() => saveProjectReviewer(p.id)}
-                        className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
-                      >
-                        {projectReviewerSaved[p.id] ? 'Saved' : 'Save'}
-                      </button>
-                    </div>
                     {/* Project Commands */}
                     <div className="space-y-2">
                       <label className="text-xs text-gray-400 font-semibold">
@@ -2127,58 +2297,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                       >
                         {projectCommandsSaved[p.id] ? 'Saved' : 'Save Commands'}
                       </button>
-                    </div>
-                    {/* GitHub Workflow Settings */}
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <label className="text-xs text-gray-400 font-semibold">
-                          GitHub Workflow
-                        </label>
-                        {workflowSaved[p.id] && (
-                          <span className="text-xs text-emerald-400">Saved</span>
-                        )}
-                      </div>
-                      {[
-                        {
-                          key: 'autoReview',
-                          label: 'Auto Review',
-                          desc: 'Lead agent automatically reviews every PR',
-                        },
-                        {
-                          key: 'autoMerge',
-                          label: 'Auto Merge',
-                          desc: 'Lead agent merges approved PRs automatically',
-                        },
-                        {
-                          key: 'waitForCI',
-                          label: 'Wait for CI',
-                          desc: 'Wait for all GitHub checks to pass before approving',
-                        },
-                        {
-                          key: 'waitForResolvedComments',
-                          label: 'Wait for Resolved Comments',
-                          desc: 'Wait for all review comments to be resolved',
-                        },
-                      ].map(({ key, label, desc }) => (
-                        <div key={key} className="flex items-center justify-between gap-3">
-                          <div className="flex-1 min-w-0">
-                            <span className="text-sm text-gray-200">{label}</span>
-                            <p className="text-xs text-gray-500 truncate">{desc}</p>
-                          </div>
-                          <button
-                            onClick={() => toggleWorkflowSetting(p.id, key)}
-                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
-                              projectWorkflow[p.id]?.[key] ? 'bg-emerald-600' : 'bg-gray-600'
-                            }`}
-                          >
-                            <span
-                              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                                projectWorkflow[p.id]?.[key] ? 'translate-x-4' : 'translate-x-0.5'
-                              }`}
-                            />
-                          </button>
-                        </div>
-                      ))}
                     </div>
                   </div>
                 )}
@@ -3049,6 +3167,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
 
   const tabs = [
     { id: 'general', icon: <SettingsIcon size={16} />, text: 'General' },
+    { id: 'github', icon: <GitBranch size={16} />, text: 'GitHub' },
     { id: 'orgs', icon: <Building2 size={16} />, text: 'Organizations' },
     { id: 'agents', icon: <Bot size={16} />, text: 'Agents' },
     { id: 'heartbeats', icon: <HeartPulse size={16} />, text: 'Heartbeats' },
@@ -3084,6 +3203,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
         </div>
 
         {tab === 'general' && <GeneralSection />}
+        {tab === 'github' && <GitHubSection projects={projects} />}
         {tab === 'orgs' && <OrganizationsSection />}
         {tab === 'heartbeats' && <HeartbeatSection />}
         {tab === 'crons' && <CronSection />}
