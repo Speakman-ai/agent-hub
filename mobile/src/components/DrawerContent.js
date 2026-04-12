@@ -13,7 +13,7 @@ import { api } from '../utils/api';
 import { getOrgs, getActiveOrg } from '../utils/orgs';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
-import humanCron from '../../../shared/utils/humanCron';
+import humanCron from '../utils/humanCron';
 
 export default function DrawerContent({ navigation }) {
   const {

@@ -16,7 +16,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
-import humanCron from '../../../shared/utils/humanCron';
+import humanCron from '../utils/humanCron';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, testConnection, loadOrgs } from '../utils/orgs';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
