@@ -198,7 +198,7 @@ As an agent on Agent Hub, you should:
 | Web Client | React + Vite + Tailwind CSS | `client/` |
 | Mobile | React Native + Expo | `mobile/` |
 | Desktop | Electron wrapper | `electron/` |
-| Deployment | EC2 + Nginx + PM2 | `18.219.58.197` |
+| Deployment | EC2 + Nginx + PM2 | `3.22.232.193` |
 
 **Database:** SQLite with WAL mode (`better-sqlite3`). Tables include `sessions`, `messages`, `heartbeat_logs`, `crons`, `wiki_pages`, `kanban_boards`, `kanban_columns`, `kanban_cards`, `kanban_epics`, `skill_registry`, `webhook_configs`, `device_tokens`.
 

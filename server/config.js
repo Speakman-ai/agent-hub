@@ -118,7 +118,7 @@ const config = {
 
   // ── GitHub ─────────────────────────────────────────────────────
   /** Public URL for this server (used as the webhook callback URL).
-   *  E.g. 'https://my-server.example.com' or 'http://18.219.58.197'.
+   *  E.g. 'https://my-server.example.com' or 'http://3.22.232.193'.
    *  When set, webhook auto-registration sends this URL to GitHub
    *  instead of relying on the client's window.location. */
   publicUrl: resolve('AGENT_HUB_PUBLIC_URL', 'publicUrl', null),

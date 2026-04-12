@@ -126,7 +126,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 ## Deployment
 
 ### EC2 Server
-- **Host**: `18.219.58.197` (user: `agenthub`, SSH via `ubuntu`)
+- **Host**: `3.22.232.193` (user: `agenthub`, SSH via `ubuntu`)
 - **Nginx** reverse proxy on port 80 → localhost:3051
 - **PM2** manages the Node.js process
 - **Port 3051** is localhost-only — all external traffic goes through Nginx
