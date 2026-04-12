@@ -31,7 +31,6 @@ import {
   Plus,
   Trash2,
   ArrowRightLeft,
-  Webhook,
   GitBranch,
 } from 'lucide-react';
 
@@ -829,6 +828,9 @@ function GitHubSection({ projects = [] }) {
           ))}
         </div>
       </div>
+
+      {/* Webhooks */}
+      <WebhookSection />
     </div>
   );
 }
@@ -1709,7 +1711,7 @@ function WebhookSection() {
                   </>
                 ) : (
                   <span className="text-amber-400">
-                    Set a Public URL in General Settings first for reliable webhook delivery
+                    Set a Public URL above for reliable webhook delivery
                   </span>
                 )}
               </p>
@@ -1804,7 +1806,7 @@ function WebhookSection() {
                     {!serverConfig?.publicUrl && (
                       <p className="text-xs text-amber-400">
                         No Public URL configured — webhook URL may not be reachable from GitHub. Set
-                        it in General Settings.
+                        it in the Webhook Endpoint section above.
                       </p>
                     )}
                     <div className="flex items-center gap-2">
@@ -3170,7 +3172,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
     { id: 'agents', icon: <Bot size={16} />, text: 'Agents' },
     { id: 'heartbeats', icon: <HeartPulse size={16} />, text: 'Heartbeats' },
     { id: 'crons', icon: <Clock size={16} />, text: 'Cron Jobs' },
-    { id: 'webhooks', icon: <Webhook size={16} />, text: 'Webhooks' },
+
     { id: 'slack', icon: <MessageSquare size={16} />, text: 'Slack' },
     { id: 'usage', icon: <BarChart3 size={16} />, text: 'Usage' },
     { id: 'backup', icon: <HardDrive size={16} />, text: 'Backup' },
@@ -3205,7 +3207,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
         {tab === 'orgs' && <OrganizationsSection />}
         {tab === 'heartbeats' && <HeartbeatSection />}
         {tab === 'crons' && <CronSection />}
-        {tab === 'webhooks' && <WebhookSection />}
+
         {tab === 'slack' && <SlackSection />}
         {tab === 'agents' && (
           <AgentConfigSection agents={agents} projects={projects} onAgentsChange={onAgentsChange} />
