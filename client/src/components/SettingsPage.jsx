@@ -420,7 +420,11 @@ function GeneralSection() {
       .getConfig()
       .then((data) => {
         setConfig(data);
-        setEdits({ claudeBin: data.claudeBin, publicUrl: data.publicUrl || '' });
+        setEdits({
+          claudeBin: data.claudeBin,
+          publicUrl: data.publicUrl || '',
+          botGithubToken: '',
+        });
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -428,13 +432,26 @@ function GeneralSection() {
 
   const isDirty =
     config &&
-    (edits.claudeBin !== config.claudeBin || edits.publicUrl !== (config.publicUrl || ''));
+    (edits.claudeBin !== config.claudeBin ||
+      edits.publicUrl !== (config.publicUrl || '') ||
+      (edits.botGithubToken && edits.botGithubToken.length > 0));
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.updateConfig(edits);
-      setConfig((prev) => ({ ...prev, ...edits }));
+      // Only send botGithubToken if the user typed a new value
+      const payload = { claudeBin: edits.claudeBin, publicUrl: edits.publicUrl };
+      if (edits.botGithubToken && edits.botGithubToken.length > 0) {
+        payload.botGithubToken = edits.botGithubToken;
+      }
+      await api.updateConfig(payload);
+      setConfig((prev) => ({
+        ...prev,
+        ...payload,
+        botGithubTokenSet: !!payload.botGithubToken || prev.botGithubTokenSet,
+        botGithubToken: payload.botGithubToken ? '••••••••' : prev.botGithubToken,
+      }));
+      setEdits((prev) => ({ ...prev, botGithubToken: '' }));
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(null), 2000);
     } catch {
@@ -510,6 +527,57 @@ function GeneralSection() {
             The externally-reachable URL for this server. Used as the callback URL when
             auto-registering GitHub webhooks. Leave empty if running locally only.
           </p>
+        </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <h4 className="text-sm font-medium text-gray-300">Bot GitHub Account</h4>
+
+        <div>
+          <label className={labelClass}>Bot Personal Access Token (PAT)</label>
+          <input
+            type="password"
+            value={edits.botGithubToken || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, botGithubToken: e.target.value }))}
+            className={inputClass}
+            placeholder={
+              config.botGithubTokenSet
+                ? '••••••••  (token set — enter new value to replace)'
+                : 'ghp_xxxx...'
+            }
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            A GitHub PAT from a dedicated bot account (e.g.{' '}
+            <code className="text-gray-400">agent-hub-bot</code>). Used for formal PR reviews and
+            merges, bypassing GitHub&apos;s same-account review limitation. The bot account needs
+            collaborator access to your repos.
+          </p>
+          {config.botGithubTokenSet && (
+            <div className="mt-2 flex items-center gap-2">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="text-xs text-emerald-400">
+                Bot configured{config.botGithubUser ? `: @${config.botGithubUser}` : ''}
+              </span>
+              <button
+                onClick={async () => {
+                  try {
+                    await api.updateConfig({ botGithubToken: '' });
+                    setConfig((prev) => ({
+                      ...prev,
+                      botGithubTokenSet: false,
+                      botGithubUser: null,
+                      botGithubToken: '',
+                    }));
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+                className="text-xs text-red-400 hover:text-red-300 ml-auto"
+              >
+                Remove
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

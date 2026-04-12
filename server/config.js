@@ -126,6 +126,12 @@ const config = {
   /** Fallback PR reviewer when no agent or project reviewer is set */
   defaultReviewer: resolve('AGENT_HUB_DEFAULT_REVIEWER', 'defaultReviewer', null),
 
+  /** GitHub PAT for a dedicated bot account used by the lead reviewer.
+   *  When set, formal PR reviews (approve/request-changes) and merges
+   *  are executed using this token instead of the default gh CLI auth,
+   *  bypassing GitHub's same-account review limitation. */
+  botGithubToken: resolve('AGENT_HUB_BOT_GITHUB_TOKEN', 'botGithubToken', null),
+
   // ── Auth ───────────────────────────────────────────────────────
   /** Optional API key for securing remote access */
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
