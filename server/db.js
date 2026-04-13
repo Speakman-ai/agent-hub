@@ -737,6 +737,9 @@ function initDb(dataDir) {
     getLastMessage: db.prepare(
       'SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1',
     ),
+    getLastAssistantMessage: db.prepare(
+      "SELECT content FROM messages WHERE session_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
+    ),
 
     // Heartbeat logs
     addHeartbeatLog: db.prepare(

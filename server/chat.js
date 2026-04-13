@@ -17,6 +17,8 @@ import { getWikiContext } from './wiki.js';
 import { getMemoryContext, appendDailyNote } from './memory.js';
 import { collectSkillsFromDir, DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
+import { writeHooksConfig } from './hooks.js';
+import { hookHandled } from './routes/hooks.js';
 
 const DEFAULT_MODEL = config.defaultModel;
 const MAX_QUEUE_SIZE = 10;
@@ -731,11 +733,26 @@ PR URL: ${prUrl}
       session = stmts.getSession.get(sessionId);
     }
 
-    // Inject bot GH_TOKEN for review sessions
+    // Write Claude Code hooks config for auto-commit-and-PR
+    // Hooks fire on Stop/SubagentStop events — cleaner than proc.on('close')
+    if (engine === 'claude-code' && effectiveCwd !== project.cwd) {
+      try {
+        writeHooksConfig(effectiveCwd, sessionId);
+      } catch (err) {
+        console.warn(`[chat] Failed to write hooks config: ${err.message}`);
+      }
+    }
+
+    // Inject env vars for the spawned process
     const spawnEnv = (() => {
       const base = { ...process.env };
       if (config.botGithubToken && reviewSessionCards.has(sessionId)) {
         base.GH_TOKEN = config.botGithubToken;
+      }
+      // Pass API key as env var so hooks can authenticate without writing
+      // the key to disk in .claude/settings.json
+      if (config.apiKey) {
+        base.AGENT_HUB_API_KEY = config.apiKey;
       }
       return base;
     })();
@@ -1043,9 +1060,20 @@ PR URL: ${prUrl}
       }
 
       // ── Auto-commit & PR ──
-      await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent).catch(
-        (err) => console.error('[auto-commit] Unexpected error:', err.message),
-      );
+      // For Claude Code worktrees, hooks handle auto-commit (see server/hooks.js).
+      // Fall back here for non-Claude engines, non-worktree sessions, or if
+      // Claude Code crashed/was killed before hooks could fire.
+      const hooksWillHandle = engine === 'claude-code' && effectiveCwd !== project.cwd;
+      if (!hooksWillHandle || !hookHandled(sessionId)) {
+        if (hooksWillHandle) {
+          console.log(
+            `[auto-commit] Hooks did not fire for ${sessionId}, falling back to proc.on('close')`,
+          );
+        }
+        await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent).catch(
+          (err) => console.error('[auto-commit] Unexpected error:', err.message),
+        );
+      }
 
       // ── Review outcome ──
       const sessionForReview = stmts.getSession.get(sessionId);
