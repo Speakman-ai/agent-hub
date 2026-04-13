@@ -800,7 +800,7 @@ If there are unresolved review threads (count > 0), do NOT approve until they ar
     ? `
 ### If the code looks good:
 Report: **"APPROVED"** — and explain briefly why the code is correct.
-The server will submit the formal approval and merge via the bot account automatically.
+The server will submit the formal approval${shouldAutoMerge ? ' and merge' : ''} via the bot account automatically.${!shouldAutoMerge ? '\nNote: Auto-merge is disabled — a human will merge the PR after approval.' : ''}
 
 ### If you find issues:
 Report: **"CHANGES REQUESTED"** — and list each issue with:
@@ -811,7 +811,8 @@ Report: **"CHANGES REQUESTED"** — and list each issue with:
 The server will submit the formal "request changes" review via the bot account automatically.
 
 Do **NOT** run \`gh pr review\`, \`gh pr merge\`, or \`gh api\` commands — the server handles all formal GitHub actions through the bot account.`
-    : `
+    : shouldAutoMerge
+      ? `
 ### If the code looks good:
 Submit a formal approval review:
 \`\`\`bash
@@ -861,6 +862,31 @@ gh api repos/{owner}/{repo}/pulls/${prNumber}/reviews --method POST -f event=REQ
 If that also fails, leave a comment prefixed with **🔄 CHANGES REQUESTED** so the outcome is clear:
 \`\`\`bash
 gh pr comment ${prNumber} --body "🔄 **CHANGES REQUESTED**\\n\\nYour feedback here"
+\`\`\``
+      : `
+### If the code looks good:
+Submit a formal approval review:
+\`\`\`bash
+gh pr review ${prNumber} --approve --body "Looks good — approved."
+\`\`\`
+If the above fails, use the API:
+\`\`\`bash
+gh api repos/{owner}/{repo}/pulls/${prNumber}/reviews --method POST -f event=APPROVE -f body="Looks good — approved."
+\`\`\`
+Do **NOT** merge the PR — auto-merge is disabled. A human will merge it after approval.
+
+### If you find issues:
+Submit a formal "request changes" review with specific, actionable feedback:
+\`\`\`bash
+gh pr review ${prNumber} --request-changes --body "Your detailed feedback here — list each issue with file path, what's wrong, and what to do instead"
+\`\`\`
+If the above command fails (e.g. same-account limitation), fall back to the API:
+\`\`\`bash
+gh api repos/{owner}/{repo}/pulls/${prNumber}/reviews --method POST -f event=REQUEST_CHANGES -f body="Your detailed feedback here"
+\`\`\`
+If that also fails, leave a comment prefixed with **🔄 CHANGES REQUESTED** so the outcome is clear:
+\`\`\`bash
+gh pr comment ${prNumber} --body "🔄 **CHANGES REQUESTED**\\n\\nYour feedback here"
 \`\`\``;
 
   const mergeRule = hasBotToken
@@ -868,8 +894,13 @@ gh pr comment ${prNumber} --body "🔄 **CHANGES REQUESTED**\\n\\nYour feedback 
 - **Do NOT run gh pr review, gh pr merge, or gh api commands** — the server handles all formal GitHub actions via the bot account
 - Just read the diff, analyze it, and clearly report APPROVED or CHANGES REQUESTED with detailed reasoning
 - Leave clear, specific feedback so the author can act on it`
-    : `- **Do NOT check out the branch or edit any code** — you are the reviewer, not the author
+    : shouldAutoMerge
+      ? `- **Do NOT check out the branch or edit any code** — you are the reviewer, not the author
 - If approved, **merge the PR** using \`gh pr merge --squash --delete-branch\` — approval and merge should be a single action
+- Leave clear, specific comments so the author can act on them
+- After leaving your review, report what you found and what action you took`
+      : `- **Do NOT check out the branch or edit any code** — you are the reviewer, not the author
+- If approved, submit the approval review but do **NOT** merge — auto-merge is disabled, a human will merge
 - Leave clear, specific comments so the author can act on them
 - After leaving your review, report what you found and what action you took`;
 
@@ -1054,11 +1085,24 @@ ${finalContent.slice(-1500)}`;
           console.error(`[Review] Server-side approval submission failed:`, err.message);
         });
 
-        // Server-side merge backup — if the agent's own `gh pr merge` failed
-        // (e.g. same-account limitation, timeout, or bot token needed), try again here
-        mergeApprovedPR(prUrl).catch((err) => {
-          console.error(`[Review] Server-side merge attempt failed:`, err.message);
-        });
+        // Respect the autoMerge toggle — only merge if enabled
+        const wf = project.githubWorkflow || {};
+        const isAutonomous = card?.epic_id
+          ? !!deps.stmts.getKanbanEpic.get(card.epic_id)?.autonomous
+          : false;
+        const shouldAutoMerge = wf.autoMerge !== undefined ? wf.autoMerge : isAutonomous;
+
+        if (shouldAutoMerge) {
+          // Server-side merge backup — if the agent's own `gh pr merge` failed
+          // (e.g. same-account limitation, timeout, or bot token needed), try again here
+          mergeApprovedPR(prUrl).catch((err) => {
+            console.error(`[Review] Server-side merge attempt failed:`, err.message);
+          });
+        } else {
+          console.log(
+            `[Review] Auto-merge disabled — skipping server-side merge for "${titleMatch[1]}"`,
+          );
+        }
       }
 
       // Card stays in Review — it only moves to Done when the PR is actually merged
