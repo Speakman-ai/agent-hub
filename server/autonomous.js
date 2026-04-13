@@ -683,6 +683,100 @@ export async function mergeApprovedPR(prUrl) {
 }
 
 /**
+ * Check whether all GitHub CI checks are passing for a PR.
+ * Returns { ok: true } if all checks pass, or { ok: false, summary } with failure details.
+ */
+export async function checkCIPassing(prUrl) {
+  const pr = parsePrUrl(prUrl);
+  if (!pr) return { ok: false, summary: 'Invalid PR URL' };
+  const env = botGhEnv();
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'pr',
+        'checks',
+        String(pr.number),
+        '--repo',
+        `${pr.owner}/${pr.repo}`,
+        '--json',
+        'name,state,conclusion',
+      ],
+      { timeout: 30000, ...(env && { env }) },
+    );
+    const checks = JSON.parse(stdout || '[]');
+    if (checks.length === 0) return { ok: true, summary: 'No CI checks configured' };
+    const pending = checks.filter(
+      (c) => c.state === 'PENDING' || c.state === 'QUEUED' || c.state === 'IN_PROGRESS',
+    );
+    const failed = checks.filter(
+      (c) =>
+        c.conclusion &&
+        c.conclusion !== 'SUCCESS' &&
+        c.conclusion !== 'NEUTRAL' &&
+        c.conclusion !== 'SKIPPED',
+    );
+    if (pending.length > 0) {
+      return {
+        ok: false,
+        summary: `${pending.length} check(s) still running: ${pending.map((c) => c.name).join(', ')}`,
+      };
+    }
+    if (failed.length > 0) {
+      return {
+        ok: false,
+        summary: `${failed.length} check(s) failing: ${failed.map((c) => `${c.name} (${c.conclusion})`).join(', ')}`,
+      };
+    }
+    return { ok: true, summary: `All ${checks.length} check(s) passing` };
+  } catch (err) {
+    // If we can't determine CI status, fail open with a warning
+    console.warn(`[Review] CI check query failed for PR #${pr.number}: ${err.message}`);
+    return { ok: true, summary: 'Could not query CI status — proceeding' };
+  }
+}
+
+/**
+ * Check whether a PR has unresolved review comment threads.
+ * Returns { ok: true } if no unresolved threads, or { ok: false, count } with the count.
+ */
+export async function checkResolvedComments(prUrl) {
+  const pr = parsePrUrl(prUrl);
+  if (!pr) return { ok: false, count: 0, summary: 'Invalid PR URL' };
+  const env = botGhEnv();
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'pr',
+        'view',
+        String(pr.number),
+        '--repo',
+        `${pr.owner}/${pr.repo}`,
+        '--json',
+        'reviewThreads',
+      ],
+      { timeout: 30000, ...(env && { env }) },
+    );
+    const data = JSON.parse(stdout || '{}');
+    const threads = data.reviewThreads || [];
+    const unresolved = threads.filter((t) => !t.isResolved);
+    if (unresolved.length > 0) {
+      return {
+        ok: false,
+        count: unresolved.length,
+        summary: `${unresolved.length} unresolved review thread(s)`,
+      };
+    }
+    return { ok: true, count: 0, summary: 'All review threads resolved' };
+  } catch (err) {
+    // Fail open — don't block merge if we can't query threads
+    console.warn(`[Review] Review thread query failed for PR #${pr.number}: ${err.message}`);
+    return { ok: true, count: 0, summary: 'Could not query review threads — proceeding' };
+  }
+}
+
+/**
  * Extract a meaningful review body from the agent's final output.
  * Looks for the content the agent passed to `gh pr review --body` or falls back
  * to a trimmed excerpt from the end of the output.
@@ -1095,19 +1189,50 @@ ${finalContent.slice(-1500)}`;
           console.error(`[Review] Server-side approval submission failed:`, err.message);
         });
 
-        // Respect the autoMerge toggle — only merge if enabled
+        // Respect workflow toggles — only merge if enabled and preconditions are met
         const wf = project.githubWorkflow || {};
         const isAutonomous = card?.epic_id
           ? !!deps.stmts.getKanbanEpic.get(card.epic_id)?.autonomous
           : false;
         const shouldAutoMerge = wf.autoMerge !== undefined ? wf.autoMerge : isAutonomous;
+        const shouldWaitForCI = wf.waitForCI !== undefined ? wf.waitForCI : false;
+        const shouldWaitForComments =
+          wf.waitForResolvedComments !== undefined ? wf.waitForResolvedComments : false;
 
         if (shouldAutoMerge) {
           // Server-side merge backup — if the agent's own `gh pr merge` failed
-          // (e.g. same-account limitation, timeout, or bot token needed), try again here
-          mergeApprovedPR(prUrl).catch((err) => {
-            console.error(`[Review] Server-side merge attempt failed:`, err.message);
-          });
+          // (e.g. same-account limitation, timeout, or bot token needed), try again here.
+          // First, verify preconditions if the respective toggles are on.
+          const prLabel = titleMatch[1] || `PR ${prUrl}`;
+          let canMerge = true;
+
+          if (shouldWaitForCI) {
+            const ci = await checkCIPassing(prUrl);
+            if (!ci.ok) {
+              console.log(
+                `[Review] Blocking merge for "${prLabel}" — CI not passing: ${ci.summary}`,
+              );
+              canMerge = false;
+            } else {
+              console.log(`[Review] CI check passed for "${prLabel}": ${ci.summary}`);
+            }
+          }
+
+          if (canMerge && shouldWaitForComments) {
+            const threads = await checkResolvedComments(prUrl);
+            if (!threads.ok) {
+              console.log(`[Review] Blocking merge for "${prLabel}" — ${threads.summary}`);
+              canMerge = false;
+            } else {
+              console.log(`[Review] Comment check passed for "${prLabel}": ${threads.summary}`);
+            }
+          }
+
+          if (canMerge) {
+            mergeApprovedPR(prUrl).catch((err) => {
+              console.error(`[Review] Server-side merge attempt failed:`, err.message);
+            });
+          }
         } else {
           console.log(
             `[Review] Auto-merge disabled — skipping server-side merge for "${titleMatch[1]}"`,
