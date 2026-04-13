@@ -10,6 +10,7 @@ export default function createRoomRoutes(deps) {
     buildTranscript,
     summarizeTranscript,
     DEFAULT_MODEL,
+    config,
   } = deps;
   const router = Router();
 
@@ -117,10 +118,14 @@ export default function createRoomRoutes(deps) {
 
       const transcript = buildTranscript(messages, { isRoom: true });
 
-      const summary = await summarizeTranscript(transcript, {
-        engine: 'claude-code',
-        model: DEFAULT_MODEL,
-      });
+      const summary = await summarizeTranscript(
+        transcript,
+        {
+          engine: 'claude-code',
+          model: DEFAULT_MODEL,
+        },
+        config,
+      );
 
       res.json({ summary });
     } catch (err) {
