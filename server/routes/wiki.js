@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { stmts } from '../db.js';
 import {
   listPages,
   getPage,
@@ -10,18 +9,9 @@ import {
   CATEGORIES as WIKI_CATEGORIES,
 } from '../wiki.js';
 
-/**
- * Create the wiki router.
- *
- * @param {object} deps
- * @param {function} deps.findProject  - (projectId) => project | null
- * @param {function} deps.broadcast    - (data) => void – send to all WS clients
- * @returns {Router}
- */
-export default function createWikiRouter({ findProject, broadcast }) {
-  const router = Router();
+export default function createWikiRoutes({ findProject, broadcast, stmts }) {
+  const router = Router({ mergeParams: true });
 
-  // List / search / filter wiki pages
   router.get('/api/projects/:projectId/wiki', (req, res) => {
     const project = findProject(req.params.projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -35,19 +25,16 @@ export default function createWikiRouter({ findProject, broadcast }) {
     }
   });
 
-  // List valid categories
-  router.get('/api/projects/:projectId/wiki/categories', (_req, res) => {
+  router.get('/api/projects/:projectId/wiki/categories', (req, res) => {
     res.json(WIKI_CATEGORIES);
   });
 
-  // Get a single page by slug
   router.get('/api/projects/:projectId/wiki/:slug', (req, res) => {
     const page = getPage(req.params.projectId, req.params.slug);
     if (!page) return res.status(404).json({ error: 'Page not found' });
     res.json(page);
   });
 
-  // Create a new page
   router.post('/api/projects/:projectId/wiki', (req, res) => {
     const project = findProject(req.params.projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -64,7 +51,6 @@ export default function createWikiRouter({ findProject, broadcast }) {
     }
   });
 
-  // Update an existing page
   router.put('/api/projects/:projectId/wiki/:slug', (req, res) => {
     const { title, content, category, updatedBy } = req.body;
     try {
@@ -82,7 +68,6 @@ export default function createWikiRouter({ findProject, broadcast }) {
     }
   });
 
-  // Delete a page
   router.delete('/api/projects/:projectId/wiki/:slug', (req, res) => {
     const deleted = deletePage(req.params.projectId, req.params.slug);
     if (!deleted) return res.status(404).json({ error: 'Page not found' });
