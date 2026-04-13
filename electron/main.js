@@ -9,7 +9,7 @@
 import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { fork } from 'child_process';
+import { fork, spawn } from 'child_process';
 import { mkdirSync, createWriteStream, readFileSync, writeFileSync, existsSync } from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -126,17 +126,29 @@ function startServer() {
     const env = {
       ...process.env,
       PATH: mergedPath,
-      ELECTRON_RUN_AS_NODE: '1',
       ELECTRON: '1',
       AGENT_HUB_DATA_DIR: USER_DATA,
       AGENT_HUB_SERVE_CLIENT: isDev ? '' : path.join(ROOT, 'client', 'dist'),
     };
 
-    serverProcess = fork(serverEntry, [], {
-      cwd: path.dirname(serverEntry),
-      env,
-      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-    });
+    if (isDev) {
+      // In dev, use the system Node binary to avoid native module ABI mismatches
+      // between Electron's embedded Node and the system Node that compiled them.
+      serverProcess = spawn('node', [serverEntry], {
+        cwd: path.dirname(serverEntry),
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } else {
+      // In production, use Electron's fork (ELECTRON_RUN_AS_NODE) so native
+      // modules rebuilt by electron-builder match the runtime.
+      env.ELECTRON_RUN_AS_NODE = '1';
+      serverProcess = fork(serverEntry, [], {
+        cwd: path.dirname(serverEntry),
+        env,
+        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      });
+    }
 
     let started = false;
 
@@ -199,14 +211,15 @@ function createWindow() {
   const port = process.env.AGENT_HUB_PORT || 3051;
   const connConfig = readConnectionConfig();
 
-  if (connConfig.mode === 'remote' && connConfig.remoteUrl) {
+  if (isDev) {
+    // In dev, always load the Vite dev server — it proxies /api to the
+    // local server, and the React app handles remote org connections itself.
+    mainWindow.loadURL('http://localhost:3050');
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  } else if (connConfig.mode === 'remote' && connConfig.remoteUrl) {
     // Remote mode — load the remote server's UI directly
     mainWindow.loadURL(connConfig.remoteUrl.replace(/\/+$/, ''));
     console.log('[electron] Loading remote URL:', connConfig.remoteUrl);
-  } else if (isDev) {
-    // In dev, the Vite dev server runs on 3050 and proxies /api to 3051
-    mainWindow.loadURL('http://localhost:3050');
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     // In production, the Express server serves the built client
     mainWindow.loadURL(`http://localhost:${port}`);
@@ -277,10 +290,10 @@ ipcMain.on('navigate-to-org', async (event) => {
 
   const config = readConnectionConfig();
   const port = process.env.AGENT_HUB_PORT || 3051;
-  if (config.mode === 'remote' && config.remoteUrl) {
-    mainWindow.loadURL(config.remoteUrl.replace(/\/+$/, ''));
-  } else if (isDev) {
+  if (isDev) {
     mainWindow.loadURL('http://localhost:3050');
+  } else if (config.mode === 'remote' && config.remoteUrl) {
+    mainWindow.loadURL(config.remoteUrl.replace(/\/+$/, ''));
   } else {
     mainWindow.loadURL(`http://localhost:${port}`);
   }

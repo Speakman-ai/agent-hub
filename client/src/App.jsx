@@ -16,7 +16,14 @@ import KanbanBoard from './components/KanbanBoard.jsx';
 import WikiBrowser from './components/WikiBrowser.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
-import { MessageCircle, Info, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
+import {
+  MessageCircle,
+  Info,
+  CheckCircle,
+  AlertTriangle,
+  Loader2,
+  ArrowLeftRight,
+} from 'lucide-react';
 import { migrateFromLegacy, fetchOrgs, getActiveOrg, getOrgs } from './utils/orgs.js';
 import { getApiBase, getAuthHeaders } from './utils/connection.js';
 
@@ -791,6 +798,7 @@ export default function App() {
       try {
         const statusRes = await fetch(`${getApiBase()}/setup/status`, {
           headers: getAuthHeaders(),
+          signal: AbortSignal.timeout(10000),
         });
         const status = await statusRes.json();
         setSetupStatus(status);
@@ -1147,16 +1155,17 @@ export default function App() {
   const isElectron = !!window.electronAPI?.isElectron;
   const isMac = window.electronAPI?.platform === 'darwin';
 
-  // Show loading spinner while connecting to the server and loading org data
+  // Show loading spinner while connecting to the server and loading org data.
+  // Includes an org switcher so users can escape a dead remote org.
   if (initializing) {
     const activeOrg = getActiveOrg();
+    const allOrgState = getOrgs();
+    const allOrgsList = allOrgState?.orgs || [];
     return (
       <div className="flex flex-col h-screen bg-gray-950 text-gray-100 items-center justify-center gap-4">
         <Loader2 size={32} className="animate-spin text-indigo-400" />
         <div className="text-center">
-          <p className="text-sm text-gray-400">
-            Connecting to server{activeOrg?.mode === 'remote' ? '...' : '...'}
-          </p>
+          <p className="text-sm text-gray-400">Connecting to server...</p>
           {activeOrg && (
             <p className="text-xs text-gray-600 mt-1">
               {activeOrg.name}
@@ -1164,6 +1173,27 @@ export default function App() {
             </p>
           )}
         </div>
+        {allOrgsList.length > 1 && (
+          <div className="flex flex-wrap gap-2 mt-2">
+            {allOrgsList
+              .filter((o) => o.id !== activeOrg?.id)
+              .map((org) => (
+                <button
+                  key={org.id}
+                  onClick={async () => {
+                    const { switchOrg } = await import('./utils/orgs.js');
+                    const { reloadForOrgSwitch } = await import('./utils/connection.js');
+                    await switchOrg(org.id);
+                    reloadForOrgSwitch();
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-400 bg-gray-800/50 hover:bg-gray-800 rounded-lg border border-gray-700/50 transition-colors"
+                >
+                  <ArrowLeftRight size={12} />
+                  {org.name}
+                </button>
+              ))}
+          </div>
+        )}
       </div>
     );
   }

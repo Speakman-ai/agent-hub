@@ -3,13 +3,16 @@ import { getApiBase, getAuthHeaders } from './connection.js';
 async function fetchJSON(url, options = {}) {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
+  const timeout = options.timeout || 15000;
+  const { timeout: _t, ...fetchOpts } = options;
   const res = await fetch(`${base}${url}`, {
-    ...options,
+    ...fetchOpts,
     headers: {
       'Content-Type': 'application/json',
       ...authHeaders,
-      ...options.headers,
+      ...fetchOpts.headers,
     },
+    signal: fetchOpts.signal || AbortSignal.timeout(timeout),
   });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
@@ -41,7 +44,7 @@ export const api = {
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
   summarizeSession: (sessionId) =>
-    fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST' }),
+    fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST', timeout: 120000 }),
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
   deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
@@ -98,7 +101,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(config),
     }),
-  runHeartbeat: (agentId) => fetchJSON(`/heartbeats/${agentId}/run`, { method: 'POST' }),
+  runHeartbeat: (agentId) =>
+    fetchJSON(`/heartbeats/${agentId}/run`, { method: 'POST', timeout: 120000 }),
 
   // Cron Sessions
   getCronSessions: () => fetchJSON('/sessions/cron'),
@@ -110,7 +114,7 @@ export const api = {
   updateCron: (id, data) =>
     fetchJSON(`/crons/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteCron: (id) => fetchJSON(`/crons/${id}`, { method: 'DELETE' }),
-  runCron: (id) => fetchJSON(`/crons/${id}/run`, { method: 'POST' }),
+  runCron: (id) => fetchJSON(`/crons/${id}/run`, { method: 'POST', timeout: 120000 }),
 
   // Rooms
   getRooms: () => fetchJSON('/rooms'),
@@ -126,7 +130,8 @@ export const api = {
   removeRoomAgent: (roomId, agentId) =>
     fetchJSON(`/rooms/${roomId}/agents/${agentId}`, { method: 'DELETE' }),
   getRoomMessages: (roomId) => fetchJSON(`/rooms/${roomId}/messages`),
-  summarizeRoom: (roomId) => fetchJSON(`/rooms/${roomId}/summarize`, { method: 'POST' }),
+  summarizeRoom: (roomId) =>
+    fetchJSON(`/rooms/${roomId}/summarize`, { method: 'POST', timeout: 120000 }),
   getProjectRoom: (projectId) => fetchJSON(`/projects/${projectId}/room`),
 
   // Usage
@@ -209,9 +214,13 @@ export const api = {
 
   // Project onboarding
   analyzeProject: (cwd) =>
-    fetchJSON('/projects/analyze', { method: 'POST', body: JSON.stringify({ cwd }) }),
+    fetchJSON('/projects/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ cwd }),
+      timeout: 300000,
+    }),
   onboardProject: (data) =>
-    fetchJSON('/projects/onboard', { method: 'POST', body: JSON.stringify(data) }),
+    fetchJSON('/projects/onboard', { method: 'POST', body: JSON.stringify(data), timeout: 60000 }),
 
   // Config settings
   getConfig: () => fetchJSON('/config'),
@@ -233,7 +242,11 @@ export const api = {
 
   // Clone from GitHub
   cloneRepo: (url, targetDir) =>
-    fetchJSON('/projects/clone', { method: 'POST', body: JSON.stringify({ url, targetDir }) }),
+    fetchJSON('/projects/clone', {
+      method: 'POST',
+      body: JSON.stringify({ url, targetDir }),
+      timeout: 300000,
+    }),
 
   // Kanban Board
   getBoard: (projectId) => fetchJSON(`/projects/${projectId}/board`),
