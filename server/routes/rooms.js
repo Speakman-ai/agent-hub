@@ -2,7 +2,15 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 
 export default function createRoomRoutes(deps) {
-  const { stmts, getEnrichedAgent, findProject, ensureProjectRoom } = deps;
+  const {
+    stmts,
+    getEnrichedAgent,
+    findProject,
+    ensureProjectRoom,
+    buildTranscript,
+    summarizeTranscript,
+    DEFAULT_MODEL,
+  } = deps;
   const router = Router();
 
   router.get('/api/rooms', (_req, res) => {
@@ -96,6 +104,29 @@ export default function createRoomRoutes(deps) {
   router.get('/api/rooms/:id/messages', (req, res) => {
     const messages = stmts.getRoomMessages.all(req.params.id);
     res.json(messages);
+  });
+
+  // Summarize a conference room conversation
+  router.post('/api/rooms/:id/summarize', async (req, res) => {
+    try {
+      const room = stmts.getRoom?.get(req.params.id);
+      if (!room) return res.status(404).json({ error: 'Room not found' });
+
+      const messages = stmts.getRoomMessages.all(req.params.id);
+      if (!messages.length) return res.status(400).json({ error: 'No messages to summarize' });
+
+      const transcript = buildTranscript(messages, { isRoom: true });
+
+      const summary = await summarizeTranscript(transcript, {
+        engine: 'claude-code',
+        model: DEFAULT_MODEL,
+      });
+
+      res.json({ summary });
+    } catch (err) {
+      console.error('Summarize room error:', err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   return router;
