@@ -23,4 +23,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** Navigate the Electron window to the correct URL after an org switch. */
   navigateToOrg: () => ipcRenderer.send('navigate-to-org'),
+
+  /** Read remote orgs from file-backed storage (survives origin changes). */
+  getRemoteOrgs: () => ipcRenderer.sendSync('get-remote-orgs'),
+
+  /** Save remote orgs to file-backed storage. */
+  saveRemoteOrgs: (orgs) => ipcRenderer.sendSync('save-remote-orgs', orgs),
+
+  /** Read the active org ID from file-backed storage. */
+  getActiveOrgId: () => ipcRenderer.sendSync('get-active-org-id'),
+
+  /** Save the active org ID to file-backed storage. */
+  saveActiveOrgId: (orgId) => ipcRenderer.sendSync('save-active-org-id', orgId),
 });

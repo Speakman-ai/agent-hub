@@ -18,8 +18,24 @@ const REMOTE_ORGS_KEY = 'agent-hub-remote-orgs';
 
 // ─── In-memory cache ──────────────────────────────────────────────
 let _localOrgs = []; // from server
-let _remoteOrgs = []; // from localStorage
-let _activeOrgId = localStorage.getItem('agent-hub-active-org') || null;
+let _remoteOrgs = []; // from localStorage (browser) or file-backed (Electron)
+let _activeOrgId = _loadActiveOrgId();
+
+/** Load active org ID — prefer Electron file-backed storage (origin-independent). */
+function _loadActiveOrgId() {
+  if (window.electronAPI?.getActiveOrgId) {
+    return window.electronAPI.getActiveOrgId() || null;
+  }
+  return localStorage.getItem('agent-hub-active-org') || null;
+}
+
+/** Persist active org ID to both localStorage and Electron file storage. */
+function _saveActiveOrgId(orgId) {
+  localStorage.setItem('agent-hub-active-org', orgId);
+  if (window.electronAPI?.saveActiveOrgId) {
+    window.electronAPI.saveActiveOrgId(orgId);
+  }
+}
 
 /** Get the merged list of all orgs (local + remote). */
 function allOrgs() {
@@ -29,6 +45,13 @@ function allOrgs() {
 // ─── Remote orgs (localStorage) ──────────────────────────────────
 
 function loadRemoteOrgs() {
+  // In Electron, use file-backed storage (survives origin changes when
+  // navigating between remote servers).
+  if (window.electronAPI?.getRemoteOrgs) {
+    _remoteOrgs = window.electronAPI.getRemoteOrgs() || [];
+    return;
+  }
+  // Browser fallback — localStorage (origin-scoped)
   try {
     const raw = localStorage.getItem(REMOTE_ORGS_KEY);
     if (raw) {
@@ -40,7 +63,12 @@ function loadRemoteOrgs() {
 }
 
 function saveRemoteOrgs() {
+  // Always write to localStorage for browser compatibility
   localStorage.setItem(REMOTE_ORGS_KEY, JSON.stringify(_remoteOrgs));
+  // In Electron, also persist to file-backed storage
+  if (window.electronAPI?.saveRemoteOrgs) {
+    window.electronAPI.saveRemoteOrgs(_remoteOrgs);
+  }
 }
 
 // ─── Public API ───────────────────────────────────────────────────
@@ -64,7 +92,7 @@ export async function fetchOrgs() {
   const merged = allOrgs();
   if (!_activeOrgId && merged.length > 0) {
     _activeOrgId = merged[0].id;
-    localStorage.setItem('agent-hub-active-org', _activeOrgId);
+    _saveActiveOrgId(_activeOrgId);
   }
 
   return { orgs: merged, activeOrgId: _activeOrgId };
@@ -95,7 +123,7 @@ export async function switchOrg(orgId) {
   if (!org) return;
 
   _activeOrgId = orgId;
-  localStorage.setItem('agent-hub-active-org', orgId);
+  _saveActiveOrgId(orgId);
 
   syncToConnection(org);
 
@@ -267,7 +295,7 @@ export async function migrateFromLegacy() {
     // Preserve active org
     if (legacy.activeOrgId) {
       _activeOrgId = legacy.activeOrgId;
-      localStorage.setItem('agent-hub-active-org', _activeOrgId);
+      _saveActiveOrgId(_activeOrgId);
     }
 
     // Remove legacy storage

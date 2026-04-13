@@ -28,6 +28,7 @@ let serverProcess = null;
 // ─── Connection config (file-backed for Electron) ───────────────
 
 const CONNECTION_CONFIG_PATH = path.join(USER_DATA, 'connection.json');
+const REMOTE_ORGS_PATH = path.join(USER_DATA, 'remote-orgs.json');
 
 let cachedConnConfig = null;
 
@@ -47,6 +48,22 @@ function writeConnectionConfig(config) {
   mkdirSync(path.dirname(CONNECTION_CONFIG_PATH), { recursive: true });
   writeFileSync(CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
   cachedConnConfig = config;
+}
+
+// ─── Remote orgs (file-backed for Electron, survives origin changes) ──
+
+function readRemoteOrgs() {
+  try {
+    if (existsSync(REMOTE_ORGS_PATH)) {
+      return JSON.parse(readFileSync(REMOTE_ORGS_PATH, 'utf-8'));
+    }
+  } catch {}
+  return [];
+}
+
+function writeRemoteOrgs(orgs) {
+  mkdirSync(path.dirname(REMOTE_ORGS_PATH), { recursive: true });
+  writeFileSync(REMOTE_ORGS_PATH, JSON.stringify(orgs, null, 2) + '\n');
 }
 
 // Inject the configured X-API-Key on every request to the remote host so the
@@ -201,12 +218,30 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  // Intercept all navigation — markdown links use <a href> which triggers
-  // will-navigate rather than window.open. Prevent in-app navigation for
-  // any external URL (keep localhost for the app itself).
+  // Intercept navigation — markdown links use <a href> which triggers
+  // will-navigate rather than window.open. Allow localhost and any
+  // configured remote server origin; open everything else externally.
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const appOrigin = isDev ? 'http://localhost:3050' : `http://localhost:${port}`;
-    if (!url.startsWith(appOrigin)) {
+    const allowedOrigins = [
+      `http://localhost:${port}`,
+      isDev ? 'http://localhost:3050' : null,
+    ].filter(Boolean);
+
+    // Allow the currently configured remote server
+    const config = readConnectionConfig();
+    if (config.mode === 'remote' && config.remoteUrl) {
+      allowedOrigins.push(config.remoteUrl.replace(/\/+$/, ''));
+    }
+
+    // Also allow any known remote org servers
+    for (const org of readRemoteOrgs()) {
+      if (org.remote_url) {
+        allowedOrigins.push(org.remote_url.replace(/\/+$/, ''));
+      }
+    }
+
+    const isAllowed = allowedOrigins.some((origin) => url.startsWith(origin));
+    if (!isAllowed) {
       event.preventDefault();
       shell.openExternal(url);
     }
@@ -231,8 +266,15 @@ ipcMain.on('save-connection-config', (event, config) => {
 
 // Navigate the window to the correct URL based on current connection config.
 // Called after an org switch so Electron loads the right server.
-ipcMain.on('navigate-to-org', (event) => {
+// Clears HTTP cache first to avoid serving stale JS bundles from the previous server.
+ipcMain.on('navigate-to-org', async (event) => {
   if (!mainWindow) return;
+
+  // Clear HTTP cache so the new server's assets are fetched fresh
+  try {
+    await session.defaultSession.clearCache();
+  } catch {}
+
   const config = readConnectionConfig();
   const port = process.env.AGENT_HUB_PORT || 3051;
   if (config.mode === 'remote' && config.remoteUrl) {
@@ -242,6 +284,41 @@ ipcMain.on('navigate-to-org', (event) => {
   } else {
     mainWindow.loadURL(`http://localhost:${port}`);
   }
+});
+
+// Remote orgs — file-backed storage that survives origin changes.
+// localStorage is origin-scoped, so when Electron navigates from Server A to
+// Server B, the remote org bookmarks stored in Server A's localStorage vanish.
+// File-backed storage solves this.
+ipcMain.on('get-remote-orgs', (event) => {
+  event.returnValue = readRemoteOrgs();
+});
+
+ipcMain.on('save-remote-orgs', (event, orgs) => {
+  writeRemoteOrgs(orgs);
+  event.returnValue = true;
+});
+
+// Persist the active org ID so it survives origin changes too.
+const ACTIVE_ORG_PATH = path.join(USER_DATA, 'active-org.json');
+
+ipcMain.on('get-active-org-id', (event) => {
+  try {
+    if (existsSync(ACTIVE_ORG_PATH)) {
+      const data = JSON.parse(readFileSync(ACTIVE_ORG_PATH, 'utf-8'));
+      event.returnValue = data.activeOrgId || null;
+    } else {
+      event.returnValue = null;
+    }
+  } catch {
+    event.returnValue = null;
+  }
+});
+
+ipcMain.on('save-active-org-id', (event, orgId) => {
+  mkdirSync(path.dirname(ACTIVE_ORG_PATH), { recursive: true });
+  writeFileSync(ACTIVE_ORG_PATH, JSON.stringify({ activeOrgId: orgId }) + '\n');
+  event.returnValue = true;
 });
 
 // Native directory picker — called from the OpenProjectWizard
