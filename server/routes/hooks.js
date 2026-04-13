@@ -22,6 +22,14 @@ export function hookHandled(sessionId) {
 }
 
 /**
+ * Remove a session from the completed set. Called by proc.on('close') after
+ * checking hookHandled() so the entry doesn't linger in memory.
+ */
+export function clearCompleted(sessionId) {
+  completed.delete(sessionId);
+}
+
+/**
  * @param {object} deps - Route dependencies from index.js
  * @returns {Router}
  */
@@ -99,8 +107,9 @@ export default function createHookRoutes(deps) {
     } finally {
       inFlight.delete(sessionId);
       completed.add(sessionId);
-      // Clean up completed set after 60s to avoid unbounded growth
-      setTimeout(() => completed.delete(sessionId), 60_000);
+      // Clean up completed set after 5 minutes — must outlive the proc.on('close')
+      // fallback delay (3s) plus any slow I/O during process teardown.
+      setTimeout(() => completed.delete(sessionId), 300_000);
     }
   });
 

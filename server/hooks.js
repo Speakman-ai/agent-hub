@@ -1,8 +1,11 @@
 /**
  * Claude Code Hooks Configuration
  *
- * Writes `.claude/settings.json` in the workspace with Stop/SubagentStop
- * hooks that call back to Agent Hub when Claude Code finishes work.
+ * Writes `.claude/settings.json` in the workspace with a Stop hook
+ * that calls back to Agent Hub when Claude Code finishes work.
+ *
+ * Note: Only the Stop event is hooked — SubagentStop fires when subagents
+ * finish while the main agent is still working, causing premature commits.
  * This replaces the proc.on('close') approach for auto-commit-and-PR,
  * using Claude Code's native hook system (available since v2.1.97).
  */
@@ -18,6 +21,12 @@ import config from './config.js';
  * @returns {string} Shell command string
  */
 function buildHookCommand(sessionId) {
+  // Validate sessionId format to prevent shell injection — the value is
+  // interpolated into a curl command string executed via `sh -c`.
+  if (!/^[a-f0-9-]+$/i.test(sessionId)) {
+    throw new Error(`Invalid sessionId format: ${sessionId}`);
+  }
+
   const port = config.port || 3051;
   const baseUrl = `http://localhost:${port}`;
 
@@ -37,7 +46,7 @@ function buildHookCommand(sessionId) {
 /**
  * Write Claude Code hooks configuration to the workspace's `.claude/settings.json`.
  *
- * Merges Stop/SubagentStop hooks into any existing settings without
+ * Merges the Stop hook into any existing settings without
  * overwriting other configuration. Each hook calls back to Agent Hub's
  * `/api/hooks/stop` endpoint with the session ID.
  *
@@ -77,18 +86,16 @@ export function writeHooksConfig(cwd, sessionId) {
     settings.hooks = {};
   }
 
-  for (const event of ['Stop', 'SubagentStop']) {
-    const existing = settings.hooks[event] || [];
+  const existing = settings.hooks.Stop || [];
 
-    // Remove any previous Agent Hub hook entries (identified by /api/hooks/stop)
-    const filtered = existing.filter(
-      (entry) => !entry.hooks?.some((h) => h.command?.includes('/api/hooks/stop')),
-    );
+  // Remove any previous Agent Hub hook entries (identified by /api/hooks/stop)
+  const filtered = existing.filter(
+    (entry) => !entry.hooks?.some((h) => h.command?.includes('/api/hooks/stop')),
+  );
 
-    // Add our hook entry
-    filtered.push(hookEntry);
-    settings.hooks[event] = filtered;
-  }
+  // Add our hook entry
+  filtered.push(hookEntry);
+  settings.hooks.Stop = filtered;
 
   // Ensure .claude directory exists
   if (!existsSync(claudeDir)) {
@@ -113,13 +120,12 @@ export function removeHooksConfig(cwd) {
     const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     if (!settings.hooks) return;
 
-    for (const event of ['Stop', 'SubagentStop']) {
-      if (!settings.hooks[event]) continue;
-      settings.hooks[event] = settings.hooks[event].filter(
+    if (settings.hooks.Stop) {
+      settings.hooks.Stop = settings.hooks.Stop.filter(
         (entry) => !entry.hooks?.some((h) => h.command?.includes('/api/hooks/stop')),
       );
-      if (settings.hooks[event].length === 0) {
-        delete settings.hooks[event];
+      if (settings.hooks.Stop.length === 0) {
+        delete settings.hooks.Stop;
       }
     }
 

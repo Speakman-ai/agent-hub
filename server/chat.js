@@ -18,7 +18,7 @@ import { getMemoryContext, appendDailyNote } from './memory.js';
 import { collectSkillsFromDir, DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
-import { hookHandled } from './routes/hooks.js';
+import { hookHandled, clearCompleted } from './routes/hooks.js';
 
 const DEFAULT_MODEL = config.defaultModel;
 const MAX_QUEUE_SIZE = 10;
@@ -1064,7 +1064,17 @@ PR URL: ${prUrl}
       // Fall back here for non-Claude engines, non-worktree sessions, or if
       // Claude Code crashed/was killed before hooks could fire.
       const hooksWillHandle = engine === 'claude-code' && effectiveCwd !== project.cwd;
-      if (!hooksWillHandle || !hookHandled(sessionId)) {
+      if (hooksWillHandle) {
+        // Give hooks 3s to register before falling back — hooks fire before
+        // process exit, but the HTTP request may arrive after proc.on('close').
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+      const handledByHook = hooksWillHandle && hookHandled(sessionId);
+      if (handledByHook) {
+        // Hooks ran successfully — clean up the completed entry so it doesn't
+        // linger in memory until the long safety timeout expires.
+        clearCompleted(sessionId);
+      } else {
         if (hooksWillHandle) {
           console.log(
             `[auto-commit] Hooks did not fire for ${sessionId}, falling back to proc.on('close')`,
