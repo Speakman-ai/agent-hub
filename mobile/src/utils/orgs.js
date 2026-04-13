@@ -147,19 +147,43 @@ export async function migrateFromLegacy() {
  */
 export async function testConnection(url, apiKey) {
   if (!url) return { ok: false, message: 'Enter a server URL first.' };
+  const base = url.replace(/\/+$/, '');
   try {
     const headers = apiKey ? { 'X-API-Key': apiKey } : {};
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(`${url.replace(/\/+$/, '')}/api/health`, {
+
+    // First: hit /api/health (public) to verify server is reachable
+    const healthRes = await fetch(`${base}/api/health`, {
       headers,
       signal: controller.signal,
     });
     clearTimeout(timeout);
-    if (!res.ok) {
-      return { ok: false, message: `Server responded with ${res.status}: ${res.statusText}` };
+    if (!healthRes.ok) {
+      return { ok: false, message: `Server responded with ${healthRes.status}: ${healthRes.statusText}` };
     }
-    const data = await res.json();
+    const data = await healthRes.json();
+
+    // Second: if server requires auth, verify the API key by hitting an auth-required endpoint
+    if (data.authRequired) {
+      if (!apiKey) {
+        return { ok: false, message: `Server requires an API key. Enter one above.` };
+      }
+      const controller2 = new AbortController();
+      const timeout2 = setTimeout(() => controller2.abort(), 10000);
+      const authRes = await fetch(`${base}/api/agents`, {
+        headers: { 'X-API-Key': apiKey },
+        signal: controller2.signal,
+      });
+      clearTimeout(timeout2);
+      if (authRes.status === 401 || authRes.status === 403) {
+        return { ok: false, message: `Server reachable but API key is invalid (${authRes.status}).` };
+      }
+      if (!authRes.ok) {
+        return { ok: false, message: `Auth check failed: ${authRes.status} ${authRes.statusText}` };
+      }
+    }
+
     return { ok: true, message: `Connected — ${data.agents || 0} agents, uptime ${Math.round((data.uptime || 0) / 60)}m` };
   } catch (err) {
     if (err.name === 'AbortError') {

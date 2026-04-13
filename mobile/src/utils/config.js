@@ -19,8 +19,8 @@ export async function loadConnectionConfig() {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
-      // Strip surrounding quotes from apiKey (common paste artifact)
-      if (parsed.apiKey) parsed.apiKey = parsed.apiKey.replace(/^["']+|["']+$/g, '');
+      // Strip whitespace and surrounding quotes from apiKey (common paste artifacts)
+      if (parsed.apiKey) parsed.apiKey = parsed.apiKey.replace(/\s+/g, '').replace(/^["']+|["']+$/g, '');
       _cachedConfig = parsed;
       return _cachedConfig;
     }
@@ -31,9 +31,9 @@ export async function loadConnectionConfig() {
 
 /** Save connection config. */
 export async function saveConnectionConfig(config) {
-  // Strip surrounding quotes from apiKey (common paste artifact)
+  // Strip whitespace and surrounding quotes from apiKey (common paste artifacts)
   if (config.apiKey) {
-    config.apiKey = config.apiKey.replace(/^["']+|["']+$/g, '');
+    config.apiKey = config.apiKey.replace(/\s+/g, '').replace(/^["']+|["']+$/g, '');
   }
   _cachedConfig = { ...DEFAULT_CONFIG, ...config };
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(_cachedConfig));

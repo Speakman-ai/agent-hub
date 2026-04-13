@@ -6,11 +6,14 @@ import {
   Modal,
   StyleSheet,
   Pressable,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import { SidebarContext } from '../context/SidebarContext';
+import { getApiBaseUrl, getWsUrl } from '../utils/config';
+import { getActiveOrg } from '../utils/orgs';
 
 const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
@@ -87,8 +90,22 @@ export default function TopBar() {
           </TouchableOpacity>
         )}
 
-        {/* Connection status */}
-        <View
+        {/* Connection status — long-press for diagnostics */}
+        <Pressable
+          onLongPress={() => {
+            const org = getActiveOrg();
+            const apiUrl = getApiBaseUrl();
+            const wsUrl = getWsUrl();
+            Alert.alert(
+              'Connection Info',
+              `Org: ${org?.name || '(none)'}\n` +
+              `URL: ${org?.remoteUrl || '(not set)'}\n` +
+              `API: ${apiUrl || '(empty)'}\n` +
+              `WS: ${wsUrl ? wsUrl.replace(/apiKey=[^&]+/, 'apiKey=***') : '(empty)'}\n` +
+              `Key: ${org?.apiKey ? `${org.apiKey.slice(0, 8)}...${org.apiKey.slice(-4)}` : '(none)'}\n` +
+              `Status: ${connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'}`,
+            );
+          }}
           style={[
             styles.statusBadge,
             connected
@@ -110,7 +127,7 @@ export default function TopBar() {
           >
             ●
           </Text>
-        </View>
+        </Pressable>
 
         {/* New session */}
         <TouchableOpacity

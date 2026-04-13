@@ -32,6 +32,10 @@ export function getConnectionConfig() {
 
 /** Persist connection config. */
 export function saveConnectionConfig(config) {
+  // Strip whitespace and surrounding quotes from apiKey (common paste artifacts)
+  if (config.apiKey) {
+    config.apiKey = config.apiKey.replace(/\s+/g, '').replace(/^["']+|["']+$/g, '');
+  }
   const merged = { ...DEFAULT_CONFIG, ...config };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
 

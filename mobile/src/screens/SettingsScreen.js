@@ -32,6 +32,7 @@ function OrganizationsSection() {
   const [testResult, setTestResult] = useState(null);
   const [showNewForm, setShowNewForm] = useState(false);
   const [newForm, setNewForm] = useState({ name: '', color: '#6366f1', remoteUrl: '', apiKey: '' });
+  const [showApiKey, setShowApiKey] = useState(false);
 
   const orgs = orgsState?.orgs || [];
   const activeOrg = getActiveOrg();
@@ -149,16 +150,21 @@ function OrganizationsSection() {
         keyboardType="url"
       />
       <Text style={[styles.inputLabel, { marginTop: 12 }]}>API Key (optional)</Text>
-      <TextInput
-        style={styles.textInput}
-        value={form.apiKey}
-        onChangeText={(v) => setForm((f) => ({ ...f, apiKey: v }))}
-        placeholder="Enter API key if required"
-        placeholderTextColor={colors.gray600}
-        secureTextEntry
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <TextInput
+          style={[styles.textInput, { flex: 1 }]}
+          value={form.apiKey}
+          onChangeText={(v) => setForm((f) => ({ ...f, apiKey: v }))}
+          placeholder="Enter API key if required"
+          placeholderTextColor={colors.gray600}
+          secureTextEntry={!showApiKey}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <TouchableOpacity onPress={() => setShowApiKey((v) => !v)} style={{ paddingHorizontal: 8, paddingVertical: 10 }}>
+          <Text style={{ color: colors.gray400, fontSize: 13 }}>{showApiKey ? 'Hide' : 'Show'}</Text>
+        </TouchableOpacity>
+      </View>
       <TouchableOpacity
         style={styles.testBtn}
         onPress={() => onTest(form.remoteUrl, form.apiKey)}
