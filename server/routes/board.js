@@ -261,7 +261,12 @@ export default function createBoardRoutes(deps) {
 
     const contextMessage = contextLines.join('\n');
 
-    handleChat(null, { agentId, sessionId, content: contextMessage });
+    handleChat(null, {
+      agentId,
+      sessionId,
+      content: contextMessage,
+      hookSpecificOutput: { sessionTitle: card.title },
+    });
 
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     broadcast({ type: 'session_created', agentId, session: stmts.getSession.get(sessionId) });

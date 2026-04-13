@@ -356,7 +356,12 @@ export async function runAutonomousLoop(projectId) {
       // Chain .catch() so async handleChat rejections (CLI spawn fail, timeout, etc.)
       // trigger rollback — without awaiting, so dispatch stays concurrent
       deps
-        .handleChat(null, { agentId: agent.id, sessionId, content: contextLines.join('\n') })
+        .handleChat(null, {
+          agentId: agent.id,
+          sessionId,
+          content: contextLines.join('\n'),
+          hookSpecificOutput: { sessionTitle: card.title },
+        })
         .catch(rollbackCard);
 
       deps.broadcast({
@@ -944,7 +949,12 @@ ${mergeRule}
   // Start a 15-minute timeout — if the review session hangs, kill it and free the slot
   startReviewSessionTimeout(sessionId, project.id);
 
-  deps.handleChat(null, { agentId: leadAgent.id, sessionId, content: reviewPrompt });
+  deps.handleChat(null, {
+    agentId: leadAgent.id,
+    sessionId,
+    content: reviewPrompt,
+    hookSpecificOutput: { sessionTitle: `Review: ${reviewTitle}` },
+  });
 
   deps.broadcast({
     type: 'lead_review',

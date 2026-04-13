@@ -241,7 +241,12 @@ export function dispatchReviewFeedback(deps, card, project, feedbackContent) {
       `[ReviewDispatch] Created new session ${sessionId} for "${card.title}" → agent "${agent.name}"`,
     );
 
-    handleChat(null, { agentId: agent.id, sessionId, content: feedbackContent });
+    handleChat(null, {
+      agentId: agent.id,
+      sessionId,
+      content: feedbackContent,
+      hookSpecificOutput: { sessionTitle: `Review fixes: ${card.title}` },
+    });
     return sessionId;
   } catch (err) {
     notifyDispatchFailure(deps, {

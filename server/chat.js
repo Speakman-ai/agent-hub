@@ -436,7 +436,7 @@ PR URL: ${prUrl}
   }
 
   async function handleChat(ws, msg) {
-    const { agentId, sessionId, content, images } = msg;
+    const { agentId, sessionId, content, images, hookSpecificOutput } = msg;
     const attachments = images && images.length > 0 ? JSON.stringify(images) : null;
 
     const found = findAgent(agentId);
@@ -875,10 +875,33 @@ PR URL: ${prUrl}
         } catch {}
       }
 
-      // Auto-name session from first message
+      // Auto-name session from hookSpecificOutput.sessionTitle, linked kanban card, or first message
       const sess = S.getSession.get(sessionId);
       if (sess && sess.name.startsWith('Session ') && isFirstMessage) {
-        const autoName = content.substring(0, 60) + (content.length > 60 ? '...' : '');
+        let autoName;
+
+        // 1. Explicit sessionTitle from UserPromptSubmit hook output
+        if (hookSpecificOutput?.sessionTitle) {
+          autoName = hookSpecificOutput.sessionTitle;
+        }
+
+        // 2. Fallback: linked kanban card title
+        if (!autoName) {
+          try {
+            const linkedCard = S.getKanbanCardBySession?.get(sessionId);
+            if (linkedCard?.title) {
+              autoName = linkedCard.title;
+            }
+          } catch {
+            /* ignore if table doesn't exist */
+          }
+        }
+
+        // 3. Fallback: first 60 chars of user message
+        if (!autoName) {
+          autoName = content.substring(0, 60) + (content.length > 60 ? '...' : '');
+        }
+
         S.updateSessionName.run(autoName, sessionId);
         broadcast({
           type: 'session-updated',
