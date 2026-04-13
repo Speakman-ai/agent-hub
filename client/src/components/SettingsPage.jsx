@@ -425,6 +425,30 @@ function GitHubAppSection({ config, setConfig }) {
       .catch(() => {});
   }, []);
 
+  // Handle return from GitHub App auto-setup flow
+  useEffect(() => {
+    const hash = window.location.hash;
+    const match = hash.match(/[?&]githubApp=([^&]*)/);
+    if (!match) return;
+    const status = match[1];
+
+    // Clean up URL by removing githubApp (and optional message) params
+    const cleanHash = hash.replace(/[?&]githubApp=[^&]*(&message=[^&]*)?/, '').replace(/\?$/, '');
+    window.history.replaceState(null, '', window.location.pathname + cleanHash);
+
+    if (status === 'ready' || status === 'no-install' || status === 'created') {
+      // Refresh status from server to reflect the new app/installation
+      api
+        .get('/api/github-app/status')
+        .then(setAppStatus)
+        .catch(() => {});
+    }
+    if (status === 'error') {
+      const msgMatch = hash.match(/message=([^&]*)/);
+      if (msgMatch) alert(decodeURIComponent(msgMatch[1]));
+    }
+  }, []);
+
   const handleCreateApp = async () => {
     try {
       const data = await api.get('/api/github-app/manifest');
@@ -515,8 +539,8 @@ function GitHubAppSection({ config, setConfig }) {
         {!appStatus?.configured ? (
           <div>
             <p className="text-xs text-gray-500 mb-2">
-              One-click setup — creates a GitHub App on your account with the right permissions. No
-              separate account needed.
+              One-click setup — creates and installs a GitHub App on your account with the right
+              permissions. No separate account needed.
             </p>
             {!config?.publicUrl ? (
               <p className="text-xs text-amber-400">
@@ -527,7 +551,7 @@ function GitHubAppSection({ config, setConfig }) {
                 onClick={handleCreateApp}
                 className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-1.5 rounded-lg transition-colors"
               >
-                Create GitHub App
+                Set Up GitHub App
               </button>
             )}
           </div>

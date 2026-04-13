@@ -222,11 +222,15 @@ export default function createConfigRoutes(deps) {
         `[GitHub App] App "${appData.slug || appData.name}" created and configured (ID: ${appData.id})`,
       );
 
-      // Redirect to the settings page with a success indicator
+      // Redirect: if no installation yet, send user to install the app on GitHub
+      // (this chains the flow: create → install → setup-complete callback)
       const clientUrl = config.publicUrl || `http://localhost:3050`;
-      res.redirect(
-        `${clientUrl}/#/settings?githubApp=created&appSlug=${encodeURIComponent(appData.slug || appData.name)}`,
-      );
+      if (!githubAppConfig.installationId) {
+        res.redirect(`https://github.com/apps/${githubAppConfig.appSlug}/installations/new`);
+      } else {
+        // Already has installation (unlikely but possible), go straight to settings
+        res.redirect(`${clientUrl}/#/settings?githubApp=ready`);
+      }
     } catch (err) {
       console.error('[GitHub App] Callback failed:', err.message);
       const clientUrl = config.publicUrl || `http://localhost:3050`;
@@ -292,6 +296,54 @@ export default function createConfigRoutes(deps) {
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * GET /api/github-app/setup-complete — GitHub redirects here after the user
+   * installs the app (via the manifest's `setup_url`). Detects the installation,
+   * persists it, and redirects the user back to the settings page.
+   * This endpoint is public (no API key) since it's a GitHub redirect callback.
+   */
+  router.get('/api/github-app/setup-complete', async (req, res) => {
+    const clientUrl = config.publicUrl || 'http://localhost:3050';
+    const app = config.githubApp;
+    if (!app?.appId || !app?.privateKey) {
+      return res.redirect(
+        `${clientUrl}/#/settings?githubApp=error&message=${encodeURIComponent('No GitHub App configured')}`,
+      );
+    }
+
+    try {
+      const installations = await getAppInstallations(app.appId, app.privateKey);
+      if (installations.length > 0) {
+        app.installationId = installations[0].id;
+        config.githubApp = app;
+
+        // Persist to config.json
+        const configPath = path.join(config.dataDir, 'config.json');
+        let fileConfig = {};
+        try {
+          fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+        } catch {
+          /* no file yet */
+        }
+        fileConfig.githubApp = app;
+        writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+        console.log(
+          `[GitHub App] Auto-setup complete — installation ${installations[0].id} (account: ${installations[0].account?.login})`,
+        );
+        return res.redirect(`${clientUrl}/#/settings?githubApp=ready`);
+      }
+
+      // No installation found — user may have cancelled
+      return res.redirect(`${clientUrl}/#/settings?githubApp=no-install`);
+    } catch (err) {
+      console.error('[GitHub App] Setup complete callback failed:', err.message);
+      return res.redirect(
+        `${clientUrl}/#/settings?githubApp=error&message=${encodeURIComponent(err.message)}`,
+      );
     }
   });
 

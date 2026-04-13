@@ -115,6 +115,8 @@ export function buildAppManifest(serverUrl) {
     description:
       'Automated PR reviews and merges for Agent Hub. Submits formal GitHub reviews (approve/request-changes) and merges approved PRs.',
     public: false,
+    setup_url: `${base}/api/github-app/setup-complete`,
+    request_oauth_on_install: false,
     default_permissions: {
       pull_requests: 'write',
       contents: 'write',
