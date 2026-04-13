@@ -92,7 +92,6 @@ export default function createProjectRoutes(deps) {
     broadcast,
     findProject,
     findAgent,
-    allAgents,
     saveProjects,
     ensureProjectRoom,
     config,
