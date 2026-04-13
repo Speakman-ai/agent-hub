@@ -9,6 +9,7 @@ import {
   mkdirSync,
   unlinkSync,
   rmdirSync,
+  cpSync,
 } from 'fs';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -16,11 +17,31 @@ import matter from 'gray-matter';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
+const PLUGIN_DIR = path.join(__dirname, '..', '..', 'plugin');
 
+/**
+ * Sync default skills to Claude Code as a proper plugin.
+ *
+ * Installs to ~/.claude/plugins/local/agent-hub-skills/ using the
+ * standard plugin layout (`.claude-plugin/plugin.json` + `skills/<name>/SKILL.md`).
+ * Falls back to the legacy `~/.claude/commands/` sync if the plugin directory
+ * is missing from the repo.
+ */
 (function syncDefaultSkillsToClaude() {
   try {
     const home = process.env.HOME || process.env.USERPROFILE;
     if (!home) return;
+
+    // Prefer plugin-based sync if the plugin/ directory exists in the repo
+    if (existsSync(PLUGIN_DIR) && existsSync(path.join(PLUGIN_DIR, '.claude-plugin'))) {
+      const pluginDest = path.join(home, '.claude', 'plugins', 'local', 'agent-hub-skills');
+      mkdirSync(pluginDest, { recursive: true });
+      cpSync(PLUGIN_DIR, pluginDest, { recursive: true });
+      console.log(`[skills] Installed agent-hub-skills plugin to ${pluginDest}`);
+      return;
+    }
+
+    // Legacy fallback: copy SKILL.md files as individual commands
     const commandsDir = path.join(home, '.claude', 'commands');
     if (!existsSync(DEFAULT_SKILLS_DIR)) return;
     mkdirSync(commandsDir, { recursive: true });
@@ -38,7 +59,7 @@ const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
       `[skills] Synced ${entries.filter((e) => e.isDirectory()).length} default skills to ${commandsDir}`,
     );
   } catch (e) {
-    console.warn('[skills] Failed to sync default skills to ~/.claude/commands:', e.message);
+    console.warn('[skills] Failed to sync default skills:', e.message);
   }
 })();
 
@@ -52,10 +73,19 @@ function readSkillFrontmatter(skillDir) {
       name: data.name || path.basename(skillDir),
       description: data.description || '',
       category: data.category || 'general',
+      version: data.version || null,
+      keepCodingInstructions: data['keep-coding-instructions'] || false,
       content: raw,
     };
   } catch {
-    return { name: path.basename(skillDir), description: '', category: 'general', content: '' };
+    return {
+      name: path.basename(skillDir),
+      description: '',
+      category: 'general',
+      version: null,
+      keepCodingInstructions: false,
+      content: '',
+    };
   }
 }
 
@@ -356,6 +386,98 @@ export default function createSkillRoutes(deps) {
     try {
       const overrides = stmts.getAgentSkillOverrides.all(req.params.agentId);
       res.json(overrides);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Plugin packaging endpoints ---
+
+  /**
+   * GET /api/skills/plugin-info
+   * Returns metadata about the bundled agent-hub-skills plugin.
+   */
+  router.get('/api/skills/plugin-info', (_req, res) => {
+    try {
+      const pluginJsonPath = path.join(PLUGIN_DIR, '.claude-plugin', 'plugin.json');
+      if (!existsSync(pluginJsonPath)) {
+        return res.status(404).json({ error: 'Plugin not found' });
+      }
+      const meta = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
+      const skillsDirPath = path.join(PLUGIN_DIR, 'skills');
+      const skills = existsSync(skillsDirPath)
+        ? readdirSync(skillsDirPath, { withFileTypes: true })
+            .filter((e) => e.isDirectory())
+            .map((e) => {
+              const fm = readSkillFrontmatter(path.join(skillsDirPath, e.name));
+              return {
+                id: e.name,
+                name: fm?.name || e.name,
+                description: fm?.description || '',
+                category: fm?.category || 'general',
+                version: fm?.version || null,
+                keepCodingInstructions: fm?.keepCodingInstructions || false,
+              };
+            })
+        : [];
+      res.json({ ...meta, skills });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/skills/export-plugin
+   * Packages selected skills (or all) into a plugin directory structure.
+   * Body: { name, description?, skillIds?: string[] }
+   * Returns the generated plugin.json and skill list.
+   */
+  router.post('/api/skills/export-plugin', (req, res) => {
+    const { name, description, skillIds } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+
+    try {
+      const pluginId = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const home = process.env.HOME || process.env.USERPROFILE;
+      const exportDir = path.join(home, '.claude', 'plugins', 'local', pluginId);
+
+      // Create plugin structure
+      mkdirSync(path.join(exportDir, '.claude-plugin'), { recursive: true });
+      mkdirSync(path.join(exportDir, 'skills'), { recursive: true });
+
+      // Write plugin.json
+      const pluginMeta = {
+        name: pluginId,
+        version: '1.0.0',
+        description: description || `${name} skills plugin`,
+        author: { name: 'Agent Hub' },
+      };
+      writeFileSync(
+        path.join(exportDir, '.claude-plugin', 'plugin.json'),
+        JSON.stringify(pluginMeta, null, 2),
+      );
+
+      // Collect skills to export
+      const allSkills = collectSkillsFromDir(DEFAULT_SKILLS_DIR);
+      const selectedSkills = skillIds
+        ? allSkills.filter((s) => skillIds.includes(s.id))
+        : allSkills;
+
+      const exported = [];
+      for (const skill of selectedSkills) {
+        const srcMd = path.join(skill.path, 'SKILL.md');
+        if (!existsSync(srcMd)) continue;
+        const destDir = path.join(exportDir, 'skills', skill.id);
+        mkdirSync(destDir, { recursive: true });
+        writeFileSync(path.join(destDir, 'SKILL.md'), readFileSync(srcMd, 'utf-8'));
+        exported.push({ id: skill.id, name: skill.name });
+      }
+
+      broadcast({
+        type: 'skills_update',
+        payload: { action: 'plugin_exported', pluginId, skills: exported },
+      });
+      res.json({ ok: true, pluginId, path: exportDir, skills: exported });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

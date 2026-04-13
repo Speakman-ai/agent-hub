@@ -20,10 +20,15 @@ import {
   ToggleRight,
   Package,
   X,
+  Plug,
+  Check,
+  Shield,
+  RefreshCw,
 } from 'lucide-react';
 
 const CATEGORIES = [
   { id: 'all', label: 'All', color: 'gray' },
+  { id: 'platform', label: 'Platform', color: 'indigo' },
   { id: 'development', label: 'Development', color: 'blue' },
   { id: 'documentation', label: 'Documentation', color: 'emerald' },
   { id: 'automation', label: 'Automation', color: 'amber' },
@@ -33,6 +38,7 @@ const CATEGORIES = [
 ];
 
 const CATEGORY_COLORS = {
+  platform: 'bg-indigo-900/40 text-indigo-400',
   development: 'bg-blue-900/40 text-blue-400',
   documentation: 'bg-emerald-900/40 text-emerald-400',
   automation: 'bg-amber-900/40 text-amber-400',
@@ -398,6 +404,258 @@ function ImportGithubModal({ onClose, onImported }) {
   );
 }
 
+function PluginSkillRow({ skill }) {
+  return (
+    <div className="flex items-center justify-between py-2.5 px-3 bg-gray-900/50 rounded-lg">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-100">{skill.name}</span>
+            <CategoryBadge category={skill.category || 'general'} />
+            {skill.version && <span className="text-[10px] text-gray-500">v{skill.version}</span>}
+          </div>
+          {skill.description && (
+            <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">{skill.description}</p>
+          )}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {skill.keepCodingInstructions && (
+          <span
+            className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-400 flex items-center gap-1"
+            title="Persists across turns via keep-coding-instructions"
+          >
+            <Shield size={10} /> persistent
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PluginPanel() {
+  const [pluginInfo, setPluginInfo] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState(null);
+  const [exportName, setExportName] = useState('');
+  const [showExport, setShowExport] = useState(false);
+  const [selectedSkills, setSelectedSkills] = useState(new Set());
+
+  useEffect(() => {
+    api
+      .getPluginInfo()
+      .then((info) => {
+        setPluginInfo(info);
+        setSelectedSkills(new Set(info.skills?.map((s) => s.id) || []));
+      })
+      .catch(() => setPluginInfo(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleExport = async () => {
+    if (!exportName.trim()) return;
+    setExporting(true);
+    setExportResult(null);
+    try {
+      const result = await api.exportPlugin({
+        name: exportName.trim(),
+        skillIds: [...selectedSkills],
+      });
+      setExportResult(result);
+    } catch (err) {
+      setExportResult({ error: err.message });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const toggleSkillSelection = (id) => {
+    setSelectedSkills((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 size={20} className="animate-spin text-gray-500" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Bundled Plugin Info */}
+      {pluginInfo && (
+        <div className="bg-gray-800 rounded-xl overflow-hidden">
+          <div className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-indigo-600/20 flex items-center justify-center">
+                  <Plug size={20} className="text-indigo-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-gray-100">{pluginInfo.name}</h3>
+                  <p className="text-xs text-gray-400">
+                    v{pluginInfo.version || '1.0.0'} by {pluginInfo.author?.name || 'Agent Hub'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-medium px-2 py-1 rounded bg-emerald-900/40 text-emerald-400 flex items-center gap-1">
+                  <Check size={10} /> Installed
+                </span>
+              </div>
+            </div>
+
+            {pluginInfo.description && (
+              <p className="text-sm text-gray-300 mb-4">{pluginInfo.description}</p>
+            )}
+
+            <div className="space-y-1.5">
+              <h4 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                Bundled Skills ({pluginInfo.skills?.length || 0})
+              </h4>
+              {pluginInfo.skills?.map((skill) => (
+                <PluginSkillRow key={skill.id} skill={skill} />
+              ))}
+            </div>
+          </div>
+
+          <div className="border-t border-gray-700 px-5 py-3 bg-gray-800/50">
+            <p className="text-xs text-gray-500">
+              Installed as Claude Code plugin at{' '}
+              <code className="bg-gray-900 px-1.5 py-0.5 rounded text-gray-400">
+                ~/.claude/plugins/local/agent-hub-skills/
+              </code>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!pluginInfo && (
+        <div className="bg-gray-800 rounded-xl p-6 text-center">
+          <Plug size={24} className="text-gray-600 mx-auto mb-2" />
+          <p className="text-gray-500 text-sm">No bundled plugin found</p>
+          <p className="text-gray-600 text-xs mt-1">
+            The plugin directory is missing from the server.
+          </p>
+        </div>
+      )}
+
+      {/* Export as Plugin */}
+      <div className="bg-gray-800 rounded-xl overflow-hidden">
+        <div
+          className="p-4 cursor-pointer hover:bg-gray-750 transition-colors flex items-center justify-between"
+          onClick={() => setShowExport(!showExport)}
+        >
+          <h3 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
+            <Package size={16} /> Export Skills as Plugin
+          </h3>
+          <span className="text-gray-500 text-2xl leading-none flex items-center">
+            {showExport ? '\u25B2' : '\u25BC'}
+          </span>
+        </div>
+
+        {showExport && (
+          <div className="border-t border-gray-700 p-5 space-y-4">
+            <p className="text-xs text-gray-400">
+              Package selected skills as a Claude Code plugin. The plugin will be installed locally
+              and can be shared via the marketplace.
+            </p>
+
+            <div>
+              <label className="text-xs font-medium text-gray-400 block mb-1.5">Plugin Name</label>
+              <input
+                type="text"
+                value={exportName}
+                onChange={(e) => setExportName(e.target.value)}
+                placeholder="my-custom-skills"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            {pluginInfo?.skills?.length > 0 && (
+              <div>
+                <label className="text-xs font-medium text-gray-400 block mb-1.5">
+                  Select Skills
+                </label>
+                <div className="space-y-1">
+                  {pluginInfo.skills.map((skill) => (
+                    <label
+                      key={skill.id}
+                      className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-gray-900/50 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedSkills.has(skill.id)}
+                        onChange={() => toggleSkillSelection(skill.id)}
+                        className="rounded border-gray-600 bg-gray-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
+                      />
+                      <span className="text-sm text-gray-200">{skill.name}</span>
+                      <CategoryBadge category={skill.category || 'general'} />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleExport}
+                disabled={exporting || !exportName.trim() || selectedSkills.size === 0}
+                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-colors disabled:opacity-50 flex items-center gap-2"
+              >
+                {exporting ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Download size={14} />
+                )}
+                Export Plugin
+              </button>
+              {exportResult && !exportResult.error && (
+                <span className="text-xs text-emerald-400 flex items-center gap-1">
+                  <Check size={12} /> Exported to {exportResult.path}
+                </span>
+              )}
+              {exportResult?.error && (
+                <span className="text-xs text-red-400">{exportResult.error}</span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Plugin format reference */}
+      <div className="bg-gray-800 rounded-xl p-5">
+        <h3 className="text-sm font-semibold text-gray-200 mb-3">Plugin Format Reference</h3>
+        <div className="text-xs text-gray-400 space-y-2 font-mono">
+          <pre className="bg-gray-900 rounded-lg p-3 overflow-x-auto">
+            {`plugin-name/
+\u251C\u2500\u2500 .claude-plugin/
+\u2502   \u2514\u2500\u2500 plugin.json       # name, version, description, author
+\u2514\u2500\u2500 skills/
+    \u251C\u2500\u2500 skill-a/
+    \u2502   \u2514\u2500\u2500 SKILL.md      # frontmatter: name, description, version
+    \u2514\u2500\u2500 skill-b/
+        \u2514\u2500\u2500 SKILL.md`}
+          </pre>
+          <p className="font-sans text-gray-500">
+            Skills use the <code className="bg-gray-900 px-1 rounded">name</code> frontmatter field
+            for stable invocation. Add{' '}
+            <code className="bg-gray-900 px-1 rounded">keep-coding-instructions: true</code> to
+            persist skill output across turns.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SkillsPage({ agents, projects }) {
   const [activeTab, setActiveTab] = useState('installed');
   const [activeAgentId, setActiveAgentId] = useState(agents[0]?.id || null);
@@ -546,6 +804,18 @@ export default function SkillsPage({ agents, projects }) {
           >
             <span className="flex items-center gap-1.5">
               <Package size={14} /> Registry
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab('plugin')}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'plugin'
+                ? 'border-indigo-500 text-white'
+                : 'border-transparent text-gray-400 hover:text-white'
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
+              <Plug size={14} /> Plugin
             </span>
           </button>
         </div>
@@ -716,6 +986,7 @@ export default function SkillsPage({ agents, projects }) {
             )}
           </>
         )}
+        {activeTab === 'plugin' && <PluginPanel />}
       </div>
 
       {showImport && (

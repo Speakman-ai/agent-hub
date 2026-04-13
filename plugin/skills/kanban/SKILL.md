@@ -7,6 +7,7 @@ description: >-
 version: 1.0.0
 keep-coding-instructions: true
 ---
+
 # Kanban Board Management
 
 You can manage the project's kanban board to track and organize tasks.

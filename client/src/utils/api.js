@@ -175,6 +175,11 @@ export const api = {
     }),
   getSkillOverrides: (agentId) => fetchJSON(`/agents/${agentId}/skills/overrides`),
 
+  // Plugin packaging
+  getPluginInfo: () => fetchJSON('/skills/plugin-info'),
+  exportPlugin: (data) =>
+    fetchJSON('/skills/export-plugin', { method: 'POST', body: JSON.stringify(data) }),
+
   // Upload
   uploadImage: (dataUrl, filename) =>
     fetchJSON('/upload', {
