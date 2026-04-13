@@ -1,5 +1,14 @@
 import { useState, useRef } from 'react';
-import { Building2, BookOpen, Settings, Clock, LayoutGrid, FileText, Eye } from 'lucide-react';
+import {
+  Building2,
+  BookOpen,
+  Settings,
+  Clock,
+  LayoutGrid,
+  FileText,
+  Eye,
+  Trash2,
+} from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
 
@@ -13,6 +22,8 @@ export default function Sidebar({
   onSelectSession,
   onNewSession,
   onDeleteSession,
+  onClearAllSessions,
+  onClearInactiveSessions,
   onRenameSession,
   onNavigate,
   currentView,
@@ -36,6 +47,7 @@ export default function Sidebar({
   const [collapsedAgents, setCollapsedAgents] = useState({});
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingSessionName, setEditingSessionName] = useState('');
+  const [confirmAction, setConfirmAction] = useState(null); // 'clear-all' | 'clear-inactive' | null
   const renameSavedRef = useRef(false);
 
   const toggleProjectCollapse = (projectId, e) => {
@@ -352,12 +364,69 @@ export default function Sidebar({
                                     </div>
                                   );
                                 })}
-                                <button
-                                  onClick={onNewSession}
-                                  className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
-                                >
-                                  + New Session
-                                </button>
+                                <div className="flex items-center gap-1 mt-1">
+                                  <button
+                                    onClick={onNewSession}
+                                    className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
+                                  >
+                                    + New Session
+                                  </button>
+                                  {sessions.length > 0 && (
+                                    <div className="ml-auto flex items-center gap-0.5 pr-1">
+                                      <button
+                                        onClick={() => setConfirmAction('clear-inactive')}
+                                        className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors"
+                                        title="Clear inactive sessions"
+                                      >
+                                        Clear idle
+                                      </button>
+                                      <button
+                                        onClick={() => setConfirmAction('clear-all')}
+                                        className="text-gray-600 hover:text-red-400 p-0.5 rounded transition-colors"
+                                        title="Clear all sessions"
+                                      >
+                                        <Trash2 size={12} />
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                                {/* Confirmation dialog */}
+                                {confirmAction && (
+                                  <div className="mx-1 mt-1 p-2 bg-gray-800 border border-gray-700 rounded-lg">
+                                    <p className="text-xs text-gray-300 mb-2">
+                                      {confirmAction === 'clear-all'
+                                        ? `Delete all ${sessions.length} session${sessions.length !== 1 ? 's' : ''}? This cannot be undone.`
+                                        : `Delete all idle sessions? Active sessions will be kept.`}
+                                    </p>
+                                    <div className="flex gap-2 justify-end">
+                                      <button
+                                        onClick={() => setConfirmAction(null)}
+                                        className="text-xs px-2 py-1 text-gray-400 hover:text-gray-200 transition-colors"
+                                      >
+                                        Cancel
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          if (confirmAction === 'clear-all') {
+                                            onClearAllSessions();
+                                          } else {
+                                            onClearInactiveSessions();
+                                          }
+                                          setConfirmAction(null);
+                                        }}
+                                        className={`text-xs px-2 py-1 rounded transition-colors ${
+                                          confirmAction === 'clear-all'
+                                            ? 'bg-red-600 hover:bg-red-500 text-white'
+                                            : 'bg-amber-600 hover:bg-amber-500 text-white'
+                                        }`}
+                                      >
+                                        {confirmAction === 'clear-all'
+                                          ? 'Delete All'
+                                          : 'Delete Idle'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             )}
 

@@ -47,6 +47,9 @@ export const api = {
     fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST', timeout: 120000 }),
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
   deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
+  clearAllSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
+  clearInactiveSessions: (agentId) =>
+    fetchJSON(`/agents/${agentId}/sessions/inactive`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
     fetchJSON(`/sessions/${sessionId}`, {
       method: 'PATCH',

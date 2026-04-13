@@ -250,6 +250,41 @@ export default function createSessionRoutes(deps) {
     res.json(events);
   });
 
+  // ─── Bulk session cleanup ─────────────────────────────────────────
+
+  router.delete('/api/agents/:agentId/sessions', (req, res) => {
+    const sessions = stmts.getSessions.all(req.params.agentId);
+    let deleted = 0;
+    for (const session of sessions) {
+      // Kill active process if running
+      const proc = activeProcesses.get(session.id);
+      if (proc) {
+        proc.kill('SIGTERM');
+        activeProcesses.delete(session.id);
+      }
+      if (session.worktree_path) {
+        removeWorkspace(session.worktree_path);
+      }
+      stmts.deleteSession.run(session.id);
+      deleted++;
+    }
+    res.json({ ok: true, deleted });
+  });
+
+  router.delete('/api/agents/:agentId/sessions/inactive', (req, res) => {
+    const sessions = stmts.getSessions.all(req.params.agentId);
+    let deleted = 0;
+    for (const session of sessions) {
+      if (activeProcesses.has(session.id)) continue;
+      if (session.worktree_path) {
+        removeWorkspace(session.worktree_path);
+      }
+      stmts.deleteSession.run(session.id);
+      deleted++;
+    }
+    res.json({ ok: true, deleted });
+  });
+
   // ─── Session CRUD ─────────────────────────────────────────────────
 
   router.delete('/api/sessions/:sessionId', (req, res) => {

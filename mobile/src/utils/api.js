@@ -24,6 +24,10 @@ export const api = {
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
   deleteSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
+  clearAllSessions: (agentId) =>
+    fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
+  clearInactiveSessions: (agentId) =>
+    fetchJSON(`/agents/${agentId}/sessions/inactive`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
     fetchJSON(`/sessions/${sessionId}`, {
       method: 'PATCH',

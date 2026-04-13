@@ -1079,6 +1079,29 @@ export default function App() {
     }
   };
 
+  const handleClearAllSessions = async () => {
+    if (!activeAgentId) return;
+    const result = await api.clearAllSessions(activeAgentId);
+    if (result.ok) {
+      setSessions([]);
+      setActiveSessionId(null);
+    }
+  };
+
+  const handleClearInactiveSessions = async () => {
+    if (!activeAgentId) return;
+    const activeIds = new Set(Object.keys(activeTasks));
+    const result = await api.clearInactiveSessions(activeAgentId);
+    if (result.ok) {
+      // Keep only sessions that had active tasks (server skipped them)
+      setSessions((prev) => prev.filter((s) => activeIds.has(s.id)));
+      if (activeSessionId && !activeIds.has(activeSessionId)) {
+        const remaining = sessions.filter((s) => activeIds.has(s.id));
+        setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+      }
+    }
+  };
+
   const handleRenameSession = async (sessionId, newName) => {
     await api.renameSession(sessionId, newName);
     setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, name: newName } : s)));
@@ -1247,6 +1270,8 @@ export default function App() {
             }}
             onNewSession={handleNewSession}
             onDeleteSession={handleDeleteSession}
+            onClearAllSessions={handleClearAllSessions}
+            onClearInactiveSessions={handleClearInactiveSessions}
             onRenameSession={handleRenameSession}
             onNavigate={(view, extra) => {
               setCurrentView(view);
