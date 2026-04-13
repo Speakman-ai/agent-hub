@@ -32,10 +32,11 @@ export async function loadConnectionConfig() {
 /** Save connection config. */
 export async function saveConnectionConfig(config) {
   // Strip whitespace and surrounding quotes from apiKey (common paste artifacts)
-  if (config.apiKey) {
-    config.apiKey = config.apiKey.replace(/\s+/g, '').replace(/^["']+|["']+$/g, '');
+  const cleaned = { ...config };
+  if (cleaned.apiKey) {
+    cleaned.apiKey = cleaned.apiKey.replace(/\s+/g, '').replace(/^["']+|["']+$/g, '');
   }
-  _cachedConfig = { ...DEFAULT_CONFIG, ...config };
+  _cachedConfig = { ...DEFAULT_CONFIG, ...cleaned };
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(_cachedConfig));
 }
 

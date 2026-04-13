@@ -150,15 +150,12 @@ export async function testConnection(url, apiKey) {
   const base = url.replace(/\/+$/, '');
   try {
     const headers = apiKey ? { 'X-API-Key': apiKey } : {};
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
 
     // First: hit /api/health (public) to verify server is reachable
     const healthRes = await fetch(`${base}/api/health`, {
       headers,
-      signal: controller.signal,
+      signal: AbortSignal.timeout(10000),
     });
-    clearTimeout(timeout);
     if (!healthRes.ok) {
       return { ok: false, message: `Server responded with ${healthRes.status}: ${healthRes.statusText}` };
     }
@@ -169,13 +166,10 @@ export async function testConnection(url, apiKey) {
       if (!apiKey) {
         return { ok: false, message: `Server requires an API key. Enter one above.` };
       }
-      const controller2 = new AbortController();
-      const timeout2 = setTimeout(() => controller2.abort(), 10000);
       const authRes = await fetch(`${base}/api/agents`, {
         headers: { 'X-API-Key': apiKey },
-        signal: controller2.signal,
+        signal: AbortSignal.timeout(10000),
       });
-      clearTimeout(timeout2);
       if (authRes.status === 401 || authRes.status === 403) {
         return { ok: false, message: `Server reachable but API key is invalid (${authRes.status}).` };
       }
@@ -186,7 +180,7 @@ export async function testConnection(url, apiKey) {
 
     return { ok: true, message: `Connected — ${data.agents || 0} agents, uptime ${Math.round((data.uptime || 0) / 60)}m` };
   } catch (err) {
-    if (err.name === 'AbortError') {
+    if (err.name === 'AbortError' || err.name === 'TimeoutError') {
       return { ok: false, message: 'Connection timed out after 10 seconds.' };
     }
     return { ok: false, message: `Connection failed: ${err.message}` };

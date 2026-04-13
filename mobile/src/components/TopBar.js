@@ -102,7 +102,7 @@ export default function TopBar() {
               `URL: ${org?.remoteUrl || '(not set)'}\n` +
               `API: ${apiUrl || '(empty)'}\n` +
               `WS: ${wsUrl ? wsUrl.replace(/apiKey=[^&]+/, 'apiKey=***') : '(empty)'}\n` +
-              `Key: ${org?.apiKey ? `${org.apiKey.slice(0, 8)}...${org.apiKey.slice(-4)}` : '(none)'}\n` +
+              `Key: ${org?.apiKey ? `${org.apiKey.slice(0, 5)}...${org.apiKey.slice(-4)}` : '(none)'}\n` +
               `Status: ${connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'}`,
             );
           }}

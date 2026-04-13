@@ -33,10 +33,14 @@ export function getConnectionConfig() {
 /** Persist connection config. */
 export function saveConnectionConfig(config) {
   // Strip whitespace and surrounding quotes from apiKey (common paste artifacts)
-  if (config.apiKey) {
-    config.apiKey = config.apiKey.replace(/\s+/g, '').replace(/^["']+|["']+$/g, '');
-  }
-  const merged = { ...DEFAULT_CONFIG, ...config };
+  const cleanedKey = config.apiKey
+    ? config.apiKey.replace(/\s+/g, '').replace(/^["']+|["']+$/g, '')
+    : config.apiKey;
+  const merged = {
+    ...DEFAULT_CONFIG,
+    ...config,
+    ...(cleanedKey !== undefined ? { apiKey: cleanedKey } : {}),
+  };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
 
   // Also save to Electron if available
@@ -111,14 +115,42 @@ export async function testConnection(url, apiKey) {
   if (apiKey) headers['X-API-Key'] = apiKey;
 
   try {
-    const res = await fetch(`${base}/api/health`, { headers, signal: AbortSignal.timeout(10000) });
-    if (!res.ok) {
-      return { ok: false, message: `Server responded with ${res.status}: ${res.statusText}` };
+    // First: hit /api/health (public) to verify server is reachable
+    const healthRes = await fetch(`${base}/api/health`, {
+      headers,
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!healthRes.ok) {
+      return {
+        ok: false,
+        message: `Server responded with ${healthRes.status}: ${healthRes.statusText}`,
+      };
     }
-    const data = await res.json();
+    const data = await healthRes.json();
+
+    // Second: if server requires auth, verify the API key by hitting an auth-required endpoint
+    if (data.authRequired) {
+      if (!apiKey) {
+        return { ok: false, message: 'Server requires an API key. Enter one above.' };
+      }
+      const authRes = await fetch(`${base}/api/agents`, {
+        headers: { 'X-API-Key': apiKey },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (authRes.status === 401 || authRes.status === 403) {
+        return {
+          ok: false,
+          message: `Server reachable but API key is invalid (${authRes.status}).`,
+        };
+      }
+      if (!authRes.ok) {
+        return { ok: false, message: `Auth check failed: ${authRes.status} ${authRes.statusText}` };
+      }
+    }
+
     return {
       ok: true,
-      message: 'Connected successfully!',
+      message: `Connected — ${data.agents || 0} agents, uptime ${Math.round((data.uptime || 0) / 60)}m`,
       serverInfo: data,
     };
   } catch (err) {
