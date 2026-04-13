@@ -129,8 +129,15 @@ const config = {
   /** GitHub PAT for a dedicated bot account used by the lead reviewer.
    *  When set, formal PR reviews (approve/request-changes) and merges
    *  are executed using this token instead of the default gh CLI auth,
-   *  bypassing GitHub's same-account review limitation. */
+   *  bypassing GitHub's same-account review limitation.
+   *  This is the fallback option — prefer GitHub App for one-click setup. */
   botGithubToken: resolve('AGENT_HUB_BOT_GITHUB_TOKEN', 'botGithubToken', null),
+
+  /** GitHub App credentials (set via the App Manifest flow in Settings).
+   *  Primary method for formal PR reviews — one-click setup, no separate account needed.
+   *  Stored in config.json after the manifest callback completes. */
+  githubApp: fileConfig.githubApp || null,
+  // Shape: { appId, appSlug, privateKey, webhookSecret, clientId, clientSecret, installationId }
 
   // ── Auth ───────────────────────────────────────────────────────
   /** Optional API key for securing remote access */

@@ -463,19 +463,22 @@ function handleKanbanWebhookEvent(deps, event, action, payload, webhookConfig) {
  * If changes_requested → send feedback to the original agent's session.
  */
 function handleWebhookPrReview(deps, card, project, cols, payload, sender) {
-  const { stmts, broadcast, getGhAuthenticatedUser, getGhBotUser } = deps;
+  const { stmts, broadcast, getGhAuthenticatedUser, getGhBotUser, getGhAppSlug } = deps;
   const review = payload.review;
   if (!review) return false;
 
   const ghAuthenticatedUser = getGhAuthenticatedUser();
   const ghBotUser = getGhBotUser();
+  const ghAppSlug = getGhAppSlug();
+  const appBotLogin = ghAppSlug ? `${ghAppSlug}[bot]` : null;
 
-  // Skip reviews from our own gh CLI user or the bot account — the lead agent's
-  // reviews are already handled by handleReviewOutcome. Processing them here
-  // too would cause duplicate feedback and card moves.
+  // Skip reviews from our own gh CLI user, bot account, or GitHub App bot —
+  // the lead agent's reviews are already handled by handleReviewOutcome.
+  // Processing them here too would cause duplicate feedback and card moves.
   if (
     (ghAuthenticatedUser && sender === ghAuthenticatedUser) ||
-    (ghBotUser && sender === ghBotUser)
+    (ghBotUser && sender === ghBotUser) ||
+    (appBotLogin && sender === appBotLogin)
   ) {
     console.log(
       `[Webhook/Kanban] Skipping self-triggered review on "${card.title}" from ${sender}`,

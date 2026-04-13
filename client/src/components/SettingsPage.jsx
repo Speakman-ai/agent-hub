@@ -413,6 +413,242 @@ function OrganizationsSection() {
   );
 }
 
+function GitHubAppSection({ config, setConfig }) {
+  const [appStatus, setAppStatus] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showBotFallback, setShowBotFallback] = useState(false);
+
+  useEffect(() => {
+    api
+      .get('/api/github-app/status')
+      .then(setAppStatus)
+      .catch(() => {});
+  }, []);
+
+  const handleCreateApp = async () => {
+    try {
+      const data = await api.get('/api/github-app/manifest');
+      // Create a form and submit it to GitHub (manifest flow requires a POST)
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = `${data.githubUrl}`;
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'manifest';
+      input.value = JSON.stringify(data.manifest);
+      form.appendChild(input);
+      document.body.appendChild(form);
+      form.submit();
+    } catch (err) {
+      alert(err.message || 'Failed to start GitHub App creation');
+    }
+  };
+
+  const handleRefreshInstallation = async () => {
+    setRefreshing(true);
+    try {
+      const result = await api.post('/api/github-app/refresh-installation');
+      if (result.installed) {
+        setAppStatus((prev) => ({
+          ...prev,
+          hasInstallation: true,
+          installationId: result.installationId,
+        }));
+      } else {
+        alert(result.message || 'No installation found');
+      }
+    } catch (err) {
+      alert(err.message || 'Failed to refresh');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleRemoveApp = async () => {
+    if (!confirm('Remove the GitHub App configuration? You can re-create it anytime.')) return;
+    try {
+      await api.del('/api/github-app');
+      setAppStatus(null);
+      setConfig((prev) => ({ ...prev, githubApp: null }));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const handleInstallApp = async () => {
+    try {
+      const data = await api.get('/api/github-app/install-url');
+      window.open(data.installUrl, '_blank');
+    } catch (err) {
+      alert(err.message || 'Failed to get install URL');
+    }
+  };
+
+  const inputClass =
+    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+  const labelClass = 'block text-xs text-gray-400 mb-1';
+
+  return (
+    <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+      <h4 className="text-sm font-medium text-gray-300">PR Review Authentication</h4>
+      <p className="text-xs text-gray-500">
+        GitHub prevents the same account from reviewing its own PRs. Set up a GitHub App
+        (recommended) or a bot PAT to enable formal PR reviews and auto-merging.
+      </p>
+
+      {/* GitHub App — Primary option */}
+      <div className="border border-gray-700 rounded-lg p-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-200">GitHub App</span>
+            <span className="text-[10px] px-1.5 py-0.5 bg-blue-600/20 text-blue-400 rounded">
+              Recommended
+            </span>
+          </div>
+          {appStatus?.configured && (
+            <button onClick={handleRemoveApp} className="text-xs text-red-400 hover:text-red-300">
+              Remove
+            </button>
+          )}
+        </div>
+
+        {!appStatus?.configured ? (
+          <div>
+            <p className="text-xs text-gray-500 mb-2">
+              One-click setup — creates a GitHub App on your account with the right permissions. No
+              separate account needed.
+            </p>
+            {!config?.publicUrl ? (
+              <p className="text-xs text-amber-400">
+                Set a Public URL above first — GitHub needs a callback URL.
+              </p>
+            ) : (
+              <button
+                onClick={handleCreateApp}
+                className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-1.5 rounded-lg transition-colors"
+              >
+                Create GitHub App
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span
+                className={`inline-block w-2 h-2 rounded-full ${appStatus.hasInstallation ? 'bg-emerald-400' : 'bg-amber-400'}`}
+              />
+              <span
+                className={`text-xs ${appStatus.hasInstallation ? 'text-emerald-400' : 'text-amber-400'}`}
+              >
+                {appStatus.hasInstallation
+                  ? `Connected: ${appStatus.appSlug || appStatus.appName || `App #${appStatus.appId}`}`
+                  : `App created — needs installation`}
+              </span>
+            </div>
+            {!appStatus.hasInstallation && (
+              <div className="flex gap-2">
+                <button
+                  onClick={handleInstallApp}
+                  className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Install on GitHub
+                </button>
+                <button
+                  onClick={handleRefreshInstallation}
+                  disabled={refreshing}
+                  className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {refreshing ? 'Checking...' : 'Refresh'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Bot PAT — Fallback option */}
+      <div className="border border-gray-700 rounded-lg p-3 space-y-3">
+        <button
+          onClick={() => setShowBotFallback(!showBotFallback)}
+          className="flex items-center justify-between w-full text-left"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-400">Bot PAT</span>
+            <span className="text-[10px] px-1.5 py-0.5 bg-gray-600/50 text-gray-400 rounded">
+              Fallback
+            </span>
+          </div>
+          <span className="text-xs text-gray-500">{showBotFallback ? '▼' : '▶'}</span>
+        </button>
+
+        {showBotFallback && (
+          <div>
+            <label className={labelClass}>Bot Personal Access Token</label>
+            <input
+              type="password"
+              value={config._botTokenEdit || ''}
+              onChange={(e) => setConfig((prev) => ({ ...prev, _botTokenEdit: e.target.value }))}
+              className={inputClass}
+              placeholder={config.botGithubTokenSet ? '••••••••  (set)' : 'ghp_xxxx...'}
+            />
+            <button
+              onClick={async () => {
+                const token = config._botTokenEdit?.trim();
+                if (!token) return;
+                try {
+                  const result = await api.updateConfig({ botGithubToken: token });
+                  setConfig((prev) => ({
+                    ...prev,
+                    botGithubTokenSet: true,
+                    botGithubUser: result.botGithubUser || null,
+                    _botTokenEdit: '',
+                  }));
+                } catch (err) {
+                  alert(err.message || 'Failed to save bot token');
+                }
+              }}
+              disabled={!config._botTokenEdit?.trim()}
+              className="mt-2 px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded disabled:opacity-50"
+            >
+              Save
+            </button>
+            <p className="text-xs text-gray-600 mt-1">
+              Alternative: use a PAT from a separate GitHub account. Requires creating a new account
+              and adding it as a collaborator.
+            </p>
+            {config.botGithubTokenSet && (
+              <div className="mt-2 flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+                <span className="text-xs text-emerald-400">
+                  Bot configured{config.botGithubUser ? `: @${config.botGithubUser}` : ''}
+                </span>
+                <button
+                  onClick={async () => {
+                    try {
+                      await api.updateConfig({ botGithubToken: '' });
+                      setConfig((prev) => ({
+                        ...prev,
+                        botGithubTokenSet: false,
+                        botGithubUser: null,
+                        botGithubToken: '',
+                      }));
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                  className="text-xs text-red-400 hover:text-red-300 ml-auto"
+                >
+                  Remove
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GeneralSection() {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -520,7 +756,6 @@ function GitHubSection({ projects = [], onProjectsChange }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
   const [publicUrl, setPublicUrl] = useState('');
-  const [botToken, setBotToken] = useState('');
   const [saving, setSaving] = useState({});
   const [saveStatus, setSaveStatus] = useState({});
 
@@ -578,41 +813,6 @@ function GitHubSection({ projects = [], onProjectsChange }) {
     }
   };
 
-  const saveBotToken = async () => {
-    setSaving((s) => ({ ...s, bot: true }));
-    try {
-      const payload = botToken.length > 0 ? { botGithubToken: botToken } : {};
-      await api.updateConfig(payload);
-      setConfig((prev) => ({
-        ...prev,
-        botGithubTokenSet: true,
-        botGithubToken: '••••••••',
-      }));
-      setBotToken('');
-      setSaveStatus((s) => ({ ...s, bot: 'saved' }));
-      setTimeout(() => setSaveStatus((s) => ({ ...s, bot: null })), 2000);
-    } catch {
-      setSaveStatus((s) => ({ ...s, bot: 'error' }));
-      setTimeout(() => setSaveStatus((s) => ({ ...s, bot: null })), 3000);
-    } finally {
-      setSaving((s) => ({ ...s, bot: false }));
-    }
-  };
-
-  const removeBotToken = async () => {
-    try {
-      await api.updateConfig({ botGithubToken: '' });
-      setConfig((prev) => ({
-        ...prev,
-        botGithubTokenSet: false,
-        botGithubUser: null,
-        botGithubToken: '',
-      }));
-    } catch {
-      /* ignore */
-    }
-  };
-
   const toggleWorkflowSetting = async (projectId, key) => {
     const current = projectWorkflow[projectId] || {};
     const newValue = !current[key];
@@ -657,60 +857,7 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         </p>
       </div>
 
-      {/* Bot GitHub Account */}
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-medium text-gray-300">Bot GitHub Account</h4>
-          {config.botGithubTokenSet && (
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-              <span className="text-xs text-emerald-400">
-                Connected{config.botGithubUser ? `: @${config.botGithubUser}` : ''}
-              </span>
-            </div>
-          )}
-        </div>
-
-        <p className="text-xs text-gray-500">
-          A dedicated bot account enables formal PR reviews and merges, bypassing GitHub&apos;s
-          same-account review limitation. The bot account needs collaborator access to your repos.
-        </p>
-
-        <div>
-          <label className={labelClass}>Bot Personal Access Token (PAT)</label>
-          <div className="flex gap-2">
-            <input
-              type="password"
-              value={botToken}
-              onChange={(e) => setBotToken(e.target.value)}
-              className={inputClass}
-              placeholder={
-                config.botGithubTokenSet
-                  ? '••••••••  (token set — enter new value to replace)'
-                  : 'ghp_xxxx...'
-              }
-            />
-            <button
-              onClick={saveBotToken}
-              disabled={!botToken || saving.bot}
-              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
-            >
-              {saving.bot ? 'Saving...' : 'Save'}
-            </button>
-          </div>
-          {saveStatus.bot === 'saved' && (
-            <span className="text-xs text-emerald-400 mt-1 block">Token saved</span>
-          )}
-          {config.botGithubTokenSet && (
-            <button
-              onClick={removeBotToken}
-              className="text-xs text-red-400 hover:text-red-300 mt-2"
-            >
-              Remove bot token
-            </button>
-          )}
-        </div>
-      </div>
+      <GitHubAppSection config={config} setConfig={setConfig} />
 
       {/* Public URL */}
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">

@@ -19,6 +19,7 @@ import { getOrCreateBoard } from './routes/board.js';
 import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
 import { defaultModelForEngine } from './config.js';
 import { removeWorkspace } from './worktree.js';
+import { githubApiRequest } from './github-app.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -50,6 +51,7 @@ let deps = null;
  * @param {Function} d.getConfig - () → config object
  * @param {Function} d.getGhAuthenticatedUser - () → string|null
  * @param {Function} d.getGhBotUser - () → string|null
+ * @param {Function} d.getGhAppSlug - () → string|null
  * @param {Function} d.getWebhookHandlerDeps - () → webhookHandlerDeps object
  */
 export function initAutonomous(d) {
@@ -481,6 +483,15 @@ export function triggerReviewForCard(cardId, project) {
 // ─── GitHub Review Helpers ─────────────────────────────────────────────────
 
 /**
+ * Check if the GitHub App is fully configured and has an installation.
+ */
+function hasGitHubApp() {
+  const config = deps.getConfig();
+  const app = config.githubApp;
+  return !!(app?.appId && app?.privateKey && app?.installationId);
+}
+
+/**
  * Build an env object that authenticates as the bot GitHub account.
  * If no bot token is configured, returns undefined (use default auth).
  */
@@ -500,17 +511,28 @@ export function parsePrUrl(prUrl) {
 }
 
 /**
- * Add the reviewer GitHub user as a reviewer on a PR.
- * Uses the bot account if configured, otherwise the default gh CLI user.
+ * Add a reviewer on a PR.
+ * Priority: GitHub App (requests review from the app bot) > Bot PAT > default gh CLI user.
  * Silently ignores failures (e.g. same-account, permissions).
  */
 export async function addSelfAsReviewer(prUrl) {
+  const pr = parsePrUrl(prUrl);
+  if (!pr) return;
+
+  // Tier 1: GitHub App — no pre-assigned reviewer needed, the app submits its own review
+  if (hasGitHubApp()) {
+    const ghAppSlug = deps.getGhAppSlug();
+    console.log(
+      `[Review] Skipping reviewer assignment for PR #${pr.number} — GitHub App "${ghAppSlug}" will submit its own review`,
+    );
+    return;
+  }
+
+  // Tier 2: Bot PAT or default gh CLI user
   const ghBotUser = deps.getGhBotUser();
   const ghAuthenticatedUser = deps.getGhAuthenticatedUser();
   const reviewerUser = ghBotUser || ghAuthenticatedUser;
   if (!reviewerUser) return;
-  const pr = parsePrUrl(prUrl);
-  if (!pr) return;
   try {
     const env = botGhEnv();
     await execFileAsync(
@@ -538,22 +560,45 @@ export async function addSelfAsReviewer(prUrl) {
 }
 
 /**
- * Submit a formal GitHub review (APPROVE or REQUEST_CHANGES) via the REST API.
- * Uses the bot account if configured (bypasses same-account limitation).
- * Falls back to a labeled comment if the formal review fails.
+ * Submit a formal GitHub review (APPROVE or REQUEST_CHANGES).
+ * Priority: GitHub App (installation token) > Bot PAT > default gh CLI auth.
+ * Falls back to a labeled comment if all formal review methods fail.
  * Returns true if the formal review succeeded, false if it fell back.
  */
 export async function submitGitHubReview(prUrl, event, body) {
   const pr = parsePrUrl(prUrl);
   if (!pr) return false;
 
+  // Tier 1: GitHub App — submit review via installation token (REST API)
+  if (hasGitHubApp()) {
+    try {
+      const config = deps.getConfig();
+      const app = config.githubApp;
+      await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`, {
+        method: 'POST',
+        body: { event, body },
+        appId: app.appId,
+        privateKey: app.privateKey,
+        installationId: app.installationId,
+      });
+      const ghAppSlug = deps.getGhAppSlug();
+      console.log(
+        `[Review] Formal ${event} review submitted on PR #${pr.number} (via GitHub App: ${ghAppSlug})`,
+      );
+      return true;
+    } catch (err) {
+      const ghAppSlug = deps.getGhAppSlug();
+      console.log(
+        `[Review] GitHub App review failed on PR #${pr.number}: ${err.message?.split('\n')[0]} — trying fallbacks`,
+      );
+    }
+  }
+
+  // Tier 2: Bot PAT or default gh CLI — submit review via gh api command
   const env = botGhEnv();
   const usingBot = !!env;
   const ghBotUser = deps.getGhBotUser();
 
-  // Try formal review via gh api (bypasses some CLI restrictions)
-  // Uses execFileAsync with args array to avoid shell injection from body content
-  // When a bot token is configured, uses GH_TOKEN env to authenticate as the bot
   try {
     await execFileAsync(
       'gh',
@@ -642,7 +687,8 @@ export async function submitGitHubReview(prUrl, event, body) {
 }
 
 /**
- * Attempt to merge a PR using the bot account (if configured) or default auth.
+ * Attempt to merge a PR.
+ * Priority: GitHub App > Bot PAT > default gh CLI auth.
  * Called as a server-side backup after approval — the agent's own `gh pr merge`
  * may have failed (e.g. same-account can't merge, or merge was already done).
  * Returns true if merged successfully, false otherwise.
@@ -650,6 +696,56 @@ export async function submitGitHubReview(prUrl, event, body) {
 export async function mergeApprovedPR(prUrl) {
   const pr = parsePrUrl(prUrl);
   if (!pr) return false;
+
+  // Tier 1: GitHub App — merge via REST API with installation token
+  if (hasGitHubApp()) {
+    try {
+      const config = deps.getConfig();
+      const app = config.githubApp;
+      await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/merge`, {
+        method: 'PUT',
+        body: { merge_method: 'squash' },
+        appId: app.appId,
+        privateKey: app.privateKey,
+        installationId: app.installationId,
+      });
+      const ghAppSlug = deps.getGhAppSlug();
+      console.log(`[Review] PR #${pr.number} merged via GitHub App (${ghAppSlug})`);
+      // Delete branch after merge
+      try {
+        const prData = await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`, {
+          appId: app.appId,
+          privateKey: app.privateKey,
+          installationId: app.installationId,
+        });
+        if (prData.head?.ref) {
+          await githubApiRequest(
+            `/repos/${pr.owner}/${pr.repo}/git/refs/heads/${prData.head.ref}`,
+            {
+              method: 'DELETE',
+              appId: app.appId,
+              privateKey: app.privateKey,
+              installationId: app.installationId,
+            },
+          );
+        }
+      } catch {
+        /* branch deletion is best-effort */
+      }
+      return true;
+    } catch (err) {
+      const msg = err.message || '';
+      if (/already.*merged|405/i.test(msg)) {
+        console.log(`[Review] PR #${pr.number} was already merged`);
+        return true;
+      }
+      console.log(
+        `[Review] GitHub App merge failed for PR #${pr.number}: ${msg.split('\n')[0]} — trying fallback`,
+      );
+    }
+  }
+
+  // Tier 2: Bot PAT or default gh CLI
   const env = botGhEnv();
   const ghBotUser = deps.getGhBotUser();
   try {
@@ -673,7 +769,7 @@ export async function mergeApprovedPR(prUrl) {
   } catch (err) {
     const msg = err.message?.split('\n')[0] || '';
     // "already merged" is not an error
-    if (/already.*merged/i.test(msg)) {
+    if (/already.*merged|405/i.test(msg)) {
       console.log(`[Review] PR #${pr.number} was already merged`);
       return true;
     }

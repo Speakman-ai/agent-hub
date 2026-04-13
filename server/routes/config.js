@@ -4,6 +4,12 @@ import path from 'path';
 import { promisify } from 'util';
 import { exec } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
+import {
+  getAppInfo,
+  getAppInstallations,
+  buildAppManifest,
+  clearTokenCache,
+} from '../github-app.js';
 
 export default function createConfigRoutes(deps) {
   const {
@@ -14,6 +20,8 @@ export default function createConfigRoutes(deps) {
     config,
     getGhBotUser,
     setGhBotUser,
+    getGhAppSlug,
+    setGhAppSlug,
     serverDir,
   } = deps;
   const router = Router();
@@ -35,6 +43,15 @@ export default function createConfigRoutes(deps) {
       publicUrl: config.publicUrl || '',
       apiKey: config.apiKey || '',
       authRequired: !!config.apiKey,
+      // GitHub App status
+      githubApp: config.githubApp
+        ? {
+            appId: config.githubApp.appId,
+            appSlug: config.githubApp.appSlug || getGhAppSlug() || null,
+            hasInstallation: !!config.githubApp.installationId,
+          }
+        : null,
+      // Bot GitHub account (fallback) — only expose whether it's configured
       botGithubToken: config.botGithubToken ? '••••••••' : '',
       botGithubTokenSet: !!config.botGithubToken,
       botGithubUser: getGhBotUser() || null,
@@ -114,6 +131,232 @@ export default function createConfigRoutes(deps) {
         Object.entries(updates).map(([k, v]) => [k, k === 'botGithubToken' && v ? '••••••••' : v]),
       ),
     });
+  });
+
+  // ─── GitHub App Setup (Manifest Flow) ──────────────────────────────────────
+  // One-click GitHub App creation for formal PR reviews.
+
+  /**
+   * GET /api/github-app/manifest — Returns the manifest and GitHub redirect URL.
+   * The client uses this to build a form that POSTs to GitHub.
+   */
+  router.get('/api/github-app/manifest', (_req, res) => {
+    const serverUrl = config.publicUrl;
+    if (!serverUrl) {
+      return res.status(400).json({
+        error: 'Public URL must be configured first (Settings → General → Public URL)',
+      });
+    }
+    const manifest = buildAppManifest(serverUrl);
+    res.json({
+      manifest,
+      githubUrl: 'https://github.com/settings/apps/new',
+      redirectUrl: manifest.redirect_url,
+    });
+  });
+
+  /**
+   * GET /api/github-app/callback — Handles the redirect from GitHub after app creation.
+   * Exchanges the temporary code for app credentials and stores them.
+   */
+  router.get('/api/github-app/callback', async (req, res) => {
+    const { code } = req.query;
+    if (!code) {
+      return res.status(400).send('Missing code parameter from GitHub');
+    }
+
+    try {
+      // Exchange the code for app credentials
+      const response = await fetch(`https://api.github.com/app-manifests/${code}/conversions`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        throw new Error(`GitHub returned ${response.status}: ${errText}`);
+      }
+
+      const appData = await response.json();
+
+      // Store credentials in config
+      const githubAppConfig = {
+        appId: appData.id,
+        appSlug: appData.slug || appData.name,
+        privateKey: appData.pem,
+        webhookSecret: appData.webhook_secret,
+        clientId: appData.client_id,
+        clientSecret: appData.client_secret,
+      };
+
+      // Try to find an existing installation
+      try {
+        const installations = await getAppInstallations(appData.id, appData.pem);
+        if (installations.length > 0) {
+          githubAppConfig.installationId = installations[0].id;
+          console.log(`[GitHub App] Found installation: ${installations[0].id}`);
+        }
+      } catch {
+        // No installations yet — user still needs to install the app
+      }
+
+      // Save to config.json
+      const configPath = path.join(config.dataDir, 'config.json');
+      let fileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        /* no file yet */
+      }
+      fileConfig.githubApp = githubAppConfig;
+      writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+      // Update in-memory config
+      config.githubApp = githubAppConfig;
+      setGhAppSlug?.(appData.slug || appData.name);
+
+      console.log(
+        `[GitHub App] App "${appData.slug || appData.name}" created and configured (ID: ${appData.id})`,
+      );
+
+      // Redirect to the settings page with a success indicator
+      const clientUrl = config.publicUrl || `http://localhost:3050`;
+      res.redirect(
+        `${clientUrl}/#/settings?githubApp=created&appSlug=${encodeURIComponent(appData.slug || appData.name)}`,
+      );
+    } catch (err) {
+      console.error('[GitHub App] Callback failed:', err.message);
+      const clientUrl = config.publicUrl || `http://localhost:3050`;
+      res.redirect(
+        `${clientUrl}/#/settings?githubApp=error&message=${encodeURIComponent(err.message)}`,
+      );
+    }
+  });
+
+  /**
+   * GET /api/github-app/install-url — Returns the installation URL for the app.
+   */
+  router.get('/api/github-app/install-url', async (_req, res) => {
+    const app = config.githubApp;
+    if (!app?.appSlug) {
+      return res.status(400).json({ error: 'No GitHub App configured' });
+    }
+    res.json({
+      installUrl: `https://github.com/apps/${app.appSlug}/installations/new`,
+    });
+  });
+
+  /**
+   * POST /api/github-app/refresh-installation — Re-detect the installation ID.
+   * Call this after the user installs the app on their account/repos.
+   */
+  router.post('/api/github-app/refresh-installation', async (_req, res) => {
+    const app = config.githubApp;
+    if (!app?.appId || !app?.privateKey) {
+      return res.status(400).json({ error: 'No GitHub App configured' });
+    }
+
+    try {
+      const installations = await getAppInstallations(app.appId, app.privateKey);
+      if (installations.length === 0) {
+        return res.json({
+          installed: false,
+          message: 'No installations found. Install the app on your GitHub account first.',
+        });
+      }
+
+      app.installationId = installations[0].id;
+      config.githubApp = app;
+
+      // Persist to config.json
+      const configPath = path.join(config.dataDir, 'config.json');
+      let fileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        /* no file yet */
+      }
+      fileConfig.githubApp = app;
+      writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+      console.log(
+        `[GitHub App] Installation refreshed: ${installations[0].id} (account: ${installations[0].account?.login})`,
+      );
+      res.json({
+        installed: true,
+        installationId: installations[0].id,
+        account: installations[0].account?.login,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * GET /api/github-app/status — Current GitHub App status.
+   * Caches the GitHub API verification for 5 minutes.
+   */
+  let _appInfoCache = { data: null, appId: null, ts: 0 };
+  const APP_INFO_CACHE_TTL = 5 * 60 * 1000;
+
+  router.get('/api/github-app/status', async (_req, res) => {
+    const app = config.githubApp;
+    if (!app?.appId) {
+      return res.json({ configured: false });
+    }
+
+    const result = {
+      configured: true,
+      appId: app.appId,
+      appSlug: app.appSlug || null,
+      hasInstallation: !!app.installationId,
+      installationId: app.installationId || null,
+    };
+
+    // Verify the app is still valid (cached)
+    const now = Date.now();
+    if (_appInfoCache.appId === app.appId && now - _appInfoCache.ts < APP_INFO_CACHE_TTL) {
+      result.appName = _appInfoCache.data?.name || null;
+      result.valid = !!_appInfoCache.data;
+    } else {
+      try {
+        const appInfo = await getAppInfo(app.appId, app.privateKey);
+        _appInfoCache = { data: appInfo, appId: app.appId, ts: now };
+        result.appName = appInfo.name;
+        result.valid = true;
+      } catch {
+        _appInfoCache = { data: null, appId: app.appId, ts: now };
+        result.valid = false;
+      }
+    }
+
+    res.json(result);
+  });
+
+  /**
+   * DELETE /api/github-app — Remove the GitHub App configuration.
+   */
+  router.delete('/api/github-app', (_req, res) => {
+    config.githubApp = null;
+    setGhAppSlug?.(null);
+    clearTokenCache();
+
+    // Remove from config.json
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    delete fileConfig.githubApp;
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    console.log('[GitHub App] Configuration removed');
+    res.json({ ok: true });
   });
 
   // GET /api/projects/:projectId/export

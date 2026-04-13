@@ -317,4 +317,16 @@ export const api = {
   createTask: (agentId, prompt) =>
     fetchJSON('/tasks', { method: 'POST', body: JSON.stringify({ agentId, prompt }) }),
   stopTask: (taskId) => fetchJSON(`/tasks/${taskId}/stop`, { method: 'POST' }),
+
+  // Generic helpers (for endpoints without dedicated methods)
+  get: (url) => fetchJSON(url),
+  post: (url, data) =>
+    fetchJSON(url, { method: 'POST', ...(data && { body: JSON.stringify(data) }) }),
+  del: (url) =>
+    fetch(`${getApiBase()}${url}`, { method: 'DELETE', headers: { ...getAuthHeaders() } }).then(
+      (res) => {
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json().catch(() => null);
+      },
+    ),
 };
