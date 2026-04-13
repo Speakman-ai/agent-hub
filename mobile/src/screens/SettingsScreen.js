@@ -1080,10 +1080,12 @@ function AgentConfigSection() {
   const [saveStatus, setSaveStatus] = useState({});
   const [edits, setEdits] = useState({});
   const [showNew, setShowNew] = useState(false);
+  const [modelConfig, setModelConfig] = useState(null);
   const [newForm, setNewForm] = useState({
     id: '',
     name: '',
     engine: 'claude-code',
+    model: '',
     cwd: '/home/ryan',
     workspace: '',
     color: '#6b7280',
@@ -1093,6 +1095,20 @@ function AgentConfigSection() {
   useEffect(() => {
     setAgents(contextAgents);
   }, [contextAgents]);
+
+  useEffect(() => {
+    api.getModelConfig().then(setModelConfig).catch(() => {});
+  }, []);
+
+  const getModelsForEngine = (engine) => {
+    if (!modelConfig) return [];
+    return modelConfig.engineValidModels[engine] || [];
+  };
+
+  const getDefaultModel = (engine) => {
+    if (!modelConfig) return '';
+    return modelConfig.engineDefaultModels[engine] || modelConfig.defaultModel || '';
+  };
 
   const getEdit = (agentId) => {
     if (edits[agentId]) return edits[agentId];
@@ -1137,7 +1153,7 @@ function AgentConfigSection() {
     try {
       await api.createAgent(newForm);
       setShowNew(false);
-      setNewForm({ id: '', name: '', engine: 'claude-code', cwd: '/home/ryan', workspace: '', color: '#6b7280', systemPrompt: '' });
+      setNewForm({ id: '', name: '', engine: 'claude-code', model: '', cwd: '/home/ryan', workspace: '', color: '#6b7280', systemPrompt: '' });
       refreshAgents();
     } catch (e) {
       Alert.alert('Error', 'Failed to create agent.');
@@ -1199,6 +1215,28 @@ function AgentConfigSection() {
             placeholderTextColor={colors.gray500}
             style={styles.formInput}
           />
+          <Text style={styles.fieldLabel}>Model</Text>
+          <View style={styles.engineToggle}>
+            {getModelsForEngine(newForm.engine).map((m) => (
+              <TouchableOpacity
+                key={m}
+                style={[
+                  styles.engineOption,
+                  (newForm.model || getDefaultModel(newForm.engine)) === m && styles.engineOptionActive,
+                ]}
+                onPress={() => setNewForm({ ...newForm, model: m })}
+              >
+                <Text
+                  style={[
+                    styles.engineOptionText,
+                    (newForm.model || getDefaultModel(newForm.engine)) === m && styles.engineOptionTextActive,
+                  ]}
+                >
+                  {m.replace(/^claude-/, '').replace(/^gpt-/, '')}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
           <TextInput
             value={newForm.systemPrompt}
             onChangeText={(v) => setNewForm({ ...newForm, systemPrompt: v })}
@@ -1262,7 +1300,10 @@ function AgentConfigSection() {
                           styles.engineOption,
                           (edit.engine || 'claude-code') === eng && styles.engineOptionActive,
                         ]}
-                        onPress={() => setEdit(agent.id, 'engine', eng)}
+                        onPress={() => {
+                          setEdit(agent.id, 'engine', eng);
+                          setEdit(agent.id, 'model', getDefaultModel(eng));
+                        }}
                       >
                         <Text
                           style={[
@@ -1271,6 +1312,29 @@ function AgentConfigSection() {
                           ]}
                         >
                           {eng}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <Text style={styles.fieldLabel}>Model</Text>
+                  <View style={styles.engineToggle}>
+                    {getModelsForEngine(edit.engine || agent.engine || 'claude-code').map((m) => (
+                      <TouchableOpacity
+                        key={m}
+                        style={[
+                          styles.engineOption,
+                          (edit.model || agent.model || getDefaultModel(edit.engine || agent.engine || 'claude-code')) === m && styles.engineOptionActive,
+                        ]}
+                        onPress={() => setEdit(agent.id, 'model', m)}
+                      >
+                        <Text
+                          style={[
+                            styles.engineOptionText,
+                            (edit.model || agent.model || getDefaultModel(edit.engine || agent.engine || 'claude-code')) === m && styles.engineOptionTextActive,
+                          ]}
+                        >
+                          {m.replace(/^claude-/, '').replace(/^gpt-/, '')}
                         </Text>
                       </TouchableOpacity>
                     ))}

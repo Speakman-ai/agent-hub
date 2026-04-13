@@ -2109,10 +2109,12 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   const [edits, setEdits] = useState({});
   const [showNew, setShowNew] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [modelConfig, setModelConfig] = useState(null);
   const [newForm, setNewForm] = useState({
     id: '',
     name: '',
     engine: 'claude-code',
+    model: '',
     projectId: projects[0]?.id || '',
     color: '#6b7280',
     avatar: '',
@@ -2123,6 +2125,23 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   useEffect(() => {
     setAgents(initialAgents);
   }, [initialAgents]);
+
+  useEffect(() => {
+    api
+      .getModelConfig()
+      .then(setModelConfig)
+      .catch(() => {});
+  }, []);
+
+  const getModelsForEngine = (engine) => {
+    if (!modelConfig) return [];
+    return modelConfig.engineValidModels[engine] || [];
+  };
+
+  const getDefaultModel = (engine) => {
+    if (!modelConfig) return '';
+    return modelConfig.engineDefaultModels[engine] || modelConfig.defaultModel || '';
+  };
 
   const getEdit = (agentId) => {
     if (edits[agentId]) return edits[agentId];
@@ -2180,6 +2199,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         id: '',
         name: '',
         engine: 'claude-code',
+        model: '',
         projectId: projects[0]?.id || '',
         color: '#6b7280',
         avatar: '',
@@ -2351,15 +2371,30 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className={labelClass}>Engine</label>
               <select
                 value={newForm.engine}
-                onChange={(e) => setNewForm({ ...newForm, engine: e.target.value })}
+                onChange={(e) => setNewForm({ ...newForm, engine: e.target.value, model: '' })}
                 className={inputClass}
               >
                 <option value="claude-code">claude-code</option>
+              </select>
+            </div>
+            <div>
+              <label className={labelClass}>Model</label>
+              <select
+                value={newForm.model || getDefaultModel(newForm.engine)}
+                onChange={(e) => setNewForm({ ...newForm, model: e.target.value })}
+                className={inputClass}
+              >
+                {getModelsForEngine(newForm.engine).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                    {m === getDefaultModel(newForm.engine) ? ' (default)' : ''}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -2571,7 +2606,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <div>
                       <label className={labelClass}>Name</label>
                       <input
@@ -2584,10 +2619,36 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                       <label className={labelClass}>Engine</label>
                       <select
                         value={edit.engine || 'claude-code'}
-                        onChange={(e) => setEdit(agent.id, 'engine', e.target.value)}
+                        onChange={(e) => {
+                          setEdit(agent.id, 'engine', e.target.value);
+                          setEdit(agent.id, 'model', getDefaultModel(e.target.value));
+                        }}
                         className={inputClass}
                       >
                         <option value="claude-code">claude-code</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Model</label>
+                      <select
+                        value={
+                          edit.model ||
+                          agent.model ||
+                          getDefaultModel(edit.engine || agent.engine || 'claude-code')
+                        }
+                        onChange={(e) => setEdit(agent.id, 'model', e.target.value)}
+                        className={inputClass}
+                      >
+                        {getModelsForEngine(edit.engine || agent.engine || 'claude-code').map(
+                          (m) => (
+                            <option key={m} value={m}>
+                              {m}
+                              {m === getDefaultModel(edit.engine || agent.engine || 'claude-code')
+                                ? ' (default)'
+                                : ''}
+                            </option>
+                          ),
+                        )}
                       </select>
                     </div>
                   </div>

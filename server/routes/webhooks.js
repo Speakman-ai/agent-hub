@@ -218,7 +218,7 @@ export function dispatchReviewFeedback(deps, card, project, feedbackContent) {
       agent.id,
       `Review fixes: ${card.title}`,
       engine,
-      defaultModelForEngine(engine),
+      agent.model || defaultModelForEngine(engine),
       1,
       0,
     );

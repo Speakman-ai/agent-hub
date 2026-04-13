@@ -216,6 +216,7 @@ export const api = {
   // Config settings
   getConfig: () => fetchJSON('/config'),
   updateConfig: (data) => fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
+  getModelConfig: () => fetchJSON('/config/models'),
 
   // Per-project export/import
   exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),

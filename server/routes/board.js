@@ -223,7 +223,7 @@ export default function createBoardRoutes(deps) {
       agentId,
       card.title,
       engine,
-      defaultModelForEngine(engine),
+      agent.model || defaultModelForEngine(engine),
       1,
       0,
     );

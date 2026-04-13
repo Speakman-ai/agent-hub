@@ -45,6 +45,15 @@ export default function createConfigRoutes(deps) {
     });
   });
 
+  // GET /api/config/models — valid models per engine (for UI dropdowns)
+  router.get('/api/config/models', (_req, res) => {
+    res.json({
+      defaultModel: config.defaultModel,
+      engineDefaultModels: config.engineDefaultModels,
+      engineValidModels: config.engineValidModels,
+    });
+  });
+
   // PATCH /api/config
   router.patch('/api/config', (req, res) => {
     const allowed = [

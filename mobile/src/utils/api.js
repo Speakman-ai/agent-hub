@@ -69,6 +69,7 @@ export const api = {
 
   // Config
   getConfig: () => fetchJSON('/config'),
+  getModelConfig: () => fetchJSON('/config/models'),
   updateConfig: (data) => fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
   exportConfig: () => fetchJSON('/config/export'),
   importConfig: (data) => fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
