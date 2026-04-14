@@ -76,7 +76,14 @@ export default function createThreadRoutes(deps) {
     stmts.createThreadEntry.run(id, thread.id, content);
     const entry = stmts.getThreadEntry.get(id);
 
-    broadcast({ type: 'thread_entry_created', threadId: thread.id, entry });
+    broadcast({
+      type: 'thread_entry_created',
+      threadId: thread.id,
+      projectId: thread.project_id,
+      threadName: thread.name,
+      threadType: thread.type,
+      entry,
+    });
     res.status(201).json(entry);
   });
 

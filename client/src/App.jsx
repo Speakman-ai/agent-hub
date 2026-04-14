@@ -24,6 +24,8 @@ import {
   cardReviewNotification,
   prMergedNotification,
   sessionCompleteNotification,
+  threadCreatedNotification,
+  threadEntryNotification,
 } from './utils/ticketNotifications.js';
 import {
   MessageCircle,
@@ -101,6 +103,11 @@ export default function App() {
   const [threadsProjectId, setThreadsProjectId] = useState(null);
   const [activeThreadId, setActiveThreadId] = useState(null);
   const [activeThread, setActiveThread] = useState(null);
+  // Unread thread entry counts per project: { [projectId]: number }
+  const [unreadThreadCounts, setUnreadThreadCounts] = useState({});
+  // Refs to push WebSocket updates into ThreadList/ThreadView
+  const threadListRef = useRef(null);
+  const threadViewRef = useRef(null);
   // Cron-linked sessions (scheduled tasks)
   const [cronSessions, setCronSessions] = useState([]);
   // Skills for the active agent (for /slash-command autocomplete)
@@ -138,6 +145,14 @@ export default function App() {
   // Track when a session was explicitly navigated to (e.g. from kanban assign)
   // so the agent-change useEffect doesn't overwrite it with a stale session ID.
   const pendingSessionIdRef = useRef(null);
+
+  // Refs for thread state (accessible inside WebSocket callback)
+  const threadsProjectIdRef = useRef(threadsProjectId);
+  threadsProjectIdRef.current = threadsProjectId;
+  const activeThreadIdRef = useRef(activeThreadId);
+  activeThreadIdRef.current = activeThreadId;
+  const currentViewRef = useRef(currentView);
+  currentViewRef.current = currentView;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
 
@@ -850,6 +865,87 @@ export default function App() {
         break;
       }
 
+      // ── Thread notifications ─────────────────────────────────
+      case 'thread_created': {
+        // Live-update ThreadList if viewing threads for this project
+        if (threadListRef.current && threadsProjectIdRef.current === data.projectId) {
+          threadListRef.current.addThread(data.thread);
+        }
+        const { title, body } = threadCreatedNotification({
+          threadName: data.thread.name,
+          threadType: data.thread.type,
+        });
+        setToasts((prev) => [
+          ...prev,
+          {
+            id: `thread-created-${data.thread.id}-${Date.now()}`,
+            type: 'info',
+            message: body,
+            duration: 6000,
+          },
+        ]);
+        notify({ title, body, type: 'info' });
+        break;
+      }
+
+      case 'thread_entry_created': {
+        const isError = data.entry?.content?.startsWith('ERROR:');
+        // Live-update ThreadView if viewing this thread
+        if (threadViewRef.current && activeThreadIdRef.current === data.threadId) {
+          threadViewRef.current.addEntry(data.entry);
+        } else {
+          // Increment unread count for the project (we need to find it from data)
+          // The broadcast includes threadId — look up the project via thread cache
+          // For simplicity, increment for all projects that have threads view open or track globally
+          setUnreadThreadCounts((prev) => {
+            const pid = data.projectId;
+            if (!pid) return prev;
+            return { ...prev, [pid]: (prev[pid] || 0) + 1 };
+          });
+        }
+        // Build notification — need thread name which the server should include
+        const threadName = data.threadName || 'Thread';
+        const threadType = data.threadType || 'cron';
+        const preview = data.entry?.content?.replace(/\n+/g, ' ').trim();
+        const { title, body } = threadEntryNotification({
+          threadName,
+          threadType,
+          preview,
+          isError,
+        });
+        // Only toast for errors or when not actively viewing the thread
+        if (
+          isError ||
+          activeThreadIdRef.current !== data.threadId ||
+          currentViewRef.current !== 'threads'
+        ) {
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: `thread-entry-${data.entry.id}-${Date.now()}`,
+              type: isError ? 'error' : 'info',
+              message: body,
+              duration: isError ? 10000 : 6000,
+            },
+          ]);
+        }
+        notify({ title, body, type: isError ? 'error' : 'info' });
+        break;
+      }
+
+      case 'thread_deleted': {
+        // Live-update ThreadList
+        if (threadListRef.current && threadsProjectIdRef.current === data.projectId) {
+          threadListRef.current.removeThread(data.threadId);
+        }
+        // If viewing the deleted thread, go back to list
+        if (activeThreadIdRef.current === data.threadId) {
+          setActiveThreadId(null);
+          setActiveThread(null);
+        }
+        break;
+      }
+
       case 'wiki_update':
         window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
         break;
@@ -1463,6 +1559,13 @@ export default function App() {
                 setThreadsProjectId(extra);
                 setActiveThreadId(null);
                 setActiveThread(null);
+                // Clear unread count when opening threads view
+                setUnreadThreadCounts((prev) => {
+                  if (!prev[extra]) return prev;
+                  const next = { ...prev };
+                  delete next[extra];
+                  return next;
+                });
               }
               setSidebarOpen(false);
             }}
@@ -1482,6 +1585,7 @@ export default function App() {
             cronSessions={cronSessions}
             wikiProjectId={wikiProjectId}
             threadsProjectId={threadsProjectId}
+            unreadThreadCounts={unreadThreadCounts}
             activeReviews={activeReviews}
           />
         </div>
@@ -1549,6 +1653,7 @@ export default function App() {
           ) : currentView === 'threads' && threadsProjectId ? (
             activeThreadId ? (
               <ThreadView
+                ref={threadViewRef}
                 key={activeThreadId}
                 threadId={activeThreadId}
                 thread={activeThread}
@@ -1559,6 +1664,7 @@ export default function App() {
               />
             ) : (
               <ThreadList
+                ref={threadListRef}
                 projectId={threadsProjectId}
                 onSelectThread={(thread) => {
                   setActiveThreadId(thread.id);

@@ -4,6 +4,8 @@ import {
   cardReviewNotification,
   prMergedNotification,
   sessionCompleteNotification,
+  threadCreatedNotification,
+  threadEntryNotification,
 } from './ticketNotifications.js';
 
 describe('cardStartedNotification', () => {
@@ -112,5 +114,76 @@ describe('sessionCompleteNotification', () => {
     const exact = 'B'.repeat(120);
     const result = sessionCompleteNotification({ agentName: 'Agent', preview: exact });
     expect(result.body).toBe(exact);
+  });
+});
+
+describe('threadCreatedNotification', () => {
+  it('formats heartbeat thread', () => {
+    const result = threadCreatedNotification({
+      threadName: 'Daily Check',
+      threadType: 'heartbeat',
+    });
+    expect(result.title).toBe('Thread Created');
+    expect(result.body).toBe('New Heartbeat thread: "Daily Check"');
+  });
+
+  it('formats cron thread', () => {
+    const result = threadCreatedNotification({
+      threadName: 'Dependabot Merge',
+      threadType: 'cron',
+    });
+    expect(result.title).toBe('Thread Created');
+    expect(result.body).toBe('New Cron thread: "Dependabot Merge"');
+  });
+});
+
+describe('threadEntryNotification', () => {
+  it('formats a normal entry with preview', () => {
+    const result = threadEntryNotification({
+      threadName: 'Daily Check',
+      threadType: 'heartbeat',
+      preview: 'All systems operational',
+    });
+    expect(result.title).toBe('Heartbeat Update');
+    expect(result.body).toBe('Daily Check: All systems operational');
+  });
+
+  it('formats an error entry', () => {
+    const result = threadEntryNotification({
+      threadName: 'Build Runner',
+      threadType: 'cron',
+      preview: 'ERROR: Build failed',
+      isError: true,
+    });
+    expect(result.title).toBe('Cron Error');
+    expect(result.body).toBe('Build Runner: ERROR: Build failed');
+  });
+
+  it('falls back when no preview', () => {
+    const result = threadEntryNotification({
+      threadName: 'Daily Check',
+      threadType: 'heartbeat',
+    });
+    expect(result.body).toBe('New entry in "Daily Check"');
+  });
+
+  it('truncates long previews to 120 characters', () => {
+    const longPreview = 'X'.repeat(200);
+    const result = threadEntryNotification({
+      threadName: 'Thread',
+      threadType: 'cron',
+      preview: longPreview,
+    });
+    expect(result.body).toBe('Thread: ' + 'X'.repeat(120) + '…');
+  });
+
+  it('does not truncate previews at exactly 120 characters', () => {
+    const exact = 'Y'.repeat(120);
+    const result = threadEntryNotification({
+      threadName: 'Thread',
+      threadType: 'cron',
+      preview: exact,
+    });
+    expect(result.body).toBe('Thread: ' + exact);
   });
 });

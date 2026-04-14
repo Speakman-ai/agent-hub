@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { Clock, Activity, Cpu, AlertCircle, List } from 'lucide-react';
 import { api } from '../utils/api.js';
 
@@ -16,7 +16,7 @@ function relativeTime(ts) {
   return d.toLocaleDateString();
 }
 
-export default function ThreadList({ projectId, onSelectThread }) {
+function ThreadListInner({ projectId, onSelectThread }, ref) {
   const [threads, setThreads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -55,6 +55,8 @@ export default function ThreadList({ projectId, onSelectThread }) {
   const removeThread = (threadId) => {
     setThreads((prev) => prev.filter((t) => t.id !== threadId));
   };
+
+  useImperativeHandle(ref, () => ({ addThread, removeThread }), []);
 
   if (loading) {
     return (
@@ -148,4 +150,6 @@ export default function ThreadList({ projectId, onSelectThread }) {
   );
 }
 
+const ThreadList = forwardRef(ThreadListInner);
 ThreadList.displayName = 'ThreadList';
+export default ThreadList;

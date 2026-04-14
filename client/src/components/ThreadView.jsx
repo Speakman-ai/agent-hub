@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import { ArrowLeft, Clock, Activity, Cpu, AlertCircle } from 'lucide-react';
 import { api } from '../utils/api.js';
 
@@ -20,7 +20,7 @@ function formatTimestamp(ts) {
   return `${time} · ${relative}`;
 }
 
-export default function ThreadView({ threadId, thread: threadProp, onBack }) {
+function ThreadViewInner({ threadId, thread: threadProp, onBack }, ref) {
   const [thread, setThread] = useState(threadProp || null);
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -80,8 +80,7 @@ export default function ThreadView({ threadId, thread: threadProp, onBack }) {
     });
   };
 
-  // Expose addEntry on the component instance — instead we'll use a prop callback pattern
-  // The parent (App.jsx) will pass new entries via a prop
+  useImperativeHandle(ref, () => ({ addEntry }), []);
 
   const typeIcon =
     thread?.type === 'heartbeat' ? (
@@ -226,5 +225,6 @@ export default function ThreadView({ threadId, thread: threadProp, onBack }) {
   );
 }
 
-// Named export for the addEntry helper so App.jsx can use it via ref if needed
+const ThreadView = forwardRef(ThreadViewInner);
 ThreadView.displayName = 'ThreadView';
+export default ThreadView;

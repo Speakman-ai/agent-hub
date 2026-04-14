@@ -40,6 +40,7 @@ export default function Sidebar({
   cronSessions = [],
   wikiProjectId,
   threadsProjectId,
+  unreadThreadCounts = {},
   activeReviews = {},
   subagentsBySession = {},
   deletingSessionIds = new Set(),
@@ -524,6 +525,13 @@ export default function Sidebar({
                     >
                       <List size={14} className="flex-shrink-0" />
                       <span className="truncate">Threads</span>
+                      {unreadThreadCounts[project.id] > 0 && (
+                        <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white px-1">
+                          {unreadThreadCounts[project.id] > 99
+                            ? '99+'
+                            : unreadThreadCounts[project.id]}
+                        </span>
+                      )}
                     </button>
                   </div>
                 )}

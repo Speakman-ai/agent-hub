@@ -74,7 +74,14 @@ function appendToHeartbeatThread(agent, content) {
     const entry = stmts.getThreadEntry.get(entryId);
 
     if (broadcastFn) {
-      broadcastFn({ type: 'thread_entry_created', threadId: thread.id, entry });
+      broadcastFn({
+        type: 'thread_entry_created',
+        threadId: thread.id,
+        projectId: thread.project_id,
+        threadName: thread.name,
+        threadType: thread.type,
+        entry,
+      });
     }
   } catch (err) {
     console.error(`[Heartbeat] Failed to append to thread for ${agent.name}:`, err.message);

@@ -40,6 +40,30 @@ export function prMergedNotification({ cardTitle, prNumber, mergedBy }) {
  * @param {{ agentName: string, sessionName?: string, preview?: string }} data
  * @returns {{ title: string, body: string }}
  */
+/**
+ * Build notification content for a new thread being created.
+ * @param {{ threadName: string, threadType: string }} data
+ * @returns {{ title: string, body: string }}
+ */
+export function threadCreatedNotification({ threadName, threadType }) {
+  const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
+  const body = `New ${label} thread: "${threadName}"`;
+  return { title: 'Thread Created', body };
+}
+
+/**
+ * Build notification content for a new thread entry.
+ * @param {{ threadName: string, threadType: string, preview?: string, isError?: boolean }} data
+ * @returns {{ title: string, body: string }}
+ */
+export function threadEntryNotification({ threadName, threadType, preview, isError }) {
+  const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
+  const title = isError ? `${label} Error` : `${label} Update`;
+  const trimmed = preview && preview.length > 120 ? preview.substring(0, 120) + '…' : preview;
+  const body = trimmed ? `${threadName}: ${trimmed}` : `New entry in "${threadName}"`;
+  return { title, body };
+}
+
 export function sessionCompleteNotification({ agentName, sessionName, preview }) {
   const title = `${agentName} — Done`;
   const parts = [];
