@@ -1518,6 +1518,7 @@ export function startReviewPollingFallback() {
   setTimeout(async () => {
     try {
       console.log('[ReviewPoll] Running initial startup reconciliation...');
+      await reconcileKanbanWithGitHub();
       await pollForMissedReviews();
       console.log('[ReviewPoll] Startup reconciliation complete');
     } catch (err) {
@@ -1528,12 +1529,88 @@ export function startReviewPollingFallback() {
   // Then run every 3 minutes as a safety net for missed webhooks
   reviewPollCron = cron.schedule('*/3 * * * *', async () => {
     try {
+      await reconcileKanbanWithGitHub();
       await pollForMissedReviews();
     } catch (err) {
       console.error('[ReviewPoll] Polling error:', err.message);
     }
   });
   console.log('[ReviewPoll] Fallback polling started (every 3 minutes)');
+}
+
+/**
+ * Reconcile kanban cards with GitHub PR state.
+ *
+ * Catches two gaps the webhook system misses:
+ * 1. Cards whose pr_url points at a superseded PR (closed, then a new PR was
+ *    opened and merged — but the card never got updated).
+ * 2. Cards that were created after their PR was already merged, so the webhook
+ *    event fired before the card existed.
+ *
+ * Scans all non-Done columns for cards with a pr_url, checks the PR state via
+ * `gh api`, and moves merged-PR cards to Done.
+ */
+async function reconcileKanbanWithGitHub() {
+  const projects = deps.getProjects();
+
+  for (const project of projects) {
+    const boardData = getOrCreateBoard(deps.stmts, project.id);
+    if (!boardData?.board) continue;
+
+    const cols = deps.stmts.getKanbanColumns.all(boardData.board.id);
+    const doneCol = cols.find((c) => c.name.toLowerCase() === 'done');
+    if (!doneCol) continue;
+
+    // Check all non-Done columns for cards with a pr_url.
+    // API calls are sequential per card — fine at current scale but could be
+    // parallelized with Promise.all if board sizes grow significantly.
+    const nonDoneCols = cols.filter((c) => c.id !== doneCol.id);
+    for (const col of nonDoneCols) {
+      const cards = deps.stmts.getKanbanCardsByColumn.all(col.id);
+      for (const card of cards) {
+        if (!card.pr_url) continue;
+
+        const prMatch = card.pr_url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+        if (!prMatch) continue;
+
+        const [, repoFullName, prNumber] = prMatch;
+
+        try {
+          const { stdout } = await execFileAsync(
+            'gh',
+            [
+              'api',
+              `repos/${repoFullName}/pulls/${prNumber}`,
+              '--jq',
+              '{state: .state, merged: .merged}',
+            ],
+            { timeout: 15000 },
+          );
+
+          const pr = JSON.parse(stdout.trim());
+
+          if (pr.state === 'closed' && pr.merged) {
+            // PR is merged — move card to Done
+            deps.stmts.moveKanbanCard.run(doneCol.id, 0, card.id);
+            deps.broadcast({ type: 'kanban_update', projectId: project.id });
+            console.log(
+              `[Reconcile] PR #${prNumber} already merged — card "${card.title}" moved to Done`,
+            );
+
+            // Free up a slot for the next autonomous card
+            tryAutonomousDispatch();
+          } else if (pr.state === 'closed' && !pr.merged) {
+            // PR was closed without merge — leave the card for manual triage.
+            console.log(
+              `[Reconcile] PR #${prNumber} closed without merge — card "${card.title}" left for triage`,
+            );
+          }
+        } catch (err) {
+          console.debug(`[Reconcile] Skipping PR #${prNumber}: ${err.message}`);
+        }
+      }
+    }
+  }
 }
 
 async function pollForMissedReviews() {
