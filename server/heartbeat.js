@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import { spawn } from 'child_process';
+import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { db, stmts } from './db.js';
 import config, { buildSpawnEnv } from './config.js';
@@ -130,6 +131,14 @@ function persistLastRun(kind, id, when = new Date()) {
  */
 export function runClaude(prompt, cwd, systemPrompt, options = {}) {
   return new Promise((resolve, reject) => {
+    if (!existsSync(cwd)) {
+      return reject(
+        new Error(
+          `Working directory does not exist: "${cwd}" — update the cwd in agent/cron settings`,
+        ),
+      );
+    }
+
     const args = ['--print', '--permission-mode', 'bypassPermissions'];
     if (systemPrompt) {
       args.push('--system-prompt', systemPrompt);

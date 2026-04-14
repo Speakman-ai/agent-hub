@@ -10,6 +10,7 @@ import { execSync, exec } from 'child_process';
 import { existsSync, mkdirSync, cpSync, rmSync, readdirSync, statSync, symlinkSync } from 'fs';
 import path from 'path';
 import { homedir } from 'os';
+import config from './config.js';
 
 const WORKSPACES_ROOT = path.join(homedir(), '.agent-hub', 'workspaces');
 
@@ -208,6 +209,15 @@ function copyFallback(projectCwd, destDir) {
  * @returns {string} Workspace directory path (or projectCwd as fallback)
  */
 export function getOrCreateProcessWorktree(projectCwd, processKey, installCommand) {
+  // Validate cwd exists — fall back to defaultCwd if it doesn't
+  if (!existsSync(projectCwd)) {
+    const fallback = config.defaultCwd || homedir();
+    console.warn(
+      `[Workspace] cwd does not exist: "${projectCwd}" — falling back to "${fallback}" for ${processKey}`,
+    );
+    projectCwd = fallback;
+  }
+
   if (!isGitRepo(projectCwd)) {
     return projectCwd;
   }
