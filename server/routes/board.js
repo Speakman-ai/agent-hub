@@ -266,6 +266,14 @@ export default function createBoardRoutes(deps) {
       sessionId,
       content: contextMessage,
       hookSpecificOutput: { sessionTitle: card.title },
+    }).catch((err) => {
+      console.error(`[Board Assign] handleChat failed for session ${sessionId}:`, err.message);
+      broadcast({
+        type: 'error',
+        agentId,
+        sessionId,
+        message: `Failed to start agent session: ${err.message}`,
+      });
     });
 
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });

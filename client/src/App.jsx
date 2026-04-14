@@ -106,6 +106,10 @@ export default function App() {
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
 
+  // Track when a session was explicitly navigated to (e.g. from kanban assign)
+  // so the agent-change useEffect doesn't overwrite it with a stale session ID.
+  const pendingSessionIdRef = useRef(null);
+
   const activeAgent = agents.find((a) => a.id === activeAgentId);
 
   // Auto-scroll — instant on initial load, smooth for live updates.
@@ -872,17 +876,27 @@ export default function App() {
   // Load sessions when agent changes
   useEffect(() => {
     if (!activeAgentId) return;
+    const targetSessionId = pendingSessionIdRef.current;
+    pendingSessionIdRef.current = null;
+
     api.getSessions(activeAgentId).then((data) => {
       setSessions(data);
-      if (data.length > 0) {
-        setActiveSessionId(data[0].id);
-        setSessionEngine(data[0].engine || activeAgent?.engine || 'claude-code');
-        setSessionModel(data[0].model || 'claude-opus-4-6');
-        setSessionWorktree(data[0].use_worktree !== 0);
+
+      // If we were explicitly navigated to a specific session (e.g. from kanban
+      // assign), honour that session ID instead of defaulting to the first one.
+      const target = targetSessionId
+        ? data.find((s) => s.id === targetSessionId) || data[0]
+        : data[0];
+
+      if (target) {
+        setActiveSessionId(target.id);
+        setSessionEngine(target.engine || activeAgent?.engine || 'claude-code');
+        setSessionModel(target.model || 'claude-opus-4-6');
+        setSessionWorktree(target.use_worktree !== 0);
         setGitWorktreeDetected(
-          data[0].git_worktree_detected != null ? data[0].git_worktree_detected === 1 : null,
+          target.git_worktree_detected != null ? target.git_worktree_detected === 1 : null,
         );
-        setSessionAskMode(data[0].ask_mode !== 0);
+        setSessionAskMode(target.ask_mode !== 0);
       } else {
         setActiveSessionId(null);
         setMessages([]);
@@ -1382,6 +1396,7 @@ export default function App() {
               agents={agents}
               refreshKey={kanbanRefreshKey}
               onNavigateToSession={(agentId, sessionId) => {
+                pendingSessionIdRef.current = sessionId;
                 setActiveAgentId(agentId);
                 setActiveSessionId(sessionId);
                 setCurrentView('chat');
