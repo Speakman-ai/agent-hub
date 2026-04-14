@@ -1,8 +1,8 @@
 /**
- * Ticket lifecycle notification message formatters.
+ * Notification message formatters.
  *
  * Pure functions that build notification titles and body text
- * for card-moved and PR-merged WebSocket events.
+ * for card-moved, PR-merged, and session-complete WebSocket events.
  */
 
 /**
@@ -33,4 +33,21 @@ export function cardReviewNotification({ cardTitle, assignee }) {
 export function prMergedNotification({ cardTitle, prNumber, mergedBy }) {
   const body = `PR #${prNumber} merged${mergedBy ? ` by ${mergedBy}` : ''}: "${cardTitle}"`;
   return { title: 'PR Merged', body };
+}
+
+/**
+ * Build notification content for a completed agent session.
+ * @param {{ agentName: string, sessionName?: string, preview?: string }} data
+ * @returns {{ title: string, body: string }}
+ */
+export function sessionCompleteNotification({ agentName, sessionName, preview }) {
+  const title = `${agentName} — Done`;
+  const parts = [];
+  if (sessionName) parts.push(`"${sessionName}"`);
+  if (preview) {
+    const trimmed = preview.length > 120 ? preview.substring(0, 120) + '…' : preview;
+    parts.push(trimmed);
+  }
+  const body = parts.join(' — ') || 'Session completed';
+  return { title, body };
 }

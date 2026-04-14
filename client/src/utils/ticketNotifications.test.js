@@ -3,6 +3,7 @@ import {
   cardStartedNotification,
   cardReviewNotification,
   prMergedNotification,
+  sessionCompleteNotification,
 } from './ticketNotifications.js';
 
 describe('cardStartedNotification', () => {
@@ -58,5 +59,58 @@ describe('prMergedNotification', () => {
   it('handles empty mergedBy string', () => {
     const result = prMergedNotification({ cardTitle: 'Task', prNumber: 1, mergedBy: '' });
     expect(result.body).toBe('PR #1 merged: "Task"');
+  });
+});
+
+describe('sessionCompleteNotification', () => {
+  it('formats with agent name, session name, and preview', () => {
+    const result = sessionCompleteNotification({
+      agentName: 'Hub Frontend',
+      sessionName: 'Fix sidebar bug',
+      preview: 'I fixed the sidebar overflow issue by adding overflow-hidden.',
+    });
+    expect(result.title).toBe('Hub Frontend — Done');
+    expect(result.body).toBe(
+      '"Fix sidebar bug" — I fixed the sidebar overflow issue by adding overflow-hidden.',
+    );
+  });
+
+  it('formats with only agent name', () => {
+    const result = sessionCompleteNotification({ agentName: 'Hub Backend' });
+    expect(result.title).toBe('Hub Backend — Done');
+    expect(result.body).toBe('Session completed');
+  });
+
+  it('formats with agent name and session name only', () => {
+    const result = sessionCompleteNotification({
+      agentName: 'Hub Frontend',
+      sessionName: 'Add notifications',
+    });
+    expect(result.title).toBe('Hub Frontend — Done');
+    expect(result.body).toBe('"Add notifications"');
+  });
+
+  it('formats with agent name and preview only', () => {
+    const result = sessionCompleteNotification({
+      agentName: 'Hub Backend',
+      preview: 'Deployed to production successfully.',
+    });
+    expect(result.title).toBe('Hub Backend — Done');
+    expect(result.body).toBe('Deployed to production successfully.');
+  });
+
+  it('truncates long previews to 120 characters', () => {
+    const longPreview = 'A'.repeat(200);
+    const result = sessionCompleteNotification({
+      agentName: 'Agent',
+      preview: longPreview,
+    });
+    expect(result.body).toBe('A'.repeat(120) + '…');
+  });
+
+  it('does not truncate previews at exactly 120 characters', () => {
+    const exact = 'B'.repeat(120);
+    const result = sessionCompleteNotification({ agentName: 'Agent', preview: exact });
+    expect(result.body).toBe(exact);
   });
 });

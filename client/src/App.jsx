@@ -23,6 +23,7 @@ import {
   cardStartedNotification,
   cardReviewNotification,
   prMergedNotification,
+  sessionCompleteNotification,
 } from './utils/ticketNotifications.js';
 import {
   MessageCircle,
@@ -129,6 +130,10 @@ export default function App() {
   const scrollContainerRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
 
   // Track when a session was explicitly navigated to (e.g. from kanban assign)
   // so the agent-change useEffect doesn't overwrite it with a stale session ID.
@@ -399,7 +404,34 @@ export default function App() {
           setStreamingContent('');
           setStreamingMsgId(null);
           setStreamingEngine(null);
-          setMessages((prev) => [...prev, data.message]);
+          if (data.message) {
+            setMessages((prev) => [...prev, data.message]);
+          }
+        }
+        // Desktop notification + toast for completed background sessions
+        if (!forActiveSession && data.message) {
+          const session = sessionsRef.current.find((s) => s.id === data.sessionId);
+          const agent = session ? agentsRef.current.find((a) => a.id === session.agent_id) : null;
+          const agentName = agent?.name || 'Agent';
+          const preview =
+            typeof data.message.content === 'string'
+              ? data.message.content.replace(/\n+/g, ' ').trim()
+              : undefined;
+          const { title, body } = sessionCompleteNotification({
+            agentName,
+            sessionName: session?.name,
+            preview,
+          });
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: `session-done-${data.sessionId}-${Date.now()}`,
+              type: 'success',
+              message: body,
+              duration: 8000,
+            },
+          ]);
+          notify({ title, body, type: 'success' });
         }
         break;
       case 'session-updated':
