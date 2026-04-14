@@ -1,14 +1,5 @@
 import { useState, useRef } from 'react';
-import {
-  Building2,
-  BookOpen,
-  Settings,
-  Clock,
-  LayoutGrid,
-  FileText,
-  Eye,
-  Trash2,
-} from 'lucide-react';
+import { Building2, BookOpen, Settings, Clock, LayoutGrid, FileText, Trash2 } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
 
@@ -36,7 +27,6 @@ export default function Sidebar({
   onOpenProject,
   cronSessions = [],
   wikiProjectId,
-  activeBabysits = {},
   activeReviews = {},
   deletingSessionIds = new Set(),
   deletingBulk = null,
@@ -248,15 +238,6 @@ export default function Sidebar({
                               <span className="flex-1 truncate text-sm">
                                 {agent.name}
                                 {isLead && <span className="text-xs text-gray-600 ml-1">lead</span>}
-                                {activeBabysits[agent.id] && (
-                                  <span
-                                    className="inline-flex items-center gap-0.5 ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 animate-pulse"
-                                    title={`Babysitting ${activeBabysits[agent.id].repoSlug} #${activeBabysits[agent.id].prNumber}`}
-                                  >
-                                    <Eye size={10} className="flex-shrink-0" />
-                                    PR #{activeBabysits[agent.id].prNumber}
-                                  </span>
-                                )}
                                 {activeReviews[agent.name] && (
                                   <span
                                     className="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 animate-pulse"

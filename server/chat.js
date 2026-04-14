@@ -295,7 +295,7 @@ ${subAgentDescriptions}
  * Create the handleChat function with injected dependencies from index.js.
  *
  * @param {object} deps - Dependencies from index.js module state
- * @returns {{ handleChat: Function, saveErrorMessage: Function, createCursorChat: Function, maybeCreateBabysitCrons: Function }}
+ * @returns {{ handleChat: Function, saveErrorMessage: Function, createCursorChat: Function }}
  */
 export default function createChatHandler(deps) {
   const {
@@ -313,7 +313,6 @@ export default function createChatHandler(deps) {
     createCursorChat: _createCursorChat,
     ensureWorktree,
     drainQueue,
-    rescheduleCron,
     handleDelegation,
     handleDelegationCancel,
     synthesizeResults,
@@ -322,89 +321,6 @@ export default function createChatHandler(deps) {
     handleReviewOutcome,
     tryAutonomousDispatch,
   } = deps;
-
-  // ─── PR babysit cron auto-creation ──────────────────────────────
-  const PR_URL_RE = /https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/g;
-
-  /**
-   * Scan text for GitHub PR URLs and create babysit crons for any new ones.
-   */
-  function maybeCreateBabysitCrons(agent, text) {
-    if (!text) return;
-
-    const matches = [...text.matchAll(PR_URL_RE)];
-    if (matches.length === 0) return;
-
-    const existing = stmts.getCrons.all();
-    const seen = new Set();
-
-    for (const match of matches) {
-      const prUrl = match[0];
-      const repoSlug = match[1];
-      const prNumber = match[2];
-
-      if (seen.has(prUrl)) continue;
-      seen.add(prUrl);
-
-      const alreadyExists = existing.some(
-        (c) => c.prompt.includes(prUrl) && c.name.includes('[babysit]'),
-      );
-      if (alreadyExists) continue;
-
-      const cronName = `[babysit] ${repoSlug} #${prNumber}`;
-      const cronPrompt = `You are babysitting PR #${prNumber} on ${repoSlug}.
-PR URL: ${prUrl}
-
-## Check PR Status
-1. Run \`gh pr checks ${prNumber}\` to see CI/status check results.
-   - Look at the STATUS column for each check. Statuses are: pass, fail, pending, or blank (queued/not started).
-   - **IMPORTANT**: If ANY check shows "pending", is blank, or is not yet "pass"/"fail", the PR is NOT ready. Checks like Bugbot run asynchronously and may not appear immediately.
-2. Run the following to find unresolved review threads:
-   gh api graphql -f query='
-     query { repository(owner:"${repoSlug.split('/')[0]}", name:"${repoSlug.split('/')[1]}") {
-       pullRequest(number:${prNumber}) { reviewThreads(first:50) { nodes {
-         isResolved comments(first:3) { nodes { body author { login } } }
-       } } }
-     } }'
-3. Run \`gh pr view ${prNumber} --json state\` to check if it was merged/closed.
-
-## Actions
-- **If the PR was merged or closed**: Output exactly: BABYSIT_COMPLETE
-- **If any checks are still pending, queued, or in-progress**: Do NOT output BABYSIT_COMPLETE. Report the current status and wait for the next run. Pending checks (like Bugbot) may leave new comments that need addressing.
-- **If status checks are failing**: Diagnose the failure, fix the code, commit, and \`git push\`.
-- **If there are unresolved review comments**: Read the feedback, make the requested changes, commit, push, and reply to resolve the threads.
-- **If ALL checks show "pass" AND no checks are pending/queued AND no unresolved comments exist**: Output exactly: BABYSIT_COMPLETE
-
-## Rules
-- Do NOT merge the PR. Only fix issues and report readiness.
-- Be concise. Start with a one-line status summary.
-- A PR is only "green" when EVERY check has completed with "pass" — not merely when no checks have failed. Pending or missing checks mean "not ready yet".
-- Only output BABYSIT_COMPLETE when the PR is truly green (or merged/closed).`;
-
-      try {
-        const result = stmts.createCron.run(cronName, '*/10 * * * *', cronPrompt, agent.cwd, 1);
-        const cronId = result.lastInsertRowid;
-        const newCron = stmts.getCron.get(cronId);
-        if (newCron) {
-          rescheduleCron(newCron);
-          console.log(`[Babysit] Created cron "${cronName}" (id=${cronId}) for ${prUrl}`);
-
-          broadcast({
-            type: 'babysit_started',
-            cronId,
-            cronName,
-            prUrl,
-            repoSlug,
-            prNumber: parseInt(prNumber),
-            agentId: agent.id,
-            agentName: agent.name,
-          });
-        }
-      } catch (err) {
-        console.error(`[Babysit] Failed to create cron for ${prUrl}:`, err.message);
-      }
-    }
-  }
 
   // Persist an assistant error message so it survives client disconnects.
   function saveErrorMessage(sessionId, messageId, engine, model, errorText) {
@@ -998,19 +914,6 @@ PR URL: ${prUrl}
         }
       }
 
-      // ── Auto-babysit: scan tool outputs for new GitHub PR URLs ──
-      try {
-        const babysitCard = stmts.getKanbanCardBySession?.get(sessionId);
-        const isAutonomousCard = babysitCard?.epic_id
-          ? !!stmts.getKanbanEpic?.get(babysitCard.epic_id)?.autonomous
-          : false;
-        if (!isAutonomousCard) {
-          maybeCreateBabysitCrons(enrichedAgent, toolResultOutputs + '\n' + finalContent);
-        }
-      } catch (err) {
-        console.error('[Babysit] PR detection failed:', err.message);
-      }
-
       // ── Delegation detection ──
       if (agent.role === 'lead' && agent.subAgents?.length > 0) {
         const delegateTasks = parseDelegateBlock(finalContent);
@@ -1126,5 +1029,5 @@ PR URL: ${prUrl}
     });
   }
 
-  return { handleChat, saveErrorMessage, createCursorChat, maybeCreateBabysitCrons };
+  return { handleChat, saveErrorMessage, createCursorChat };
 }

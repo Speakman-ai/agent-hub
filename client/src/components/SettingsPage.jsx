@@ -1314,17 +1314,9 @@ function CronSection() {
     const pollId = setInterval(refresh, 60_000);
     const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
 
-    // When a babysit cron is cleaned up server-side, remove it from local state
-    const onBabysitCleaned = (e) => {
-      const { cronId } = e.detail;
-      if (cronId) setCrons((prev) => prev.filter((c) => c.id !== cronId));
-    };
-    window.addEventListener('babysit-cleaned', onBabysitCleaned);
-
     return () => {
       clearInterval(pollId);
       clearInterval(tickId);
-      window.removeEventListener('babysit-cleaned', onBabysitCleaned);
     };
   }, []);
 

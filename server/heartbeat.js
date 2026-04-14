@@ -14,12 +14,6 @@ const scheduledTasks = new Map();
 // Track which agents have a heartbeat currently running (prevent double-launch)
 const runningHeartbeats = new Set();
 
-// Optional callback for babysit-complete events (set by index.js).
-let onBabysitComplete = null;
-export function setOnBabysitComplete(fn) {
-  onBabysitComplete = fn;
-}
-
 // Optional callback for cron session updates (set by index.js).
 let onCronSessionUpdate = null;
 export function setOnCronSessionUpdate(fn) {
@@ -252,9 +246,7 @@ export async function runCronJob(cronJob) {
   const logId = logEntry.lastInsertRowid;
   const startTime = Date.now();
 
-  // Babysit crons do real work (diagnose, fix, commit, push) — give them more time
-  const isBabysit = cronJob.name.includes('[babysit]');
-  const timeoutMs = isBabysit ? config.babysitTimeoutMs : config.defaultTimeoutMs;
+  const timeoutMs = config.defaultTimeoutMs;
 
   try {
     const cronCwd = getOrCreateProcessWorktree(cronJob.cwd, `cron-${cronJob.id}`);
@@ -302,46 +294,8 @@ export async function runCronJob(cronJob) {
       console.error(`[Cron] Failed to save session/push for "${cronJob.name}":`, err.message);
     }
 
-    // ── Babysit auto-termination ────────────────────────────────
-    // If this is a [babysit] cron and the agent reported completion,
-    // delete the cron, stop its scheduler, and notify connected clients.
-    if (cronJob.name.includes('[babysit]') && result.includes('BABYSIT_COMPLETE')) {
-      console.log(`[Babysit] PR is green — deleting cron "${cronJob.name}" (id=${cronJob.id})`);
-      try {
-        // Stop the in-memory scheduled task first
-        rescheduleCron({ ...cronJob, enabled: false });
-        // Delete the cron row (cascade-deletes its logs)
-        stmts.deleteCron.run(cronJob.id);
-      } catch (err) {
-        console.error(`[Babysit] Failed to clean up cron ${cronJob.id}:`, err.message);
-      }
-
-      // Extract PR info from cron name for the notification
-      const prMatch = cronJob.name.match(/\[babysit\]\s+(.+?)\s+#(\d+)/);
-      const prInfo = prMatch ? { repoSlug: prMatch[1], prNumber: parseInt(prMatch[2]) } : {};
-
-      // Notify via Slack
-      if (SLACK_WEBHOOK_URL) {
-        await notifySlack(
-          `Babysit Complete`,
-          `PR ${prInfo.repoSlug || ''}#${prInfo.prNumber || '?'} is green and ready to merge.\n${result.substring(0, 500)}`,
-        ).catch(() => {});
-      }
-
-      // Notify connected clients via callback
-      if (onBabysitComplete) {
-        onBabysitComplete({
-          cronId: cronJob.id,
-          cronName: cronJob.name,
-          repoSlug: prInfo.repoSlug,
-          prNumber: prInfo.prNumber,
-          result: result.substring(0, 1000),
-        });
-      }
-    }
-
     // Notify for cron results too
-    if (SLACK_WEBHOOK_URL && !cronJob.name.includes('[babysit]')) {
+    if (SLACK_WEBHOOK_URL) {
       const lowerResult = result.toLowerCase();
       const allClear = ['no open', 'nothing to', 'all clear', 'no dependabot'].some((p) =>
         lowerResult.includes(p),
@@ -438,18 +392,6 @@ export function scheduleAll(agents) {
         stmts.deleteHeartbeatState.run(agent.id);
       } catch {}
     }
-  }
-
-  // Clean up disabled babysit crons left over from previous runs.
-  // These are ephemeral — once done, they should be deleted.
-  try {
-    const stale = stmts.getCrons.all().filter((c) => !c.enabled && c.name.includes('[babysit]'));
-    for (const c of stale) {
-      stmts.deleteCron.run(c.id);
-      console.log(`[Babysit] Cleaned up stale disabled cron "${c.name}" (id=${c.id})`);
-    }
-  } catch (err) {
-    console.error('[Babysit] Stale cleanup failed:', err.message);
   }
 
   // Schedule standalone crons

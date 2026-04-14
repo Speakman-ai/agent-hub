@@ -87,11 +87,9 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(false);
   // Loading state — true until org/switch + project load completes
   const [initializing, setInitializing] = useState(true);
-  // Active babysit PRs: Map of agentId -> { cronId, prNumber, repoSlug }
-  const [activeBabysits, setActiveBabysits] = useState({});
   // Active lead reviews: Map of agentId -> { prUrl, cardTitle, sessionId }
   const [activeReviews, setActiveReviews] = useState({});
-  // Toast notifications (e.g., babysit events)
+  // Toast notifications
   const [toasts, setToasts] = useState([]);
   // Kanban board refresh trigger
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
@@ -562,36 +560,6 @@ export default function App() {
         }
         break;
 
-      // ─── Babysit notifications ─────────────────────────────
-      case 'babysit-snapshot': {
-        // Rebuild babysit map from server snapshot on connect.
-        const next = {};
-        for (const b of data.babysits || []) {
-          next[b.agentId] = { cronId: b.cronId, prNumber: b.prNumber, repoSlug: b.repoSlug };
-        }
-        setActiveBabysits(next);
-        break;
-      }
-      case 'babysit_started': {
-        if (data.agentId) {
-          setActiveBabysits((prev) => ({
-            ...prev,
-            [data.agentId]: {
-              cronId: data.cronId,
-              prNumber: data.prNumber,
-              repoSlug: data.repoSlug,
-            },
-          }));
-        }
-        const toast = {
-          id: `babysit-start-${Date.now()}`,
-          type: 'info',
-          message: `Babysitting ${data.repoSlug}#${data.prNumber} — watching until green`,
-          duration: 8000,
-        };
-        setToasts((prev) => [...prev, toast]);
-        break;
-      }
       case 'sessions_resuming': {
         const count = data.count || 0;
         const toast = {
@@ -631,35 +599,6 @@ export default function App() {
         window.dispatchEvent(new CustomEvent('task-complete', { detail: data }));
         break;
       }
-      case 'babysit_complete': {
-        // Remove the babysit entry for the agent whose cron just completed.
-        if (data.cronId) {
-          setActiveBabysits((prev) => {
-            const next = { ...prev };
-            for (const [agentId, info] of Object.entries(next)) {
-              if (info.cronId === data.cronId) {
-                delete next[agentId];
-                break;
-              }
-            }
-            return next;
-          });
-        }
-        const toast = {
-          id: `babysit-done-${Date.now()}`,
-          type: 'success',
-          message: `${data.repoSlug}#${data.prNumber} is green and ready to merge!`,
-          duration: 15000,
-        };
-        setToasts((prev) => [...prev, toast]);
-        // Babysit cron has been deleted server-side — notify settings page
-        // by dispatching a custom event that SettingsPage can listen for.
-        window.dispatchEvent(
-          new CustomEvent('babysit-cleaned', { detail: { cronId: data.cronId } }),
-        );
-        break;
-      }
-
       // ── Message queue events ────────────────────────────────────
       case 'queue_updated':
         setMessageQueues((prev) => ({
@@ -1315,7 +1254,6 @@ export default function App() {
             onOpenProject={() => setShowWizard(true)}
             cronSessions={cronSessions}
             wikiProjectId={wikiProjectId}
-            activeBabysits={activeBabysits}
             activeReviews={activeReviews}
           />
         </div>
@@ -1542,7 +1480,7 @@ export default function App() {
           />
         )}
 
-        {/* Toast notifications (babysit events, etc.) */}
+        {/* Toast notifications */}
         {toasts.length > 0 && (
           <div className="fixed top-4 right-4 z-[60] flex flex-col gap-2 max-w-sm">
             {toasts.map((toast) => (

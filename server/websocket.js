@@ -114,42 +114,6 @@ export default function createWebSocket(server, deps) {
       }
     } catch {}
 
-    // Send snapshot of active babysit crons so the client can show indicators.
-    try {
-      const allCrons = stmts.getCrons.all();
-      const babysitCrons = allCrons.filter((c) => c.enabled && c.name.includes('[babysit]'));
-      if (babysitCrons.length > 0) {
-        const projects = getProjects();
-        const babysits = babysitCrons
-          .map((c) => {
-            const match = c.name.match(/\[babysit\]\s+(.+?)\s+#(\d+)/);
-            // Find the agent by matching cwd
-            let agentId = null;
-            let agentName = null;
-            for (const p of projects) {
-              const ag = p.agents.find((a) => a.cwd === c.cwd);
-              if (ag) {
-                agentId = ag.id;
-                agentName = ag.name;
-                break;
-              }
-            }
-            return {
-              cronId: c.id,
-              cronName: c.name,
-              repoSlug: match ? match[1] : '',
-              prNumber: match ? parseInt(match[2]) : 0,
-              agentId,
-              agentName,
-            };
-          })
-          .filter((b) => b.agentId); // only include those we can map to an agent
-        if (babysits.length > 0) {
-          ws.send(JSON.stringify({ type: 'babysit-snapshot', babysits }));
-        }
-      }
-    } catch {}
-
     ws.on('message', (raw) => {
       let msg;
       try {
