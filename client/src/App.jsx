@@ -51,6 +51,8 @@ export default function App() {
   const [currentView, setCurrentView] = useState('chat');
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [deletingSessionIds, setDeletingSessionIds] = useState(new Set());
+  const [deletingBulk, setDeletingBulk] = useState(null); // 'all' | 'inactive' | null
   // Map of sessionId -> running task state ({messageId, content, engine, model}).
   // Populated from the server's snapshot on connect and updated as stream events arrive.
   // Used to (a) restore streaming state when switching sessions and (b) power the
@@ -1071,34 +1073,53 @@ export default function App() {
   };
 
   const handleDeleteSession = async (sessionId) => {
-    await api.deleteSession(sessionId);
-    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-    if (activeSessionId === sessionId) {
-      const remaining = sessions.filter((s) => s.id !== sessionId);
-      setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+    setDeletingSessionIds((prev) => new Set(prev).add(sessionId));
+    try {
+      await api.deleteSession(sessionId);
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      if (activeSessionId === sessionId) {
+        const remaining = sessions.filter((s) => s.id !== sessionId);
+        setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+      }
+    } finally {
+      setDeletingSessionIds((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
     }
   };
 
   const handleClearAllSessions = async () => {
     if (!activeAgentId) return;
-    const result = await api.clearAllSessions(activeAgentId);
-    if (result.ok) {
-      setSessions([]);
-      setActiveSessionId(null);
+    setDeletingBulk('all');
+    try {
+      const result = await api.clearAllSessions(activeAgentId);
+      if (result.ok) {
+        setSessions([]);
+        setActiveSessionId(null);
+      }
+    } finally {
+      setDeletingBulk(null);
     }
   };
 
   const handleClearInactiveSessions = async () => {
     if (!activeAgentId) return;
-    const activeIds = new Set(Object.keys(activeTasks));
-    const result = await api.clearInactiveSessions(activeAgentId);
-    if (result.ok) {
-      // Keep only sessions that had active tasks (server skipped them)
-      setSessions((prev) => prev.filter((s) => activeIds.has(s.id)));
-      if (activeSessionId && !activeIds.has(activeSessionId)) {
-        const remaining = sessions.filter((s) => activeIds.has(s.id));
-        setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+    setDeletingBulk('inactive');
+    try {
+      const activeIds = new Set(Object.keys(activeTasks));
+      const result = await api.clearInactiveSessions(activeAgentId);
+      if (result.ok) {
+        // Keep only sessions that had active tasks (server skipped them)
+        setSessions((prev) => prev.filter((s) => activeIds.has(s.id)));
+        if (activeSessionId && !activeIds.has(activeSessionId)) {
+          const remaining = sessions.filter((s) => activeIds.has(s.id));
+          setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+        }
       }
+    } finally {
+      setDeletingBulk(null);
     }
   };
 
@@ -1272,6 +1293,8 @@ export default function App() {
             onDeleteSession={handleDeleteSession}
             onClearAllSessions={handleClearAllSessions}
             onClearInactiveSessions={handleClearInactiveSessions}
+            deletingSessionIds={deletingSessionIds}
+            deletingBulk={deletingBulk}
             onRenameSession={handleRenameSession}
             onNavigate={(view, extra) => {
               setCurrentView(view);

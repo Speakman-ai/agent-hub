@@ -38,6 +38,8 @@ export default function Sidebar({
   wikiProjectId,
   activeBabysits = {},
   activeReviews = {},
+  deletingSessionIds = new Set(),
+  deletingBulk = null,
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [hoveredRoom, setHoveredRoom] = useState(null);
@@ -349,7 +351,11 @@ export default function Sidebar({
                                           <span className="truncate">{session.name}</span>
                                         </button>
                                       )}
-                                      {hoveredSession === session.id && !isEditing && (
+                                      {deletingSessionIds.has(session.id) ? (
+                                        <span className="pr-2 text-gray-500 text-xs animate-spin">
+                                          ⟳
+                                        </span>
+                                      ) : hoveredSession === session.id && !isEditing ? (
                                         <button
                                           onClick={(e) => {
                                             e.stopPropagation();
@@ -360,7 +366,7 @@ export default function Sidebar({
                                         >
                                           ✕
                                         </button>
-                                      )}
+                                      ) : null}
                                     </div>
                                   );
                                 })}
@@ -375,17 +381,25 @@ export default function Sidebar({
                                     <div className="ml-auto flex items-center gap-0.5 pr-1">
                                       <button
                                         onClick={() => setConfirmAction('clear-inactive')}
-                                        className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors"
+                                        disabled={!!deletingBulk}
+                                        className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                         title="Clear inactive sessions"
                                       >
-                                        Clear idle
+                                        {deletingBulk === 'inactive' ? '...' : 'Clear idle'}
                                       </button>
                                       <button
                                         onClick={() => setConfirmAction('clear-all')}
-                                        className="text-gray-600 hover:text-red-400 p-0.5 rounded transition-colors"
+                                        disabled={!!deletingBulk}
+                                        className="text-gray-600 hover:text-red-400 p-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                         title="Clear all sessions"
                                       >
-                                        <Trash2 size={12} />
+                                        {deletingBulk === 'all' ? (
+                                          <span className="text-xs animate-spin inline-block">
+                                            ⟳
+                                          </span>
+                                        ) : (
+                                          <Trash2 size={12} />
+                                        )}
                                       </button>
                                     </div>
                                   )}
@@ -406,23 +420,26 @@ export default function Sidebar({
                                         Cancel
                                       </button>
                                       <button
-                                        onClick={() => {
+                                        onClick={async () => {
                                           if (confirmAction === 'clear-all') {
-                                            onClearAllSessions();
+                                            await onClearAllSessions();
                                           } else {
-                                            onClearInactiveSessions();
+                                            await onClearInactiveSessions();
                                           }
                                           setConfirmAction(null);
                                         }}
-                                        className={`text-xs px-2 py-1 rounded transition-colors ${
+                                        disabled={!!deletingBulk}
+                                        className={`text-xs px-2 py-1 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
                                           confirmAction === 'clear-all'
                                             ? 'bg-red-600 hover:bg-red-500 text-white'
                                             : 'bg-amber-600 hover:bg-amber-500 text-white'
                                         }`}
                                       >
-                                        {confirmAction === 'clear-all'
-                                          ? 'Delete All'
-                                          : 'Delete Idle'}
+                                        {deletingBulk
+                                          ? 'Deleting...'
+                                          : confirmAction === 'clear-all'
+                                            ? 'Delete All'
+                                            : 'Delete Idle'}
                                       </button>
                                     </div>
                                   </div>

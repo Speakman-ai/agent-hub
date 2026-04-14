@@ -36,6 +36,9 @@ ahw/
 server/uploads/
 .agent-hub-images/
 
+# Claude Code local settings (session-specific, may contain hooks/keys)
+.claude/settings.json
+
 # OS files
 .DS_Store
 Thumbs.db
