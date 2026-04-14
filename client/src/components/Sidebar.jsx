@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Building2,
   BookOpen,
@@ -9,7 +9,9 @@ import {
   Trash2,
   GitFork,
   List,
+  AlertTriangle,
 } from 'lucide-react';
+import { getServerBase } from '../utils/connection.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
 
@@ -52,7 +54,18 @@ export default function Sidebar({
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingSessionName, setEditingSessionName] = useState('');
   const [confirmAction, setConfirmAction] = useState(null); // 'clear-all' | 'clear-inactive' | null
+  const [serverVersion, setServerVersion] = useState(null);
   const renameSavedRef = useRef(false);
+
+  const clientVersion = import.meta.env.VITE_APP_VERSION || 'unknown';
+
+  useEffect(() => {
+    const base = getServerBase();
+    fetch(`${base}/api/health`)
+      .then((r) => r.json())
+      .then((data) => setServerVersion(data.version || null))
+      .catch(() => setServerVersion(null));
+  }, []);
 
   const toggleProjectCollapse = (projectId, e) => {
     e.stopPropagation();
@@ -641,6 +654,19 @@ export default function Sidebar({
             <span>Settings</span>
           </span>
         </button>
+        {/* Version display */}
+        <div className="px-3 pt-2 text-xs text-gray-500 flex items-center gap-1.5">
+          <span>v{clientVersion}</span>
+          {serverVersion && serverVersion !== clientVersion && (
+            <span
+              className="inline-flex items-center gap-1 text-amber-400"
+              title={`Client v${clientVersion} · Server v${serverVersion}`}
+            >
+              <AlertTriangle size={12} />
+              <span>server v{serverVersion}</span>
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

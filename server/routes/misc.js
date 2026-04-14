@@ -1,8 +1,14 @@
 import { Router } from 'express';
-import { statSync, readdirSync } from 'fs';
+import { statSync, readdirSync, readFileSync } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { db } from '../db.js';
 import { getSlackStatus, restartSlack, getSlackMessages, getAllSlackMessages } from '../slack.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const serverVersion = JSON.parse(
+  readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8'),
+).version;
 
 /**
  * Health check router — mount BEFORE auth middleware.
@@ -14,7 +20,7 @@ export function createHealthRoute(deps) {
   router.get('/api/health', (_req, res) => {
     res.json({
       status: 'ok',
-      version: '1.0.0',
+      version: serverVersion,
       uptime: process.uptime(),
       projects: getProjects().length,
       agents: allAgents().length,

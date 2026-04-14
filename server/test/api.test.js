@@ -35,6 +35,11 @@ describe('GET /api/health', () => {
     expect(res.body).toHaveProperty('projects');
     expect(res.body).toHaveProperty('agents');
   });
+
+  it('returns version from package.json', async () => {
+    const res = await request.get('/api/health').expect(200);
+    expect(res.body.version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
