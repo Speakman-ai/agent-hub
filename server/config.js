@@ -6,35 +6,59 @@
  *
  * Resolution order (highest wins):
  *   1. Environment variables  (e.g. CLAUDE_BIN, AGENT_HUB_PORT)
- *   2. config.json file       (server/config.json — gitignored, portable)
+ *   2. config.json file       (~/.agent-hub/data/config.json)
  *   3. Built-in defaults      (below)
  *
+ * All app state lives under ~/.agent-hub/:
+ *   - data/          → agent-hub.db, projects.json, config.json
+ *   - projects/      → per-project context files and skills
+ *   - workspaces/    → git worktrees (ephemeral)
+ *
  * To move Agent Hub to another machine:
- *   1. Copy (or export) config.json + agents.json + agent-hub.db
- *   2. Move your agent directories wherever you like
- *   3. Update `agentsDir` / binary paths in config.json
- *   4. Sign into Claude Code / Cursor CLI manually
+ *   1. Copy ~/.agent-hub/ to the new machine
+ *   2. Update CLI binary paths in config.json if they differ
+ *   3. Sign into Claude Code / Cursor CLI manually
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, copyFileSync, cpSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
+// ─── Data directory ─────────────────────────────────────────────
+// Default to ~/.agent-hub/data — all persistent state lives here.
+const DEFAULT_DATA_DIR = path.join(HOME, '.agent-hub', 'data');
+const DATA_DIR = process.env.AGENT_HUB_DATA_DIR || DEFAULT_DATA_DIR;
+
+// Ensure the data directory exists on first run.
+mkdirSync(DATA_DIR, { recursive: true });
+
 // ─── Load optional config.json ───────────────────────────────────
-// Prefer the data-dir copy (writable, persists across app reinstalls).
-// Fall back to the bundled copy in this directory for dev.
-const DATA_DIR = process.env.AGENT_HUB_DATA_DIR || __dirname;
+// Priority: DATA_DIR/config.json → server/config.json (legacy) → defaults.
+// If config.json only exists in the legacy location (server/), auto-migrate
+// it to DATA_DIR so all state consolidates under ~/.agent-hub/.
 export const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
+const LEGACY_CONFIG_PATH = path.join(__dirname, 'config.json');
+
+// Auto-migrate: copy legacy config.json into the data directory.
+if (!existsSync(CONFIG_PATH) && existsSync(LEGACY_CONFIG_PATH)) {
+  try {
+    copyFileSync(LEGACY_CONFIG_PATH, CONFIG_PATH);
+    console.log(`[config] Migrated config.json → ${CONFIG_PATH}`);
+  } catch {
+    // Non-fatal — we'll still read from the legacy path below.
+  }
+}
+
 let fileConfig = {};
 try {
   fileConfig = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
 } catch {
-  // Try the bundled copy as a fallback (dev or first run in prod).
+  // Fall back to legacy location (dev setup or failed migration).
   try {
-    fileConfig = JSON.parse(readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
+    fileConfig = JSON.parse(readFileSync(LEGACY_CONFIG_PATH, 'utf-8'));
   } catch {
     // No config.json anywhere — defaults will be used.
   }
@@ -55,6 +79,22 @@ function resolveInt(envKey, fileKey, fallback) {
   return Number.isNaN(n) ? fallback : n;
 }
 
+// ─── Auto-migrate legacy projects directory ─────────────────────
+// If ~/.openclaw/projects exists but ~/.agent-hub/projects doesn't,
+// copy the directory so project context files (SOUL.md, skills, etc.)
+// aren't silently lost after the rename.
+const DEFAULT_PROJECTS_DIR = path.join(HOME, '.agent-hub', 'projects');
+const LEGACY_PROJECTS_DIR = path.join(HOME, '.openclaw', 'projects');
+
+if (!existsSync(DEFAULT_PROJECTS_DIR) && existsSync(LEGACY_PROJECTS_DIR)) {
+  try {
+    cpSync(LEGACY_PROJECTS_DIR, DEFAULT_PROJECTS_DIR, { recursive: true });
+    console.log(`[config] Migrated projects dir → ${DEFAULT_PROJECTS_DIR}`);
+  } catch (err) {
+    console.warn(`[config] Failed to migrate projects dir: ${err.message}`);
+  }
+}
+
 // ─── Exported config object ──────────────────────────────────────
 
 const config = {
@@ -70,14 +110,14 @@ const config = {
   /** Fallback cwd when an agent has no cwd set */
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME),
 
-  /** Where data files live (projects.json, db, etc.) */
-  dataDir: resolve('AGENT_HUB_DATA_DIR', 'dataDir', __dirname),
+  /** Where data files live (projects.json, db, config.json, etc.) */
+  dataDir: resolve('AGENT_HUB_DATA_DIR', 'dataDir', DEFAULT_DATA_DIR),
 
-  /** Base directory for project ahw directories */
+  /** Base directory for project context files (SOUL.md, skills, etc.) */
   projectsDir: resolve(
     'AGENT_HUB_PROJECTS_DIR',
     'projectsDir',
-    path.join(HOME, '.openclaw', 'projects'),
+    path.join(HOME, '.agent-hub', 'projects'),
   ),
 
   // ── Models ─────────────────────────────────────────────────────

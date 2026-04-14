@@ -25,7 +25,7 @@ server/slack-config.json.ready
 # Backup files
 server/*-backup.json
 
-# Instance-specific config (contains local paths)
+# Instance-specific config (legacy location — now lives in ~/.agent-hub/data/)
 server/config.json
 server/projects.json
 
@@ -43,3 +43,6 @@ Thumbs.db
 release/
 server/connection.json
 server/server.log
+
+# Claude Code instance-specific settings
+.claude/settings.json

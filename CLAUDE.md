@@ -28,7 +28,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Express.js** backend with WebSocket support for real-time chat
 - **SQLite database** (`better-sqlite3`) for sessions, messages, heartbeats, crons
 - **Project→Agent hierarchy** - Projects are top-level entities (with `cwd`, `ahw` workspace, color); each project contains one or more agents. Defined in `server/projects.json`.
-- **Centralized config** - `server/config.json` holds port, CLI binary paths (`claudeBin`, `cursorBin`), and `defaultCwd`. Edit here rather than hardcoding.
+- **Centralized config** - `~/.agent-hub/data/config.json` holds port, CLI binary paths (`claudeBin`, `cursorBin`), and `defaultCwd`. Falls back to `server/config.json` (legacy) if the data-dir copy doesn't exist. Edit here rather than hardcoding.
 - **Agent management** - CRUD operations for AI agent configurations
 - **Session management** - Persistent chat sessions with message history
 - **Heartbeat system** - Scheduled agent check-ins with configurable prompts
@@ -81,7 +81,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 
 ### Integration Points
 
-- **Claude Code CLI** and **Cursor Agent CLI** paths are configured in `server/config.json` (`claudeBin` / `cursorBin`). The committed defaults point at a Linux host (`/home/ryan/...`); update them for your local environment if running the server directly on this Mac.
+- **Claude Code CLI** and **Cursor Agent CLI** paths are configured in `~/.agent-hub/data/config.json` (`claudeBin` / `cursorBin`). Falls back to `server/config.json` if the data-dir copy doesn't exist. The built-in defaults point at `/usr/local/bin/claude`; update in config.json for your environment.
 - **Slack Bot Framework**: `@slack/bolt` for multi-agent Slack integration
 - **Cron Scheduling**: `node-cron` for automated task execution
 
