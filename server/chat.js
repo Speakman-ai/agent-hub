@@ -713,6 +713,20 @@ export default function createChatHandler(deps) {
         } catch {}
       }
 
+      // Detect worktree status from CLI status line (workspace.git_worktree)
+      if (event.type === 'system' && event.gitWorktree != null) {
+        try {
+          S.updateSessionGitWorktreeDetected.run(event.gitWorktree ? 1 : 0, sessionId);
+        } catch (err) {
+          console.warn('[chat] Failed to persist git_worktree_detected:', err.message);
+        }
+        broadcast({
+          type: 'session-worktree-detected',
+          sessionId,
+          gitWorktree: event.gitWorktree,
+        });
+      }
+
       if (event.type === 'tool_result' && event.output) {
         toolResultOutputs += '\n' + event.output;
       }

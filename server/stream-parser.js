@@ -103,6 +103,7 @@ function normalizeClaude(raw) {
             model: raw.model ?? null,
             cwd: raw.cwd ?? null,
             tools: Array.isArray(raw.tools) ? raw.tools : [],
+            gitWorktree: raw.workspace?.git_worktree ?? null,
           },
         ];
       }

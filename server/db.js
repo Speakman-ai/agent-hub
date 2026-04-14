@@ -420,6 +420,13 @@ function initDb(dataDir) {
     db.exec('ALTER TABLE sessions ADD COLUMN worktree_branch TEXT');
   }
 
+  // Migration: add git_worktree_detected to sessions (detected from CLI status line)
+  try {
+    db.prepare('SELECT git_worktree_detected FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN git_worktree_detected INTEGER NOT NULL DEFAULT 0');
+  }
+
   // Migration: add max_turns to rooms
   try {
     db.prepare('SELECT max_turns FROM rooms LIMIT 1').get();
@@ -689,6 +696,9 @@ function initDb(dataDir) {
     ),
     updateSessionWorktreePath: db.prepare(
       "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionGitWorktreeDetected: db.prepare(
+      "UPDATE sessions SET git_worktree_detected = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionAskMode: db.prepare(
       "UPDATE sessions SET ask_mode = ?, updated_at = datetime('now') WHERE id = ?",

@@ -47,6 +47,7 @@ export default function App() {
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-6');
   const [sessionWorktree, setSessionWorktree] = useState(true);
+  const [gitWorktreeDetected, setGitWorktreeDetected] = useState(null); // null = unknown, true/false from CLI
   const [sessionAskMode, setSessionAskMode] = useState(false);
   const [currentView, setCurrentView] = useState('chat');
   const [showSwitcher, setShowSwitcher] = useState(false);
@@ -303,6 +304,17 @@ export default function App() {
         setSessions((prev) =>
           prev.map((s) => (s.id === data.session.id ? { ...s, name: data.session.name } : s)),
         );
+        break;
+      case 'session-worktree-detected':
+        // Update the session's git_worktree_detected flag from CLI status line
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === data.sessionId ? { ...s, git_worktree_detected: data.gitWorktree ? 1 : 0 } : s,
+          ),
+        );
+        if (forActiveSession) {
+          setGitWorktreeDetected(data.gitWorktree);
+        }
         break;
       case 'error':
         if (data.sessionId) {
@@ -793,6 +805,9 @@ export default function App() {
         setSessionEngine(data[0].engine || activeAgent?.engine || 'claude-code');
         setSessionModel(data[0].model || 'claude-opus-4-6');
         setSessionWorktree(data[0].use_worktree !== 0);
+        setGitWorktreeDetected(
+          data[0].git_worktree_detected != null ? data[0].git_worktree_detected === 1 : null,
+        );
         setSessionAskMode(data[0].ask_mode !== 0);
       } else {
         setActiveSessionId(null);
@@ -800,6 +815,7 @@ export default function App() {
         setSessionEngine(agents.find((a) => a.id === activeAgentId)?.engine || 'claude-code');
         setSessionModel('claude-opus-4-6');
         setSessionWorktree(true);
+        setGitWorktreeDetected(null);
         setSessionAskMode(false);
       }
     });
@@ -828,6 +844,9 @@ export default function App() {
       setSessionModel(session.model);
     }
     setSessionWorktree(session?.use_worktree !== 0);
+    setGitWorktreeDetected(
+      session?.git_worktree_detected != null ? session.git_worktree_detected === 1 : null,
+    );
     setSessionAskMode(session?.ask_mode !== 0);
   }, [activeSessionId, sessions]);
 
@@ -956,6 +975,7 @@ export default function App() {
     setSessionEngine(session.engine || activeAgent?.engine || 'claude-code');
     setSessionModel(session.model || 'claude-opus-4-6');
     setSessionWorktree(session.use_worktree !== 0);
+    setGitWorktreeDetected(null); // New session, not yet detected
     setSessionAskMode(session.ask_mode !== 0);
     setMessages([]);
     setCurrentView('chat');
@@ -1274,6 +1294,7 @@ export default function App() {
             messages={messages}
             activeSessionId={activeSessionId}
             sessionWorktree={sessionWorktree}
+            gitWorktreeDetected={gitWorktreeDetected}
             onWorktreeChange={handleWorktreeChange}
             sessionAskMode={sessionAskMode}
             onAskModeChange={handleAskModeChange}
