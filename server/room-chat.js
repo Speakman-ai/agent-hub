@@ -350,7 +350,7 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
           '--permission-mode',
           'bypassPermissions',
           '--model',
-          DEFAULT_MODEL,
+          agent.model || DEFAULT_MODEL,
           '--system-prompt',
           roomSystemPrompt,
           userPrompt,

@@ -183,7 +183,7 @@ export async function handleDelegation(
             '--permission-mode',
             'bypassPermissions',
             '--model',
-            DEFAULT_MODEL,
+            subAgent.model || DEFAULT_MODEL,
             '--system-prompt',
             subPrompt,
             task.task,
@@ -318,7 +318,7 @@ export async function synthesizeResults(
 
   const assistantMsgId = uuidv4();
   const engine = 'claude-code';
-  const model = DEFAULT_MODEL;
+  const model = enrichedAgent?.model || DEFAULT_MODEL;
 
   // Build synthesis prompt with all results
   const resultsSummary = results

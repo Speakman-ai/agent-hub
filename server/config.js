@@ -129,7 +129,7 @@ const config = {
   },
 
   engineValidModels: fileConfig.engineValidModels || {
-    'claude-code': ['claude-opus-4-6', 'claude-sonnet-4-6'],
+    'claude-code': ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-6'],
     'cursor-agent': [
       'gpt-5.3-codex-high',
       'gpt-5.3-codex',
