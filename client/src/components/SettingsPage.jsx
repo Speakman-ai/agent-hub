@@ -1297,12 +1297,20 @@ function GitHubSection({ projects = [], onProjectsChange }) {
   const [saving, setSaving] = useState({});
   const [saveStatus, setSaveStatus] = useState({});
 
+  // CLI auth status
+  const [ghStatus, setGhStatus] = useState(null);
+  const [ghStatusLoading, setGhStatusLoading] = useState(true);
+
   // Per-project workflow state
   const [projectWorkflow, setProjectWorkflow] = useState({});
   const [projectReviewers, setProjectReviewers] = useState({});
   const [workflowSaved, setWorkflowSaved] = useState({});
   const [reviewerSaved, setReviewerSaved] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
+
+  // Per-project repo test
+  const [repoTesting, setRepoTesting] = useState({});
+  const [repoTestResult, setRepoTestResult] = useState({});
 
   useEffect(() => {
     api
@@ -1313,6 +1321,12 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         setLoading(false);
       })
       .catch(() => setLoading(false));
+    // Fetch CLI auth status
+    fetch(`${getApiBase()}/github/status`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then(setGhStatus)
+      .catch(() => setGhStatus({ authenticated: false, error: 'Failed to check' }))
+      .finally(() => setGhStatusLoading(false));
   }, []);
 
   // Init per-project state when projects arrive
@@ -1382,6 +1396,61 @@ function GitHubSection({ projects = [], onProjectsChange }) {
     }
   };
 
+  const testProjectConnection = async (project) => {
+    // Detect repo from project cwd, then test the connection
+    setRepoTesting((prev) => ({ ...prev, [project.id]: true }));
+    setRepoTestResult((prev) => ({ ...prev, [project.id]: null }));
+    try {
+      const detectRes = await fetch(`${getApiBase()}/github/detect-repo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ cwd: project.cwd }),
+      });
+      const detect = await detectRes.json();
+      if (!detect.hasRemote || !detect.owner || !detect.repo) {
+        setRepoTestResult((prev) => ({
+          ...prev,
+          [project.id]: { ok: false, error: 'No GitHub remote found in project directory' },
+        }));
+        return;
+      }
+      const testRes = await fetch(`${getApiBase()}/github/test-connection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ owner: detect.owner, repo: detect.repo }),
+      });
+      const result = await testRes.json();
+      setRepoTestResult((prev) => ({
+        ...prev,
+        [project.id]: result.ok
+          ? {
+              ok: true,
+              detail: `${detect.owner}/${detect.repo} (${result.repoInfo.private ? 'private' : 'public'})`,
+            }
+          : { ok: false, error: result.error },
+      }));
+    } catch {
+      setRepoTestResult((prev) => ({
+        ...prev,
+        [project.id]: { ok: false, error: 'Request failed' },
+      }));
+    } finally {
+      setRepoTesting((prev) => ({ ...prev, [project.id]: false }));
+    }
+  };
+
+  const refreshGhStatus = async () => {
+    setGhStatusLoading(true);
+    try {
+      const r = await fetch(`${getApiBase()}/github/status`, { headers: getAuthHeaders() });
+      setGhStatus(await r.json());
+    } catch {
+      setGhStatus({ authenticated: false, error: 'Failed to check' });
+    } finally {
+      setGhStatusLoading(false);
+    }
+  };
+
   if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
   if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
 
@@ -1393,6 +1462,61 @@ function GitHubSection({ projects = [], onProjectsChange }) {
           Configure GitHub integration — bot authentication, webhook URLs, and per-project PR
           workflow settings.
         </p>
+      </div>
+
+      {/* CLI Auth Status */}
+      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-medium text-gray-300">CLI Authentication</h4>
+          <button
+            onClick={refreshGhStatus}
+            disabled={ghStatusLoading}
+            className="text-xs text-gray-400 hover:text-white transition-colors flex items-center gap-1"
+          >
+            <RefreshCw size={12} className={ghStatusLoading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
+        {ghStatusLoading ? (
+          <p className="text-xs text-gray-500">Checking gh CLI status...</p>
+        ) : ghStatus?.authenticated ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 size={14} className="text-emerald-400" />
+              <span className="text-sm text-emerald-300">
+                Authenticated as <span className="font-mono font-medium">{ghStatus.user}</span>
+              </span>
+            </div>
+            {ghStatus.scopes?.length > 0 && (
+              <div className="flex flex-wrap gap-1 pl-5">
+                {ghStatus.scopes.map((s) => (
+                  <span
+                    key={s}
+                    className="bg-gray-900 text-gray-400 px-2 py-0.5 rounded text-[10px] font-mono"
+                  >
+                    {s}
+                  </span>
+                ))}
+              </div>
+            )}
+            {ghStatus.botUser && (
+              <div className="flex items-center gap-2 pl-5">
+                <span className="text-xs text-gray-500">Bot account:</span>
+                <span className="text-xs font-mono text-gray-400">{ghStatus.botUser}</span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} className="text-amber-400" />
+            <span className="text-sm text-amber-300">
+              Not authenticated — run{' '}
+              <code className="bg-gray-900 px-1.5 py-0.5 rounded text-gray-300 text-xs">
+                gh auth login
+              </code>
+            </span>
+          </div>
+        )}
       </div>
 
       <GitHubAppSection config={config} setConfig={setConfig} />
@@ -1518,6 +1642,33 @@ function GitHubSection({ projects = [], onProjectsChange }) {
                       </button>
                     </div>
                   ))}
+
+                  {/* Test Connection */}
+                  <div className="pt-2 border-t border-gray-800">
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => testProjectConnection(p)}
+                        disabled={repoTesting[p.id]}
+                        className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                      >
+                        {repoTesting[p.id] ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <Plug size={12} />
+                        )}
+                        {repoTesting[p.id] ? 'Testing...' : 'Test Connection'}
+                      </button>
+                      {repoTestResult[p.id] && (
+                        <span
+                          className={`text-xs ${repoTestResult[p.id].ok ? 'text-emerald-400' : 'text-red-400'}`}
+                        >
+                          {repoTestResult[p.id].ok
+                            ? `Connected to ${repoTestResult[p.id].detail}`
+                            : repoTestResult[p.id].error}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

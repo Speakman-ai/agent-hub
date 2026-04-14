@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { promisify } from 'util';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import {
   getAppInfo,
@@ -412,6 +412,135 @@ export default function createConfigRoutes(deps) {
 
     console.log('[GitHub App] Configuration removed');
     res.json({ ok: true });
+  });
+
+  // ─── GitHub CLI Status & Repo Detection ────────────────────────────────────
+
+  /**
+   * GET /api/github/status — Check gh CLI auth status and return user info.
+   * Returns { authenticated, user, scopes } or { authenticated: false, error }.
+   */
+  router.get('/api/github/status', async (_req, res) => {
+    const execFileAsync = promisify(execFile);
+    try {
+      const { stdout: user } = await execFileAsync('gh', ['api', 'user', '--jq', '.login']);
+      // Get scopes from the token
+      let scopes = [];
+      try {
+        const { stdout: scopeOut, stderr: scopeErr } = await execFileAsync('gh', [
+          'api',
+          '-i',
+          'user',
+        ]);
+        const combined = scopeOut + scopeErr;
+        const scopeMatch = combined.match(/x-oauth-scopes:\s*(.+)/i);
+        if (scopeMatch) {
+          scopes = scopeMatch[1]
+            .trim()
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+        }
+      } catch {
+        /* scopes optional */
+      }
+      res.json({
+        authenticated: true,
+        user: user.trim(),
+        scopes,
+        // Also include GitHub App & bot status for unified view
+        githubApp: config.githubApp
+          ? {
+              appId: config.githubApp.appId,
+              appSlug: config.githubApp.appSlug || getGhAppSlug() || null,
+              hasInstallation: !!config.githubApp.installationId,
+            }
+          : null,
+        botUser: getGhBotUser() || null,
+      });
+    } catch (err) {
+      res.json({
+        authenticated: false,
+        error: 'GitHub CLI not authenticated. Run: gh auth login',
+      });
+    }
+  });
+
+  /**
+   * POST /api/github/detect-repo — Detect GitHub remote for a given directory.
+   * Body: { cwd: "/path/to/project" }
+   * Returns { hasRemote, owner, repo, url, defaultBranch } or { hasRemote: false }
+   */
+  router.post('/api/github/detect-repo', async (req, res) => {
+    const { cwd } = req.body;
+    if (!cwd) return res.status(400).json({ error: 'cwd is required' });
+
+    const execFileAsync = promisify(execFile);
+    try {
+      // Get remote URL
+      const { stdout: remoteUrl } = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
+        cwd,
+      });
+      const url = remoteUrl.trim();
+      if (!url) return res.json({ hasRemote: false });
+
+      // Parse owner/repo from various URL formats
+      let owner = null;
+      let repo = null;
+      const httpsMatch = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+      if (httpsMatch) {
+        owner = httpsMatch[1];
+        repo = httpsMatch[2].replace(/\.git$/, '');
+      }
+
+      // Get default branch
+      let defaultBranch = 'main';
+      try {
+        const { stdout: branch } = await execFileAsync(
+          'git',
+          ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+          { cwd },
+        );
+        defaultBranch = branch.trim().replace('refs/remotes/origin/', '');
+      } catch {
+        /* fallback to main */
+      }
+
+      res.json({ hasRemote: true, owner, repo, url, defaultBranch });
+    } catch {
+      res.json({ hasRemote: false });
+    }
+  });
+
+  /**
+   * POST /api/github/test-connection — Test GitHub connection for a given owner/repo.
+   * Body: { owner, repo }
+   * Returns { ok, repoInfo } or { ok: false, error }
+   */
+  router.post('/api/github/test-connection', async (req, res) => {
+    const { owner, repo } = req.body;
+    if (!owner || !repo) return res.status(400).json({ error: 'owner and repo are required' });
+
+    // Validate owner/repo to prevent injection via execFile args
+    const validName = /^[a-zA-Z0-9._-]+$/;
+    if (!validName.test(owner) || !validName.test(repo)) {
+      return res.status(400).json({ error: 'Invalid owner or repo name' });
+    }
+
+    const execFileAsync = promisify(execFile);
+    try {
+      const { stdout } = await execFileAsync('gh', [
+        'api',
+        `repos/${owner}/${repo}`,
+        '--jq',
+        '{ name: .name, full_name: .full_name, private: .private, default_branch: .default_branch, permissions: .permissions }',
+      ]);
+      const repoInfo = JSON.parse(stdout.trim());
+      res.json({ ok: true, repoInfo });
+    } catch (err) {
+      const msg = err.stderr?.split('\n')[0] || err.message?.split('\n')[0] || 'Connection failed';
+      res.json({ ok: false, error: msg });
+    }
   });
 
   // GET /api/projects/:projectId/export

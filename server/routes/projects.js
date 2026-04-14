@@ -647,6 +647,31 @@ export default function createProjectRoutes(deps) {
       }
     }
 
+    // Set up GitHub repo connection if provided during onboarding
+    if (projectData.githubRepo?.owner && projectData.githubRepo?.repo) {
+      const { owner, repo } = projectData.githubRepo;
+      const repoUrl = `https://github.com/${owner}/${repo}`;
+      const defaultEvents = JSON.stringify([
+        'pull_request.opened',
+        'pull_request.closed',
+        'pull_request.synchronize',
+        'pull_request_review.submitted',
+        'pull_request_review_comment.created',
+        'check_suite.completed',
+      ]);
+      try {
+        stmts.createWebhookConfig.run(
+          project.id,
+          repoUrl,
+          null, // secret — user can set later
+          defaultEvents,
+          1, // enabled
+        );
+      } catch (err) {
+        console.warn(`[Onboard] Failed to create webhook config: ${err.message}`);
+      }
+    }
+
     const projects = getProjects();
     projects.push(project);
     saveProjects();

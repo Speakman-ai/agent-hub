@@ -15,7 +15,7 @@ const COLOR_PRESETS = [
 
 const CONTEXT_FILE_TABS = ['SOUL.md', 'AGENTS.md', 'USER.md', 'TOOLS.md', 'MEMORY.md'];
 
-const STEP_LABELS = ['Select Folder', 'Analyze', 'Review & Create'];
+const STEP_LABELS = ['Select Folder', 'Analyze', 'GitHub', 'Review & Create'];
 
 function deriveNameFromPath(path) {
   return path.split('/').filter(Boolean).pop() || '';
@@ -129,7 +129,17 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
   const [analysisResult, setAnalysisResult] = useState(null);
   const [analysisError, setAnalysisError] = useState(null);
 
-  // Step 3 state
+  // Step 3 state — GitHub
+  const [ghStatus, setGhStatus] = useState(null); // { authenticated, user, scopes }
+  const [ghLoading, setGhLoading] = useState(false);
+  const [repoInfo, setRepoInfo] = useState(null); // { hasRemote, owner, repo, url }
+  const [repoOwner, setRepoOwner] = useState('');
+  const [repoName, setRepoName] = useState('');
+  const [testResult, setTestResult] = useState(null); // { ok, repoInfo } or { ok: false, error }
+  const [testing, setTesting] = useState(false);
+  const [skipGitHub, setSkipGitHub] = useState(false);
+
+  // Step 4 state
   const [selectedAgents, setSelectedAgents] = useState({});
   const [contextFiles, setContextFiles] = useState({});
   const [activeTab, setActiveTab] = useState('SOUL.md');
@@ -307,15 +317,73 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
     }
   }, [path]);
 
+  const detectGitHub = useCallback(async () => {
+    setGhLoading(true);
+    setGhStatus(null);
+    setRepoInfo(null);
+    setTestResult(null);
+    try {
+      // Check gh auth status
+      const statusRes = await fetch(`${getApiBase()}/github/status`, {
+        headers: getAuthHeaders(),
+      });
+      const status = await statusRes.json();
+      setGhStatus(status);
+
+      // Detect repo from directory
+      if (status.authenticated && path) {
+        const repoRes = await fetch(`${getApiBase()}/github/detect-repo`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ cwd: path }),
+        });
+        const repo = await repoRes.json();
+        setRepoInfo(repo);
+        if (repo.hasRemote && repo.owner && repo.repo) {
+          setRepoOwner(repo.owner);
+          setRepoName(repo.repo);
+        }
+      }
+    } catch {
+      setGhStatus({ authenticated: false, error: 'Failed to check GitHub status' });
+    } finally {
+      setGhLoading(false);
+    }
+  }, [path]);
+
+  const testGitHubConnection = useCallback(async () => {
+    if (!repoOwner || !repoName) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`${getApiBase()}/github/test-connection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ owner: repoOwner, repo: repoName }),
+      });
+      const result = await res.json();
+      setTestResult(result);
+    } catch {
+      setTestResult({ ok: false, error: 'Request failed' });
+    } finally {
+      setTesting(false);
+    }
+  }, [repoOwner, repoName]);
+
   const handleCreate = useCallback(async () => {
     setCreating(true);
     try {
       const agents = (analysisResult?.agents || []).filter((_, i) => selectedAgents[i]);
+      // Include GitHub config if user set it up
+      const githubConfig =
+        !skipGitHub && repoOwner && repoName
+          ? { githubRepo: { owner: repoOwner, repo: repoName } }
+          : {};
       const res = await fetch(`${getApiBase()}/projects/onboard`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
-          project: { id: projectId, name, cwd: path, color },
+          project: { id: projectId, name, cwd: path, color, ...githubConfig },
           agents,
           contextFiles,
           commands: analysisResult?.commands || null,
@@ -341,6 +409,9 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
     name,
     path,
     color,
+    skipGitHub,
+    repoOwner,
+    repoName,
     onProjectCreated,
     onClose,
   ]);
@@ -850,7 +921,10 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
                     Back
                   </button>
                   <button
-                    onClick={() => setStep(3)}
+                    onClick={() => {
+                      setStep(3);
+                      detectGitHub();
+                    }}
                     className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
                   >
                     Next
@@ -861,8 +935,160 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
           </div>
         )}
 
-        {/* Step 3: Review & Create */}
+        {/* Step 3: GitHub Connection */}
         {step === 3 && (
+          <div className="space-y-4">
+            {ghLoading ? (
+              <div className="flex items-center gap-3 py-8 justify-center">
+                <Spinner />
+                <span className="text-sm text-gray-400">Detecting GitHub configuration...</span>
+              </div>
+            ) : (
+              <>
+                {/* Auth Status */}
+                <div
+                  className={`rounded-lg p-4 border ${ghStatus?.authenticated ? 'bg-emerald-900/20 border-emerald-700/50' : 'bg-gray-800 border-gray-700'}`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <div
+                      className={`w-2 h-2 rounded-full ${ghStatus?.authenticated ? 'bg-emerald-400' : 'bg-gray-500'}`}
+                    />
+                    <span
+                      className={`text-sm font-medium ${ghStatus?.authenticated ? 'text-emerald-300' : 'text-gray-300'}`}
+                    >
+                      {ghStatus?.authenticated
+                        ? `Authenticated as ${ghStatus.user}`
+                        : 'GitHub CLI not authenticated'}
+                    </span>
+                  </div>
+                  {ghStatus?.authenticated && ghStatus.scopes?.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-2 pl-4">
+                      {ghStatus.scopes.map((s) => (
+                        <span
+                          key={s}
+                          className="bg-emerald-900/40 text-emerald-400 px-2 py-0.5 rounded text-[10px] font-mono"
+                        >
+                          {s}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {!ghStatus?.authenticated && (
+                    <div className="mt-2 pl-4">
+                      <p className="text-xs text-gray-500 mb-2">
+                        Run{' '}
+                        <code className="bg-gray-900 px-1.5 py-0.5 rounded text-gray-300">
+                          gh auth login
+                        </code>{' '}
+                        in your terminal to authenticate, then click Retry.
+                      </p>
+                      <button
+                        onClick={detectGitHub}
+                        className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+                      >
+                        Retry Detection
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Repo Connection */}
+                {ghStatus?.authenticated && (
+                  <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 space-y-3">
+                    <h4 className="text-sm font-medium text-gray-300">Repository Connection</h4>
+                    {repoInfo?.hasRemote && (
+                      <p className="text-xs text-gray-500">
+                        Detected remote:{' '}
+                        <span className="font-mono text-gray-400">{repoInfo.url}</span>
+                      </p>
+                    )}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Owner</label>
+                        <input
+                          type="text"
+                          value={repoOwner}
+                          onChange={(e) => {
+                            setRepoOwner(e.target.value);
+                            setTestResult(null);
+                          }}
+                          placeholder="org-or-user"
+                          className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Repository</label>
+                        <input
+                          type="text"
+                          value={repoName}
+                          onChange={(e) => {
+                            setRepoName(e.target.value);
+                            setTestResult(null);
+                          }}
+                          placeholder="repo-name"
+                          className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Test connection */}
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={testGitHubConnection}
+                        disabled={!repoOwner || !repoName || testing}
+                        className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+                      >
+                        {testing && <Spinner size={3} />}
+                        {testing ? 'Testing...' : 'Test Connection'}
+                      </button>
+                      {testResult && (
+                        <span
+                          className={`text-xs ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}
+                        >
+                          {testResult.ok
+                            ? `Connected — ${testResult.repoInfo.full_name} (${testResult.repoInfo.private ? 'private' : 'public'})`
+                            : testResult.error}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Actions */}
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setStep(2)}
+                className="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
+              >
+                Back
+              </button>
+              <button
+                onClick={() => {
+                  setSkipGitHub(true);
+                  setStep(4);
+                }}
+                className="text-gray-400 hover:text-gray-200 text-sm px-4 py-2 rounded-lg transition-colors"
+              >
+                Skip
+              </button>
+              <button
+                onClick={() => {
+                  setSkipGitHub(false);
+                  setStep(4);
+                }}
+                disabled={!ghStatus?.authenticated || (!repoOwner && !repoName)}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Review & Create */}
+        {step === 4 && (
           <div className="space-y-4">
             {/* Agent cards with checkboxes */}
             {analysisResult?.agents?.length > 0 && (
@@ -956,7 +1182,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
             <div className="flex gap-3 pt-1">
               <button
                 onClick={() => {
-                  setStep(2);
+                  setStep(3);
                   setAnalysisError(null);
                 }}
                 className="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors"
