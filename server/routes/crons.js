@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { rescheduleCron, runCronJob } from '../heartbeat.js';
+import { rescheduleCron, runCronJob, runWikiMemorySync } from '../heartbeat.js';
 import config from '../config.js';
 
 export default function createCronRoutes(deps) {
@@ -67,6 +67,14 @@ export default function createCronRoutes(deps) {
     res.json({ status: 'running' });
     runCronJob(cronJob).catch((err) => {
       console.error(`Manual cron run failed for "${cronJob.name}":`, err);
+    });
+  });
+
+  // ── Manual trigger for wiki → memory reconciliation ──────────────
+  router.post('/api/memory/reconcile', (_req, res) => {
+    res.json({ status: 'running' });
+    runWikiMemorySync().catch((err) => {
+      console.error('[Wiki→Memory Sync] Manual trigger failed:', err.message);
     });
   });
 

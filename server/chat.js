@@ -14,7 +14,7 @@ import { createStreamParser } from './stream-parser.js';
 import config, { defaultModelForEngine, buildSpawnEnv } from './config.js';
 import { resolveProjectPaths, contextFilePath } from './project-paths.js';
 import { getWikiContext } from './wiki.js';
-import { getMemoryContext, appendDailyNote } from './memory.js';
+import { getMemoryContext, appendDailyNote, reconcileMemoryAfterSession } from './memory.js';
 import { collectSkillsFromDir, DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
@@ -950,6 +950,15 @@ export default function createChatHandler(deps) {
             .then((summary) => {
               if (summary && summary.trim()) {
                 appendDailyNote(project.ahw, `**Session Summary** (${agent.name}):\n${summary}`);
+
+                // Post-session memory reconciliation — check if MEMORY.md needs updating
+                reconcileMemoryAfterSession(project.ahw, summary, {
+                  claudeBin: config.claudeBin,
+                  spawnEnv: buildSpawnEnv(config),
+                  cwd: project.cwd,
+                }).catch((err) => {
+                  console.error('[Memory Reconciliation] Post-session failed:', err.message);
+                });
               }
             })
             .catch((err) => {

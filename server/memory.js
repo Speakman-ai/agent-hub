@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import path from 'path';
+import { spawn } from 'child_process';
 
 function today() {
   return new Date().toISOString().split('T')[0];
@@ -148,4 +149,235 @@ export function getMemoryData(workspace) {
   }
 
   return { memory, dailyNotes };
+}
+
+// ─── Memory Reconciliation ─────────────────────────────────────────
+
+/**
+ * Spawn Claude in --print mode with a prompt and return the result.
+ * Lightweight helper used by reconciliation functions.
+ */
+function runClaudeForMemory(
+  prompt,
+  systemPrompt,
+  { claudeBin, spawnEnv, cwd, timeoutMs = 3 * 60 * 1000 },
+) {
+  return new Promise((resolve, reject) => {
+    const args = ['--print', '--permission-mode', 'bypassPermissions'];
+    if (systemPrompt) args.push('--system-prompt', systemPrompt);
+    args.push(prompt);
+
+    let output = '';
+    let errorOutput = '';
+
+    const proc = spawn(claudeBin, args, {
+      cwd: cwd || process.env.HOME,
+      env: spawnEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM');
+      reject(new Error('Memory reconciliation timed out'));
+    }, timeoutMs);
+
+    proc.stdout.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+    proc.stderr.on('data', (chunk) => {
+      errorOutput += chunk.toString();
+    });
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0 || output.trim()) {
+        resolve(output.trim());
+      } else {
+        reject(new Error(errorOutput || `Exited with code ${code}`));
+      }
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * Post-session memory reconciliation.
+ *
+ * After a session summary is written, this checks whether the session
+ * revealed anything that contradicts or is missing from MEMORY.md.
+ * If so, it produces an updated MEMORY.md and writes it.
+ *
+ * This is lightweight — it only fires when a session summary exists,
+ * and it uses --print mode (no interactive session cost).
+ *
+ * @param {string} workspace - The project's ahw workspace path
+ * @param {string} sessionSummary - The summary that was just generated
+ * @param {{ claudeBin: string, spawnEnv: object, cwd?: string }} opts
+ */
+export async function reconcileMemoryAfterSession(workspace, sessionSummary, opts) {
+  if (!workspace || !sessionSummary) return;
+
+  const memoryPath = path.join(workspace, 'MEMORY.md');
+  if (!existsSync(memoryPath)) return;
+
+  let currentMemory;
+  try {
+    currentMemory = readFileSync(memoryPath, 'utf-8');
+  } catch {
+    return;
+  }
+
+  if (!currentMemory.trim()) return;
+
+  const systemPrompt = [
+    'You are a memory file maintainer. You will receive the current MEMORY.md file and a session summary.',
+    'Your job is to check whether the session summary reveals any FACTS that contradict or are missing from MEMORY.md.',
+    '',
+    'Rules:',
+    '- Only update FACTUAL sections (e.g. "Key Decisions", "Project Structure", "Important Ports").',
+    '- Do NOT touch daily notes, session logs, or timestamps.',
+    '- Do NOT add session-specific details — those belong in daily notes, not long-term memory.',
+    '- If nothing needs changing, respond with exactly: NO_CHANGES_NEEDED',
+    '- If changes are needed, respond with the COMPLETE updated MEMORY.md content.',
+    '- Preserve the existing structure and formatting exactly.',
+    '- Be conservative — only change lines where you are confident the current info is wrong or outdated.',
+  ].join('\n');
+
+  const prompt = [
+    '## Current MEMORY.md',
+    '```',
+    currentMemory,
+    '```',
+    '',
+    '## Session Summary (just completed)',
+    '```',
+    sessionSummary,
+    '```',
+    '',
+    'Check if MEMORY.md needs factual corrections based on this session. Follow your instructions exactly.',
+  ].join('\n');
+
+  try {
+    const result = await runClaudeForMemory(prompt, systemPrompt, opts);
+    if (!result || result.includes('NO_CHANGES_NEEDED')) {
+      console.log('[Memory Reconciliation] No changes needed after session.');
+      return;
+    }
+
+    // Sanity check: result should look like a markdown file, not a chat response
+    if (result.length < 50 || result.length > currentMemory.length * 3) {
+      console.warn('[Memory Reconciliation] Skipping — result looks malformed.');
+      return;
+    }
+
+    updateMemory(workspace, result);
+    appendDailyNote(
+      workspace,
+      '**Memory Reconciliation** — MEMORY.md updated based on session findings.',
+    );
+    console.log('[Memory Reconciliation] MEMORY.md updated after session.');
+  } catch (err) {
+    console.error('[Memory Reconciliation] Failed:', err.message);
+  }
+}
+
+/**
+ * Full wiki-to-memory reconciliation.
+ *
+ * Reads all wiki pages for a project, compares against MEMORY.md,
+ * and asks Claude to produce an updated version that reflects the
+ * wiki's authoritative content.
+ *
+ * Intended to run on a schedule (e.g. daily cron) as a safety net.
+ *
+ * @param {string} workspace - The project's ahw workspace path
+ * @param {Array<{title: string, content: string, category: string}>} wikiPages
+ * @param {{ claudeBin: string, spawnEnv: object, cwd?: string }} opts
+ */
+export async function reconcileMemoryFromWiki(workspace, wikiPages, opts) {
+  if (!workspace || !wikiPages?.length) return;
+
+  const memoryPath = path.join(workspace, 'MEMORY.md');
+  if (!existsSync(memoryPath)) return;
+
+  let currentMemory;
+  try {
+    currentMemory = readFileSync(memoryPath, 'utf-8');
+  } catch {
+    return;
+  }
+
+  if (!currentMemory.trim()) return;
+
+  // Build a condensed wiki digest (titles + key content, capped to avoid token bloat)
+  const wikiDigest = wikiPages
+    .map((p) => {
+      const truncated =
+        p.content.length > 800 ? p.content.substring(0, 800) + '...(truncated)' : p.content;
+      return `### ${p.title} (${p.category})\n${truncated}`;
+    })
+    .join('\n\n');
+
+  // Cap total wiki content to ~15k chars
+  const cappedDigest =
+    wikiDigest.length > 15000
+      ? wikiDigest.substring(0, 15000) + '\n\n...(remaining pages truncated)'
+      : wikiDigest;
+
+  const systemPrompt = [
+    'You are a memory file maintainer. You will receive the current MEMORY.md and a digest of all wiki pages.',
+    'The wiki is the authoritative source of truth about this project.',
+    '',
+    'Your job:',
+    '1. Compare MEMORY.md against the wiki content.',
+    '2. Fix any facts in MEMORY.md that the wiki shows are wrong or outdated.',
+    '3. Add any important architectural facts from the wiki that are missing from MEMORY.md.',
+    '',
+    'Rules:',
+    '- Only update FACTUAL sections (e.g. "Key Decisions", "Project Structure", "Important Ports").',
+    '- Do NOT touch daily notes, session logs, timestamps, or "Unresolved" items.',
+    '- Do NOT copy wiki content verbatim — MEMORY.md should be a concise summary.',
+    '- Preserve the existing MEMORY.md structure and formatting.',
+    '- If nothing needs changing, respond with exactly: NO_CHANGES_NEEDED',
+    '- If changes are needed, respond with the COMPLETE updated MEMORY.md content.',
+    '- Be conservative — only change what you are confident is wrong.',
+  ].join('\n');
+
+  const prompt = [
+    '## Current MEMORY.md',
+    '```',
+    currentMemory,
+    '```',
+    '',
+    '## Wiki Pages (source of truth)',
+    cappedDigest,
+    '',
+    'Reconcile MEMORY.md against the wiki. Follow your instructions exactly.',
+  ].join('\n');
+
+  try {
+    const result = await runClaudeForMemory(prompt, systemPrompt, {
+      ...opts,
+      timeoutMs: 5 * 60 * 1000, // Allow more time for the full reconciliation
+    });
+    if (!result || result.includes('NO_CHANGES_NEEDED')) {
+      console.log('[Wiki→Memory Sync] No changes needed.');
+      return;
+    }
+
+    if (result.length < 50 || result.length > currentMemory.length * 3) {
+      console.warn('[Wiki→Memory Sync] Skipping — result looks malformed.');
+      return;
+    }
+
+    updateMemory(workspace, result);
+    appendDailyNote(workspace, '**Wiki→Memory Sync** — MEMORY.md reconciled against project wiki.');
+    console.log('[Wiki→Memory Sync] MEMORY.md updated from wiki.');
+  } catch (err) {
+    console.error('[Wiki→Memory Sync] Failed:', err.message);
+  }
 }

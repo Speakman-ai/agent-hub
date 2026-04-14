@@ -4,6 +4,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { db, stmts } from './db.js';
 import config, { buildSpawnEnv } from './config.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
+import { reconcileMemoryFromWiki } from './memory.js';
+import { listPages, getPage } from './wiki.js';
+import { getProjects } from './project-model.js';
 
 const CLAUDE_BIN = config.claudeBin;
 const SLACK_WEBHOOK_URL = config.slackWebhookUrl;
@@ -436,6 +439,16 @@ export function scheduleAll(agents) {
     }
   }
 
+  // ── Built-in: Wiki → Memory Sync (daily at 4am) ──────────────────
+  const WIKI_SYNC_SCHEDULE = '0 4 * * *'; // 4:00 AM daily
+  const wikiSyncTask = cron.schedule(WIKI_SYNC_SCHEDULE, () => {
+    runWikiMemorySync().catch((err) => {
+      console.error('[Wiki→Memory Sync] Scheduled run failed:', err.message);
+    });
+  });
+  scheduledTasks.set('system:wiki-memory-sync', wikiSyncTask);
+  console.log(`[Scheduler] Wiki→Memory sync scheduled: ${WIKI_SYNC_SCHEDULE}`);
+
   console.log(`[Scheduler] ${scheduledTasks.size} tasks scheduled`);
 
   // Fire catch-up runs after a short delay so the server has time to finish booting
@@ -451,6 +464,56 @@ export function scheduleAll(agents) {
         }
       }
     }, 5000);
+  }
+}
+
+// ─── Wiki → Memory Sync ─────────────────────────────────────────────
+
+/**
+ * Run wiki-to-memory reconciliation for all projects that have
+ * both a workspace (ahw) and wiki pages.
+ *
+ * Scheduled as a built-in daily task — runs alongside user crons
+ * but isn't stored in the crons table (it's a system task).
+ */
+export async function runWikiMemorySync() {
+  const projects = getProjects();
+  const opts = {
+    claudeBin: config.claudeBin,
+    spawnEnv: buildSpawnEnv(config),
+  };
+
+  for (const project of projects) {
+    if (!project.ahw) continue;
+
+    try {
+      // Get all wiki pages with full content
+      const pageMetas = listPages(project.id);
+      if (!pageMetas.length) continue;
+
+      const wikiPages = pageMetas
+        .map((meta) => {
+          const full = getPage(project.id, meta.slug);
+          return {
+            title: full?.title || meta.title,
+            content: full?.content || '',
+            category: full?.category || meta.category,
+          };
+        })
+        .filter((p) => p.content.trim());
+
+      if (!wikiPages.length) continue;
+
+      console.log(
+        `[Wiki→Memory Sync] Reconciling "${project.name}" (${wikiPages.length} wiki pages)...`,
+      );
+      await reconcileMemoryFromWiki(project.ahw, wikiPages, {
+        ...opts,
+        cwd: project.cwd,
+      });
+    } catch (err) {
+      console.error(`[Wiki→Memory Sync] Failed for "${project.name}":`, err.message);
+    }
   }
 }
 
