@@ -32,7 +32,8 @@ function getCategoryBadge(category) {
 
 function relativeTime(dateStr) {
   if (!dateStr) return '';
-  const date = new Date(dateStr);
+  // Handle SQLite datetime format (no timezone) — treat as UTC
+  const date = dateStr.includes('T') ? new Date(dateStr) : new Date(dateStr + 'Z');
   const now = Date.now();
   const diff = now - date.getTime();
   const seconds = Math.floor(diff / 1000);

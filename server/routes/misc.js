@@ -156,7 +156,7 @@ export default function createMiscRoutes(deps) {
       const byDay = db
         .prepare(
           `
-        SELECT date(se.timestamp) as day,
+        SELECT date(se.timestamp, 'localtime') as day,
                COUNT(*) as count,
                COALESCE(SUM(json_extract(se.payload, '$.costUsd')), 0) as cost,
                COALESCE(SUM(json_extract(se.payload, '$.durationMs')), 0) as duration_ms,
@@ -164,7 +164,7 @@ export default function createMiscRoutes(deps) {
         FROM session_events se
         WHERE se.event_type = 'result'
           AND se.timestamp >= datetime('now', '-30 days')
-        GROUP BY date(se.timestamp)
+        GROUP BY date(se.timestamp, 'localtime')
         ORDER BY day DESC
       `,
         )

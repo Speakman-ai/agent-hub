@@ -10,7 +10,8 @@ vi.mock('child_process', () => {
 });
 
 const { spawn } = await import('child_process');
-const { reconcileMemoryAfterSession, reconcileMemoryFromWiki } = await import('./memory.js');
+const { reconcileMemoryAfterSession, reconcileMemoryFromWiki, localDateStr } =
+  await import('./memory.js');
 
 // Helper: create a fake spawn that resolves with given output and exit code
 function setupSpawnMock(output, exitCode = 0) {
@@ -73,6 +74,38 @@ afterEach(() => {
   if (tmpDir && existsSync(tmpDir)) {
     rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+// ─── localDateStr ────────────────────────────────────────────────
+
+describe('localDateStr', () => {
+  it('formats a date as YYYY-MM-DD using local timezone', () => {
+    // Use a specific date to avoid TZ ambiguity — noon local time is unambiguous
+    const d = new Date(2025, 5, 15, 12, 0, 0); // June 15, 2025 noon local
+    expect(localDateStr(d)).toBe('2025-06-15');
+  });
+
+  it('zero-pads single-digit months and days', () => {
+    const d = new Date(2025, 0, 5, 12, 0, 0); // Jan 5, 2025
+    expect(localDateStr(d)).toBe('2025-01-05');
+  });
+
+  it('uses local date, not UTC date', () => {
+    // Create a date that is different in UTC vs local for most timezones
+    // At 2025-01-01 00:30 local time, UTC could be the previous day (for positive UTC offsets)
+    // or the next day (for negative UTC offsets like US timezones)
+    const d = new Date(2025, 0, 1, 0, 30, 0); // Jan 1, 2025 00:30 local
+    const result = localDateStr(d);
+    // The local date must always be 2025-01-01 regardless of UTC offset
+    expect(result).toBe('2025-01-01');
+  });
+
+  it('defaults to current date when called with no arguments', () => {
+    const result = localDateStr();
+    const now = new Date();
+    const expected = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    expect(result).toBe(expected);
+  });
 });
 
 // ─── reconcileMemoryAfterSession ─────────────────────────────────

@@ -653,7 +653,7 @@ export default function createConfigRoutes(deps) {
       const safeName = project.name.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="${safeName}-export-${new Date().toISOString().split('T')[0]}.json"`,
+        `attachment; filename="${safeName}-export-${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}.json"`,
       );
       res.json(exported);
     } catch (err) {

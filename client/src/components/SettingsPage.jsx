@@ -4329,7 +4329,9 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
       const safeName = (proj?.name || selectedProjectId)
         .replace(/[^a-zA-Z0-9-_]/g, '-')
         .toLowerCase();
-      a.download = `${safeName}-export-${new Date().toISOString().split('T')[0]}.json`;
+      const now = new Date();
+      const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      a.download = `${safeName}-export-${localDate}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

@@ -379,7 +379,9 @@ function ConfigBackupSection() {
     try {
       const data = await api.exportConfig();
       const json = JSON.stringify(data, null, 2);
-      const filename = `agent-hub-export-${new Date().toISOString().split('T')[0]}.json`;
+      const now = new Date();
+      const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const filename = `agent-hub-export-${localDate}.json`;
       const filePath = `${FileSystem.cacheDirectory}${filename}`;
       await FileSystem.writeAsStringAsync(filePath, json);
       await Sharing.shareAsync(filePath, { mimeType: 'application/json', dialogTitle: 'Export Agent Hub Config' });
