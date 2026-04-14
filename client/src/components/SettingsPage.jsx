@@ -87,6 +87,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  ScrollText,
 } from 'lucide-react';
 
 function OrganizationsSection() {
@@ -1672,7 +1673,7 @@ function GitHubSection({ projects = [], onProjectsChange }) {
   );
 }
 
-function HeartbeatSection() {
+function HeartbeatSection({ onNavigate }) {
   const [heartbeats, setHeartbeats] = useState([]);
   const [expandedAgent, setExpandedAgent] = useState(null);
   const [logs, setLogs] = useState({});
@@ -1721,6 +1722,18 @@ function HeartbeatSection() {
       console.error(e);
     }
     setTimeout(() => setRunning((prev) => ({ ...prev, [agentId]: false })), 3000);
+  };
+
+  const viewThread = async (hb) => {
+    if (!onNavigate) return;
+    try {
+      const { thread } = await api.getHeartbeatThread(hb.agentId);
+      if (thread) {
+        onNavigate('threads', { projectId: thread.project_id, threadId: thread.id, thread });
+      }
+    } catch (e) {
+      console.error('Failed to fetch heartbeat thread:', e);
+    }
   };
 
   const startEdit = (hb) => {
@@ -1846,6 +1859,15 @@ function HeartbeatSection() {
                   )}
                 </div>
                 <div className="flex items-center gap-1.5 sm:gap-2">
+                  {onNavigate && (
+                    <button
+                      onClick={() => viewThread(hb)}
+                      className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                      title="View thread"
+                    >
+                      <ScrollText size={14} />
+                    </button>
+                  )}
                   <button
                     onClick={() => startEdit(hb)}
                     className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
@@ -1923,7 +1945,7 @@ function HeartbeatSection() {
   );
 }
 
-function CronSection() {
+function CronSection({ onNavigate }) {
   const [crons, setCrons] = useState([]);
   const [running, setRunning] = useState({});
   const [showForm, setShowForm] = useState(false);
@@ -1974,6 +1996,18 @@ function CronSection() {
       clearInterval(tickId);
     };
   }, []);
+
+  const viewThread = async (cronJob) => {
+    if (!onNavigate) return;
+    try {
+      const { thread } = await api.getCronThread(cronJob.id);
+      if (thread) {
+        onNavigate('threads', { projectId: thread.project_id, threadId: thread.id, thread });
+      }
+    } catch (e) {
+      console.error('Failed to fetch cron thread:', e);
+    }
+  };
 
   const toggleCron = async (cronJob) => {
     const updated = await api.updateCron(cronJob.id, {
@@ -2247,6 +2281,15 @@ function CronSection() {
                   )}
                 </div>
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+                  {onNavigate && (
+                    <button
+                      onClick={() => viewThread(cronJob)}
+                      className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                      title="View thread"
+                    >
+                      <ScrollText size={14} />
+                    </button>
+                  )}
                   <button
                     onClick={() => triggerRun(cronJob.id)}
                     disabled={running[cronJob.id]}
@@ -4538,7 +4581,13 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
   );
 }
 
-export default function SettingsPage({ projects = [], agents, onAgentsChange, initialTab }) {
+export default function SettingsPage({
+  projects = [],
+  agents,
+  onAgentsChange,
+  initialTab,
+  onNavigate,
+}) {
   const [tab, setTab] = useState(initialTab || 'general');
 
   // When navigating directly to a specific tab (e.g. from OrgSwitcher)
@@ -4591,8 +4640,8 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
             <GitHubSection projects={projects} onProjectsChange={onAgentsChange} />
           )}
           {tab === 'orgs' && <OrganizationsSection />}
-          {tab === 'heartbeats' && <HeartbeatSection />}
-          {tab === 'crons' && <CronSection />}
+          {tab === 'heartbeats' && <HeartbeatSection onNavigate={onNavigate} />}
+          {tab === 'crons' && <CronSection onNavigate={onNavigate} />}
 
           {tab === 'slack' && <SlackSection />}
           {tab === 'agents' && (

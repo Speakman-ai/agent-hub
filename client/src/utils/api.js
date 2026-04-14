@@ -364,6 +364,8 @@ export const api = {
   },
   getThread: (threadId) => fetchJSON(`/threads/${threadId}`),
   getThreadEntries: (threadId) => fetchJSON(`/threads/${threadId}/entries`),
+  getCronThread: (cronId) => fetchJSON(`/crons/${cronId}/thread`),
+  getHeartbeatThread: (agentId) => fetchJSON(`/heartbeats/${agentId}/thread`),
 
   // Generic helpers (for endpoints without dedicated methods)
   get: (url) => fetchJSON(url),

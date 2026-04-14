@@ -1442,6 +1442,19 @@ export default function App() {
               agents={agents}
               onAgentsChange={refreshAgents}
               initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined}
+              onNavigate={(view, extra) => {
+                setCurrentView(view);
+                if (view === 'threads' && extra) {
+                  setThreadsProjectId(extra.projectId);
+                  if (extra.threadId) {
+                    setActiveThreadId(extra.threadId);
+                    setActiveThread(extra.thread || null);
+                  } else {
+                    setActiveThreadId(null);
+                    setActiveThread(null);
+                  }
+                }
+              }}
             />
           ) : currentView === 'wiki' && wikiProjectId ? (
             <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />

@@ -5,6 +5,22 @@ export default function createHeartbeatRoutes(deps) {
   const { allAgents, findAgent, getEnrichedAgent, saveProjects, stmts } = deps;
   const router = Router();
 
+  // ── Heartbeat thread shortcut (find thread by agent source_id) ────
+
+  router.get('/api/heartbeats/:agentId/thread', (req, res) => {
+    const found = findAgent(req.params.agentId);
+    if (!found) return res.status(404).json({ error: 'Agent not found' });
+
+    const { project } = found;
+    const thread = stmts.getThreadBySource.get(project.id, 'heartbeat', req.params.agentId);
+    if (!thread) {
+      return res.json({ thread: null, entries: [] });
+    }
+
+    const entries = stmts.getThreadEntries.all(thread.id);
+    res.json({ thread, entries });
+  });
+
   router.get('/api/heartbeats', (_req, res) => {
     const configs = allAgents().map((a) => ({
       agentId: a.id,
