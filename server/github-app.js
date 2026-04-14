@@ -121,6 +121,7 @@ export function buildAppManifest(serverUrl) {
       pull_requests: 'write',
       contents: 'write',
       issues: 'write',
+      checks: 'read',
     },
     default_events: ['pull_request', 'pull_request_review', 'check_suite'],
   };
