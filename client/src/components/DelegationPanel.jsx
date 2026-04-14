@@ -1,14 +1,14 @@
 import { useState, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Loader2, GitFork, AlertTriangle } from 'lucide-react';
+import { Loader2, GitFork, AlertTriangle, Timer } from 'lucide-react';
 
 /**
  * DelegationPanel — shows inline below a lead agent's message when
  * delegation is active or completed. Displays each sub-agent's task,
  * status (thinking/streaming/done/error), and expandable output.
  */
-function DelegationPanel({ delegations, onCancel, sessionId }) {
+function DelegationPanel({ delegations, onCancel, sessionId, throttled }) {
   const [collapsed, setCollapsed] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState({});
 
@@ -59,6 +59,15 @@ function DelegationPanel({ delegations, onCancel, sessionId }) {
               ? `${doneCount}/${delegations.length} complete${hasErrors ? ' (with errors)' : ''}`
               : `${doneCount}/${delegations.length} running...`}
           </span>
+          {throttled && !allDone && (
+            <span
+              className="flex items-center gap-1 text-xs text-amber-400"
+              title="API rate limited — retrying automatically"
+            >
+              <Timer size={12} />
+              <span>throttled</span>
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {!allDone && onCancel && (

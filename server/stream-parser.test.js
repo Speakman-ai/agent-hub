@@ -174,9 +174,22 @@ describe('createStreamParser — Claude Code', () => {
     expect(events[0].stopReason).toBe('end_turn');
   });
 
-  it('ignores rate_limit_event', () => {
+  it('normalizes rate_limit_event', () => {
+    const events = parse([
+      JSON.stringify({ type: 'rate_limit_event', retry_after_ms: 5000, message: 'Rate limited' }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('rate_limit');
+    expect(events[0].retryAfterMs).toBe(5000);
+    expect(events[0].message).toBe('Rate limited');
+  });
+
+  it('normalizes rate_limit_event with no extra fields', () => {
     const events = parse([JSON.stringify({ type: 'rate_limit_event' })]);
-    expect(events).toHaveLength(0);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('rate_limit');
+    expect(events[0].retryAfterMs).toBeNull();
+    expect(events[0].message).toBeNull();
   });
 
   it('returns unknown for unhandled types', () => {

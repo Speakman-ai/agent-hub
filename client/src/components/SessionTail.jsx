@@ -19,6 +19,7 @@ import {
   Wrench,
   MessageCircle,
   AlertTriangle,
+  Timer,
 } from 'lucide-react';
 
 /**
@@ -114,6 +115,8 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded })
                 return <TextBubble key={`b${i}`} text={block.text} />;
               case 'result':
                 return <ResultFooter key={`b${i}`} result={block.event} />;
+              case 'rate_limit':
+                return <RateLimitBanner key={`b${i}`} event={block.event} />;
               case 'error':
                 return <ErrorBlock key={`b${i}`} message={block.event.message} />;
               case 'unknown':
@@ -181,6 +184,8 @@ function eventsToBlocks(events) {
       blocks.push({ kind: 'tool', use: event, result: resultByToolId[event.id] });
     } else if (t === 'result') {
       blocks.push({ kind: 'result', event });
+    } else if (t === 'rate_limit') {
+      blocks.push({ kind: 'rate_limit', event });
     } else if (t === 'error') {
       blocks.push({ kind: 'error', event });
     } else {
@@ -445,6 +450,19 @@ function ResultFooter({ result }) {
       </span>
       <span>·</span>
       <span>{parts.join(' · ')}</span>
+    </div>
+  );
+}
+
+function RateLimitBanner({ event }) {
+  const retryStr = event.retryAfterMs
+    ? `retrying in ${(event.retryAfterMs / 1000).toFixed(0)}s`
+    : 'retrying…';
+  return (
+    <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-1.5 text-xs text-amber-400 flex items-center gap-2">
+      <Timer size={12} />
+      <span>Rate limited — {retryStr}</span>
+      {event.message && <span className="text-amber-600">· {event.message}</span>}
     </div>
   );
 }

@@ -9,7 +9,7 @@
  * Normalized event shape:
  *   {
  *     type: 'system' | 'assistant_text' | 'thinking' | 'tool_use' |
- *           'tool_result' | 'result' | 'error' | 'unknown',
+ *           'tool_result' | 'result' | 'rate_limit' | 'error' | 'unknown',
  *     ...type-specific fields,
  *     raw: <original line> // for debugging / forward compat
  *   }
@@ -21,6 +21,7 @@
  *   tool_use      : { id, tool, input }
  *   tool_result   : { toolUseId, output, isError }
  *   result        : { text, durationMs, costUsd, isError, numTurns }
+ *   rate_limit    : { retryAfterMs, message }
  *   error         : { message }
  *
  * Usage:
@@ -173,7 +174,13 @@ function normalizeClaude(raw) {
       ];
 
     case 'rate_limit_event':
-      return []; // Not user-facing
+      return [
+        {
+          type: 'rate_limit',
+          retryAfterMs: raw.retry_after_ms ?? raw.retryAfterMs ?? null,
+          message: raw.message ?? null,
+        },
+      ];
 
     default:
       return [{ type: 'unknown', text: `unhandled claude event: ${raw.type}` }];

@@ -75,6 +75,8 @@ export default function App() {
   const [roomQueueLength, setRoomQueueLength] = useState(0);
   // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
   const [delegations, setDelegations] = useState({});
+  // Rate-limit throttle state: Map of sessionId -> { active, retryAfterMs, clearedAt }
+  const [throttle, setThrottle] = useState({});
   // Wiki state
   const [wikiProjectId, setWikiProjectId] = useState(null);
   // Cron-linked sessions (scheduled tasks)
@@ -284,10 +286,35 @@ export default function App() {
           const next = [...existing, { seq, event }].sort((a, b) => a.seq - b.seq);
           return { ...prev, [messageId]: next };
         });
+
+        // Track rate-limit throttle state per session
+        if (event?.type === 'rate_limit') {
+          const sid = data.sessionId;
+          const retryMs = event.retryAfterMs || 5000;
+          setThrottle((prev) => ({
+            ...prev,
+            [sid]: { active: true, retryAfterMs: retryMs, ts: Date.now() },
+          }));
+          // Auto-clear throttle indicator after retry period elapses
+          setTimeout(() => {
+            setThrottle((prev) => {
+              const entry = prev[sid];
+              if (!entry || !entry.active) return prev;
+              return { ...prev, [sid]: { ...entry, active: false } };
+            });
+          }, retryMs + 1000);
+        }
         break;
       }
       case 'done':
         setActiveTasks((prev) => {
+          const next = { ...prev };
+          delete next[data.sessionId];
+          return next;
+        });
+        // Clear throttle state for completed session
+        setThrottle((prev) => {
+          if (!prev[data.sessionId]) return prev;
           const next = { ...prev };
           delete next[data.sessionId];
           return next;
@@ -1405,6 +1432,7 @@ export default function App() {
                               <DelegationPanel
                                 delegations={delegations[activeSessionId].tasks}
                                 sessionId={activeSessionId}
+                                throttled={throttle[activeSessionId]?.active}
                                 onCancel={(sid) =>
                                   send({ type: 'delegation_cancel', sessionId: sid })
                                 }
