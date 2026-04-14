@@ -416,6 +416,24 @@ function initDb(dataDir) {
       FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_thread_entries_thread ON thread_entries(thread_id);
+
+    -- Escalations: notifications requiring human intervention
+    CREATE TABLE IF NOT EXISTS escalations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('merge_conflict','ci_failure','review_needed','blocker')),
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      pr_number INTEGER,
+      pr_url TEXT,
+      card_id TEXT,
+      source TEXT,
+      acknowledged INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_escalations_project ON escalations(project_id);
+    CREATE INDEX IF NOT EXISTS idx_escalations_type ON escalations(project_id, type);
+    CREATE INDEX IF NOT EXISTS idx_escalations_ack ON escalations(acknowledged);
   `);
 
   // Migration: add next_run_at to crons (last_run already exists)
@@ -1236,6 +1254,32 @@ function initDb(dataDir) {
     ),
     deleteAgentSkillOverride: db.prepare(
       'DELETE FROM agent_skill_overrides WHERE agent_id = ? AND skill_id = ?',
+    ),
+
+    // Escalations
+    getEscalationsByProject: db.prepare(
+      'SELECT * FROM escalations WHERE project_id = ? ORDER BY created_at DESC',
+    ),
+    getActiveEscalationsByProject: db.prepare(
+      'SELECT * FROM escalations WHERE project_id = ? AND acknowledged = 0 ORDER BY created_at DESC',
+    ),
+    getAllActiveEscalations: db.prepare(
+      'SELECT * FROM escalations WHERE acknowledged = 0 ORDER BY created_at DESC',
+    ),
+    getEscalation: db.prepare('SELECT * FROM escalations WHERE id = ?'),
+    createEscalation: db.prepare(
+      `INSERT INTO escalations (id, project_id, type, title, description, pr_number, pr_url, card_id, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    acknowledgeEscalation: db.prepare('UPDATE escalations SET acknowledged = 1 WHERE id = ?'),
+    deleteEscalation: db.prepare('DELETE FROM escalations WHERE id = ?'),
+    getRecentEscalationByTypeAndPr: db.prepare(
+      `SELECT * FROM escalations WHERE project_id = ? AND type = ? AND pr_number = ? AND acknowledged = 0
+       ORDER BY created_at DESC LIMIT 1`,
+    ),
+    getAnyRecentEscalationByTypeAndPr: db.prepare(
+      `SELECT * FROM escalations WHERE project_id = ? AND type = ? AND pr_number = ?
+       ORDER BY created_at DESC LIMIT 1`,
     ),
   };
 

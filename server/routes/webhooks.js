@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Router } from 'express';
 import config, { defaultModelForEngine } from '../config.js';
 import { getOrCreateBoard } from './board.js';
+import { createEscalation } from './escalations.js';
 
 // ─── Shared helpers (used by multiple routes and index.js) ──────────
 
@@ -139,7 +140,29 @@ export function notifyDispatchFailure(
     }
   }
 
-  // 4. Optional Slack notification for visibility
+  // 4. Escalation for dispatch blockers
+  // skipSlack: true because step 5 below sends its own Slack notification
+  // for dispatch failures — avoids duplicate messages.
+  if (projectId) {
+    try {
+      createEscalation(
+        { stmts, broadcast },
+        {
+          projectId,
+          type: 'blocker',
+          title: `Dispatch failed: ${cardTitle || source}`,
+          description: `${reason}${error ? `\n\nError: ${error.message}` : ''}`,
+          cardId: cardId || null,
+          source: source || 'dispatch',
+          skipSlack: true,
+        },
+      );
+    } catch (escalationErr) {
+      console.error(`[${source}] Failed to create escalation:`, escalationErr.message);
+    }
+  }
+
+  // 5. Optional Slack notification for visibility
   if (config.slackWebhookUrl) {
     fetch(config.slackWebhookUrl, {
       method: 'POST',
@@ -587,6 +610,33 @@ ${reviewBody || '(No body — check inline comments on the PR)'}
       `[Webhook/Kanban] Changes requested on "${card.title}" by ${sender} — dispatched to session ${sessionId || '(failed)'}`,
     );
 
+    // Escalate human review comments that may require human judgment.
+    // Dedup: only create if there's no existing unacknowledged review_needed
+    // escalation for this PR — prevents duplicate notifications when a reviewer
+    // submits multiple rounds of "changes requested".
+    if (prNumber) {
+      const existing = stmts.getRecentEscalationByTypeAndPr.get(
+        project.id,
+        'review_needed',
+        prNumber,
+      );
+      if (!existing) {
+        createEscalation(
+          { stmts, broadcast },
+          {
+            projectId: project.id,
+            type: 'review_needed',
+            title: `Changes requested on PR #${prNumber} by ${sender}`,
+            description: `A reviewer has requested changes on "${card.title}". The agent will attempt to address the feedback, but human review may be needed to verify the changes are correct.\n\n**Reviewer comment:**\n${reviewBody?.substring(0, 500) || '(see inline comments)'}`,
+            prNumber,
+            prUrl: payload.pull_request?.html_url || null,
+            cardId: card.id,
+            source: 'webhook',
+          },
+        );
+      }
+    }
+
     broadcast({
       type: 'webhook_pr_review',
       projectId: project.id,
@@ -771,11 +821,40 @@ function handleWebhookPrClosed(deps, card, project, cols, payload, sender) {
  * "In Progress" (agent fixing review comments), this confirms the push happened.
  */
 function handleWebhookPrSynchronize(deps, card, project, cols, payload, sender) {
-  const { broadcast } = deps;
+  const { stmts, broadcast } = deps;
   const prNumber = payload.pull_request?.number;
   const headSha = payload.pull_request?.head?.sha?.substring(0, 7);
+  const mergeable = payload.pull_request?.mergeable;
 
   console.log(`[Webhook/Kanban] PR #${prNumber} updated (${headSha}) — card "${card.title}"`);
+
+  // Detect merge conflicts — GitHub sets mergeable to false when conflicts exist.
+  // Note: `mergeable` is often `null` in webhook payloads because GitHub computes
+  // it asynchronously. The strict `=== false` check is intentional — `null` means
+  // "not yet computed" so we may miss some conflicts on the initial push event.
+  // A follow-up could poll the PR API to get the resolved mergeable status.
+  if (mergeable === false && prNumber) {
+    const existing = stmts.getRecentEscalationByTypeAndPr.get(
+      project.id,
+      'merge_conflict',
+      prNumber,
+    );
+    if (!existing) {
+      createEscalation(
+        { stmts, broadcast },
+        {
+          projectId: project.id,
+          type: 'merge_conflict',
+          title: `Merge conflicts on PR #${prNumber}`,
+          description: `PR "${card.title}" has merge conflicts that need to be resolved. The branch cannot be merged automatically.\n\nRebase or merge the base branch to resolve conflicts.`,
+          prNumber,
+          prUrl: payload.pull_request?.html_url || null,
+          cardId: card.id,
+          source: 'webhook',
+        },
+      );
+    }
+  }
 
   broadcast({
     type: 'webhook_pr_pushed',
@@ -824,6 +903,57 @@ function handleWebhookCheckSuiteCompleted(deps, card, project, cols, payload, _s
       if (inProgressCol) {
         stmts.moveKanbanCard.run(inProgressCol.id, 0, card.id);
         broadcast({ type: 'kanban_update', projectId: project.id });
+      }
+
+      // Check if there's ANY prior CI failure escalation for this PR (including
+      // silent/acknowledged tracking records). If found, this is a repeated
+      // failure — escalate visibly to human.
+      if (prNumber) {
+        const existing = stmts.getAnyRecentEscalationByTypeAndPr.get(
+          project.id,
+          'ci_failure',
+          prNumber,
+        );
+        if (existing) {
+          console.log(
+            `[Webhook/Kanban] Repeated CI failure on PR #${prNumber} — escalating to human`,
+          );
+          createEscalation(
+            { stmts, broadcast },
+            {
+              projectId: project.id,
+              type: 'ci_failure',
+              title: `CI failing repeatedly on PR #${prNumber}`,
+              description: `CI checks have failed multiple times on "${card.title}". The agent was unable to fix the issue automatically. Human intervention is needed to diagnose and resolve the failures.\n\nCheck suite: ${checkSuite.app?.name || 'CI'}`,
+              prNumber,
+              prUrl: payload.repository
+                ? `https://github.com/${payload.repository.full_name}/pull/${prNumber}`
+                : null,
+              cardId: card.id,
+              source: 'webhook',
+            },
+          );
+        } else {
+          // First CI failure — create a silent tracking record so we can detect
+          // repeated failures. No broadcast or Slack notification yet — give the
+          // agent a chance to fix it before alerting the human.
+          createEscalation(
+            { stmts, broadcast },
+            {
+              projectId: project.id,
+              type: 'ci_failure',
+              title: `CI failed on PR #${prNumber}`,
+              description: `CI checks failed on "${card.title}". The agent has been notified to fix the issue.\n\nCheck suite: ${checkSuite.app?.name || 'CI'}`,
+              prNumber,
+              prUrl: payload.repository
+                ? `https://github.com/${payload.repository.full_name}/pull/${prNumber}`
+                : null,
+              cardId: card.id,
+              source: 'webhook',
+              silent: true,
+            },
+          );
+        }
       }
 
       const originalSession = stmts.getSession.get(card.session_id);

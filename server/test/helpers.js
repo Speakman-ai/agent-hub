@@ -138,6 +138,24 @@ export async function createThread(projectId, overrides = {}) {
 }
 
 /**
+ * Create an escalation for a project.
+ * Returns the created escalation object.
+ */
+export async function createEscalationHelper(projectId, overrides = {}) {
+  const request = await getRequest();
+  const res = await request
+    .post(`/api/projects/${projectId}/escalations`)
+    .send({
+      type: overrides.type || 'blocker',
+      title: overrides.title || `Test Escalation ${uid('esc')}`,
+      description: overrides.description || 'Test escalation description',
+      ...overrides,
+    })
+    .expect(201);
+  return res.body;
+}
+
+/**
  * Create a kanban card for a project.
  * Gets board columns first, then creates a card in the first column.
  * Returns the created card object.
