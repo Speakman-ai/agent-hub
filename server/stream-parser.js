@@ -9,7 +9,7 @@
  * Normalized event shape:
  *   {
  *     type: 'system' | 'assistant_text' | 'thinking' | 'tool_use' |
- *           'tool_result' | 'result' | 'rate_limit' | 'error' | 'unknown',
+ *           'tool_result' | 'result' | 'checkpoint' | 'rate_limit' | 'error' | 'unknown',
  *     ...type-specific fields,
  *     raw: <original line> // for debugging / forward compat
  *   }
@@ -21,6 +21,7 @@
  *   tool_use      : { id, tool, input }
  *   tool_result   : { toolUseId, output, isError }
  *   result        : { text, durationMs, costUsd, isError, numTurns }
+ *   checkpoint    : { uuid, turnIndex }
  *   rate_limit    : { retryAfterMs, message }
  *   error         : { message }
  *
@@ -135,6 +136,17 @@ function normalizeClaude(raw) {
       // user.message.content has tool_result blocks (after the model called a tool)
       const content = raw.message?.content ?? [];
       const out = [];
+
+      // When --replay-user-messages is used, user events carry a uuid field
+      // that identifies a checkpoint (restore point) for this turn.
+      if (raw.uuid) {
+        out.push({
+          type: 'checkpoint',
+          uuid: raw.uuid,
+          turnIndex: raw.turn_number ?? null,
+        });
+      }
+
       for (const block of content) {
         if (block.type === 'tool_result') {
           out.push({

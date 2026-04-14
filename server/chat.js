@@ -618,6 +618,7 @@ export default function createChatHandler(deps) {
         '--output-format',
         'stream-json',
         '--include-partial-messages',
+        '--replay-user-messages',
         '--verbose',
       ];
       if (isNewEngineSession) {
@@ -739,6 +740,19 @@ export default function createChatHandler(deps) {
           type: 'session-worktree-detected',
           sessionId,
           gitWorktree: event.gitWorktree,
+        });
+      }
+
+      // Persist checkpoint (restore point) emitted by --replay-user-messages
+      // INSERT OR IGNORE silently skips duplicates (e.g. resumed sessions)
+      if (event.type === 'checkpoint' && event.uuid) {
+        S.addCheckpoint.run(sessionId, assistantMsgId, event.uuid, event.turnIndex, null);
+        broadcast({
+          type: 'checkpoint',
+          sessionId,
+          uuid: event.uuid,
+          turnIndex: event.turnIndex,
+          messageId: assistantMsgId,
         });
       }
 

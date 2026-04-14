@@ -220,6 +220,22 @@ function initDb(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS idx_message_queue_session ON message_queue(session_id, position ASC);
 
+    -- Checkpoints: Claude Code auto-save restore points per session.
+    -- Each user turn creates a checkpoint identified by its UUID. The UI can
+    -- display these and trigger file-level rewinds.
+    CREATE TABLE IF NOT EXISTS checkpoints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      message_id TEXT,
+      uuid TEXT NOT NULL,
+      turn_index INTEGER,
+      label TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, created_at ASC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_checkpoints_uuid ON checkpoints(uuid);
+
     CREATE TABLE IF NOT EXISTS device_tokens (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       token TEXT NOT NULL UNIQUE,
@@ -808,6 +824,17 @@ function initDb(dataDir) {
     countSessionEvents: db.prepare(
       'SELECT COUNT(*) as count FROM session_events WHERE parent_kind = ? AND parent_id = ?',
     ),
+
+    // Checkpoints (Claude Code auto-save restore points)
+    addCheckpoint: db.prepare(
+      `INSERT OR IGNORE INTO checkpoints (session_id, message_id, uuid, turn_index, label)
+       VALUES (?, ?, ?, ?, ?)`,
+    ),
+    getCheckpoints: db.prepare(
+      `SELECT * FROM checkpoints WHERE session_id = ? ORDER BY created_at ASC`,
+    ),
+    getCheckpointByUuid: db.prepare('SELECT * FROM checkpoints WHERE uuid = ?'),
+    updateCheckpointLabel: db.prepare('UPDATE checkpoints SET label = ? WHERE uuid = ?'),
 
     // Heartbeat next-run state (survives server restarts)
     upsertHeartbeatState: db.prepare(

@@ -105,7 +105,8 @@ export function summarizeTranscript(transcript, { engine, model, cwd }, config) 
 // ─── Route factory ──────────────────────────────────────────────────
 
 export default function createSessionRoutes(deps) {
-  const { stmts, findAgent, getEnrichedAgent, handleChat, config, activeProcesses } = deps;
+  const { stmts, findAgent, getEnrichedAgent, handleChat, config, activeProcesses, broadcast } =
+    deps;
 
   const router = Router();
 
@@ -446,6 +447,156 @@ export default function createSessionRoutes(deps) {
           startedAt: t.started_at,
         })),
       );
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Checkpoints (Claude Code rewind) ────────────────────────────
+
+  /**
+   * GET /api/sessions/:sessionId/checkpoints
+   * Returns all checkpoints recorded for this session, in chronological order.
+   */
+  router.get('/api/sessions/:sessionId/checkpoints', (req, res) => {
+    try {
+      const session = stmts.getSession.get(req.params.sessionId);
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      const checkpoints = stmts.getCheckpoints.all(req.params.sessionId);
+      res.json(checkpoints);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/sessions/:sessionId/rewind
+   * Rewinds file changes to a specific checkpoint.
+   * Body: { uuid } — the checkpoint UUID to rewind to.
+   *
+   * This spawns `claude --resume <engineSessionId> --rewind-files <uuid>` which
+   * undoes all file modifications made after the given checkpoint.
+   */
+  router.post('/api/sessions/:sessionId/rewind', (req, res) => {
+    const { uuid } = req.body || {};
+    if (!uuid) return res.status(400).json({ error: 'uuid is required' });
+
+    try {
+      const session = stmts.getSession.get(req.params.sessionId);
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      if (session.engine !== 'claude-code') {
+        return res.status(400).json({ error: 'Checkpoints are only supported for Claude Code' });
+      }
+
+      const checkpoint = stmts.getCheckpointByUuid.get(uuid);
+      if (!checkpoint) return res.status(404).json({ error: 'Checkpoint not found' });
+      if (checkpoint.session_id !== req.params.sessionId) {
+        return res.status(400).json({ error: 'Checkpoint does not belong to this session' });
+      }
+
+      // Cannot rewind while a task is actively running for this session
+      if (activeProcesses.has(req.params.sessionId)) {
+        return res.status(409).json({ error: 'Cannot rewind while session is actively running' });
+      }
+
+      const engineSessionId = session.engine_session_id;
+      if (!engineSessionId) {
+        return res.status(400).json({
+          error:
+            'Session has no engine_session_id — cannot rewind (session was never fully started)',
+        });
+      }
+
+      // Resolve cwd for the rewind process
+      const cwd =
+        session.worktree_path ||
+        (() => {
+          const found = findAgent(session.agent_id);
+          return found?.project?.cwd || process.cwd();
+        })();
+
+      const claudeBin = config.claudeBin || 'claude';
+      const args = [
+        '--print',
+        '--resume',
+        engineSessionId,
+        '--output-format',
+        'stream-json',
+        '--rewind-files',
+        uuid,
+      ];
+
+      let output = '';
+      let errorOutput = '';
+
+      const REWIND_TIMEOUT_MS = 30_000;
+
+      const proc = spawn(claudeBin, args, {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      const killTimer = setTimeout(() => {
+        console.error(`[rewind] Process timed out after ${REWIND_TIMEOUT_MS}ms — killing`);
+        proc.kill();
+      }, REWIND_TIMEOUT_MS);
+
+      proc.stdout.on('data', (chunk) => {
+        output += chunk.toString();
+      });
+      proc.stderr.on('data', (chunk) => {
+        errorOutput += chunk.toString();
+      });
+
+      proc.on('close', (code) => {
+        clearTimeout(killTimer);
+        if (code !== 0 && !output.trim()) {
+          console.error(`[rewind] claude exited code=${code}, stderr: ${errorOutput.trim()}`);
+        }
+        broadcast({
+          type: 'rewind-complete',
+          sessionId: req.params.sessionId,
+          uuid,
+          success: code === 0,
+        });
+      });
+
+      proc.on('error', (err) => {
+        clearTimeout(killTimer);
+        console.error(`[rewind] Failed to spawn claude:`, err.message);
+        broadcast({
+          type: 'rewind-complete',
+          sessionId: req.params.sessionId,
+          uuid,
+          success: false,
+          error: err.message,
+        });
+      });
+
+      res.json({ status: 'rewind_started', uuid, sessionId: req.params.sessionId });
+    } catch (err) {
+      console.error('[rewind] Error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * PATCH /api/sessions/:sessionId/checkpoints/:uuid
+   * Update checkpoint metadata (e.g. label).
+   * Body: { label }
+   */
+  router.patch('/api/sessions/:sessionId/checkpoints/:uuid', (req, res) => {
+    const { label } = req.body || {};
+    if (label === undefined) return res.status(400).json({ error: 'label is required' });
+
+    try {
+      const checkpoint = stmts.getCheckpointByUuid.get(req.params.uuid);
+      if (!checkpoint) return res.status(404).json({ error: 'Checkpoint not found' });
+      if (checkpoint.session_id !== req.params.sessionId) {
+        return res.status(400).json({ error: 'Checkpoint does not belong to this session' });
+      }
+      stmts.updateCheckpointLabel.run(label, req.params.uuid);
+      res.json({ ...checkpoint, label });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
