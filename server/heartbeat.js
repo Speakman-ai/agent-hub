@@ -122,7 +122,8 @@ function persistLastRun(kind, id, when = new Date()) {
  * @param {string} prompt
  * @param {string} cwd
  * @param {string} [systemPrompt]
- * @param {{ timeoutMs?: number }} [options]
+ * @param {{ timeoutMs?: number, detailed?: boolean }} [options]
+ *   When `detailed` is true, resolves with `{ stdout, stderr, code }` instead of a plain string.
  */
 export function runClaude(prompt, cwd, systemPrompt, options = {}) {
   return new Promise((resolve, reject) => {
@@ -146,7 +147,16 @@ export function runClaude(prompt, cwd, systemPrompt, options = {}) {
 
     const timer = setTimeout(() => {
       proc.kill('SIGTERM');
-      reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
+      if (options.detailed) {
+        reject(
+          Object.assign(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`), {
+            stdout: output,
+            stderr: errorOutput,
+          }),
+        );
+      } else {
+        reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
+      }
     }, timeout);
 
     proc.stdout.on('data', (chunk) => {
@@ -159,7 +169,13 @@ export function runClaude(prompt, cwd, systemPrompt, options = {}) {
 
     proc.on('close', (code) => {
       clearTimeout(timer);
-      if (code !== 0 && !output) {
+      if (options.detailed) {
+        resolve({
+          stdout: output.trim(),
+          stderr: errorOutput.trim(),
+          code,
+        });
+      } else if (code !== 0 && !output) {
         reject(new Error(errorOutput || `Exited with code ${code}`));
       } else {
         resolve(output.trim() || errorOutput.trim() || '(empty response)');
@@ -304,6 +320,48 @@ export async function runHeartbeat(agent) {
 }
 
 /**
+ * Find the project that owns a cron job (matched by cwd).
+ * Returns the project object or null if no match.
+ */
+function findProjectForCron(cronJob) {
+  const projects = getProjects();
+  return projects.find((p) => p.cwd === cronJob.cwd) || null;
+}
+
+/**
+ * Format cron run output for a thread entry.
+ * Combines stdout and stderr into a single content string.
+ */
+function formatCronEntryContent({ stdout, stderr, status, durationMs }) {
+  const parts = [];
+  if (stdout) parts.push(stdout);
+  if (stderr) parts.push(`--- stderr ---\n${stderr}`);
+  if (!stdout && !stderr) parts.push('(empty response)');
+  parts.push(`\n[${status} in ${durationMs}ms]`);
+  return parts.join('\n');
+}
+
+/**
+ * Get or create the thread associated with a cron job.
+ * Auto-creates on first call; thread name defaults to the cron job name.
+ * Returns the thread, or null if the cron has no associated project.
+ */
+function getOrCreateCronThread(cronJob) {
+  const project = findProjectForCron(cronJob);
+  if (!project) return null;
+
+  const sourceId = String(cronJob.id);
+  let thread = stmts.getThreadBySource.get(project.id, 'cron', sourceId);
+  if (!thread) {
+    const threadId = uuidv4();
+    stmts.createThread.run(threadId, project.id, cronJob.name, 'cron', sourceId);
+    thread = stmts.getThread.get(threadId);
+    console.log(`[Cron] Created thread "${cronJob.name}" for cron ${cronJob.id}`);
+  }
+  return thread;
+}
+
+/**
  * Execute a standalone cron job
  */
 export async function runCronJob(cronJob) {
@@ -314,13 +372,36 @@ export async function runCronJob(cronJob) {
 
   const timeoutMs = config.defaultTimeoutMs;
 
+  // Get or create the thread for this cron job
+  const thread = getOrCreateCronThread(cronJob);
+
   try {
     const cronCwd = getOrCreateProcessWorktree(cronJob.cwd, `cron-${cronJob.id}`);
-    const result = await runClaude(cronJob.prompt, cronCwd, undefined, { timeoutMs });
+    const detailed = await runClaude(cronJob.prompt, cronCwd, undefined, {
+      timeoutMs,
+      detailed: true,
+    });
     const durationMs = Date.now() - startTime;
+    const result = detailed.stdout || detailed.stderr || '(empty response)';
     stmts.updateCronResult.run(result, cronJob.id);
     stmts.updateCronLog.run(result, 'success', durationMs, logId);
     console.log(`[Cron] "${cronJob.name}" completed successfully (${durationMs}ms)`);
+
+    // ── Add thread entry with output ─────────────────────────────
+    if (thread) {
+      try {
+        const entryId = uuidv4();
+        const content = formatCronEntryContent({
+          stdout: detailed.stdout,
+          stderr: detailed.stderr,
+          status: 'success',
+          durationMs,
+        });
+        stmts.createThreadEntry.run(entryId, thread.id, content);
+      } catch (err) {
+        console.error(`[Cron] Failed to add thread entry for "${cronJob.name}":`, err.message);
+      }
+    }
 
     // ── Save result to a dedicated cron session ─────────────────
     try {
@@ -354,6 +435,7 @@ export async function runCronJob(cronJob) {
           sessionId: session.id,
           cronId: cronJob.id,
           cronName: cronJob.name,
+          threadId: thread?.id || null,
         });
       }
     } catch (err) {
@@ -378,6 +460,26 @@ export async function runCronJob(cronJob) {
     stmts.updateCronResult.run(`ERROR: ${errorMsg}`, cronJob.id);
     stmts.updateCronLog.run(errorMsg, 'error', durationMs, logId);
     console.error(`[Cron] "${cronJob.name}" failed:`, errorMsg);
+
+    // Add error entry to thread
+    if (thread) {
+      try {
+        const entryId = uuidv4();
+        const content = formatCronEntryContent({
+          stdout: err.stdout || null,
+          stderr: err.stderr || errorMsg,
+          status: 'error',
+          durationMs,
+        });
+        stmts.createThreadEntry.run(entryId, thread.id, content);
+      } catch (threadErr) {
+        console.error(
+          `[Cron] Failed to add error thread entry for "${cronJob.name}":`,
+          threadErr.message,
+        );
+      }
+    }
+
     return { id: logId, status: 'error', result: errorMsg };
   } finally {
     const task = scheduledTasks.get(`cron:${cronJob.id}`);

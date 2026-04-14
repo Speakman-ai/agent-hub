@@ -1001,6 +1001,11 @@ function initDb(dataDir) {
     ),
     updateSessionCronId: db.prepare('UPDATE sessions SET cron_id = ? WHERE id = ?'),
 
+    // Thread lookup by source (used by cron/heartbeat to find their thread)
+    getThreadBySource: db.prepare(
+      'SELECT * FROM threads WHERE project_id = ? AND type = ? AND source_id = ? LIMIT 1',
+    ),
+
     // Device tokens (push notifications)
     registerDeviceToken: db.prepare(
       `INSERT INTO device_tokens (token, platform, last_used)

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { rescheduleCron, runCronJob } from '../heartbeat.js';
 import config from '../config.js';
+import { getProjects } from '../project-model.js';
 
 export default function createCronRoutes(deps) {
   const { stmts } = deps;
@@ -68,6 +69,29 @@ export default function createCronRoutes(deps) {
     runCronJob(cronJob).catch((err) => {
       console.error(`Manual cron run failed for "${cronJob.name}":`, err);
     });
+  });
+
+  // ── Cron thread shortcut (find thread by cron source_id) ────
+
+  router.get('/api/crons/:id/thread', (req, res) => {
+    const id = parseInt(req.params.id);
+    const cron = stmts.getCron.get(id);
+    if (!cron) return res.status(404).json({ error: 'Cron not found' });
+
+    // Find the project that owns this cron (matched by cwd)
+    const projects = getProjects();
+    const project = projects.find((p) => p.cwd === cron.cwd);
+    if (!project) {
+      return res.json({ thread: null, entries: [] });
+    }
+
+    const thread = stmts.getThreadBySource.get(project.id, 'cron', String(id));
+    if (!thread) {
+      return res.json({ thread: null, entries: [] });
+    }
+
+    const entries = stmts.getThreadEntries.all(thread.id);
+    res.json({ thread, entries });
   });
 
   return router;

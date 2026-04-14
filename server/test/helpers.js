@@ -120,11 +120,6 @@ export async function createWikiPage(projectId, overrides = {}) {
 }
 
 /**
- * Create a kanban card for a project.
- * Gets board columns first, then creates a card in the first column.
- * Returns the created card object.
- */
-/**
  * Create a thread for a project.
  * Returns the created thread object.
  */
@@ -142,6 +137,11 @@ export async function createThread(projectId, overrides = {}) {
   return res.body;
 }
 
+/**
+ * Create a kanban card for a project.
+ * Gets board columns first, then creates a card in the first column.
+ * Returns the created card object.
+ */
 export async function createCard(projectId, overrides = {}) {
   const request = await getRequest();
 
