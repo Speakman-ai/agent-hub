@@ -14,6 +14,7 @@ import {
 } from './project-model.js';
 
 let originalApiKey;
+const createdProjectIds = [];
 
 beforeAll(async () => {
   // Ensure app is initialized (loads DB, projects, etc.)
@@ -22,7 +23,12 @@ beforeAll(async () => {
   config.apiKey = null;
 });
 
-afterAll(() => {
+afterAll(async () => {
+  // Clean up all test projects so they don't leak into the real project list
+  const request = await getRequest();
+  for (const id of createdProjectIds) {
+    await request.delete(`/api/projects/${id}`).catch(() => {});
+  }
   config.apiKey = originalApiKey;
 });
 
@@ -32,6 +38,7 @@ describe('migrateWebhookRepoToProject', () => {
 
     // Create a project via API
     const projId = `migrate-test-${Date.now()}`;
+    createdProjectIds.push(projId);
     const res = await request
       .post('/api/projects')
       .send({ id: projId, name: 'Migrate Test', cwd: '/tmp', color: '#000' })
@@ -62,6 +69,7 @@ describe('migrateWebhookRepoToProject', () => {
     const request = await getRequest();
 
     const projId = `migrate-noop-${Date.now()}`;
+    createdProjectIds.push(projId);
     await request
       .post('/api/projects')
       .send({ id: projId, name: 'No Overwrite Test', cwd: '/tmp', color: '#111' })
