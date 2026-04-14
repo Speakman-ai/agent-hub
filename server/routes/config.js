@@ -4,6 +4,7 @@ import path from 'path';
 import { promisify } from 'util';
 import { exec, execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
+import { localDateStr } from '../memory.js';
 import {
   getAppInfo,
   getAppInstallations,
@@ -653,7 +654,7 @@ export default function createConfigRoutes(deps) {
       const safeName = project.name.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="${safeName}-export-${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}.json"`,
+        `attachment; filename="${safeName}-export-${localDateStr()}.json"`,
       );
       res.json(exported);
     } catch (err) {
