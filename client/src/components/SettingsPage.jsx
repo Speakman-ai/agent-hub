@@ -2099,6 +2099,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
       schedule: cronJob.schedule,
       prompt: cronJob.prompt,
       cwd: cronJob.cwd || '',
+      project_id: cronJob.project_id || '',
     });
   };
 
@@ -2199,6 +2200,27 @@ function CronSection({ projects = [], onNavigate, showToast }) {
                   rows={3}
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 resize-none"
                 />
+                {projects.length > 0 && (
+                  <select
+                    value={editForm.project_id}
+                    onChange={(e) => {
+                      const proj = projects.find((p) => p.id === e.target.value);
+                      setEditForm({
+                        ...editForm,
+                        project_id: e.target.value,
+                        cwd: proj?.cwd || editForm.cwd,
+                      });
+                    }}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                  >
+                    <option value="">No project</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <input
                   value={editForm.cwd}
                   onChange={(e) => setEditForm({ ...editForm, cwd: e.target.value })}
