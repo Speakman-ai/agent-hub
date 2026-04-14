@@ -917,7 +917,7 @@ function ClaudeAuthSection() {
               <>
                 <span className="text-gray-500">Token Expires</span>
                 <span className={`font-mono ${tokenExpired ? 'text-red-400' : 'text-gray-300'}`}>
-                  {tokenExpired ? 'Expired' : relativeFuture(auth.token.expiresAt)}
+                  {tokenExpired ? 'Expired' : relativeFuture(auth.token.expiresAt).label}
                 </span>
               </>
             )}
