@@ -1768,9 +1768,12 @@ function HeartbeatSection({ onNavigate }) {
       const { thread } = await api.getHeartbeatThread(hb.agentId);
       if (thread) {
         onNavigate('threads', { projectId: thread.project_id, threadId: thread.id, thread });
+      } else {
+        alert('No thread yet — run this heartbeat at least once to create a thread.');
       }
     } catch (e) {
       console.error('Failed to fetch heartbeat thread:', e);
+      alert('Failed to load heartbeat thread.');
     }
   };
 
@@ -2041,9 +2044,12 @@ function CronSection({ onNavigate }) {
       const { thread } = await api.getCronThread(cronJob.id);
       if (thread) {
         onNavigate('threads', { projectId: thread.project_id, threadId: thread.id, thread });
+      } else {
+        alert('No thread yet — run this cron job at least once to create a thread.');
       }
     } catch (e) {
       console.error('Failed to fetch cron thread:', e);
+      alert('Failed to load cron thread.');
     }
   };
 
