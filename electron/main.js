@@ -258,6 +258,16 @@ function createWindow() {
     if (!isAllowed) {
       event.preventDefault();
       shell.openExternal(url);
+      // Safety net: navigate back to the app root if the window is stuck
+      // on a non-app page (e.g. the GitHub App register page's form POST
+      // to github.com). Only reload when necessary to avoid disrupting
+      // the user's current state (scroll position, in-flight work, etc.).
+      const appUrl = isDev
+        ? 'http://localhost:3050'
+        : `http://localhost:${port}`;
+      if (!mainWindow.webContents.getURL().startsWith(appUrl)) {
+        mainWindow.loadURL(appUrl);
+      }
     }
   });
 

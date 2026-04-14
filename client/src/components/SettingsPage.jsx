@@ -1,4 +1,4 @@
-import { useState, useEffect, Component } from 'react';
+import { useState, useEffect, useRef, Component } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import humanCron from '../../../shared/utils/humanCron.js';
@@ -467,6 +467,16 @@ function GitHubAppSection({ config, setConfig }) {
   const [appStatus, setAppStatus] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [showBotFallback, setShowBotFallback] = useState(false);
+  const pollIntervalRef = useRef(null);
+  const pollTimeoutRef = useRef(null);
+
+  // Clean up polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     api
@@ -500,12 +510,40 @@ function GitHubAppSection({ config, setConfig }) {
   }, []);
 
   const handleCreateApp = () => {
-    // Navigate to the server-rendered register page, which auto-submits
-    // the manifest form to GitHub. Using a full page navigation avoids
-    // GitHub's auth redirect dropping the POST body (known issue with
-    // programmatic form.submit() from SPAs).
+    // Open the server-rendered register page in a new window/tab.
+    // In Electron this opens in the system browser (via setWindowOpenHandler),
+    // which avoids navigating the main window away from the SPA — that caused
+    // a black screen because will-navigate blocked the github.com form POST
+    // and left the window stuck on the bare "Redirecting to GitHub…" HTML.
     const base = getServerBase();
-    window.location.href = `${base}/api/github-app/register`;
+    window.open(`${base}/api/github-app/register`, '_blank');
+
+    // Poll for setup completion since the callback will land in the
+    // external browser, not this window (especially in Electron).
+    // Store IDs in refs so they get cleaned up if the component unmounts.
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const status = await api.get('/github-app/status');
+        if (status.configured) {
+          setAppStatus(status);
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+      } catch {
+        /* ignore — keep polling */
+      }
+    }, 3000);
+    // Stop polling after 5 minutes
+    pollTimeoutRef.current = setTimeout(
+      () => {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      },
+      5 * 60 * 1000,
+    );
   };
 
   const handleRefreshInstallation = async () => {
