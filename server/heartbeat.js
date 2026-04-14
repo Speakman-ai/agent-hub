@@ -6,7 +6,7 @@ import config, { buildSpawnEnv } from './config.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
-import { getProjects, findAgent } from './project-model.js';
+import { getProjects } from './project-model.js';
 
 const CLAUDE_BIN = config.claudeBin;
 const SLACK_WEBHOOK_URL = config.slackWebhookUrl;
@@ -34,10 +34,13 @@ export function setBroadcast(fn) {
  * Uses source_id = agent.id to deduplicate.
  */
 function getOrCreateHeartbeatThread(agent) {
-  const found = findAgent(agent.id);
-  if (!found) return null;
-
-  const projectId = found.project.id;
+  const projectId = agent.projectId;
+  if (!projectId) {
+    console.warn(
+      `[Heartbeat] No projectId for agent ${agent.name} (${agent.id}) — skipping thread`,
+    );
+    return null;
+  }
 
   // Look up existing thread by source_id
   let thread = stmts.getThreadBySourceId.get(projectId, 'heartbeat', agent.id);
@@ -316,6 +319,13 @@ export async function runHeartbeat(agent) {
     // Refresh next-run from the live task so the DB reflects the upcoming fire.
     const task = scheduledTasks.get(`heartbeat:${agent.id}`);
     if (task) persistNextRun('heartbeat', agent.id, task);
+    // Keep only the last 100 thread entries per heartbeat thread
+    try {
+      const thread = getOrCreateHeartbeatThread(agent);
+      if (thread) {
+        stmts.pruneThreadEntries.run(thread.id, thread.id);
+      }
+    } catch {}
   }
 }
 

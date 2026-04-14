@@ -1191,6 +1191,11 @@ function initDb(dataDir) {
     ),
     deleteThreadEntry: db.prepare('DELETE FROM thread_entries WHERE id = ?'),
     deleteThreadEntries: db.prepare('DELETE FROM thread_entries WHERE thread_id = ?'),
+    pruneThreadEntries: db.prepare(
+      `DELETE FROM thread_entries WHERE thread_id = ? AND id NOT IN (
+         SELECT id FROM thread_entries WHERE thread_id = ? ORDER BY timestamp DESC LIMIT 100
+       )`,
+    ),
 
     // Skill registry
     getSkillRegistry: db.prepare(
