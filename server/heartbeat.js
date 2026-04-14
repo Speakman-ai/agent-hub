@@ -6,7 +6,7 @@ import config, { buildSpawnEnv } from './config.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
-import { getProjects } from './project-model.js';
+import { getProjects, findAgent } from './project-model.js';
 
 const CLAUDE_BIN = config.claudeBin;
 const SLACK_WEBHOOK_URL = config.slackWebhookUrl;
@@ -21,6 +21,60 @@ const runningHeartbeats = new Set();
 let onCronSessionUpdate = null;
 export function setOnCronSessionUpdate(fn) {
   onCronSessionUpdate = fn;
+}
+
+// Optional callback for broadcasting WebSocket events (set by index.js).
+let broadcastFn = null;
+export function setBroadcast(fn) {
+  broadcastFn = fn;
+}
+
+/**
+ * Get or create a heartbeat thread for an agent.
+ * Uses source_id = agent.id to deduplicate.
+ */
+function getOrCreateHeartbeatThread(agent) {
+  const found = findAgent(agent.id);
+  if (!found) return null;
+
+  const projectId = found.project.id;
+
+  // Look up existing thread by source_id
+  let thread = stmts.getThreadBySourceId.get(projectId, 'heartbeat', agent.id);
+  if (thread) return thread;
+
+  // Auto-create a new thread
+  const id = uuidv4();
+  const name = `${agent.name} heartbeat`;
+  stmts.createThread.run(id, projectId, name, 'heartbeat', agent.id);
+  thread = stmts.getThread.get(id);
+
+  if (broadcastFn) {
+    broadcastFn({ type: 'thread_created', projectId, thread });
+  }
+
+  return thread;
+}
+
+/**
+ * Append heartbeat output to the agent's heartbeat thread.
+ * Creates the thread on first call.
+ */
+function appendToHeartbeatThread(agent, content) {
+  try {
+    const thread = getOrCreateHeartbeatThread(agent);
+    if (!thread) return;
+
+    const entryId = uuidv4();
+    stmts.createThreadEntry.run(entryId, thread.id, content);
+    const entry = stmts.getThreadEntry.get(entryId);
+
+    if (broadcastFn) {
+      broadcastFn({ type: 'thread_entry_created', threadId: thread.id, entry });
+    }
+  } catch (err) {
+    console.error(`[Heartbeat] Failed to append to thread for ${agent.name}:`, err.message);
+  }
 }
 
 /**
@@ -227,12 +281,19 @@ export async function runHeartbeat(agent) {
     stmts.updateHeartbeatLog.run(result, 'success', logId);
     console.log(`[Heartbeat] ${agent.name} completed successfully`);
 
+    // Pipe output into thread
+    appendToHeartbeatThread(agent, result);
+
     await notifySlack(agent.name, result);
     return { id: logId, status: 'success', result };
   } catch (err) {
     const errorMsg = err.message || 'Unknown error';
     stmts.updateHeartbeatLog.run(errorMsg, 'error', logId);
     console.error(`[Heartbeat] ${agent.name} failed:`, errorMsg);
+
+    // Pipe error into thread too
+    appendToHeartbeatThread(agent, `ERROR: ${errorMsg}`);
+
     return { id: logId, status: 'error', result: errorMsg };
   } finally {
     runningHeartbeats.delete(agent.id);

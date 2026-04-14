@@ -1168,6 +1168,9 @@ function initDb(dataDir) {
       'SELECT * FROM threads WHERE project_id = ? AND type = ? ORDER BY created_at DESC',
     ),
     getThread: db.prepare('SELECT * FROM threads WHERE id = ?'),
+    getThreadBySourceId: db.prepare(
+      'SELECT * FROM threads WHERE project_id = ? AND type = ? AND source_id = ?',
+    ),
     createThread: db.prepare(
       'INSERT INTO threads (id, project_id, name, type, source_id) VALUES (?, ?, ?, ?, ?)',
     ),
