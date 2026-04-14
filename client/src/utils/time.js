@@ -1,12 +1,25 @@
 /**
+ * Parse a date value into a Date object.
+ * Handles: ISO strings, SQLite datetime strings (no TZ = UTC), epoch ms numbers.
+ */
+function parseDate(val) {
+  if (!val) return null;
+  // Numeric timestamp (epoch ms)
+  if (typeof val === 'number') return new Date(val);
+  const str = String(val);
+  // If it contains 'T', it's ISO format — Date constructor handles it
+  if (str.includes('T')) return new Date(str);
+  // SQLite datetime format (no timezone) — treat as UTC
+  return new Date(str + 'Z');
+}
+
+/**
  * Format a date string as relative time ("2 min ago", "1h ago", etc.)
  */
 export function relativeTime(dateStr) {
-  if (!dateStr) return '';
+  const d = parseDate(dateStr);
+  if (!d || isNaN(d)) return '';
   const now = new Date();
-  const date = new Date(dateStr);
-  // Handle SQLite datetime format (no timezone = UTC)
-  const d = dateStr.includes('T') ? date : new Date(dateStr + 'Z');
   const diffMs = now - d;
   const diffSec = Math.floor(diffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
@@ -36,9 +49,8 @@ export function formatElapsed(seconds) {
  * Returns { label, overdue } where overdue=true means the date is in the past.
  */
 export function relativeFuture(dateStr) {
-  if (!dateStr) return { label: '', overdue: false };
-  const date = new Date(dateStr);
-  const d = dateStr.includes('T') ? date : new Date(dateStr + 'Z');
+  const d = parseDate(dateStr);
+  if (!d || isNaN(d)) return { label: '', overdue: false };
   const diffMs = d - new Date();
   const overdue = diffMs < 0;
   const absSec = Math.floor(Math.abs(diffMs) / 1000);
