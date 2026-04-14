@@ -357,6 +357,14 @@ export const api = {
     fetchJSON('/tasks', { method: 'POST', body: JSON.stringify({ agentId, prompt }) }),
   stopTask: (taskId) => fetchJSON(`/tasks/${taskId}/stop`, { method: 'POST' }),
 
+  // Threads
+  getThreads: (projectId, type) => {
+    const qs = type ? `?type=${type}` : '';
+    return fetchJSON(`/projects/${projectId}/threads${qs}`);
+  },
+  getThread: (threadId) => fetchJSON(`/threads/${threadId}`),
+  getThreadEntries: (threadId) => fetchJSON(`/threads/${threadId}/entries`),
+
   // Generic helpers (for endpoints without dedicated methods)
   get: (url) => fetchJSON(url),
   post: (url, data) =>

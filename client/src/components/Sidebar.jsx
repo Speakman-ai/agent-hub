@@ -8,6 +8,7 @@ import {
   FileText,
   Trash2,
   GitFork,
+  List,
 } from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
@@ -36,6 +37,7 @@ export default function Sidebar({
   onOpenProject,
   cronSessions = [],
   wikiProjectId,
+  threadsProjectId,
   activeReviews = {},
   subagentsBySession = {},
   deletingSessionIds = new Set(),
@@ -496,6 +498,19 @@ export default function Sidebar({
                     >
                       <FileText size={14} className="flex-shrink-0" />
                       <span className="truncate">Wiki</span>
+                    </button>
+
+                    {/* Project threads */}
+                    <button
+                      onClick={() => onNavigate('threads', project.id)}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                        currentView.startsWith('threads') && threadsProjectId === project.id
+                          ? 'bg-gray-800 text-white'
+                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                      }`}
+                    >
+                      <List size={14} className="flex-shrink-0" />
+                      <span className="truncate">Threads</span>
                     </button>
                   </div>
                 )}

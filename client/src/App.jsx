@@ -14,6 +14,8 @@ import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import KanbanBoard from './components/KanbanBoard.jsx';
 import WikiBrowser from './components/WikiBrowser.jsx';
+import ThreadList from './components/ThreadList.jsx';
+import ThreadView from './components/ThreadView.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { api } from './utils/api.js';
 import {
@@ -88,6 +90,10 @@ export default function App() {
   const [subagents, setSubagents] = useState({});
   // Wiki state
   const [wikiProjectId, setWikiProjectId] = useState(null);
+  // Threads state
+  const [threadsProjectId, setThreadsProjectId] = useState(null);
+  const [activeThreadId, setActiveThreadId] = useState(null);
+  const [activeThread, setActiveThread] = useState(null);
   // Cron-linked sessions (scheduled tasks)
   const [cronSessions, setCronSessions] = useState([]);
   // Skills for the active agent (for /slash-command autocomplete)
@@ -1353,6 +1359,11 @@ export default function App() {
             onNavigate={(view, extra) => {
               setCurrentView(view);
               if (view === 'wiki' && extra) setWikiProjectId(extra);
+              if (view === 'threads' && extra) {
+                setThreadsProjectId(extra);
+                setActiveThreadId(null);
+                setActiveThread(null);
+              }
               setSidebarOpen(false);
             }}
             currentView={currentView}
@@ -1370,6 +1381,7 @@ export default function App() {
             onOpenProject={() => setShowWizard(true)}
             cronSessions={cronSessions}
             wikiProjectId={wikiProjectId}
+            threadsProjectId={threadsProjectId}
             activeReviews={activeReviews}
           />
         </div>
@@ -1420,6 +1432,26 @@ export default function App() {
             />
           ) : currentView === 'wiki' && wikiProjectId ? (
             <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
+          ) : currentView === 'threads' && threadsProjectId ? (
+            activeThreadId ? (
+              <ThreadView
+                key={activeThreadId}
+                threadId={activeThreadId}
+                thread={activeThread}
+                onBack={() => {
+                  setActiveThreadId(null);
+                  setActiveThread(null);
+                }}
+              />
+            ) : (
+              <ThreadList
+                projectId={threadsProjectId}
+                onSelectThread={(thread) => {
+                  setActiveThreadId(thread.id);
+                  setActiveThread(thread);
+                }}
+              />
+            )
           ) : currentView === 'skills' ? (
             <SkillsPage agents={agents} projects={projects} />
           ) : currentView === 'room' && activeRoom ? (
