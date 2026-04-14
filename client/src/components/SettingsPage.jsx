@@ -469,7 +469,7 @@ function GitHubAppSection({ config, setConfig }) {
 
   useEffect(() => {
     api
-      .get('/api/github-app/status')
+      .get('/github-app/status')
       .then(setAppStatus)
       .catch(() => {});
   }, []);
@@ -488,7 +488,7 @@ function GitHubAppSection({ config, setConfig }) {
     if (status === 'ready' || status === 'no-install' || status === 'created') {
       // Refresh status from server to reflect the new app/installation
       api
-        .get('/api/github-app/status')
+        .get('/github-app/status')
         .then(setAppStatus)
         .catch(() => {});
     }
@@ -500,7 +500,7 @@ function GitHubAppSection({ config, setConfig }) {
 
   const handleCreateApp = async () => {
     try {
-      const data = await api.get('/api/github-app/manifest');
+      const data = await api.get('/github-app/manifest');
       // Create a form and submit it to GitHub (manifest flow requires a POST)
       const form = document.createElement('form');
       form.method = 'POST';
@@ -520,7 +520,7 @@ function GitHubAppSection({ config, setConfig }) {
   const handleRefreshInstallation = async () => {
     setRefreshing(true);
     try {
-      const result = await api.post('/api/github-app/refresh-installation');
+      const result = await api.post('/github-app/refresh-installation');
       if (result.installed) {
         setAppStatus((prev) => ({
           ...prev,
@@ -540,7 +540,7 @@ function GitHubAppSection({ config, setConfig }) {
   const handleRemoveApp = async () => {
     if (!confirm('Remove the GitHub App configuration? You can re-create it anytime.')) return;
     try {
-      await api.del('/api/github-app');
+      await api.del('/github-app');
       setAppStatus(null);
       setConfig((prev) => ({ ...prev, githubApp: null }));
     } catch {
@@ -550,7 +550,7 @@ function GitHubAppSection({ config, setConfig }) {
 
   const handleInstallApp = async () => {
     try {
-      const data = await api.get('/api/github-app/install-url');
+      const data = await api.get('/github-app/install-url');
       window.open(data.installUrl, '_blank');
     } catch (err) {
       alert(err.message || 'Failed to get install URL');
