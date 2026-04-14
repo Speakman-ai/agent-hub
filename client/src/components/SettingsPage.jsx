@@ -44,6 +44,16 @@ import {
   ChevronDown,
   ChevronRight,
   X,
+  Key,
+  LogIn,
+  LogOut,
+  Shield,
+  ExternalLink,
+  CheckCircle2,
+  AlertCircle,
+  Copy,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 function OrganizationsSection() {
@@ -674,6 +684,439 @@ function GitHubAppSection({ config, setConfig }) {
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ClaudeAuthSection() {
+  const [auth, setAuth] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [logoutLoading, setLogoutLoading] = useState(false);
+  const [oauthUrl, setOauthUrl] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [apiKeySaving, setApiKeySaving] = useState(false);
+  const [apiKeyValidating, setApiKeyValidating] = useState(false);
+  const [apiKeyStatus, setApiKeyStatus] = useState(null); // { type: 'success'|'error', msg }
+
+  const inputClass =
+    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+
+  const fetchAuth = async () => {
+    try {
+      const data = await api.getClaudeAuth();
+      setAuth(data);
+    } catch {
+      setAuth(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAuth();
+  }, []);
+
+  const handleOAuthLogin = async () => {
+    setLoginLoading(true);
+    setOauthUrl(null);
+    try {
+      const data = await api.startClaudeOAuthLogin();
+      if (data.oauthUrl) {
+        setOauthUrl(data.oauthUrl);
+        window.open(data.oauthUrl, '_blank');
+        // Poll for completion
+        const poll = setInterval(async () => {
+          try {
+            const status = await api.getClaudeAuth();
+            if (status.oauth?.loggedIn) {
+              clearInterval(poll);
+              setAuth(status);
+              setOauthUrl(null);
+              setLoginLoading(false);
+            }
+          } catch {
+            /* keep polling */
+          }
+        }, 3000);
+        // Stop polling after 2 minutes
+        setTimeout(() => {
+          clearInterval(poll);
+          setLoginLoading(false);
+        }, 120_000);
+      } else if (data.completed) {
+        await fetchAuth();
+        setLoginLoading(false);
+      } else {
+        setLoginLoading(false);
+      }
+    } catch {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleCancelLogin = async () => {
+    try {
+      await api.cancelClaudeOAuthLogin();
+    } catch {
+      /* ignore */
+    }
+    setLoginLoading(false);
+    setOauthUrl(null);
+  };
+
+  const handleLogout = async () => {
+    setLogoutLoading(true);
+    try {
+      await api.logoutClaude();
+      await fetchAuth();
+    } catch {
+      /* ignore */
+    }
+    setLogoutLoading(false);
+  };
+
+  const handleSaveApiKey = async () => {
+    setApiKeySaving(true);
+    setApiKeyStatus(null);
+    try {
+      const result = await api.setClaudeApiKey(apiKeyInput);
+      if (result.ok) {
+        setApiKeyStatus({
+          type: 'success',
+          msg: result.masked ? `Saved: ${result.masked}` : 'API key cleared',
+        });
+        setApiKeyInput('');
+        await fetchAuth();
+      }
+    } catch (err) {
+      setApiKeyStatus({ type: 'error', msg: err.message });
+    }
+    setApiKeySaving(false);
+  };
+
+  const handleClearApiKey = async () => {
+    setApiKeySaving(true);
+    setApiKeyStatus(null);
+    try {
+      await api.setClaudeApiKey('');
+      setApiKeyStatus({ type: 'success', msg: 'API key cleared' });
+      await fetchAuth();
+    } catch (err) {
+      setApiKeyStatus({ type: 'error', msg: err.message });
+    }
+    setApiKeySaving(false);
+  };
+
+  const handleValidateApiKey = async () => {
+    if (!apiKeyInput) return;
+    setApiKeyValidating(true);
+    setApiKeyStatus(null);
+    try {
+      const result = await api.validateClaudeApiKey(apiKeyInput);
+      setApiKeyStatus({
+        type: result.valid ? 'success' : 'error',
+        msg: result.output,
+      });
+    } catch (err) {
+      setApiKeyStatus({ type: 'error', msg: err.message });
+    }
+    setApiKeyValidating(false);
+  };
+
+  const handleCopyUrl = () => {
+    if (oauthUrl) {
+      navigator.clipboard.writeText(oauthUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  if (loading) return <p className="text-sm text-gray-500">Loading auth status...</p>;
+
+  const isOAuthLoggedIn = auth?.oauth?.loggedIn;
+  const email = auth?.oauth?.email;
+  const orgName = auth?.oauth?.orgName;
+  const subscriptionType = auth?.oauth?.subscriptionType || auth?.token?.subscriptionType;
+  const rateLimitTier = auth?.token?.rateLimitTier;
+  const tokenExpired = auth?.token?.expired;
+  const apiKeyConfigured = auth?.apiKey?.configured;
+  const apiKeySource = auth?.apiKey?.source;
+  const activeMethod = auth?.activeMethod;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold mb-1">Claude Code Authentication</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Manage how Agent Hub authenticates with Claude Code. OAuth is the default method; an API
+          key can be used as an alternative.
+        </p>
+      </div>
+
+      {/* Active Method Badge */}
+      <div className="bg-gray-800 rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <Shield size={16} /> Authentication Status
+          </h4>
+          <span
+            className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+              activeMethod === 'oauth'
+                ? 'bg-emerald-500/15 text-emerald-400'
+                : activeMethod === 'api-key'
+                  ? 'bg-blue-500/15 text-blue-400'
+                  : 'bg-red-500/15 text-red-400'
+            }`}
+          >
+            {activeMethod === 'oauth'
+              ? 'OAuth Active'
+              : activeMethod === 'api-key'
+                ? 'API Key Active'
+                : 'Not Authenticated'}
+          </span>
+        </div>
+
+        {(isOAuthLoggedIn || apiKeyConfigured) && (
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            {email && (
+              <>
+                <span className="text-gray-500">Email</span>
+                <span className="text-gray-300 font-mono">{email}</span>
+              </>
+            )}
+            {orgName && orgName !== email && (
+              <>
+                <span className="text-gray-500">Organization</span>
+                <span className="text-gray-300 font-mono">{orgName}</span>
+              </>
+            )}
+            {subscriptionType && (
+              <>
+                <span className="text-gray-500">Plan</span>
+                <span className="text-gray-300 font-mono capitalize">{subscriptionType}</span>
+              </>
+            )}
+            {rateLimitTier && (
+              <>
+                <span className="text-gray-500">Rate Limit Tier</span>
+                <span className="text-gray-300 font-mono">{rateLimitTier}</span>
+              </>
+            )}
+            {apiKeyConfigured && (
+              <>
+                <span className="text-gray-500">API Key Source</span>
+                <span className="text-gray-300 font-mono capitalize">{apiKeySource}</span>
+              </>
+            )}
+            {auth?.token?.expiresAt && (
+              <>
+                <span className="text-gray-500">Token Expires</span>
+                <span className={`font-mono ${tokenExpired ? 'text-red-400' : 'text-gray-300'}`}>
+                  {tokenExpired ? 'Expired' : relativeFuture(auth.token.expiresAt)}
+                </span>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* OAuth Section */}
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <LogIn size={16} /> OAuth Login
+        </h4>
+
+        {isOAuthLoggedIn ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-emerald-400">
+              <CheckCircle2 size={16} />
+              <span>
+                Logged in as <span className="font-mono font-medium">{email}</span>
+              </span>
+            </div>
+            <button
+              onClick={handleLogout}
+              disabled={logoutLoading}
+              className="flex items-center gap-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-sm px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {logoutLoading ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <LogOut size={14} />
+              )}
+              {logoutLoading ? 'Logging out...' : 'Logout'}
+            </button>
+          </div>
+        ) : loginLoading ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-blue-400">
+              <Loader2 size={16} className="animate-spin" />
+              <span>Waiting for OAuth completion...</span>
+            </div>
+            {oauthUrl && (
+              <div className="bg-gray-900 rounded-lg p-3 space-y-2">
+                <p className="text-xs text-gray-400">
+                  A browser tab should have opened. If not, copy and open this URL:
+                </p>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-xs text-blue-400 break-all">{oauthUrl}</code>
+                  <button
+                    onClick={handleCopyUrl}
+                    className="text-gray-400 hover:text-white p-1 shrink-0"
+                    title="Copy URL"
+                  >
+                    {copied ? (
+                      <CheckCircle2 size={14} className="text-emerald-400" />
+                    ) : (
+                      <Copy size={14} />
+                    )}
+                  </button>
+                  <a
+                    href={oauthUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-gray-400 hover:text-white p-1 shrink-0"
+                    title="Open in new tab"
+                  >
+                    <ExternalLink size={14} />
+                  </a>
+                </div>
+              </div>
+            )}
+            <button
+              onClick={handleCancelLogin}
+              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs text-gray-500">
+              Log in via OAuth to authenticate with claude.ai. This opens a browser tab to complete
+              the login.
+            </p>
+            <button
+              onClick={handleOAuthLogin}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+            >
+              <LogIn size={14} />
+              Start OAuth Login
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* API Key Section */}
+      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <Key size={16} /> API Key
+        </h4>
+        <p className="text-xs text-gray-500">
+          Alternative to OAuth — set an Anthropic API key that gets passed to all spawned Claude
+          Code processes.
+        </p>
+
+        {apiKeyConfigured && (
+          <div className="flex items-center justify-between bg-gray-900 rounded-lg p-3">
+            <div className="flex items-center gap-2 text-sm">
+              <CheckCircle2 size={14} className="text-emerald-400" />
+              <span className="text-gray-300">
+                API key configured
+                <span className="text-gray-500 ml-1">({apiKeySource})</span>
+              </span>
+            </div>
+            {apiKeySource === 'config' && (
+              <button
+                onClick={handleClearApiKey}
+                disabled={apiKeySaving}
+                className="text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
+              >
+                {apiKeySaving ? 'Clearing...' : 'Clear'}
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="space-y-2">
+          <div className="relative">
+            <input
+              type={showApiKey ? 'text' : 'password'}
+              value={apiKeyInput}
+              onChange={(e) => {
+                setApiKeyInput(e.target.value);
+                setApiKeyStatus(null);
+              }}
+              className={`${inputClass} pr-10 text-xs`}
+              placeholder="sk-ant-api03-..."
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+            />
+            <button
+              onClick={() => setShowApiKey(!showApiKey)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 p-1"
+            >
+              {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleValidateApiKey}
+              disabled={!apiKeyInput || apiKeyValidating}
+              className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+            >
+              {apiKeyValidating ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Shield size={12} />
+              )}
+              {apiKeyValidating ? 'Validating...' : 'Validate'}
+            </button>
+            <button
+              onClick={handleSaveApiKey}
+              disabled={!apiKeyInput || apiKeySaving}
+              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+            >
+              {apiKeySaving ? <Loader2 size={12} className="animate-spin" /> : null}
+              {apiKeySaving ? 'Saving...' : 'Save Key'}
+            </button>
+          </div>
+
+          {apiKeyStatus && (
+            <div
+              className={`flex items-center gap-2 text-xs mt-1 ${
+                apiKeyStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+              }`}
+            >
+              {apiKeyStatus.type === 'success' ? (
+                <CheckCircle2 size={12} />
+              ) : (
+                <AlertCircle size={12} />
+              )}
+              <span>{apiKeyStatus.msg}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Refresh */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => {
+            setLoading(true);
+            fetchAuth();
+          }}
+          className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+        >
+          <RefreshCw size={12} />
+          Refresh status
+        </button>
       </div>
     </div>
   );
@@ -3911,6 +4354,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
 
   const tabs = [
     { id: 'general', icon: <SettingsIcon size={16} />, text: 'General' },
+    { id: 'claude-auth', icon: <Key size={16} />, text: 'Auth' },
     { id: 'github', icon: <GitBranch size={16} />, text: 'GitHub' },
     { id: 'orgs', icon: <Building2 size={16} />, text: 'Organizations' },
     { id: 'agents', icon: <Bot size={16} />, text: 'Agents' },
@@ -3947,6 +4391,7 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
         </div>
 
         {tab === 'general' && <GeneralSection />}
+        {tab === 'claude-auth' && <ClaudeAuthSection />}
         {tab === 'github' && (
           <GitHubSection projects={projects} onProjectsChange={onAgentsChange} />
         )}
