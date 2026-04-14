@@ -41,9 +41,8 @@ export function generateJWT(appId, privateKey) {
 // ─── Installation Token Cache ───────────────────────────────────────────────
 // Installation tokens are valid for 1 hour. We cache and refresh 5 min early.
 
-let cachedToken = null;
-let cachedTokenExpiry = 0;
-let cachedInstallationId = null;
+/** Per-installation token cache: installationId (string) → { token, expiry } */
+const tokenCache = new Map();
 
 /**
  * Get a valid installation access token, refreshing if needed.
@@ -53,14 +52,11 @@ let cachedInstallationId = null;
  * @returns {Promise<string>} Installation access token
  */
 export async function getInstallationToken(appId, privateKey, installationId) {
-  // Return cached token if it's still valid (with 5-min buffer) and matches this installation
+  const key = String(installationId);
   const now = Date.now();
-  if (
-    cachedToken &&
-    cachedTokenExpiry > now + 5 * 60 * 1000 &&
-    String(cachedInstallationId) === String(installationId)
-  ) {
-    return cachedToken;
+  const cached = tokenCache.get(key);
+  if (cached && cached.expiry > now + 5 * 60 * 1000) {
+    return cached.token;
   }
 
   const jwt = generateJWT(appId, privateKey);
@@ -82,20 +78,39 @@ export async function getInstallationToken(appId, privateKey, installationId) {
   }
 
   const data = await res.json();
-  cachedToken = data.token;
-  cachedTokenExpiry = new Date(data.expires_at).getTime();
-  cachedInstallationId = installationId;
-  console.log(`[GitHub App] Installation token refreshed, expires at ${data.expires_at}`);
-  return cachedToken;
+  const expiry = new Date(data.expires_at).getTime();
+  tokenCache.set(key, { token: data.token, expiry });
+  console.log(
+    `[GitHub App] Installation token refreshed for ${installationId}, expires at ${data.expires_at}`,
+  );
+  return data.token;
 }
 
 /**
  * Clear the cached installation token (e.g. on config change).
  */
 export function clearTokenCache() {
-  cachedToken = null;
-  cachedTokenExpiry = 0;
-  cachedInstallationId = null;
+  tokenCache.clear();
+}
+
+/**
+ * Resolve the correct installation ID for a given repo owner.
+ * Searches the `installations` array first, falls back to the legacy
+ * top-level `installationId`.
+ * @param {object} githubAppConfig - config.githubApp
+ * @param {string} [owner] - GitHub account/org that owns the repo
+ * @returns {string|number|null} installation ID, or null if none found
+ */
+export function resolveInstallationId(githubAppConfig, owner) {
+  if (!githubAppConfig) return null;
+  if (owner && Array.isArray(githubAppConfig.installations)) {
+    const match = githubAppConfig.installations.find(
+      (inst) => inst.account?.toLowerCase() === owner.toLowerCase(),
+    );
+    if (match) return match.id;
+  }
+  // Fallback: legacy single installationId
+  return githubAppConfig.installationId || null;
 }
 
 // ─── App Manifest ───────────────────────────────────────────────────────────
@@ -114,7 +129,7 @@ export function buildAppManifest(serverUrl) {
     hook_attributes: { url: `${base}/api/webhooks/github`, active: true },
     description:
       'Automated PR reviews and merges for Agent Hub. Submits formal GitHub reviews (approve/request-changes) and merges approved PRs.',
-    public: false,
+    public: true,
     setup_url: `${base}/api/github-app/setup-complete`,
     request_oauth_on_install: false,
     default_permissions: {

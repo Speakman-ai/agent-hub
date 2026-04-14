@@ -176,7 +176,10 @@ const config = {
    *  Primary method for formal PR reviews — one-click setup, no separate account needed.
    *  Stored in config.json after the manifest callback completes. */
   githubApp: fileConfig.githubApp || null,
-  // Shape: { appId, appSlug, privateKey, webhookSecret, clientId, clientSecret, installationId }
+  // Shape: { appId, appSlug, privateKey, webhookSecret, clientId, clientSecret,
+  //          installationId,  // legacy single installation (backward compat)
+  //          installations: [{ id, account, accountType }]  // all installations
+  //        }
 
   // ── Auth ───────────────────────────────────────────────────────
   /** Optional API key for securing remote access */

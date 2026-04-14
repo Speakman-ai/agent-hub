@@ -94,6 +94,7 @@ describe('leadReviewPR — review prompt routing', () => {
         appSlug: 'agent-hub-reviewer',
         privateKey: '-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----',
         installationId: '67890',
+        installations: [{ id: '67890', account: 'owner', accountType: 'User' }],
       },
     });
     initAutonomous(mockDeps);

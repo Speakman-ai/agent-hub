@@ -49,7 +49,9 @@ export default function createConfigRoutes(deps) {
         ? {
             appId: config.githubApp.appId,
             appSlug: config.githubApp.appSlug || getGhAppSlug() || null,
-            hasInstallation: !!config.githubApp.installationId,
+            hasInstallation:
+              !!config.githubApp.installationId || config.githubApp.installations?.length > 0,
+            installations: config.githubApp.installations || [],
           }
         : null,
       // Bot GitHub account (fallback) — only expose whether it's configured
@@ -264,12 +266,19 @@ export default function createConfigRoutes(deps) {
         clientSecret: appData.client_secret,
       };
 
-      // Try to find an existing installation
+      // Try to find existing installations
       try {
         const installations = await getAppInstallations(appData.id, appData.pem);
         if (installations.length > 0) {
           githubAppConfig.installationId = installations[0].id;
-          console.log(`[GitHub App] Found installation: ${installations[0].id}`);
+          githubAppConfig.installations = installations.map((inst) => ({
+            id: inst.id,
+            account: inst.account?.login,
+            accountType: inst.account?.type,
+          }));
+          console.log(
+            `[GitHub App] Found ${installations.length} installation(s): ${installations.map((i) => i.account?.login).join(', ')}`,
+          );
         }
       } catch {
         // No installations yet — user still needs to install the app
@@ -345,6 +354,11 @@ export default function createConfigRoutes(deps) {
       }
 
       app.installationId = installations[0].id;
+      app.installations = installations.map((inst) => ({
+        id: inst.id,
+        account: inst.account?.login,
+        accountType: inst.account?.type,
+      }));
       config.githubApp = app;
 
       // Persist to config.json
@@ -359,12 +373,12 @@ export default function createConfigRoutes(deps) {
       writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
 
       console.log(
-        `[GitHub App] Installation refreshed: ${installations[0].id} (account: ${installations[0].account?.login})`,
+        `[GitHub App] Installation refreshed: ${installations.length} installation(s) — ${installations.map((i) => i.account?.login).join(', ')}`,
       );
       res.json({
         installed: true,
         installationId: installations[0].id,
-        account: installations[0].account?.login,
+        installations: app.installations,
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -390,6 +404,11 @@ export default function createConfigRoutes(deps) {
       const installations = await getAppInstallations(app.appId, app.privateKey);
       if (installations.length > 0) {
         app.installationId = installations[0].id;
+        app.installations = installations.map((inst) => ({
+          id: inst.id,
+          account: inst.account?.login,
+          accountType: inst.account?.type,
+        }));
         config.githubApp = app;
 
         // Persist to config.json
@@ -404,7 +423,7 @@ export default function createConfigRoutes(deps) {
         writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
 
         console.log(
-          `[GitHub App] Auto-setup complete — installation ${installations[0].id} (account: ${installations[0].account?.login})`,
+          `[GitHub App] Auto-setup complete — ${installations.length} installation(s): ${installations.map((i) => i.account?.login).join(', ')}`,
         );
         return res.redirect(`${clientUrl}/#/settings?githubApp=ready`);
       }
@@ -436,8 +455,10 @@ export default function createConfigRoutes(deps) {
       configured: true,
       appId: app.appId,
       appSlug: app.appSlug || null,
-      hasInstallation: !!app.installationId,
+      hasInstallation:
+        !!app.installationId || (Array.isArray(app.installations) && app.installations.length > 0),
       installationId: app.installationId || null,
+      installations: app.installations || [],
     };
 
     // Verify the app is still valid (cached)
@@ -529,6 +550,20 @@ export default function createConfigRoutes(deps) {
       installationId,
     };
 
+    // Populate full installations array
+    try {
+      const allInstallations = await getAppInstallations(appId, privateKey);
+      if (allInstallations.length > 0) {
+        githubAppConfig.installations = allInstallations.map((inst) => ({
+          id: inst.id,
+          account: inst.account?.login,
+          accountType: inst.account?.type,
+        }));
+      }
+    } catch {
+      // Could not fetch installations — proceed with single installationId
+    }
+
     // Save to config.json
     const configPath = path.join(config.dataDir, 'config.json');
     let fileConfig = {};
@@ -590,7 +625,9 @@ export default function createConfigRoutes(deps) {
           ? {
               appId: config.githubApp.appId,
               appSlug: config.githubApp.appSlug || getGhAppSlug() || null,
-              hasInstallation: !!config.githubApp.installationId,
+              hasInstallation:
+                !!config.githubApp.installationId || config.githubApp.installations?.length > 0,
+              installations: config.githubApp.installations || [],
             }
           : null,
         botUser: getGhBotUser() || null,

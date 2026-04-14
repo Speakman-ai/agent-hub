@@ -19,7 +19,7 @@ import { getOrCreateBoard } from './routes/board.js';
 import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
 import { defaultModelForEngine } from './config.js';
 import { removeWorkspace } from './worktree.js';
-import { githubApiRequest } from './github-app.js';
+import { githubApiRequest, resolveInstallationId } from './github-app.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -488,7 +488,8 @@ export function triggerReviewForCard(cardId, project) {
 function hasGitHubApp() {
   const config = deps.getConfig();
   const app = config.githubApp;
-  return !!(app?.appId && app?.privateKey && app?.installationId);
+  if (!(app?.appId && app?.privateKey)) return false;
+  return !!(app.installationId || (app.installations && app.installations.length > 0));
 }
 
 /**
@@ -574,12 +575,17 @@ export async function submitGitHubReview(prUrl, event, body) {
     try {
       const config = deps.getConfig();
       const app = config.githubApp;
+      const instId = resolveInstallationId(app, pr.owner);
+      if (!instId) {
+        console.log(`[Review] No GitHub App installation found for owner "${pr.owner}" — skipping`);
+        return false;
+      }
       await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`, {
         method: 'POST',
         body: { event, body },
         appId: app.appId,
         privateKey: app.privateKey,
-        installationId: app.installationId,
+        installationId: instId,
       });
       const ghAppSlug = deps.getGhAppSlug();
       console.log(
@@ -702,12 +708,17 @@ export async function mergeApprovedPR(prUrl) {
     try {
       const config = deps.getConfig();
       const app = config.githubApp;
+      const instId = resolveInstallationId(app, pr.owner);
+      if (!instId) {
+        console.log(`[Review] No GitHub App installation found for owner "${pr.owner}" — skipping`);
+        return false;
+      }
       await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/merge`, {
         method: 'PUT',
         body: { merge_method: 'squash' },
         appId: app.appId,
         privateKey: app.privateKey,
-        installationId: app.installationId,
+        installationId: instId,
       });
       const ghAppSlug = deps.getGhAppSlug();
       console.log(`[Review] PR #${pr.number} merged via GitHub App (${ghAppSlug})`);
@@ -716,7 +727,7 @@ export async function mergeApprovedPR(prUrl) {
         const prData = await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`, {
           appId: app.appId,
           privateKey: app.privateKey,
-          installationId: app.installationId,
+          installationId: instId,
         });
         if (prData.head?.ref) {
           await githubApiRequest(
@@ -725,7 +736,7 @@ export async function mergeApprovedPR(prUrl) {
               method: 'DELETE',
               appId: app.appId,
               privateKey: app.privateKey,
-              installationId: app.installationId,
+              installationId: instId,
             },
           );
         }
