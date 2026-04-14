@@ -1,5 +1,14 @@
 import { useState, useRef } from 'react';
-import { Building2, BookOpen, Settings, Clock, LayoutGrid, FileText, Trash2 } from 'lucide-react';
+import {
+  Building2,
+  BookOpen,
+  Settings,
+  Clock,
+  LayoutGrid,
+  FileText,
+  Trash2,
+  GitFork,
+} from 'lucide-react';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
 
@@ -28,6 +37,7 @@ export default function Sidebar({
   cronSessions = [],
   wikiProjectId,
   activeReviews = {},
+  subagentsBySession = {},
   deletingSessionIds = new Set(),
   deletingBulk = null,
 }) {
@@ -328,6 +338,15 @@ export default function Sidebar({
                                               className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
                                               title="Task running"
                                             />
+                                          )}
+                                          {subagentsBySession[session.id]?.running > 0 && (
+                                            <span
+                                              className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
+                                              title={`${subagentsBySession[session.id].running} subagent${subagentsBySession[session.id].running === 1 ? '' : 's'} running`}
+                                            >
+                                              <GitFork size={10} />
+                                              {subagentsBySession[session.id].running}
+                                            </span>
                                           )}
                                           <span className="truncate">{session.name}</span>
                                         </button>

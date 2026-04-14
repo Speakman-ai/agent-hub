@@ -20,6 +20,8 @@ import {
   MessageCircle,
   AlertTriangle,
   Timer,
+  GitFork,
+  Cpu,
 } from 'lucide-react';
 
 /**
@@ -109,6 +111,8 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded })
                 return <SystemBanner key={`b${i}`} system={block.event} />;
               case 'thinking':
                 return <ThinkingBlock key={`b${i}`} text={block.event.text} />;
+              case 'subagent':
+                return <SubagentCard key={`b${i}`} use={block.use} result={block.result} />;
               case 'tool':
                 return <ToolCard key={`b${i}`} use={block.use} result={block.result} />;
               case 'text':
@@ -181,7 +185,12 @@ function eventsToBlocks(events) {
     } else if (t === 'thinking') {
       blocks.push({ kind: 'thinking', event });
     } else if (t === 'tool_use') {
-      blocks.push({ kind: 'tool', use: event, result: resultByToolId[event.id] });
+      const isSubagent = event.tool === 'Task' || event.tool === 'Agent';
+      blocks.push({
+        kind: isSubagent ? 'subagent' : 'tool',
+        use: event,
+        result: resultByToolId[event.id],
+      });
     } else if (t === 'result') {
       blocks.push({ kind: 'result', event });
     } else if (t === 'rate_limit') {
@@ -365,6 +374,115 @@ function ToolCard({ use, result }) {
               >
                 {result.output || '(empty)'}
               </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Subagent type labels and colors ──────────────────────────────────
+const SUBAGENT_TYPES = {
+  'general-purpose': { label: 'General', color: 'text-indigo-400' },
+  Explore: { label: 'Explore', color: 'text-cyan-400' },
+  Plan: { label: 'Plan', color: 'text-amber-400' },
+  'code-reviewer': { label: 'Reviewer', color: 'text-emerald-400' },
+};
+
+function SubagentCard({ use, result }) {
+  const [open, setOpen] = useState(false);
+  const input = use.input ?? {};
+  const subagentType = input.subagent_type || 'general-purpose';
+  const description = input.description || 'Subagent task';
+  const model = input.model || null;
+  const background = input.run_in_background || false;
+  const isolation = input.isolation || null;
+  const errored = result?.isError;
+  const stillRunning = !result;
+  const typeInfo = SUBAGENT_TYPES[subagentType] || {
+    label: subagentType,
+    color: 'text-gray-400',
+  };
+
+  return (
+    <div
+      className={`border rounded-lg overflow-hidden border-indigo-700/60 bg-indigo-950/20 ${errored ? 'border-red-700/80' : ''}`}
+    >
+      {/* Header */}
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-black/20"
+      >
+        <span className="flex-shrink-0 text-indigo-400">
+          <GitFork size={16} />
+        </span>
+        <span className="font-mono font-semibold text-indigo-300 flex-shrink-0">Subagent</span>
+        <span
+          className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-gray-800/80 ${typeInfo.color}`}
+        >
+          {typeInfo.label}
+        </span>
+        <span className="text-gray-400 truncate flex-1">{description}</span>
+        {stillRunning && (
+          <span className="flex items-center gap-1 text-indigo-400 text-[10px] animate-pulse">
+            <Cpu size={10} />
+            running…
+          </span>
+        )}
+        {!stillRunning && !errored && <span className="text-emerald-400 text-[10px]">✓ done</span>}
+        {errored && <span className="text-red-400 text-[10px] uppercase tracking-wide">error</span>}
+        <span className="text-gray-500 text-2xl leading-none flex items-center">
+          {open ? '▼' : '▶'}
+        </span>
+      </button>
+
+      {/* Metadata badges row */}
+      <div className="flex items-center gap-2 px-3 pb-1.5 text-[10px] text-gray-500">
+        {model && (
+          <span className="bg-gray-800/60 px-1.5 py-0.5 rounded">
+            {model.replace('claude-', '').replace(/-/g, ' ')}
+          </span>
+        )}
+        {background && <span className="bg-gray-800/60 px-1.5 py-0.5 rounded">background</span>}
+        {isolation && (
+          <span className="bg-gray-800/60 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+            <GitFork size={8} /> {isolation}
+          </span>
+        )}
+      </div>
+
+      {/* Expanded content */}
+      {open && (
+        <div className="border-t border-indigo-900/40 p-3 space-y-2">
+          {/* Prompt */}
+          {input.prompt && (
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">prompt</div>
+              <div className="text-xs text-gray-300 bg-black/30 rounded p-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words">
+                {input.prompt}
+              </div>
+            </div>
+          )}
+          {/* Result — rendered as markdown for readability */}
+          {result && (
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">
+                {errored ? 'error' : 'result'}
+              </div>
+              <div
+                className={`text-xs rounded p-2 max-h-96 overflow-y-auto ${errored ? 'bg-red-950/40 text-red-300' : 'bg-black/30 text-gray-300 markdown-content'}`}
+              >
+                {errored ? (
+                  <pre className="whitespace-pre-wrap break-words">
+                    {result.output || '(empty)'}
+                  </pre>
+                ) : (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                    {result.output || '(empty)'}
+                  </ReactMarkdown>
+                )}
+              </div>
             </div>
           )}
         </div>

@@ -77,6 +77,8 @@ export default function App() {
   const [delegations, setDelegations] = useState({});
   // Rate-limit throttle state: Map of sessionId -> { active, retryAfterMs, clearedAt }
   const [throttle, setThrottle] = useState({});
+  // Subagent tracking: Map of sessionId -> { total, running, done, errored }
+  const [subagents, setSubagents] = useState({});
   // Wiki state
   const [wikiProjectId, setWikiProjectId] = useState(null);
   // Cron-linked sessions (scheduled tasks)
@@ -287,6 +289,44 @@ export default function App() {
           return { ...prev, [messageId]: next };
         });
 
+        // Track subagent spawns and completions per session
+        if (event?.type === 'tool_use' && (event.tool === 'Task' || event.tool === 'Agent')) {
+          const sid = data.sessionId;
+          setSubagents((prev) => {
+            const entry = prev[sid] || {
+              total: 0,
+              running: 0,
+              done: 0,
+              errored: 0,
+              ids: new Set(),
+            };
+            if (entry.ids.has(event.id)) return prev; // dedup
+            const next = {
+              ...entry,
+              total: entry.total + 1,
+              running: entry.running + 1,
+              ids: new Set(entry.ids),
+            };
+            next.ids.add(event.id);
+            return { ...prev, [sid]: next };
+          });
+        }
+        if (event?.type === 'tool_result') {
+          const sid = data.sessionId;
+          setSubagents((prev) => {
+            const entry = prev[sid];
+            if (!entry || entry.running <= 0) return prev;
+            return {
+              ...prev,
+              [sid]: {
+                ...entry,
+                running: entry.running - 1,
+                ...(event.isError ? { errored: entry.errored + 1 } : { done: entry.done + 1 }),
+              },
+            };
+          });
+        }
+
         // Track rate-limit throttle state per session
         if (event?.type === 'rate_limit') {
           const sid = data.sessionId;
@@ -314,6 +354,13 @@ export default function App() {
         });
         // Clear throttle state for completed session
         setThrottle((prev) => {
+          if (!prev[data.sessionId]) return prev;
+          const next = { ...prev };
+          delete next[data.sessionId];
+          return next;
+        });
+        // Clear subagent tracking for completed session
+        setSubagents((prev) => {
           if (!prev[data.sessionId]) return prev;
           const next = { ...prev };
           delete next[data.sessionId];
@@ -1289,6 +1336,7 @@ export default function App() {
             }}
             currentView={currentView}
             activeTaskSessionIds={activeTasks}
+            subagentsBySession={subagents}
             rooms={rooms}
             activeRoomId={activeRoomId}
             onSelectRoom={(id) => {
