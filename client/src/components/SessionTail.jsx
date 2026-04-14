@@ -21,6 +21,8 @@ import {
   AlertTriangle,
   GitFork,
   Cpu,
+  Timer,
+  Bookmark,
 } from 'lucide-react';
 
 /**
@@ -40,7 +42,7 @@ import {
  *   onEventsLoaded(messageId, events) — called after a successful HTTP fetch,
  *                  so the parent can hoist the events into shared state
  */
-function SessionTail({ message, events, agentColor, streaming, onEventsLoaded }) {
+function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, verboseMode }) {
   const messageId = message?.id;
 
   // If we don't have events yet AND this isn't a live stream, lazy-fetch them.
@@ -67,7 +69,7 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded })
     };
   }, [messageId, events, streaming, onEventsLoaded]);
 
-  const blocks = useMemo(() => eventsToBlocks(events ?? []), [events]);
+  const blocks = useMemo(() => eventsToBlocks(events ?? [], verboseMode), [events, verboseMode]);
   const hasEvents = !!events && events.length > 0;
 
   // Fallback: when there are no events to render (either truly legacy, or
@@ -109,15 +111,35 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded })
               case 'system':
                 return <SystemBanner key={`b${i}`} system={block.event} />;
               case 'thinking':
-                return <ThinkingBlock key={`b${i}`} text={block.event.text} />;
+                return (
+                  <ThinkingBlock key={`b${i}`} text={block.event.text} defaultOpen={verboseMode} />
+                );
               case 'subagent':
-                return <SubagentCard key={`b${i}`} use={block.use} result={block.result} />;
+                return (
+                  <SubagentCard
+                    key={`b${i}`}
+                    use={block.use}
+                    result={block.result}
+                    defaultOpen={verboseMode}
+                  />
+                );
               case 'tool':
-                return <ToolCard key={`b${i}`} use={block.use} result={block.result} />;
+                return (
+                  <ToolCard
+                    key={`b${i}`}
+                    use={block.use}
+                    result={block.result}
+                    defaultOpen={verboseMode}
+                  />
+                );
               case 'text':
                 return <TextBubble key={`b${i}`} text={block.text} />;
               case 'result':
                 return <ResultFooter key={`b${i}`} result={block.event} />;
+              case 'checkpoint':
+                return <CheckpointBlock key={`b${i}`} event={block.event} />;
+              case 'rate_limit':
+                return <RateLimitBlock key={`b${i}`} event={block.event} />;
               case 'error':
                 return <ErrorBlock key={`b${i}`} message={block.event.message} />;
               case 'unknown':
@@ -141,7 +163,7 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded })
  * partial-vs-final precedence rule (final wins; partials are the streaming
  * preview that gets replaced when the final arrives).
  */
-function eventsToBlocks(events) {
+function eventsToBlocks(events, verbose) {
   const blocks = [];
 
   // First pass: index tool_results by tool_use_id for pairing.
@@ -177,8 +199,8 @@ function eventsToBlocks(events) {
     flushText();
 
     if (t === 'tool_result') continue; // shown inside its paired tool card
-    if (t === 'checkpoint') continue; // internal restore-point bookkeeping
-    if (t === 'rate_limit') continue; // no visual representation
+    if (t === 'checkpoint' && !verbose) continue; // internal restore-point bookkeeping
+    if (t === 'rate_limit' && !verbose) continue; // no visual representation
     if (t === 'system') {
       blocks.push({ kind: 'system', event });
     } else if (t === 'thinking') {
@@ -190,6 +212,10 @@ function eventsToBlocks(events) {
         use: event,
         result: resultByToolId[event.id],
       });
+    } else if (t === 'checkpoint') {
+      blocks.push({ kind: 'checkpoint', event });
+    } else if (t === 'rate_limit') {
+      blocks.push({ kind: 'rate_limit', event });
     } else if (t === 'result') {
       blocks.push({ kind: 'result', event });
     } else if (t === 'error') {
@@ -284,8 +310,8 @@ function SystemBanner({ system }) {
   );
 }
 
-function ThinkingBlock({ text }) {
-  const [open, setOpen] = useState(false);
+function ThinkingBlock({ text, defaultOpen }) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
   return (
     <div className="bg-gray-900/40 border border-gray-800 rounded-lg overflow-hidden">
       <button
@@ -324,8 +350,8 @@ const TOOL_STYLES = {
   NotebookEdit: { color: 'border-amber-700/60 bg-amber-950/30', icon: <BookOpen size={16} /> },
 };
 
-function ToolCard({ use, result }) {
-  const [open, setOpen] = useState(false);
+function ToolCard({ use, result, defaultOpen }) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
   const style = TOOL_STYLES[use.tool] || {
     color: 'border-gray-700/60 bg-gray-900/40',
     icon: <Wrench size={16} />,
@@ -387,8 +413,8 @@ const SUBAGENT_TYPES = {
   'code-reviewer': { label: 'Reviewer', color: 'text-emerald-400' },
 };
 
-function SubagentCard({ use, result }) {
-  const [open, setOpen] = useState(false);
+function SubagentCard({ use, result, defaultOpen }) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
   const input = use.input ?? {};
   const subagentType = input.subagent_type || 'general-purpose';
   const description = input.description || 'Subagent task';
@@ -567,6 +593,29 @@ function ResultFooter({ result }) {
       </span>
       <span>·</span>
       <span>{parts.join(' · ')}</span>
+    </div>
+  );
+}
+
+function CheckpointBlock({ event }) {
+  return (
+    <div className="flex items-center gap-2 text-[10px] text-gray-600 font-mono px-2 py-1 bg-gray-900/30 rounded border border-gray-800/50">
+      <Bookmark size={10} />
+      <span>checkpoint</span>
+      {event.uuid && <span className="text-gray-700 truncate">{event.uuid.slice(0, 12)}…</span>}
+      {typeof event.turnIndex === 'number' && <span>· turn {event.turnIndex}</span>}
+    </div>
+  );
+}
+
+function RateLimitBlock({ event }) {
+  const seconds = event.retryAfterMs ? Math.ceil(event.retryAfterMs / 1000) : null;
+  return (
+    <div className="flex items-center gap-2 text-[10px] text-amber-500/80 font-mono px-2 py-1 bg-amber-950/20 rounded border border-amber-800/30">
+      <Timer size={10} />
+      <span>rate limited</span>
+      {seconds && <span>· retry in {seconds}s</span>}
+      {event.message && <span className="text-amber-600 truncate">· {event.message}</span>}
     </div>
   );
 }
