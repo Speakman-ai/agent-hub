@@ -115,6 +115,41 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - Committing directly to main (only merge commits from PRs)
 - Merging PRs — leave that for the human
 
+## Testing
+
+**Every feature, bugfix, and refactor should include at least one test.** PRs without tests for new logic will be flagged in review.
+
+### Framework
+- **Vitest** for all unit/integration tests
+- **Playwright** for E2E tests (in `e2e/`)
+
+### Running Tests
+- `npm test` — Run all server unit tests
+- `npm run test:server` — Server tests only
+- `npm run test:client` — Client tests only
+- `cd server && npx vitest --watch` — Watch mode for server
+
+### Where Tests Go
+- **Server**: Co-located as `server/<module>.test.js` (e.g., `stream-parser.test.js`) or in `server/test/` for API integration tests
+- **Client**: Co-located as `client/src/**/*.test.js` (e.g., `utils/humanCron.test.js`)
+- **E2E**: In `e2e/tests/*.spec.js`
+
+### Test Patterns
+- Use `describe`, `it`, `expect` from Vitest (globals enabled)
+- Server API tests use `supertest` with the Express app from `server/test/setup.js`
+- Client utility tests are pure function tests — no React component rendering needed for utils
+- Mock external dependencies (CLI spawning, file system) when testing server logic
+
+### What to Test
+- **New utility functions**: Unit test inputs/outputs and edge cases
+- **New API endpoints**: Integration test with supertest (request → response)
+- **Bug fixes**: Write a test that would have caught the bug before fixing it
+- **Complex logic**: State machines, parsers, data transformations
+
+### What NOT to Test
+- Simple CRUD wiring with no logic (e.g., a route that just calls a prepared statement and returns the result)
+- UI layout/styling (that's E2E territory)
+
 ## Development Notes
 
 - The server runs as an ES module (`"type": "module"`)
