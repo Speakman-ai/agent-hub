@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { execSync, spawn } from 'child_process';
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
 import { buildSpawnEnv } from '../config.js';
@@ -334,7 +335,7 @@ export default function createProjectRoutes(deps) {
   router.patch('/api/projects/:projectId', (req, res) => {
     const project = findProject(req.params.projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const allowed = ['name', 'cwd', 'color', 'defaultReviewer'];
+    const allowed = ['name', 'cwd', 'color', 'defaultReviewer', 'githubRepo'];
     for (const key of allowed) {
       if (req.body[key] !== undefined) project[key] = req.body[key];
     }
@@ -354,6 +355,23 @@ export default function createProjectRoutes(deps) {
         if (req.body.githubWorkflow[key] !== undefined) {
           project.githubWorkflow[key] = !!req.body.githubWorkflow[key];
         }
+      }
+    }
+    // Auto-create webhook config when githubRepo is set
+    if (req.body.githubRepo && typeof req.body.githubRepo === 'string') {
+      const repoUrl = `https://github.com/${req.body.githubRepo}`;
+      const existing = stmts.getWebhookConfigByProjectAndRepo.get(project.id, repoUrl);
+      if (!existing) {
+        const secret = crypto.randomBytes(32).toString('hex');
+        const defaultEvents = JSON.stringify([
+          'pull_request.opened',
+          'pull_request.closed',
+          'pull_request.synchronize',
+          'pull_request_review.submitted',
+          'pull_request_review_comment.created',
+          'check_suite.completed',
+        ]);
+        stmts.createWebhookConfig.run(project.id, repoUrl, secret, defaultEvents, 1);
       }
     }
     saveProjects();

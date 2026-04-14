@@ -1170,6 +1170,9 @@ function initDb(dataDir) {
       "UPDATE webhook_configs SET repo_url = ?, events = ?, enabled = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     deleteWebhookConfig: db.prepare('DELETE FROM webhook_configs WHERE id = ?'),
+    getWebhookConfigByProjectAndRepo: db.prepare(
+      'SELECT * FROM webhook_configs WHERE project_id = ? AND repo_url = ?',
+    ),
     addWebhookLog: db.prepare(
       'INSERT INTO webhook_logs (webhook_config_id, event_type, action, delivery_id, status) VALUES (?, ?, ?, ?, ?)',
     ),

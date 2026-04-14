@@ -144,7 +144,21 @@ export default function createConfigRoutes(deps) {
    * GET /api/github-app/manifest — Returns the manifest and GitHub redirect URL.
    * The client uses this to build a form that POSTs to GitHub.
    */
-  router.get('/api/github-app/manifest', (_req, res) => {
+  router.get('/api/github-app/manifest', (req, res) => {
+    // Allow inline publicUrl setting via query param
+    if (req.query.publicUrl && !config.publicUrl) {
+      const publicUrl = req.query.publicUrl;
+      const configPath = path.join(config.dataDir, 'config.json');
+      let fileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        /* no file yet */
+      }
+      fileConfig.publicUrl = publicUrl;
+      writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+      config.publicUrl = publicUrl;
+    }
     const serverUrl = config.publicUrl;
     if (!serverUrl) {
       return res.status(400).json({
@@ -168,7 +182,21 @@ export default function createConfigRoutes(deps) {
    * By navigating the browser to this endpoint, the form lives in a fresh
    * page load and submits reliably.
    */
-  router.get('/api/github-app/register', (_req, res) => {
+  router.get('/api/github-app/register', (req, res) => {
+    // Allow inline publicUrl setting via query param
+    if (req.query.publicUrl && !config.publicUrl) {
+      const publicUrl = req.query.publicUrl;
+      const configPath = path.join(config.dataDir, 'config.json');
+      let fileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        /* no file yet */
+      }
+      fileConfig.publicUrl = publicUrl;
+      writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+      config.publicUrl = publicUrl;
+    }
     const serverUrl = config.publicUrl;
     if (!serverUrl) {
       return res.status(400).send('Public URL must be configured first.');
@@ -453,6 +481,74 @@ export default function createConfigRoutes(deps) {
 
     console.log('[GitHub App] Configuration removed');
     res.json({ ok: true });
+  });
+
+  /**
+   * POST /api/github-app/connect — Connect an existing GitHub App.
+   * Accepts appId, privateKey, and installationId and validates them.
+   */
+  router.post('/api/github-app/connect', async (req, res) => {
+    const { appId, privateKey, installationId } = req.body;
+
+    if (!appId || !privateKey || !installationId) {
+      return res
+        .status(400)
+        .json({ error: 'appId, privateKey, and installationId are all required' });
+    }
+
+    // Validate credentials by calling getAppInfo
+    let appInfo;
+    try {
+      appInfo = await getAppInfo(appId, privateKey);
+    } catch (err) {
+      return res.status(400).json({
+        error: `Invalid GitHub App credentials: ${err.message}`,
+      });
+    }
+
+    // Verify installationId exists (warn but don't fail)
+    try {
+      const installations = await getAppInstallations(appId, privateKey);
+      const found = installations.some((inst) => String(inst.id) === String(installationId));
+      if (!found) {
+        console.warn(
+          `[GitHub App] Installation ID ${installationId} not found in app installations — proceeding anyway`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[GitHub App] Could not verify installation ID: ${err.message} — proceeding anyway`,
+      );
+    }
+
+    const appSlug = appInfo.slug || appInfo.name;
+    const githubAppConfig = {
+      appId,
+      appSlug,
+      privateKey,
+      installationId,
+    };
+
+    // Save to config.json
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    fileConfig.githubApp = githubAppConfig;
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    // Update in-memory config
+    config.githubApp = githubAppConfig;
+    setGhAppSlug?.(appSlug);
+
+    console.log(
+      `[GitHub App] Connected existing app "${appSlug}" (ID: ${appId}, Installation: ${installationId})`,
+    );
+
+    res.json({ ok: true, appId, appSlug, installationId });
   });
 
   // ─── GitHub CLI Status & Repo Detection ────────────────────────────────────

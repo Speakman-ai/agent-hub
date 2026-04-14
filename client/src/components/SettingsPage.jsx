@@ -88,6 +88,7 @@ import {
   Eye,
   EyeOff,
   ScrollText,
+  Link,
 } from 'lucide-react';
 
 function OrganizationsSection() {
@@ -463,293 +464,7 @@ function OrganizationsSection() {
   );
 }
 
-function GitHubAppSection({ config, setConfig }) {
-  const [appStatus, setAppStatus] = useState(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [showBotFallback, setShowBotFallback] = useState(false);
-  const pollIntervalRef = useRef(null);
-  const pollTimeoutRef = useRef(null);
-
-  // Clean up polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-      if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    api
-      .get('/github-app/status')
-      .then(setAppStatus)
-      .catch(() => {});
-  }, []);
-
-  // Handle return from GitHub App auto-setup flow
-  useEffect(() => {
-    const hash = window.location.hash;
-    const match = hash.match(/[?&]githubApp=([^&]*)/);
-    if (!match) return;
-    const status = match[1];
-
-    // Clean up URL by removing githubApp (and optional message) params
-    const cleanHash = hash.replace(/[?&]githubApp=[^&]*(&message=[^&]*)?/, '').replace(/\?$/, '');
-    window.history.replaceState(null, '', window.location.pathname + cleanHash);
-
-    if (status === 'ready' || status === 'no-install' || status === 'created') {
-      // Refresh status from server to reflect the new app/installation
-      api
-        .get('/github-app/status')
-        .then(setAppStatus)
-        .catch(() => {});
-    }
-    if (status === 'error') {
-      const msgMatch = hash.match(/message=([^&]*)/);
-      if (msgMatch) alert(decodeURIComponent(msgMatch[1]));
-    }
-  }, []);
-
-  const handleCreateApp = () => {
-    // Open the server-rendered register page in a new window/tab.
-    // In Electron this opens in the system browser (via setWindowOpenHandler),
-    // which avoids navigating the main window away from the SPA — that caused
-    // a black screen because will-navigate blocked the github.com form POST
-    // and left the window stuck on the bare "Redirecting to GitHub…" HTML.
-    const base = getServerBase();
-    window.open(`${base}/api/github-app/register`, '_blank');
-
-    // Poll for setup completion since the callback will land in the
-    // external browser, not this window (especially in Electron).
-    // Store IDs in refs so they get cleaned up if the component unmounts.
-    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-    if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
-
-    pollIntervalRef.current = setInterval(async () => {
-      try {
-        const status = await api.get('/github-app/status');
-        if (status.configured) {
-          setAppStatus(status);
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-        }
-      } catch {
-        /* ignore — keep polling */
-      }
-    }, 3000);
-    // Stop polling after 5 minutes
-    pollTimeoutRef.current = setTimeout(
-      () => {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      },
-      5 * 60 * 1000,
-    );
-  };
-
-  const handleRefreshInstallation = async () => {
-    setRefreshing(true);
-    try {
-      const result = await api.post('/github-app/refresh-installation');
-      if (result.installed) {
-        setAppStatus((prev) => ({
-          ...prev,
-          hasInstallation: true,
-          installationId: result.installationId,
-        }));
-      } else {
-        alert(result.message || 'No installation found');
-      }
-    } catch (err) {
-      alert(err.message || 'Failed to refresh');
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
-  const handleRemoveApp = async () => {
-    if (!confirm('Remove the GitHub App configuration? You can re-create it anytime.')) return;
-    try {
-      await api.del('/github-app');
-      setAppStatus(null);
-      setConfig((prev) => ({ ...prev, githubApp: null }));
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const handleInstallApp = async () => {
-    try {
-      const data = await api.get('/github-app/install-url');
-      window.open(data.installUrl, '_blank');
-    } catch (err) {
-      alert(err.message || 'Failed to get install URL');
-    }
-  };
-
-  const inputClass =
-    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
-  const labelClass = 'block text-xs text-gray-400 mb-1';
-
-  return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-      <h4 className="text-sm font-medium text-gray-300">PR Review Authentication</h4>
-      <p className="text-xs text-gray-500">
-        GitHub prevents the same account from reviewing its own PRs. Set up a GitHub App
-        (recommended) or a bot PAT to enable formal PR reviews and auto-merging.
-      </p>
-
-      {/* GitHub App — Primary option */}
-      <div className="border border-gray-700 rounded-lg p-3 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-200">GitHub App</span>
-            <span className="text-[10px] px-1.5 py-0.5 bg-blue-600/20 text-blue-400 rounded">
-              Recommended
-            </span>
-          </div>
-          {appStatus?.configured && (
-            <button onClick={handleRemoveApp} className="text-xs text-red-400 hover:text-red-300">
-              Remove
-            </button>
-          )}
-        </div>
-
-        {!appStatus?.configured ? (
-          <div>
-            <p className="text-xs text-gray-500 mb-2">
-              One-click setup — creates and installs a GitHub App on your account with the right
-              permissions. No separate account needed.
-            </p>
-            {!config?.publicUrl ? (
-              <p className="text-xs text-amber-400">
-                Set a Public URL above first — GitHub needs a callback URL.
-              </p>
-            ) : (
-              <button
-                onClick={handleCreateApp}
-                className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-1.5 rounded-lg transition-colors"
-              >
-                Set Up GitHub App
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <span
-                className={`inline-block w-2 h-2 rounded-full ${appStatus.hasInstallation ? 'bg-emerald-400' : 'bg-amber-400'}`}
-              />
-              <span
-                className={`text-xs ${appStatus.hasInstallation ? 'text-emerald-400' : 'text-amber-400'}`}
-              >
-                {appStatus.hasInstallation
-                  ? `Connected: ${appStatus.appSlug || appStatus.appName || `App #${appStatus.appId}`}`
-                  : `App created — needs installation`}
-              </span>
-            </div>
-            {!appStatus.hasInstallation && (
-              <div className="flex gap-2">
-                <button
-                  onClick={handleInstallApp}
-                  className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
-                >
-                  Install on GitHub
-                </button>
-                <button
-                  onClick={handleRefreshInstallation}
-                  disabled={refreshing}
-                  className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
-                >
-                  {refreshing ? 'Checking...' : 'Refresh'}
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Bot PAT — Fallback option */}
-      <div className="border border-gray-700 rounded-lg p-3 space-y-3">
-        <button
-          onClick={() => setShowBotFallback(!showBotFallback)}
-          className="flex items-center justify-between w-full text-left"
-        >
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-400">Bot PAT</span>
-            <span className="text-[10px] px-1.5 py-0.5 bg-gray-600/50 text-gray-400 rounded">
-              Fallback
-            </span>
-          </div>
-          <span className="text-xs text-gray-500">{showBotFallback ? '▼' : '▶'}</span>
-        </button>
-
-        {showBotFallback && (
-          <div>
-            <label className={labelClass}>Bot Personal Access Token</label>
-            <input
-              type="password"
-              value={config._botTokenEdit || ''}
-              onChange={(e) => setConfig((prev) => ({ ...prev, _botTokenEdit: e.target.value }))}
-              className={inputClass}
-              placeholder={config.botGithubTokenSet ? '••••••••  (set)' : 'ghp_xxxx...'}
-            />
-            <button
-              onClick={async () => {
-                const token = config._botTokenEdit?.trim();
-                if (!token) return;
-                try {
-                  const result = await api.updateConfig({ botGithubToken: token });
-                  setConfig((prev) => ({
-                    ...prev,
-                    botGithubTokenSet: true,
-                    botGithubUser: result.botGithubUser || null,
-                    _botTokenEdit: '',
-                  }));
-                } catch (err) {
-                  alert(err.message || 'Failed to save bot token');
-                }
-              }}
-              disabled={!config._botTokenEdit?.trim()}
-              className="mt-2 px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded disabled:opacity-50"
-            >
-              Save
-            </button>
-            <p className="text-xs text-gray-600 mt-1">
-              Alternative: use a PAT from a separate GitHub account. Requires creating a new account
-              and adding it as a collaborator.
-            </p>
-            {config.botGithubTokenSet && (
-              <div className="mt-2 flex items-center gap-2">
-                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-                <span className="text-xs text-emerald-400">
-                  Bot configured{config.botGithubUser ? `: @${config.botGithubUser}` : ''}
-                </span>
-                <button
-                  onClick={async () => {
-                    try {
-                      await api.updateConfig({ botGithubToken: '' });
-                      setConfig((prev) => ({
-                        ...prev,
-                        botGithubTokenSet: false,
-                        botGithubUser: null,
-                        botGithubToken: '',
-                      }));
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
-                  className="text-xs text-red-400 hover:text-red-300 ml-auto"
-                >
-                  Remove
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+/* GitHubAppSection removed — merged into unified GitHubSection */
 
 function ClaudeAuthSection() {
   const [auth, setAuth] = useState(null);
@@ -1322,31 +1037,53 @@ function GeneralSection() {
 function GitHubSection({ projects = [], onProjectsChange }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [publicUrl, setPublicUrl] = useState('');
-  const [saving, setSaving] = useState({});
-  const [saveStatus, setSaveStatus] = useState({});
 
   // CLI auth status
   const [ghStatus, setGhStatus] = useState(null);
   const [ghStatusLoading, setGhStatusLoading] = useState(true);
 
-  // Per-project workflow state
+  // GitHub App state
+  const [appStatus, setAppStatus] = useState(null);
+  const [refreshingApp, setRefreshingApp] = useState(false);
+  const [showBotFallback, setShowBotFallback] = useState(false);
+  const [showConnectForm, setShowConnectForm] = useState(false);
+  const [connectForm, setConnectForm] = useState({ appId: '', privateKey: '', installationId: '' });
+  const [connectError, setConnectError] = useState(null);
+  const [connecting, setConnecting] = useState(false);
+  const [publicUrlInput, setPublicUrlInput] = useState('');
+  const [showPublicUrlPrompt, setShowPublicUrlPrompt] = useState(false);
+  const pollIntervalRef = useRef(null);
+  const pollTimeoutRef = useRef(null);
+
+  // Per-project state
   const [projectWorkflow, setProjectWorkflow] = useState({});
   const [projectReviewers, setProjectReviewers] = useState({});
+  const [projectRepos, setProjectRepos] = useState({});
   const [workflowSaved, setWorkflowSaved] = useState({});
   const [reviewerSaved, setReviewerSaved] = useState({});
+  const [repoSaving, setRepoSaving] = useState({});
+  const [repoSaveStatus, setRepoSaveStatus] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
+  const [detecting, setDetecting] = useState({});
 
   // Per-project repo test
   const [repoTesting, setRepoTesting] = useState({});
   const [repoTestResult, setRepoTestResult] = useState({});
+
+  // Clean up polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     api
       .getConfig()
       .then((data) => {
         setConfig(data);
-        setPublicUrl(data.publicUrl || '');
+        setPublicUrlInput(data.publicUrl || '');
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -1356,12 +1093,38 @@ function GitHubSection({ projects = [], onProjectsChange }) {
       .then(setGhStatus)
       .catch(() => setGhStatus({ authenticated: false, error: 'Failed to check' }))
       .finally(() => setGhStatusLoading(false));
+    // Fetch app status
+    api
+      .get('/github-app/status')
+      .then(setAppStatus)
+      .catch(() => {});
+  }, []);
+
+  // Handle return from GitHub App auto-setup flow
+  useEffect(() => {
+    const hash = window.location.hash;
+    const match = hash.match(/[?&]githubApp=([^&]*)/);
+    if (!match) return;
+    const status = match[1];
+    const cleanHash = hash.replace(/[?&]githubApp=[^&]*(&message=[^&]*)?/, '').replace(/\?$/, '');
+    window.history.replaceState(null, '', window.location.pathname + cleanHash);
+    if (status === 'ready' || status === 'no-install' || status === 'created') {
+      api
+        .get('/github-app/status')
+        .then(setAppStatus)
+        .catch(() => {});
+    }
+    if (status === 'error') {
+      const msgMatch = hash.match(/message=([^&]*)/);
+      if (msgMatch) alert(decodeURIComponent(msgMatch[1]));
+    }
   }, []);
 
   // Init per-project state when projects arrive
   useEffect(() => {
     const wf = {};
     const rev = {};
+    const repos = {};
     projects.forEach((p) => {
       wf[p.id] = {
         autoMerge: p.githubWorkflow?.autoMerge || false,
@@ -1370,29 +1133,111 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
       };
       rev[p.id] = p.defaultReviewer || '';
+      repos[p.id] = p.githubRepo || '';
     });
     setProjectWorkflow(wf);
     setProjectReviewers(rev);
+    setProjectRepos(repos);
   }, [projects]);
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
   const labelClass = 'block text-xs text-gray-400 mb-1';
 
-  const savePublicUrl = async () => {
-    setSaving((s) => ({ ...s, publicUrl: true }));
+  // --- GitHub App handlers ---
+
+  const handleCreateApp = () => {
+    const base = getServerBase();
+    const url = publicUrlInput
+      ? `${base}/api/github-app/register?publicUrl=${encodeURIComponent(publicUrlInput)}`
+      : `${base}/api/github-app/register`;
+    window.open(url, '_blank');
+
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const status = await api.get('/github-app/status');
+        if (status.configured) {
+          setAppStatus(status);
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+      } catch {
+        /* ignore — keep polling */
+      }
+    }, 3000);
+    pollTimeoutRef.current = setTimeout(
+      () => {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      },
+      5 * 60 * 1000,
+    );
+  };
+
+  const handleConnectExisting = async () => {
+    setConnecting(true);
+    setConnectError(null);
     try {
-      await api.updateConfig({ publicUrl });
-      setConfig((prev) => ({ ...prev, publicUrl }));
-      setSaveStatus((s) => ({ ...s, publicUrl: 'saved' }));
-      setTimeout(() => setSaveStatus((s) => ({ ...s, publicUrl: null })), 2000);
-    } catch {
-      setSaveStatus((s) => ({ ...s, publicUrl: 'error' }));
-      setTimeout(() => setSaveStatus((s) => ({ ...s, publicUrl: null })), 3000);
+      await api.post('/github-app/connect', {
+        appId: Number(connectForm.appId),
+        privateKey: connectForm.privateKey,
+        installationId: Number(connectForm.installationId),
+      });
+      const status = await api.get('/github-app/status');
+      setAppStatus(status);
+      setShowConnectForm(false);
+      setConnectForm({ appId: '', privateKey: '', installationId: '' });
+    } catch (err) {
+      setConnectError(err.message || 'Failed to connect');
     } finally {
-      setSaving((s) => ({ ...s, publicUrl: false }));
+      setConnecting(false);
     }
   };
+
+  const handleRefreshInstallation = async () => {
+    setRefreshingApp(true);
+    try {
+      const result = await api.post('/github-app/refresh-installation');
+      if (result.installed) {
+        setAppStatus((prev) => ({
+          ...prev,
+          hasInstallation: true,
+          installationId: result.installationId,
+        }));
+      } else {
+        alert(result.message || 'No installation found');
+      }
+    } catch (err) {
+      alert(err.message || 'Failed to refresh');
+    } finally {
+      setRefreshingApp(false);
+    }
+  };
+
+  const handleInstallApp = async () => {
+    try {
+      const data = await api.get('/github-app/install-url');
+      window.open(data.installUrl, '_blank');
+    } catch (err) {
+      alert(err.message || 'Failed to get install URL');
+    }
+  };
+
+  const handleRemoveApp = async () => {
+    if (!confirm('Remove the GitHub App configuration? You can re-create it anytime.')) return;
+    try {
+      await api.del('/github-app');
+      setAppStatus(null);
+      setConfig((prev) => ({ ...prev, githubApp: null }));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // --- Per-project handlers ---
 
   const toggleWorkflowSetting = async (projectId, key) => {
     const current = projectWorkflow[projectId] || {};
@@ -1425,37 +1270,64 @@ function GitHubSection({ projects = [], onProjectsChange }) {
     }
   };
 
-  const testProjectConnection = async (project) => {
-    // Detect repo from project cwd, then test the connection
-    setRepoTesting((prev) => ({ ...prev, [project.id]: true }));
-    setRepoTestResult((prev) => ({ ...prev, [project.id]: null }));
+  const saveProjectRepo = async (projectId) => {
+    setRepoSaving((prev) => ({ ...prev, [projectId]: true }));
+    setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null }));
     try {
-      const detectRes = await fetch(`${getApiBase()}/github/detect-repo`, {
+      await api.updateProject(projectId, { githubRepo: projectRepos[projectId] });
+      setRepoSaveStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
+      setTimeout(() => setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
+      if (onProjectsChange) onProjectsChange();
+    } catch {
+      setRepoSaveStatus((prev) => ({ ...prev, [projectId]: 'error' }));
+      setTimeout(() => setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
+    } finally {
+      setRepoSaving((prev) => ({ ...prev, [projectId]: false }));
+    }
+  };
+
+  const detectRepo = async (project) => {
+    setDetecting((prev) => ({ ...prev, [project.id]: true }));
+    try {
+      const res = await fetch(`${getApiBase()}/github/detect-repo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ cwd: project.cwd }),
       });
-      const detect = await detectRes.json();
-      if (!detect.hasRemote || !detect.owner || !detect.repo) {
+      const data = await res.json();
+      if (data.owner && data.repo) {
+        setProjectRepos((prev) => ({ ...prev, [project.id]: `${data.owner}/${data.repo}` }));
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      setDetecting((prev) => ({ ...prev, [project.id]: false }));
+    }
+  };
+
+  const testProjectConnection = async (project) => {
+    setRepoTesting((prev) => ({ ...prev, [project.id]: true }));
+    setRepoTestResult((prev) => ({ ...prev, [project.id]: null }));
+    try {
+      const repo = projectRepos[project.id];
+      if (!repo) {
         setRepoTestResult((prev) => ({
           ...prev,
-          [project.id]: { ok: false, error: 'No GitHub remote found in project directory' },
+          [project.id]: { ok: false, error: 'No repo configured' },
         }));
         return;
       }
+      const [owner, repoName] = repo.split('/');
       const testRes = await fetch(`${getApiBase()}/github/test-connection`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ owner: detect.owner, repo: detect.repo }),
+        body: JSON.stringify({ owner, repo: repoName }),
       });
       const result = await testRes.json();
       setRepoTestResult((prev) => ({
         ...prev,
         [project.id]: result.ok
-          ? {
-              ok: true,
-              detail: `${detect.owner}/${detect.repo} (${result.repoInfo.private ? 'private' : 'public'})`,
-            }
+          ? { ok: true, detail: `${repo} (${result.repoInfo.private ? 'private' : 'public'})` }
           : { ok: false, error: result.error },
       }));
     } catch {
@@ -1488,8 +1360,7 @@ function GitHubSection({ projects = [], onProjectsChange }) {
       <div>
         <h3 className="text-lg font-semibold mb-1">GitHub Settings</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Configure GitHub integration — bot authentication, webhook URLs, and per-project PR
-          workflow settings.
+          Connect a GitHub App and link repositories to your projects.
         </p>
       </div>
 
@@ -1548,43 +1419,253 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         )}
       </div>
 
-      <GitHubAppSection config={config} setConfig={setConfig} />
-
-      {/* Public URL */}
+      {/* Zone 1: GitHub App */}
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">Webhook Endpoint</h4>
-        <div>
-          <label className={labelClass}>Public URL</label>
-          <div className="flex gap-2">
-            <input
-              value={publicUrl}
-              onChange={(e) => setPublicUrl(e.target.value)}
-              className={inputClass}
-              placeholder="https://my-server.example.com"
-            />
+        <h4 className="text-sm font-medium text-gray-300">GitHub App</h4>
+        <p className="text-xs text-gray-500">
+          One-time setup — connect a GitHub App for PR reviews, auto-merging, and webhook
+          management.
+        </p>
+
+        {!appStatus?.configured ? (
+          /* State A — Not configured */
+          <div className="space-y-3">
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  if (!config?.publicUrl && !publicUrlInput) {
+                    setShowPublicUrlPrompt(true);
+                    setShowConnectForm(false);
+                  } else {
+                    handleCreateApp();
+                  }
+                }}
+                className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                <Plus size={14} />
+                Create New App
+              </button>
+              <button
+                onClick={() => {
+                  setShowConnectForm(!showConnectForm);
+                  setShowPublicUrlPrompt(false);
+                }}
+                className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                <Link size={14} />
+                Connect Existing App
+              </button>
+            </div>
+
+            {/* Inline public URL prompt */}
+            {showPublicUrlPrompt && (
+              <div className="bg-gray-900/50 rounded-lg p-3 space-y-2">
+                <label className={labelClass}>Public URL (required for GitHub callback)</label>
+                <div className="flex gap-2">
+                  <input
+                    value={publicUrlInput}
+                    onChange={(e) => setPublicUrlInput(e.target.value)}
+                    className={inputClass}
+                    placeholder="https://my-server.example.com"
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!publicUrlInput.trim()) return;
+                      await api.updateConfig({ publicUrl: publicUrlInput.trim() });
+                      setConfig((prev) => ({ ...prev, publicUrl: publicUrlInput.trim() }));
+                      setShowPublicUrlPrompt(false);
+                      handleCreateApp();
+                    }}
+                    disabled={!publicUrlInput.trim()}
+                    className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm px-4 py-1.5 rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    Continue
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Connect existing app form */}
+            {showConnectForm && (
+              <div className="bg-gray-900/50 rounded-lg p-3 space-y-3">
+                <div>
+                  <label className={labelClass}>App ID</label>
+                  <input
+                    type="number"
+                    value={connectForm.appId}
+                    onChange={(e) => setConnectForm((f) => ({ ...f, appId: e.target.value }))}
+                    className={inputClass}
+                    placeholder="123456"
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>Private Key</label>
+                  <textarea
+                    value={connectForm.privateKey}
+                    onChange={(e) => setConnectForm((f) => ({ ...f, privateKey: e.target.value }))}
+                    className={`${inputClass} h-24 resize-none`}
+                    placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;..."
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>Installation ID</label>
+                  <input
+                    type="number"
+                    value={connectForm.installationId}
+                    onChange={(e) =>
+                      setConnectForm((f) => ({ ...f, installationId: e.target.value }))
+                    }
+                    className={inputClass}
+                    placeholder="12345678"
+                  />
+                </div>
+                {connectError && <p className="text-xs text-red-400">{connectError}</p>}
+                <button
+                  onClick={handleConnectExisting}
+                  disabled={
+                    connecting ||
+                    !connectForm.appId ||
+                    !connectForm.privateKey ||
+                    !connectForm.installationId
+                  }
+                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                >
+                  {connecting && <Loader2 size={12} className="animate-spin" />}
+                  {connecting ? 'Connecting...' : 'Connect'}
+                </button>
+              </div>
+            )}
+          </div>
+        ) : !appStatus?.hasInstallation ? (
+          /* State B — Created but not installed */
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-2 h-2 rounded-full bg-amber-400" />
+              <span className="text-xs text-amber-400">App created — needs installation</span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleInstallApp}
+                className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+              >
+                <ExternalLink size={12} />
+                Install on GitHub
+              </button>
+              <button
+                onClick={handleRefreshInstallation}
+                disabled={refreshingApp}
+                className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <RefreshCw size={12} className={refreshingApp ? 'animate-spin' : ''} />
+                {refreshingApp ? 'Checking...' : 'Refresh'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          /* State C — Fully configured */
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+            <span className="text-sm text-emerald-400">
+              Connected: {appStatus.appSlug || appStatus.appName || `App #${appStatus.appId}`}
+            </span>
             <button
-              onClick={savePublicUrl}
-              disabled={publicUrl === (config.publicUrl || '') || saving.publicUrl}
-              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
+              onClick={handleRemoveApp}
+              className="text-xs text-red-400 hover:text-red-300 ml-auto"
             >
-              {saving.publicUrl ? 'Saving...' : 'Save'}
+              Remove
             </button>
           </div>
-          <p className="text-xs text-gray-600 mt-1">
-            The externally-reachable URL for this server. Used as the callback URL when
-            auto-registering GitHub webhooks. Leave empty if running locally only.
-          </p>
-          {saveStatus.publicUrl === 'saved' && (
-            <span className="text-xs text-emerald-400 mt-1 block">Saved</span>
+        )}
+
+        {/* Bot PAT — Advanced accordion */}
+        <div className="border-t border-gray-700 pt-3">
+          <button
+            onClick={() => setShowBotFallback(!showBotFallback)}
+            className="flex items-center justify-between w-full text-left"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-400">Advanced: Bot PAT</span>
+              <span className="text-[10px] px-1.5 py-0.5 bg-gray-600/50 text-gray-400 rounded">
+                Fallback
+              </span>
+            </div>
+            {showBotFallback ? (
+              <ChevronDown size={14} className="text-gray-500" />
+            ) : (
+              <ChevronRight size={14} className="text-gray-500" />
+            )}
+          </button>
+
+          {showBotFallback && (
+            <div className="mt-3 space-y-2">
+              <label className={labelClass}>Bot Personal Access Token</label>
+              <input
+                type="password"
+                value={config._botTokenEdit || ''}
+                onChange={(e) => setConfig((prev) => ({ ...prev, _botTokenEdit: e.target.value }))}
+                className={inputClass}
+                placeholder={config.botGithubTokenSet ? '••••••••  (set)' : 'ghp_xxxx...'}
+              />
+              <button
+                onClick={async () => {
+                  const token = config._botTokenEdit?.trim();
+                  if (!token) return;
+                  try {
+                    const result = await api.updateConfig({ botGithubToken: token });
+                    setConfig((prev) => ({
+                      ...prev,
+                      botGithubTokenSet: true,
+                      botGithubUser: result.botGithubUser || null,
+                      _botTokenEdit: '',
+                    }));
+                  } catch (err) {
+                    alert(err.message || 'Failed to save bot token');
+                  }
+                }}
+                disabled={!config._botTokenEdit?.trim()}
+                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded disabled:opacity-50"
+              >
+                Save
+              </button>
+              <p className="text-xs text-gray-600">
+                Alternative: use a PAT from a separate GitHub account for PR reviews.
+              </p>
+              {config.botGithubTokenSet && (
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+                  <span className="text-xs text-emerald-400">
+                    Bot configured{config.botGithubUser ? `: @${config.botGithubUser}` : ''}
+                  </span>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await api.updateConfig({ botGithubToken: '' });
+                        setConfig((prev) => ({
+                          ...prev,
+                          botGithubTokenSet: false,
+                          botGithubUser: null,
+                          botGithubToken: '',
+                        }));
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    className="text-xs text-red-400 hover:text-red-300 ml-auto"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
 
-      {/* Per-Project Workflow Settings */}
+      {/* Zone 2: Projects & Repos */}
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">PR Workflow per Project</h4>
+        <h4 className="text-sm font-medium text-gray-300">Projects & Repos</h4>
         <p className="text-xs text-gray-500">
-          Control how the lead agent handles PR reviews and merges for each project.
+          Link GitHub repositories and configure PR workflow for each project.
         </p>
 
         {projects.length === 0 && (
@@ -1592,121 +1673,182 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         )}
 
         <div className="space-y-2">
-          {projects.map((p) => (
-            <div key={p.id} className="bg-gray-900/50 rounded-lg p-3">
-              <div
-                className="flex items-center gap-3 cursor-pointer"
-                onClick={() => setExpandedProject(expandedProject === p.id ? null : p.id)}
-              >
-                <span className="text-lg text-gray-500">
-                  {expandedProject === p.id ? '▾' : '▸'}
-                </span>
-                <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color }} />
-                <span className="text-sm font-medium">{p.name}</span>
-                {workflowSaved[p.id] && (
-                  <span className="text-xs text-emerald-400 ml-auto">Saved</span>
-                )}
-              </div>
+          {projects.map((p) => {
+            const isExpanded = expandedProject === p.id;
+            const repo = projectRepos[p.id] || '';
 
-              {expandedProject === p.id && (
-                <div className="pl-8 pt-3 space-y-3">
-                  {/* PR Reviewer */}
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs text-gray-400 flex-shrink-0 w-28">PR Reviewer:</label>
-                    <input
-                      value={projectReviewers[p.id] || ''}
-                      onChange={(e) =>
-                        setProjectReviewers((prev) => ({ ...prev, [p.id]: e.target.value }))
-                      }
-                      placeholder="github-username"
-                      className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1"
-                    />
-                    <button
-                      onClick={() => saveReviewer(p.id)}
-                      className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
-                    >
-                      {reviewerSaved[p.id] ? 'Saved' : 'Save'}
-                    </button>
-                  </div>
+            return (
+              <div key={p.id} className="bg-gray-900/50 rounded-lg p-3">
+                {/* Header row */}
+                <div
+                  className="flex items-center gap-3 cursor-pointer"
+                  onClick={() => setExpandedProject(isExpanded ? null : p.id)}
+                >
+                  {isExpanded ? (
+                    <ChevronDown size={16} className="text-gray-500 flex-shrink-0" />
+                  ) : (
+                    <ChevronRight size={16} className="text-gray-500 flex-shrink-0" />
+                  )}
+                  <div
+                    className="w-3 h-3 rounded-sm flex-shrink-0"
+                    style={{ backgroundColor: p.color }}
+                  />
+                  <span className="text-sm font-medium">{p.name}</span>
+                  <span className="ml-auto flex items-center gap-1.5">
+                    {repo ? (
+                      <>
+                        <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+                        <span className="text-xs text-gray-400 font-mono">{repo}</span>
+                      </>
+                    ) : (
+                      <span className="text-xs text-gray-600">No repo linked</span>
+                    )}
+                  </span>
+                </div>
 
-                  {/* Workflow Toggles */}
-                  {[
-                    {
-                      key: 'autoReview',
-                      label: 'Auto Review',
-                      desc: 'Lead agent automatically reviews every PR',
-                    },
-                    {
-                      key: 'autoMerge',
-                      label: 'Auto Merge',
-                      desc: 'Lead agent merges approved PRs automatically',
-                    },
-                    {
-                      key: 'waitForCI',
-                      label: 'Wait for CI',
-                      desc: 'Wait for all GitHub checks to pass before approving',
-                    },
-                    {
-                      key: 'waitForResolvedComments',
-                      label: 'Wait for Resolved Comments',
-                      desc: 'Wait for all review comments to be resolved',
-                    },
-                  ].map(({ key, label, desc }) => (
-                    <div key={key} className="flex items-center justify-between gap-3">
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm text-gray-200">{label}</span>
-                        <p className="text-xs text-gray-500 truncate">{desc}</p>
-                      </div>
-                      <button
-                        onClick={() => toggleWorkflowSetting(p.id, key)}
-                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
-                          projectWorkflow[p.id]?.[key] ? 'bg-emerald-600' : 'bg-gray-600'
-                        }`}
-                      >
-                        <span
-                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                            projectWorkflow[p.id]?.[key] ? 'translate-x-4' : 'translate-x-0.5'
-                          }`}
+                {/* Expanded content */}
+                {isExpanded && (
+                  <div className="pl-8 pt-3 space-y-4">
+                    {/* Repo linking */}
+                    <div className="space-y-2">
+                      <label className={labelClass}>GitHub Repository</label>
+                      <div className="flex gap-2">
+                        <input
+                          value={repo}
+                          onChange={(e) =>
+                            setProjectRepos((prev) => ({ ...prev, [p.id]: e.target.value }))
+                          }
+                          className={inputClass}
+                          placeholder="owner/repo"
                         />
-                      </button>
-                    </div>
-                  ))}
-
-                  {/* Test Connection */}
-                  <div className="pt-2 border-t border-gray-800">
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={() => testProjectConnection(p)}
-                        disabled={repoTesting[p.id]}
-                        className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-                      >
-                        {repoTesting[p.id] ? (
-                          <Loader2 size={12} className="animate-spin" />
-                        ) : (
-                          <Plug size={12} />
-                        )}
-                        {repoTesting[p.id] ? 'Testing...' : 'Test Connection'}
-                      </button>
-                      {repoTestResult[p.id] && (
-                        <span
-                          className={`text-xs ${repoTestResult[p.id].ok ? 'text-emerald-400' : 'text-red-400'}`}
+                        <button
+                          onClick={() => detectRepo(p)}
+                          disabled={detecting[p.id]}
+                          className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 disabled:opacity-50"
                         >
-                          {repoTestResult[p.id].ok
-                            ? `Connected to ${repoTestResult[p.id].detail}`
-                            : repoTestResult[p.id].error}
+                          {detecting[p.id] ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Globe size={12} />
+                          )}
+                          Auto-detect
+                        </button>
+                        <button
+                          onClick={() => saveProjectRepo(p.id)}
+                          disabled={repoSaving[p.id]}
+                          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap"
+                        >
+                          {repoSaving[p.id] ? 'Saving...' : 'Save'}
+                        </button>
+                      </div>
+                      {repoSaveStatus[p.id] === 'saved' && (
+                        <span className="text-xs text-emerald-400">
+                          Saved — webhook auto-configured
                         </span>
                       )}
+                      {repoSaveStatus[p.id] === 'error' && (
+                        <span className="text-xs text-red-400">Failed to save</span>
+                      )}
+                    </div>
+
+                    {/* PR Reviewer */}
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-gray-400 flex-shrink-0 w-28">
+                        PR Reviewer:
+                      </label>
+                      <input
+                        value={projectReviewers[p.id] || ''}
+                        onChange={(e) =>
+                          setProjectReviewers((prev) => ({ ...prev, [p.id]: e.target.value }))
+                        }
+                        placeholder="github-username"
+                        className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1"
+                      />
+                      <button
+                        onClick={() => saveReviewer(p.id)}
+                        className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
+                      >
+                        {reviewerSaved[p.id] ? 'Saved' : 'Save'}
+                      </button>
+                    </div>
+
+                    {/* Workflow Toggles */}
+                    {[
+                      {
+                        key: 'autoReview',
+                        label: 'Auto Review',
+                        desc: 'Lead agent automatically reviews every PR',
+                      },
+                      {
+                        key: 'autoMerge',
+                        label: 'Auto Merge',
+                        desc: 'Lead agent merges approved PRs automatically',
+                      },
+                      {
+                        key: 'waitForCI',
+                        label: 'Wait for CI',
+                        desc: 'Wait for all GitHub checks to pass before approving',
+                      },
+                      {
+                        key: 'waitForResolvedComments',
+                        label: 'Wait for Resolved Comments',
+                        desc: 'Wait for all review comments to be resolved',
+                      },
+                    ].map(({ key, label, desc }) => (
+                      <div key={key} className="flex items-center justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm text-gray-200">{label}</span>
+                          <p className="text-xs text-gray-500 truncate">{desc}</p>
+                        </div>
+                        <button
+                          onClick={() => toggleWorkflowSetting(p.id, key)}
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
+                            projectWorkflow[p.id]?.[key] ? 'bg-emerald-600' : 'bg-gray-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                              projectWorkflow[p.id]?.[key] ? 'translate-x-4' : 'translate-x-0.5'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    ))}
+                    {workflowSaved[p.id] && <span className="text-xs text-emerald-400">Saved</span>}
+
+                    {/* Test Connection */}
+                    <div className="pt-2 border-t border-gray-800">
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => testProjectConnection(p)}
+                          disabled={repoTesting[p.id]}
+                          className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                        >
+                          {repoTesting[p.id] ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Plug size={12} />
+                          )}
+                          {repoTesting[p.id] ? 'Testing...' : 'Test Connection'}
+                        </button>
+                        {repoTestResult[p.id] && (
+                          <span
+                            className={`text-xs ${repoTestResult[p.id].ok ? 'text-emerald-400' : 'text-red-400'}`}
+                          >
+                            {repoTestResult[p.id].ok
+                              ? `Connected to ${repoTestResult[p.id].detail}`
+                              : repoTestResult[p.id].error}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
-
-      {/* Webhooks */}
-      <WebhookSection />
     </div>
   );
 }
@@ -2427,463 +2569,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
   );
 }
 
-function WebhookSection() {
-  const [webhooks, setWebhooks] = useState([]);
-  const [showForm, setShowForm] = useState(false);
-  const [webhookLogs, setWebhookLogs] = useState({});
-  const [expandedWebhook, setExpandedWebhook] = useState(null);
-  const [copiedField, setCopiedField] = useState(null);
-  const [registering, setRegistering] = useState({});
-  const [regStatus, setRegStatus] = useState({}); // { [whId]: { registered, hooks, webhookUrl } }
-  const [projects, setProjects] = useState([]);
-  const [serverConfig, setServerConfig] = useState(null); // { publicUrl, ... }
-  const [form, setForm] = useState({
-    projectId: '',
-    repoUrl: '',
-    autoRegister: false,
-    events: {
-      'pull_request.opened': { enabled: true, label: 'PR opened' },
-      'pull_request.closed': { enabled: true, label: 'PR closed / merged' },
-      'pull_request.synchronize': { enabled: true, label: 'New commits pushed to PR' },
-      'pull_request_review.submitted': {
-        enabled: true,
-        label: 'Review submitted (approve / request changes)',
-      },
-      'pull_request_review_comment.created': {
-        enabled: true,
-        label: 'Inline review comment posted',
-      },
-      'check_suite.completed': { enabled: true, label: 'CI checks completed' },
-      'issues.opened': { enabled: false, label: 'Issue opened' },
-      push: { enabled: false, label: 'Push to any branch' },
-    },
-  });
-
-  const refreshLogs = async (list) => {
-    const entries = await Promise.all(
-      (list || webhooks).map(async (w) => {
-        try {
-          const logs = await api.getWebhookLogs(w.id, 5);
-          return [w.id, logs];
-        } catch {
-          return [w.id, []];
-        }
-      }),
-    );
-    setWebhookLogs(Object.fromEntries(entries));
-  };
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const [wh, proj, cfg] = await Promise.all([
-          api.getWebhooks().catch(() => []),
-          api.getProjects(),
-          api.getConfig().catch(() => null),
-        ]);
-        setWebhooks(wh);
-        setProjects(proj);
-        if (cfg) setServerConfig(cfg);
-        if (wh.length) await refreshLogs(wh);
-      } catch (e) {
-        console.error(e);
-      }
-    };
-    load();
-    const pollId = setInterval(load, 60000);
-    return () => clearInterval(pollId);
-  }, []);
-
-  const copyToClipboard = (text, field) => {
-    navigator.clipboard.writeText(text);
-    setCopiedField(field);
-    setTimeout(() => setCopiedField(null), 2000);
-  };
-
-  const createWebhook = async (e) => {
-    e.preventDefault();
-    const enabledEvents = {};
-    Object.entries(form.events).forEach(([key, val]) => {
-      if (val.enabled) enabledEvents[key] = { enabled: true };
-    });
-    const created = await api.createWebhook({
-      projectId: form.projectId,
-      repoUrl: form.repoUrl,
-      events: enabledEvents,
-      autoRegister: form.autoRegister,
-    });
-    // If auto-register returned inline registration info, extract the webhook record
-    const { registration, ...webhookRecord } = created;
-    setWebhooks((prev) => [...prev, webhookRecord]);
-    if (registration) {
-      if (registration.ok) {
-        setRegStatus((prev) => ({
-          ...prev,
-          [webhookRecord.id]: {
-            registered: true,
-            hooks: [{ id: registration.hookId }],
-            webhookUrl: registration.url,
-          },
-        }));
-      }
-    }
-    setShowForm(false);
-  };
-
-  const toggleWebhook = async (wh) => {
-    const updated = await api.updateWebhook(wh.id, { enabled: !wh.enabled });
-    setWebhooks((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
-  };
-
-  const deleteWebhook = async (id) => {
-    await api.deleteWebhook(id);
-    setWebhooks((prev) => prev.filter((w) => w.id !== id));
-  };
-
-  const registerOnGitHub = async (wh) => {
-    setRegistering((prev) => ({ ...prev, [wh.id]: true }));
-    try {
-      const result = await api.registerWebhook(wh.id);
-      setRegStatus((prev) => ({
-        ...prev,
-        [wh.id]: { registered: true, hooks: [{ id: result.hookId }], webhookUrl: result.url },
-      }));
-    } catch (err) {
-      setRegStatus((prev) => ({ ...prev, [wh.id]: { registered: false, error: err.message } }));
-    }
-    setRegistering((prev) => ({ ...prev, [wh.id]: false }));
-  };
-
-  const unregisterFromGitHub = async (wh) => {
-    setRegistering((prev) => ({ ...prev, [wh.id]: true }));
-    try {
-      await api.unregisterWebhook(wh.id);
-      setRegStatus((prev) => ({ ...prev, [wh.id]: { registered: false } }));
-    } catch (err) {
-      setRegStatus((prev) => ({ ...prev, [wh.id]: { registered: false, error: err.message } }));
-    }
-    setRegistering((prev) => ({ ...prev, [wh.id]: false }));
-  };
-
-  const checkRegistration = async (wh) => {
-    try {
-      const status = await api.getWebhookRegistration(wh.id);
-      setRegStatus((prev) => ({ ...prev, [wh.id]: status }));
-    } catch (err) {
-      console.warn('checkRegistration failed:', err);
-    }
-  };
-
-  /** Resolve the public webhook URL: prefer server-side publicUrl, fall back to client base */
-  const getWebhookUrl = () => {
-    if (serverConfig?.publicUrl)
-      return `${serverConfig.publicUrl.replace(/\/+$/, '')}/api/webhooks/github`;
-    const base = getServerBase() || window.location.origin;
-    return `${base}/api/webhooks/github`;
-  };
-
-  const statusColor = (s) =>
-    s === 'success'
-      ? 'bg-emerald-500'
-      : s === 'error'
-        ? 'bg-red-500'
-        : s === 'running'
-          ? 'bg-blue-500'
-          : 'bg-gray-600';
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold">GitHub Webhooks</h3>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors"
-        >
-          {showForm ? 'Cancel' : '+ New Webhook'}
-        </button>
-      </div>
-
-      {showForm && (
-        <form onSubmit={createWebhook} className="bg-gray-800 rounded-xl p-4 mb-4 space-y-3">
-          <select
-            value={form.projectId}
-            onChange={(e) => setForm({ ...form, projectId: e.target.value })}
-            required
-            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
-          >
-            <option value="">Select Project</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <input
-            value={form.repoUrl}
-            onChange={(e) => setForm({ ...form, repoUrl: e.target.value })}
-            placeholder="Repository URL (e.g. https://github.com/owner/repo)"
-            required
-            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
-          />
-
-          <div className="space-y-2">
-            <p className="text-xs text-gray-400 font-medium">Events to handle:</p>
-            {Object.entries(form.events).map(([eventKey, eventConfig]) => (
-              <label
-                key={eventKey}
-                className="flex items-center gap-3 cursor-pointer bg-gray-900 rounded-lg px-3 py-2.5"
-              >
-                <input
-                  type="checkbox"
-                  checked={eventConfig.enabled}
-                  onChange={() =>
-                    setForm({
-                      ...form,
-                      events: {
-                        ...form.events,
-                        [eventKey]: { ...eventConfig, enabled: !eventConfig.enabled },
-                      },
-                    })
-                  }
-                  className="rounded border-gray-600"
-                />
-                <div>
-                  <span className="text-sm font-mono text-gray-300">{eventKey}</span>
-                  <span className="text-xs text-gray-500 ml-2">{eventConfig.label}</span>
-                </div>
-              </label>
-            ))}
-          </div>
-
-          <label className="flex items-center gap-3 cursor-pointer bg-gray-900 rounded-lg px-3 py-2.5">
-            <input
-              type="checkbox"
-              checked={form.autoRegister}
-              onChange={() => setForm({ ...form, autoRegister: !form.autoRegister })}
-              className="rounded border-gray-600"
-            />
-            <div>
-              <span className="text-sm text-gray-300">Auto-register on GitHub</span>
-              <p className="text-xs text-gray-500 mt-0.5">
-                {serverConfig?.publicUrl ? (
-                  <>
-                    Webhook URL:{' '}
-                    <code className="text-gray-400">
-                      {serverConfig.publicUrl.replace(/\/+$/, '')}/api/webhooks/github
-                    </code>
-                  </>
-                ) : (
-                  <span className="text-amber-400">
-                    Set a Public URL above for reliable webhook delivery
-                  </span>
-                )}
-              </p>
-            </div>
-          </label>
-
-          <button
-            type="submit"
-            className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
-          >
-            {form.autoRegister ? 'Create & Register' : 'Create Webhook'}
-          </button>
-        </form>
-      )}
-
-      <div className="space-y-3">
-        {webhooks.map((wh) => {
-          const events = JSON.parse(wh.events || '{}');
-          const enabledEvents = Object.entries(events).filter(([, v]) => v.enabled);
-          const project = projects.find((p) => p.id === wh.project_id);
-          const logs = webhookLogs[wh.id] || [];
-          const isExpanded = expandedWebhook === wh.id;
-
-          return (
-            <div key={wh.id} className="bg-gray-800 rounded-xl p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-medium text-sm">
-                      {wh.repo_url.replace(/https?:\/\/github\.com\//, '')}
-                    </span>
-                    {project && (
-                      <span className="text-xs bg-gray-700 px-1.5 py-0.5 rounded text-gray-400">
-                        {project.name}
-                      </span>
-                    )}
-                    <span
-                      className={`text-xs px-1.5 py-0.5 rounded ${wh.enabled ? 'bg-emerald-900/40 text-emerald-400' : 'bg-gray-700 text-gray-500'}`}
-                    >
-                      {wh.enabled ? 'active' : 'disabled'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    {enabledEvents.length} event{enabledEvents.length !== 1 ? 's' : ''}:{' '}
-                    {enabledEvents.map(([k]) => k).join(', ')}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1">
-                  {logs.slice(0, 5).map((log) => (
-                    <div
-                      key={log.id}
-                      title={`${log.event_type} — ${log.status}${log.duration_ms ? ` (${(log.duration_ms / 1000).toFixed(1)}s)` : ''}`}
-                      className={`w-2 h-2 rounded-full ${statusColor(log.status)}`}
-                    />
-                  ))}
-                  <button
-                    onClick={() => toggleWebhook(wh)}
-                    className={`ml-2 text-xs px-2 py-1 rounded transition-colors ${wh.enabled ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-emerald-800 hover:bg-emerald-700 text-emerald-300'}`}
-                  >
-                    {wh.enabled ? 'Disable' : 'Enable'}
-                  </button>
-                  <button
-                    onClick={() => setExpandedWebhook(isExpanded ? null : wh.id)}
-                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded transition-colors text-gray-300"
-                  >
-                    {isExpanded ? 'Hide' : 'Setup'}
-                  </button>
-                  <button
-                    onClick={() => deleteWebhook(wh.id)}
-                    className="text-xs bg-red-900/40 hover:bg-red-800/60 px-2 py-1 rounded transition-colors text-red-400"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-
-              {isExpanded && (
-                <div className="mt-3 space-y-3 border-t border-gray-700 pt-3">
-                  <div className="space-y-2">
-                    <p className="text-xs text-gray-400 font-medium">Webhook Setup</p>
-                    <div className="flex items-center gap-2">
-                      <code className="flex-1 text-xs bg-gray-900 px-2 py-1.5 rounded font-mono text-gray-300 truncate">
-                        {getWebhookUrl()}
-                      </code>
-                      <button
-                        onClick={() => copyToClipboard(getWebhookUrl(), `url-${wh.id}`)}
-                        className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-gray-300"
-                      >
-                        {copiedField === `url-${wh.id}` ? 'Copied' : 'Copy URL'}
-                      </button>
-                    </div>
-                    {!serverConfig?.publicUrl && (
-                      <p className="text-xs text-amber-400">
-                        No Public URL configured — webhook URL may not be reachable from GitHub. Set
-                        it in the Webhook Endpoint section above.
-                      </p>
-                    )}
-                    <div className="flex items-center gap-2">
-                      <code className="flex-1 text-xs bg-gray-900 px-2 py-1.5 rounded font-mono text-gray-300 truncate">
-                        {wh.secret}
-                      </code>
-                      <button
-                        onClick={() => copyToClipboard(wh.secret, `secret-${wh.id}`)}
-                        className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-gray-300"
-                      >
-                        {copiedField === `secret-${wh.id}` ? 'Copied' : 'Copy Secret'}
-                      </button>
-                    </div>
-
-                    {/* Registration status */}
-                    {regStatus[wh.id]?.registered && (
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-                        <span className="text-emerald-400">Registered on GitHub</span>
-                        {regStatus[wh.id]?.hooks?.[0]?.id && (
-                          <span className="text-gray-500 font-mono">
-                            Hook #{regStatus[wh.id].hooks[0].id}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    {regStatus[wh.id]?.error && (
-                      <p className="text-xs text-red-400">
-                        Registration error: {regStatus[wh.id].error}
-                      </p>
-                    )}
-
-                    <div className="flex items-center gap-2">
-                      {regStatus[wh.id]?.registered ? (
-                        <>
-                          <button
-                            onClick={() => unregisterFromGitHub(wh)}
-                            disabled={registering[wh.id]}
-                            className="text-xs bg-red-900/40 hover:bg-red-800/60 disabled:opacity-50 px-3 py-1.5 rounded text-red-400 transition-colors"
-                          >
-                            {registering[wh.id] ? 'Removing...' : 'Remove from GitHub'}
-                          </button>
-                          <button
-                            onClick={() => checkRegistration(wh)}
-                            className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1.5 rounded text-gray-300 transition-colors"
-                          >
-                            Refresh Status
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => registerOnGitHub(wh)}
-                            disabled={registering[wh.id]}
-                            className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-3 py-1.5 rounded text-white transition-colors"
-                          >
-                            {registering[wh.id] ? 'Registering...' : 'Register on GitHub'}
-                          </button>
-                          <button
-                            onClick={() => checkRegistration(wh)}
-                            className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1.5 rounded text-gray-300 transition-colors"
-                          >
-                            Check Status
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <p className="text-xs text-gray-400 font-medium">Event Handlers</p>
-                    {enabledEvents.map(([eventKey]) => (
-                      <span
-                        key={eventKey}
-                        className="inline-block bg-gray-900 rounded px-2 py-1 text-xs font-mono text-emerald-400 mr-1 mb-1"
-                      >
-                        {eventKey}
-                      </span>
-                    ))}
-                  </div>
-
-                  {logs.length > 0 && (
-                    <div className="space-y-1">
-                      <p className="text-xs text-gray-400 font-medium">Recent Activity</p>
-                      {logs.map((log) => (
-                        <div key={log.id} className="flex items-center gap-2 text-xs">
-                          <div
-                            className={`w-2 h-2 rounded-full shrink-0 ${statusColor(log.status)}`}
-                          />
-                          <span className="font-mono text-gray-400">{log.event_type}</span>
-                          <span className="text-gray-600">
-                            {log.duration_ms ? `${(log.duration_ms / 1000).toFixed(1)}s` : '...'}
-                          </span>
-                          <span className="text-gray-600 ml-auto">
-                            {new Date(log.created_at).toLocaleString()}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {webhooks.length === 0 && !showForm && (
-          <p className="text-sm text-gray-500 text-center py-4">
-            No webhooks configured. Create one to receive GitHub events.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
+/* WebhookSection removed — webhooks are now auto-managed when saving project repos */
 
 function SlackSection() {
   const [status, setStatus] = useState([]);
