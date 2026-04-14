@@ -498,23 +498,13 @@ function GitHubAppSection({ config, setConfig }) {
     }
   }, []);
 
-  const handleCreateApp = async () => {
-    try {
-      const data = await api.get('/github-app/manifest');
-      // Create a form and submit it to GitHub (manifest flow requires a POST)
-      const form = document.createElement('form');
-      form.method = 'POST';
-      form.action = `${data.githubUrl}`;
-      const input = document.createElement('input');
-      input.type = 'hidden';
-      input.name = 'manifest';
-      input.value = JSON.stringify(data.manifest);
-      form.appendChild(input);
-      document.body.appendChild(form);
-      form.submit();
-    } catch (err) {
-      alert(err.message || 'Failed to start GitHub App creation');
-    }
+  const handleCreateApp = () => {
+    // Navigate to the server-rendered register page, which auto-submits
+    // the manifest form to GitHub. Using a full page navigation avoids
+    // GitHub's auth redirect dropping the POST body (known issue with
+    // programmatic form.submit() from SPAs).
+    const base = getServerBase();
+    window.location.href = `${base}/api/github-app/register`;
   };
 
   const handleRefreshInstallation = async () => {

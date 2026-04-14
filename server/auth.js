@@ -12,7 +12,12 @@
 
 import config from './config.js';
 
-const PUBLIC_PATHS = ['/api/health', '/api/github-app/callback', '/api/github-app/setup-complete'];
+const PUBLIC_PATHS = [
+  '/api/health',
+  '/api/github-app/callback',
+  '/api/github-app/setup-complete',
+  '/api/github-app/register',
+];
 
 export function authMiddleware(req, res, next) {
   const apiKey = config.apiKey;

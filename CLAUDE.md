@@ -115,6 +115,16 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - Committing directly to main (only merge commits from PRs)
 - Merging PRs — leave that for the human
 
+## External API Documentation — Always Verify
+
+When working with any external service API (GitHub, Slack, Stripe, AWS, etc.), **always search for and read the current official documentation** before implementing or debugging. Do not rely solely on training data — APIs change.
+
+- Consult the official documentation for the service you're integrating with
+- Compare the current API contract against what the code implements
+- Do this **proactively** — don't wait until something breaks
+
+This applies to all work: new integrations, bug fixes, and debugging unexpected behavior from third-party services.
+
 ## Testing
 
 **Every feature, bugfix, and refactor should include at least one test.** PRs without tests for new logic will be flagged in review.

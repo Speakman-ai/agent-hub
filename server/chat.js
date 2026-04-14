@@ -245,6 +245,15 @@ You are working in a git worktree with its own feature branch. Follow these rule
   // Memory instructions
   prompt += `\n\n## Memory Instructions\nYou have access to memory files in your workspace. The memory context above shows your current knowledge.\nWhen you learn something important (decisions, preferences, key facts), mention it in your response so it gets logged.`;
 
+  // External API documentation convention — applies to all agents
+  prompt += `\n\n## External API Documentation — Always Verify
+When working with any external service API (GitHub, Slack, Stripe, AWS, etc.), **always search for and read the current official documentation** before implementing or debugging. Do not rely solely on training data — APIs change, and stale knowledge leads to subtle bugs.
+
+- Consult the official documentation for the service you're integrating with
+- Compare the current API contract against what the code implements
+- Do this **proactively** at the start of the task — don't wait until something breaks
+- This applies to new integrations, bug fixes, debugging unexpected behavior, and code review of third-party API usage`;
+
   // Delegation instructions for lead agents
   if (agent.role === 'lead' && Array.isArray(agent.subAgents) && agent.subAgents.length > 0) {
     const getEnrichedAgent = options._getEnrichedAgent;

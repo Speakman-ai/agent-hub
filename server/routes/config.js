@@ -159,6 +159,46 @@ export default function createConfigRoutes(deps) {
   });
 
   /**
+   * GET /api/github-app/register — Server-rendered HTML page that auto-submits
+   * the manifest form to GitHub. This avoids the issue where programmatic
+   * form.submit() from the SPA loses the POST body when GitHub's auth
+   * redirects through /login (stale session cookie drops the form data).
+   *
+   * By navigating the browser to this endpoint, the form lives in a fresh
+   * page load and submits reliably.
+   */
+  router.get('/api/github-app/register', (_req, res) => {
+    const serverUrl = config.publicUrl;
+    if (!serverUrl) {
+      return res.status(400).send('Public URL must be configured first.');
+    }
+    const manifest = buildAppManifest(serverUrl);
+    // Escape for safe embedding in an HTML attribute:
+    // - < prevents tag injection
+    // - & prevents entity ambiguity
+    // - ' prevents attribute breakout (value is single-quoted)
+    // - " for completeness
+    const manifestJson = JSON.stringify(manifest)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/'/g, '&#39;')
+      .replace(/"/g, '&quot;');
+    const state = Date.now().toString(36);
+    res.setHeader('Content-Type', 'text/html');
+    res.send(`<!DOCTYPE html>
+<html>
+<head><title>Setting up GitHub App…</title></head>
+<body>
+  <p>Redirecting to GitHub…</p>
+  <form id="manifest-form" action="https://github.com/settings/apps/new?state=${state}" method="post">
+    <input type="hidden" name="manifest" value="${manifestJson}">
+  </form>
+  <script>document.getElementById('manifest-form').submit();</script>
+</body>
+</html>`);
+  });
+
+  /**
    * GET /api/github-app/callback — Handles the redirect from GitHub after app creation.
    * Exchanges the temporary code for app credentials and stores them.
    */
