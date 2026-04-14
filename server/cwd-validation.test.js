@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from 'vitest';
-import { existsSync } from 'fs';
 
 // Mock modules before importing the function under test
 vi.mock('./db.js', () => ({ db: {}, stmts: {} }));
