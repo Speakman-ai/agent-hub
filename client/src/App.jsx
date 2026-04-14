@@ -115,6 +115,9 @@ export default function App() {
   const [activeReviews, setActiveReviews] = useState({});
   // Toast notifications
   const [toasts, setToasts] = useState([]);
+  const showToast = (message, type = 'info', duration = 5000) => {
+    setToasts((prev) => [...prev, { id: `toast-${Date.now()}`, type, message, duration }]);
+  };
   // Desktop notifications (Electron native / Web Notifications API)
   const { notify } = useDesktopNotifications();
   // Kanban board refresh trigger
@@ -1507,6 +1510,7 @@ export default function App() {
                   }
                 }
               }}
+              showToast={showToast}
             />
           ) : currentView === 'wiki' && wikiProjectId ? (
             <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />

@@ -1711,7 +1711,7 @@ function GitHubSection({ projects = [], onProjectsChange }) {
   );
 }
 
-function HeartbeatSection({ onNavigate }) {
+function HeartbeatSection({ onNavigate, showToast }) {
   const [heartbeats, setHeartbeats] = useState([]);
   const [expandedAgent, setExpandedAgent] = useState(null);
   const [logs, setLogs] = useState({});
@@ -1769,11 +1769,11 @@ function HeartbeatSection({ onNavigate }) {
       if (thread) {
         onNavigate('threads', { projectId: thread.project_id, threadId: thread.id, thread });
       } else {
-        alert('No thread yet — run this heartbeat at least once to create a thread.');
+        showToast?.('No thread yet — run this heartbeat at least once to create a thread.', 'info');
       }
     } catch (e) {
       console.error('Failed to fetch heartbeat thread:', e);
-      alert('Failed to load heartbeat thread.');
+      showToast?.('Failed to load heartbeat thread.', 'error');
     }
   };
 
@@ -1986,7 +1986,7 @@ function HeartbeatSection({ onNavigate }) {
   );
 }
 
-function CronSection({ onNavigate }) {
+function CronSection({ onNavigate, showToast }) {
   const [crons, setCrons] = useState([]);
   const [running, setRunning] = useState({});
   const [showForm, setShowForm] = useState(false);
@@ -2045,11 +2045,11 @@ function CronSection({ onNavigate }) {
       if (thread) {
         onNavigate('threads', { projectId: thread.project_id, threadId: thread.id, thread });
       } else {
-        alert('No thread yet — run this cron job at least once to create a thread.');
+        showToast?.('No thread yet — run this cron job at least once to create a thread.', 'info');
       }
     } catch (e) {
       console.error('Failed to fetch cron thread:', e);
-      alert('Failed to load cron thread.');
+      showToast?.('Failed to load cron thread.', 'error');
     }
   };
 
@@ -4631,6 +4631,7 @@ export default function SettingsPage({
   onAgentsChange,
   initialTab,
   onNavigate,
+  showToast,
 }) {
   const [tab, setTab] = useState(initialTab || 'general');
 
@@ -4684,8 +4685,10 @@ export default function SettingsPage({
             <GitHubSection projects={projects} onProjectsChange={onAgentsChange} />
           )}
           {tab === 'orgs' && <OrganizationsSection />}
-          {tab === 'heartbeats' && <HeartbeatSection onNavigate={onNavigate} />}
-          {tab === 'crons' && <CronSection onNavigate={onNavigate} />}
+          {tab === 'heartbeats' && (
+            <HeartbeatSection onNavigate={onNavigate} showToast={showToast} />
+          )}
+          {tab === 'crons' && <CronSection onNavigate={onNavigate} showToast={showToast} />}
 
           {tab === 'slack' && <SlackSection />}
           {tab === 'agents' && (
