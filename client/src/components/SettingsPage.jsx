@@ -1111,6 +1111,11 @@ function HeartbeatSection() {
                   required
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                 />
+                {editForm.interval && humanCron(editForm.interval) !== editForm.interval && (
+                  <p className="text-xs text-blue-400 mt-1 ml-1">
+                    ↳ {humanCron(editForm.interval)}
+                  </p>
+                )}
                 <textarea
                   value={editForm.prompt}
                   onChange={(e) => setEditForm({ ...editForm, prompt: e.target.value })}
@@ -1399,6 +1404,9 @@ function CronSection() {
             required
             className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
           />
+          {form.schedule && humanCron(form.schedule) !== form.schedule && (
+            <p className="text-xs text-blue-400 -mt-1 ml-1">↳ {humanCron(form.schedule)}</p>
+          )}
           <textarea
             value={form.prompt}
             onChange={(e) => setForm({ ...form, prompt: e.target.value })}
@@ -1441,6 +1449,11 @@ function CronSection() {
                   required
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                 />
+                {editForm.schedule && humanCron(editForm.schedule) !== editForm.schedule && (
+                  <p className="text-xs text-blue-400 -mt-1 ml-1">
+                    ↳ {humanCron(editForm.schedule)}
+                  </p>
+                )}
                 <textarea
                   value={editForm.prompt}
                   onChange={(e) => setEditForm({ ...editForm, prompt: e.target.value })}
@@ -2948,6 +2961,12 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                           placeholder="*/30 * * * *"
                           className={inputClass}
                         />
+                        {edit.heartbeat?.interval &&
+                          humanCron(edit.heartbeat.interval) !== edit.heartbeat.interval && (
+                            <p className="text-xs text-blue-400 mt-1">
+                              ↳ {humanCron(edit.heartbeat.interval)}
+                            </p>
+                          )}
                       </div>
                       <div>
                         <label className={labelClass}>Heartbeat Prompt</label>
