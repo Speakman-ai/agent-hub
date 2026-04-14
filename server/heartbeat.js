@@ -79,9 +79,14 @@ export function runClaude(prompt, cwd, systemPrompt, options = {}) {
     let errorOutput = '';
     const timeout = options.timeoutMs || config.defaultTimeoutMs;
 
+    const heartbeatEnv = { ...process.env };
+    if (config.anthropicApiKey) {
+      heartbeatEnv.ANTHROPIC_API_KEY = config.anthropicApiKey;
+    }
+
     const proc = spawn(CLAUDE_BIN, args, {
       cwd,
-      env: { ...process.env },
+      env: heartbeatEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

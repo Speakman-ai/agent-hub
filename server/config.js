@@ -181,6 +181,11 @@ const config = {
   /** Optional API key for securing remote access */
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
 
+  /** Optional Anthropic API key for Claude Code sessions.
+   *  When set, passed as ANTHROPIC_API_KEY env var to all spawned
+   *  CLI processes — an alternative to OAuth-based auth. */
+  anthropicApiKey: resolve('ANTHROPIC_API_KEY', 'anthropicApiKey', null),
+
   // ── Slack ──────────────────────────────────────────────────────
   slackWebhookUrl: process.env.SLACK_WEBHOOK_URL || fileConfig.slackWebhookUrl || null,
 

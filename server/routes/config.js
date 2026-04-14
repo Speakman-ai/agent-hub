@@ -55,6 +55,9 @@ export default function createConfigRoutes(deps) {
       botGithubToken: config.botGithubToken ? '••••••••' : '',
       botGithubTokenSet: !!config.botGithubToken,
       botGithubUser: getGhBotUser() || null,
+      // Claude Code auth — whether an Anthropic API key is configured
+      anthropicApiKey: config.anthropicApiKey ? '••••••••' : '',
+      anthropicApiKeySet: !!config.anthropicApiKey,
       _file: {
         claudeBin: fileConfig.claudeBin || null,
         cursorBin: fileConfig.cursorBin || null,

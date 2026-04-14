@@ -696,6 +696,10 @@ export default function createChatHandler(deps) {
       if (config.apiKey) {
         base.AGENT_HUB_API_KEY = config.apiKey;
       }
+      // Pass Anthropic API key if configured (alternative to OAuth auth)
+      if (config.anthropicApiKey) {
+        base.ANTHROPIC_API_KEY = config.anthropicApiKey;
+      }
       return base;
     })();
 

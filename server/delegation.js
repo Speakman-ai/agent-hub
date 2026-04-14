@@ -193,9 +193,14 @@ export async function handleDelegation(
           let stderr = '';
           const timeout = config.conferenceTimeoutMs || 600000;
 
+          const spawnEnv = { ...process.env };
+          if (config.anthropicApiKey) {
+            spawnEnv.ANTHROPIC_API_KEY = config.anthropicApiKey;
+          }
+
           const proc = spawn(CLAUDE_BIN, args, {
             cwd: leadCwd || subAgent.cwd || project.cwd || process.env.HOME,
-            env: { ...process.env },
+            env: spawnEnv,
             stdio: ['ignore', 'pipe', 'pipe'],
           });
 
@@ -368,9 +373,14 @@ export async function synthesizeResults(
       let stdout = '';
       let stderr = '';
 
+      const synthEnv = { ...process.env };
+      if (config.anthropicApiKey) {
+        synthEnv.ANTHROPIC_API_KEY = config.anthropicApiKey;
+      }
+
       const proc = spawn(CLAUDE_BIN, args, {
         cwd: leadCwd || project.cwd || process.env.HOME,
-        env: { ...process.env },
+        env: synthEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
