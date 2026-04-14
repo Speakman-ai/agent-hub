@@ -35,4 +35,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** Save the active org ID to file-backed storage. */
   saveActiveOrgId: (orgId) => ipcRenderer.sendSync('save-active-org-id', orgId),
+
+  // ─── Desktop Notifications ──────────────────────────────────────
+
+  /** Show a native desktop notification (fire-and-forget). */
+  showNotification: (options) => ipcRenderer.send('show-notification', options),
+
+  /** Check if the system supports native notifications. */
+  isNotificationSupported: () => ipcRenderer.sendSync('get-notification-support'),
 });

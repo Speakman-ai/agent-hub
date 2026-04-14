@@ -11,6 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { fork, spawn } from 'child_process';
 import { mkdirSync, createWriteStream, readFileSync, writeFileSync, existsSync } from 'fs';
+import { createNotificationHandlers } from './notifications.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -344,6 +345,13 @@ ipcMain.handle('select-directory', async () => {
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
 });
+
+// ─── Notification IPC handlers ───────────────────────────────────
+
+const notifHandlers = createNotificationHandlers(() => mainWindow);
+
+ipcMain.on('show-notification', notifHandlers.handleShowNotification);
+ipcMain.on('get-notification-support', notifHandlers.handleGetSupport);
 
 // ─── App menu ────────────────────────────────────────────────────
 

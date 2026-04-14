@@ -17,6 +17,7 @@ import WikiBrowser from './components/WikiBrowser.jsx';
 import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
+import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { api } from './utils/api.js';
 import {
   MessageCircle,
@@ -109,6 +110,8 @@ export default function App() {
   const [activeReviews, setActiveReviews] = useState({});
   // Toast notifications
   const [toasts, setToasts] = useState([]);
+  // Desktop notifications (Electron native / Web Notifications API)
+  const { notify } = useDesktopNotifications();
   // Kanban board refresh trigger
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   const activeRoomIdRef = useRef(activeRoomId);
@@ -649,19 +652,22 @@ export default function App() {
           });
         }
         break;
-      case 'delegation_error':
+      case 'delegation_error': {
+        const delegationMsg = `Delegation failed: ${data.error}`;
         if (data.sessionId === activeSessionIdRef.current) {
           setToasts((prev) => [
             ...prev,
             {
               id: `delegation-err-${Date.now()}`,
               type: 'error',
-              message: `Delegation failed: ${data.error}`,
+              message: delegationMsg,
               duration: 10000,
             },
           ]);
         }
+        notify({ title: 'Delegation Error', body: delegationMsg, type: 'error' });
         break;
+      }
 
       case 'sessions_resuming': {
         const count = data.count || 0;
@@ -699,6 +705,11 @@ export default function App() {
             duration: 15000,
           },
         ]);
+        notify({
+          title: data.status === 'done' ? 'Task Complete' : 'Task Failed',
+          body: taskMsg,
+          type: taskStatus,
+        });
         window.dispatchEvent(new CustomEvent('task-complete', { detail: data }));
         break;
       }
@@ -738,13 +749,15 @@ export default function App() {
         break;
 
       case 'dispatch_failure': {
+        const dispatchMsg = `Dispatch failed (${data.source}): ${data.cardTitle} — ${data.reason}`;
         const toast = {
           id: `dispatch-failure-${Date.now()}`,
           type: 'error',
-          message: `Dispatch failed (${data.source}): ${data.cardTitle} — ${data.reason}`,
+          message: dispatchMsg,
           duration: 15000,
         };
         setToasts((prev) => [...prev, toast]);
+        notify({ title: 'Dispatch Failure', body: dispatchMsg, type: 'error' });
         // Also refresh kanban to show the new card comment
         setKanbanRefreshKey((k) => k + 1);
         break;
