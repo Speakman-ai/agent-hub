@@ -34,6 +34,16 @@ function initDb(dataDir) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
+  // Migration: drop legacy threads/thread_entries tables that lack project_id
+  // (created by an older schema before the threads feature was redesigned).
+  {
+    const cols = db.pragma('table_info(threads)').map((c) => c.name);
+    if (cols.length > 0 && !cols.includes('project_id')) {
+      db.exec('DROP TABLE IF EXISTS thread_entries');
+      db.exec('DROP TABLE IF EXISTS threads');
+    }
+  }
+
   // Create tables
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
