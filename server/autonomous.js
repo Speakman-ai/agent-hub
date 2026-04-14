@@ -985,17 +985,19 @@ If there are unresolved review threads (count > 0), do NOT approve until they ar
 `;
   }
 
-  // When a bot token is configured, the server handles all formal GitHub actions
-  // (approve, request-changes, merge) via the bot account. The agent should only
-  // read the diff and report findings — NOT run gh pr review / gh pr merge itself,
-  // since those would use the user's personal gh CLI auth.
+  // When a bot token or GitHub App is configured, the server handles all formal
+  // GitHub actions (approve, request-changes, merge) via the bot/app account.
+  // The agent should only read the diff and report findings — NOT run
+  // gh pr review / gh pr merge itself, since those would use the user's personal
+  // gh CLI auth.
   const hasBotToken = !!config.botGithubToken;
+  const serverHandlesReview = hasBotToken || hasGitHubApp();
 
-  const agentReviewStep = hasBotToken
+  const agentReviewStep = serverHandlesReview
     ? `
 ### If the code looks good:
 Report: **"APPROVED"** — and explain briefly why the code is correct.
-The server will submit the formal approval${shouldAutoMerge ? ' and merge' : ''} via the bot account automatically.${!shouldAutoMerge ? '\nNote: Auto-merge is disabled — a human will merge the PR after approval.' : ''}
+The server will submit the formal approval${shouldAutoMerge ? ' and merge' : ''} via the ${hasGitHubApp() ? 'GitHub App' : 'bot account'} automatically.${!shouldAutoMerge ? '\nNote: Auto-merge is disabled — a human will merge the PR after approval.' : ''}
 
 ### If you find issues:
 Report: **"CHANGES REQUESTED"** — and list each issue with:
@@ -1003,9 +1005,9 @@ Report: **"CHANGES REQUESTED"** — and list each issue with:
 - What's wrong
 - What to do instead
 
-The server will submit the formal "request changes" review via the bot account automatically.
+The server will submit the formal "request changes" review via the ${hasGitHubApp() ? 'GitHub App' : 'bot account'} automatically.
 
-Do **NOT** run \`gh pr review\`, \`gh pr merge\`, or \`gh api\` commands — the server handles all formal GitHub actions through the bot account.`
+Do **NOT** run \`gh pr review\`, \`gh pr merge\`, or \`gh api\` commands — the server handles all formal GitHub actions through the ${hasGitHubApp() ? 'GitHub App' : 'bot account'}.`
     : shouldAutoMerge
       ? `
 ### If the code looks good:
@@ -1084,9 +1086,9 @@ If that also fails, leave a comment prefixed with **🔄 CHANGES REQUESTED** so 
 gh pr comment ${prNumber} --body "🔄 **CHANGES REQUESTED**\\n\\nYour feedback here"
 \`\`\``;
 
-  const mergeRule = hasBotToken
+  const mergeRule = serverHandlesReview
     ? `- **Do NOT check out the branch or edit any code** — you are the reviewer, not the author
-- **Do NOT run gh pr review, gh pr merge, or gh api commands** — the server handles all formal GitHub actions via the bot account
+- **Do NOT run gh pr review, gh pr merge, or gh api commands** — the server handles all formal GitHub actions via the ${hasGitHubApp() ? 'GitHub App' : 'bot account'}
 - Just read the diff, analyze it, and clearly report APPROVED or CHANGES REQUESTED with detailed reasoning
 - Leave clear, specific feedback so the author can act on it`
     : shouldAutoMerge
