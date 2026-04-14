@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
+import { isFileModifyingTool, shortenPath, parseDiffLines } from '../utils/diff.js';
 import {
   Bot,
   Zap,
@@ -350,6 +351,53 @@ const TOOL_STYLES = {
   NotebookEdit: { color: 'border-amber-700/60 bg-amber-950/30', icon: <BookOpen size={16} /> },
 };
 
+/**
+ * DiffView — compact, colorized diff for Edit and Write tools.
+ * Edit: shows old_string lines as removals (red) and new_string as additions (green).
+ * Write: shows all content as additions (green).
+ */
+function DiffView({ tool, input }) {
+  const { filePath, action, removals, additions } = parseDiffLines(tool, input);
+
+  const addedCount = additions.filter((l) => l.trim()).length;
+  const removedCount = removals.filter((l) => l.trim()).length;
+
+  return (
+    <div className="bg-gray-950/60 rounded-md overflow-hidden font-mono text-xs">
+      {/* File path header */}
+      <div className="flex items-center gap-2 px-2 py-1 bg-gray-900/80 text-gray-400 border-b border-gray-800/50">
+        <span className="text-emerald-500 font-semibold">{action}:</span>
+        <span className="truncate">{shortenPath(filePath)}</span>
+        <span className="ml-auto text-[10px] text-gray-600">
+          {addedCount > 0 && <span className="text-emerald-500">+{addedCount}</span>}
+          {removedCount > 0 && <span className="text-red-400 ml-1">-{removedCount}</span>}
+        </span>
+      </div>
+      {/* Diff lines */}
+      <div className="overflow-x-auto max-h-64 overflow-y-auto">
+        {removals.map((line, i) => (
+          <div
+            key={`r${i}`}
+            className="px-2 py-px bg-red-950/40 text-red-300 border-l-2 border-red-600"
+          >
+            <span className="text-red-500/60 select-none mr-2">-</span>
+            {line}
+          </div>
+        ))}
+        {additions.map((line, i) => (
+          <div
+            key={`a${i}`}
+            className="px-2 py-px bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-600"
+          >
+            <span className="text-emerald-500/60 select-none mr-2">+</span>
+            {line}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ToolCard({ use, result, defaultOpen }) {
   const [open, setOpen] = useState(defaultOpen ?? false);
   const style = TOOL_STYLES[use.tool] || {
@@ -359,6 +407,16 @@ function ToolCard({ use, result, defaultOpen }) {
   const summary = summarizeToolInput(use.tool, use.input);
   const errored = result?.isError;
   const stillRunning = !result;
+  const showDiff = isFileModifyingTool(use.tool) && defaultOpen;
+
+  // When verbose + file-modifying tool, show compact diff instead of full expandable card
+  if (showDiff && !errored) {
+    return (
+      <div className={`border rounded-lg overflow-hidden ${style.color}`}>
+        <DiffView tool={use.tool} input={use.input} />
+      </div>
+    );
+  }
 
   return (
     <div
