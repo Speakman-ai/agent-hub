@@ -1038,14 +1038,9 @@ function GitHubSection({ projects = [], onProjectsChange }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // CLI auth status
-  const [ghStatus, setGhStatus] = useState(null);
-  const [ghStatusLoading, setGhStatusLoading] = useState(true);
-
   // GitHub App state
   const [appStatus, setAppStatus] = useState(null);
   const [refreshingApp, setRefreshingApp] = useState(false);
-  const [showBotFallback, setShowBotFallback] = useState(false);
   const [showConnectForm, setShowConnectForm] = useState(false);
   const [connectForm, setConnectForm] = useState({ appId: '', privateKey: '', installationId: '' });
   const [connectError, setConnectError] = useState(null);
@@ -1057,10 +1052,8 @@ function GitHubSection({ projects = [], onProjectsChange }) {
 
   // Per-project state
   const [projectWorkflow, setProjectWorkflow] = useState({});
-  const [projectReviewers, setProjectReviewers] = useState({});
   const [projectRepos, setProjectRepos] = useState({});
   const [workflowSaved, setWorkflowSaved] = useState({});
-  const [reviewerSaved, setReviewerSaved] = useState({});
   const [repoSaving, setRepoSaving] = useState({});
   const [repoSaveStatus, setRepoSaveStatus] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
@@ -1087,12 +1080,6 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-    // Fetch CLI auth status
-    fetch(`${getApiBase()}/github/status`, { headers: getAuthHeaders() })
-      .then((r) => r.json())
-      .then(setGhStatus)
-      .catch(() => setGhStatus({ authenticated: false, error: 'Failed to check' }))
-      .finally(() => setGhStatusLoading(false));
     // Fetch app status
     api
       .get('/github-app/status')
@@ -1123,7 +1110,6 @@ function GitHubSection({ projects = [], onProjectsChange }) {
   // Init per-project state when projects arrive
   useEffect(() => {
     const wf = {};
-    const rev = {};
     const repos = {};
     projects.forEach((p) => {
       wf[p.id] = {
@@ -1132,11 +1118,9 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         waitForCI: p.githubWorkflow?.waitForCI || false,
         waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
       };
-      rev[p.id] = p.defaultReviewer || '';
       repos[p.id] = p.githubRepo || '';
     });
     setProjectWorkflow(wf);
-    setProjectReviewers(rev);
     setProjectRepos(repos);
   }, [projects]);
 
@@ -1259,17 +1243,6 @@ function GitHubSection({ projects = [], onProjectsChange }) {
     }
   };
 
-  const saveReviewer = async (projectId) => {
-    try {
-      await api.updateProject(projectId, { defaultReviewer: projectReviewers[projectId] });
-      setReviewerSaved((prev) => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setReviewerSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
-      if (onProjectsChange) onProjectsChange();
-    } catch {
-      /* ignore */
-    }
-  };
-
   const saveProjectRepo = async (projectId) => {
     setRepoSaving((prev) => ({ ...prev, [projectId]: true }));
     setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null }));
@@ -1340,18 +1313,6 @@ function GitHubSection({ projects = [], onProjectsChange }) {
     }
   };
 
-  const refreshGhStatus = async () => {
-    setGhStatusLoading(true);
-    try {
-      const r = await fetch(`${getApiBase()}/github/status`, { headers: getAuthHeaders() });
-      setGhStatus(await r.json());
-    } catch {
-      setGhStatus({ authenticated: false, error: 'Failed to check' });
-    } finally {
-      setGhStatusLoading(false);
-    }
-  };
-
   if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
   if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
 
@@ -1364,62 +1325,7 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         </p>
       </div>
 
-      {/* CLI Auth Status */}
-      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-medium text-gray-300">CLI Authentication</h4>
-          <button
-            onClick={refreshGhStatus}
-            disabled={ghStatusLoading}
-            className="text-xs text-gray-400 hover:text-white transition-colors flex items-center gap-1"
-          >
-            <RefreshCw size={12} className={ghStatusLoading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-        </div>
-        {ghStatusLoading ? (
-          <p className="text-xs text-gray-500">Checking gh CLI status...</p>
-        ) : ghStatus?.authenticated ? (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 size={14} className="text-emerald-400" />
-              <span className="text-sm text-emerald-300">
-                Authenticated as <span className="font-mono font-medium">{ghStatus.user}</span>
-              </span>
-            </div>
-            {ghStatus.scopes?.length > 0 && (
-              <div className="flex flex-wrap gap-1 pl-5">
-                {ghStatus.scopes.map((s) => (
-                  <span
-                    key={s}
-                    className="bg-gray-900 text-gray-400 px-2 py-0.5 rounded text-[10px] font-mono"
-                  >
-                    {s}
-                  </span>
-                ))}
-              </div>
-            )}
-            {ghStatus.botUser && (
-              <div className="flex items-center gap-2 pl-5">
-                <span className="text-xs text-gray-500">Bot account:</span>
-                <span className="text-xs font-mono text-gray-400">{ghStatus.botUser}</span>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="flex items-center gap-2">
-            <AlertCircle size={14} className="text-amber-400" />
-            <span className="text-sm text-amber-300">
-              Not authenticated — run{' '}
-              <code className="bg-gray-900 px-1.5 py-0.5 rounded text-gray-300 text-xs">
-                gh auth login
-              </code>
-            </span>
-          </div>
-        )}
-      </div>
-
-      {/* Zone 1: GitHub App */}
+      {/* GitHub App */}
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
         <h4 className="text-sm font-medium text-gray-300">GitHub App</h4>
         <p className="text-xs text-gray-500">
@@ -1566,7 +1472,7 @@ function GitHubSection({ projects = [], onProjectsChange }) {
           <div className="flex items-center gap-2">
             <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
             <span className="text-sm text-emerald-400">
-              Connected: {appStatus.appSlug || appStatus.appName || `App #${appStatus.appId}`}
+              Connected: {appStatus.appName || appStatus.appSlug || `App #${appStatus.appId}`}
             </span>
             <button
               onClick={handleRemoveApp}
@@ -1576,92 +1482,9 @@ function GitHubSection({ projects = [], onProjectsChange }) {
             </button>
           </div>
         )}
-
-        {/* Bot PAT — Advanced accordion */}
-        <div className="border-t border-gray-700 pt-3">
-          <button
-            onClick={() => setShowBotFallback(!showBotFallback)}
-            className="flex items-center justify-between w-full text-left"
-          >
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-gray-400">Advanced: Bot PAT</span>
-              <span className="text-[10px] px-1.5 py-0.5 bg-gray-600/50 text-gray-400 rounded">
-                Fallback
-              </span>
-            </div>
-            {showBotFallback ? (
-              <ChevronDown size={14} className="text-gray-500" />
-            ) : (
-              <ChevronRight size={14} className="text-gray-500" />
-            )}
-          </button>
-
-          {showBotFallback && (
-            <div className="mt-3 space-y-2">
-              <label className={labelClass}>Bot Personal Access Token</label>
-              <input
-                type="password"
-                value={config._botTokenEdit || ''}
-                onChange={(e) => setConfig((prev) => ({ ...prev, _botTokenEdit: e.target.value }))}
-                className={inputClass}
-                placeholder={config.botGithubTokenSet ? '••••••••  (set)' : 'ghp_xxxx...'}
-              />
-              <button
-                onClick={async () => {
-                  const token = config._botTokenEdit?.trim();
-                  if (!token) return;
-                  try {
-                    const result = await api.updateConfig({ botGithubToken: token });
-                    setConfig((prev) => ({
-                      ...prev,
-                      botGithubTokenSet: true,
-                      botGithubUser: result.botGithubUser || null,
-                      _botTokenEdit: '',
-                    }));
-                  } catch (err) {
-                    alert(err.message || 'Failed to save bot token');
-                  }
-                }}
-                disabled={!config._botTokenEdit?.trim()}
-                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded disabled:opacity-50"
-              >
-                Save
-              </button>
-              <p className="text-xs text-gray-600">
-                Alternative: use a PAT from a separate GitHub account for PR reviews.
-              </p>
-              {config.botGithubTokenSet && (
-                <div className="flex items-center gap-2">
-                  <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-                  <span className="text-xs text-emerald-400">
-                    Bot configured{config.botGithubUser ? `: @${config.botGithubUser}` : ''}
-                  </span>
-                  <button
-                    onClick={async () => {
-                      try {
-                        await api.updateConfig({ botGithubToken: '' });
-                        setConfig((prev) => ({
-                          ...prev,
-                          botGithubTokenSet: false,
-                          botGithubUser: null,
-                          botGithubToken: '',
-                        }));
-                      } catch {
-                        /* ignore */
-                      }
-                    }}
-                    className="text-xs text-red-400 hover:text-red-300 ml-auto"
-                  >
-                    Remove
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
       </div>
 
-      {/* Zone 2: Projects & Repos */}
+      {/* Projects & Repos */}
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
         <h4 className="text-sm font-medium text-gray-300">Projects & Repos</h4>
         <p className="text-xs text-gray-500">
@@ -1749,27 +1572,6 @@ function GitHubSection({ projects = [], onProjectsChange }) {
                       {repoSaveStatus[p.id] === 'error' && (
                         <span className="text-xs text-red-400">Failed to save</span>
                       )}
-                    </div>
-
-                    {/* PR Reviewer */}
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs text-gray-400 flex-shrink-0 w-28">
-                        PR Reviewer:
-                      </label>
-                      <input
-                        value={projectReviewers[p.id] || ''}
-                        onChange={(e) =>
-                          setProjectReviewers((prev) => ({ ...prev, [p.id]: e.target.value }))
-                        }
-                        placeholder="github-username"
-                        className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-sm text-gray-100 focus:outline-none focus:border-gray-600 flex-1"
-                      />
-                      <button
-                        onClick={() => saveReviewer(p.id)}
-                        className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"
-                      >
-                        {reviewerSaved[p.id] ? 'Saved' : 'Save'}
-                      </button>
                     </div>
 
                     {/* Workflow Toggles */}
