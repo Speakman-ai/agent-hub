@@ -440,7 +440,16 @@ function initDb(dataDir) {
   try {
     db.prepare('SELECT git_worktree_detected FROM sessions LIMIT 1').get();
   } catch {
-    db.exec('ALTER TABLE sessions ADD COLUMN git_worktree_detected INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE sessions ADD COLUMN git_worktree_detected INTEGER DEFAULT NULL');
+  }
+
+  // Fixup: original migration used NOT NULL DEFAULT 0, which falsely marks pre-existing
+  // sessions as "CLI confirmed not in worktree". Reset stale defaults to NULL (unknown).
+  {
+    const info = db.pragma('table_info(sessions)').find((c) => c.name === 'git_worktree_detected');
+    if (info && info.notnull === 1) {
+      db.exec('UPDATE sessions SET git_worktree_detected = NULL WHERE git_worktree_detected = 0');
+    }
   }
 
   // Migration: add max_turns to rooms
