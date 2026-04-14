@@ -180,14 +180,30 @@ export default function createBoardRoutes(deps) {
     if (!card) return res.status(404).json({ error: 'Card not found' });
     const { columnId, position } = req.body;
     if (!columnId) return res.status(400).json({ error: 'columnId is required' });
+    const previousColumnId = card.column_id;
     stmts.moveKanbanCard.run(columnId, position ?? 0, req.params.cardId);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     const updatedCard = stmts.getKanbanCard.get(req.params.cardId);
     res.json(updatedCard);
 
-    // Review-column trigger
+    // Post-move hooks: notifications + review trigger
     try {
       const col = stmts.getKanbanColumn?.get(columnId);
+
+      // Broadcast card_moved for desktop/toast notifications
+      if (col && previousColumnId !== columnId) {
+        broadcast({
+          type: 'card_moved',
+          projectId: req.params.projectId,
+          cardId: req.params.cardId,
+          cardTitle: updatedCard.title,
+          columnName: col.name,
+          assignee: updatedCard.assignee,
+          prUrl: updatedCard.pr_url,
+        });
+      }
+
+      // Review-column trigger
       if (col && col.name.toLowerCase() === 'review') {
         console.log(
           `[Lead Review] Card "${updatedCard.title}" moved to Review column — checking for review trigger`,
@@ -200,7 +216,7 @@ export default function createBoardRoutes(deps) {
         }
       }
     } catch (err) {
-      console.error(`[Lead Review] Error in review-column trigger:`, err.message);
+      console.error(`[Card Move] Error in post-move hooks:`, err.message);
     }
   });
 

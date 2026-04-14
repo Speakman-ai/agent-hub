@@ -20,6 +20,11 @@ import { useWebSocket } from './hooks/useWebSocket.js';
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { api } from './utils/api.js';
 import {
+  cardStartedNotification,
+  cardReviewNotification,
+  prMergedNotification,
+} from './utils/ticketNotifications.js';
+import {
   MessageCircle,
   Info,
   CheckCircle,
@@ -759,6 +764,53 @@ export default function App() {
         setToasts((prev) => [...prev, toast]);
         notify({ title: 'Dispatch Failure', body: dispatchMsg, type: 'error' });
         // Also refresh kanban to show the new card comment
+        setKanbanRefreshKey((k) => k + 1);
+        break;
+      }
+
+      // ── Ticket lifecycle notifications ─────────────────────────
+      case 'card_moved': {
+        const colLower = (data.columnName || '').toLowerCase();
+        if (colLower === 'in progress') {
+          const { title, body } = cardStartedNotification(data);
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: `card-started-${data.cardId}-${Date.now()}`,
+              type: 'info',
+              message: body,
+              duration: 8000,
+            },
+          ]);
+          notify({ title, body, type: 'info' });
+        } else if (colLower === 'review') {
+          const { title, body } = cardReviewNotification(data);
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: `card-review-${data.cardId}-${Date.now()}`,
+              type: 'info',
+              message: body,
+              duration: 8000,
+            },
+          ]);
+          notify({ title, body, type: 'info' });
+        }
+        break;
+      }
+
+      case 'webhook_pr_merged': {
+        const { title, body } = prMergedNotification(data);
+        setToasts((prev) => [
+          ...prev,
+          {
+            id: `pr-merged-${data.prNumber}-${Date.now()}`,
+            type: 'success',
+            message: body,
+            duration: 10000,
+          },
+        ]);
+        notify({ title, body, type: 'success' });
         setKanbanRefreshKey((k) => k + 1);
         break;
       }
