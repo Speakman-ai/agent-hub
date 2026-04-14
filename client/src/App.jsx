@@ -315,7 +315,7 @@ export default function App() {
           const sid = data.sessionId;
           setSubagents((prev) => {
             const entry = prev[sid];
-            if (!entry || entry.running <= 0) return prev;
+            if (!entry || !entry.ids.has(event.toolUseId)) return prev;
             return {
               ...prev,
               [sid]: {

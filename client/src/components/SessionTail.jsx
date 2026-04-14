@@ -438,19 +438,21 @@ function SubagentCard({ use, result }) {
       </button>
 
       {/* Metadata badges row */}
-      <div className="flex items-center gap-2 px-3 pb-1.5 text-[10px] text-gray-500">
-        {model && (
-          <span className="bg-gray-800/60 px-1.5 py-0.5 rounded">
-            {model.replace('claude-', '').replace(/-/g, ' ')}
-          </span>
-        )}
-        {background && <span className="bg-gray-800/60 px-1.5 py-0.5 rounded">background</span>}
-        {isolation && (
-          <span className="bg-gray-800/60 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-            <GitFork size={8} /> {isolation}
-          </span>
-        )}
-      </div>
+      {(model || background || isolation) && (
+        <div className="flex items-center gap-2 px-3 pb-1.5 text-[10px] text-gray-500">
+          {model && (
+            <span className="bg-gray-800/60 px-1.5 py-0.5 rounded">
+              {model.replace('claude-', '').replace(/-/g, ' ')}
+            </span>
+          )}
+          {background && <span className="bg-gray-800/60 px-1.5 py-0.5 rounded">background</span>}
+          {isolation && (
+            <span className="bg-gray-800/60 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+              <GitFork size={8} /> {isolation}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Expanded content */}
       {open && (
