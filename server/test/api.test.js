@@ -14,6 +14,7 @@ import {
   createSession,
   createWikiPage,
   createCard,
+  createThread,
 } from './helpers.js';
 
 let request;
@@ -928,5 +929,177 @@ describe('Delegations', () => {
     const session = await createSession();
     const res = await request.get(`/api/sessions/${session.id}/delegations`).expect(200);
     expect(Array.isArray(res.body)).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Threads
+// ═══════════════════════════════════════════════════════════════════
+
+describe('Threads', () => {
+  let project;
+
+  beforeAll(async () => {
+    project = await createProject();
+  });
+
+  describe('POST /api/projects/:projectId/threads', () => {
+    it('creates a cron thread', async () => {
+      const res = await request
+        .post(`/api/projects/${project.id}/threads`)
+        .send({ name: 'Daily backup', type: 'cron', source_id: 'cron-123' })
+        .expect(201);
+
+      expect(res.body.id).toBeDefined();
+      expect(res.body.name).toBe('Daily backup');
+      expect(res.body.type).toBe('cron');
+      expect(res.body.source_id).toBe('cron-123');
+      expect(res.body.project_id).toBe(project.id);
+      expect(res.body.created_at).toBeDefined();
+    });
+
+    it('creates a heartbeat thread', async () => {
+      const res = await request
+        .post(`/api/projects/${project.id}/threads`)
+        .send({ name: 'Agent check-in', type: 'heartbeat' })
+        .expect(201);
+
+      expect(res.body.type).toBe('heartbeat');
+    });
+
+    it('rejects missing name', async () => {
+      await request.post(`/api/projects/${project.id}/threads`).send({ type: 'cron' }).expect(400);
+    });
+
+    it('rejects invalid type', async () => {
+      await request
+        .post(`/api/projects/${project.id}/threads`)
+        .send({ name: 'Bad', type: 'invalid' })
+        .expect(400);
+    });
+
+    it('returns 404 for unknown project', async () => {
+      await request
+        .post('/api/projects/nonexistent/threads')
+        .send({ name: 'Test', type: 'cron' })
+        .expect(404);
+    });
+  });
+
+  describe('GET /api/projects/:projectId/threads', () => {
+    it('lists threads for a project', async () => {
+      const proj = await createProject();
+      await createThread(proj.id, { name: 'Thread A', type: 'cron' });
+      await createThread(proj.id, { name: 'Thread B', type: 'heartbeat' });
+
+      const res = await request.get(`/api/projects/${proj.id}/threads`).expect(200);
+      expect(res.body.length).toBe(2);
+    });
+
+    it('filters by type', async () => {
+      const proj = await createProject();
+      await createThread(proj.id, { name: 'Cron 1', type: 'cron' });
+      await createThread(proj.id, { name: 'HB 1', type: 'heartbeat' });
+
+      const res = await request.get(`/api/projects/${proj.id}/threads?type=heartbeat`).expect(200);
+      expect(res.body.length).toBe(1);
+      expect(res.body[0].type).toBe('heartbeat');
+    });
+  });
+
+  describe('GET /api/threads/:threadId', () => {
+    it('returns a single thread', async () => {
+      const thread = await createThread(project.id);
+      const res = await request.get(`/api/threads/${thread.id}`).expect(200);
+      expect(res.body.id).toBe(thread.id);
+    });
+
+    it('returns 404 for unknown thread', async () => {
+      await request.get('/api/threads/nonexistent').expect(404);
+    });
+  });
+
+  describe('DELETE /api/threads/:threadId', () => {
+    it('deletes a thread', async () => {
+      const thread = await createThread(project.id);
+      await request.delete(`/api/threads/${thread.id}`).expect(200);
+      await request.get(`/api/threads/${thread.id}`).expect(404);
+    });
+
+    it('returns 404 for unknown thread', async () => {
+      await request.delete('/api/threads/nonexistent').expect(404);
+    });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Thread Entries
+// ═══════════════════════════════════════════════════════════════════
+
+describe('Thread Entries', () => {
+  let project;
+
+  beforeAll(async () => {
+    project = await createProject();
+  });
+
+  describe('POST /api/threads/:threadId/entries', () => {
+    it('creates an entry', async () => {
+      const thread = await createThread(project.id);
+      const res = await request
+        .post(`/api/threads/${thread.id}/entries`)
+        .send({ content: 'Cron started' })
+        .expect(201);
+
+      expect(res.body.id).toBeDefined();
+      expect(res.body.thread_id).toBe(thread.id);
+      expect(res.body.content).toBe('Cron started');
+      expect(res.body.timestamp).toBeDefined();
+    });
+
+    it('rejects missing content', async () => {
+      const thread = await createThread(project.id);
+      await request.post(`/api/threads/${thread.id}/entries`).send({}).expect(400);
+    });
+
+    it('returns 404 for unknown thread', async () => {
+      await request.post('/api/threads/nonexistent/entries').send({ content: 'test' }).expect(404);
+    });
+  });
+
+  describe('GET /api/threads/:threadId/entries', () => {
+    it('lists entries in chronological order', async () => {
+      const thread = await createThread(project.id);
+      await request
+        .post(`/api/threads/${thread.id}/entries`)
+        .send({ content: 'First' })
+        .expect(201);
+      await request
+        .post(`/api/threads/${thread.id}/entries`)
+        .send({ content: 'Second' })
+        .expect(201);
+
+      const res = await request.get(`/api/threads/${thread.id}/entries`).expect(200);
+      expect(res.body.length).toBe(2);
+      expect(res.body[0].content).toBe('First');
+      expect(res.body[1].content).toBe('Second');
+    });
+
+    it('returns 404 for unknown thread', async () => {
+      await request.get('/api/threads/nonexistent/entries').expect(404);
+    });
+  });
+
+  describe('cascade delete', () => {
+    it('deleting a thread removes its entries', async () => {
+      const thread = await createThread(project.id);
+      await request
+        .post(`/api/threads/${thread.id}/entries`)
+        .send({ content: 'Will be deleted' })
+        .expect(201);
+
+      await request.delete(`/api/threads/${thread.id}`).expect(200);
+      await request.get(`/api/threads/${thread.id}/entries`).expect(404);
+    });
   });
 });

@@ -383,6 +383,29 @@ function initDb(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS idx_wiki_project ON wiki_pages(project_id);
     CREATE INDEX IF NOT EXISTS idx_wiki_category ON wiki_pages(project_id, category);
+
+    -- Threads: group log entries for cron runs, heartbeat checks, etc.
+    CREATE TABLE IF NOT EXISTS threads (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('cron', 'heartbeat')),
+      source_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_threads_project ON threads(project_id);
+    CREATE INDEX IF NOT EXISTS idx_threads_type ON threads(project_id, type);
+    CREATE INDEX IF NOT EXISTS idx_threads_source ON threads(project_id, source_id);
+
+    -- Thread entries: individual log lines within a thread
+    CREATE TABLE IF NOT EXISTS thread_entries (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_thread_entries_thread ON thread_entries(thread_id);
   `);
 
   // Migration: add next_run_at to crons (last_run already exists)
@@ -1136,6 +1159,30 @@ function initDb(dataDir) {
     getWikiPagesByCategory: db.prepare(
       'SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at FROM wiki_pages WHERE project_id = ? AND category = ? ORDER BY updated_at DESC',
     ),
+
+    // Threads
+    getThreadsByProject: db.prepare(
+      'SELECT * FROM threads WHERE project_id = ? ORDER BY created_at DESC',
+    ),
+    getThreadsByProjectAndType: db.prepare(
+      'SELECT * FROM threads WHERE project_id = ? AND type = ? ORDER BY created_at DESC',
+    ),
+    getThread: db.prepare('SELECT * FROM threads WHERE id = ?'),
+    createThread: db.prepare(
+      'INSERT INTO threads (id, project_id, name, type, source_id) VALUES (?, ?, ?, ?, ?)',
+    ),
+    deleteThread: db.prepare('DELETE FROM threads WHERE id = ?'),
+
+    // Thread entries
+    getThreadEntries: db.prepare(
+      'SELECT * FROM thread_entries WHERE thread_id = ? ORDER BY timestamp ASC',
+    ),
+    getThreadEntry: db.prepare('SELECT * FROM thread_entries WHERE id = ?'),
+    createThreadEntry: db.prepare(
+      'INSERT INTO thread_entries (id, thread_id, content) VALUES (?, ?, ?)',
+    ),
+    deleteThreadEntry: db.prepare('DELETE FROM thread_entries WHERE id = ?'),
+    deleteThreadEntries: db.prepare('DELETE FROM thread_entries WHERE thread_id = ?'),
 
     // Skill registry
     getSkillRegistry: db.prepare(

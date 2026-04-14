@@ -124,6 +124,24 @@ export async function createWikiPage(projectId, overrides = {}) {
  * Gets board columns first, then creates a card in the first column.
  * Returns the created card object.
  */
+/**
+ * Create a thread for a project.
+ * Returns the created thread object.
+ */
+export async function createThread(projectId, overrides = {}) {
+  const request = await getRequest();
+  const res = await request
+    .post(`/api/projects/${projectId}/threads`)
+    .send({
+      name: overrides.name || `Test Thread ${uid('thread')}`,
+      type: overrides.type || 'cron',
+      source_id: overrides.source_id || null,
+      ...overrides,
+    })
+    .expect(201);
+  return res.body;
+}
+
 export async function createCard(projectId, overrides = {}) {
   const request = await getRequest();
 
