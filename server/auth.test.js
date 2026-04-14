@@ -87,6 +87,20 @@ describe('authMiddleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it('passes through for non-API paths (static files / SPA fallback)', () => {
+    config.apiKey = 'secret-key';
+    const next = vi.fn();
+    authMiddleware(mockReq({ path: '/' }), mockRes(), next);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('passes through for static asset paths', () => {
+    config.apiKey = 'secret-key';
+    const next = vi.fn();
+    authMiddleware(mockReq({ path: '/assets/index-abc123.js' }), mockRes(), next);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
   it('prefers header over query param', () => {
     config.apiKey = 'secret-key';
     const next = vi.fn();

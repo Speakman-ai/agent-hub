@@ -25,7 +25,10 @@ export function authMiddleware(req, res, next) {
   // No key configured → auth disabled (local-only mode)
   if (!apiKey) return next();
 
-  // Public endpoints bypass auth
+  // Only gate API routes — static files / SPA fallback serve without auth
+  if (!req.path.startsWith('/api/')) return next();
+
+  // Public API endpoints bypass auth
   if (PUBLIC_PATHS.includes(req.path)) return next();
 
   // Check header first, then query param
