@@ -615,12 +615,9 @@ export default function createChatHandler(deps) {
         model,
         '--system-prompt',
         enrichedPrompt,
-        '--input-format',
-        'stream-json',
         '--output-format',
         'stream-json',
         '--include-partial-messages',
-        '--replay-user-messages',
         '--verbose',
       ];
       if (isNewEngineSession) {
@@ -628,6 +625,7 @@ export default function createChatHandler(deps) {
       } else {
         args.push('--resume', engineSessionId);
       }
+      args.push(finalPrompt);
       bin = CLAUDE_BIN;
     }
 
@@ -703,14 +701,8 @@ export default function createChatHandler(deps) {
     const proc = spawn(bin, args, {
       cwd: effectiveCwd,
       env: spawnEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-
-    // Send prompt via stdin for Claude Code (stream-json input format).
-    if (engine !== 'cursor-agent' && proc.stdin) {
-      proc.stdin.write(JSON.stringify({ type: 'user_message', content: finalPrompt }) + '\n');
-      proc.stdin.end();
-    }
 
     // Pin this stream's writes to the db handle that's active right now.
     const S = stmts;
