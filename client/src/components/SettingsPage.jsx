@@ -1,8 +1,40 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Component } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import humanCron from '../../../shared/utils/humanCron.js';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
+
+/** Error boundary to catch render crashes in individual settings tabs */
+class SettingsErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+          <p className="text-red-400 text-sm font-medium mb-1">Something went wrong</p>
+          <p className="text-xs text-gray-400 mb-3">
+            {this.state.error?.message || 'An unexpected error occurred'}
+          </p>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import {
   testConnection,
   getAuthHeaders,
@@ -693,6 +725,7 @@ function GitHubAppSection({ config, setConfig }) {
 function ClaudeAuthSection() {
   const [auth, setAuth] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [loginLoading, setLoginLoading] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [oauthUrl, setOauthUrl] = useState(null);
@@ -707,11 +740,13 @@ function ClaudeAuthSection() {
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
 
   const fetchAuth = async () => {
+    setError(null);
     try {
       const data = await api.getClaudeAuth();
       setAuth(data);
-    } catch {
+    } catch (err) {
       setAuth(null);
+      setError(err.message || 'Failed to load auth status');
     } finally {
       setLoading(false);
     }
@@ -836,7 +871,36 @@ function ClaudeAuthSection() {
     }
   };
 
-  if (loading) return <p className="text-sm text-gray-500">Loading auth status...</p>;
+  if (loading)
+    return (
+      <div className="flex items-center gap-2 text-sm text-gray-400 py-8">
+        <Loader2 size={16} className="animate-spin" />
+        <span>Loading auth status...</span>
+      </div>
+    );
+
+  if (error && !auth)
+    return (
+      <div className="space-y-4">
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-red-400 text-sm mb-2">
+            <AlertCircle size={16} />
+            <span className="font-medium">Failed to load authentication status</span>
+          </div>
+          <p className="text-xs text-gray-400 mb-3">{error}</p>
+          <button
+            onClick={() => {
+              setLoading(true);
+              fetchAuth();
+            }}
+            className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+          >
+            <RefreshCw size={12} />
+            Retry
+          </button>
+        </div>
+      </div>
+    );
 
   const isOAuthLoggedIn = auth?.oauth?.loggedIn;
   const email = auth?.oauth?.email;
@@ -4377,23 +4441,29 @@ export default function SettingsPage({ projects = [], agents, onAgentsChange, in
           ))}
         </div>
 
-        {tab === 'general' && <GeneralSection />}
-        {tab === 'claude-auth' && <ClaudeAuthSection />}
-        {tab === 'github' && (
-          <GitHubSection projects={projects} onProjectsChange={onAgentsChange} />
-        )}
-        {tab === 'orgs' && <OrganizationsSection />}
-        {tab === 'heartbeats' && <HeartbeatSection />}
-        {tab === 'crons' && <CronSection />}
+        <SettingsErrorBoundary key={tab}>
+          {tab === 'general' && <GeneralSection />}
+          {tab === 'claude-auth' && <ClaudeAuthSection />}
+          {tab === 'github' && (
+            <GitHubSection projects={projects} onProjectsChange={onAgentsChange} />
+          )}
+          {tab === 'orgs' && <OrganizationsSection />}
+          {tab === 'heartbeats' && <HeartbeatSection />}
+          {tab === 'crons' && <CronSection />}
 
-        {tab === 'slack' && <SlackSection />}
-        {tab === 'agents' && (
-          <AgentConfigSection agents={agents} projects={projects} onAgentsChange={onAgentsChange} />
-        )}
-        {tab === 'usage' && <UsageSection />}
-        {tab === 'backup' && (
-          <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />
-        )}
+          {tab === 'slack' && <SlackSection />}
+          {tab === 'agents' && (
+            <AgentConfigSection
+              agents={agents}
+              projects={projects}
+              onAgentsChange={onAgentsChange}
+            />
+          )}
+          {tab === 'usage' && <UsageSection />}
+          {tab === 'backup' && (
+            <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />
+          )}
+        </SettingsErrorBoundary>
       </div>
     </div>
   );
