@@ -1,10 +1,11 @@
 /**
  * Claude Code Hooks Configuration
  *
- * Writes `.claude/settings.json` in the workspace with a Stop hook
- * that calls back to Agent Hub when Claude Code finishes work.
+ * Writes `.claude/settings.json` in the workspace with hooks that call back
+ * to Agent Hub. Supports both system hooks (auto-commit on Stop) and
+ * per-agent configured hooks for any supported event type.
  *
- * Note: Only the Stop event is hooked — SubagentStop fires when subagents
+ * Note: System hooks only use Stop — SubagentStop fires when subagents
  * finish while the main agent is still working, causing premature commits.
  * This replaces the proc.on('close') approach for auto-commit-and-PR,
  * using Claude Code's native hook system (available since v2.1.97).
@@ -44,16 +45,33 @@ function buildHookCommand(sessionId) {
 }
 
 /**
+ * Supported Claude Code hook event types.
+ * These correspond to the lifecycle events that Claude Code emits.
+ */
+export const HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SubagentStop'];
+
+/**
  * Write Claude Code hooks configuration to the workspace's `.claude/settings.json`.
  *
- * Merges the Stop hook into any existing settings without
- * overwriting other configuration. Each hook calls back to Agent Hub's
- * `/api/hooks/stop` endpoint with the session ID.
+ * Merges system hooks (auto-commit Stop) and agent-configured
+ * hooks into any existing settings without overwriting other configuration.
  *
  * @param {string} cwd - The workspace directory (typically a worktree)
  * @param {string} sessionId - The Agent Hub session ID
+ * @param {object} [options] - Additional options
+ * @param {object} [options.agentHooks] - Agent-configured hooks keyed by event type.
+ *   Each event maps to an array of { matcher, hooks: [{ type, command }] } entries.
+ * @param {boolean} [options.includeSystemHooks=false] - Whether to include the
+ *   auto-commit Stop hook (true for worktree sessions)
  */
-export function writeHooksConfig(cwd, sessionId) {
+export function writeHooksConfig(cwd, sessionId, options = {}) {
+  const { agentHooks, includeSystemHooks = false } = options;
+
+  // Skip if there's nothing to write
+  if (!includeSystemHooks && (!agentHooks || Object.keys(agentHooks).length === 0)) {
+    return;
+  }
+
   const claudeDir = path.join(cwd, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.json');
 
@@ -68,34 +86,66 @@ export function writeHooksConfig(cwd, sessionId) {
     settings = {};
   }
 
-  const hookCommand = buildHookCommand(sessionId);
-
-  const agentHubHook = {
-    type: 'command',
-    command: hookCommand,
-  };
-
-  // Build matcher entry — empty matcher matches all events
-  const hookEntry = {
-    matcher: '',
-    hooks: [agentHubHook],
-  };
-
-  // Merge into settings, preserving non-Agent-Hub hooks
   if (!settings.hooks) {
     settings.hooks = {};
   }
 
-  const existing = settings.hooks.Stop || [];
+  // 1) Merge system hooks (auto-commit on Stop) for worktree sessions
+  if (includeSystemHooks) {
+    const hookCommand = buildHookCommand(sessionId);
+    const agentHubHook = { type: 'command', command: hookCommand };
+    const hookEntry = { matcher: '', hooks: [agentHubHook] };
 
-  // Remove any previous Agent Hub hook entries (identified by /api/hooks/stop)
-  const filtered = existing.filter(
-    (entry) => !entry.hooks?.some((h) => h.command?.includes('/api/hooks/stop')),
-  );
+    const event = 'Stop';
+    const existing = settings.hooks[event] || [];
+    // Remove any previous Agent Hub system hook entries.
+    // Note: this filter would also remove agent-configured hooks whose command
+    // happens to contain '/api/hooks/stop' — unlikely but worth noting.
+    const filtered = existing.filter(
+      (entry) => !entry.hooks?.some((h) => h.command?.includes('/api/hooks/stop')),
+    );
+    filtered.push(hookEntry);
+    settings.hooks[event] = filtered;
+  }
 
-  // Add our hook entry
-  filtered.push(hookEntry);
-  settings.hooks.Stop = filtered;
+  // 2) Merge agent-configured hooks for all supported event types
+  if (agentHooks && typeof agentHooks === 'object') {
+    for (const event of HOOK_EVENTS) {
+      const agentEntries = agentHooks[event];
+      if (!Array.isArray(agentEntries) || agentEntries.length === 0) continue;
+
+      const existing = settings.hooks[event] || [];
+
+      // Remove previous agent-configured entries (identified by [agent-hub-agent] marker)
+      const filtered = existing.filter(
+        (entry) => !entry.hooks?.some((h) => h.command?.includes('[agent-hub-agent]')),
+      );
+
+      // Add agent-configured entries with marker comment for later identification
+      for (const entry of agentEntries) {
+        if (!Array.isArray(entry.hooks) || entry.hooks.length === 0) continue;
+        filtered.push({
+          matcher: entry.matcher || '',
+          hooks: entry.hooks.map((h) => ({
+            type: h.type || 'command',
+            command: `${h.command} # [agent-hub-agent]`,
+          })),
+        });
+      }
+
+      settings.hooks[event] = filtered;
+    }
+  }
+
+  // Clean up empty event arrays
+  for (const event of Object.keys(settings.hooks)) {
+    if (Array.isArray(settings.hooks[event]) && settings.hooks[event].length === 0) {
+      delete settings.hooks[event];
+    }
+  }
+  if (Object.keys(settings.hooks).length === 0) {
+    delete settings.hooks;
+  }
 
   // Ensure .claude directory exists
   if (!existsSync(claudeDir)) {
@@ -120,12 +170,17 @@ export function removeHooksConfig(cwd) {
     const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     if (!settings.hooks) return;
 
-    if (settings.hooks.Stop) {
-      settings.hooks.Stop = settings.hooks.Stop.filter(
-        (entry) => !entry.hooks?.some((h) => h.command?.includes('/api/hooks/stop')),
+    for (const event of Object.keys(settings.hooks)) {
+      if (!Array.isArray(settings.hooks[event])) continue;
+      settings.hooks[event] = settings.hooks[event].filter(
+        (entry) =>
+          !entry.hooks?.some(
+            (h) =>
+              h.command?.includes('/api/hooks/stop') || h.command?.includes('[agent-hub-agent]'),
+          ),
       );
-      if (settings.hooks.Stop.length === 0) {
-        delete settings.hooks.Stop;
+      if (settings.hooks[event].length === 0) {
+        delete settings.hooks[event];
       }
     }
 

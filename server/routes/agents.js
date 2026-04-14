@@ -4,6 +4,7 @@ import path from 'path';
 import { defaultModelForEngine } from '../config.js';
 import { resolveProjectPaths, contextFilePath, ALL_CONTEXT_FILES } from '../project-paths.js';
 import { updateMemory, getMemoryData } from '../memory.js';
+import { HOOK_EVENTS } from '../hooks.js';
 
 export default function createAgentRoutes(deps) {
   const {
@@ -106,6 +107,90 @@ export default function createAgentRoutes(deps) {
     // Sync project conference room (removes deleted agent)
     ensureProjectRoom(project);
     res.status(204).end();
+  });
+
+  // ─── Hooks configuration ────────────────────────────────────────────
+  // Per-agent Claude Code hooks — stored in projects.json agent.hooks.
+  // Format mirrors Claude Code's native hooks structure:
+  //   { "PreToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "..." }] }] }
+
+  /**
+   * GET /api/agents/:agentId/hooks — read agent hook configuration
+   */
+  router.get('/api/agents/:agentId/hooks', (req, res) => {
+    const found = findAgent(req.params.agentId);
+    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const { agent } = found;
+    res.json({
+      hooks: agent.hooks || {},
+      supportedEvents: HOOK_EVENTS,
+    });
+  });
+
+  /**
+   * PUT /api/agents/:agentId/hooks — replace agent hook configuration
+   *
+   * Body: { hooks: { PreToolUse?: [...], PostToolUse?: [...], ... } }
+   * Each event maps to an array of { matcher: string, hooks: [{ type: "command", command: string }] }
+   */
+  router.put('/api/agents/:agentId/hooks', (req, res) => {
+    const found = findAgent(req.params.agentId);
+    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const { agent } = found;
+
+    const { hooks } = req.body;
+    if (!hooks || typeof hooks !== 'object') {
+      return res.status(400).json({ error: 'hooks object is required' });
+    }
+
+    // Validate: only allow known event types
+    for (const event of Object.keys(hooks)) {
+      if (!HOOK_EVENTS.includes(event)) {
+        return res.status(400).json({ error: `Unknown hook event: ${event}` });
+      }
+      if (!Array.isArray(hooks[event])) {
+        return res.status(400).json({ error: `hooks.${event} must be an array` });
+      }
+      // Validate each entry has the correct shape
+      for (const entry of hooks[event]) {
+        if (typeof entry.matcher !== 'string' && entry.matcher !== undefined) {
+          return res.status(400).json({ error: `hooks.${event}[].matcher must be a string` });
+        }
+        if (!Array.isArray(entry.hooks) || entry.hooks.length === 0) {
+          return res
+            .status(400)
+            .json({ error: `hooks.${event}[].hooks must be a non-empty array` });
+        }
+        for (const h of entry.hooks) {
+          if (!h.command || typeof h.command !== 'string') {
+            return res
+              .status(400)
+              .json({ error: `hooks.${event}[].hooks[].command must be a non-empty string` });
+          }
+          if (h.type && h.type !== 'command') {
+            return res
+              .status(400)
+              .json({ error: `hooks.${event}[].hooks[].type must be "command" if specified` });
+          }
+        }
+      }
+    }
+
+    agent.hooks = hooks;
+    saveProjects();
+    res.json({ hooks: agent.hooks, supportedEvents: HOOK_EVENTS });
+  });
+
+  /**
+   * DELETE /api/agents/:agentId/hooks — remove all agent hook configuration
+   */
+  router.delete('/api/agents/:agentId/hooks', (req, res) => {
+    const found = findAgent(req.params.agentId);
+    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const { agent } = found;
+    delete agent.hooks;
+    saveProjects();
+    res.json({ hooks: {}, supportedEvents: HOOK_EVENTS });
   });
 
   // ─── Context endpoints ─────────────────────────────────────────────

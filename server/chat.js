@@ -733,13 +733,21 @@ PR URL: ${prUrl}
       session = stmts.getSession.get(sessionId);
     }
 
-    // Write Claude Code hooks config for auto-commit-and-PR
-    // Hooks fire on Stop/SubagentStop events — cleaner than proc.on('close')
-    if (engine === 'claude-code' && effectiveCwd !== project.cwd) {
-      try {
-        writeHooksConfig(effectiveCwd, sessionId);
-      } catch (err) {
-        console.warn(`[chat] Failed to write hooks config: ${err.message}`);
+    // Write Claude Code hooks config — agent-configured hooks + system auto-commit hooks.
+    // System hooks (Stop/SubagentStop) only apply to worktree sessions.
+    // Agent hooks apply to all Claude Code sessions.
+    if (engine === 'claude-code') {
+      const isWorktree = effectiveCwd !== project.cwd;
+      const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
+      if (isWorktree || hasAgentHooks) {
+        try {
+          writeHooksConfig(effectiveCwd, sessionId, {
+            agentHooks: agent.hooks,
+            includeSystemHooks: isWorktree,
+          });
+        } catch (err) {
+          console.warn(`[chat] Failed to write hooks config: ${err.message}`);
+        }
       }
     }
 
