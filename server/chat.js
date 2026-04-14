@@ -640,6 +640,7 @@ export default function createChatHandler(deps) {
     // Resolve effective cwd
     let effectiveCwd = project.cwd;
     if (session.use_worktree && (session.worktree_path || isNewEngineSession)) {
+      const priorWorktree = session.worktree_path;
       effectiveCwd = ensureWorktree(
         session,
         project.cwd,
@@ -647,6 +648,20 @@ export default function createChatHandler(deps) {
         project.commands?.install || null,
       );
       session = stmts.getSession.get(sessionId);
+
+      // Log cross-worktree resume — Claude Code 2.1.94+ handles this natively
+      if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
+        console.log(
+          `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
+        );
+      }
+    } else if (!isNewEngineSession && !session.use_worktree && session.worktree_path) {
+      // Worktree was disabled but engine_session_id is preserved —
+      // Claude Code 2.1.94+ resumes across worktrees, so the conversation
+      // context carries over even though we're now running in project.cwd.
+      console.log(
+        `[chat] Resuming session ${sessionId} in project cwd (worktree disabled, cross-worktree resume)`,
+      );
     }
 
     // Write Claude Code hooks config — agent-configured hooks + system auto-commit hooks.

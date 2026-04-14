@@ -351,8 +351,9 @@ export default function createSessionRoutes(deps) {
     const session = stmts.getSession.get(req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Session not found' });
     stmts.updateSessionWorktree.run(enabled ? 1 : 0, req.params.sessionId);
-    // Clear engine_session_id so the CLI starts fresh in the new cwd
-    stmts.updateSessionEngineSessionId.run(null, req.params.sessionId);
+    // Claude Code 2.1.94+ supports --resume across worktrees, so we preserve
+    // engine_session_id for session continuity when toggling worktree mode.
+    // The CLI will resume the conversation context even though the cwd changed.
     const updated = stmts.getSession.get(req.params.sessionId);
     res.json(updated);
   });
