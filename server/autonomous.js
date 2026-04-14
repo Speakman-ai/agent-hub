@@ -1541,13 +1541,15 @@ export function startReviewPollingFallback() {
 /**
  * Reconcile kanban cards with GitHub PR state.
  *
- * Catches two gaps the webhook system misses:
+ * Catches three gaps the webhook system misses:
  * 1. Cards whose pr_url points at a superseded PR (closed, then a new PR was
  *    opened and merged — but the card never got updated).
  * 2. Cards that were created after their PR was already merged, so the webhook
  *    event fired before the card existed.
+ * 3. Cards with a session_id but no pr_url — discovers the PR by searching
+ *    GitHub for the session's worktree branch and auto-links it.
  *
- * Scans all non-Done columns for cards with a pr_url, checks the PR state via
+ * Scans all non-Done columns, auto-links missing pr_urls, checks PR state via
  * `gh api`, and moves merged-PR cards to Done.
  */
 async function reconcileKanbanWithGitHub() {
@@ -1561,26 +1563,72 @@ async function reconcileKanbanWithGitHub() {
     const doneCol = cols.find((c) => c.name.toLowerCase() === 'done');
     if (!doneCol) continue;
 
-    // Check all non-Done columns for cards with a pr_url.
+    // Derive repo full name from project.github or fall back to webhook config
+    let repoFullName = project.github?.repo || null;
+    if (!repoFullName) {
+      const webhookConfigs = deps.stmts.getWebhookConfigsByProject?.all(project.id);
+      const repoUrl = webhookConfigs?.[0]?.repo_url;
+      if (repoUrl) {
+        const match = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+        if (match) repoFullName = `${match[1]}/${match[2]}`;
+      }
+    }
+    if (!repoFullName) continue;
+
+    // Check all non-Done columns for cards.
     // API calls are sequential per card — fine at current scale but could be
     // parallelized with Promise.all if board sizes grow significantly.
     const nonDoneCols = cols.filter((c) => c.id !== doneCol.id);
     for (const col of nonDoneCols) {
       const cards = deps.stmts.getKanbanCardsByColumn.all(col.id);
       for (const card of cards) {
+        // ── Pass 1: Auto-discover pr_url for cards with session but no PR link ──
+        if (!card.pr_url && card.session_id) {
+          try {
+            const session = deps.stmts.getSession?.get(card.session_id);
+            const branch = session?.worktree_branch;
+            if (branch) {
+              const { stdout } = await execFileAsync(
+                'gh',
+                [
+                  'api',
+                  `repos/${repoFullName}/pulls?head=${repoFullName.split('/')[0]}:${branch}&state=all`,
+                  '--jq',
+                  'first | {url: .html_url, state: .state, merged: .merged} // empty',
+                ],
+                { timeout: 15000 },
+              );
+
+              if (stdout.trim()) {
+                const pr = JSON.parse(stdout.trim());
+                if (pr.url) {
+                  deps.stmts.setCardPrUrl.run(pr.url, card.id);
+                  card.pr_url = pr.url;
+                  console.log(
+                    `[Reconcile] Auto-linked PR URL on card "${card.title}" via session branch "${branch}"`,
+                  );
+                }
+              }
+            }
+          } catch {
+            // gh CLI not available or API error — skip silently
+          }
+        }
+
+        // ── Pass 2: Check pr_url state and move merged cards to Done ──
         if (!card.pr_url) continue;
 
         const prMatch = card.pr_url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
         if (!prMatch) continue;
 
-        const [, repoFullName, prNumber] = prMatch;
+        const [, cardRepo, prNumber] = prMatch;
 
         try {
           const { stdout } = await execFileAsync(
             'gh',
             [
               'api',
-              `repos/${repoFullName}/pulls/${prNumber}`,
+              `repos/${cardRepo}/pulls/${prNumber}`,
               '--jq',
               '{state: .state, merged: .merged}',
             ],

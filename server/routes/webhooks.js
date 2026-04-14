@@ -426,7 +426,35 @@ function handleKanbanWebhookEvent(deps, event, action, payload, webhookConfig) {
   if (!prUrl) return false;
 
   // Find the kanban card linked to this PR
-  const card = stmts.getKanbanCardByPrUrl?.get(prUrl);
+  let card = stmts.getKanbanCardByPrUrl?.get(prUrl);
+
+  // If no card found by pr_url, try matching by session ID from the branch name.
+  // Autonomous branches use the pattern: <project>/<agent>/session-<shortId>
+  // This auto-links pr_url on cards that were created before the PR existed.
+  if (!card && payload.pull_request?.head?.ref) {
+    const branchSessionMatch = payload.pull_request.head.ref.match(/session-([a-f0-9]{8})/);
+    if (branchSessionMatch) {
+      const shortId = branchSessionMatch[1];
+      // Find cards whose session_id starts with this short ID
+      const boardData = getOrCreateBoard(stmts, webhookConfig.project_id);
+      if (boardData?.board) {
+        const allCards = stmts.getKanbanCards.all(boardData.board.id);
+        card = allCards.find((c) => c.session_id && c.session_id.startsWith(shortId));
+        if (card && !card.pr_url) {
+          // Auto-link the pr_url so future webhook events match directly
+          try {
+            stmts.setCardPrUrl.run(prUrl, card.id);
+            console.log(
+              `[Webhook/Kanban] Auto-linked PR URL on card "${card.title}" via branch session ID`,
+            );
+          } catch (_e) {
+            /* non-critical */
+          }
+        }
+      }
+    }
+  }
+
   if (!card) return false;
 
   const project = projects.find((p) => p.id === webhookConfig.project_id);
