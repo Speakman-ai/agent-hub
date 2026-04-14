@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import humanCron from '../../../shared/utils/humanCron.js';
+import CronSchedulePicker from './CronSchedulePicker.jsx';
 import {
   testConnection,
   getAuthHeaders,
@@ -1728,7 +1729,7 @@ function CronSection() {
   const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
     name: '',
-    schedule: '',
+    schedule: '*/30 * * * *',
     prompt: '',
     cwd: '/home/ryan',
     enabled: true,
@@ -1796,7 +1797,7 @@ function CronSection() {
     const created = await api.createCron(form);
     setCrons((prev) => [...prev, created]);
     setShowForm(false);
-    setForm({ name: '', schedule: '', prompt: '', cwd: '/home/ryan', enabled: true });
+    setForm({ name: '', schedule: '*/30 * * * *', prompt: '', cwd: '/home/ryan', enabled: true });
   };
 
   const startEditing = (cronJob) => {
@@ -1838,16 +1839,10 @@ function CronSection() {
             required
             className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
           />
-          <input
+          <CronSchedulePicker
             value={form.schedule}
-            onChange={(e) => setForm({ ...form, schedule: e.target.value })}
-            placeholder="Cron schedule (e.g. */30 * * * *)"
-            required
-            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+            onChange={(schedule) => setForm({ ...form, schedule })}
           />
-          {form.schedule && humanCron(form.schedule) !== form.schedule && (
-            <p className="text-xs text-blue-400 -mt-1 ml-1">↳ {humanCron(form.schedule)}</p>
-          )}
           <textarea
             value={form.prompt}
             onChange={(e) => setForm({ ...form, prompt: e.target.value })}
@@ -1883,18 +1878,10 @@ function CronSection() {
                   required
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                 />
-                <input
+                <CronSchedulePicker
                   value={editForm.schedule}
-                  onChange={(e) => setEditForm({ ...editForm, schedule: e.target.value })}
-                  placeholder="Cron schedule (e.g. */30 * * * *)"
-                  required
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                  onChange={(schedule) => setEditForm({ ...editForm, schedule })}
                 />
-                {editForm.schedule && humanCron(editForm.schedule) !== editForm.schedule && (
-                  <p className="text-xs text-blue-400 -mt-1 ml-1">
-                    ↳ {humanCron(editForm.schedule)}
-                  </p>
-                )}
                 <textarea
                   value={editForm.prompt}
                   onChange={(e) => setEditForm({ ...editForm, prompt: e.target.value })}
