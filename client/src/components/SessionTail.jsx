@@ -118,8 +118,6 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded })
                 return <TextBubble key={`b${i}`} text={block.text} />;
               case 'result':
                 return <ResultFooter key={`b${i}`} result={block.event} />;
-              case 'rate_limit':
-                return null;
               case 'error':
                 return <ErrorBlock key={`b${i}`} message={block.event.message} />;
               case 'unknown':
@@ -179,6 +177,8 @@ function eventsToBlocks(events) {
     flushText();
 
     if (t === 'tool_result') continue; // shown inside its paired tool card
+    if (t === 'checkpoint') continue; // internal restore-point bookkeeping
+    if (t === 'rate_limit') continue; // no visual representation
     if (t === 'system') {
       blocks.push({ kind: 'system', event });
     } else if (t === 'thinking') {
@@ -192,8 +192,6 @@ function eventsToBlocks(events) {
       });
     } else if (t === 'result') {
       blocks.push({ kind: 'result', event });
-    } else if (t === 'rate_limit') {
-      blocks.push({ kind: 'rate_limit', event });
     } else if (t === 'error') {
       blocks.push({ kind: 'error', event });
     } else {
