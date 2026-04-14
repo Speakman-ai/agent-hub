@@ -76,7 +76,14 @@ describe('Thread source lookup', () => {
     const { v4: uuidv4 } = await import('uuid');
 
     const project = await createProject({ cwd: '/tmp/source-lookup-test' });
-    const cronResult = stmts.createCron.run('Source Test', '0 * * * *', 'test', '/tmp', 0);
+    const cronResult = stmts.createCron.run(
+      'Source Test',
+      '0 * * * *',
+      'test',
+      '/tmp',
+      0,
+      project.id,
+    );
     const cronId = cronResult.lastInsertRowid;
 
     const threadId = uuidv4();

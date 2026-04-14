@@ -711,6 +711,7 @@ export default function createConfigRoutes(deps) {
             c.prompt,
             targetProject.cwd,
             c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
+            targetProject.id || null,
           );
           imported++;
         }
@@ -1061,6 +1062,7 @@ export default function createConfigRoutes(deps) {
             c.prompt,
             c.cwd || config.defaultCwd,
             c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
+            c.project_id || null,
           );
           imported++;
         }

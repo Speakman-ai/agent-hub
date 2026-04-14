@@ -339,12 +339,43 @@ export async function runHeartbeat(agent) {
 }
 
 /**
- * Find the project that owns a cron job (matched by cwd).
+ * Find the project that owns a cron job.
+ * Checks project_id first, then falls back to cwd matching.
  * Returns the project object or null if no match.
  */
 function findProjectForCron(cronJob) {
   const projects = getProjects();
-  return projects.find((p) => p.cwd === cronJob.cwd) || null;
+  return (
+    (cronJob.project_id && projects.find((p) => p.id === cronJob.project_id)) ||
+    projects.find((p) => p.cwd === cronJob.cwd) ||
+    null
+  );
+}
+
+/**
+ * Resolve the working directory for a cron job.
+ * If the stored cwd doesn't exist, tries to resolve from the linked project.
+ * Falls back to config.defaultCwd as a last resort.
+ */
+function resolveCronCwd(cronJob) {
+  // Stored cwd is valid — use it
+  if (existsSync(cronJob.cwd)) return cronJob.cwd;
+
+  // Try to resolve from the linked project
+  const project = findProjectForCron(cronJob);
+  if (project && existsSync(project.cwd)) {
+    console.warn(
+      `[Cron] cwd "${cronJob.cwd}" does not exist for "${cronJob.name}" — using project cwd "${project.cwd}"`,
+    );
+    return project.cwd;
+  }
+
+  // Last resort — defaultCwd
+  const fallback = config.defaultCwd;
+  console.warn(
+    `[Cron] cwd "${cronJob.cwd}" does not exist for "${cronJob.name}" — falling back to "${fallback}"`,
+  );
+  return fallback;
 }
 
 /**
@@ -395,7 +426,8 @@ export async function runCronJob(cronJob) {
   const thread = getOrCreateCronThread(cronJob);
 
   try {
-    const cronCwd = getOrCreateProcessWorktree(cronJob.cwd, `cron-${cronJob.id}`);
+    const resolvedCwd = resolveCronCwd(cronJob);
+    const cronCwd = getOrCreateProcessWorktree(resolvedCwd, `cron-${cronJob.id}`);
     const detailed = await runClaude(cronJob.prompt, cronCwd, undefined, {
       timeoutMs,
       detailed: true,

@@ -573,6 +573,13 @@ function initDb(dataDir) {
     /* already exists */
   }
 
+  // Migrate: add project_id to crons (links cron to a project for cwd resolution)
+  try {
+    db.exec('ALTER TABLE crons ADD COLUMN project_id TEXT');
+  } catch (_e) {
+    /* already exists */
+  }
+
   // Migrate: active_room_tasks + room_message_queue for conference room persistence
   db.exec(`
     CREATE TABLE IF NOT EXISTS active_room_tasks (
@@ -843,10 +850,10 @@ function initDb(dataDir) {
     getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
     getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
     createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     updateCron: db.prepare(
-      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ? WHERE id = ?',
+      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ? WHERE id = ?',
     ),
     deleteCron: db.prepare('DELETE FROM crons WHERE id = ?'),
     updateCronResult: db.prepare(

@@ -13,7 +13,7 @@ export default function createCronRoutes(deps) {
   });
 
   router.post('/api/crons', (req, res) => {
-    const { name, schedule, prompt, cwd, enabled } = req.body;
+    const { name, schedule, prompt, cwd, enabled, project_id } = req.body;
     if (!name || !schedule || !prompt) {
       return res.status(400).json({ error: 'name, schedule, and prompt are required' });
     }
@@ -23,6 +23,7 @@ export default function createCronRoutes(deps) {
       prompt,
       cwd || config.defaultCwd,
       enabled !== undefined ? (enabled ? 1 : 0) : 1,
+      project_id || null,
     );
     const cronJob = stmts.getCron.get(result.lastInsertRowid);
     rescheduleCron(cronJob);
@@ -33,13 +34,14 @@ export default function createCronRoutes(deps) {
     const existing = stmts.getCron.get(parseInt(req.params.id));
     if (!existing) return res.status(404).json({ error: 'Cron not found' });
 
-    const { name, schedule, prompt, cwd, enabled } = req.body;
+    const { name, schedule, prompt, cwd, enabled, project_id } = req.body;
     stmts.updateCron.run(
       name || existing.name,
       schedule || existing.schedule,
       prompt || existing.prompt,
       cwd || existing.cwd,
       enabled !== undefined ? (enabled ? 1 : 0) : existing.enabled,
+      project_id !== undefined ? project_id : existing.project_id || null,
       existing.id,
     );
     const updated = stmts.getCron.get(existing.id);
@@ -78,9 +80,11 @@ export default function createCronRoutes(deps) {
     const cron = stmts.getCron.get(id);
     if (!cron) return res.status(404).json({ error: 'Cron not found' });
 
-    // Find the project that owns this cron (matched by cwd)
+    // Find the project that owns this cron (by project_id, falling back to cwd match)
     const projects = getProjects();
-    const project = projects.find((p) => p.cwd === cron.cwd);
+    const project =
+      (cron.project_id && projects.find((p) => p.id === cron.project_id)) ||
+      projects.find((p) => p.cwd === cron.cwd);
     if (!project) {
       return res.json({ thread: null, entries: [] });
     }

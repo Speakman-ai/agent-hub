@@ -1986,7 +1986,8 @@ function HeartbeatSection({ onNavigate, showToast }) {
   );
 }
 
-function CronSection({ onNavigate, showToast }) {
+function CronSection({ projects = [], onNavigate, showToast }) {
+  const defaultCwd = projects[0]?.cwd || '';
   const [crons, setCrons] = useState([]);
   const [running, setRunning] = useState({});
   const [showForm, setShowForm] = useState(false);
@@ -1999,7 +2000,8 @@ function CronSection({ onNavigate, showToast }) {
     name: '',
     schedule: '*/30 * * * *',
     prompt: '',
-    cwd: '/home/ryan',
+    cwd: defaultCwd,
+    project_id: projects[0]?.id || '',
     enabled: true,
   });
 
@@ -2080,7 +2082,14 @@ function CronSection({ onNavigate, showToast }) {
     const created = await api.createCron(form);
     setCrons((prev) => [...prev, created]);
     setShowForm(false);
-    setForm({ name: '', schedule: '*/30 * * * *', prompt: '', cwd: '/home/ryan', enabled: true });
+    setForm({
+      name: '',
+      schedule: '*/30 * * * *',
+      prompt: '',
+      cwd: defaultCwd,
+      project_id: projects[0]?.id || '',
+      enabled: true,
+    });
   };
 
   const startEditing = (cronJob) => {
@@ -2134,6 +2143,23 @@ function CronSection({ onNavigate, showToast }) {
             rows={3}
             className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 resize-none"
           />
+          {projects.length > 0 && (
+            <select
+              value={form.project_id}
+              onChange={(e) => {
+                const proj = projects.find((p) => p.id === e.target.value);
+                setForm({ ...form, project_id: e.target.value, cwd: proj?.cwd || form.cwd });
+              }}
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+            >
+              <option value="">No project</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
           <input
             value={form.cwd}
             onChange={(e) => setForm({ ...form, cwd: e.target.value })}
@@ -4688,7 +4714,9 @@ export default function SettingsPage({
           {tab === 'heartbeats' && (
             <HeartbeatSection onNavigate={onNavigate} showToast={showToast} />
           )}
-          {tab === 'crons' && <CronSection onNavigate={onNavigate} showToast={showToast} />}
+          {tab === 'crons' && (
+            <CronSection projects={projects} onNavigate={onNavigate} showToast={showToast} />
+          )}
 
           {tab === 'slack' && <SlackSection />}
           {tab === 'agents' && (
