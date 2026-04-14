@@ -8,6 +8,7 @@
 
 import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
+import { buildSpawnEnv } from './config.js';
 
 // ─── Module-level state ──────────────────────────────────────────────
 let deps = null;
@@ -360,10 +361,7 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
         let errorOutput = '';
         const timeout = config.conferenceTimeoutMs; // configurable, default 10 min
 
-        const roomEnv = { ...process.env };
-        if (config.anthropicApiKey) {
-          roomEnv.ANTHROPIC_API_KEY = config.anthropicApiKey;
-        }
+        const roomEnv = buildSpawnEnv(config);
 
         const proc = spawn(CLAUDE_BIN, args, {
           cwd: agent.cwd || process.env.HOME,

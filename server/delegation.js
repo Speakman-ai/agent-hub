@@ -8,6 +8,7 @@
 
 import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
+import { buildSpawnEnv } from './config.js';
 
 // ─── Module-level state ──────────────────────────────────────────────
 let deps = null;
@@ -193,10 +194,7 @@ export async function handleDelegation(
           let stderr = '';
           const timeout = config.conferenceTimeoutMs || 600000;
 
-          const spawnEnv = { ...process.env };
-          if (config.anthropicApiKey) {
-            spawnEnv.ANTHROPIC_API_KEY = config.anthropicApiKey;
-          }
+          const spawnEnv = buildSpawnEnv(config);
 
           const proc = spawn(CLAUDE_BIN, args, {
             cwd: leadCwd || subAgent.cwd || project.cwd || process.env.HOME,
@@ -373,10 +371,7 @@ export async function synthesizeResults(
       let stdout = '';
       let stderr = '';
 
-      const synthEnv = { ...process.env };
-      if (config.anthropicApiKey) {
-        synthEnv.ANTHROPIC_API_KEY = config.anthropicApiKey;
-      }
+      const synthEnv = buildSpawnEnv(config);
 
       const proc = spawn(CLAUDE_BIN, args, {
         cwd: leadCwd || project.cwd || process.env.HOME,

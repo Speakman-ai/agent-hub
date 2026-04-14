@@ -23,10 +23,11 @@
 
 import { Router } from 'express';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
+import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
 
-const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
+const HOME = os.homedir();
 const CREDENTIALS_PATH = path.join(HOME, '.claude', '.credentials.json');
 
 /**
@@ -322,7 +323,7 @@ export default function createClaudeAuthRoutes(deps) {
     res.json({
       ok: true,
       configured: !!apiKey,
-      masked: apiKey ? `${apiKey.slice(0, 10)}...${apiKey.slice(-4)}` : null,
+      masked: apiKey ? `••••••••${apiKey.slice(-4)}` : null,
     });
   });
 
@@ -369,6 +370,23 @@ export default function createClaudeAuthRoutes(deps) {
       res.status(500).json({ error: err.message });
     }
   });
+
+  // NOTE: These process-level signal handlers are registered once at startup.
+  // If createClaudeAuthRoutes were ever called more than once (e.g., in tests),
+  // duplicate listeners would accumulate. Guard or deregister if that changes.
+  const cleanup = () => {
+    if (activeLoginProc) {
+      try {
+        activeLoginProc.kill('SIGTERM');
+      } catch {
+        /* already dead */
+      }
+      activeLoginProc = null;
+      activeLoginId = null;
+    }
+  };
+  process.on('SIGTERM', cleanup);
+  process.on('SIGINT', cleanup);
 
   return router;
 }

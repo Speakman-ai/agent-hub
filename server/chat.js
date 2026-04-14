@@ -11,7 +11,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { stmts } from './db.js';
 import { createStreamParser } from './stream-parser.js';
-import config, { defaultModelForEngine } from './config.js';
+import config, { defaultModelForEngine, buildSpawnEnv } from './config.js';
 import { resolveProjectPaths, contextFilePath } from './project-paths.js';
 import { getWikiContext } from './wiki.js';
 import { getMemoryContext, appendDailyNote } from './memory.js';
@@ -687,7 +687,7 @@ export default function createChatHandler(deps) {
 
     // Inject env vars for the spawned process
     const spawnEnv = (() => {
-      const base = { ...process.env };
+      const base = buildSpawnEnv(config);
       if (config.botGithubToken && reviewSessionCards.has(sessionId)) {
         base.GH_TOKEN = config.botGithubToken;
       }
@@ -695,10 +695,6 @@ export default function createChatHandler(deps) {
       // the key to disk in .claude/settings.json
       if (config.apiKey) {
         base.AGENT_HUB_API_KEY = config.apiKey;
-      }
-      // Pass Anthropic API key if configured (alternative to OAuth auth)
-      if (config.anthropicApiKey) {
-        base.ANTHROPIC_API_KEY = config.anthropicApiKey;
       }
       return base;
     })();

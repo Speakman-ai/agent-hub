@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { spawn } from 'child_process';
 import { Router } from 'express';
-import { defaultModelForEngine } from '../config.js';
+import { defaultModelForEngine, buildSpawnEnv } from '../config.js';
 import { removeWorkspace } from '../worktree.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ export function summarizeTranscript(transcript, { engine, model, cwd }, config) 
 
     const proc = spawn(bin, args, {
       cwd: cwd || process.env.HOME,
-      env: { ...process.env },
+      env: buildSpawnEnv(config),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

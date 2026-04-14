@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getMemoryContext, appendDailyNote } from './memory.js';
 
-import config from './config.js';
+import config, { buildSpawnEnv } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_BIN = config.claudeBin;
@@ -104,7 +104,7 @@ function runAgent(systemPrompt, userMessage, cwd, engine = 'claude-code') {
 
     const proc = spawn(bin, args, {
       cwd,
-      env: { ...process.env },
+      env: buildSpawnEnv(config),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

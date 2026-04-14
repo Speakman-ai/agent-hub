@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { db, stmts } from './db.js';
-import config from './config.js';
+import config, { buildSpawnEnv } from './config.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
 
 const CLAUDE_BIN = config.claudeBin;
@@ -79,10 +79,7 @@ export function runClaude(prompt, cwd, systemPrompt, options = {}) {
     let errorOutput = '';
     const timeout = options.timeoutMs || config.defaultTimeoutMs;
 
-    const heartbeatEnv = { ...process.env };
-    if (config.anthropicApiKey) {
-      heartbeatEnv.ANTHROPIC_API_KEY = config.anthropicApiKey;
-    }
+    const heartbeatEnv = buildSpawnEnv(config);
 
     const proc = spawn(CLAUDE_BIN, args, {
       cwd,

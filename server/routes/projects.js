@@ -4,6 +4,7 @@ import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
+import { buildSpawnEnv } from '../config.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
 
@@ -403,7 +404,7 @@ export default function createProjectRoutes(deps) {
     try {
       proc = spawn(CLAUDE_BIN, args, {
         cwd: resolvedCwd,
-        env: { ...process.env },
+        env: buildSpawnEnv(config),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {

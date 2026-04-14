@@ -21,11 +21,12 @@
  */
 
 import { readFileSync, copyFileSync, cpSync, existsSync, mkdirSync } from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
+const HOME = os.homedir();
 
 // ─── Data directory ─────────────────────────────────────────────
 // Default to ~/.agent-hub/data — all persistent state lives here.
@@ -197,6 +198,19 @@ const config = {
 
 export function defaultModelForEngine(engine) {
   return config.engineDefaultModels[engine] || config.defaultModel;
+}
+
+/**
+ * Build a spawn environment with common env vars injected.
+ * Centralises ANTHROPIC_API_KEY injection so every spawn site
+ * stays in sync automatically.
+ */
+export function buildSpawnEnv(cfg = config) {
+  const env = { ...process.env };
+  if (cfg.anthropicApiKey) {
+    env.ANTHROPIC_API_KEY = cfg.anthropicApiKey;
+  }
+  return env;
 }
 
 export default config;
