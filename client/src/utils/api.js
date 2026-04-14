@@ -95,6 +95,23 @@ export const api = {
       return null;
     }),
 
+  // MCP Servers
+  getMcpServers: (agentId) => fetchJSON(`/agents/${agentId}/mcp-servers`),
+  updateMcpServers: (agentId, mcpServers) =>
+    fetchJSON(`/agents/${agentId}/mcp-servers`, {
+      method: 'PUT',
+      body: JSON.stringify({ mcpServers }),
+    }),
+  updateMcpServer: (agentId, serverName, config) =>
+    fetchJSON(`/agents/${agentId}/mcp-servers/${encodeURIComponent(serverName)}`, {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+  deleteMcpServer: (agentId, serverName) =>
+    fetchJSON(`/agents/${agentId}/mcp-servers/${encodeURIComponent(serverName)}`, {
+      method: 'DELETE',
+    }),
+
   // Heartbeats
   getHeartbeats: () => fetchJSON('/heartbeats'),
   getHeartbeatLogs: (agentId, limit = 50) =>

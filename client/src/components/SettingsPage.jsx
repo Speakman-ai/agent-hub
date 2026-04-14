@@ -38,6 +38,12 @@ import {
   Trash2,
   ArrowRightLeft,
   GitBranch,
+  Server,
+  Terminal,
+  Globe,
+  ChevronDown,
+  ChevronRight,
+  X,
 } from 'lucide-react';
 
 function OrganizationsSection() {
@@ -2277,6 +2283,487 @@ function SlackSection() {
   );
 }
 
+/**
+ * MCP Server management sub-section for an individual agent.
+ * Renders inside the expanded agent config form.
+ */
+function McpServersSection({ agentId }) {
+  const [servers, setServers] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editingServer, setEditingServer] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [newServer, setNewServer] = useState({
+    name: '',
+    type: 'stdio',
+    command: '',
+    args: '',
+    url: '',
+    env: '',
+    cwd: '',
+  });
+
+  const inputClass =
+    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600';
+  const labelClass = 'block text-xs text-gray-400 mb-1';
+
+  const loadServers = () => {
+    api
+      .getMcpServers(agentId)
+      .then((data) => {
+        setServers(data.mcpServers || {});
+      })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadServers();
+  }, [agentId]);
+
+  const resetNewForm = () => {
+    setNewServer({
+      name: '',
+      type: 'stdio',
+      command: '',
+      args: '',
+      url: '',
+      env: '',
+      cwd: '',
+    });
+  };
+
+  const parseArgs = (argsStr) => {
+    if (!argsStr.trim()) return [];
+    try {
+      const parsed = JSON.parse(argsStr);
+      return Array.isArray(parsed) ? parsed : [argsStr];
+    } catch {
+      return argsStr.split(/\s+/).filter(Boolean);
+    }
+  };
+
+  const parseEnv = (envStr) => {
+    if (!envStr.trim()) return {};
+    try {
+      return JSON.parse(envStr);
+    } catch {
+      // Parse KEY=VALUE format, one per line
+      const env = {};
+      for (const line of envStr.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.includes('=')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        env[trimmed.substring(0, eqIdx).trim()] = trimmed.substring(eqIdx + 1).trim();
+      }
+      return env;
+    }
+  };
+
+  const buildServerConfig = (form) => {
+    const config = {};
+    if (form.type === 'stdio') {
+      config.command = form.command;
+      const args = parseArgs(form.args);
+      if (args.length) config.args = args;
+    } else {
+      config.url = form.url;
+    }
+    const env = parseEnv(form.env);
+    if (Object.keys(env).length) config.env = env;
+    if (form.cwd?.trim()) config.cwd = form.cwd.trim();
+    return config;
+  };
+
+  const handleAddServer = async (e) => {
+    e.preventDefault();
+    if (!newServer.name.trim()) return;
+    setSaving(true);
+    try {
+      const config = buildServerConfig(newServer);
+      const result = await api.updateMcpServer(agentId, newServer.name.trim(), config);
+      setServers(result.mcpServers || {});
+      setShowAdd(false);
+      resetNewForm();
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 2000);
+    } catch (err) {
+      console.error('Failed to add MCP server:', err);
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUpdateServer = async (name, form) => {
+    setSaving(true);
+    try {
+      const config = buildServerConfig(form);
+      const result = await api.updateMcpServer(agentId, name, config);
+      setServers(result.mcpServers || {});
+      setEditingServer(null);
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 2000);
+    } catch (err) {
+      console.error('Failed to update MCP server:', err);
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteServer = async (name) => {
+    try {
+      const result = await api.deleteMcpServer(agentId, name);
+      setServers(result.mcpServers || {});
+      setConfirmDelete(null);
+      setEditingServer(null);
+    } catch (err) {
+      console.error('Failed to delete MCP server:', err);
+    }
+  };
+
+  const serverEntries = Object.entries(servers);
+  const serverCount = serverEntries.length;
+
+  const ServerForm = ({ form, setForm, onSubmit, onCancel, submitLabel, serverName }) => (
+    <form onSubmit={onSubmit} className="bg-gray-900/50 rounded-lg p-3 space-y-3">
+      {!serverName && (
+        <div>
+          <label className={labelClass}>Server Name</label>
+          <input
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            placeholder="e.g. filesystem, github, slack"
+            className={inputClass}
+            required
+          />
+        </div>
+      )}
+
+      <div>
+        <label className={labelClass}>Connection Type</label>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setForm({ ...form, type: 'stdio' })}
+            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-colors ${
+              form.type === 'stdio'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+            }`}
+          >
+            <Terminal size={12} />
+            stdio (command)
+          </button>
+          <button
+            type="button"
+            onClick={() => setForm({ ...form, type: 'sse' })}
+            className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-colors ${
+              form.type === 'sse'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+            }`}
+          >
+            <Globe size={12} />
+            SSE (url)
+          </button>
+        </div>
+      </div>
+
+      {form.type === 'stdio' ? (
+        <>
+          <div>
+            <label className={labelClass}>Command</label>
+            <input
+              value={form.command}
+              onChange={(e) => setForm({ ...form, command: e.target.value })}
+              placeholder="e.g. npx, uvx, node, python"
+              className={inputClass + ' font-mono'}
+              required
+            />
+          </div>
+          <div>
+            <label className={labelClass}>
+              Arguments <span className="text-gray-500">(space-separated or JSON array)</span>
+            </label>
+            <input
+              value={form.args}
+              onChange={(e) => setForm({ ...form, args: e.target.value })}
+              placeholder="e.g. -y @modelcontextprotocol/server-filesystem /path"
+              className={inputClass + ' font-mono'}
+            />
+          </div>
+        </>
+      ) : (
+        <div>
+          <label className={labelClass}>URL</label>
+          <input
+            value={form.url}
+            onChange={(e) => setForm({ ...form, url: e.target.value })}
+            placeholder="e.g. http://localhost:8080/sse"
+            className={inputClass + ' font-mono'}
+            required
+          />
+        </div>
+      )}
+
+      <div>
+        <label className={labelClass}>
+          Environment Variables <span className="text-gray-500">(KEY=VALUE per line or JSON)</span>
+        </label>
+        <textarea
+          value={form.env}
+          onChange={(e) => setForm({ ...form, env: e.target.value })}
+          placeholder={'API_KEY=sk-xxx\nANOTHER_VAR=value'}
+          rows={2}
+          className={inputClass + ' resize-none font-mono'}
+        />
+      </div>
+
+      <div>
+        <label className={labelClass}>
+          Working Directory <span className="text-gray-500">(optional)</span>
+        </label>
+        <input
+          value={form.cwd}
+          onChange={(e) => setForm({ ...form, cwd: e.target.value })}
+          placeholder="/path/to/working/directory"
+          className={inputClass + ' font-mono'}
+        />
+      </div>
+
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-xs text-gray-400 hover:text-white px-3 py-1.5 rounded-lg transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          disabled={saving}
+          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+        >
+          {saving ? 'Saving...' : submitLabel || 'Add Server'}
+        </button>
+      </div>
+    </form>
+  );
+
+  return (
+    <div className="border-t border-gray-700 pt-3">
+      <div
+        className="flex items-center gap-3 mb-3 cursor-pointer"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <Server size={14} className="text-gray-400" />
+        <label className="text-xs text-gray-400 font-medium cursor-pointer">MCP Servers</label>
+        {serverCount > 0 && (
+          <span className="bg-blue-900/50 text-blue-300 px-1.5 py-0.5 rounded-full text-xs">
+            {serverCount}
+          </span>
+        )}
+        {saveStatus === 'saved' && <span className="text-xs text-emerald-400">Saved</span>}
+        {saveStatus === 'error' && <span className="text-xs text-red-400">Error</span>}
+        <span className="ml-auto text-gray-500">
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </span>
+      </div>
+
+      {expanded && (
+        <div className="space-y-2">
+          {loading && <p className="text-xs text-gray-500">Loading MCP servers...</p>}
+
+          {!loading && serverCount === 0 && !showAdd && (
+            <p className="text-xs text-gray-500">
+              No MCP servers configured. Add servers to give this agent access to external tools.
+            </p>
+          )}
+
+          {/* Server list */}
+          {serverEntries.map(([name, config]) => {
+            const isEditing = editingServer === name;
+            const isStdio = !!config.command;
+
+            if (isEditing) {
+              const editForm = {
+                name,
+                type: isStdio ? 'stdio' : 'sse',
+                command: config.command || '',
+                args: config.args
+                  ? config.args.some((a) => a.includes(' '))
+                    ? JSON.stringify(config.args)
+                    : config.args.join(' ')
+                  : '',
+                url: config.url || '',
+                env: config.env
+                  ? Object.entries(config.env)
+                      .map(([k, v]) => `${k}=${v}`)
+                      .join('\n')
+                  : '',
+                cwd: config.cwd || '',
+              };
+
+              return (
+                <EditServerWrapper
+                  key={name}
+                  serverName={name}
+                  initialForm={editForm}
+                  saving={saving}
+                  onSave={(form) => handleUpdateServer(name, form)}
+                  onCancel={() => setEditingServer(null)}
+                  onDelete={() => {
+                    if (confirmDelete === name) {
+                      handleDeleteServer(name);
+                    } else {
+                      setConfirmDelete(name);
+                      setTimeout(() => setConfirmDelete(null), 3000);
+                    }
+                  }}
+                  confirmDelete={confirmDelete === name}
+                  ServerForm={ServerForm}
+                />
+              );
+            }
+
+            return (
+              <div
+                key={name}
+                className="bg-gray-900/50 rounded-lg p-3 flex items-center gap-3 group"
+              >
+                <div className="flex-shrink-0">
+                  {isStdio ? (
+                    <Terminal size={14} className="text-gray-500" />
+                  ) : (
+                    <Globe size={14} className="text-gray-500" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-200">{name}</span>
+                    <span className="text-xs text-gray-500">{isStdio ? 'stdio' : 'sse'}</span>
+                  </div>
+                  <p className="text-xs text-gray-500 font-mono truncate mt-0.5">
+                    {isStdio
+                      ? `${config.command}${config.args?.length ? ' ' + config.args.join(' ') : ''}`
+                      : config.url}
+                  </p>
+                  {config.env && Object.keys(config.env).length > 0 && (
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      env: {Object.keys(config.env).join(', ')}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => setEditingServer(name)}
+                    className="text-gray-500 hover:text-blue-400 p-1 rounded transition-colors"
+                    title="Edit server"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirmDelete === name) {
+                        handleDeleteServer(name);
+                      } else {
+                        setConfirmDelete(name);
+                        setTimeout(() => setConfirmDelete(null), 3000);
+                      }
+                    }}
+                    className={`p-1 rounded transition-colors ${
+                      confirmDelete === name
+                        ? 'text-red-400 bg-red-900/30'
+                        : 'text-gray-500 hover:text-red-400'
+                    }`}
+                    title={confirmDelete === name ? 'Click again to confirm' : 'Delete server'}
+                  >
+                    {confirmDelete === name ? <X size={12} /> : <Trash2 size={12} />}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Add new server */}
+          {showAdd ? (
+            <ServerForm
+              form={newServer}
+              setForm={setNewServer}
+              onSubmit={handleAddServer}
+              onCancel={() => {
+                setShowAdd(false);
+                resetNewForm();
+              }}
+              submitLabel="Add Server"
+            />
+          ) : (
+            <button
+              onClick={() => setShowAdd(true)}
+              className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-blue-400 px-2 py-1.5 rounded-lg transition-colors hover:bg-gray-700/50"
+            >
+              <Plus size={12} />
+              Add MCP Server
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Wrapper for editing an existing MCP server — holds local form state.
+ */
+function EditServerWrapper({
+  serverName,
+  initialForm,
+  saving,
+  onSave,
+  onCancel,
+  onDelete,
+  confirmDelete,
+  ServerForm,
+}) {
+  const [form, setForm] = useState(initialForm);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs text-gray-400 font-medium">Editing: {serverName}</span>
+        <button
+          onClick={onDelete}
+          className={`text-xs px-2 py-0.5 rounded transition-colors ${
+            confirmDelete
+              ? 'bg-red-600 text-white hover:bg-red-500'
+              : 'text-gray-500 hover:text-red-400'
+          }`}
+        >
+          {confirmDelete ? 'Confirm Delete' : 'Delete'}
+        </button>
+      </div>
+      <ServerForm
+        form={form}
+        setForm={setForm}
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSave(form);
+        }}
+        onCancel={onCancel}
+        submitLabel={saving ? 'Saving...' : 'Save Changes'}
+        serverName={serverName}
+      />
+    </div>
+  );
+}
+
 function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChange }) {
   const [agents, setAgents] = useState(initialAgents);
   const [expanded, setExpanded] = useState(null);
@@ -2971,6 +3458,9 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                       </div>
                     </div>
                   </div>
+
+                  {/* MCP Servers */}
+                  <McpServersSection agentId={agent.id} />
 
                   <div className="flex items-center justify-between pt-2">
                     <button

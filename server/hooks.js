@@ -63,12 +63,16 @@ export const HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'Notification', 'Stop',
  *   Each event maps to an array of { matcher, hooks: [{ type, command }] } entries.
  * @param {boolean} [options.includeSystemHooks=false] - Whether to include the
  *   auto-commit Stop hook (true for worktree sessions)
+ * @param {object} [options.mcpServers] - MCP server configurations to write.
+ *   Keyed by server name: { "name": { command, args?, env?, cwd?, url? } }
  */
 export function writeHooksConfig(cwd, sessionId, options = {}) {
-  const { agentHooks, includeSystemHooks = false } = options;
+  const { agentHooks, includeSystemHooks = false, mcpServers } = options;
+
+  const hasMcp = mcpServers && Object.keys(mcpServers).length > 0;
 
   // Skip if there's nothing to write
-  if (!includeSystemHooks && (!agentHooks || Object.keys(agentHooks).length === 0)) {
+  if (!includeSystemHooks && (!agentHooks || Object.keys(agentHooks).length === 0) && !hasMcp) {
     return;
   }
 
@@ -147,6 +151,28 @@ export function writeHooksConfig(cwd, sessionId, options = {}) {
     delete settings.hooks;
   }
 
+  // 3) Merge MCP server configurations
+  if (hasMcp) {
+    if (!settings.mcpServers) settings.mcpServers = {};
+
+    // Remove previous agent-hub-managed MCP servers (identified by _agentHub marker)
+    for (const name of Object.keys(settings.mcpServers)) {
+      if (settings.mcpServers[name]?._agentHub) {
+        delete settings.mcpServers[name];
+      }
+    }
+
+    // Add agent-configured MCP servers with marker
+    for (const [name, serverConfig] of Object.entries(mcpServers)) {
+      settings.mcpServers[name] = { ...serverConfig, _agentHub: true };
+    }
+
+    // Clean up empty mcpServers object
+    if (Object.keys(settings.mcpServers).length === 0) {
+      delete settings.mcpServers;
+    }
+  }
+
   // Ensure .claude directory exists
   if (!existsSync(claudeDir)) {
     mkdirSync(claudeDir, { recursive: true });
@@ -186,6 +212,18 @@ export function removeHooksConfig(cwd) {
 
     if (Object.keys(settings.hooks).length === 0) {
       delete settings.hooks;
+    }
+
+    // Remove agent-hub-managed MCP servers
+    if (settings.mcpServers) {
+      for (const name of Object.keys(settings.mcpServers)) {
+        if (settings.mcpServers[name]?._agentHub) {
+          delete settings.mcpServers[name];
+        }
+      }
+      if (Object.keys(settings.mcpServers).length === 0) {
+        delete settings.mcpServers;
+      }
     }
 
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');

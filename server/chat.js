@@ -671,11 +671,13 @@ export default function createChatHandler(deps) {
     if (engine === 'claude-code') {
       const isWorktree = effectiveCwd !== project.cwd;
       const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
-      if (isWorktree || hasAgentHooks) {
+      const hasMcpServers = agent.mcpServers && Object.keys(agent.mcpServers).length > 0;
+      if (isWorktree || hasAgentHooks || hasMcpServers) {
         try {
           writeHooksConfig(effectiveCwd, sessionId, {
             agentHooks: agent.hooks,
             includeSystemHooks: isWorktree,
+            mcpServers: agent.mcpServers,
           });
         } catch (err) {
           console.warn(`[chat] Failed to write hooks config: ${err.message}`);
