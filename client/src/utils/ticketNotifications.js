@@ -69,7 +69,7 @@ export function sessionCompleteNotification({ agentName, sessionName, preview })
   const parts = [];
   if (sessionName) parts.push(`"${sessionName}"`);
   if (preview) {
-    const trimmed = preview.length > 120 ? preview.substring(0, 120) + '…' : preview;
+    const trimmed = preview.length > 120 ? '…' + preview.slice(-120) : preview;
     parts.push(trimmed);
   }
   const body = parts.join(' — ') || 'Session completed';

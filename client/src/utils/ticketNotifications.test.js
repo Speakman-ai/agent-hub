@@ -101,13 +101,13 @@ describe('sessionCompleteNotification', () => {
     expect(result.body).toBe('Deployed to production successfully.');
   });
 
-  it('truncates long previews to 120 characters', () => {
-    const longPreview = 'A'.repeat(200);
+  it('truncates long previews to last 120 characters', () => {
+    const longPreview = 'A'.repeat(80) + 'B'.repeat(120);
     const result = sessionCompleteNotification({
       agentName: 'Agent',
       preview: longPreview,
     });
-    expect(result.body).toBe('A'.repeat(120) + '…');
+    expect(result.body).toBe('…' + 'B'.repeat(120));
   });
 
   it('does not truncate previews at exactly 120 characters', () => {
