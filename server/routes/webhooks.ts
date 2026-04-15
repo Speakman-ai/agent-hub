@@ -788,16 +788,20 @@ function handleWebhookReviewRequested(
 
   const ghAuthenticatedUser = getGhAuthenticatedUser();
   const ghBotUser = getGhBotUser();
+  const ghAppSlug = deps.getGhAppSlug?.();
 
   const requestedReviewer = payload.requested_reviewer?.login;
   const reviewer =
     ((project as Record<string, unknown>).defaultReviewer as string | undefined) ||
     config.defaultReviewer;
 
+  // Match against all known bot identities including the GitHub App bot login (slug[bot])
+  const appBotLogin = ghAppSlug ? `${ghAppSlug}[bot]` : null;
   const isOurReviewer =
     (ghAuthenticatedUser && requestedReviewer === ghAuthenticatedUser) ||
     (ghBotUser && requestedReviewer === ghBotUser) ||
-    (reviewer && requestedReviewer === reviewer);
+    (reviewer && requestedReviewer === reviewer) ||
+    (appBotLogin && requestedReviewer === appBotLogin);
 
   if (!isOurReviewer) {
     console.log(

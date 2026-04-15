@@ -68,10 +68,37 @@ interface ResolvedCommentsResult {
 const autonomousCrons = new Map<string, cron.ScheduledTask>();
 const autonomousProjects = new Set<string>();
 const lastDispatchedReviewId = new Map<string, number>();
-const reviewSessionCards = new Map<string, { cardId: string | null; prUrl: string }>();
+const reviewSessionCards = new Map<
+  string,
+  { cardId: string | null; prUrl: string; reviewerAgent: string }
+>();
 const reviewSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const REVIEW_SESSION_TIMEOUT_MS = 15 * 60 * 1000;
 let reviewPollCron: cron.ScheduledTask | null = null;
+
+// Round-robin reviewer rotation: tracks the last reviewer index per project
+const lastReviewerIndex = new Map<string, number>();
+
+/**
+ * Select the next eligible reviewer agent for a project using round-robin.
+ * Eligible agents: role === 'lead' OR canReview === true.
+ * Skips the author agent to prevent self-review.
+ */
+function selectReviewerAgent(project: Project, authorAgent?: Agent): Agent | null {
+  const eligible = project.agents.filter(
+    (a) =>
+      (a.role === 'lead' || a.canReview === true) &&
+      a.active !== false &&
+      (!authorAgent || a.id !== authorAgent.id),
+  );
+  if (eligible.length === 0) return null;
+  if (eligible.length === 1) return eligible[0];
+
+  const lastIdx = lastReviewerIndex.get(project.id) ?? -1;
+  const nextIdx = (lastIdx + 1) % eligible.length;
+  lastReviewerIndex.set(project.id, nextIdx);
+  return eligible[nextIdx];
+}
 
 // ─── Injected dependencies (set via init()) ────────────────────────────────
 let deps: AutonomousDeps | null = null;
@@ -133,6 +160,36 @@ export function startReviewSessionTimeout(sessionId: string, projectId: string):
       }
     }
 
+    // Update card review_status back to awaiting_review
+    if (tracked?.cardId) {
+      try {
+        d.stmts.setCardReviewStatus.run('awaiting_review', tracked.cardId);
+      } catch (_e: unknown) {
+        /* non-critical */
+      }
+    }
+
+    // Log the timeout
+    if (tracked?.prUrl) {
+      try {
+        d.stmts.createReviewLog.run(
+          crypto.randomUUID(),
+          projectId,
+          tracked.cardId || null,
+          tracked.prUrl,
+          tracked.reviewerAgent || 'unknown',
+          null,
+          sessionId,
+          'timeout',
+          'Review session timed out after 15 minutes',
+          new Date().toISOString(),
+          new Date().toISOString(),
+        );
+      } catch (_e: unknown) {
+        /* non-critical */
+      }
+    }
+
     reviewSessionCards.delete(sessionId);
 
     try {
@@ -155,6 +212,11 @@ export function startReviewSessionTimeout(sessionId: string, projectId: string):
       sessionId,
       outcome: 'timeout',
       projectId,
+      prUrl: tracked?.prUrl || null,
+      cardId: tracked?.cardId || null,
+      cardTitle: null,
+      reviewerAgent: null,
+      authorAgent: null,
     });
 
     if (autonomousProjects.size > 0) {
@@ -450,7 +512,20 @@ export function triggerReviewForCard(cardId: string, project: Project): void {
     console.log(
       `[Lead Review] Card "${card.title}" moved to Review but has no PR URL — skipping review`,
     );
+    // Still mark as awaiting_review so it's visible
+    try {
+      d.stmts.setCardReviewStatus.run('awaiting_review', card.id);
+    } catch (_e: unknown) {
+      /* non-critical */
+    }
     return;
+  }
+
+  // Mark card as awaiting_review
+  try {
+    d.stmts.setCardReviewStatus.run('awaiting_review', card.id);
+  } catch (_e: unknown) {
+    /* non-critical */
   }
 
   const subAgent = card.assignee ? project.agents.find((a) => a.name === card.assignee) : null;
@@ -957,8 +1032,6 @@ export async function leadReviewPR(
   subAgent?: Agent,
 ): Promise<void> {
   const d = getDeps();
-  const leadAgent = project.agents.find((a) => a.role === 'lead');
-  if (!leadAgent) return;
 
   const alreadyReviewing = [...reviewSessionCards.values()].find((r) => r.prUrl === prUrl);
   if (alreadyReviewing) {
@@ -967,6 +1040,23 @@ export async function leadReviewPR(
   }
 
   const config = d.getConfig();
+
+  // Hard guard: refuse to start reviews if no bot identity is configured
+  const hasBotIdentity = !!config.botGithubToken || hasGitHubApp();
+  if (!hasBotIdentity) {
+    console.warn(
+      `[Lead Review] BLOCKED — no bot identity configured (no botGithubToken and no GitHub App). ` +
+        `Reviews would appear as the user's personal GitHub profile. Configure a GitHub App or bot token in Settings.`,
+    );
+    d.broadcast({
+      type: 'lead_review_skipped',
+      projectId: project.id,
+      prUrl,
+      reason: 'no_bot_identity',
+      cardTitle: card?.title || '',
+    });
+    return;
+  }
 
   const wfAutoReview = (project as Record<string, unknown>).githubWorkflow as
     | {
@@ -983,20 +1073,31 @@ export async function leadReviewPR(
     return;
   }
 
-  const isSelfReview = subAgent ? leadAgent.id === subAgent.id : false;
-  if (isSelfReview) {
-    console.log(
-      `[Lead Review] Skipping self-review for "${card?.title || prUrl}" — lead agent cannot review its own PRs`,
-    );
-    d.broadcast({
-      type: 'lead_review_skipped',
-      projectId: project.id,
-      prUrl,
-      reason: 'self-review',
-      cardTitle: card?.title || '',
-    });
-    return;
+  // Round-robin reviewer selection (skips author to prevent self-review)
+  let leadAgent = selectReviewerAgent(project, subAgent);
+  if (!leadAgent) {
+    // Fallback: try the first lead agent
+    const fallbackLead = project.agents.find((a) => a.role === 'lead');
+    if (!fallbackLead) return;
+
+    // Check if it would be a self-review
+    if (subAgent && fallbackLead.id === subAgent.id) {
+      console.log(
+        `[Lead Review] Skipping self-review for "${card?.title || prUrl}" — no eligible reviewer found that isn't the author`,
+      );
+      d.broadcast({
+        type: 'lead_review_skipped',
+        projectId: project.id,
+        prUrl,
+        reason: 'self-review',
+        cardTitle: card?.title || '',
+      });
+      return;
+    }
+    leadAgent = fallbackLead;
   }
+
+  const isSelfReview = false; // selectReviewerAgent already excludes the author
 
   const isAutonomous = card?.epic_id
     ? !!(d.stmts.getKanbanEpic.get(card.epic_id) as KanbanEpicRow | undefined)?.autonomous
@@ -1195,7 +1296,20 @@ ${mergeRule}
 - When reporting your outcome, clearly state whether you APPROVED or REQUESTED CHANGES with detailed reasoning
 - **Do NOT create kanban cards** — this is a review session, not new work. The task card already exists and is being tracked automatically.`;
 
-  reviewSessionCards.set(sessionId, { cardId: card?.id || null, prUrl });
+  reviewSessionCards.set(sessionId, {
+    cardId: card?.id || null,
+    prUrl,
+    reviewerAgent: leadAgent.name || leadAgent.id,
+  });
+
+  // Set card review_status to 'reviewing'
+  if (card) {
+    try {
+      d.stmts.setCardReviewStatus.run('reviewing', card.id);
+    } catch (_e: unknown) {
+      /* non-critical */
+    }
+  }
 
   startReviewSessionTimeout(sessionId, project.id);
 
@@ -1213,8 +1327,10 @@ ${mergeRule}
     prUrl,
     cardTitle: reviewTitle,
     reviewerAgent: leadAgent.name,
+    authorAgent: subAgent?.name || null,
     sessionId,
     isSelfReview,
+    cardId: card?.id || null,
   });
 }
 
@@ -1275,6 +1391,55 @@ export async function handleReviewOutcome(
     const prUrl = card?.pr_url || tracked?.prUrl;
     const webhookHandlerDeps = d.getWebhookHandlerDeps();
 
+    // Determine outcome for logging
+    const reviewOutcome =
+      mergeFailed && approved
+        ? 'merge_conflict'
+        : approved
+          ? 'approved'
+          : changesRequested
+            ? 'changes_requested'
+            : 'ambiguous';
+
+    // Update card review_status
+    if (card) {
+      const statusMap: Record<string, string> = {
+        approved: 'approved',
+        changes_requested: 'changes_requested',
+        merge_conflict: 'approved', // approved but merge failed
+        ambiguous: 'awaiting_review',
+      };
+      try {
+        d.stmts.setCardReviewStatus.run(statusMap[reviewOutcome] || null, card.id);
+      } catch (_e: unknown) {
+        /* non-critical */
+      }
+    }
+
+    // Create review log entry
+    if (prUrl) {
+      const reviewerName =
+        tracked?.reviewerAgent || project.agents.find((a) => a.role === 'lead')?.name || 'unknown';
+      const authorAgent = card?.assignee || null;
+      try {
+        d.stmts.createReviewLog.run(
+          crypto.randomUUID(),
+          project.id,
+          card?.id || null,
+          prUrl,
+          reviewerName,
+          authorAgent,
+          sessionId,
+          reviewOutcome,
+          finalContent.slice(-2000),
+          new Date().toISOString(),
+          new Date().toISOString(),
+        );
+      } catch (_e: unknown) {
+        console.error('[Review] Failed to create review log entry');
+      }
+    }
+
     if (mergeFailed && approved && card) {
       console.log(
         `[Review] PR approved but merge failed for "${titleMatch[1]}" — dispatching conflict resolution to author`,
@@ -1330,6 +1495,11 @@ ${finalContent.slice(-1500)}`;
         sessionId,
         outcome: 'merge_conflict',
         projectId: project.id,
+        prUrl,
+        cardId: card?.id || null,
+        cardTitle: titleMatch[1],
+        reviewerAgent: project.agents.find((a) => a.role === 'lead')?.name || null,
+        authorAgent: card?.assignee || null,
       });
     } else if (approved) {
       if (prUrl) {
@@ -1400,6 +1570,11 @@ ${finalContent.slice(-1500)}`;
         sessionId,
         outcome: 'approved',
         projectId: project.id,
+        prUrl,
+        cardId: card?.id || null,
+        cardTitle: titleMatch[1],
+        reviewerAgent: project.agents.find((a) => a.role === 'lead')?.name || null,
+        authorAgent: card?.assignee || null,
       });
     } else if (changesRequested && card) {
       if (prUrl) {
@@ -1457,6 +1632,11 @@ ${finalContent.slice(-2000)}`;
         sessionId,
         outcome: 'changes_requested',
         projectId: project.id,
+        prUrl,
+        cardId: card?.id || null,
+        cardTitle: titleMatch[1],
+        reviewerAgent: project.agents.find((a) => a.role === 'lead')?.name || null,
+        authorAgent: card?.assignee || null,
       });
     } else {
       console.warn(
@@ -1508,6 +1688,11 @@ ${finalContent.slice(-2000)}`;
         sessionId,
         outcome: 'ambiguous',
         projectId: project.id,
+        prUrl,
+        cardId: card?.id || null,
+        cardTitle: titleMatch[1],
+        reviewerAgent: project.agents.find((a) => a.role === 'lead')?.name || null,
+        authorAgent: card?.assignee || null,
       });
     }
 
@@ -1728,6 +1913,20 @@ async function pollForMissedReviews(): Promise<void> {
         if (!prMatch) continue;
 
         const [, repoFullName, prNumber] = prMatch;
+
+        // --- Orphan detector: cards in Review with pr_url but no active review session ---
+        if (col === reviewCol) {
+          const hasActiveReview = [...reviewSessionCards.values()].some(
+            (r) => r.prUrl === card.pr_url,
+          );
+          if (!hasActiveReview) {
+            console.log(
+              `[ReviewPoll] Orphan detected: card "${card.title}" in Review column with PR but no active review session — triggering review`,
+            );
+            triggerReviewForCard(card.id, project);
+            continue; // Don't also process as missed-feedback — let the new review handle it
+          }
+        }
 
         try {
           const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {

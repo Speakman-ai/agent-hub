@@ -289,74 +289,72 @@ You don't need to create cards for trivial tasks (quick questions, one-line fixe
       : '';
 
     prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
-This project is connected to GitHub. When asked to implement a change, follow this **exact lifecycle**:
+This project is connected to GitHub. When implementing changes, follow the lifecycle below.
 
-### 1. Issue Tracking
-- **Check** if a kanban card already exists for this work: \`GET /api/projects/${projectId}/board\`
-- If no card exists, **create one** in "To Do": \`POST /api/projects/${projectId}/board/cards\` with \`{title, description, columnId: "<todo-column-id>", priority, assignee: "your-agent-name"}\`
-- **Move the card to "In Progress"** when you begin work: \`POST /api/projects/${projectId}/board/cards/:cardId/move\` with \`{columnId: "<in-progress-column-id>"}\`
+### Your Job (Steps 1–7)
+You handle implementation, testing, and handing off to the automated review system. Once you move the card to Review, **your job is done** — the server handles the rest.
 
-### 2. Sync & Branch
-- **Pull latest from main** first to ensure a fresh base:
-  \`\`\`bash
-  git checkout main && git pull origin main
-  \`\`\`
-- **Create a new feature branch**: \`git checkout -b feature/<short-description>\`${options.useWorktree ? '\n- You are in a git worktree — you can pull and branch here without affecting the main repo.' : ''}
-- If delegating to sub-agents, they must edit files in the **current working directory**, not the main repo.
+### 1. Kanban Card
+- Check for an existing card: \`GET /api/projects/${projectId}/board\`
+- If none exists, **create one** in "To Do": \`POST /api/projects/${projectId}/board/cards\` with \`{title, description, columnId: "<todo-column-id>", priority, assignee: "your-agent-name"}\`
+- Keep **title short** (under 60 chars) and **description concise** (2-3 sentences max — what changed and why).
+- **Move to "In Progress"** when you begin: \`POST /api/projects/${projectId}/board/cards/:cardId/move\` with \`{columnId: "<in-progress-column-id>"}\`
 
-### 3. Build Environment
-${project.commands?.install ? `- **Install dependencies**: \`${project.commands.install}\`` : '- **Install dependencies** if needed (check for `package-lock.json`, `requirements.txt`, `Cargo.lock`, etc.)'}
-${project.commands?.build ? `- **Verify the project builds**: \`${project.commands.build}\`` : '- **Verify the project builds** before making changes: `npm run build`, `cargo check`, etc.'}
-- Skip this step if you've already built in this session and no dependencies changed.
+### 2. Branch
+- Pull latest: \`git checkout main && git pull origin main\`
+- Create feature branch: \`git checkout -b feature/<short-description>\`${options.useWorktree ? '\n- You are in a git worktree — you can pull and branch here without affecting the main repo.' : ''}
 
-### 4. Implement
-- Make your code changes on the feature branch.
-- Follow existing code patterns and conventions.
+### 3. Implement
+- Make your changes. Follow existing code patterns and conventions.
+${project.commands?.install ? `- Install dependencies if needed: \`${project.commands.install}\`` : ''}
 
-### 5. Test & Lint
-${project.commands?.test ? `- **Run tests**: \`${project.commands.test}\`` : "- **Run tests** according to the project's test configuration (`npm test`, `pytest`, `cargo test`, etc.)."}
-${project.commands?.lint ? `- **Run linting**: \`${project.commands.lint}\`` : "- **Run linting** according to the project's lint configuration (`npm run lint`, `eslint`, `ruff`, etc.)."}
-- If tests or linting fail, **fix the issues before proceeding**.
+### 4. Test & Lint
+${project.commands?.test ? `- Run tests: \`${project.commands.test}\`` : '- Run tests: `npm test`, `pytest`, `cargo test`, etc.'}
+${project.commands?.lint ? `- Run linting: \`${project.commands.lint}\`` : '- Run linting: `npm run lint`, `eslint`, etc.'}
+- Fix failures before proceeding.
 
-### 6. Commit & Push
-- Stage and commit your changes with a descriptive message.
-- Push the branch to the remote: \`git push -u origin <branch-name>\`
+### 5. Commit & Push
+- Stage, commit with a clear message, and push: \`git push -u origin <branch-name>\`
 
-### 7. Create PR
-- Open a PR against main: \`gh pr create --title "<title>" --body "<description>"\`
+### 6. Create PR
+- \`gh pr create --title "<concise title>" --body "<description>"\`
 ${reviewerNote}
+- PR body format:
+  \`\`\`
+  ## Summary
+  <1-3 bullet points: what changed and why>
 
-### 8. Watch & Fix (CI Loop)
-After creating the PR, **monitor it until checks pass**:
-- Wait 30 seconds, then check: \`gh pr checks <pr-number>\`
-- If there are **failed checks**: read the failure logs, fix the code, commit, and push again.
-- **Repeat** until all checks pass.
+  ## Test plan
+  <What was tested / how to verify>
+  \`\`\`
 
-### 9. Review & Resolve Comments
-- Wait for the lead agent (or self-review if you ARE the lead) to review the PR.
-- If you are the lead implementing a change, **start a separate self-review session** to review your own PR objectively.
-- If there are **review comments**: address each comment, push fixes, and resolve the threads.
-- **Repeat** until there are 0 unresolved comments and all checks pass.
+### 7. CI Loop + Hand Off to Review
+- Poll CI: \`gh pr checks <pr-number>\` — fix failures until green.
+- **Link PR to card**: \`PUT /api/projects/${projectId}/board/cards/:cardId\` with \`{pr_url: "<pr-url>"}\`
+- **Move card to "Review"**: \`POST /api/projects/${projectId}/board/cards/:cardId/move\` with \`{columnId: "<review-column-id>"}\`
+- **You're done.** The server automatically triggers a lead review when the card reaches Review. Do NOT wait — move on to your next task or end the session.
 
-### 10. Flag for Human Merge
-- Once the PR has passing checks and all comments are resolved, **move the kanban card to "Review"**: \`POST /api/projects/${projectId}/board/cards/:cardId/move\` with \`{columnId: "<review-column-id>"}\`
-- The PR is now ready for **human review and merge**. Do NOT merge the PR yourself — a human will merge it.
+### What Happens Next (Automated)
+The server picks up the review automatically:
+1. The lead agent reviews your PR (reads diff, checks for bugs/security/correctness)
+2. If **approved**: the server submits a formal GitHub approval. If auto-merge is enabled, it merges. If not, a human merges.
+3. If **changes requested**: the server submits a formal review with feedback and dispatches it back to you in a new session. Address the feedback, push fixes, and the lead will re-review automatically.
+4. This loop repeats until the PR is approved and merged.
+
+### Existing PRs — Fix Mode
+If asked to fix, update, or resolve issues on **existing PRs**, skip the full lifecycle:
+1. Check out the PR's branch.
+2. Read failures: \`gh pr checks <number>\` and/or \`gh pr view <number> --json comments,reviews\`
+3. Fix, commit, push.
+4. Poll until green. Move on.
+Do NOT create new cards/branches/PRs for existing PR work. Do NOT merge.
 
 ### Shortcuts
-- For **trivial fixes** (typos, one-line changes): you may skip kanban card creation, but still use a branch + PR.
-- **Found a bug or follow-up?** Create a card in "Backlog" so it gets tracked.
-- **Hit a blocker?** Add a comment to the kanban card explaining what's stuck.
+- **Trivial fixes**: skip card creation, still use branch + PR.
+- **Found a bug?** Create a "Backlog" card.
+- **Blocked?** Comment on the card.
 
-### Existing PRs — Manual Fix Mode
-If the user asks you to fix, update, or resolve issues on **existing PRs** (e.g., "go through each PR and resolve tests and unresolved comments", "fix CI on PR #42", "address review comments on my open PRs"), **skip the full lifecycle above**. Instead:
-1. Check out the PR's branch (or work in its worktree if one exists).
-2. Read the failed checks (\`gh pr checks <number>\`) and/or review comments (\`gh pr view <number> --json comments,reviews\`).
-3. Fix the issues directly, commit, and push.
-4. Watch until green (poll checks every 30s, fix again if needed).
-5. Once clean, move on to the next PR if batching.
-Do **not** create new kanban cards, new branches, or new PRs for this work — you're fixing an existing one. Do NOT merge — leave for human.
-
-Use \`GET /api/projects/${projectId}/board\` to see column names and their IDs.`;
+Use \`GET /api/projects/${projectId}/board\` to see column IDs.`;
   } else {
     if (options.useWorktree) {
       prompt += `\n\n## Git Workflow — Worktree-First Development

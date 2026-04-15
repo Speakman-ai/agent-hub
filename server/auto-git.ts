@@ -286,6 +286,16 @@ export async function autoCommitAndPR(
         cardTitle: card?.title || commitTitle,
       });
 
+      // Reconciliation: ensure card has pr_url linked
+      if (card && !card.pr_url) {
+        try {
+          d.stmts.setCardPrUrl.run(prUrl, card.id);
+          console.log(`[auto-commit] Linked PR URL to card "${card.title}": ${prUrl}`);
+        } catch (_e: unknown) {
+          /* non-critical */
+        }
+      }
+
       triggerReview(card, project, prUrl, agent);
     } catch (prErr: unknown) {
       const errMsg = prErr instanceof Error ? prErr.message : String(prErr);
@@ -293,9 +303,39 @@ export async function autoCommitAndPR(
       if (existingMatch) {
         const prUrl = existingMatch[0];
         console.log(`[auto-commit] PR already exists: ${prUrl} — continuing flow`);
+        // Reconciliation: link existing PR to card if not already linked
+        if (card && !card.pr_url) {
+          try {
+            d.stmts.setCardPrUrl.run(prUrl, card.id);
+            console.log(`[auto-commit] Linked existing PR URL to card "${card.title}": ${prUrl}`);
+          } catch (_e: unknown) {
+            /* non-critical */
+          }
+        }
         triggerReview(card, project, prUrl, agent);
       } else {
         console.error(`[auto-commit] PR creation failed: ${errMsg}`);
+        // Fallback: try to discover PR by branch name
+        try {
+          const { stdout: prDiscovery } = await execAsync(
+            `gh pr view ${JSON.stringify(branch)} --json url,state --jq 'select(.state == "OPEN") | .url'`,
+            { cwd: effectiveCwd, timeout: 15000 },
+          );
+          const discoveredUrl = prDiscovery.trim();
+          if (discoveredUrl) {
+            console.log(`[auto-commit] Discovered PR by branch name: ${discoveredUrl}`);
+            if (card && !card.pr_url) {
+              try {
+                d.stmts.setCardPrUrl.run(discoveredUrl, card.id);
+              } catch (_e: unknown) {
+                /* non-critical */
+              }
+            }
+            triggerReview(card, project, discoveredUrl, agent);
+          }
+        } catch {
+          // No PR found by branch name either
+        }
       }
     }
   } catch (err: unknown) {

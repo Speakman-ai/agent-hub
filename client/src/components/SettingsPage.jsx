@@ -1356,6 +1356,16 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         {!appStatus?.configured ? (
           /* State A — Not configured */
           <div className="space-y-3">
+            {/* Identity warning */}
+            <div className="bg-amber-900/30 border border-amber-700/50 rounded-lg p-3 flex items-start gap-2">
+              <span className="text-amber-400 text-sm mt-0.5">⚠</span>
+              <div className="text-xs text-amber-300/90">
+                <strong>No bot identity configured.</strong> PR reviews will appear as your personal
+                GitHub profile. Create a GitHub App or set a{' '}
+                <code className="bg-gray-900/50 px-1 rounded">botGithubToken</code> in config to fix
+                this.
+              </div>
+            </div>
             <div className="flex gap-3">
               <button
                 onClick={() => {

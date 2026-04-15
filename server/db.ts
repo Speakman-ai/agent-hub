@@ -587,6 +587,33 @@ function initDb(dataDir: string): void {
   }
 
   try {
+    db.exec(
+      "ALTER TABLE kanban_cards ADD COLUMN review_status TEXT DEFAULT NULL CHECK(review_status IN ('awaiting_review','reviewing','approved','changes_requested',NULL))",
+    );
+  } catch (_e) {
+    /* already exists */
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS review_logs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      card_id TEXT,
+      pr_url TEXT NOT NULL,
+      reviewer_agent TEXT NOT NULL,
+      author_agent TEXT,
+      session_id TEXT,
+      outcome TEXT NOT NULL CHECK(outcome IN ('approved','changes_requested','merge_conflict','ambiguous','timeout')),
+      review_body TEXT,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_review_logs_project ON review_logs(project_id);
+    CREATE INDEX IF NOT EXISTS idx_review_logs_card ON review_logs(card_id);
+    CREATE INDEX IF NOT EXISTS idx_review_logs_pr ON review_logs(pr_url);
+  `);
+
+  try {
     db.exec('ALTER TABLE crons ADD COLUMN project_id TEXT');
   } catch (_e) {
     /* already exists */
@@ -1139,6 +1166,26 @@ function initDb(dataDir: string): void {
       'INSERT INTO kanban_card_comments (id, card_id, author, content) VALUES (?, ?, ?, ?)',
     ),
     deleteKanbanCardComment: db.prepare('DELETE FROM kanban_card_comments WHERE id = ?'),
+
+    // Review logs
+    createReviewLog: db.prepare(
+      `INSERT INTO review_logs (id, project_id, card_id, pr_url, reviewer_agent, author_agent, session_id, outcome, review_body, started_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getReviewLogs: db.prepare(
+      'SELECT * FROM review_logs WHERE project_id = ? ORDER BY completed_at DESC LIMIT ?',
+    ),
+    getReviewLogsByCard: db.prepare(
+      'SELECT * FROM review_logs WHERE card_id = ? ORDER BY completed_at DESC',
+    ),
+    getReviewLogsByPrUrl: db.prepare(
+      'SELECT * FROM review_logs WHERE pr_url = ? ORDER BY completed_at DESC',
+    ),
+
+    // Card review status
+    setCardReviewStatus: db.prepare(
+      "UPDATE kanban_cards SET review_status = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
 
     // Kanban epics
     getKanbanEpics: db.prepare(

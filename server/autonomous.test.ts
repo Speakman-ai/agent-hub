@@ -41,6 +41,8 @@ interface MockStmts {
   createSession: { run: Mock };
   insertMessage: { run: Mock };
   getKanbanEpic: { get: Mock };
+  setCardReviewStatus: { run: Mock };
+  createReviewLog: { run: Mock };
 }
 
 interface MockDeps {
@@ -75,6 +77,8 @@ function makeDeps(configOverrides: Partial<MockConfig> = {}): {
     createSession: { run: vi.fn() },
     insertMessage: { run: vi.fn() },
     getKanbanEpic: { get: vi.fn(() => null) },
+    setCardReviewStatus: { run: vi.fn() },
+    createReviewLog: { run: vi.fn() },
   };
 
   const mockDeps: MockDeps = {
@@ -160,7 +164,7 @@ describe('leadReviewPR — review prompt routing', () => {
     expect(prompt).not.toMatch(/```bash\ngh pr review/);
   });
 
-  it('tells agent to run gh pr review when neither bot token nor GitHub App is configured', async () => {
+  it('blocks review when neither bot token nor GitHub App is configured (no bot identity)', async () => {
     const { mockDeps, getCapturedPrompt } = makeDeps({});
     initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
 
@@ -168,14 +172,18 @@ describe('leadReviewPR — review prompt routing', () => {
       id: 'dev-1',
     } as Agent);
 
-    const prompt = getCapturedPrompt();
-    expect(prompt).toBeTruthy();
-    expect(prompt).toMatch(/gh pr review/);
-    expect(prompt).not.toContain('Do **NOT** run');
+    expect(getCapturedPrompt()).toBeNull();
+    expect(mockDeps.handleChat).not.toHaveBeenCalled();
+    expect(mockDeps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'lead_review_skipped',
+        reason: 'no_bot_identity',
+      }),
+    );
   });
 
   it('includes instruction not to create kanban cards during reviews', async () => {
-    const { mockDeps, getCapturedPrompt } = makeDeps();
+    const { mockDeps, getCapturedPrompt } = makeDeps({ botGithubToken: 'ghp_fake' });
     initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
 
     await leadReviewPR(makeProject(), 'https://github.com/owner/repo/pull/50', null, {
@@ -190,7 +198,7 @@ describe('leadReviewPR — review prompt routing', () => {
 
 describe('leadReviewPR — self-review prevention', () => {
   it('skips review when the lead agent is also the PR author', async () => {
-    const { mockDeps, getCapturedPrompt } = makeDeps();
+    const { mockDeps, getCapturedPrompt } = makeDeps({ botGithubToken: 'ghp_fake' });
     initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
 
     await leadReviewPR(makeProject(), 'https://github.com/owner/repo/pull/45', null, {
@@ -210,7 +218,7 @@ describe('leadReviewPR — self-review prevention', () => {
   });
 
   it('proceeds with review when the lead agent is NOT the PR author', async () => {
-    const { mockDeps, getCapturedPrompt } = makeDeps();
+    const { mockDeps, getCapturedPrompt } = makeDeps({ botGithubToken: 'ghp_fake' });
     initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
 
     await leadReviewPR(makeProject(), 'https://github.com/owner/repo/pull/46', null, {
@@ -223,12 +231,88 @@ describe('leadReviewPR — self-review prevention', () => {
   });
 
   it('proceeds with review when subAgent is null (ad-hoc review)', async () => {
-    const { mockDeps, getCapturedPrompt } = makeDeps();
+    const { mockDeps, getCapturedPrompt } = makeDeps({ botGithubToken: 'ghp_fake' });
     initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
 
     await leadReviewPR(makeProject(), 'https://github.com/owner/repo/pull/47', null, undefined);
 
     expect(getCapturedPrompt()).toBeTruthy();
     expect(mockDeps.handleChat).toHaveBeenCalled();
+  });
+});
+
+describe('leadReviewPR — round-robin reviewer rotation', () => {
+  it('rotates reviewers among eligible agents', async () => {
+    const project = {
+      id: 'proj-rr',
+      name: 'Round Robin Test',
+      cwd: '/tmp',
+      ahw: '',
+      githubWorkflow: {},
+      agents: [
+        { id: 'lead-1', name: 'Lead A', role: 'lead', engine: 'claude-code' },
+        { id: 'lead-2', name: 'Lead B', role: 'lead', engine: 'claude-code' },
+        { id: 'dev-1', name: 'Dev', role: 'developer', engine: 'claude-code' },
+      ],
+    } as Project;
+
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_fake' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    // First review — should pick Lead A (index 0)
+    await leadReviewPR(project, 'https://github.com/owner/repo/pull/100', null, {
+      id: 'dev-1',
+      name: 'Dev',
+    } as Agent);
+    expect(mockDeps.handleChat).toHaveBeenCalled();
+    const firstCall = mockDeps.handleChat.mock.calls[0];
+    const firstAgentId = firstCall[1].agentId;
+
+    // Second review — should pick Lead B (index 1)
+    mockDeps.handleChat.mockClear();
+    await leadReviewPR(project, 'https://github.com/owner/repo/pull/101', null, {
+      id: 'dev-1',
+      name: 'Dev',
+    } as Agent);
+    expect(mockDeps.handleChat).toHaveBeenCalled();
+    const secondCall = mockDeps.handleChat.mock.calls[0];
+    const secondAgentId = secondCall[1].agentId;
+
+    expect(firstAgentId).not.toEqual(secondAgentId);
+    expect([firstAgentId, secondAgentId].sort()).toEqual(['lead-1', 'lead-2']);
+  });
+
+  it('uses canReview flag for reviewer eligibility', async () => {
+    const project = {
+      id: 'proj-cr',
+      name: 'canReview Test',
+      cwd: '/tmp',
+      ahw: '',
+      githubWorkflow: {},
+      agents: [
+        { id: 'lead-1', name: 'Lead', role: 'lead', engine: 'claude-code' },
+        {
+          id: 'reviewer-1',
+          name: 'Reviewer',
+          role: 'developer',
+          canReview: true,
+          engine: 'claude-code',
+        },
+        { id: 'dev-1', name: 'Dev', role: 'developer', engine: 'claude-code' },
+      ],
+    } as Project;
+
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_fake' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    await leadReviewPR(project, 'https://github.com/owner/repo/pull/102', null, {
+      id: 'dev-1',
+      name: 'Dev',
+    } as Agent);
+
+    expect(mockDeps.handleChat).toHaveBeenCalled();
+    const agentId = mockDeps.handleChat.mock.calls[0][1].agentId;
+    // Should be either lead-1 or reviewer-1, but NOT dev-1
+    expect(['lead-1', 'reviewer-1']).toContain(agentId);
   });
 });

@@ -561,5 +561,33 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     },
   );
 
+  // ─── Review Logs ─────────────────────────────────────────────────────
+  router.get('/api/projects/:projectId/reviews', (req: Request, res: Response) => {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const rows = stmts.getReviewLogs.all(req.params.projectId, limit);
+    res.json(rows);
+  });
+
+  router.get('/api/projects/:projectId/reviews/active', (_req: Request, res: Response) => {
+    const reviewSessionCards = deps.getReviewSessionCards?.() as
+      | Map<string, { cardId: string | null; prUrl: string }>
+      | undefined;
+    if (!reviewSessionCards) return res.json([]);
+
+    const active = [...reviewSessionCards.entries()].map(([sessionId, { cardId, prUrl }]) => {
+      const card = cardId
+        ? (stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined)
+        : undefined;
+      return {
+        sessionId,
+        cardId,
+        prUrl,
+        cardTitle: card?.title || null,
+        assignee: card?.assignee || null,
+      };
+    });
+    res.json(active);
+  });
+
   return router;
 }
