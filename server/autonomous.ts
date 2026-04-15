@@ -607,9 +607,7 @@ export async function addSelfAsReviewer(prUrl: string): Promise<void> {
       ],
       { timeout: 15000, env },
     );
-    console.log(
-      `[Review] Added ${ghBotUser} as reviewer on PR #${pr.number} (bot)`,
-    );
+    console.log(`[Review] Added ${ghBotUser} as reviewer on PR #${pr.number} (bot)`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message?.split('\n')[0] : String(err);
     console.log(`[Review] Could not add reviewer on PR #${pr.number}: ${msg}`);

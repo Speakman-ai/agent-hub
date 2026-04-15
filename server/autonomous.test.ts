@@ -24,9 +24,8 @@ vi.mock('node-cron', () => ({
   schedule: vi.fn(),
 }));
 
-const { initAutonomous, leadReviewPR, submitGitHubReview, addSelfAsReviewer } = await import(
-  './autonomous.js'
-);
+const { initAutonomous, leadReviewPR, submitGitHubReview, addSelfAsReviewer } =
+  await import('./autonomous.js');
 
 interface MockConfig {
   botGithubToken: string | null;
