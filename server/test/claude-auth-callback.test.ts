@@ -10,10 +10,7 @@ beforeAll(async () => {
 
 describe('POST /api/config/claude-auth/callback', () => {
   it('returns 400 when code is missing', async () => {
-    const res = await request
-      .post('/api/config/claude-auth/callback')
-      .send({})
-      .expect(400);
+    const res = await request.post('/api/config/claude-auth/callback').send({}).expect(400);
     expect(res.body.error).toMatch(/code is required/);
   });
 

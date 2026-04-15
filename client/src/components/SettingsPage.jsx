@@ -629,7 +629,10 @@ function ClaudeAuthSection() {
     try {
       const result = await api.submitOAuthCallback(callbackInput.trim());
       if (result.ok) {
-        setCallbackStatus({ type: 'success', msg: 'Callback submitted — waiting for confirmation...' });
+        setCallbackStatus({
+          type: 'success',
+          msg: 'Callback submitted — waiting for confirmation...',
+        });
         setCallbackInput('');
       } else {
         setCallbackStatus({ type: 'error', msg: result.error || 'Failed to submit callback' });
