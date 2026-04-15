@@ -548,5 +548,188 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
+  // ─── Forward to agent ──────────────────────────────────────────
+
+  const MAX_PROMPT_LENGTH = 50_000;
+  const MAX_FORWARD_MESSAGES = 200;
+  const MAX_FORWARD_CONTENT_BYTES = 512_000; // 500 KB
+
+  interface ForwardBody {
+    targetAgentId: string;
+    messageIds?: string[];
+    prompt?: string;
+    autoStart?: boolean;
+  }
+
+  /**
+   * POST /api/sessions/:sessionId/forward
+   *
+   * Forward conversation context from one session to a different agent.
+   * Creates a new session for the target agent with the forwarded messages
+   * as the initial user message.
+   *
+   * Body:
+   *   targetAgentId  (required) — agent to forward to
+   *   messageIds     (optional) — specific message IDs to include (default: all)
+   *   prompt         (optional) — extra instructions prepended to the forwarded context
+   *   autoStart      (optional) — if true, immediately send the forwarded message to the
+   *                                target agent's CLI (fire-and-forget, like background tasks).
+   *                                Note: if the CLI spawn fails after the 201 response, the
+   *                                session exists but the agent won't be running. Clients can
+   *                                detect this via the normal WebSocket session status events.
+   *
+   * Limits: prompt max 50k chars; without messageIds only last 200 messages are forwarded;
+   *         with messageIds, 400 if count exceeds 200 or content exceeds 500 KB.
+   *
+   * Returns: { session, forwardedMessageId }
+   */
+  router.post('/api/sessions/:sessionId/forward', (req: Request, res: Response) => {
+    try {
+      const { targetAgentId, messageIds, prompt, autoStart } = req.body as ForwardBody;
+
+      if (!targetAgentId) {
+        return res.status(400).json({ error: 'targetAgentId is required' });
+      }
+
+      if (prompt && prompt.length > MAX_PROMPT_LENGTH) {
+        return res
+          .status(400)
+          .json({ error: `prompt exceeds maximum length of ${MAX_PROMPT_LENGTH} characters` });
+      }
+
+      // Validate source session
+      const sourceSession = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+      if (!sourceSession) {
+        return res.status(404).json({ error: 'Source session not found' });
+      }
+
+      // Validate target agent
+      const targetFound = findAgent(targetAgentId);
+      if (!targetFound) {
+        return res.status(404).json({ error: `Target agent not found: ${targetAgentId}` });
+      }
+
+      // If autoStart requested, verify handleChat is available
+      if (autoStart && !handleChat) {
+        return res.status(503).json({
+          error: 'Auto-start is not available — chat handler is not initialized',
+        });
+      }
+
+      // Gather messages from source session
+      const allMessages = stmts.getMessages.all(req.params.sessionId) as MessageRow[];
+      if (!allMessages.length) {
+        return res.status(400).json({ error: 'Source session has no messages to forward' });
+      }
+
+      // Cap forwarded messages to avoid huge payloads
+      let selected: MessageRow[] = allMessages;
+      if (!messageIds && allMessages.length > MAX_FORWARD_MESSAGES) {
+        selected = allMessages.slice(-MAX_FORWARD_MESSAGES);
+      }
+
+      // Filter to specific messages if IDs provided
+      if (messageIds && Array.isArray(messageIds) && messageIds.length > 0) {
+        const idSet = new Set(messageIds);
+        selected = allMessages.filter((m) => idSet.has(m.id));
+        if (!selected.length) {
+          return res.status(400).json({ error: 'None of the specified messageIds were found' });
+        }
+      }
+
+      // Guard: cap the number of forwarded messages
+      if (selected.length > MAX_FORWARD_MESSAGES) {
+        return res.status(400).json({
+          error: `Too many messages to forward (${selected.length}). Maximum is ${MAX_FORWARD_MESSAGES}.`,
+        });
+      }
+
+      // Guard: cap total content size to avoid oversized payloads
+      const totalBytes = selected.reduce((sum, m) => sum + Buffer.byteLength(m.content), 0);
+      if (totalBytes > MAX_FORWARD_CONTENT_BYTES) {
+        const sizeMB = (totalBytes / 1_000_000).toFixed(1);
+        return res.status(400).json({
+          error: `Forwarded content is too large (${sizeMB} MB). Maximum is ${MAX_FORWARD_CONTENT_BYTES / 1_000} KB. Use messageIds to select a smaller subset.`,
+        });
+      }
+
+      // Resolve source agent name for transcript labels
+      const sourceFound = findAgent(sourceSession.agent_id);
+      const sourceAgentName = sourceFound?.agent?.name || sourceSession.agent_id;
+      const targetAgent = targetFound.agent;
+
+      // Build the forwarded context as a transcript
+      const transcript = buildTranscript(selected, { agentName: sourceAgentName });
+
+      // Assemble the forwarded message content
+      const parts: string[] = [];
+      if (prompt) {
+        parts.push(prompt.trim());
+        parts.push('');
+      }
+      parts.push(`--- Forwarded from session with ${sourceAgentName} ---`);
+      parts.push('');
+      parts.push(transcript);
+      parts.push('');
+      parts.push('--- End of forwarded context ---');
+
+      const forwardedContent = parts.join('\n');
+
+      // Create a new session for the target agent
+      const newSessionId = uuidv4();
+      const truncatedName = `[Fwd] ${sourceAgentName}: ${sourceSession.name || 'Session'}`.slice(
+        0,
+        100,
+      );
+      const engine = targetAgent.engine || 'claude-code';
+      const model = targetAgent.model || defaultModelForEngine(engine);
+      stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, 1, 0);
+
+      // When autoStart is true, handleChat will store the user message itself,
+      // so we only pre-store it when NOT auto-starting (to avoid duplicates).
+      let forwardedMessageId: string | null = null;
+      if (!autoStart) {
+        forwardedMessageId = uuidv4();
+        stmts.addMessage.run(
+          forwardedMessageId,
+          newSessionId,
+          'user',
+          forwardedContent,
+          null,
+          null,
+          null,
+        );
+        stmts.touchSession.run(newSessionId);
+      }
+
+      const newSession = stmts.getSession.get(newSessionId) as SessionRow;
+
+      // Broadcast so all clients know a new forwarded session was created
+      broadcast({
+        type: 'session_forwarded',
+        sourceSessionId: req.params.sessionId,
+        targetAgentId,
+        session: newSession,
+        forwardedMessageId,
+      });
+
+      // Optionally auto-start the target agent (fire-and-forget like background tasks).
+      // handleChat stores the user message and spawns the CLI process.
+      if (autoStart && handleChat) {
+        handleChat(null, {
+          type: 'chat',
+          agentId: targetAgentId,
+          sessionId: newSessionId,
+          content: forwardedContent,
+        });
+      }
+
+      res.status(201).json({ session: newSession, forwardedMessageId });
+    } catch (err) {
+      console.error('Forward session error:', err);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   return router;
 }
