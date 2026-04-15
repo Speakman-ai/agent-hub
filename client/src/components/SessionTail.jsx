@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
+import { markdownComponentsCompact } from './MarkdownRenderer.jsx';
 import { isFileModifyingTool, shortenPath, parseDiffLines } from '../utils/diff.js';
 import {
   Bot,
@@ -238,40 +239,7 @@ const ENGINE_BADGES = {
   },
 };
 
-// Shared markdown renderer config — used by both TextBubble (rich timeline)
-// and LegacyAssistantBubble (pre-stream-json messages). Keeps multiline code
-// blocks rendered as proper <pre> elements with syntax highlighting.
-function extractText(node) {
-  if (typeof node === 'string') return node;
-  if (typeof node === 'number') return String(node);
-  if (Array.isArray(node)) return node.map(extractText).join('');
-  if (node?.props?.children) return extractText(node.props.children);
-  return '';
-}
-
-const MARKDOWN_COMPONENTS = {
-  code({ inline, className, children, ...props }) {
-    if (!inline && extractText(children).includes('\n')) {
-      return (
-        <pre className="bg-gray-950 rounded p-2 overflow-x-auto text-xs my-2">
-          <code className={className}>{children}</code>
-        </pre>
-      );
-    }
-    return (
-      <code className={className} {...props}>
-        {children}
-      </code>
-    );
-  },
-  a({ href, children, ...props }) {
-    return (
-      <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-        {children}
-      </a>
-    );
-  },
-};
+const MARKDOWN_COMPONENTS = markdownComponentsCompact;
 
 function Header({ agentColor, engine, model, streaming, createdAt }) {
   const badge = engine ? ENGINE_BADGES[engine] : null;

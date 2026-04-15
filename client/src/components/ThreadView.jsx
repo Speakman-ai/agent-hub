@@ -1,63 +1,7 @@
-import { useState, useEffect, useRef, forwardRef, useImperativeHandle, useCallback } from 'react';
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import { ArrowLeft, Clock, Activity, Cpu, AlertCircle } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
-
-function extractText(node) {
-  if (typeof node === 'string') return node;
-  if (typeof node === 'number') return String(node);
-  if (Array.isArray(node)) return node.map(extractText).join('');
-  if (node?.props?.children) return extractText(node.props.children);
-  return '';
-}
-
-function CodeBlock({ children, className }) {
-  const [copied, setCopied] = useState(false);
-  const plainText = extractText(children).replace(/\n$/, '');
-  const language = className?.replace('language-', '') || '';
-
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(plainText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }, [plainText]);
-
-  return (
-    <div className="relative group my-2">
-      <div className="flex items-center justify-between bg-gray-950 rounded-t-lg px-4 py-1.5 text-xs text-gray-500">
-        <span>{language || 'code'}</span>
-        <button onClick={handleCopy} className="hover:text-gray-300 transition-colors">
-          {copied ? 'Copied!' : 'Copy'}
-        </button>
-      </div>
-      <pre className={`${className || ''} rounded-t-none`}>
-        <code className={className}>{children}</code>
-      </pre>
-    </div>
-  );
-}
-
-const markdownComponents = {
-  code({ node: _node, inline, className, children, ...props }) {
-    if (!inline && extractText(children).includes('\n')) {
-      return <CodeBlock className={className}>{children}</CodeBlock>;
-    }
-    return (
-      <code className={className} {...props}>
-        {children}
-      </code>
-    );
-  },
-  a({ href, children, ...props }) {
-    return (
-      <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-        {children}
-      </a>
-    );
-  },
-};
+import { MarkdownContent } from './MarkdownRenderer.jsx';
 
 function formatTimestamp(ts) {
   if (!ts) return '';
@@ -267,13 +211,7 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }, ref) {
                     {isError ? (
                       <p className="whitespace-pre-wrap">{entry.content}</p>
                     ) : (
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[rehypeHighlight]}
-                        components={markdownComponents}
-                      >
-                        {entry.content}
-                      </ReactMarkdown>
+                      <MarkdownContent content={entry.content} />
                     )}
                     {/* Mobile timestamp */}
                     <span className="text-[10px] text-gray-600 font-mono sm:hidden mt-0.5 block">
