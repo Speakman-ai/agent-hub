@@ -289,9 +289,36 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       if (card.priority) contextLines.push(`\n**Priority:** ${card.priority}`);
       if (card.labels) contextLines.push(`**Labels:** ${card.labels}`);
       if (card.github_issue_url) contextLines.push(`**GitHub:** ${card.github_issue_url}`);
-      contextLines.push(
-        `\n---\nYou have been assigned this task from the project kanban board. Review the description above and begin working on it. Update the kanban card with progress as you go.`,
-      );
+
+      if (agent.role === 'intake') {
+        contextLines.push(
+          `\n---\n## Ticket Research & Breakdown`,
+          `\nYou have been assigned this card for **research and ticket creation only** — do NOT write code or create PRs.`,
+          `\nYour job:`,
+          `1. **Research** this task — understand the scope, identify sub-tasks, and consider edge cases`,
+          `2. **Check for duplicates** — before creating any new ticket, search the existing board to make sure a similar card doesn't already exist`,
+          `3. **Break it down** into actionable sub-tickets on the kanban board (in Backlog)`,
+          `4. **Link sub-tickets** to the same epic as this card (if it has one)${card.epic_id ? ` — epic ID: \`${card.epic_id}\`` : ''}`,
+          `5. **Add a comment** to this card summarizing what you created`,
+          `6. **Move this card to Done** when finished`,
+          `\n### Duplicate Detection`,
+          `Before creating each ticket, fetch all existing cards:`,
+          `\`\`\`bash`,
+          `curl -s http://localhost:3051/api/projects/${req.params.projectId}/board | jq '.cards[] | {id, title, description, column: .column_id}'`,
+          `\`\`\``,
+          `If a card with a similar title or overlapping scope already exists, skip creating a duplicate and note it in your summary comment.`,
+          `\n### Card APIs`,
+          `- **Get board**: \`GET /api/projects/${req.params.projectId}/board\``,
+          `- **Create card**: \`POST /api/projects/${req.params.projectId}/board/cards\` with \`{title, description, priority, labels, columnId, createdBy: "${agent.id}"}\``,
+          `- **Link to epic**: \`POST /api/projects/${req.params.projectId}/board/cards/:cardId/epic\` with \`{epicId}\``,
+          `- **Add comment**: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\` with \`{content, author: "${agent.id}"}\``,
+          `- **Move card**: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\` with \`{columnId: "<done-column-id>"}\``,
+        );
+      } else {
+        contextLines.push(
+          `\n---\nYou have been assigned this task from the project kanban board. Review the description above and begin working on it. Update the kanban card with progress as you go.`,
+        );
+      }
 
       const contextMessage = contextLines.join('\n');
 

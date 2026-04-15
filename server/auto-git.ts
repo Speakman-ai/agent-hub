@@ -143,6 +143,11 @@ export async function autoCommitAndPR(
 ): Promise<void> {
   const d = getDeps();
   try {
+    if (agent.role === 'intake') {
+      console.log(`[auto-commit] Session ${sessionId} — skipping (intake agent, no PR)`);
+      return;
+    }
+
     if (effectiveCwd === project.cwd) {
       console.log(`[auto-commit] Session ${sessionId} — skipping (not a worktree)`);
       return;

@@ -137,6 +137,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(sessions);
   });
 
+  router.get('/api/sessions/:sessionId', (req: Request, res: Response) => {
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json(session);
+  });
+
   router.get('/api/sessions/:sessionId/messages', (req: Request, res: Response) => {
     const messages = stmts.getMessages.all(req.params.sessionId) as MessageRow[];
     res.json(messages);
