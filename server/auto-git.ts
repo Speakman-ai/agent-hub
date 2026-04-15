@@ -221,6 +221,28 @@ async function commitPushAndCreatePR(
   const commitTitle = card?.title || session?.name || 'Agent task completion';
 
   if (changes.hasUncommitted) {
+    // Ensure git identity is configured (may be missing in shallow clones)
+    try {
+      await execAsync('git config user.name', { cwd: effectiveCwd });
+    } catch {
+      // Try to copy from the project's main repo, or fall back to defaults
+      try {
+        const { stdout: name } = await execAsync('git config user.name', { cwd: project.cwd });
+        const { stdout: email } = await execAsync('git config user.email', { cwd: project.cwd });
+        if (name.trim())
+          await execAsync(`git config user.name ${JSON.stringify(name.trim())}`, {
+            cwd: effectiveCwd,
+          });
+        if (email.trim())
+          await execAsync(`git config user.email ${JSON.stringify(email.trim())}`, {
+            cwd: effectiveCwd,
+          });
+      } catch {
+        await execAsync('git config user.name "Agent Hub"', { cwd: effectiveCwd });
+        await execAsync('git config user.email "agent@agent-hub.com"', { cwd: effectiveCwd });
+      }
+    }
+
     const commitBody = [
       card?.description ? `\n${card.description}` : null,
       `\nAgent: ${agent.name}`,
