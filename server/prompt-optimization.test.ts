@@ -202,6 +202,68 @@ describe('buildEnrichedPrompt — first message gating', () => {
   });
 });
 
+describe('buildEnrichedPrompt — autonomous PR steps gating', () => {
+  const gitTmp = path.join(os.tmpdir(), `prompt-auto-test-${Date.now()}`);
+
+  beforeEach(() => {
+    mkdirSync(tmpBase, { recursive: true });
+    mkdirSync(path.join(tmpBase, 'skills'), { recursive: true });
+    // Create a git repo with a GitHub remote so isGitHubConnected = true
+    mkdirSync(gitTmp, { recursive: true });
+    const { execSync } = require('child_process');
+    execSync('git init && git remote add origin https://github.com/test/repo.git', {
+      cwd: gitTmp,
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpBase, { recursive: true, force: true });
+    rmSync(gitTmp, { recursive: true, force: true });
+  });
+
+  it('includes gh pr create steps when isAutonomous is true', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject({ cwd: gitTmp }),
+      makeAgent(),
+      { isFirstMessage: true, isAutonomous: true },
+    );
+    expect(prompt).toContain('gh pr create');
+    expect(prompt).toContain('Create PR');
+    expect(prompt).toContain('CI + Hand Off');
+  });
+
+  it('excludes gh pr create steps when isAutonomous is false', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject({ cwd: gitTmp }),
+      makeAgent(),
+      { isFirstMessage: true, isAutonomous: false },
+    );
+    expect(prompt).not.toContain('gh pr create');
+    expect(prompt).not.toContain('Create PR');
+    expect(prompt).not.toContain('CI + Hand Off');
+  });
+
+  it('excludes gh pr create steps when isAutonomous is omitted', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject({ cwd: gitTmp }),
+      makeAgent(),
+      { isFirstMessage: true },
+    );
+    expect(prompt).not.toContain('gh pr create');
+    expect(prompt).not.toContain('CI + Hand Off');
+  });
+
+  it('tells non-autonomous agents to commit without pushing', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject({ cwd: gitTmp }),
+      makeAgent(),
+      { isFirstMessage: true, isAutonomous: false },
+    );
+    expect(prompt).toContain('Do NOT push or create a PR');
+    expect(prompt).toContain('server handles that automatically');
+  });
+});
+
 describe('buildEnrichedPrompt — lead agent delegation', () => {
   beforeEach(() => {
     mkdirSync(tmpBase, { recursive: true });
