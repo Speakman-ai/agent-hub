@@ -155,13 +155,13 @@ export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges
 
   let hasUnpushed = false;
   try {
-    const { stdout: logOut } = await execAsync('git log @{upstream}..HEAD --oneline 2>/dev/null', {
+    const { stdout: logOut } = await execAsync('git log @{upstream}..HEAD --oneline', {
       cwd,
     });
     hasUnpushed = !!logOut.trim();
   } catch {
     try {
-      const { stdout: logOut2 } = await execAsync('git log main..HEAD --oneline 2>/dev/null', {
+      const { stdout: logOut2 } = await execAsync('git log main..HEAD --oneline', {
         cwd,
       });
       hasUnpushed = !!logOut2.trim();

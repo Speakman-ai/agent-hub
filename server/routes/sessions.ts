@@ -555,7 +555,6 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
-<<<<<<< HEAD
   // ─── Forward to agent ──────────────────────────────────────────
 
   const MAX_PROMPT_LENGTH = 50_000;

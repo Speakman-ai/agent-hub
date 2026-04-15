@@ -21,6 +21,7 @@ export default function ChangesReadyBox({ sessionId, changes, onCreated, onDismi
   const [error, setError] = useState(null);
 
   const handleCreate = async () => {
+    if (loading) return;
     setLoading(true);
     setError(null);
     try {
