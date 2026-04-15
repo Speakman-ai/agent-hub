@@ -640,6 +640,7 @@ function ClaudeAuthSection() {
             const status = await api.getClaudeAuth();
             if (status.oauth?.loggedIn) {
               clearInterval(poll);
+              clearTimeout(timeout);
               setAuth(status);
               setOauthUrl(null);
               setLoginLoading(false);
@@ -650,7 +651,7 @@ function ClaudeAuthSection() {
           }
         }, 3000);
         // Stop polling after 2 minutes
-        setTimeout(() => {
+        const timeout = setTimeout(() => {
           clearInterval(poll);
           setLoginLoading(false);
           setCallbackStatus({
