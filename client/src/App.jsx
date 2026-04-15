@@ -1891,12 +1891,15 @@ export default function App() {
 }
 
 function Toast({ toast, onDismiss }) {
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+
   useEffect(() => {
     if (toast.duration) {
-      const timer = setTimeout(onDismiss, toast.duration);
+      const timer = setTimeout(() => onDismissRef.current(), toast.duration);
       return () => clearTimeout(timer);
     }
-  }, [toast.duration, onDismiss]);
+  }, [toast.duration]);
 
   const colors = {
     info: 'bg-blue-900/90 border-blue-700 text-blue-100',
