@@ -375,9 +375,9 @@ function ToolCard({ use, result, defaultOpen }) {
   const summary = summarizeToolInput(use.tool, use.input);
   const errored = result?.isError;
   const stillRunning = !result;
-  const showDiff = isFileModifyingTool(use.tool) && defaultOpen;
+  const showDiff = isFileModifyingTool(use.tool);
 
-  // When verbose + file-modifying tool, show compact diff instead of full expandable card
+  // File-modifying tools always show compact diff (visible in both compact and verbose mode)
   if (showDiff && !errored) {
     return (
       <div className={`border rounded-lg overflow-hidden ${style.color}`}>
