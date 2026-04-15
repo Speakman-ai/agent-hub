@@ -45,6 +45,8 @@ Thumbs.db
 .worktrees/
 release/
 server/connection.json
+server/active-org.json
+server/remote-orgs.json
 server/server.log
 
 # Claude Code instance-specific settings

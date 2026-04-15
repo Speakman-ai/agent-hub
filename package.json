@@ -6,12 +6,12 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "cd server && node index.js",
+    "dev:server": "cd server && npx tsx index.ts",
     "dev:client": "cd client && npx vite --port 3050",
     "build": "cd client && npx vite build",
     "start": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "install:all": "npm install && cd server && npm install && cd ../client && npm install && cd ../mobile && npm install",
-    "test": "cd client && npm test && cd ../server && npm test && cd ../electron && npx vitest run",
+    "test": "npm run test:client && npm run test:server && npm run test:electron",
     "test:client": "cd client && npm test",
     "test:server": "cd server && npm test",
     "test:electron": "cd electron && npx vitest run",
@@ -22,12 +22,11 @@
     "electron:start": "npx electron .",
     "electron:pack": "npm run build && npx electron-builder --dir",
     "postinstall": "electron-builder install-app-deps",
-    "test": "cd server && npx vitest run",
     "test:watch": "cd server && npx vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write 'server/**/*.js' 'client/src/**/*.{js,jsx}' 'electron/**/*.{js,cjs}'",
-    "format:check": "prettier --check 'server/**/*.js' 'client/src/**/*.{js,jsx}' 'electron/**/*.{js,cjs}'",
+    "format": "prettier --write 'server/**/*.ts' 'client/src/**/*.{js,jsx}' 'electron/**/*.{js,cjs}'",
+    "format:check": "prettier --check 'server/**/*.ts' 'client/src/**/*.{js,jsx}' 'electron/**/*.{js,cjs}'",
     "prepare": "husky",
     "test:e2e": "cd e2e && npx playwright test",
     "test:e2e:ui": "cd e2e && npx playwright test --ui",
@@ -79,7 +78,7 @@
     }
   },
   "lint-staged": {
-    "server/**/*.js": [
+    "server/**/*.ts": [
       "eslint --fix",
       "prettier --write"
     ],
@@ -91,6 +90,8 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@playwright/test": "^1.59.1",
+    "@typescript-eslint/eslint-plugin": "^8.58.2",
+    "@typescript-eslint/parser": "^8.58.2",
     "concurrently": "^8.2.2",
     "electron": "^35.7.5",
     "electron-builder": "^26.0.0",
@@ -100,9 +101,11 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "globals": "^17.4.0",
     "husky": "^9.1.7",
+    "jsdom": "^29.0.2",
     "lint-staged": "^16.4.0",
     "prettier": "^3.8.2",
     "supertest": "^7.2.2",
+    "typescript-eslint": "^8.58.2",
     "vitest": "^4.1.4"
   }
 }

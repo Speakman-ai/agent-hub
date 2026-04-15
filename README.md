@@ -147,7 +147,7 @@ agent-hub/
 │       ├── hooks/          # useWebSocket.js for real-time connection
 │       └── utils/          # API client, time formatting, exports
 ├── server/                 # Express.js backend
-│   ├── index.js            # All REST + WebSocket routes (~7k lines)
+│   ├── index.ts            # All REST + WebSocket routes (Express + WebSocket bootstrap)
 │   ├── db.js               # SQLite setup with auto-migrations
 │   ├── config.js           # Centralized configuration resolution
 │   ├── auth.js             # API key authentication middleware
@@ -293,11 +293,11 @@ Never commit directly to `main`. Never push to `main` for feature work.
 ### Code Conventions
 
 - **ES Modules** throughout (`import`/`export`, no `require`)
-- **No TypeScript** — plain JavaScript with JSX
+- **TypeScript on the server** (`server/`) — strict mode, run with `tsx`; **client and mobile** stay **JavaScript** with JSX
 - **PascalCase** for React components, **camelCase** for functions/variables, **kebab-case** for file names
 - **Tailwind CSS** utility classes, dark theme by default
 - **Raw SQL** with prepared statements via better-sqlite3 (no ORM)
-- **Single-file server** — all routes live in `server/index.js`
+- **Single-file server** — all routes live in `server/index.ts`
 
 ## Troubleshooting
 

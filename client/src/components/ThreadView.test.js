@@ -90,9 +90,12 @@ describe('ThreadView entry classification', () => {
     const d2 = new Date(entry2.timestamp);
     const d3 = new Date(entry3.timestamp);
 
-    // Different dates — should show separator
-    expect(d1.toDateString()).not.toBe(d2.toDateString());
-    // Same date — no separator
-    expect(d2.toDateString()).toBe(d3.toDateString());
+    const utcDay = (d) =>
+      `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+
+    // Different UTC calendar days — should show separator (local toDateString() is TZ-flaky)
+    expect(utcDay(d1)).not.toBe(utcDay(d2));
+    // Same UTC day — no separator
+    expect(utcDay(d2)).toBe(utcDay(d3));
   });
 });

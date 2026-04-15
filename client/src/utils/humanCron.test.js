@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import humanCron from './humanCron.js';
+import humanCron from '../../../shared/utils/humanCron.js';
 
 describe('humanCron', () => {
   it('returns empty string for invalid input', () => {

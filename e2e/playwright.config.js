@@ -60,7 +60,8 @@ export default defineConfig({
    * NOTE: env spreads process.env to inherit PATH, HOME, etc. */
   webServer: [
     {
-      command: `node ../server/index.js`,
+      command: `npx tsx index.ts`,
+      cwd: '../server',
       port: SERVER_PORT,
       reuseExistingServer: !process.env.CI,
       env: {

@@ -1,0 +1,1316 @@
+import { Router, Request, Response } from 'express';
+import { readFileSync, writeFileSync } from 'fs';
+import path from 'path';
+import { promisify } from 'util';
+import { exec, execFile } from 'child_process';
+import { v4 as uuidv4 } from 'uuid';
+import { localDateStr } from '../memory.js';
+import {
+  getAppInfo,
+  getAppInstallations,
+  buildAppManifest,
+  clearTokenCache,
+} from '../github-app.js';
+import type { RouteDeps, AppConfig, GitHubAppConfig, Project, Stmts } from '../types.js';
+
+interface FileConfig {
+  claudeBin?: string;
+  cursorBin?: string;
+  githubApp?: GitHubAppConfig;
+  [key: string]: unknown;
+}
+
+interface AppInfoCache {
+  data: { name: string } | null;
+  appId: string | null;
+  ts: number;
+}
+
+interface Installation {
+  id: number;
+  account?: { login?: string; type?: string };
+}
+
+interface GitHubAppConversion {
+  id: number;
+  slug?: string;
+  name?: string;
+  pem: string;
+  webhook_secret: string;
+  client_id: string;
+  client_secret: string;
+}
+
+interface CronImportData {
+  name: string;
+  schedule: string;
+  prompt: string;
+  cwd?: string;
+  enabled?: boolean | number;
+  project_id?: string;
+}
+
+interface RoomImportData {
+  id?: string;
+  name: string;
+  max_turns?: number;
+  agents?: Array<{ agentId?: string; agent_id?: string }>;
+}
+
+interface WebhookImportData {
+  repo_url: string;
+  secret?: string;
+  events?: string;
+  enabled?: boolean | number;
+}
+
+interface WikiImportData {
+  slug: string;
+  title: string;
+  content?: string;
+  category?: string;
+  updated_by?: string;
+}
+
+interface KanbanImportData {
+  board?: { name?: string };
+  columns?: Array<{
+    id: string;
+    name: string;
+    position: number;
+    color?: string;
+  }>;
+  cards?: Array<{
+    id: string;
+    column_id: string;
+    title: string;
+    description?: string;
+    priority?: string;
+    assignee?: string;
+    labels?: string;
+    github_issue_url?: string;
+    pr_url?: string;
+    created_by?: string;
+    position?: number;
+    epic_id?: string;
+  }>;
+  epics?: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    color?: string;
+    position?: number;
+  }>;
+  comments?: Record<string, Array<{ author?: string; content: string }>>;
+}
+
+interface ProjectExportData {
+  version: number;
+  type: string;
+  project?: {
+    agents?: unknown[];
+    color?: string;
+    leadAgent?: string;
+    subAgents?: string[];
+    commands?: Record<string, string>;
+  };
+  crons?: CronImportData[];
+  rooms?: RoomImportData[];
+  webhooks?: WebhookImportData[];
+  wiki?: WikiImportData[];
+  kanban?: KanbanImportData;
+}
+
+interface LegacyAgent {
+  id: string;
+  name?: string;
+  cwd?: string;
+  workspace?: string;
+  engine?: string;
+  systemPrompt?: string;
+  color?: string;
+  heartbeat?: { enabled: boolean; interval: string; prompt: string };
+}
+
+interface LegacyExportData {
+  version: number;
+  config?: Record<string, unknown>;
+  projects?: Project[];
+  agents?: LegacyAgent[];
+  crons?: CronImportData[];
+  rooms?: RoomImportData[];
+  slack?: {
+    accounts?: Array<{
+      botToken?: string;
+      appToken?: string;
+      [key: string]: unknown;
+    }>;
+  };
+}
+
+interface SlackConfigData {
+  accounts: Array<{
+    botToken?: string;
+    appToken?: string;
+    [key: string]: unknown;
+  }>;
+}
+
+export default function createConfigRoutes(deps: RouteDeps): Router {
+  const {
+    stmts,
+    getProjects,
+    setProjects,
+    saveProjects,
+    config,
+    getGhBotUser,
+    setGhBotUser,
+    getGhAppSlug,
+    setGhAppSlug,
+    serverDir,
+  } = deps;
+  const router = Router();
+
+  router.get('/api/config', (_req: Request, res: Response) => {
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(path.join(config.dataDir, 'config.json'), 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    res.json({
+      claudeBin: config.claudeBin,
+      cursorBin: config.cursorBin,
+      defaultModel: config.defaultModel,
+      defaultCwd: config.defaultCwd,
+      port: config.port,
+      publicUrl: config.publicUrl || '',
+      apiKey: config.apiKey || '',
+      authRequired: !!config.apiKey,
+      githubApp: config.githubApp
+        ? {
+            appId: config.githubApp.appId,
+            appSlug: config.githubApp.appSlug || getGhAppSlug() || null,
+            hasInstallation:
+              !!config.githubApp.installationId ||
+              (config.githubApp.installations?.length ?? 0) > 0,
+            installations: config.githubApp.installations || [],
+          }
+        : null,
+      botGithubToken: config.botGithubToken ? '••••••••' : '',
+      botGithubTokenSet: !!config.botGithubToken,
+      botGithubUser: getGhBotUser() || null,
+      anthropicApiKey: config.anthropicApiKey ? '••••••••' : '',
+      anthropicApiKeySet: !!config.anthropicApiKey,
+      _file: {
+        claudeBin: fileConfig.claudeBin || null,
+        cursorBin: fileConfig.cursorBin || null,
+      },
+    });
+  });
+
+  router.get('/api/config/models', (_req: Request, res: Response) => {
+    res.json({
+      defaultModel: config.defaultModel,
+      engineDefaultModels: config.engineDefaultModels,
+      engineValidModels: config.engineValidModels,
+    });
+  });
+
+  router.patch('/api/config', (req: Request, res: Response) => {
+    const allowed = [
+      'claudeBin',
+      'cursorBin',
+      'defaultModel',
+      'defaultCwd',
+      'port',
+      'apiKey',
+      'publicUrl',
+      'botGithubToken',
+    ] as const;
+    const updates: Record<string, unknown> = {};
+    for (const key of allowed) {
+      if ((req.body as Record<string, unknown>)[key] !== undefined)
+        updates[key] = (req.body as Record<string, unknown>)[key];
+    }
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No valid config fields provided' });
+    }
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+
+    Object.assign(fileConfig, updates);
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    for (const [key, val] of Object.entries(updates)) {
+      if (key in config) {
+        Object.defineProperty(config, key, { value: val, writable: true, configurable: true });
+      }
+    }
+
+    if ('botGithubToken' in updates) {
+      const execAsync = promisify(exec);
+      const newToken = updates.botGithubToken as string | null;
+      if (newToken) {
+        execAsync('gh api user --jq ".login"', { env: { ...process.env, GH_TOKEN: newToken } })
+          .then(({ stdout }) => {
+            setGhBotUser(stdout.trim());
+            console.log(`[GitHub Bot] Bot account re-detected: ${stdout.trim()}`);
+          })
+          .catch((err: Error) => {
+            setGhBotUser(null);
+            console.warn(`[GitHub Bot] Token validation failed: ${err.message?.split('\n')[0]}`);
+          });
+      } else {
+        setGhBotUser(null);
+        console.log('[GitHub Bot] Bot token removed');
+      }
+    }
+
+    res.json({
+      ok: true,
+      updated: Object.fromEntries(
+        Object.entries(updates).map(([k, v]) => [k, k === 'botGithubToken' && v ? '••••••••' : v]),
+      ),
+    });
+  });
+
+  // ─── GitHub App Setup (Manifest Flow) ──────────────────────────────────────
+
+  router.get('/api/github-app/manifest', (req: Request, res: Response) => {
+    const serverUrl = config.publicUrl;
+    if (!serverUrl) {
+      return res.status(400).json({
+        error: 'Public URL must be configured first (Settings → General → Public URL)',
+      });
+    }
+    const manifest = buildAppManifest(serverUrl);
+    res.json({
+      manifest,
+      githubUrl: 'https://github.com/settings/apps/new',
+      redirectUrl: manifest.redirect_url,
+    });
+  });
+
+  router.get('/api/github-app/register', (req: Request, res: Response) => {
+    const serverUrl = config.publicUrl;
+    if (!serverUrl) {
+      return res.status(400).send('Public URL must be configured first.');
+    }
+    const manifest = buildAppManifest(serverUrl);
+    const manifestJson = JSON.stringify(manifest)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/'/g, '&#39;')
+      .replace(/"/g, '&quot;');
+    const state = Date.now().toString(36);
+    res.setHeader('Content-Type', 'text/html');
+    res.send(`<!DOCTYPE html>
+<html>
+<head><title>Setting up GitHub App…</title></head>
+<body>
+  <p>Redirecting to GitHub…</p>
+  <form id="manifest-form" action="https://github.com/settings/apps/new?state=${state}" method="post">
+    <input type="hidden" name="manifest" value="${manifestJson}">
+  </form>
+  <script>document.getElementById('manifest-form').submit();</script>
+</body>
+</html>`);
+  });
+
+  router.get('/api/github-app/callback', async (req: Request, res: Response) => {
+    const { code } = req.query as { code?: string };
+    if (!code) {
+      return res.status(400).send('Missing code parameter from GitHub');
+    }
+
+    try {
+      const response = await fetch(`https://api.github.com/app-manifests/${code}/conversions`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        throw new Error(`GitHub returned ${response.status}: ${errText}`);
+      }
+
+      const appData = (await response.json()) as GitHubAppConversion;
+
+      const githubAppConfig: GitHubAppConfig & {
+        installations?: Array<{ id: number; account: string; accountType: string }>;
+      } = {
+        appId: String(appData.id),
+        appSlug: appData.slug || appData.name,
+        privateKey: appData.pem,
+        webhookSecret: appData.webhook_secret,
+        clientId: appData.client_id,
+        clientSecret: appData.client_secret,
+      };
+
+      try {
+        const installations = (await getAppInstallations(
+          appData.id,
+          appData.pem,
+        )) as unknown as Installation[];
+        if (installations.length > 0) {
+          githubAppConfig.installationId = installations[0].id;
+          githubAppConfig.installations = installations.map((inst) => ({
+            id: inst.id,
+            account: inst.account?.login ?? '',
+            accountType: inst.account?.type ?? '',
+          }));
+          console.log(
+            `[GitHub App] Found ${installations.length} installation(s): ${installations.map((i) => i.account?.login).join(', ')}`,
+          );
+        }
+      } catch {
+        // No installations yet — user still needs to install the app
+      }
+
+      const configPath = path.join(config.dataDir, 'config.json');
+      let fileConfig: FileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        /* no file yet */
+      }
+      fileConfig.githubApp = githubAppConfig;
+      writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+      config.githubApp = githubAppConfig;
+      setGhAppSlug?.(appData.slug || appData.name || null);
+
+      console.log(
+        `[GitHub App] App "${appData.slug || appData.name}" created and configured (ID: ${appData.id})`,
+      );
+
+      const clientUrl = config.publicUrl || `http://localhost:3050`;
+      if (!githubAppConfig.installationId) {
+        res.redirect(`https://github.com/apps/${githubAppConfig.appSlug}/installations/new`);
+      } else {
+        res.redirect(`${clientUrl}/#/settings?githubApp=ready`);
+      }
+    } catch (err: unknown) {
+      console.error('[GitHub App] Callback failed:', (err as Error).message);
+      const clientUrl = config.publicUrl || `http://localhost:3050`;
+      res.redirect(
+        `${clientUrl}/#/settings?githubApp=error&message=${encodeURIComponent((err as Error).message)}`,
+      );
+    }
+  });
+
+  router.get('/api/github-app/install-url', async (_req: Request, res: Response) => {
+    const app = config.githubApp;
+    if (!app?.appSlug) {
+      return res.status(400).json({ error: 'No GitHub App configured' });
+    }
+    res.json({
+      installUrl: `https://github.com/apps/${app.appSlug}/installations/new`,
+    });
+  });
+
+  router.post('/api/github-app/refresh-installation', async (_req: Request, res: Response) => {
+    const app = config.githubApp;
+    if (!app?.appId || !app?.privateKey) {
+      return res.status(400).json({ error: 'No GitHub App configured' });
+    }
+
+    try {
+      const installations = (await getAppInstallations(
+        app.appId,
+        app.privateKey,
+      )) as unknown as Installation[];
+      if (installations.length === 0) {
+        return res.json({
+          installed: false,
+          message: 'No installations found. Install the app on your GitHub account first.',
+        });
+      }
+
+      app.installationId = installations[0].id;
+      app.installations = installations.map((inst) => ({
+        id: inst.id,
+        account: inst.account?.login ?? '',
+        accountType: inst.account?.type ?? '',
+      }));
+      config.githubApp = app;
+
+      const configPath = path.join(config.dataDir, 'config.json');
+      let fileConfig: FileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        /* no file yet */
+      }
+      fileConfig.githubApp = app;
+      writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+      console.log(
+        `[GitHub App] Installation refreshed: ${installations.length} installation(s) — ${installations.map((i) => i.account?.login).join(', ')}`,
+      );
+      res.json({
+        installed: true,
+        installationId: installations[0].id,
+        installations: app.installations,
+      });
+    } catch (err: unknown) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/api/github-app/setup-complete', async (req: Request, res: Response) => {
+    const clientUrl = config.publicUrl || 'http://localhost:3050';
+    const app = config.githubApp;
+    if (!app?.appId || !app?.privateKey) {
+      return res.redirect(
+        `${clientUrl}/#/settings?githubApp=error&message=${encodeURIComponent('No GitHub App configured')}`,
+      );
+    }
+
+    try {
+      const installations = (await getAppInstallations(
+        app.appId,
+        app.privateKey,
+      )) as unknown as Installation[];
+      if (installations.length > 0) {
+        app.installationId = installations[0].id;
+        app.installations = installations.map((inst) => ({
+          id: inst.id,
+          account: inst.account?.login ?? '',
+          accountType: inst.account?.type ?? '',
+        }));
+        config.githubApp = app;
+
+        const configPath = path.join(config.dataDir, 'config.json');
+        let fileConfig: FileConfig = {};
+        try {
+          fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+        } catch {
+          /* no file yet */
+        }
+        fileConfig.githubApp = app;
+        writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+        console.log(
+          `[GitHub App] Auto-setup complete — ${installations.length} installation(s): ${installations.map((i) => i.account?.login).join(', ')}`,
+        );
+        return res.redirect(`${clientUrl}/#/settings?githubApp=ready`);
+      }
+
+      return res.redirect(`${clientUrl}/#/settings?githubApp=no-install`);
+    } catch (err: unknown) {
+      console.error('[GitHub App] Setup complete callback failed:', (err as Error).message);
+      return res.redirect(
+        `${clientUrl}/#/settings?githubApp=error&message=${encodeURIComponent((err as Error).message)}`,
+      );
+    }
+  });
+
+  let _appInfoCache: AppInfoCache = { data: null, appId: null, ts: 0 };
+  const APP_INFO_CACHE_TTL = 5 * 60 * 1000;
+
+  router.get('/api/github-app/status', async (_req: Request, res: Response) => {
+    const app = config.githubApp;
+    if (!app?.appId) {
+      return res.json({ configured: false });
+    }
+
+    const result: Record<string, unknown> = {
+      configured: true,
+      appId: app.appId,
+      appSlug: app.appSlug || null,
+      hasInstallation:
+        !!app.installationId || (Array.isArray(app.installations) && app.installations.length > 0),
+      installationId: app.installationId || null,
+      installations: app.installations || [],
+    };
+
+    const now = Date.now();
+    if (_appInfoCache.appId === app.appId && now - _appInfoCache.ts < APP_INFO_CACHE_TTL) {
+      result.appName = _appInfoCache.data?.name || null;
+      result.valid = !!_appInfoCache.data;
+    } else {
+      try {
+        const appInfo = (await getAppInfo(app.appId, app.privateKey)) as { name: string };
+        _appInfoCache = { data: appInfo, appId: app.appId, ts: now };
+        result.appName = appInfo.name;
+        result.valid = true;
+      } catch {
+        _appInfoCache = { data: null, appId: app.appId, ts: now };
+        result.valid = false;
+      }
+    }
+
+    res.json(result);
+  });
+
+  router.delete('/api/github-app', (_req: Request, res: Response) => {
+    config.githubApp = null;
+    setGhAppSlug?.(null);
+    clearTokenCache();
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    delete fileConfig.githubApp;
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    console.log('[GitHub App] Configuration removed');
+    res.json({ ok: true });
+  });
+
+  router.post('/api/github-app/connect', async (req: Request, res: Response) => {
+    const { appId, privateKey, installationId } = req.body as {
+      appId?: string;
+      privateKey?: string;
+      installationId?: string;
+    };
+
+    if (!appId || !privateKey || !installationId) {
+      return res
+        .status(400)
+        .json({ error: 'appId, privateKey, and installationId are all required' });
+    }
+
+    let appInfo: { slug?: string; name?: string };
+    try {
+      appInfo = (await getAppInfo(appId, privateKey)) as { slug?: string; name?: string };
+    } catch (err: unknown) {
+      return res.status(400).json({
+        error: `Invalid GitHub App credentials: ${(err as Error).message}`,
+      });
+    }
+
+    try {
+      const installations = (await getAppInstallations(
+        appId,
+        privateKey,
+      )) as unknown as Installation[];
+      const found = installations.some((inst) => String(inst.id) === String(installationId));
+      if (!found) {
+        console.warn(
+          `[GitHub App] Installation ID ${installationId} not found in app installations — proceeding anyway`,
+        );
+      }
+    } catch (err: unknown) {
+      console.warn(
+        `[GitHub App] Could not verify installation ID: ${(err as Error).message} — proceeding anyway`,
+      );
+    }
+
+    const appSlug = appInfo.slug || appInfo.name || '';
+    const githubAppConfig: GitHubAppConfig & {
+      installations?: Array<{ id: number; account: string; accountType: string }>;
+    } = {
+      appId,
+      appSlug,
+      privateKey,
+      installationId: Number(installationId),
+    };
+
+    try {
+      const allInstallations = (await getAppInstallations(
+        appId,
+        privateKey,
+      )) as unknown as Installation[];
+      if (allInstallations.length > 0) {
+        githubAppConfig.installations = allInstallations.map((inst) => ({
+          id: inst.id,
+          account: inst.account?.login ?? '',
+          accountType: inst.account?.type ?? '',
+        }));
+      }
+    } catch {
+      // Could not fetch installations — proceed with single installationId
+    }
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    fileConfig.githubApp = githubAppConfig;
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    config.githubApp = githubAppConfig;
+    setGhAppSlug?.(appSlug);
+
+    console.log(
+      `[GitHub App] Connected existing app "${appSlug}" (ID: ${appId}, Installation: ${installationId})`,
+    );
+
+    res.json({ ok: true, appId, appSlug, installationId });
+  });
+
+  // ─── GitHub CLI Status & Repo Detection ────────────────────────────────────
+
+  router.get('/api/github/status', async (_req: Request, res: Response) => {
+    const execFileAsync = promisify(execFile);
+    try {
+      const { stdout: user } = await execFileAsync('gh', ['api', 'user', '--jq', '.login']);
+      let scopes: string[] = [];
+      try {
+        const { stdout: scopeOut, stderr: scopeErr } = await execFileAsync('gh', [
+          'api',
+          '-i',
+          'user',
+        ]);
+        const combined = scopeOut + scopeErr;
+        const scopeMatch = combined.match(/x-oauth-scopes:\s*(.+)/i);
+        if (scopeMatch) {
+          scopes = scopeMatch[1]
+            .trim()
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+        }
+      } catch {
+        /* scopes optional */
+      }
+      res.json({
+        authenticated: true,
+        user: user.trim(),
+        scopes,
+        githubApp: config.githubApp
+          ? {
+              appId: config.githubApp.appId,
+              appSlug: config.githubApp.appSlug || getGhAppSlug() || null,
+              hasInstallation:
+                !!config.githubApp.installationId ||
+                (config.githubApp.installations?.length ?? 0) > 0,
+              installations: config.githubApp.installations || [],
+            }
+          : null,
+        botUser: getGhBotUser() || null,
+      });
+    } catch {
+      res.json({
+        authenticated: false,
+        error: 'GitHub CLI not authenticated. Run: gh auth login',
+      });
+    }
+  });
+
+  router.post('/api/github/detect-repo', async (req: Request, res: Response) => {
+    const { cwd } = req.body as { cwd?: string };
+    if (!cwd) return res.status(400).json({ error: 'cwd is required' });
+
+    const execFileAsync = promisify(execFile);
+    try {
+      const { stdout: remoteUrl } = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
+        cwd,
+      });
+      const url = remoteUrl.trim();
+      if (!url) return res.json({ hasRemote: false });
+
+      let owner: string | null = null;
+      let repo: string | null = null;
+      const httpsMatch = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+      if (httpsMatch) {
+        owner = httpsMatch[1];
+        repo = httpsMatch[2].replace(/\.git$/, '');
+      }
+
+      let defaultBranch = 'main';
+      try {
+        const { stdout: branch } = await execFileAsync(
+          'git',
+          ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+          { cwd },
+        );
+        defaultBranch = branch.trim().replace('refs/remotes/origin/', '');
+      } catch {
+        /* fallback to main */
+      }
+
+      res.json({ hasRemote: true, owner, repo, url, defaultBranch });
+    } catch {
+      res.json({ hasRemote: false });
+    }
+  });
+
+  router.post('/api/github/test-connection', async (req: Request, res: Response) => {
+    const { owner, repo } = req.body as { owner?: string; repo?: string };
+    if (!owner || !repo) return res.status(400).json({ error: 'owner and repo are required' });
+
+    const validName = /^[a-zA-Z0-9._-]+$/;
+    if (!validName.test(owner) || !validName.test(repo)) {
+      return res.status(400).json({ error: 'Invalid owner or repo name' });
+    }
+
+    const execFileAsync = promisify(execFile);
+    try {
+      const { stdout } = await execFileAsync('gh', [
+        'api',
+        `repos/${owner}/${repo}`,
+        '--jq',
+        '{ name: .name, full_name: .full_name, private: .private, default_branch: .default_branch, permissions: .permissions }',
+      ]);
+      const repoInfo = JSON.parse(stdout.trim()) as Record<string, unknown>;
+      res.json({ ok: true, repoInfo });
+    } catch (err: unknown) {
+      const error = err as { stderr?: string; message?: string };
+      const msg =
+        error.stderr?.split('\n')[0] || error.message?.split('\n')[0] || 'Connection failed';
+      res.json({ ok: false, error: msg });
+    }
+  });
+
+  router.get('/api/projects/:projectId/export', (req: Request, res: Response) => {
+    try {
+      const projects = getProjects();
+      const project = projects.find((p) => p.id === req.params.projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const allCrons = stmts.getCrons.all() as Array<
+        Record<string, unknown> & { cwd: string; name: string }
+      >;
+      const projectCrons = allCrons
+        .filter((c) => c.cwd === project.cwd)
+        .map(
+          ({
+            last_run: _last_run,
+            last_result: _last_result,
+            next_run_at: _next_run_at,
+            ...rest
+          }) => rest,
+        );
+
+      const allRooms = stmts.getRooms.all() as Array<
+        Record<string, unknown> & { id: string; project_id: string | null }
+      >;
+      const projectRooms = allRooms
+        .filter((r) => r.project_id === project.id)
+        .map((room) => {
+          const roomAgents = (
+            stmts.getRoomAgents.all(room.id) as Array<{ agent_id: string; position: number }>
+          ).map((ra) => ({
+            agentId: ra.agent_id,
+            position: ra.position,
+          }));
+          return { ...room, agents: roomAgents };
+        });
+
+      const webhooks = (
+        stmts.getWebhookConfigsByProject.all(project.id) as Array<
+          Record<string, unknown> & { secret: string }
+        >
+      ).map(({ secret: _secret, ...rest }) => ({ ...rest, secret: '***REDACTED***' }));
+
+      const wikiPages = (
+        stmts.getWikiPages.all(project.id) as Array<Record<string, unknown> & { slug: string }>
+      ).map((page) => {
+        const full = stmts.getWikiPage.get(project.id, page.slug) as
+          | Record<string, unknown>
+          | undefined;
+        return full || page;
+      });
+
+      let kanban: Record<string, unknown> | null = null;
+      const board = stmts.getKanbanBoard.get(project.id) as { id: string } | undefined;
+      if (board) {
+        const columns = stmts.getKanbanColumns.all(board.id) as Array<Record<string, unknown>>;
+        const cards = (
+          stmts.getKanbanCards.all(board.id) as Array<
+            Record<string, unknown> & { id: string; session_id?: string }
+          >
+        ).map(({ session_id: _session_id, ...rest }) => rest);
+        const epics = stmts.getKanbanEpics.all(board.id) as Array<Record<string, unknown>>;
+        const comments: Record<string, unknown[]> = {};
+        for (const card of cards) {
+          const cardComments = stmts.getKanbanCardComments?.all(card.id) as unknown[] | undefined;
+          if (cardComments?.length) comments[card.id] = cardComments;
+        }
+        kanban = { board, columns, cards, epics, comments };
+      }
+
+      const exported = {
+        version: 3,
+        type: 'project',
+        exportedAt: new Date().toISOString(),
+        project,
+        crons: projectCrons,
+        rooms: projectRooms,
+        webhooks,
+        wiki: wikiPages,
+        kanban,
+      };
+
+      const safeName = project.name.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase();
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${safeName}-export-${localDateStr()}.json"`,
+      );
+      res.json(exported);
+    } catch (err: unknown) {
+      console.error('Project export failed:', (err as Error).message);
+      res.status(500).json({ error: 'Export failed: ' + (err as Error).message });
+    }
+  });
+
+  router.post('/api/projects/:projectId/import', (req: Request, res: Response) => {
+    try {
+      const data = req.body as ProjectExportData;
+      if (!data || data.version !== 3 || data.type !== 'project') {
+        return res
+          .status(400)
+          .json({ error: 'Invalid project export — expected version 3 with type "project"' });
+      }
+
+      const targetProjectId = req.params.projectId;
+      const projects = getProjects();
+      const targetProject = projects.find((p) => p.id === targetProjectId);
+      if (!targetProject) return res.status(404).json({ error: 'Target project not found' });
+
+      const results: Record<string, string | boolean> = {
+        project: false,
+        crons: false,
+        rooms: false,
+        webhooks: false,
+        wiki: false,
+        kanban: false,
+      };
+
+      if (data.project) {
+        (targetProject as Record<string, unknown>).agents =
+          data.project.agents || (targetProject as Record<string, unknown>).agents;
+        targetProject.color = data.project.color || targetProject.color;
+        (targetProject as Record<string, unknown>).leadAgent =
+          data.project.leadAgent || (targetProject as Record<string, unknown>).leadAgent;
+        (targetProject as Record<string, unknown>).subAgents =
+          data.project.subAgents || (targetProject as Record<string, unknown>).subAgents;
+        if (data.project.commands)
+          (targetProject as Record<string, unknown>).commands = data.project.commands;
+        saveProjects();
+        results.project = true;
+      }
+
+      if (Array.isArray(data.crons)) {
+        const existingCrons = stmts.getCrons.all() as Array<{ name: string }>;
+        const existingNames = new Set(existingCrons.map((c) => c.name));
+        let imported = 0;
+        for (const c of data.crons) {
+          if (existingNames.has(c.name)) continue;
+          stmts.createCron.run(
+            c.name,
+            c.schedule,
+            c.prompt,
+            targetProject.cwd,
+            c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
+            targetProject.id || null,
+          );
+          imported++;
+        }
+        results.crons = `${imported} new, ${data.crons.length - imported} skipped`;
+      }
+
+      if (Array.isArray(data.rooms)) {
+        const existingRooms = stmts.getRooms.all() as Array<{ name: string }>;
+        const existingNames = new Set(existingRooms.map((r) => r.name));
+        let imported = 0;
+        for (const r of data.rooms) {
+          if (existingNames.has(r.name)) continue;
+          const roomId = uuidv4();
+          stmts.createProjectRoom.run(roomId, r.name, targetProjectId);
+          if (r.max_turns) stmts.updateRoomMaxTurns.run(r.max_turns, roomId);
+          if (Array.isArray(r.agents)) {
+            for (const ra of r.agents) {
+              stmts.addRoomAgent.run(roomId, ra.agentId || ra.agent_id, roomId);
+            }
+          }
+          imported++;
+        }
+        results.rooms = `${imported} new, ${data.rooms.length - imported} skipped`;
+      }
+
+      if (Array.isArray(data.webhooks)) {
+        const existing = stmts.getWebhookConfigsByProject.all(targetProjectId) as Array<{
+          repo_url: string;
+        }>;
+        const existingRepos = new Set(existing.map((w) => w.repo_url));
+        let imported = 0;
+        for (const w of data.webhooks) {
+          if (existingRepos.has(w.repo_url)) continue;
+          const secret = w.secret && !w.secret.includes('REDACTED') ? w.secret : uuidv4();
+          stmts.createWebhookConfig.run(
+            targetProjectId,
+            w.repo_url,
+            secret,
+            w.events || '{}',
+            w.enabled ? 1 : 0,
+          );
+          imported++;
+        }
+        results.webhooks = `${imported} new, ${data.webhooks.length - imported} skipped`;
+      }
+
+      if (Array.isArray(data.wiki)) {
+        let imported = 0,
+          updated = 0;
+        for (const page of data.wiki) {
+          const existing = stmts.getWikiPage.get(targetProjectId, page.slug) as
+            | Record<string, unknown>
+            | undefined;
+          if (existing) {
+            stmts.updateWikiPage.run(
+              page.title,
+              page.content,
+              page.category || 'general',
+              page.updated_by || 'import',
+              targetProjectId,
+              page.slug,
+            );
+            updated++;
+          } else {
+            stmts.createWikiPage.run(
+              uuidv4(),
+              targetProjectId,
+              page.title,
+              page.slug,
+              page.content || '',
+              page.category || 'general',
+              page.updated_by || 'import',
+            );
+            imported++;
+          }
+        }
+        results.wiki = `${imported} new, ${updated} updated`;
+      }
+
+      if (data.kanban) {
+        let existingBoard = stmts.getKanbanBoard.get(targetProjectId) as { id: string } | undefined;
+        let boardId: string;
+        let boardCreated = false;
+        const colIdMap: Record<string, string> = {};
+
+        if (existingBoard) {
+          boardId = existingBoard.id;
+          const existingCols = stmts.getKanbanColumns.all(boardId) as Array<{
+            id: string;
+            name: string;
+          }>;
+          for (const col of existingCols) {
+            const matchingImported = (data.kanban.columns || []).find(
+              (c) => c.name.toLowerCase() === col.name.toLowerCase(),
+            );
+            if (matchingImported) colIdMap[matchingImported.id] = col.id;
+          }
+          for (const col of data.kanban.columns || []) {
+            if (!colIdMap[col.id]) {
+              const newColId = uuidv4();
+              colIdMap[col.id] = newColId;
+              stmts.createKanbanColumn.run(
+                newColId,
+                boardId,
+                col.name,
+                col.position,
+                col.color || null,
+              );
+            }
+          }
+        } else {
+          boardId = uuidv4();
+          stmts.createKanbanBoard.run(
+            boardId,
+            targetProjectId,
+            data.kanban.board?.name || `${targetProject.name} Board`,
+          );
+          boardCreated = true;
+          for (const col of data.kanban.columns || []) {
+            const newColId = uuidv4();
+            colIdMap[col.id] = newColId;
+            stmts.createKanbanColumn.run(
+              newColId,
+              boardId,
+              col.name,
+              col.position,
+              col.color || null,
+            );
+          }
+        }
+
+        const epicIdMap: Record<string, string> = {};
+        const existingEpics = stmts.getKanbanEpics.all(boardId) as Array<{
+          id: string;
+          name: string;
+        }>;
+        const existingEpicNames = new Set(existingEpics.map((e) => e.name.toLowerCase()));
+        let epicsImported = 0;
+        for (const epic of data.kanban.epics || []) {
+          if (existingEpicNames.has(epic.name.toLowerCase())) {
+            const existing = existingEpics.find(
+              (e) => e.name.toLowerCase() === epic.name.toLowerCase(),
+            );
+            if (existing) epicIdMap[epic.id] = existing.id;
+            continue;
+          }
+          const newEpicId = uuidv4();
+          epicIdMap[epic.id] = newEpicId;
+          stmts.createKanbanEpic.run(
+            newEpicId,
+            boardId,
+            epic.name,
+            epic.description || '',
+            epic.color || '#6b7280',
+            epic.position || 0,
+          );
+          epicsImported++;
+        }
+
+        const existingCards = stmts.getKanbanCards.all(boardId) as Array<{ title: string }>;
+        const existingCardTitles = new Set(existingCards.map((c) => c.title.toLowerCase()));
+        let cardsImported = 0,
+          cardsSkipped = 0;
+        for (const card of data.kanban.cards || []) {
+          if (existingCardTitles.has(card.title.toLowerCase())) {
+            cardsSkipped++;
+            continue;
+          }
+          const newCardId = uuidv4();
+          const newColId = colIdMap[card.column_id];
+          if (!newColId) continue;
+          const newEpicId = card.epic_id ? epicIdMap[card.epic_id] || null : null;
+          stmts.createKanbanCard.run(
+            newCardId,
+            newColId,
+            boardId,
+            card.title,
+            card.description || '',
+            card.priority || 'medium',
+            card.assignee || '',
+            card.labels || '',
+            null,
+            card.github_issue_url || null,
+            card.created_by || 'import',
+            card.position || 0,
+          );
+          if (newEpicId) {
+            stmts.updateKanbanCard.run(
+              card.title,
+              card.description || '',
+              card.priority || 'medium',
+              card.labels || '',
+              card.assignee || '',
+              null,
+              card.github_issue_url || null,
+              card.pr_url || null,
+              newEpicId,
+              newCardId,
+            );
+          }
+          const cardComments = data.kanban.comments?.[card.id];
+          if (cardComments?.length) {
+            for (const comment of cardComments) {
+              stmts.createKanbanCardComment.run(
+                uuidv4(),
+                newCardId,
+                comment.author || 'import',
+                comment.content,
+              );
+            }
+          }
+          cardsImported++;
+        }
+        results.kanban = boardCreated
+          ? `Board created with ${data.kanban.columns?.length || 0} columns, ${cardsImported} cards, ${epicsImported} epics`
+          : `Merged: ${cardsImported} new cards, ${cardsSkipped} skipped, ${epicsImported} new epics`;
+      }
+
+      res.json({ message: 'Project import complete.', results });
+    } catch (err: unknown) {
+      console.error('Project import failed:', (err as Error).message);
+      res.status(500).json({ error: 'Import failed: ' + (err as Error).message });
+    }
+  });
+
+  router.get('/api/config/export', (_req: Request, res: Response) => {
+    try {
+      let fileConfig: FileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(path.join(config.dataDir, 'config.json'), 'utf-8'));
+      } catch {
+        /* no config.json yet */
+      }
+
+      const crons = (stmts.getCrons.all() as Array<Record<string, unknown>>).map(
+        ({ last_run: _last_run, last_result: _last_result, next_run_at: _next_run_at, ...rest }) =>
+          rest,
+      );
+
+      const rooms = (stmts.getRooms.all() as Array<Record<string, unknown> & { id: string }>).map(
+        (room) => {
+          const roomAgents = (
+            stmts.getRoomAgents.all(room.id) as Array<{ agent_id: string; position: number }>
+          ).map((ra) => ({
+            agentId: ra.agent_id,
+            position: ra.position,
+          }));
+          return { ...room, agents: roomAgents };
+        },
+      );
+
+      let slackConfig: SlackConfigData = { accounts: [] };
+      try {
+        slackConfig = JSON.parse(readFileSync(path.join(serverDir, 'slack-config.json'), 'utf-8'));
+        slackConfig.accounts = (slackConfig.accounts || []).map(
+          ({ botToken, appToken, ...rest }) => ({
+            ...rest,
+            botToken: botToken ? '***REDACTED***' : undefined,
+            appToken: appToken ? '***REDACTED***' : undefined,
+          }),
+        );
+      } catch {
+        /* no slack config */
+      }
+
+      const projects = getProjects();
+      const exported = {
+        version: 2,
+        exportedAt: new Date().toISOString(),
+        config: fileConfig,
+        projects,
+        crons,
+        rooms,
+        slack: slackConfig,
+      };
+
+      res.setHeader('Content-Disposition', 'attachment; filename="agent-hub-export.json"');
+      res.json(exported);
+    } catch (err: unknown) {
+      console.error('Config export failed:', (err as Error).message);
+      res.status(500).json({ error: 'Export failed: ' + (err as Error).message });
+    }
+  });
+
+  router.post('/api/config/import', (req: Request, res: Response) => {
+    try {
+      const data = req.body as LegacyExportData;
+      if (!data || ![1, 2].includes(data.version)) {
+        return res.status(400).json({ error: 'Invalid export format — expected version 1 or 2' });
+      }
+
+      const results: Record<string, string | boolean> = {
+        config: false,
+        projects: false,
+        crons: false,
+        rooms: false,
+        slack: false,
+      };
+
+      if (data.config && typeof data.config === 'object') {
+        writeFileSync(
+          path.join(config.dataDir, 'config.json'),
+          JSON.stringify(data.config, null, 2) + '\n',
+        );
+        results.config = true;
+      }
+
+      if (data.version === 2 && Array.isArray(data.projects) && data.projects.length > 0) {
+        setProjects(data.projects);
+        saveProjects();
+        results.projects = true;
+      } else if (data.version === 1 && Array.isArray(data.agents) && data.agents.length > 0) {
+        setProjects(
+          data.agents.map((a) => ({
+            id: a.id,
+            name: a.name || a.id,
+            cwd: a.cwd || config.defaultCwd,
+            ahw: a.workspace || '',
+            color: a.color || '#6b7280',
+            agents: [
+              {
+                id: a.id,
+                name: a.name || a.id,
+                engine: a.engine || 'claude-code',
+                systemPrompt: a.systemPrompt || '',
+                color: a.color || '#6b7280',
+                heartbeat: a.heartbeat || { enabled: false, interval: '', prompt: '' },
+              },
+            ],
+          })),
+        );
+        saveProjects();
+        results.projects = 'imported from v1 agents format';
+      }
+
+      if (Array.isArray(data.crons)) {
+        const existingCrons = stmts.getCrons.all() as Array<{ name: string }>;
+        const existingNames = new Set(existingCrons.map((c) => c.name));
+        let imported = 0;
+        for (const c of data.crons) {
+          if (existingNames.has(c.name)) continue;
+          stmts.createCron.run(
+            c.name,
+            c.schedule,
+            c.prompt,
+            c.cwd || config.defaultCwd,
+            c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
+            c.project_id || null,
+          );
+          imported++;
+        }
+        results.crons = `${imported} new, ${data.crons.length - imported} skipped (duplicate names)`;
+      }
+
+      if (Array.isArray(data.rooms)) {
+        const existingRooms = stmts.getRooms.all() as Array<{ name: string }>;
+        const existingNames = new Set(existingRooms.map((r) => r.name));
+        let imported = 0;
+        for (const r of data.rooms) {
+          if (existingNames.has(r.name)) continue;
+          const roomId = r.id || uuidv4();
+          stmts.createRoom.run(roomId, r.name);
+          if (r.max_turns) stmts.updateRoomMaxTurns.run(r.max_turns, roomId);
+          if (Array.isArray(r.agents)) {
+            for (const ra of r.agents) {
+              stmts.addRoomAgent.run(roomId, ra.agentId || ra.agent_id, roomId);
+            }
+          }
+          imported++;
+        }
+        results.rooms = `${imported} new, ${data.rooms.length - imported} skipped (duplicate names)`;
+      }
+
+      if (data.slack && Array.isArray(data.slack.accounts)) {
+        const hasRealTokens = data.slack.accounts.some(
+          (a) => a.botToken && !a.botToken.includes('REDACTED'),
+        );
+        if (hasRealTokens) {
+          writeFileSync(
+            path.join(serverDir, 'slack-config.json'),
+            JSON.stringify(data.slack, null, 2) + '\n',
+          );
+          results.slack = true;
+        } else {
+          results.slack = 'skipped (tokens redacted — update slack-config.json manually)';
+        }
+      }
+
+      res.json({
+        message: 'Import complete. Restart the server for all changes to take effect.',
+        results,
+      });
+    } catch (err: unknown) {
+      console.error('Config import failed:', (err as Error).message);
+      res.status(500).json({ error: 'Import failed: ' + (err as Error).message });
+    }
+  });
+
+  return router;
+}

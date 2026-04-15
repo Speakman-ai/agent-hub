@@ -1,0 +1,128 @@
+import { Router, Request, Response } from 'express';
+import { runHeartbeat, rescheduleHeartbeat } from '../heartbeat.js';
+import type {
+  RouteDeps,
+  EnrichedAgent,
+  HeartbeatLogRow,
+  HeartbeatStateRow,
+  ThreadRow,
+  ThreadEntryRow,
+} from '../types.js';
+
+interface HeartbeatOverview {
+  agentId: string;
+  agentName: string;
+  color: string | undefined;
+  heartbeat: { enabled: boolean; interval: string; prompt: string };
+  latestLog: HeartbeatLogRow | null;
+  state: HeartbeatStateRow | null;
+}
+
+interface HeartbeatStateInfo {
+  agentId: string;
+  agentName: string;
+  enabled: boolean;
+  interval: string | null;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  overdue: boolean;
+  overdue_seconds: number;
+}
+
+export default function createHeartbeatRoutes(deps: RouteDeps): Router {
+  const { allAgents, findAgent, getEnrichedAgent, saveProjects, stmts } = deps;
+  const router = Router();
+
+  router.get('/api/heartbeats/:agentId/thread', (req: Request, res: Response) => {
+    const found = findAgent(req.params.agentId as string);
+    if (!found) return res.status(404).json({ error: 'Agent not found' });
+
+    const { project } = found;
+    const thread = stmts.getThreadBySource.get(project.id, 'heartbeat', req.params.agentId) as
+      | ThreadRow
+      | undefined;
+    if (!thread) {
+      return res.json({ thread: null, entries: [] });
+    }
+
+    const entries = stmts.getThreadEntries.all(thread.id) as ThreadEntryRow[];
+    res.json({ thread, entries });
+  });
+
+  router.get('/api/heartbeats', (_req: Request, res: Response) => {
+    const configs: HeartbeatOverview[] = allAgents().map((a) => ({
+      agentId: a.id,
+      agentName: a.name,
+      color: a.color,
+      heartbeat: a.heartbeat || { enabled: false, interval: '', prompt: '' },
+      latestLog: (stmts.getLatestHeartbeat.get(a.id) as HeartbeatLogRow | undefined) || null,
+      state: (stmts.getHeartbeatState.get(a.id) as HeartbeatStateRow | undefined) || null,
+    }));
+    res.json(configs);
+  });
+
+  router.get('/api/heartbeats/state', (_req: Request, res: Response) => {
+    const now = Date.now();
+    const rows: HeartbeatStateInfo[] = allAgents()
+      .filter((a) => a.heartbeat?.enabled || a.heartbeat?.interval)
+      .map((a) => {
+        const state = (stmts.getHeartbeatState.get(a.id) as HeartbeatStateRow | undefined) || null;
+        const nextMs = state?.next_run_at ? Date.parse(state.next_run_at) : null;
+        return {
+          agentId: a.id,
+          agentName: a.name,
+          enabled: !!a.heartbeat?.enabled,
+          interval: a.heartbeat?.interval || null,
+          next_run_at: state?.next_run_at || null,
+          last_run_at: state?.last_run_at || null,
+          overdue: nextMs != null && Number.isFinite(nextMs) ? nextMs < now : false,
+          overdue_seconds:
+            nextMs != null && Number.isFinite(nextMs) && nextMs < now
+              ? Math.round((now - nextMs) / 1000)
+              : 0,
+        };
+      });
+    res.json(rows);
+  });
+
+  router.get('/api/heartbeats/:agentId/logs', (req: Request, res: Response) => {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const logs = stmts.getHeartbeatLogs.all(req.params.agentId, limit) as HeartbeatLogRow[];
+    res.json(logs);
+  });
+
+  router.put('/api/heartbeats/:agentId', (req: Request, res: Response) => {
+    const found = findAgent(req.params.agentId as string);
+    if (!found) return res.status(404).json({ error: 'Agent not found' });
+    const { agent } = found;
+
+    const { enabled, interval, prompt } = req.body;
+    agent.heartbeat = {
+      enabled: enabled !== undefined ? enabled : (agent.heartbeat?.enabled ?? false),
+      interval: interval || agent.heartbeat?.interval || '',
+      prompt: prompt || agent.heartbeat?.prompt || '',
+    };
+
+    saveProjects();
+    rescheduleHeartbeat(getEnrichedAgent(agent.id)!);
+    res.json(agent.heartbeat);
+  });
+
+  router.post('/api/heartbeats/:agentId/run', async (req: Request, res: Response) => {
+    const enriched = getEnrichedAgent(req.params.agentId as string);
+    if (!enriched) return res.status(404).json({ error: 'Agent not found' });
+    if (!enriched.heartbeat?.prompt) {
+      return res.status(400).json({ error: 'No heartbeat prompt configured' });
+    }
+
+    const logEntry = stmts.addHeartbeatLog.run(enriched.id, enriched.heartbeat.prompt, 'running');
+    const logId = logEntry.lastInsertRowid;
+    res.json({ logId, status: 'running' });
+
+    runHeartbeat(enriched).catch((err: Error) => {
+      console.error(`Manual heartbeat failed for ${enriched.name}:`, err);
+    });
+  });
+
+  return router;
+}

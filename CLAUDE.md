@@ -15,8 +15,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Individual Component Commands
 - **Client**: `cd client && npm run dev` (Vite dev server on port 3050)
-- **Server**: `cd server && npm start` (Express server on port 3051)
+- **Server**: `cd server && npm start` (Express server on port 3051, uses `tsx`)
 - **Mobile**: `npm run mobile` or `cd mobile && expo start` (Expo dev server)
+
+### TypeScript (Server)
+- `cd server && npm run typecheck` - Run `tsc --noEmit` to check types
+- `cd server && npx tsc --noEmit` - Same as above, directly
+- The server uses `tsx` for runtime (no build step) and `tsc --noEmit` for type checking only
 
 ## Architecture Overview
 
@@ -24,8 +29,9 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 
 ### Core Components
 
-**Server (`/server`)**
+**Server (`/server`)** — **TypeScript** (strict mode, ESM)
 - **Express.js** backend with WebSocket support for real-time chat
+- **TypeScript** with `strict: true`, using `tsx` for runtime and `tsc --noEmit` for type checking
 - **SQLite database** (`better-sqlite3`) for sessions, messages, heartbeats, crons
 - **Project→Agent hierarchy** - Projects are top-level entities (with `cwd`, `ahw` workspace, color); each project contains one or more agents. Defined in `server/projects.json`.
 - **Centralized config** - `~/.agent-hub/data/config.json` holds port, CLI binary paths (`claudeBin`, `cursorBin`), and `defaultCwd`. Falls back to `server/config.json` (legacy) if the data-dir copy doesn't exist. Edit here rather than hardcoding.
@@ -140,13 +146,13 @@ This applies to all work: new integrations, bug fixes, and debugging unexpected 
 - `cd server && npx vitest --watch` — Watch mode for server
 
 ### Where Tests Go
-- **Server**: Co-located as `server/<module>.test.js` (e.g., `stream-parser.test.js`) or in `server/test/` for API integration tests
+- **Server**: Co-located as `server/<module>.test.ts` (e.g., `stream-parser.test.ts`) or in `server/test/` for API integration tests
 - **Client**: Co-located as `client/src/**/*.test.js` (e.g., `utils/humanCron.test.js`)
 - **E2E**: In `e2e/tests/*.spec.js`
 
 ### Test Patterns
 - Use `describe`, `it`, `expect` from Vitest (globals enabled)
-- Server API tests use `supertest` with the Express app from `server/test/setup.js`
+- Server API tests use `supertest` with the Express app from `server/test/setup.ts`
 - Client utility tests are pure function tests — no React component rendering needed for utils
 - Mock external dependencies (CLI spawning, file system) when testing server logic
 
@@ -162,6 +168,9 @@ This applies to all work: new integrations, bug fixes, and debugging unexpected 
 
 ## Development Notes
 
+- The server is **TypeScript** (strict mode) running via `tsx` — no build/dist step needed
+- All server source files are `.ts`; imports use `.js` extensions per ESM convention (TypeScript resolves `.js` → `.ts`)
+- Core types live in `server/types.ts` (DB row types, `Stmts`, `RouteDeps`, `Project`, `Agent`, stream events, etc.)
 - The server runs as an ES module (`"type": "module"`)
 - SQLite WAL mode enabled for concurrent access
 - WebSocket handles chat streaming, cancellation, and real-time updates

@@ -1,4 +1,5 @@
 import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
 import reactPlugin from 'eslint-plugin-react';
 import reactHooksPlugin from 'eslint-plugin-react-hooks';
 import prettierConfig from 'eslint-config-prettier';
@@ -23,18 +24,26 @@ export default [
   // Base recommended rules for all JS files
   js.configs.recommended,
 
-  // Server files — Node.js ES modules
+  // Server files — Node.js ES modules (TypeScript)
   {
-    files: ['server/**/*.js'],
+    files: ['server/**/*.ts'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
+      parser: tseslint.parser,
       globals: {
         ...globals.node,
       },
     },
+    plugins: {
+      '@typescript-eslint': tseslint.plugin,
+    },
     rules: {
-      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+      'no-undef': 'off',
+      'no-redeclare': 'off',
+      '@typescript-eslint/no-redeclare': 'error',
       'no-console': 'off',
       'no-constant-condition': 'warn',
       'no-empty': ['warn', { allowEmptyCatch: true }],
@@ -81,7 +90,7 @@ export default [
 
   // Test files — relaxed rules
   {
-    files: ['**/*.test.js', '**/__tests__/**/*.js', '**/test/**/*.js'],
+    files: ['**/*.test.{js,ts}', '**/__tests__/**/*.{js,ts}', '**/test/**/*.{js,ts}'],
     languageOptions: {
       globals: {
         ...globals.node,

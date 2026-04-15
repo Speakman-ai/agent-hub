@@ -96,7 +96,10 @@ function isRemoteMode() {
 
 function startServer() {
   return new Promise((resolve, reject) => {
-    const serverEntry = path.join(ROOT, 'server', 'index.js').replace('app.asar', 'app.asar.unpacked');
+    // Server is TypeScript; run via tsx (same as npm run dev:server). Unpacked from
+    // app.asar so native modules in server/ resolve correctly.
+    const serverDir = path.join(ROOT, 'server').replace('app.asar', 'app.asar.unpacked');
+    const tsxCli = path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 
     // Ensure the user data directory exists
     mkdirSync(USER_DATA, { recursive: true });
@@ -135,8 +138,8 @@ function startServer() {
     if (isDev) {
       // In dev, use the system Node binary to avoid native module ABI mismatches
       // between Electron's embedded Node and the system Node that compiled them.
-      serverProcess = spawn('node', [serverEntry], {
-        cwd: path.dirname(serverEntry),
+      serverProcess = spawn('node', [tsxCli, 'index.ts'], {
+        cwd: serverDir,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -144,8 +147,8 @@ function startServer() {
       // In production, use Electron's fork (ELECTRON_RUN_AS_NODE) so native
       // modules rebuilt by electron-builder match the runtime.
       env.ELECTRON_RUN_AS_NODE = '1';
-      serverProcess = fork(serverEntry, [], {
-        cwd: path.dirname(serverEntry),
+      serverProcess = fork(tsxCli, ['index.ts'], {
+        cwd: serverDir,
         env,
         stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
       });
