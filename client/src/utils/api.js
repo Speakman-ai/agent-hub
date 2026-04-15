@@ -367,6 +367,35 @@ export const api = {
   getCronThread: (cronId) => fetchJSON(`/crons/${cronId}/thread`),
   getHeartbeatThread: (agentId) => fetchJSON(`/heartbeats/${agentId}/thread`),
 
+  // Notes
+  getNotes: (projectId, query, limit) => {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    if (limit) params.set('limit', limit);
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/notes${qs ? '?' + qs : ''}`);
+  },
+  getNote: (projectId, noteId) => fetchJSON(`/projects/${projectId}/notes/${noteId}`),
+  createNote: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/notes`, { method: 'POST', body: JSON.stringify(data) }),
+  updateNote: (projectId, noteId, data) =>
+    fetchJSON(`/projects/${projectId}/notes/${noteId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteNote: (projectId, noteId) =>
+    fetchJSON(`/projects/${projectId}/notes/${noteId}`, { method: 'DELETE' }),
+  processNote: (projectId, date, data) =>
+    fetchJSON(`/projects/${projectId}/notes/${date}/process`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeout: 30000,
+    }),
+  getNoteProcessings: (projectId, limit) =>
+    fetchJSON(`/projects/${projectId}/notes/processings${limit ? '?limit=' + limit : ''}`),
+  getNoteProcessingsByDate: (projectId, date) =>
+    fetchJSON(`/projects/${projectId}/notes/${date}/processings`),
+
   // Generic helpers (for endpoints without dedicated methods)
   get: (url) => fetchJSON(url),
   post: (url, data) =>

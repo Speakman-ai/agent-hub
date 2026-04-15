@@ -6,6 +6,7 @@ import {
   Clock,
   LayoutGrid,
   FileText,
+  StickyNote,
   Trash2,
   GitFork,
   List,
@@ -39,6 +40,7 @@ export default function Sidebar({
   onOpenProject,
   cronSessions = [],
   wikiProjectId,
+  notesProjectId,
   threadsProjectId,
   unreadThreadCounts = {},
   activeReviews = {},
@@ -512,6 +514,19 @@ export default function Sidebar({
                     >
                       <FileText size={14} className="flex-shrink-0" />
                       <span className="truncate">Wiki</span>
+                    </button>
+
+                    {/* Project notes */}
+                    <button
+                      onClick={() => onNavigate('notes', project.id)}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                        currentView === 'notes' && notesProjectId === project.id
+                          ? 'bg-gray-800 text-white'
+                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                      }`}
+                    >
+                      <StickyNote size={14} className="flex-shrink-0" />
+                      <span className="truncate">Notes</span>
                     </button>
 
                     {/* Project threads */}

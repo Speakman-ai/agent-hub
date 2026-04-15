@@ -417,6 +417,22 @@ function initDb(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS idx_thread_entries_thread ON thread_entries(thread_id);
 
+    -- Note processings: tracks notes sent to agents for incorporation into knowledge
+    CREATE TABLE IF NOT EXISTS note_processings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      note_date TEXT NOT NULL,
+      note_excerpt TEXT NOT NULL DEFAULT '',
+      target TEXT NOT NULL DEFAULT 'auto' CHECK(target IN ('auto', 'wiki', 'memory', 'plan')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'success', 'error')),
+      result TEXT,
+      session_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_note_processings_project ON note_processings(project_id);
+    CREATE INDEX IF NOT EXISTS idx_note_processings_date ON note_processings(project_id, note_date);
+
     -- Escalations: notifications requiring human intervention
     CREATE TABLE IF NOT EXISTS escalations (
       id TEXT PRIMARY KEY,
@@ -1301,6 +1317,24 @@ function initDb(dataDir) {
       `SELECT * FROM escalations WHERE project_id = ? AND type = ? AND pr_number = ?
        ORDER BY created_at DESC LIMIT 1`,
     ),
+
+    // Note processings
+    createNoteProcessing: db.prepare(
+      `INSERT INTO note_processings (id, project_id, note_date, note_excerpt, target, status, session_id)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+    ),
+    updateNoteProcessing: db.prepare(
+      `UPDATE note_processings SET status = ?, result = ?, completed_at = datetime('now') WHERE id = ?`,
+    ),
+    updateNoteProcessingStatus: db.prepare(`UPDATE note_processings SET status = ? WHERE id = ?`),
+    getNoteProcessing: db.prepare('SELECT * FROM note_processings WHERE id = ?'),
+    getNoteProcessingsByProject: db.prepare(
+      'SELECT * FROM note_processings WHERE project_id = ? ORDER BY created_at DESC LIMIT ?',
+    ),
+    getNoteProcessingsByDate: db.prepare(
+      'SELECT * FROM note_processings WHERE project_id = ? AND note_date = ? ORDER BY created_at DESC',
+    ),
+    getNoteProcessingBySession: db.prepare('SELECT * FROM note_processings WHERE session_id = ?'),
   };
 
   // Cache for future switches.

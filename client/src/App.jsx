@@ -16,6 +16,7 @@ import KanbanBoard from './components/KanbanBoard.jsx';
 import WikiBrowser from './components/WikiBrowser.jsx';
 import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
+import NotesEditor from './components/NotesEditor.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { api } from './utils/api.js';
@@ -99,6 +100,8 @@ export default function App() {
   const [subagents, setSubagents] = useState({});
   // Wiki state
   const [wikiProjectId, setWikiProjectId] = useState(null);
+  // Notes state
+  const [notesProjectId, setNotesProjectId] = useState(null);
   // Threads state
   const [threadsProjectId, setThreadsProjectId] = useState(null);
   const [activeThreadId, setActiveThreadId] = useState(null);
@@ -1565,6 +1568,7 @@ export default function App() {
             onNavigate={(view, extra) => {
               setCurrentView(view);
               if (view === 'wiki' && extra) setWikiProjectId(extra);
+              if (view === 'notes' && extra) setNotesProjectId(extra);
               if (view === 'threads' && extra) {
                 setThreadsProjectId(extra);
                 setActiveThreadId(null);
@@ -1594,6 +1598,7 @@ export default function App() {
             onOpenProject={() => setShowWizard(true)}
             cronSessions={cronSessions}
             wikiProjectId={wikiProjectId}
+            notesProjectId={notesProjectId}
             threadsProjectId={threadsProjectId}
             unreadThreadCounts={unreadThreadCounts}
             activeReviews={activeReviews}
@@ -1660,6 +1665,8 @@ export default function App() {
             />
           ) : currentView === 'wiki' && wikiProjectId ? (
             <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
+          ) : currentView === 'notes' && notesProjectId ? (
+            <NotesEditor projectId={notesProjectId} />
           ) : currentView === 'threads' && threadsProjectId ? (
             activeThreadId ? (
               <ThreadView

@@ -848,6 +848,12 @@ export default function createChatHandler(deps) {
             });
           }
         } catch {}
+        try {
+          const np = S.getNoteProcessingBySession?.get(sessionId);
+          if (np && (np.status === 'pending' || np.status === 'running')) {
+            S.updateNoteProcessing.run('error', JSON.stringify({ error: errorMsg }), np.id);
+          }
+        } catch {}
         drainQueue(sessionId);
         return;
       }
@@ -931,6 +937,14 @@ export default function createChatHandler(deps) {
             status: 'done',
             preview: finalContent.substring(0, 200),
           });
+        }
+      } catch {}
+
+      // Update note processing status if this session was a note processing task
+      try {
+        const np = S.getNoteProcessingBySession?.get(sessionId);
+        if (np && (np.status === 'pending' || np.status === 'running')) {
+          S.updateNoteProcessing.run('success', finalContent.substring(0, 1000), np.id);
         }
       } catch {}
 

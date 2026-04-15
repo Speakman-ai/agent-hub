@@ -56,6 +56,7 @@ export default function createAgentRoutes(deps) {
       'heartbeat',
       'active',
       'reviewer',
+      'role',
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) agent[key] = req.body[key];
@@ -66,7 +67,7 @@ export default function createAgentRoutes(deps) {
 
   // POST /api/agents — create new agent (requires projectId)
   router.post('/api/agents', (req, res) => {
-    const { id, projectId, name, engine, model, systemPrompt, color, heartbeat } = req.body;
+    const { id, projectId, name, engine, model, systemPrompt, color, heartbeat, role } = req.body;
     if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) {
       return res.status(400).json({ error: 'id is required and must be alphanumeric+hyphens' });
     }
@@ -87,6 +88,7 @@ export default function createAgentRoutes(deps) {
       systemPrompt: systemPrompt || '',
       color: color || project.color || '#6b7280',
       heartbeat: heartbeat || { enabled: false, interval: '', prompt: '' },
+      ...(role && { role }),
     };
     // Create agent-specific directory
     mkdirSync(path.join(project.ahw, 'agents', id), { recursive: true });
