@@ -2,11 +2,9 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFileSync } from 'fs';
 
-// In Docker production builds, VITE_API_PORT is empty — the client
-// will use same-origin WebSocket via nginx. In dev, defaults to 3051.
-const apiPort = process.env.VITE_API_PORT !== undefined
-  ? process.env.VITE_API_PORT || ''
-  : '3051';
+// In Docker production builds, set VITE_API_PORT="" so the client uses
+// same-origin WebSocket via nginx. In dev, defaults to 3051.
+const apiPort = process.env.VITE_API_PORT ?? '3051';
 let clientVersion = '0.0.0';
 try {
   clientVersion = JSON.parse(readFileSync('../package.json', 'utf-8')).version;
@@ -14,7 +12,9 @@ try {
   // In Docker, the root package.json isn't available — fall back gracefully
   try {
     clientVersion = JSON.parse(readFileSync('./package.json', 'utf-8')).version || '0.0.0';
-  } catch { /* use fallback */ }
+  } catch {
+    /* use fallback */
+  }
 }
 
 export default defineConfig({

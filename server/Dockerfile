@@ -1,4 +1,4 @@
-FROM node:22-slim AS base
+FROM node:22-slim AS build
 
 # Install build tools for native modules (better-sqlite3)
 RUN apt-get update && \
@@ -10,10 +10,19 @@ WORKDIR /app
 # Copy package files first for layer caching
 COPY package.json package-lock.json ./
 
-RUN npm ci --omit=dev
+# Install all deps (including dev) to get tsx for runtime
+RUN npm ci
 
 # Copy server source
 COPY . .
+
+# ─── Production image ────────────────────────────────────────────
+FROM node:22-slim
+
+WORKDIR /app
+
+# Copy built node_modules (includes native bindings) and source
+COPY --from=build /app /app
 
 # Create data and uploads directories
 RUN mkdir -p /data /app/uploads
@@ -25,4 +34,5 @@ ENV AGENT_HUB_PORT=3051
 
 EXPOSE 3051
 
-CMD ["npx", "tsx", "index.ts"]
+# Use tsx directly from node_modules — no npx overhead
+CMD ["node_modules/.bin/tsx", "index.ts"]
