@@ -649,6 +649,7 @@ export interface Stmts {
   deleteEscalationsByProject: Stmt;
 
   // Bulk project cleanup
+  deleteNotesByProject: Stmt;
   deleteWikiPagesByProject: Stmt;
   deleteWebhookConfigsByProject: Stmt;
   deleteBoardsByProject: Stmt;

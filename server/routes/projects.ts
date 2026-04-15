@@ -478,6 +478,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const project = projects[idx];
 
     stmts.deleteEscalationsByProject.run(project.id);
+    stmts.deleteNotesByProject.run(project.id);
     stmts.deleteWikiPagesByProject.run(project.id);
     stmts.deleteWebhookConfigsByProject.run(project.id);
     stmts.deleteBoardsByProject.run(project.id);

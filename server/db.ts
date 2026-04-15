@@ -376,6 +376,17 @@ function initDb(dataDir: string): void {
       PRIMARY KEY (agent_id, skill_id)
     );
 
+    -- Notes: per-project rich markdown notes
+    CREATE TABLE IF NOT EXISTS notes (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
+
     -- Wiki pages: per-project knowledge base with full-text search
     CREATE TABLE IF NOT EXISTS wiki_pages (
       id TEXT PRIMARY KEY,
@@ -616,6 +627,18 @@ function initDb(dataDir: string): void {
     `);
   } catch (e: unknown) {
     console.warn('[wiki] FTS5 creation failed (may already exist):', (e as Error).message);
+  }
+
+  // Migration: create notes FTS5 index
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+        title, content, project_id UNINDEXED,
+        content_rowid='rowid'
+      );
+    `);
+  } catch (e: unknown) {
+    console.warn('[notes] FTS5 creation failed (may already exist):', (e as Error).message);
   }
 
   const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get() as { count: number };
@@ -1283,7 +1306,21 @@ function initDb(dataDir: string): void {
     deleteEscalation: db.prepare('DELETE FROM escalations WHERE id = ?'),
     deleteEscalationsByProject: db.prepare('DELETE FROM escalations WHERE project_id = ?'),
 
+    // Notes
+    getNotes: db.prepare(
+      'SELECT id, project_id, title, created_at, updated_at FROM notes WHERE project_id = ? ORDER BY updated_at DESC',
+    ),
+    getNote: db.prepare('SELECT * FROM notes WHERE id = ?'),
+    createNote: db.prepare(
+      'INSERT INTO notes (id, project_id, title, content) VALUES (?, ?, ?, ?)',
+    ),
+    updateNote: db.prepare(
+      "UPDATE notes SET title = ?, content = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    deleteNote: db.prepare('DELETE FROM notes WHERE id = ?'),
+
     // Bulk project cleanup (cascade handles child rows via FK constraints)
+    deleteNotesByProject: db.prepare('DELETE FROM notes WHERE project_id = ?'),
     deleteWikiPagesByProject: db.prepare('DELETE FROM wiki_pages WHERE project_id = ?'),
     deleteWebhookConfigsByProject: db.prepare('DELETE FROM webhook_configs WHERE project_id = ?'),
     deleteBoardsByProject: db.prepare('DELETE FROM kanban_boards WHERE project_id = ?'),

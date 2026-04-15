@@ -49,6 +49,7 @@ import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { ensureSessionWorkspace } from './worktree.js';
 
+import createNoteRoutes from './routes/notes.js';
 import createWikiRoutes from './routes/wiki.js';
 import createHeartbeatRoutes from './routes/heartbeats.js';
 import createCronRoutes from './routes/crons.js';
@@ -376,10 +377,11 @@ const routeDeps: RouteDeps = {
   restoreAutonomousCrons,
 };
 
+app.use(createMemoryRoutes(routeDeps));
+app.use(createNoteRoutes(routeDeps));
 app.use(createWikiRoutes(routeDeps));
 app.use(createHeartbeatRoutes(routeDeps));
 app.use(createCronRoutes(routeDeps));
-app.use(createMemoryRoutes(routeDeps));
 app.use(createRoomRoutes(routeDeps));
 app.use(createSkillRoutes(routeDeps));
 app.use(createWebhookRoutes(routeDeps));

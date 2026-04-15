@@ -179,6 +179,28 @@ export async function createEscalationHelper(
   return res.body as Record<string, unknown>;
 }
 
+interface NoteOverrides {
+  title?: string;
+  content?: string;
+  [key: string]: unknown;
+}
+
+export async function createNote(
+  projectId: string,
+  overrides: NoteOverrides = {},
+): Promise<Record<string, unknown>> {
+  const request = await getRequest();
+  const res = await request
+    .post(`/api/projects/${projectId}/notes`)
+    .send({
+      title: overrides.title ?? `Test Note ${uid('note')}`,
+      content: overrides.content ?? 'Some note content.',
+      ...overrides,
+    })
+    .expect(201);
+  return res.body as Record<string, unknown>;
+}
+
 interface CardOverrides {
   title?: string;
   description?: string;

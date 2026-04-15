@@ -47,10 +47,11 @@ export default function createNoteRoutes({ findProject, broadcast }: RouteDeps):
   router.put('/api/projects/:projectId/notes/:noteId', (req: Request, res: Response) => {
     const { title, content } = req.body as { title?: string; content?: string };
     try {
-      const note = updateNote(req.params.noteId as string, { title, content });
-      if (note.project_id !== req.params.projectId) {
+      const existing = getNote(req.params.noteId as string);
+      if (!existing || existing.project_id !== req.params.projectId) {
         return res.status(404).json({ error: 'Note not found' });
       }
+      const note = updateNote(req.params.noteId as string, { title, content });
       broadcast({ type: 'note_update', projectId: req.params.projectId, note });
       res.json(note);
     } catch (err) {
@@ -61,8 +62,11 @@ export default function createNoteRoutes({ findProject, broadcast }: RouteDeps):
   });
 
   router.delete('/api/projects/:projectId/notes/:noteId', (req: Request, res: Response) => {
-    const deleted = deleteNote(req.params.noteId as string);
-    if (!deleted) return res.status(404).json({ error: 'Note not found' });
+    const note = getNote(req.params.noteId as string);
+    if (!note || note.project_id !== req.params.projectId) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+    deleteNote(req.params.noteId as string);
     broadcast({
       type: 'note_delete',
       projectId: req.params.projectId,
