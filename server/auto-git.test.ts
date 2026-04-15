@@ -12,7 +12,26 @@ vi.mock('fs', () => ({
 }));
 
 import { exec } from 'child_process';
-import { checkWorktreeChanges, initAutoGit, autoCommitAndPR } from './auto-git.js';
+import {
+  checkWorktreeChanges,
+  initAutoGit,
+  autoCommitAndPR,
+  buildCardDescription,
+} from './auto-git.js';
+import type { MessageRow } from './types.js';
+
+function makeMsg(role: 'user' | 'assistant', content: string): MessageRow {
+  return {
+    id: 'msg-1',
+    session_id: 'sess-1',
+    role,
+    content,
+    engine: null,
+    model: null,
+    attachments: null,
+    created_at: new Date().toISOString(),
+  };
+}
 
 // Helper to mock execAsync results
 function mockExec(results: Record<string, { stdout?: string; stderr?: string; error?: Error }>) {
@@ -233,5 +252,61 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     );
     expect(changesReadyEvents).toHaveLength(1);
     expect(changesReadyEvents[0][0].branch).toBe('feature/new-work');
+  });
+});
+
+describe('buildCardDescription', () => {
+  it('includes the first user message as the task', () => {
+    const messages = [
+      makeMsg('user', 'Fix the login page crash when email is empty'),
+      makeMsg('assistant', 'I found the issue in LoginForm.jsx...'),
+    ];
+    const result = buildCardDescription(messages, '');
+    expect(result).toContain('### Task');
+    expect(result).toContain('Fix the login page crash when email is empty');
+  });
+
+  it('truncates long user messages to 500 chars', () => {
+    const longMessage = 'A'.repeat(600);
+    const messages = [makeMsg('user', longMessage)];
+    const result = buildCardDescription(messages, '');
+    expect(result).toContain('A'.repeat(500) + '...');
+    expect(result).not.toContain('A'.repeat(501));
+  });
+
+  it('includes git diff stat in a Changes section', () => {
+    const messages = [makeMsg('user', 'Add dark mode')];
+    const diffStat =
+      ' src/App.jsx | 12 ++++++------\n 1 file changed, 6 insertions(+), 6 deletions(-)';
+    const result = buildCardDescription(messages, diffStat);
+    expect(result).toContain('### Changes');
+    expect(result).toContain('src/App.jsx');
+    expect(result).toContain('```');
+  });
+
+  it('limits diff stat to 20 lines', () => {
+    const messages = [makeMsg('user', 'Refactor everything')];
+    const statLines = Array.from({ length: 25 }, (_, i) => ` file${i}.ts | 1 +`);
+    const diffStat = statLines.join('\n');
+    const result = buildCardDescription(messages, diffStat);
+    expect(result).toContain('file0.ts');
+    expect(result).toContain('file18.ts');
+    expect(result).not.toContain('file19.ts');
+    expect(result).toContain('... and 6 more files');
+  });
+
+  it('returns empty string when no messages and no diff', () => {
+    const result = buildCardDescription([], '');
+    expect(result).toBe('');
+  });
+
+  it('skips assistant-only start and finds the first user message', () => {
+    const messages = [
+      makeMsg('assistant', 'How can I help you?'),
+      makeMsg('user', 'Fix the bug in auth'),
+    ];
+    const result = buildCardDescription(messages, '');
+    expect(result).toContain('Fix the bug in auth');
+    expect(result).not.toContain('How can I help you?');
   });
 });

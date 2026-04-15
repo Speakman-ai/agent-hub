@@ -3,7 +3,15 @@ import path from 'path';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import type { Stmts, Project, Agent, KanbanCardRow, AppConfig, BroadcastFn } from './types.js';
+import type {
+  Stmts,
+  Project,
+  Agent,
+  KanbanCardRow,
+  AppConfig,
+  BroadcastFn,
+  MessageRow,
+} from './types.js';
 
 const execAsync = promisify(exec);
 
@@ -139,6 +147,40 @@ function triggerReview(
       console.error(`[Lead Review] Failed to start:`, msg);
     });
   }
+}
+
+// ─── Build card description from session context ───────────────────
+
+export function buildCardDescription(messages: MessageRow[], diffStat: string): string {
+  const lines: string[] = [];
+
+  // Extract the first user message as the task/problem statement
+  const firstUserMsg = messages.find((m) => m.role === 'user');
+  if (firstUserMsg) {
+    const taskText = firstUserMsg.content.trim();
+    // Truncate long messages to a reasonable summary length
+    const maxLen = 500;
+    const truncated = taskText.length > maxLen ? taskText.substring(0, maxLen) + '...' : taskText;
+    lines.push('### Task');
+    lines.push(truncated);
+  }
+
+  // Add a "Changes" section from git diff --stat
+  if (diffStat.trim()) {
+    lines.push('');
+    lines.push('### Changes');
+    lines.push('```');
+    // Limit to first 20 lines of diff stat to keep it concise
+    const statLines = diffStat.trim().split('\n');
+    const trimmedStat =
+      statLines.length > 20
+        ? [...statLines.slice(0, 19), `... and ${statLines.length - 19} more files`].join('\n')
+        : statLines.join('\n');
+    lines.push(trimmedStat);
+    lines.push('```');
+  }
+
+  return lines.join('\n');
 }
 
 // ─── Worktree change detection ──────────────────────────────────────
@@ -476,6 +518,23 @@ export async function manualCommitAndPR(
     return null;
   }
 
+  // Build a rich description from session messages + git diff stat
+  const messages = d.stmts.getMessages.all(sessionId) as MessageRow[];
+  let diffStat = '';
+  try {
+    const { stdout } = await execAsync(
+      'git diff --stat HEAD~1 HEAD 2>/dev/null || git diff --stat main...HEAD',
+      {
+        cwd: effectiveCwd,
+        timeout: 10000,
+      },
+    );
+    diffStat = stdout;
+  } catch {
+    // diff stat is optional — proceed without it
+  }
+  const cardDescription = buildCardDescription(messages, diffStat);
+
   // createKanbanCard params: (id, column_id, board_id, title, description, priority,
   //   assignee, labels, session_id, github_issue_url, created_by, position)
   d.stmts.createKanbanCard.run(
@@ -483,7 +542,7 @@ export async function manualCommitAndPR(
     targetCol.id,
     board.id,
     cardTitle,
-    '',
+    cardDescription,
     'medium',
     agent.name || '',
     '',
