@@ -184,4 +184,4 @@ This applies to all work: new integrations, bug fixes, and debugging unexpected 
 - **Nginx** reverse proxy on port 80 → localhost:3051
 - **PM2** manages the Node.js process
 - **Port 3051** is localhost-only — all external traffic goes through Nginx
-- Deploy: `ssh → git pull → npm run build → pm2 restart agent-hub`
+- Deploy: `ssh → git pull → npm install && npm run build && (cd server && npm install) → pm2 start ecosystem.config.cjs` (or `pm2 restart agent-hub`). The API is TS (`tsx index.ts`); do not point PM2 at `index.js`.

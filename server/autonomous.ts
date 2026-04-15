@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import cron from 'node-cron';
 import { v4 as uuidv4 } from 'uuid';
@@ -805,10 +805,89 @@ export async function checkCIPassing(prUrl: string): Promise<CICheckResult> {
   }
 }
 
+/** Count unresolved review threads via GraphQL (works when `gh pr view --json reviewThreads` is unavailable). */
+async function countUnresolvedThreadsGraphql(
+  pr: ParsedPR,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<number> {
+  const query = `query($owner:String!,$name:String!,$number:Int!){
+    repository(owner:$owner,name:$name){
+      pullRequest(number:$number){
+        reviewThreads(first:100){ nodes { isResolved } }
+      }
+    }
+  }`;
+  const payload = JSON.stringify({
+    query,
+    variables: {
+      owner: pr.owner,
+      name: pr.repo,
+      number: parseInt(pr.number, 10),
+    },
+  });
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const child = spawn('gh', ['api', 'graphql', '--input', '-'], {
+      env: env ? { ...process.env, ...env } : process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    const t = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error('gh api graphql timed out after 30s'));
+    }, 30000);
+    child.stdout?.on('data', (d: Buffer) => {
+      out += d.toString();
+    });
+    child.stderr?.on('data', (d: Buffer) => {
+      err += d.toString();
+    });
+    child.on('error', (e) => {
+      clearTimeout(t);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(t);
+      if (code !== 0) {
+        reject(new Error(err || `gh api graphql exited with ${code}`));
+      } else {
+        resolve(out);
+      }
+    });
+    child.stdin?.write(payload);
+    child.stdin?.end();
+  });
+  const parsed = JSON.parse(stdout || '{}') as {
+    data?: {
+      repository?: {
+        pullRequest?: {
+          reviewThreads?: { nodes?: Array<{ isResolved?: boolean } | null> | null } | null;
+        };
+      };
+    };
+    errors?: unknown;
+  };
+  if (parsed.errors) {
+    throw new Error(`GraphQL errors: ${JSON.stringify(parsed.errors)}`);
+  }
+  const nodes = parsed.data?.repository?.pullRequest?.reviewThreads?.nodes || [];
+  return nodes.filter((n) => n && !n.isResolved).length;
+}
+
 export async function checkResolvedComments(prUrl: string): Promise<ResolvedCommentsResult> {
   const pr = parsePrUrl(prUrl);
   if (!pr) return { ok: false, count: 0, summary: 'Invalid PR URL' };
   const env = botGhEnv();
+
+  const summarizeUnresolved = (unresolved: number): ResolvedCommentsResult =>
+    unresolved > 0
+      ? {
+          ok: false,
+          count: unresolved,
+          summary: `${unresolved} unresolved review thread(s)`,
+        }
+      : { ok: true, count: 0, summary: 'All review threads resolved' };
+
   try {
     const { stdout } = await execFileAsync(
       'gh',
@@ -825,19 +904,33 @@ export async function checkResolvedComments(prUrl: string): Promise<ResolvedComm
     );
     const data = JSON.parse(stdout || '{}') as { reviewThreads?: Array<{ isResolved: boolean }> };
     const threads = data.reviewThreads || [];
-    const unresolved = threads.filter((t) => !t.isResolved);
-    if (unresolved.length > 0) {
-      return {
-        ok: false,
-        count: unresolved.length,
-        summary: `${unresolved.length} unresolved review thread(s)`,
-      };
-    }
-    return { ok: true, count: 0, summary: 'All review threads resolved' };
+    const unresolved = threads.filter((t) => !t.isResolved).length;
+    return summarizeUnresolved(unresolved);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[Review] Review thread query failed for PR #${pr.number}: ${msg}`);
-    return { ok: true, count: 0, summary: 'Could not query review threads — proceeding' };
+    const stderr =
+      err && typeof err === 'object' && 'stderr' in err
+        ? String((err as { stderr?: Buffer | string }).stderr || '')
+        : '';
+    const combined = `${msg} ${stderr}`;
+    // Older `gh` versions do not support `gh pr view --json reviewThreads`; use GraphQL instead.
+    const useGraphqlFallback = /Unknown JSON field:\s*"reviewThreads"/i.test(combined);
+
+    if (!useGraphqlFallback) {
+      console.warn(`[Review] Review thread query failed for PR #${pr.number}: ${msg}`);
+      return { ok: true, count: 0, summary: 'Could not query review threads — proceeding' };
+    }
+
+    try {
+      const unresolved = await countUnresolvedThreadsGraphql(pr, env);
+      return summarizeUnresolved(unresolved);
+    } catch (gErr: unknown) {
+      const gMsg = gErr instanceof Error ? gErr.message : String(gErr);
+      console.warn(
+        `[Review] Review thread GraphQL fallback failed for PR #${pr.number}: ${gMsg} (original: ${msg})`,
+      );
+      return { ok: true, count: 0, summary: 'Could not query review threads — proceeding' };
+    }
   }
 }
 
@@ -950,10 +1043,9 @@ If any checks are still running, wait 30 seconds and check again. If checks are 
   if (shouldWaitForComments) {
     preReviewChecks += `
 ## Step 0b — Check for unresolved review comments
-\`\`\`bash
-gh pr view ${prNumber} --json reviewThreads --jq '[.reviewThreads[] | select(.isResolved == false)] | length'
-\`\`\`
-If there are unresolved review threads (count > 0), do NOT approve until they are resolved.
+On the PR’s **Files changed** tab, confirm there are no **unresolved** review conversations before approving.
+(If your \`gh\` is recent, you can try: \`gh pr view ${prNumber} --json reviewThreads\`; older CLIs omit that field — the server uses the GitHub API when needed.)
+If there are unresolved threads, do NOT approve until they are resolved.
 `;
   }
 

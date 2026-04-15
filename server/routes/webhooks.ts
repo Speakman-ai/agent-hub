@@ -1155,7 +1155,9 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
 
       try {
         if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
-          console.warn(`[Webhook] HMAC verification failed for ${repoFullName}`);
+          console.warn(
+            `[Webhook] HMAC verification failed for ${repoFullName} — check that the webhook signing secret in GitHub repo/org settings matches Agent Hub’s webhook config for this repository (and that the server build includes raw-body HMAC verification).`,
+          );
           return res.status(401).json({ error: 'Invalid signature' });
         }
       } catch {

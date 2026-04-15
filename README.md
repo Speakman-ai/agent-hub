@@ -248,17 +248,29 @@ The database file lives at `server/agent-hub.db` (or in `dataDir` if configured)
 
 ### Production (EC2 + Nginx + PM2)
 
+The API is **TypeScript** (`server/index.ts`) and must be started with **tsx** (same as `npm run dev:server`). Do **not** point PM2 at `server/index.js` — that file does not exist.
+
 ```bash
 ssh ubuntu@your-server
 cd ~/agent-hub
 git pull
+npm install
 npm run build
+cd server && npm install && cd ..
+# First deploy, or after changing the process file:
+pm2 start ecosystem.config.cjs
+# Routine updates:
 pm2 restart agent-hub
 ```
 
-- **Nginx** reverse proxies port 80 to localhost:3051
-- **PM2** manages the Node.js process with auto-restart
-- **Port 3051** is localhost-only; all external traffic routes through Nginx
+- **`ecosystem.config.cjs`** runs `node server/node_modules/tsx/dist/cli.mjs index.ts` with `cwd` set to `server/`.
+- **Nginx** reverse proxies port 80 to localhost:3051. Keep `proxy_read_timeout` reasonable (e.g. 60s+); GitHub webhooks should get a quick `2xx` from `/api/webhooks/github` (the app responds before long-running work).
+- **PM2** manages the Node.js process with auto-restart.
+- **Port 3051** is localhost-only; all external traffic routes through Nginx.
+
+**GitHub webhooks:** The **signing secret** configured on the GitHub side must **exactly match** the secret stored in Agent Hub’s webhook config for that repo. Mismatches produce `HMAC verification failed` in logs. The server verifies the raw request body (`express.json` `verify` hook); deploy current server code so HMAC uses the same bytes GitHub signed.
+
+**`gh` CLI on the server:** For autonomous review features, install a recent [GitHub CLI](https://cli.github.com/). Older versions lack `gh pr view --json reviewThreads`; the server falls back to the GraphQL API when that field is missing.
 
 ### Monitoring
 
