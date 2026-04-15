@@ -68,7 +68,10 @@ interface ResolvedCommentsResult {
 const autonomousCrons = new Map<string, cron.ScheduledTask>();
 const autonomousProjects = new Set<string>();
 const lastDispatchedReviewId = new Map<string, number>();
-const reviewSessionCards = new Map<string, { cardId: string | null; prUrl: string }>();
+const reviewSessionCards = new Map<
+  string,
+  { cardId: string | null; prUrl: string; reviewerAgent: string }
+>();
 const reviewSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const REVIEW_SESSION_TIMEOUT_MS = 15 * 60 * 1000;
 let reviewPollCron: cron.ScheduledTask | null = null;
@@ -174,7 +177,7 @@ export function startReviewSessionTimeout(sessionId: string, projectId: string):
           projectId,
           tracked.cardId || null,
           tracked.prUrl,
-          'unknown',
+          tracked.reviewerAgent || 'unknown',
           null,
           sessionId,
           'timeout',
@@ -1071,7 +1074,7 @@ export async function leadReviewPR(
   }
 
   // Round-robin reviewer selection (skips author to prevent self-review)
-  const leadAgent = selectReviewerAgent(project, subAgent);
+  let leadAgent = selectReviewerAgent(project, subAgent);
   if (!leadAgent) {
     // Fallback: try the first lead agent
     const fallbackLead = project.agents.find((a) => a.role === 'lead');
@@ -1091,8 +1094,8 @@ export async function leadReviewPR(
       });
       return;
     }
+    leadAgent = fallbackLead;
   }
-  if (!leadAgent) return;
 
   const isSelfReview = false; // selectReviewerAgent already excludes the author
 
@@ -1293,7 +1296,11 @@ ${mergeRule}
 - When reporting your outcome, clearly state whether you APPROVED or REQUESTED CHANGES with detailed reasoning
 - **Do NOT create kanban cards** — this is a review session, not new work. The task card already exists and is being tracked automatically.`;
 
-  reviewSessionCards.set(sessionId, { cardId: card?.id || null, prUrl });
+  reviewSessionCards.set(sessionId, {
+    cardId: card?.id || null,
+    prUrl,
+    reviewerAgent: leadAgent.name || leadAgent.id,
+  });
 
   // Set card review_status to 'reviewing'
   if (card) {
@@ -1411,7 +1418,8 @@ export async function handleReviewOutcome(
 
     // Create review log entry
     if (prUrl) {
-      const leadAgent = project.agents.find((a) => a.role === 'lead');
+      const reviewerName =
+        tracked?.reviewerAgent || project.agents.find((a) => a.role === 'lead')?.name || 'unknown';
       const authorAgent = card?.assignee || null;
       try {
         d.stmts.createReviewLog.run(
@@ -1419,7 +1427,7 @@ export async function handleReviewOutcome(
           project.id,
           card?.id || null,
           prUrl,
-          leadAgent?.name || 'unknown',
+          reviewerName,
           authorAgent,
           sessionId,
           reviewOutcome,
