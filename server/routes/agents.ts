@@ -69,6 +69,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       'active',
       'reviewer',
       'role',
+      'canReview',
     ] as const;
     for (const key of allowed) {
       if ((req.body as Record<string, unknown>)[key] !== undefined)

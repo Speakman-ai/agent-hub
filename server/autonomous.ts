@@ -82,11 +82,13 @@ const lastReviewerIndex = new Map<string, number>();
 /**
  * Select the next eligible reviewer agent for a project using round-robin.
  * Eligible agents: role === 'lead' OR canReview === true.
+ * Setting canReview to false explicitly excludes an agent, even leads.
  * Skips the author agent to prevent self-review.
  */
 function selectReviewerAgent(project: Project, authorAgent?: Agent): Agent | null {
   const eligible = project.agents.filter(
     (a) =>
+      a.canReview !== false &&
       (a.role === 'lead' || a.canReview === true) &&
       a.active !== false &&
       (!authorAgent || a.id !== authorAgent.id),

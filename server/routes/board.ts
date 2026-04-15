@@ -123,27 +123,16 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.post('/api/projects/:projectId/board/cards', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const {
-      title,
-      description,
-      priority,
-      assignee,
-      labels,
-      columnId,
-      sessionId,
-      githubIssueUrl,
-      createdBy,
-    } = req.body as {
-      title?: string;
-      description?: string;
-      priority?: string;
-      assignee?: string;
-      labels?: string;
-      columnId?: string;
-      sessionId?: string;
-      githubIssueUrl?: string;
-      createdBy?: string;
-    };
+    const body = req.body as Record<string, unknown>;
+    const title = body.title as string | undefined;
+    const description = body.description as string | undefined;
+    const priority = body.priority as string | undefined;
+    const assignee = body.assignee as string | undefined;
+    const labels = body.labels as string | undefined;
+    const columnId = (body.columnId ?? body.column_id) as string | undefined;
+    const sessionId = (body.sessionId ?? body.session_id) as string | undefined;
+    const githubIssueUrl = (body.githubIssueUrl ?? body.github_issue_url) as string | undefined;
+    const createdBy = (body.createdBy ?? body.created_by) as string | undefined;
     if (!title) return res.status(400).json({ error: 'title is required' });
     if (!columnId) return res.status(400).json({ error: 'columnId is required' });
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
@@ -172,27 +161,19 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.put('/api/projects/:projectId/board/cards/:cardId', (req: Request, res: Response) => {
     const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
     if (!card) return res.status(404).json({ error: 'Card not found' });
-    const {
-      title,
-      description,
-      priority,
-      assignee,
-      labels,
-      sessionId,
-      githubIssueUrl,
-      prUrl,
-      epicId,
-    } = req.body as {
-      title?: string;
-      description?: string | null;
-      priority?: string;
-      assignee?: string | null;
-      labels?: string | null;
-      sessionId?: string | null;
-      githubIssueUrl?: string | null;
-      prUrl?: string | null;
-      epicId?: string | null;
-    };
+    const body = req.body as Record<string, unknown>;
+    const title = body.title as string | undefined;
+    const description = body.description as string | null | undefined;
+    const priority = body.priority as string | undefined;
+    const assignee = body.assignee as string | null | undefined;
+    const labels = body.labels as string | null | undefined;
+    const sessionId = (body.sessionId ?? body.session_id) as string | null | undefined;
+    const githubIssueUrl = (body.githubIssueUrl ?? body.github_issue_url) as
+      | string
+      | null
+      | undefined;
+    const prUrl = (body.prUrl ?? body.pr_url) as string | null | undefined;
+    const epicId = (body.epicId ?? body.epic_id) as string | null | undefined;
     stmts.updateKanbanCard.run(
       title ?? card.title,
       description ?? card.description,

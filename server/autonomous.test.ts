@@ -315,4 +315,32 @@ describe('leadReviewPR — round-robin reviewer rotation', () => {
     // Should be either lead-1 or reviewer-1, but NOT dev-1
     expect(['lead-1', 'reviewer-1']).toContain(agentId);
   });
+
+  it('excludes leads with canReview set to false', async () => {
+    const project = {
+      id: 'proj-no-review',
+      name: 'canReview false Test',
+      cwd: '/tmp',
+      ahw: '',
+      githubWorkflow: {},
+      agents: [
+        { id: 'lead-1', name: 'Lead A', role: 'lead', engine: 'claude-code' },
+        { id: 'lead-2', name: 'Lead B', role: 'lead', canReview: false, engine: 'claude-code' },
+        { id: 'dev-1', name: 'Dev', role: 'developer', engine: 'claude-code' },
+      ],
+    } as Project;
+
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_fake' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    // Should always pick lead-1 since lead-2 has canReview: false
+    await leadReviewPR(project, 'https://github.com/owner/repo/pull/200', null, {
+      id: 'dev-1',
+      name: 'Dev',
+    } as Agent);
+
+    expect(mockDeps.handleChat).toHaveBeenCalled();
+    const agentId = mockDeps.handleChat.mock.calls[0][1].agentId;
+    expect(agentId).toBe('lead-1');
+  });
 });
