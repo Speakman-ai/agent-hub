@@ -16,6 +16,7 @@ mobile/*.ipa
 # Environment & secrets
 .env
 .env.*
+!.env.example
 
 # Slack config (may contain tokens)
 server/slack-config.json

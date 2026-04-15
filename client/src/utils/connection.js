@@ -84,9 +84,15 @@ export function getWsUrl() {
     }
     return wsUrl;
   }
-  // Local mode — connect to same hostname on server port
-  const port = import.meta.env.VITE_API_PORT || 3051;
-  return `ws://${window.location.hostname}:${port}`;
+  // Local mode — if VITE_API_PORT is set, connect directly to that port
+  // (dev mode with separate vite + server processes).
+  // Otherwise, use same-origin WebSocket via /ws path
+  // (production / Docker — nginx proxies the upgrade).
+  if (import.meta.env.VITE_API_PORT) {
+    return `ws://${window.location.hostname}:${import.meta.env.VITE_API_PORT}`;
+  }
+  const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${wsProto}//${window.location.host}/ws`;
 }
 
 /** Reload the app after an org switch. In Electron, navigates the window
