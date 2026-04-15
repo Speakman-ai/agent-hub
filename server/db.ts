@@ -515,6 +515,12 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN git_worktree_detected INTEGER DEFAULT NULL');
   }
 
+  try {
+    db.prepare('SELECT changes_ready FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN changes_ready TEXT DEFAULT NULL');
+  }
+
   // Fixup: original migration used NOT NULL DEFAULT 0, which falsely marks pre-existing
   // sessions as "CLI confirmed not in worktree". Reset stale defaults to NULL (unknown).
   {
@@ -833,6 +839,12 @@ function initDb(dataDir: string): void {
     ),
     updateSessionAskMode: db.prepare(
       "UPDATE sessions SET ask_mode = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionChangesReady: db.prepare(
+      "UPDATE sessions SET changes_ready = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    clearSessionChangesReady: db.prepare(
+      "UPDATE sessions SET changes_ready = NULL, updated_at = datetime('now') WHERE id = ?",
     ),
 
     // Background tasks

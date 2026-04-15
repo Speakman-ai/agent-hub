@@ -14,6 +14,7 @@ export interface SessionRow {
   worktree_path: string | null;
   worktree_branch: string | null;
   git_worktree_detected: number | null;
+  changes_ready: string | null;
   ask_mode: number;
   cron_id: number | null;
   created_at: string;
@@ -418,6 +419,8 @@ export interface Stmts {
   updateSessionWorktreePath: Stmt;
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
+  updateSessionChangesReady: Stmt;
+  clearSessionChangesReady: Stmt;
 
   // Background tasks
   insertBackgroundTask: Stmt;

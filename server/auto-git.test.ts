@@ -110,6 +110,8 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
   const mockBroadcast = vi.fn();
   const mockStmts = {
     getKanbanCardBySession: { get: vi.fn(() => undefined) },
+    updateSessionChangesReady: { run: vi.fn() },
+    clearSessionChangesReady: { run: vi.fn() },
   } as Record<string, unknown>;
 
   beforeEach(() => {
@@ -252,6 +254,55 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     );
     expect(changesReadyEvents).toHaveLength(1);
     expect(changesReadyEvents[0][0].branch).toBe('feature/new-work');
+  });
+
+  it('persists changes_ready to the database when broadcasting', async () => {
+    mockExec({
+      'git remote -v': { stdout: 'origin\thttps://github.com/test/repo.git (fetch)\n' },
+      'git status --porcelain': { stdout: 'M file.ts\n' },
+      'git log @{upstream}..HEAD': { stdout: '' },
+      'git rev-parse --abbrev-ref HEAD': { stdout: 'feature/persist-test\n' },
+      'gh pr view': { error: new Error('no pull requests found') },
+    });
+
+    const project = { id: 'test', cwd: '/repo' } as never;
+    const agent = { name: 'test-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-3', 'agent-1', project, agent, '/worktree', '');
+
+    // Should persist changes_ready JSON to the session row
+    const updateCalls = (mockStmts.updateSessionChangesReady as { run: ReturnType<typeof vi.fn> }).run.mock.calls;
+    expect(updateCalls).toHaveLength(1);
+    const [json, sessionId] = updateCalls[0];
+    expect(sessionId).toBe('sess-3');
+    const parsed = JSON.parse(json);
+    expect(parsed.branch).toBe('feature/persist-test');
+    expect(parsed.hasUncommitted).toBe(true);
+    expect(parsed.agentId).toBe('agent-1');
+  });
+
+  it('clears changes_ready when a PR already exists', async () => {
+    mockExec({
+      'git remote -v': { stdout: 'origin\thttps://github.com/test/repo.git (fetch)\n' },
+      'git status --porcelain': { stdout: 'M file.ts\n' },
+      'git log @{upstream}..HEAD': { stdout: '' },
+      'git rev-parse --abbrev-ref HEAD': { stdout: 'feature/existing\n' },
+      'gh pr view': { stdout: 'https://github.com/test/repo/pull/99\n' },
+    });
+
+    const project = { id: 'test', cwd: '/repo' } as never;
+    const agent = { name: 'test-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-4', 'agent-1', project, agent, '/worktree', '');
+
+    // Should clear changes_ready from the session
+    const clearCalls = (mockStmts.clearSessionChangesReady as { run: ReturnType<typeof vi.fn> }).run.mock.calls;
+    expect(clearCalls).toHaveLength(1);
+    expect(clearCalls[0][0]).toBe('sess-4');
+
+    // Should NOT persist changes_ready
+    const updateCalls = (mockStmts.updateSessionChangesReady as { run: ReturnType<typeof vi.fn> }).run.mock.calls;
+    expect(updateCalls).toHaveLength(0);
   });
 });
 

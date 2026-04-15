@@ -1127,6 +1127,22 @@ export default function App() {
     api.getSessions(activeAgentId).then((data) => {
       setSessions(data);
 
+      // Hydrate changesReady from persisted session data so the PR button
+      // survives page refreshes and WebSocket reconnects.
+      const persisted = {};
+      for (const s of data) {
+        if (s.changes_ready) {
+          try {
+            persisted[s.id] = typeof s.changes_ready === 'string'
+              ? JSON.parse(s.changes_ready)
+              : s.changes_ready;
+          } catch { /* ignore malformed JSON */ }
+        }
+      }
+      if (Object.keys(persisted).length > 0) {
+        setChangesReady((prev) => ({ ...prev, ...persisted }));
+      }
+
       // If we were explicitly navigated to a specific session (e.g. from kanban
       // assign), honour that session ID instead of defaulting to the first one.
       const target = targetSessionId

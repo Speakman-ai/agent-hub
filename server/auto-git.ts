@@ -451,6 +451,7 @@ export async function autoCommitAndPR(
             console.log(
               `[auto-commit] Session ${sessionId} — PR already exists (${existingPrUrl}), skipping changes_ready`,
             );
+            d.stmts.clearSessionChangesReady.run(sessionId);
             d.broadcast({
               type: 'auto_pr_created',
               sessionId,
@@ -467,13 +468,17 @@ export async function autoCommitAndPR(
         console.log(
           `[auto-commit] Session ${sessionId} — ad-hoc session with changes, broadcasting changes_ready`,
         );
-        d.broadcast({
-          type: 'changes_ready',
-          sessionId,
+        const changesReadyData = {
           agentId,
           branch: changes.branch,
           hasUncommitted: changes.hasUncommitted,
           hasUnpushed: changes.hasUnpushed,
+        };
+        d.stmts.updateSessionChangesReady.run(JSON.stringify(changesReadyData), sessionId);
+        d.broadcast({
+          type: 'changes_ready',
+          sessionId,
+          ...changesReadyData,
         });
       }
       return;

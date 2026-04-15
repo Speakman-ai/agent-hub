@@ -768,6 +768,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         return res.status(422).json({ error: 'No changes to commit or PR creation failed' });
       }
 
+      stmts.clearSessionChangesReady.run(sessionId);
       res.json({ prUrl: result.prUrl, cardId: result.cardId });
     } catch (err) {
       const msg = (err as Error).message || String(err);
