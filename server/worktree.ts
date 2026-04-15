@@ -28,6 +28,27 @@ function projectSlug(projectCwd: string): string {
   return path.basename(projectCwd).replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 
+/**
+ * Copy git user.name and user.email from a source repo (or global config)
+ * into a newly-cloned directory so that `git commit` works without a global identity.
+ */
+function copyGitUserConfig(sourceCwd: string, targetCwd: string): void {
+  const keys = ['user.name', 'user.email'] as const;
+  for (const key of keys) {
+    try {
+      // Try source repo's local config first, then falls back to global
+      const value = execSync(`git config ${key}`, { cwd: sourceCwd, stdio: 'pipe' })
+        .toString()
+        .trim();
+      if (value) {
+        execSync(`git config ${key} ${JSON.stringify(value)}`, { cwd: targetCwd, stdio: 'pipe' });
+      }
+    } catch {
+      // Key not set anywhere — skip
+    }
+  }
+}
+
 function ensureWorkspaceDir(projectCwd: string): string {
   const dir = path.join(WORKSPACES_ROOT, projectSlug(projectCwd));
   if (!existsSync(dir)) {
@@ -203,6 +224,7 @@ export function getOrCreateProcessWorktree(
         timeout: 60000,
       });
     }
+    copyGitUserConfig(projectCwd, cloneDir);
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     console.log(`[Workspace] Created clone: ${cloneDir}`);
     return cloneDir;
@@ -259,6 +281,7 @@ export function ensureSessionWorkspace(
     }
 
     execSync(`git checkout -b "${branchName}"`, { cwd: cloneDir, stdio: 'pipe' });
+    copyGitUserConfig(projectCwd, cloneDir);
 
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     persistFn(cloneDir, branchName, session.id);
