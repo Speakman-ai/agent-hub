@@ -634,6 +634,26 @@ function ClaudeAuthSection() {
           msg: 'Callback submitted — waiting for confirmation...',
         });
         setCallbackInput('');
+        // Poll for login completion (same pattern as handleOAuthLogin)
+        const poll = setInterval(async () => {
+          try {
+            const status = await api.getClaudeAuth();
+            if (status.oauth?.loggedIn) {
+              clearInterval(poll);
+              setAuth(status);
+              setOauthUrl(null);
+              setLoginLoading(false);
+              setCallbackStatus(null);
+            }
+          } catch {
+            /* keep polling */
+          }
+        }, 3000);
+        // Stop polling after 2 minutes
+        setTimeout(() => {
+          clearInterval(poll);
+          setLoginLoading(false);
+        }, 120_000);
       } else {
         setCallbackStatus({ type: 'error', msg: result.error || 'Failed to submit callback' });
       }
