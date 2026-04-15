@@ -585,12 +585,15 @@ export async function addSelfAsReviewer(prUrl: string): Promise<void> {
     return;
   }
 
+  const env = botGhEnv();
   const ghBotUser = d.getGhBotUser();
-  const ghAuthenticatedUser = d.getGhAuthenticatedUser();
-  const reviewerUser = ghBotUser || ghAuthenticatedUser;
-  if (!reviewerUser) return;
+  if (!env || !ghBotUser) {
+    console.log(
+      `[Review] Skipping reviewer assignment for PR #${pr.number} — no bot token configured (would use personal profile)`,
+    );
+    return;
+  }
   try {
-    const env = botGhEnv();
     await execFileAsync(
       'gh',
       [
@@ -600,12 +603,12 @@ export async function addSelfAsReviewer(prUrl: string): Promise<void> {
         '--repo',
         `${pr.owner}/${pr.repo}`,
         '--add-reviewer',
-        reviewerUser,
+        ghBotUser,
       ],
-      { timeout: 15000, ...(env && { env }) },
+      { timeout: 15000, env },
     );
     console.log(
-      `[Review] Added ${reviewerUser} as reviewer on PR #${pr.number}${ghBotUser ? ' (bot)' : ''}`,
+      `[Review] Added ${ghBotUser} as reviewer on PR #${pr.number} (bot)`,
     );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message?.split('\n')[0] : String(err);
@@ -653,8 +656,15 @@ export async function submitGitHubReview(
   }
 
   const env = botGhEnv();
-  const usingBot = !!env;
   const ghBotUser = d.getGhBotUser();
+
+  // Refuse to fall back to personal gh CLI — reviews would appear as the user's profile
+  if (!env) {
+    console.warn(
+      `[Review] No bot token configured — refusing to submit review on PR #${pr.number} as personal profile`,
+    );
+    return false;
+  }
 
   try {
     await execFileAsync(
@@ -669,10 +679,10 @@ export async function submitGitHubReview(
         '-f',
         `body=${body}`,
       ],
-      { timeout: 15000, ...(env && { env }) },
+      { timeout: 15000, env },
     );
     console.log(
-      `[Review] Formal ${event} review submitted on PR #${pr.number}${usingBot ? ` (as bot: ${ghBotUser})` : ''}`,
+      `[Review] Formal ${event} review submitted on PR #${pr.number} (as bot: ${ghBotUser})`,
     );
     return true;
   } catch (err: unknown) {
@@ -682,7 +692,7 @@ export async function submitGitHubReview(
     );
   }
 
-  const fallbackOpts = { timeout: 15000, ...(env && { env }) };
+  const fallbackOpts = { timeout: 15000, env };
   try {
     const label = event === 'APPROVE' ? 'approved' : 'changes-requested';
     const prefix = event === 'APPROVE' ? '✅ **APPROVED**' : '🔄 **CHANGES REQUESTED**';
@@ -730,7 +740,7 @@ export async function submitGitHubReview(
       /* ignore */
     }
     console.log(
-      `[Review] Fallback: comment + label "${label}" added on PR #${pr.number}${usingBot ? ' (bot)' : ''}`,
+      `[Review] Fallback: comment + label "${label}" added on PR #${pr.number} (bot: ${ghBotUser})`,
     );
     return false;
   } catch (err: unknown) {
