@@ -46,10 +46,7 @@ vi.mock('./project-paths.js', () => ({
     skillsDir: path.join(tmpBase, 'skills'),
     contextFiles: {},
   }),
-  contextFilePath: (
-    _paths: unknown,
-    filename: string,
-  ) => {
+  contextFilePath: (_paths: unknown, filename: string) => {
     const p = path.join(tmpBase, filename);
     return existsSync(p) ? p : null;
   },
@@ -73,6 +70,7 @@ function makeAgent(overrides = {}) {
   return {
     id: 'test-agent',
     name: 'Test Agent',
+    engine: 'claude-code',
     systemPrompt: 'You are a test agent.',
     role: 'member' as const,
     ...overrides,

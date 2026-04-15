@@ -261,9 +261,7 @@ Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/proje
   if (isFirstMessage) {
     if (isGitHubConnected) {
       const reviewer = agent.reviewer || project.defaultReviewer || '';
-      const reviewerNote = reviewer
-        ? ` Add \`--reviewer ${reviewer}\` to \`gh pr create\`.`
-        : '';
+      const reviewerNote = reviewer ? ` Add \`--reviewer ${reviewer}\` to \`gh pr create\`.` : '';
 
       prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
 This project is connected to GitHub. Follow this lifecycle for changes:
