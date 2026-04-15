@@ -152,7 +152,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
     const proc = spawn(config.claudeBin, args, {
       cwd: HOME,
       env: { ...process.env, BROWSER: 'false' },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     activeLoginProc = proc;
@@ -254,6 +254,25 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       res.json({ ok: true, output: 'Login cancelled' });
     } else {
       res.json({ ok: true, output: 'No login in progress' });
+    }
+  });
+
+  router.post('/api/config/claude-auth/callback', (req: Request, res: Response) => {
+    const { code } = (req.body || {}) as { code?: string };
+    if (!code || typeof code !== 'string') {
+      return res.status(400).json({ error: 'code is required (the URL copied from Anthropic)' });
+    }
+
+    if (!activeLoginProc || !activeLoginProc.stdin) {
+      return res.status(409).json({ error: 'No login in progress' });
+    }
+
+    try {
+      activeLoginProc.stdin.write(code.trim() + '\n');
+      res.json({ ok: true, output: 'Callback code submitted' });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `Failed to submit callback: ${message}` });
     }
   });
 

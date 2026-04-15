@@ -261,6 +261,11 @@ export const api = {
       timeout: 20000,
     }),
   cancelClaudeOAuthLogin: () => fetchJSON('/config/claude-auth/cancel-login', { method: 'POST' }),
+  submitOAuthCallback: (code) =>
+    fetchJSON('/config/claude-auth/callback', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
   logoutClaude: () => fetchJSON('/config/claude-auth', { method: 'DELETE' }),
   setClaudeApiKey: (apiKey) =>
     fetchJSON('/config/claude-auth/api-key', { method: 'POST', body: JSON.stringify({ apiKey }) }),
