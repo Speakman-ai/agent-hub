@@ -937,8 +937,21 @@ export async function leadReviewPR(project, prUrl, card, subAgent) {
     return;
   }
 
-  // If the lead IS the sub-agent, spawn a separate review session (self-review)
+  // If the lead IS the sub-agent, skip the review — agents should not review their own PRs
   const isSelfReview = subAgent ? leadAgent.id === subAgent.id : false;
+  if (isSelfReview) {
+    console.log(
+      `[Lead Review] Skipping self-review for "${card?.title || prUrl}" — lead agent cannot review its own PRs`,
+    );
+    deps.broadcast({
+      type: 'lead_review_skipped',
+      projectId: project.id,
+      prUrl,
+      reason: 'self-review',
+      cardTitle: card?.title || '',
+    });
+    return;
+  }
 
   // Check if this card belongs to an autonomous epic
   const isAutonomous = card?.epic_id
@@ -1144,7 +1157,8 @@ ${agentReviewStep}
 ${mergeRule}
 
 ## Important
-- When reporting your outcome, clearly state whether you APPROVED or REQUESTED CHANGES with detailed reasoning`;
+- When reporting your outcome, clearly state whether you APPROVED or REQUESTED CHANGES with detailed reasoning
+- **Do NOT create kanban cards** — this is a review session, not new work. The task card already exists and is being tracked automatically.`;
 
   // Track card→review session linkage for reliable outcome handling
   reviewSessionCards.set(sessionId, { cardId: card?.id || null, prUrl });

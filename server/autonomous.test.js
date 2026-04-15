@@ -146,4 +146,68 @@ describe('leadReviewPR — review prompt routing', () => {
     // Should NOT contain the "Do NOT run" restriction
     expect(prompt).not.toContain('Do **NOT** run');
   });
+
+  it('includes instruction not to create kanban cards during reviews', async () => {
+    const { mockDeps, getCapturedPrompt } = makeDeps();
+    initAutonomous(mockDeps);
+
+    await leadReviewPR(makeProject(), 'https://github.com/owner/repo/pull/50', null, {
+      id: 'dev-1',
+    });
+
+    const prompt = getCapturedPrompt();
+    expect(prompt).toBeTruthy();
+    expect(prompt).toContain('Do NOT create kanban cards');
+  });
+});
+
+describe('leadReviewPR — self-review prevention', () => {
+  it('skips review when the lead agent is also the PR author', async () => {
+    const { mockDeps, getCapturedPrompt } = makeDeps();
+    initAutonomous(mockDeps);
+
+    // subAgent has same id as the lead agent
+    await leadReviewPR(makeProject(), 'https://github.com/owner/repo/pull/45', null, {
+      id: 'lead-1',
+      name: 'Lead',
+    });
+
+    // Should NOT have started a review session
+    expect(getCapturedPrompt()).toBeNull();
+    expect(mockDeps.handleChat).not.toHaveBeenCalled();
+
+    // Should broadcast a skip notification
+    expect(mockDeps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'lead_review_skipped',
+        reason: 'self-review',
+      }),
+    );
+  });
+
+  it('proceeds with review when the lead agent is NOT the PR author', async () => {
+    const { mockDeps, getCapturedPrompt } = makeDeps();
+    initAutonomous(mockDeps);
+
+    // subAgent has different id from lead
+    await leadReviewPR(makeProject(), 'https://github.com/owner/repo/pull/46', null, {
+      id: 'dev-1',
+      name: 'Dev',
+    });
+
+    // Should have started a review session
+    expect(getCapturedPrompt()).toBeTruthy();
+    expect(mockDeps.handleChat).toHaveBeenCalled();
+  });
+
+  it('proceeds with review when subAgent is null (ad-hoc review)', async () => {
+    const { mockDeps, getCapturedPrompt } = makeDeps();
+    initAutonomous(mockDeps);
+
+    // null subAgent — cannot determine authorship, so review should proceed
+    await leadReviewPR(makeProject(), 'https://github.com/owner/repo/pull/47', null, null);
+
+    expect(getCapturedPrompt()).toBeTruthy();
+    expect(mockDeps.handleChat).toHaveBeenCalled();
+  });
 });
