@@ -363,14 +363,14 @@ export default function createProjectRoutes(deps) {
       const existing = stmts.getWebhookConfigByProjectAndRepo.get(project.id, repoUrl);
       if (!existing) {
         const secret = crypto.randomBytes(32).toString('hex');
-        const defaultEvents = JSON.stringify([
-          'pull_request.opened',
-          'pull_request.closed',
-          'pull_request.synchronize',
-          'pull_request_review.submitted',
-          'pull_request_review_comment.created',
-          'check_suite.completed',
-        ]);
+        const defaultEvents = JSON.stringify({
+          'pull_request.opened': { enabled: true },
+          'pull_request.closed': { enabled: true },
+          'pull_request.synchronize': { enabled: true },
+          'pull_request_review.submitted': { enabled: true },
+          'pull_request_review_comment.created': { enabled: true },
+          'check_suite.completed': { enabled: true },
+        });
         stmts.createWebhookConfig.run(project.id, repoUrl, secret, defaultEvents, 1);
       }
     }

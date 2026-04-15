@@ -161,10 +161,10 @@ function migrateWebhookRepoToProject() {
     if (project.githubRepo) continue;
 
     // Extract owner/repo from https://github.com/owner/repo
-    const match = wh.repo_url?.match(/github\.com\/(.+)/);
+    const match = wh.repo_url?.match(/github\.com\/([^/]+\/[^/]+)/);
     if (!match) continue;
 
-    project.githubRepo = match[1].replace(/\/$/, ''); // strip trailing slash
+    project.githubRepo = match[1];
     migrated = true;
     console.log(
       `[Migration] Set githubRepo="${project.githubRepo}" on project "${project.id}" from webhook config`,

@@ -1133,12 +1133,14 @@ function GitHubSection({ projects = [], onProjectsChange }) {
 
   // --- GitHub App handlers ---
 
-  const handleCreateApp = () => {
+  const handleCreateApp = async () => {
+    // Ensure publicUrl is persisted via config API before navigating
+    if (publicUrlInput && publicUrlInput.trim()) {
+      await api.updateConfig({ publicUrl: publicUrlInput.trim() });
+      setConfig((prev) => ({ ...prev, publicUrl: publicUrlInput.trim() }));
+    }
     const base = getServerBase();
-    const url = publicUrlInput
-      ? `${base}/api/github-app/register?publicUrl=${encodeURIComponent(publicUrlInput)}`
-      : `${base}/api/github-app/register`;
-    window.open(url, '_blank');
+    window.open(`${base}/api/github-app/register`, '_blank');
 
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);

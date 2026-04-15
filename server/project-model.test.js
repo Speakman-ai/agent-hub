@@ -95,4 +95,54 @@ describe('migrateWebhookRepoToProject', () => {
     const updated = findProject(projId);
     expect(updated.githubRepo).toBe('existing/repo');
   });
+
+  it('auto-created webhook config uses object format for events', async () => {
+    const request = await getRequest();
+
+    const projId = `auto-webhook-${Date.now()}`;
+    await request
+      .post('/api/projects')
+      .send({ id: projId, name: 'Auto Webhook Test', cwd: '/tmp', color: '#333' })
+      .expect(201);
+
+    // Update project with githubRepo — should auto-create webhook config
+    await request.patch(`/api/projects/${projId}`).send({ githubRepo: 'test-org/auto-repo' });
+
+    const wh = stmts.getWebhookConfigByProjectAndRepo.get(
+      projId,
+      'https://github.com/test-org/auto-repo',
+    );
+    expect(wh).toBeTruthy();
+
+    // Events must be an object with { enabled: true } values, not an array
+    const events = JSON.parse(wh.events);
+    expect(events).toBeTypeOf('object');
+    expect(Array.isArray(events)).toBe(false);
+    expect(events['pull_request.opened']).toEqual({ enabled: true });
+    expect(events['pull_request_review.submitted']).toEqual({ enabled: true });
+  });
+
+  it('only captures owner/repo, ignoring trailing path segments', async () => {
+    const request = await getRequest();
+
+    const projId = `migrate-trailing-${Date.now()}`;
+    await request
+      .post('/api/projects')
+      .send({ id: projId, name: 'Trailing Path Test', cwd: '/tmp', color: '#222' })
+      .expect(201);
+
+    // Insert a webhook config with extra trailing segments
+    stmts.createWebhookConfig.run(
+      projId,
+      'https://github.com/some-org/some-repo/tree/main/extra',
+      'secret789',
+      '["push"]',
+      1,
+    );
+
+    migrateWebhookRepoToProject();
+
+    const updated = findProject(projId);
+    expect(updated.githubRepo).toBe('some-org/some-repo');
+  });
 });

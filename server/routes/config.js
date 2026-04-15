@@ -147,20 +147,6 @@ export default function createConfigRoutes(deps) {
    * The client uses this to build a form that POSTs to GitHub.
    */
   router.get('/api/github-app/manifest', (req, res) => {
-    // Allow inline publicUrl setting via query param
-    if (req.query.publicUrl && !config.publicUrl) {
-      const publicUrl = req.query.publicUrl;
-      const configPath = path.join(config.dataDir, 'config.json');
-      let fileConfig = {};
-      try {
-        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
-      } catch {
-        /* no file yet */
-      }
-      fileConfig.publicUrl = publicUrl;
-      writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
-      config.publicUrl = publicUrl;
-    }
     const serverUrl = config.publicUrl;
     if (!serverUrl) {
       return res.status(400).json({
@@ -185,20 +171,6 @@ export default function createConfigRoutes(deps) {
    * page load and submits reliably.
    */
   router.get('/api/github-app/register', (req, res) => {
-    // Allow inline publicUrl setting via query param
-    if (req.query.publicUrl && !config.publicUrl) {
-      const publicUrl = req.query.publicUrl;
-      const configPath = path.join(config.dataDir, 'config.json');
-      let fileConfig = {};
-      try {
-        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
-      } catch {
-        /* no file yet */
-      }
-      fileConfig.publicUrl = publicUrl;
-      writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
-      config.publicUrl = publicUrl;
-    }
     const serverUrl = config.publicUrl;
     if (!serverUrl) {
       return res.status(400).send('Public URL must be configured first.');
