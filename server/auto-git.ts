@@ -230,7 +230,7 @@ async function commitPushAndCreatePR(
       .filter((line): line is string => line != null)
       .join('\n');
 
-    await execAsync("git add -A", { cwd: effectiveCwd });
+    await execAsync('git add -A', { cwd: effectiveCwd });
     const fullMessage = `${commitTitle}\n${commitBody}`;
     await execAsync(`git commit -m ${JSON.stringify(fullMessage)}`, { cwd: effectiveCwd });
     console.log(`[auto-commit] Committed: ${commitTitle}`);
