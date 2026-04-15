@@ -237,7 +237,8 @@ export function buildEnrichedPrompt(
 After significant work, update the wiki to preserve knowledge. Search first (\`GET /api/projects/${projectId}/wiki?q=...\`), update existing pages rather than duplicating. Create via \`POST /api/projects/${projectId}/wiki\` with \`{title, content, category, updatedBy}\`. Update via \`PUT /api/projects/${projectId}/wiki/:slug\`. Categories: general, api-docs, architecture, conventions, test-patterns, troubleshooting, onboarding. Focus on decisions, patterns, and knowledge that would be lost when the session ends.`;
 
         prompt += `\n\n## Kanban Board — Task Self-Reporting
-Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/projects/${projectId}/board/cards\` and \`POST /api/projects/${projectId}/board/cards/:cardId/move\`. Use \`GET /api/projects/${projectId}/board\` for column IDs. Skip cards for trivial tasks.`;
+Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/projects/${projectId}/board/cards\` and \`POST /api/projects/${projectId}/board/cards/:cardId/move\`. Use \`GET /api/projects/${projectId}/board\` for column IDs. Skip cards for trivial tasks.
+When creating cards: use a **concise title** (under 60 chars) summarizing the problem/task, and include **acceptance criteria** as a bulleted checklist in the description. Pass \`session_id: "$AGENT_HUB_SESSION_ID"\` to link the card to your session (this auto-renames the sidebar to the card title).`;
       }
     }
   }
@@ -266,12 +267,17 @@ Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/proje
       prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
 This project is connected to GitHub. Follow this lifecycle for changes:
 
-1. **Kanban Card**: Check \`GET /api/projects/${projectId}/board\`, create in "To Do" or move to "In Progress"
+1. **Kanban Card**: Check \`GET /api/projects/${projectId}/board\`. Create a card with a **concise title** (under 60 chars, summarizing the problem) and a description that includes:
+   - **Problem**: 1-2 sentences on what's wrong or what's needed
+   - **Acceptance Criteria**: Bulleted checklist of conditions that must be met for this to be complete
+   Include \`session_id: "$AGENT_HUB_SESSION_ID"\` when creating the card — this links it to your session and **auto-renames the sidebar** to the card title.
+   Move to "In Progress" when you begin.
 2. **Branch**: \`git checkout main && git pull && git checkout -b feature/<name>\`${options.useWorktree ? ' (worktree — safe to branch here)' : ''}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
 4. **Test & Lint**: ${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding
 5. **Commit & Push**: \`git push -u origin <branch>\`
-6. **Create PR**: \`gh pr create --title "..." --body "## Summary\\n...\\n## Test plan\\n..."\`${reviewerNote}
+6. **Create PR**: \`gh pr create --title "<concise summary of what changed>" --body "## Summary\\n<1-3 bullets: what changed and why>\\n\\n## Acceptance Criteria\\n<copy from ticket — check off each item met>\\n\\n## Test plan\\n<how it was verified>"\`${reviewerNote}
+   The PR title must be concise (under 70 chars) and describe the **solution**, not restate the problem. The body must reference the ticket's acceptance criteria and confirm each is met.
 7. **CI + Hand Off**: Fix CI failures, link PR to card (\`PUT .../cards/:id {pr_url}\`), move card to "Review" — **you're done**, the server auto-triggers lead review
 
 **Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit, push. No new cards/branches/PRs. Do NOT merge.
@@ -727,6 +733,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (config.apiKey) {
         base.AGENT_HUB_API_KEY = config.apiKey;
       }
+      base.AGENT_HUB_SESSION_ID = sessionId;
       return base;
     })();
 

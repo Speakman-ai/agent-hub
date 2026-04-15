@@ -115,6 +115,15 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).not.toContain('Kanban Board');
   });
 
+  it('kanban instructions include acceptance criteria and session_id guidance', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('acceptance criteria');
+    expect(prompt).toContain('AGENT_HUB_SESSION_ID');
+    expect(prompt).toContain('auto-renames the sidebar');
+  });
+
   it('includes memory instructions on first message', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: true,
