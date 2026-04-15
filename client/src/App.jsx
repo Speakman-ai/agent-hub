@@ -443,7 +443,11 @@ export default function App() {
               id: `session-done-${data.sessionId}-${Date.now()}`,
               type: 'success',
               message: body,
-              duration: 8000,
+              duration: 10000,
+              onClick: () => {
+                setActiveSessionId(data.sessionId);
+                setCurrentView('chat');
+              },
             },
           ]);
           notify({ title, body, type: 'success' });
@@ -757,7 +761,13 @@ export default function App() {
             id: `task-${data.taskId}-${Date.now()}`,
             type: taskStatus,
             message: taskMsg,
-            duration: 15000,
+            duration: 10000,
+            onClick: data.sessionId
+              ? () => {
+                  setActiveSessionId(data.sessionId);
+                  setCurrentView('chat');
+                }
+              : undefined,
           },
         ]);
         notify({
@@ -809,7 +819,7 @@ export default function App() {
           id: `dispatch-failure-${Date.now()}`,
           type: 'error',
           message: dispatchMsg,
-          duration: 15000,
+          duration: 10000,
         };
         setToasts((prev) => [...prev, toast]);
         notify({ title: 'Dispatch Failure', body: dispatchMsg, type: 'error' });
@@ -1899,6 +1909,17 @@ function Toast({ toast, onDismiss }) {
       <span className="flex-shrink-0">{icons[toast.type] || <Info size={18} />}</span>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium">{toast.message}</p>
+        {toast.onClick && (
+          <button
+            onClick={() => {
+              toast.onClick();
+              onDismiss();
+            }}
+            className="text-xs underline opacity-75 hover:opacity-100 mt-0.5"
+          >
+            View session →
+          </button>
+        )}
       </div>
       <button
         onClick={onDismiss}
