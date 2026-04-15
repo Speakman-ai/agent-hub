@@ -25,8 +25,8 @@ export function getMemoryContext(workspace: string | undefined): string {
   if (existsSync(memoryPath)) {
     try {
       let memory = readFileSync(memoryPath, 'utf-8');
-      if (memory.length > 3000) {
-        memory = '...(truncated)\n' + memory.slice(-3000);
+      if (memory.length > 2000) {
+        memory = '...(truncated)\n' + memory.slice(-2000);
       }
       if (memory.trim()) {
         parts.push(`## MEMORY.md (Long-term)\n${memory}`);
@@ -40,8 +40,8 @@ export function getMemoryContext(workspace: string | undefined): string {
   if (existsSync(todayPath)) {
     try {
       let content = readFileSync(todayPath, 'utf-8');
-      if (content.length > 5000) {
-        content = '...(truncated)\n' + content.slice(-5000);
+      if (content.length > 3000) {
+        content = '...(truncated)\n' + content.slice(-3000);
       }
       if (content.trim()) {
         parts.push(`## Today's Notes (${today()})\n${content}`);
@@ -55,8 +55,8 @@ export function getMemoryContext(workspace: string | undefined): string {
   if (existsSync(yesterdayPath)) {
     try {
       let content = readFileSync(yesterdayPath, 'utf-8');
-      if (content.length > 3000) {
-        content = '...(truncated)\n' + content.slice(-3000);
+      if (content.length > 1500) {
+        content = '...(truncated)\n' + content.slice(-1500);
       }
       if (content.trim()) {
         parts.push(`## Yesterday's Notes (${yesterday()})\n${content}`);
