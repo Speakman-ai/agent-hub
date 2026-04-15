@@ -375,6 +375,31 @@ export async function autoCommitAndPR(
     if (!card) {
       const changes = await checkWorktreeChanges(effectiveCwd);
       if (changes.hasUncommitted || changes.hasUnpushed) {
+        // Check if a PR already exists for this branch — if so, don't show the
+        // "Create ticket & PR" banner (clicking it would fail with 422).
+        try {
+          const { stdout: prOut } = await execAsync(
+            `gh pr view --json url,state --jq 'select(.state == "OPEN") | .url'`,
+            { cwd: effectiveCwd, timeout: 15000 },
+          );
+          const existingPrUrl = prOut.trim();
+          if (existingPrUrl) {
+            console.log(
+              `[auto-commit] Session ${sessionId} — PR already exists (${existingPrUrl}), skipping changes_ready`,
+            );
+            d.broadcast({
+              type: 'auto_pr_created',
+              sessionId,
+              agentId,
+              prUrl: existingPrUrl,
+              cardTitle: '',
+            });
+            return;
+          }
+        } catch {
+          // No open PR — fall through to show the banner
+        }
+
         console.log(
           `[auto-commit] Session ${sessionId} — ad-hoc session with changes, broadcasting changes_ready`,
         );
