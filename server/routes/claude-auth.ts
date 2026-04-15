@@ -96,6 +96,15 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       }
 
       const apiKeyConfigured = !!(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+
+      // Safety: clear stale process reference if the subprocess has already exited
+      if (activeLoginProc && activeLoginProc.exitCode !== null) {
+        console.log(
+          `[claude-auth] Cleaning up stale login process (exitCode=${activeLoginProc.exitCode}, loginId=${activeLoginId})`,
+        );
+        activeLoginProc = null;
+        activeLoginId = null;
+      }
       const loginInProgress = !!activeLoginProc;
 
       res.json({
@@ -266,6 +275,12 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
     const { code } = (req.body || {}) as { code?: string };
     if (!code || typeof code !== 'string') {
       return res.status(400).json({ error: 'code is required (the URL copied from Anthropic)' });
+    }
+
+    // Clean up stale process reference before checking
+    if (activeLoginProc && activeLoginProc.exitCode !== null) {
+      activeLoginProc = null;
+      activeLoginId = null;
     }
 
     if (!activeLoginProc || !activeLoginProc.stdin) {
