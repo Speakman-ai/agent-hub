@@ -441,7 +441,7 @@ ${commentList}
 2. If a comment is a question or discussion point, respond with a comment on the PR
 3. After addressing all comments, commit and push:
    \`\`\`bash
-   git add -A -- ':!node_modules' ':!*/node_modules'
+   git add -A
    git commit -m "Address review comments"
    git push
    \`\`\`
@@ -678,7 +678,7 @@ ${reviewBody || '(No body — check inline comments on the PR)'}
 3. Address each issue — fix the code
 4. Commit and push to the same branch:
    \`\`\`bash
-   git add -A -- ':!node_modules' ':!*/node_modules'
+   git add -A
    git commit -m "Address review feedback from ${sender}"
    git push
    \`\`\``;
@@ -1048,7 +1048,7 @@ The CI checks on your PR have **failed**. Please investigate and fix.
 3. Fix the issues in your code
 4. Commit and push:
    \`\`\`bash
-   git add -A -- ':!node_modules' ':!*/node_modules'
+   git add -A
    git commit -m "Fix CI failures"
    git push
    \`\`\`

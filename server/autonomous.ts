@@ -1271,7 +1271,7 @@ If the merge command fails (e.g., "merge conflict", "not mergeable", "out of dat
    \`\`\`
 2. Resolve any conflicts, then force-push the updated branch:
    \`\`\`bash
-   git add -A -- ':!node_modules' ':!*/node_modules'
+   git add -A
    git rebase --continue
    git push --force-with-lease
    \`\`\`
@@ -1764,7 +1764,7 @@ Your PR has received review feedback from the lead reviewer. Please read the com
    If there are conflicts, resolve them before continuing.
 4. Commit and push to the same branch:
    \`\`\`bash
-   git add -A -- ':!node_modules' ':!*/node_modules'
+   git add -A
    git commit -m "Address review feedback"
    git push
    \`\`\`
@@ -2133,7 +2133,7 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
 3. Address each issue — fix the code or explain why no change is needed
 4. Commit and push:
    \`\`\`bash
-   git add -A -- ':!node_modules' ':!*/node_modules'
+   git add -A
    git commit -m "Address review feedback"
    git push
    \`\`\``;
