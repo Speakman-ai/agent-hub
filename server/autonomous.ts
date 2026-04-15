@@ -951,6 +951,58 @@ async function countUnresolvedThreadsGraphql(
   return nodes.filter((n) => n && !n.isResolved).length;
 }
 
+/**
+ * Check if a PR has merge conflicts by querying the GitHub API.
+ * Returns true if the PR is in a conflicting state.
+ */
+export async function checkPrMergeability(pr: ParsedPR): Promise<boolean> {
+  const d = getDeps();
+  const config = d.getConfig();
+
+  // Try GitHub App first, then bot token, then gh CLI
+  if (hasGitHubApp()) {
+    try {
+      const app = config.githubApp as GitHubAppConfig;
+      const instId = resolveInstallationId(app, pr.owner);
+      if (instId) {
+        const data = (await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`, {
+          appId: app.appId,
+          privateKey: app.privateKey,
+          installationId: instId,
+        })) as { mergeable?: boolean; mergeable_state?: string };
+        return data.mergeable === false || data.mergeable_state === 'dirty';
+      }
+    } catch {
+      // Fall through to CLI
+    }
+  }
+
+  // Fallback: use gh CLI
+  const env = botGhEnv();
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'pr',
+        'view',
+        String(pr.number),
+        '--repo',
+        `${pr.owner}/${pr.repo}`,
+        '--json',
+        'mergeable,mergeStateStatus',
+      ],
+      { timeout: 15000, ...(env && { env }) },
+    );
+    const data = JSON.parse(stdout || '{}') as {
+      mergeable?: string;
+      mergeStateStatus?: string;
+    };
+    return data.mergeable === 'CONFLICTING' || data.mergeStateStatus === 'DIRTY';
+  } catch {
+    return false; // Can't determine — assume no conflicts
+  }
+}
+
 export async function checkResolvedComments(prUrl: string): Promise<ResolvedCommentsResult> {
   const pr = parsePrUrl(prUrl);
   if (!pr) return { ok: false, count: 0, summary: 'Invalid PR URL' };
@@ -1138,10 +1190,17 @@ export async function leadReviewPR(
 
   const prNumber = prUrl.match(/\d+$/)?.[0] || '';
 
-  let preReviewChecks = '';
+  let preReviewChecks = `
+## Step 0 — Check merge status
+Before reviewing, check if the PR has merge conflicts:
+\`\`\`bash
+gh pr view ${prNumber} --json mergeable,mergeStateStatus --jq '{mergeable, mergeStateStatus}'
+\`\`\`
+If \`mergeable\` is \`"CONFLICTING"\`, **request changes** — tell the author to rebase onto main and resolve conflicts before the review can proceed. Do NOT approve a PR with merge conflicts.
+`;
   if (shouldWaitForCI) {
     preReviewChecks += `
-## Step 0 — Wait for CI checks to pass
+## Step 0b — Wait for CI checks to pass
 Before reviewing, verify all GitHub checks are passing:
 \`\`\`bash
 gh pr checks ${prNumber}
@@ -1151,7 +1210,7 @@ If any checks are still running, wait 30 seconds and check again. If checks are 
   }
   if (shouldWaitForComments) {
     preReviewChecks += `
-## Step 0b — Check for unresolved review comments
+## Step 0c — Check for unresolved review comments
 On the PR’s **Files changed** tab, confirm there are no **unresolved** review conversations before approving.
 (If your \`gh\` is recent, you can try: \`gh pr view ${prNumber} --json reviewThreads\`; older CLIs omit that field — the server uses the GitHub API when needed.)
 If there are unresolved threads, do NOT approve until they are resolved.
@@ -1512,6 +1571,86 @@ ${finalContent.slice(-1500)}`;
       });
     } else if (approved) {
       if (prUrl) {
+        // Server-side mergeability check — catch conflicts the reviewer missed
+        const pr = parsePrUrl(prUrl);
+        if (pr) {
+          try {
+            const hasMergeConflicts = await checkPrMergeability(pr);
+            if (hasMergeConflicts) {
+              console.log(
+                `[Review] PR approved but has merge conflicts — routing to conflict resolution`,
+              );
+              // Submit the approval (code quality was good) but then dispatch conflict resolution
+              const reviewBody = extractReviewBody(finalContent, 'approve');
+              submitGitHubReview(
+                prUrl,
+                'APPROVE',
+                reviewBody +
+                  '\n\n> Note: This PR has merge conflicts that need resolving before it can be merged.',
+              ).catch((err: unknown) => {
+                const msg = err instanceof Error ? err.message : String(err);
+                console.error(`[Review] Server-side approval submission failed:`, msg);
+              });
+
+              if (card) {
+                const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1] || '';
+                const conflictMessage = `# Merge Conflict Resolution Needed
+
+Your PR was **approved** by the lead reviewer, but it has merge conflicts with the main branch that must be resolved before merging.
+
+## What to do:
+1. Rebase your branch onto main:
+   \`\`\`bash
+   git fetch origin main
+   git rebase origin/main
+   \`\`\`
+2. Resolve any conflicts that arise, then continue the rebase:
+   \`\`\`bash
+   # After resolving conflicts in each file:
+   git add <resolved-files>
+   git rebase --continue
+   \`\`\`
+3. Force-push the rebased branch:
+   \`\`\`bash
+   git push --force-with-lease
+   \`\`\`
+4. Verify the build still passes: \`npm run build\`
+5. The lead will automatically re-review and merge once conflicts are resolved.
+
+${prNumber ? `**PR:** ${prUrl}\nCheck the current conflict status: \`gh pr view ${prNumber} --json mergeable,mergeStateStatus\`` : ''}
+
+## Reviewer's notes:
+${finalContent.slice(-1500)}`;
+
+                const inProgressCol = cols.find((c) => c.name === 'In Progress');
+                if (inProgressCol) {
+                  d.stmts.moveKanbanCard.run(inProgressCol.id, 0, card.id);
+                  d.broadcast({ type: 'kanban_update', projectId: project.id });
+                }
+
+                const webhookHandlerDeps = d.getWebhookHandlerDeps();
+                dispatchReviewFeedback(webhookHandlerDeps, card, project, conflictMessage);
+              }
+
+              d.broadcast({
+                type: 'lead_review_complete',
+                sessionId,
+                outcome: 'merge_conflict',
+                projectId: project.id,
+                prUrl,
+                cardId: card?.id || null,
+                cardTitle: titleMatch[1],
+                reviewerAgent: project.agents.find((a) => a.role === 'lead')?.name || null,
+                authorAgent: card?.assignee || null,
+              });
+              return;
+            }
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`[Review] Mergeability check failed (proceeding with approval): ${msg}`);
+          }
+        }
+
         const reviewBody = extractReviewBody(finalContent, 'approve');
         submitGitHubReview(prUrl, 'APPROVE', reviewBody).catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
