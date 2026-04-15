@@ -456,6 +456,17 @@ export async function runCronJob(cronJob) {
           durationMs,
         });
         stmts.createThreadEntry.run(entryId, thread.id, content);
+        const entry = stmts.getThreadEntry.get(entryId);
+        if (broadcastFn) {
+          broadcastFn({
+            type: 'thread_entry_created',
+            threadId: thread.id,
+            projectId: thread.project_id,
+            threadName: thread.name,
+            threadType: thread.type,
+            entry,
+          });
+        }
       } catch (err) {
         console.error(`[Cron] Failed to add thread entry for "${cronJob.name}":`, err.message);
       }
@@ -530,6 +541,17 @@ export async function runCronJob(cronJob) {
           durationMs,
         });
         stmts.createThreadEntry.run(entryId, thread.id, content);
+        const entry = stmts.getThreadEntry.get(entryId);
+        if (broadcastFn) {
+          broadcastFn({
+            type: 'thread_entry_created',
+            threadId: thread.id,
+            projectId: thread.project_id,
+            threadName: thread.name,
+            threadType: thread.type,
+            entry,
+          });
+        }
       } catch (threadErr) {
         console.error(
           `[Cron] Failed to add error thread entry for "${cronJob.name}":`,
