@@ -566,7 +566,8 @@ function handleKanbanWebhookEvent(
     }
   }
 
-  if (!card) return false;
+  // Short-circuit: if no card and not a PR open event, nothing to do
+  if (!card && !(event === 'pull_request' && action === 'opened')) return false;
 
   const project = projects.find((p) => p.id === webhookConfig.project_id);
   if (!project) return false;
@@ -574,6 +575,57 @@ function handleKanbanWebhookEvent(
   const boardData = getOrCreateBoard(stmts, project.id) as BoardData | null;
   if (!boardData?.board) return false;
   const cols = stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
+
+  // Auto-create a kanban card when a PR is opened and no card exists yet
+  if (!card && event === 'pull_request' && action === 'opened' && payload.pull_request) {
+    const pr = payload.pull_request;
+    const inProgressCol = cols.find((c) => c.name === 'In Progress');
+    const targetCol = inProgressCol || cols[0];
+    if (!targetCol) return false;
+
+    const cardId = uuidv4();
+    const sender = payload.sender?.login || 'unknown';
+
+    // Extract a short description from the PR body (first non-empty line, capped)
+    const bodyFirstLine =
+      pr.body
+        ?.split('\n')
+        .find((l: string) => l.trim() && !l.startsWith('#'))
+        ?.trim() || '';
+    const description =
+      bodyFirstLine.length > 200 ? bodyFirstLine.substring(0, 197) + '...' : bodyFirstLine;
+
+    stmts.createKanbanCard.run(
+      cardId,
+      targetCol.id,
+      boardData.board.id,
+      pr.title,
+      description,
+      'medium',
+      sender,
+      '',
+      '',
+      '',
+      sender,
+      0,
+    );
+
+    // Link the PR URL to the new card
+    try {
+      stmts.setCardPrUrl.run(prUrl, cardId);
+    } catch {
+      /* non-critical */
+    }
+
+    console.log(
+      `[Webhook/Kanban] Auto-created card "${pr.title}" from PR #${pr.number} (${prUrl})`,
+    );
+    broadcast({ type: 'kanban_update', projectId: project.id });
+    card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+    return true;
+  }
+
+  if (!card) return false;
 
   const eventKey = action ? `${event}.${action}` : event;
   const sender = payload.sender?.login || 'unknown';
