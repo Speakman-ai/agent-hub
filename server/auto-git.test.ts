@@ -100,7 +100,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       broadcast: mockBroadcast,
       triggerReviewForCard: vi.fn(),
       leadReviewPR: vi.fn(),
-      getConfig: vi.fn(() => ({})),
+      getConfig: vi.fn(() => ({}) as never),
       DEFAULT_SKILLS_DIR: '/tmp/skills',
     });
   });
