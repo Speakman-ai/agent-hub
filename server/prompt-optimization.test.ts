@@ -207,6 +207,7 @@ describe('buildEnrichedPrompt — lead agent delegation', () => {
     const mockGetEnrichedAgent = (id: string) => ({
       id,
       name: 'Sub Agent',
+      engine: 'claude-code',
       systemPrompt: 'I am a sub-agent.',
       projectId: 'test-proj',
       projectName: 'Test',
@@ -229,6 +230,7 @@ describe('buildEnrichedPrompt — lead agent delegation', () => {
     const mockGetEnrichedAgent = (id: string) => ({
       id,
       name: 'Sub Agent',
+      engine: 'claude-code',
       systemPrompt: 'I am a sub-agent.',
       projectId: 'test-proj',
       projectName: 'Test',
