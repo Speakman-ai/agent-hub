@@ -222,43 +222,38 @@ describe('buildEnrichedPrompt — autonomous PR steps gating', () => {
   });
 
   it('includes gh pr create steps when isAutonomous is true', () => {
-    const prompt = buildEnrichedPrompt(
-      makeProject({ cwd: gitTmp }),
-      makeAgent(),
-      { isFirstMessage: true, isAutonomous: true },
-    );
+    const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
+      isFirstMessage: true,
+      isAutonomous: true,
+    });
     expect(prompt).toContain('gh pr create');
     expect(prompt).toContain('Create PR');
     expect(prompt).toContain('CI + Hand Off');
   });
 
   it('excludes gh pr create steps when isAutonomous is false', () => {
-    const prompt = buildEnrichedPrompt(
-      makeProject({ cwd: gitTmp }),
-      makeAgent(),
-      { isFirstMessage: true, isAutonomous: false },
-    );
+    const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
+      isFirstMessage: true,
+      isAutonomous: false,
+    });
     expect(prompt).not.toContain('gh pr create');
     expect(prompt).not.toContain('Create PR');
     expect(prompt).not.toContain('CI + Hand Off');
   });
 
   it('excludes gh pr create steps when isAutonomous is omitted', () => {
-    const prompt = buildEnrichedPrompt(
-      makeProject({ cwd: gitTmp }),
-      makeAgent(),
-      { isFirstMessage: true },
-    );
+    const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
+      isFirstMessage: true,
+    });
     expect(prompt).not.toContain('gh pr create');
     expect(prompt).not.toContain('CI + Hand Off');
   });
 
   it('tells non-autonomous agents to commit without pushing', () => {
-    const prompt = buildEnrichedPrompt(
-      makeProject({ cwd: gitTmp }),
-      makeAgent(),
-      { isFirstMessage: true, isAutonomous: false },
-    );
+    const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
+      isFirstMessage: true,
+      isAutonomous: false,
+    });
     expect(prompt).toContain('Do NOT push or create a PR');
     expect(prompt).toContain('server handles that automatically');
   });
