@@ -70,7 +70,7 @@ const autonomousProjects = new Set<string>();
 const lastDispatchedReviewId = new Map<string, number>();
 const reviewSessionCards = new Map<
   string,
-  { cardId: string | null; prUrl: string; reviewerAgent: string }
+  { cardId: string | null; prUrl: string; reviewerAgent: string; autoMergeOverride?: boolean }
 >();
 const reviewSessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const REVIEW_SESSION_TIMEOUT_MS = 15 * 60 * 1000;
@@ -1032,6 +1032,7 @@ export async function leadReviewPR(
   prUrl: string,
   card: KanbanCardRow | null,
   subAgent?: Agent,
+  options?: { autoMergeOverride?: boolean },
 ): Promise<void> {
   const d = getDeps();
 
@@ -1106,7 +1107,12 @@ export async function leadReviewPR(
     : false;
 
   const wf = wfAutoReview || {};
-  const shouldAutoMerge = wf.autoMerge !== undefined ? wf.autoMerge : isAutonomous;
+  const shouldAutoMerge =
+    options?.autoMergeOverride !== undefined
+      ? options.autoMergeOverride
+      : wf.autoMerge !== undefined
+        ? wf.autoMerge
+        : isAutonomous;
   const shouldWaitForCI = wf.waitForCI !== undefined ? wf.waitForCI : false;
   const shouldWaitForComments =
     wf.waitForResolvedComments !== undefined ? wf.waitForResolvedComments : false;
@@ -1302,6 +1308,7 @@ ${mergeRule}
     cardId: card?.id || null,
     prUrl,
     reviewerAgent: leadAgent.name || leadAgent.id,
+    autoMergeOverride: options?.autoMergeOverride,
   });
 
   // Set card review_status to 'reviewing'
@@ -1519,7 +1526,12 @@ ${finalContent.slice(-1500)}`;
         const isAutonomous = card?.epic_id
           ? !!(d.stmts.getKanbanEpic.get(card.epic_id) as KanbanEpicRow | undefined)?.autonomous
           : false;
-        const shouldAutoMerge = wf.autoMerge !== undefined ? wf.autoMerge : isAutonomous;
+        const shouldAutoMerge =
+          tracked?.autoMergeOverride !== undefined
+            ? tracked.autoMergeOverride
+            : wf.autoMerge !== undefined
+              ? wf.autoMerge
+              : isAutonomous;
         const shouldWaitForCI = wf.waitForCI !== undefined ? wf.waitForCI : false;
         const shouldWaitForComments =
           wf.waitForResolvedComments !== undefined ? wf.waitForResolvedComments : false;

@@ -70,6 +70,12 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+  createPrFromSession: (sessionId, { autoMerge = false, title } = {}) =>
+    fetchJSON(`/sessions/${sessionId}/create-pr`, {
+      method: 'POST',
+      body: JSON.stringify({ autoMerge, title }),
+      timeout: 60000,
+    }),
   setSessionAskMode: (sessionId, enabled) =>
     fetchJSON(`/sessions/${sessionId}/ask-mode`, {
       method: 'PUT',
