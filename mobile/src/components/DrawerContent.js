@@ -31,6 +31,8 @@ export default function DrawerContent({ navigation }) {
     activeRoomId,
     setActiveRoomId,
     refreshRooms,
+    refreshProjects,
+    refreshAgents,
     cronSessions,
   } = useApp();
 
@@ -276,6 +278,28 @@ export default function DrawerContent({ navigation }) {
                             [project.id]: !prev[project.id],
                           }));
                         }
+                      }}
+                      onLongPress={() => {
+                        Alert.alert(
+                          'Delete Project',
+                          `Delete "${project.name}" and all its agents, sessions, board, and wiki data? This cannot be undone.`,
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            {
+                              text: 'Delete',
+                              style: 'destructive',
+                              onPress: async () => {
+                                try {
+                                  await api.deleteProject(project.id);
+                                  refreshProjects();
+                                  refreshAgents();
+                                } catch (err) {
+                                  Alert.alert('Error', 'Failed to delete project');
+                                }
+                              },
+                            },
+                          ],
+                        );
                       }}
                     >
                       <View

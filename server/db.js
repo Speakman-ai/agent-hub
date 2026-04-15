@@ -1283,6 +1283,16 @@ function initDb(dataDir) {
     ),
     acknowledgeEscalation: db.prepare('UPDATE escalations SET acknowledged = 1 WHERE id = ?'),
     deleteEscalation: db.prepare('DELETE FROM escalations WHERE id = ?'),
+    deleteEscalationsByProject: db.prepare('DELETE FROM escalations WHERE project_id = ?'),
+
+    // Bulk project cleanup (cascade handles child rows via FK constraints)
+    deleteWikiPagesByProject: db.prepare('DELETE FROM wiki_pages WHERE project_id = ?'),
+    deleteWebhookConfigsByProject: db.prepare('DELETE FROM webhook_configs WHERE project_id = ?'),
+    deleteBoardsByProject: db.prepare('DELETE FROM kanban_boards WHERE project_id = ?'),
+    deleteThreadsByProject: db.prepare('DELETE FROM threads WHERE project_id = ?'),
+    deleteRoomsByProject: db.prepare('DELETE FROM rooms WHERE project_id = ?'),
+    deleteCronsByProject: db.prepare('DELETE FROM crons WHERE project_id = ?'),
+    deleteSessionsByAgent: db.prepare('DELETE FROM sessions WHERE agent_id = ?'),
     getRecentEscalationByTypeAndPr: db.prepare(
       `SELECT * FROM escalations WHERE project_id = ? AND type = ? AND pr_number = ? AND acknowledged = 0
        ORDER BY created_at DESC LIMIT 1`,

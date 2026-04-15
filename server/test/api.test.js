@@ -149,6 +149,28 @@ describe('Projects', () => {
     it('returns 404 for nonexistent project', async () => {
       await request.delete('/api/projects/does-not-exist').expect(404);
     });
+
+    it('cleans up associated wiki, board, and thread data', async () => {
+      const proj = await createProject();
+
+      // Create associated data
+      const wiki = await createWikiPage(proj.id, { title: 'Cleanup Test' });
+      const card = await createCard(proj.id, { title: 'Cleanup Card' });
+      const thread = await createThread(proj.id, { name: 'Cleanup Thread' });
+
+      // Verify data exists
+      await request.get(`/api/projects/${proj.id}/wiki`).expect(200);
+      const boardRes = await request.get(`/api/projects/${proj.id}/board`).expect(200);
+      expect(boardRes.body.cards.length).toBeGreaterThan(0);
+
+      // Delete project
+      await request.delete(`/api/projects/${proj.id}`).expect(204);
+
+      // Verify associated data is gone
+      await request.get(`/api/projects/${proj.id}/wiki`).expect(404);
+      await request.get(`/api/projects/${proj.id}/board`).expect(404);
+      await request.get(`/api/projects/${proj.id}/threads`).expect(404);
+    });
   });
 });
 

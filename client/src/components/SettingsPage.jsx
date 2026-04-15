@@ -1063,6 +1063,9 @@ function GitHubSection({ projects = [], onProjectsChange }) {
   const [repoTesting, setRepoTesting] = useState({});
   const [repoTestResult, setRepoTestResult] = useState({});
 
+  // Project delete confirmation (inline toggle pattern)
+  const [confirmDeleteProject, setConfirmDeleteProject] = useState(null);
+
   // Clean up polling on unmount
   useEffect(() => {
     return () => {
@@ -1310,6 +1313,21 @@ function GitHubSection({ projects = [], onProjectsChange }) {
       }));
     } finally {
       setRepoTesting((prev) => ({ ...prev, [project.id]: false }));
+    }
+  };
+
+  const handleDeleteProject = async (projectId) => {
+    if (confirmDeleteProject === projectId) {
+      try {
+        await api.deleteProject(projectId);
+        if (onProjectsChange) onProjectsChange();
+      } catch (err) {
+        console.error('Failed to delete project:', err);
+      }
+      setConfirmDeleteProject(null);
+    } else {
+      setConfirmDeleteProject(projectId);
+      setTimeout(() => setConfirmDeleteProject(null), 3000);
     }
   };
 
@@ -1643,6 +1661,34 @@ function GitHubSection({ projects = [], onProjectsChange }) {
                           </span>
                         )}
                       </div>
+                    </div>
+
+                    {/* Delete Project */}
+                    <div className="pt-2 border-t border-gray-800">
+                      <button
+                        onClick={() => handleDeleteProject(p.id)}
+                        className={`text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${
+                          confirmDeleteProject === p.id
+                            ? 'bg-red-600 text-white'
+                            : 'text-gray-500 hover:text-red-400 hover:bg-gray-800'
+                        }`}
+                        title={
+                          confirmDeleteProject === p.id
+                            ? 'Click again to confirm deletion'
+                            : 'Delete this project and all associated data'
+                        }
+                      >
+                        <Trash2 size={12} />
+                        {confirmDeleteProject === p.id
+                          ? 'Confirm Delete Project'
+                          : 'Delete Project'}
+                      </button>
+                      {confirmDeleteProject === p.id && (
+                        <p className="text-xs text-red-400 mt-1">
+                          This will permanently delete all agents, sessions, board, wiki, and other
+                          data.
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}

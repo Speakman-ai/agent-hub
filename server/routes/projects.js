@@ -382,6 +382,26 @@ export default function createProjectRoutes(deps) {
     const projects = getProjects();
     const idx = projects.findIndex((p) => p.id === req.params.projectId);
     if (idx === -1) return res.status(404).json({ error: 'Project not found' });
+
+    const project = projects[idx];
+
+    // Clean up all project-scoped database data.
+    // Foreign key cascades handle child rows (e.g. board → columns → cards → comments).
+    stmts.deleteEscalationsByProject.run(project.id);
+    stmts.deleteWikiPagesByProject.run(project.id);
+    stmts.deleteWebhookConfigsByProject.run(project.id);
+    stmts.deleteBoardsByProject.run(project.id);
+    stmts.deleteThreadsByProject.run(project.id);
+    stmts.deleteRoomsByProject.run(project.id);
+    stmts.deleteCronsByProject.run(project.id);
+
+    // Clean up agent-scoped data (sessions, heartbeat state)
+    const agentIds = (project.agents || []).map((a) => a.id);
+    for (const agentId of agentIds) {
+      stmts.deleteSessionsByAgent.run(agentId);
+    }
+
+    // Remove from projects.json
     projects.splice(idx, 1);
     saveProjects();
     res.status(204).end();

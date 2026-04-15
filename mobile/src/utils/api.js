@@ -67,6 +67,7 @@ export const api = {
 
   // Projects
   getProjects: () => fetchJSON('/projects'),
+  deleteProject: (projectId) => fetchJSON(`/projects/${projectId}`, { method: 'DELETE' }),
 
   // Usage
   getUsage: () => fetchJSON('/usage'),
