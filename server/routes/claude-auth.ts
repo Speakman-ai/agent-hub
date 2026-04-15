@@ -204,12 +204,17 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
         }
       } else {
         const status = code === 0 ? 'success' : 'failed';
-        console.log(`[claude-auth] OAuth login ${status} (loginId=${loginId})`);
+        console.log(
+          `[claude-auth] OAuth login ${status} (loginId=${loginId})${status === 'failed' ? ` output: ${allOutput.trim().slice(0, 500)}` : ''}`,
+        );
         if (broadcast) {
           broadcast({
             type: 'claude-auth-update',
             loginId,
             status,
+            ...(status === 'failed' && {
+              error: allOutput.trim().slice(0, 500) || 'Login process exited unexpectedly',
+            }),
           });
         }
       }

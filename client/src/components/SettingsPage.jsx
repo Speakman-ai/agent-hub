@@ -519,16 +519,27 @@ function ClaudeAuthSection() {
             const status = await api.getClaudeAuth();
             if (status.oauth?.loggedIn) {
               clearInterval(poll);
+              clearTimeout(timeout);
               setAuth(status);
               setOauthUrl(null);
               setLoginLoading(false);
+            } else if (!status.loginInProgress) {
+              // Process exited without success — stop polling
+              clearInterval(poll);
+              clearTimeout(timeout);
+              setAuth(status);
+              setLoginLoading(false);
+              setCallbackStatus({
+                type: 'error',
+                msg: 'Login process exited without completing. Please try again.',
+              });
             }
           } catch {
             /* keep polling */
           }
         }, 3000);
         // Stop polling after 2 minutes
-        setTimeout(() => {
+        const timeout = setTimeout(() => {
           clearInterval(poll);
           setLoginLoading(false);
         }, 120_000);
@@ -634,7 +645,7 @@ function ClaudeAuthSection() {
           msg: 'Callback submitted — waiting for confirmation...',
         });
         setCallbackInput('');
-        // Poll for login completion (same pattern as handleOAuthLogin)
+        // Poll for login completion — check both success AND process exit
         const poll = setInterval(async () => {
           try {
             const status = await api.getClaudeAuth();
@@ -645,6 +656,16 @@ function ClaudeAuthSection() {
               setOauthUrl(null);
               setLoginLoading(false);
               setCallbackStatus(null);
+            } else if (!status.loginInProgress) {
+              // Process exited without success — stop polling immediately
+              clearInterval(poll);
+              clearTimeout(timeout);
+              setAuth(status);
+              setLoginLoading(false);
+              setCallbackStatus({
+                type: 'error',
+                msg: 'Login failed — the auth process exited without completing. Try logging in via CLI: claude /login',
+              });
             }
           } catch {
             /* keep polling */
