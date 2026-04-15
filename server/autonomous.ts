@@ -628,8 +628,10 @@ export async function submitGitHubReview(
       const app = config.githubApp as GitHubAppConfig;
       const instId = resolveInstallationId(app, pr.owner);
       if (!instId) {
-        console.log(`[Review] No GitHub App installation found for owner "${pr.owner}" — skipping`);
-        return false;
+        console.log(
+          `[Review] No GitHub App installation found for owner "${pr.owner}" — trying fallbacks`,
+        );
+        throw new Error('No installation found');
       }
       await githubApiRequest(`/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`, {
         method: 'POST',
@@ -1416,7 +1418,7 @@ export async function handleReviewOutcome(
     const approved = /approv|pr review.*--approve|ready for.*merge|looks good|lgtm|no issues/i.test(
       finalContent,
     );
-    const changesRequested = /request.changes|changes.needed|needs?.fix|--request-changes/i.test(
+    const changesRequested = /request.changes|changes.needed|needs?.+fix|--request-changes/i.test(
       finalContent,
     );
     const mergeFailed =
