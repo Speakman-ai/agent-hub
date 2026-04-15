@@ -14,7 +14,16 @@ async function fetchJSON(url, options = {}) {
     },
     signal: fetchOpts.signal || AbortSignal.timeout(timeout),
   });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = await res.json();
+      detail = body.error || body.message || JSON.stringify(body);
+    } catch {
+      /* response wasn't JSON */
+    }
+    throw new Error(detail ? `${res.status}: ${detail}` : `API error: ${res.status}`);
+  }
   return res.json();
 }
 

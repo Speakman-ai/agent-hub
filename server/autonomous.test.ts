@@ -85,6 +85,7 @@ const {
   checkPrMergeability,
   botGhEnv,
   triggerReviewForCard,
+  addSelfAsReviewer,
 } = await import('./autonomous.js');
 
 const { getOrCreateBoard } = await import('./routes/board.js');
@@ -2033,5 +2034,62 @@ describe('mergeApprovedPR', () => {
 
     const result = await mergeApprovedPR('https://github.com/owner/repo/pull/42');
     expect(result).toBe(false);
+  });
+});
+
+describe('submitGitHubReview — personal profile guard', () => {
+  it('refuses to submit review when no bot token is configured', async () => {
+    const { mockDeps } = makeDeps({}); // no botGithubToken, no githubApp
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    const result = await submitGitHubReview(
+      'https://github.com/owner/repo/pull/99',
+      'APPROVE',
+      'Looks good',
+    );
+    expect(result).toBe(false);
+  });
+
+  it('submits review when bot token is configured', async () => {
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_bot123' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    // execFile mock returns success, so this should succeed
+    const result = await submitGitHubReview(
+      'https://github.com/owner/repo/pull/99',
+      'APPROVE',
+      'Looks good',
+    );
+    expect(result).toBe(true);
+  });
+});
+
+describe('addSelfAsReviewer — personal profile guard', () => {
+  it('skips reviewer assignment when no bot token is configured', async () => {
+    const { execFile } = await import('child_process');
+    const { mockDeps } = makeDeps({}); // no botGithubToken, no githubApp
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    (execFile as unknown as Mock).mockClear();
+    await addSelfAsReviewer('https://github.com/owner/repo/pull/99');
+
+    // Should NOT have called execFile (would use personal profile)
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it('adds reviewer when bot token is configured', async () => {
+    const { execFile } = await import('child_process');
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_bot123' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    (execFile as unknown as Mock).mockClear();
+    await addSelfAsReviewer('https://github.com/owner/repo/pull/99');
+
+    // Should have called execFile with bot env
+    expect(execFile).toHaveBeenCalled();
+    const callArgs = (execFile as unknown as Mock).mock.calls[0];
+    expect(callArgs[0]).toBe('gh');
+    expect(callArgs[1]).toContain('--add-reviewer');
+    expect(callArgs[1]).toContain('bot-user');
   });
 });

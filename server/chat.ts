@@ -65,6 +65,7 @@ interface DelegateTask {
 
 interface BuildEnrichedPromptOptions {
   useWorktree?: boolean;
+  isFirstMessage?: boolean;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -219,6 +220,8 @@ export function buildEnrichedPrompt(
     }
   }
 
+  const isFirstMessage = options.isFirstMessage !== false; // default true for backward compat
+
   const projectId =
     (project as ProjectWithCommands & { id?: string }).id || (agent as EnrichedAgent).projectId;
   {
@@ -227,43 +230,15 @@ export function buildEnrichedPrompt(
       if (wikiContext) {
         prompt += '\n\n' + wikiContext;
       }
-      prompt += `\n\n## Wiki Documentation Guidelines
-After completing significant work, update the project wiki to preserve institutional knowledge. This helps future agents (and humans) understand decisions, patterns, and solutions without re-discovering them.
 
-**Before writing:**
-- Search the wiki first (\`GET /api/projects/${projectId}/wiki?q=...\`) to check if a relevant page already exists.
-- If a page exists on the topic, **update it** rather than creating a duplicate.
-- If no relevant page exists, **create a new one** with a clear title and appropriate category.
+      // Static instructional blocks — only on first message to save tokens
+      if (isFirstMessage) {
+        prompt += `\n\n## Wiki Documentation Guidelines
+After significant work, update the wiki to preserve knowledge. Search first (\`GET /api/projects/${projectId}/wiki?q=...\`), update existing pages rather than duplicating. Create via \`POST /api/projects/${projectId}/wiki\` with \`{title, content, category, updatedBy}\`. Update via \`PUT /api/projects/${projectId}/wiki/:slug\`. Categories: general, api-docs, architecture, conventions, test-patterns, troubleshooting, onboarding. Focus on decisions, patterns, and knowledge that would be lost when the session ends.`;
 
-**What to document:**
-- Architecture decisions and rationale
-- API endpoints, request/response formats, and auth patterns
-- Code conventions, naming patterns, and file structure choices
-- Bug fixes and troubleshooting steps (so the same issue isn't debugged twice)
-- Setup/onboarding steps that weren't obvious
-- Test patterns and testing strategies
-
-**Categories:** general, api-docs, architecture, conventions, test-patterns, troubleshooting, onboarding
-
-**How to write:**
-- \`POST /api/projects/${projectId}/wiki\` with \`{title, content, category, updatedBy: "your-agent-name"}\`
-- \`PUT /api/projects/${projectId}/wiki/:slug\` to update an existing page
-- Use markdown for content. Be concise but thorough — write for a developer joining the project cold.
-
-You don't need to document every small change. Focus on things that represent **decisions**, **patterns**, or **knowledge that would be lost** when this session ends.`;
-
-      prompt += `\n\n## Kanban Board — Task Self-Reporting
-You have access to a project kanban board via the \`kanban\` skill. **Report your work on the board** as you go:
-
-- **Starting a task?** Create a card in "In Progress" (or move an existing one from "To Do"):
-  \`POST /api/projects/${projectId}/board/cards\` with \`{title, description, columnId, priority, assignee: "your-agent-name"}\`
-- **Finished?** Move the card to "Done":
-  \`POST /api/projects/${projectId}/board/cards/:cardId/move\` with \`{columnId: "<done-column-id>"}\`
-- **Found a bug or follow-up?** Create a card in "Backlog" so it gets tracked.
-- **Hit a blocker?** Add a comment to the card explaining what's stuck.
-
-Use \`GET /api/projects/${projectId}/board\` to see columns and their IDs. Keep card titles short and descriptive.
-You don't need to create cards for trivial tasks (quick questions, one-line fixes). Focus on meaningful work items.`;
+        prompt += `\n\n## Kanban Board — Task Self-Reporting
+Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/projects/${projectId}/board/cards\` and \`POST /api/projects/${projectId}/board/cards/:cardId/move\`. Use \`GET /api/projects/${projectId}/board\` for column IDs. Skip cards for trivial tasks.`;
+      }
     }
   }
 
@@ -282,102 +257,39 @@ You don't need to create cards for trivial tasks (quick questions, one-line fixe
     isGitHubConnected = remoteOutput.includes('github.com');
   } catch {}
 
-  if (isGitHubConnected) {
-    const reviewer = agent.reviewer || project.defaultReviewer || '';
-    const reviewerNote = reviewer
-      ? `When creating a PR, add \`--reviewer ${reviewer}\` to the \`gh pr create\` command.`
-      : '';
+  // Static instructional blocks — only on first message to save tokens
+  if (isFirstMessage) {
+    if (isGitHubConnected) {
+      const reviewer = agent.reviewer || project.defaultReviewer || '';
+      const reviewerNote = reviewer ? ` Add \`--reviewer ${reviewer}\` to \`gh pr create\`.` : '';
 
-    prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
-This project is connected to GitHub. When implementing changes, follow the lifecycle below.
+      prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
+This project is connected to GitHub. Follow this lifecycle for changes:
 
-### Your Job (Steps 1–7)
-You handle implementation, testing, and handing off to the automated review system. Once you move the card to Review, **your job is done** — the server handles the rest.
+1. **Kanban Card**: Check \`GET /api/projects/${projectId}/board\`, create in "To Do" or move to "In Progress"
+2. **Branch**: \`git checkout main && git pull && git checkout -b feature/<name>\`${options.useWorktree ? ' (worktree — safe to branch here)' : ''}
+3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
+4. **Test & Lint**: ${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding
+5. **Commit & Push**: \`git push -u origin <branch>\`
+6. **Create PR**: \`gh pr create --title "..." --body "## Summary\\n...\\n## Test plan\\n..."\`${reviewerNote}
+7. **CI + Hand Off**: Fix CI failures, link PR to card (\`PUT .../cards/:id {pr_url}\`), move card to "Review" — **you're done**, the server auto-triggers lead review
 
-### 1. Kanban Card
-- Check for an existing card: \`GET /api/projects/${projectId}/board\`
-- If none exists, **create one** in "To Do": \`POST /api/projects/${projectId}/board/cards\` with \`{title, description, columnId: "<todo-column-id>", priority, assignee: "your-agent-name"}\`
-- Keep **title short** (under 60 chars) and **description concise** (2-3 sentences max — what changed and why).
-- **Move to "In Progress"** when you begin: \`POST /api/projects/${projectId}/board/cards/:cardId/move\` with \`{columnId: "<in-progress-column-id>"}\`
-
-### 2. Branch
-- Pull latest: \`git checkout main && git pull origin main\`
-- Create feature branch: \`git checkout -b feature/<short-description>\`${options.useWorktree ? '\n- You are in a git worktree — you can pull and branch here without affecting the main repo.' : ''}
-
-### 3. Implement
-- Make your changes. Follow existing code patterns and conventions.
-${project.commands?.install ? `- Install dependencies if needed: \`${project.commands.install}\`` : ''}
-
-### 4. Test & Lint
-${project.commands?.test ? `- Run tests: \`${project.commands.test}\`` : '- Run tests: `npm test`, `pytest`, `cargo test`, etc.'}
-${project.commands?.lint ? `- Run linting: \`${project.commands.lint}\`` : '- Run linting: `npm run lint`, `eslint`, etc.'}
-- Fix failures before proceeding.
-
-### 5. Commit & Push
-- Stage, commit with a clear message, and push: \`git push -u origin <branch-name>\`
-
-### 6. Create PR
-- \`gh pr create --title "<concise title>" --body "<description>"\`
-${reviewerNote}
-- PR body format:
-  \`\`\`
-  ## Summary
-  <1-3 bullet points: what changed and why>
-
-  ## Test plan
-  <What was tested / how to verify>
-  \`\`\`
-
-### 7. CI Loop + Hand Off to Review
-- Poll CI: \`gh pr checks <pr-number>\` — fix failures until green.
-- **Link PR to card**: \`PUT /api/projects/${projectId}/board/cards/:cardId\` with \`{pr_url: "<pr-url>"}\`
-- **Move card to "Review"**: \`POST /api/projects/${projectId}/board/cards/:cardId/move\` with \`{columnId: "<review-column-id>"}\`
-- **You're done.** The server automatically triggers a lead review when the card reaches Review. Do NOT wait — move on to your next task or end the session.
-
-### What Happens Next (Automated)
-The server picks up the review automatically:
-1. The lead agent reviews your PR (reads diff, checks for bugs/security/correctness)
-2. If **approved**: the server submits a formal GitHub approval. If auto-merge is enabled, it merges. If not, a human merges.
-3. If **changes requested**: the server submits a formal review with feedback and dispatches it back to you in a new session. Address the feedback, push fixes, and the lead will re-review automatically.
-4. This loop repeats until the PR is approved and merged.
-
-### Existing PRs — Fix Mode
-If asked to fix, update, or resolve issues on **existing PRs**, skip the full lifecycle:
-1. Check out the PR's branch.
-2. Read failures: \`gh pr checks <number>\` and/or \`gh pr view <number> --json comments,reviews\`
-3. Fix, commit, push.
-4. Poll until green. Move on.
-Do NOT create new cards/branches/PRs for existing PR work. Do NOT merge.
-
-### Shortcuts
-- **Trivial fixes**: skip card creation, still use branch + PR.
-- **Found a bug?** Create a "Backlog" card.
-- **Blocked?** Comment on the card.
-
-Use \`GET /api/projects/${projectId}/board\` to see column IDs.`;
-  } else {
-    if (options.useWorktree) {
-      prompt += `\n\n## Git Workflow — Worktree-First Development
-You are working in a git worktree with its own feature branch. Follow these rules:
-- **Never commit directly to main.** All work stays on the current feature branch.
-- When asked to "commit and push", commit to the current branch and push it — do NOT push to main.
-- When asked to "make a PR" or "open a PR", push the branch and create a PR against main using \`gh pr create\`.
-- Main only receives code via merged PRs — never direct commits.
-- If delegating to sub-agents, they must edit files in the current working directory (the worktree), not the main repo.`;
+**Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit, push. No new cards/branches/PRs. Do NOT merge.
+**Shortcuts**: Trivial fixes skip card creation. Found a bug? Create "Backlog" card.`;
+    } else if (options.useWorktree) {
+      prompt += `\n\n## Git Workflow
+You are in a git worktree. Never commit to main. Commit to the current feature branch. Use \`gh pr create\` for PRs against main.`;
     }
+
+    prompt += `\n\n## Memory Instructions
+You have access to memory files. The memory context above shows your current knowledge. Mention important learnings (decisions, preferences, key facts) in your response so they get logged.`;
+
+    prompt += `\n\n## External API Documentation — Always Verify
+When working with external APIs (GitHub, Slack, etc.), always consult official documentation first. Do not rely solely on training data — APIs change.`;
   }
 
-  prompt += `\n\n## Memory Instructions\nYou have access to memory files in your workspace. The memory context above shows your current knowledge.\nWhen you learn something important (decisions, preferences, key facts), mention it in your response so it gets logged.`;
-
-  prompt += `\n\n## External API Documentation — Always Verify
-When working with any external service API (GitHub, Slack, Stripe, AWS, etc.), **always search for and read the current official documentation** before implementing or debugging. Do not rely solely on training data — APIs change, and stale knowledge leads to subtle bugs.
-
-- Consult the official documentation for the service you're integrating with
-- Compare the current API contract against what the code implements
-- Do this **proactively** at the start of the task — don't wait until something breaks
-- This applies to new integrations, bug fixes, debugging unexpected behavior, and code review of third-party API usage`;
-
   if (agent.role === 'lead' && Array.isArray(agent.subAgents) && agent.subAgents.length > 0) {
+    // Delegation: sub-agent list is dynamic (agents can change), so always include
     const getEnrichedAgent = options._getEnrichedAgent;
     if (!getEnrichedAgent) {
       console.warn(
@@ -394,27 +306,25 @@ When working with any external service API (GitHub, Slack, Stripe, AWS, etc.), *
       .filter(Boolean)
       .join('\n');
 
-    prompt += `\n\n## Delegation
+    if (isFirstMessage) {
+      prompt += `\n\n## Delegation
 
-You lead a team of sub-agents. When a task requires multiple specialists working in parallel, delegate by including a \`<delegate>\` block in your response:
-
+You lead a team of sub-agents. Delegate by including a \`<delegate>\` block:
 \`\`\`
 <delegate>
-[{"agentId": "sub-agent-id", "task": "Detailed description of what this agent should do..."},
- {"agentId": "another-sub-id", "task": "Detailed description..."}]
+[{"agentId": "sub-agent-id", "task": "..."}]
 </delegate>
 \`\`\`
 
 Your available sub-agents:
 ${subAgentDescriptions}
 
-### Guidelines
-- Only delegate when tasks genuinely benefit from parallel specialist work
-- Each task description should be self-contained with full context needed to execute
-- After delegation completes, you'll receive the results to synthesize for the user
-- For simple questions or single-domain tasks, just answer directly without delegating
-- You can delegate to one or many sub-agents as appropriate
-- **IMPORTANT: Do NOT use the Agent tool for delegation.** The Agent tool's subagent_type only supports built-in types (general-purpose, Explore, Plan). Your sub-agents are custom and must be invoked via the \`<delegate>\` block above — the server handles spawning them as separate CLI processes. If you use the Agent tool with a custom subagent_type like "${agent.subAgents?.[0] || 'sub-agent-id'}", it will fail with "Agent Type not found".`;
+Guidelines: Delegate only for parallel specialist work. Each task must be self-contained. For simple tasks, just do it directly.
+**IMPORTANT: Do NOT use the Agent tool for delegation.** Use the \`<delegate>\` block — the server spawns sub-agents as separate CLI processes.`;
+    } else {
+      // On subsequent messages, just remind of available sub-agents (compact)
+      prompt += `\n\n## Sub-Agents\n${subAgentDescriptions}\nDelegate via \`<delegate>\` block (not Agent tool).`;
+    }
   }
 
   return prompt;
@@ -634,6 +544,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       agent as AgentWithModel,
       {
         useWorktree: !!session!.use_worktree,
+        isFirstMessage,
         _getEnrichedAgent: getEnrichedAgent,
       },
     );

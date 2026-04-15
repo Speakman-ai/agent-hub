@@ -770,8 +770,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
       res.json({ prUrl: result.prUrl, cardId: result.cardId });
     } catch (err) {
-      console.error('[create-pr] Error:', (err as Error).message);
-      res.status(500).json({ error: (err as Error).message });
+      const msg = (err as Error).message || String(err);
+      const stack = (err as Error).stack || '';
+      console.error(`[create-pr] Error for session ${sessionId}:`, msg);
+      console.error(`[create-pr] Stack:`, stack);
+      res.status(500).json({ error: msg });
     }
   });
 
