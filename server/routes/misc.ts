@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { db } from '../db.js';
 import { getSlackStatus, restartSlack, getSlackMessages, getAllSlackMessages } from '../slack.js';
 import type { RouteDeps, EnrichedAgent, AppConfig, Stmts, Project } from '../types.js';
+import { getLogBuffer } from '../server-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverVersion: string = JSON.parse(
@@ -44,6 +45,10 @@ export function createHealthRoute(deps: HealthRouteDeps): Router {
 export default function createMiscRoutes(deps: RouteDeps): Router {
   const { allAgents, getEnrichedAgent, stmts } = deps;
   const router = Router();
+
+  router.get('/api/server-logs', (_req: Request, res: Response) => {
+    res.json(getLogBuffer());
+  });
 
   router.get('/api/browse', (req: Request, res: Response) => {
     const home = process.env.HOME || '/home/' + (process.env.USER || 'user');

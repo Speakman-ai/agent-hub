@@ -1,3 +1,6 @@
+import { installLogCapture, setLogBroadcast } from './server-log.js';
+installLogCapture(); // Must be first — captures all subsequent console output
+
 import express from 'express';
 import type { Request, Response } from 'express';
 import { createServer } from 'http';
@@ -415,6 +418,7 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
   handleRoomDequeue,
 });
 _broadcast = _wsBroadcast;
+setLogBroadcast(_wsBroadcast);
 
 const chatHandler = createChatHandler({
   broadcast,

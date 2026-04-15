@@ -1021,7 +1021,7 @@ export default function App() {
     }
   }, []);
 
-  const { send, connected, reconnecting } = useWebSocket(handleWsMessage);
+  const { send, connected, reconnecting, wsRef } = useWebSocket(handleWsMessage);
 
   // Called by SessionTail after it lazy-fetches historical events for a
   // legacy message. Hoists them into the shared map so subsequent renders
@@ -1685,6 +1685,7 @@ export default function App() {
                 }
               }}
               showToast={showToast}
+              wsRef={wsRef}
             />
           ) : currentView === 'wiki' && wikiProjectId ? (
             <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />

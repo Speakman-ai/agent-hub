@@ -89,6 +89,7 @@ import {
   EyeOff,
   ScrollText,
   Link,
+  FileText,
 } from 'lucide-react';
 
 function OrganizationsSection() {
@@ -4342,6 +4343,150 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
   );
 }
 
+function ServerLogsSection({ wsRef }) {
+  const [logs, setLogs] = useState([]);
+  const [autoFollow, setAutoFollow] = useState(true);
+  const [filter, setFilter] = useState('');
+  const [levelFilter, setLevelFilter] = useState('all'); // 'all' | 'log' | 'warn' | 'error'
+  const containerRef = useRef(null);
+  const wasAtBottomRef = useRef(true);
+
+  // Fetch initial logs
+  useEffect(() => {
+    api
+      .getServerLogs()
+      .then((data) => setLogs(data))
+      .catch(() => {});
+  }, []);
+
+  // Subscribe to WS server-log events
+  useEffect(() => {
+    function handler(e) {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'server-log' && data.entry) {
+          setLogs((prev) => {
+            const next = [...prev, data.entry];
+            return next.length > 2000 ? next.slice(-2000) : next;
+          });
+        }
+      } catch {}
+    }
+    const ws = wsRef?.current;
+    if (ws) {
+      ws.addEventListener('message', handler);
+      return () => ws.removeEventListener('message', handler);
+    }
+  }, [wsRef]);
+
+  // Auto-scroll
+  useEffect(() => {
+    if (autoFollow && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
+  }, [logs, autoFollow]);
+
+  // Detect manual scroll
+  const handleScroll = () => {
+    if (!containerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+    const atBottom = scrollHeight - scrollTop - clientHeight < 40;
+    wasAtBottomRef.current = atBottom;
+    if (atBottom && !autoFollow) setAutoFollow(true);
+    if (!atBottom && autoFollow) setAutoFollow(false);
+  };
+
+  const filteredLogs = logs.filter((entry) => {
+    if (levelFilter !== 'all' && entry.level !== levelFilter) return false;
+    if (filter && !entry.message.toLowerCase().includes(filter.toLowerCase())) return false;
+    return true;
+  });
+
+  const levelColor = (level) => {
+    if (level === 'error') return 'text-red-400';
+    if (level === 'warn') return 'text-yellow-400';
+    return 'text-gray-400';
+  };
+
+  const tsColor = 'text-gray-600';
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3 flex-wrap">
+        <input
+          type="text"
+          placeholder="Filter logs..."
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 flex-1 min-w-[200px]"
+        />
+        <div className="flex gap-1">
+          {['all', 'log', 'warn', 'error'].map((lvl) => (
+            <button
+              key={lvl}
+              onClick={() => setLevelFilter(lvl)}
+              className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                levelFilter === lvl ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {lvl === 'all' ? 'All' : lvl.charAt(0).toUpperCase() + lvl.slice(1)}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setAutoFollow(!autoFollow)}
+          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+            autoFollow ? 'bg-blue-600/30 text-blue-400' : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          Auto-follow {autoFollow ? 'ON' : 'OFF'}
+        </button>
+        <button
+          onClick={() => setLogs([])}
+          className="px-2.5 py-1 rounded text-xs font-medium text-gray-500 hover:text-gray-300 transition-colors"
+        >
+          Clear
+        </button>
+      </div>
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="bg-gray-950 border border-gray-800 rounded-xl font-mono text-xs leading-5 overflow-auto"
+        style={{ height: 'calc(100vh - 280px)', minHeight: '400px' }}
+      >
+        {filteredLogs.length === 0 ? (
+          <div className="flex items-center justify-center h-full text-gray-600">
+            {logs.length === 0 ? 'No logs yet — waiting for server output...' : 'No matching logs'}
+          </div>
+        ) : (
+          <div className="p-3">
+            {filteredLogs.map((entry, i) => (
+              <div key={i} className="hover:bg-gray-900/50 px-1 -mx-1 rounded">
+                <span className={tsColor}>
+                  {new Date(entry.ts).toLocaleTimeString('en-US', {
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                  })}
+                </span>{' '}
+                <span className={levelColor(entry.level)}>
+                  {entry.level === 'log' ? ' ' : entry.level === 'warn' ? '⚠' : '✖'}
+                </span>{' '}
+                <span className="text-gray-300">{entry.message}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="text-xs text-gray-600">
+        {filteredLogs.length} of {logs.length} entries
+        {logs.length >= 2000 && ' (oldest entries trimmed)'}
+      </p>
+    </div>
+  );
+}
+
 export default function SettingsPage({
   projects = [],
   agents,
@@ -4349,6 +4494,7 @@ export default function SettingsPage({
   initialTab,
   onNavigate,
   showToast,
+  wsRef,
 }) {
   const [tab, setTab] = useState(initialTab || 'general');
 
@@ -4369,6 +4515,7 @@ export default function SettingsPage({
     { id: 'slack', icon: <MessageSquare size={16} />, text: 'Slack' },
     { id: 'usage', icon: <BarChart3 size={16} />, text: 'Usage' },
     { id: 'backup', icon: <HardDrive size={16} />, text: 'Backup' },
+    { id: 'logs', icon: <FileText size={16} />, text: 'Logs' },
   ];
 
   return (
@@ -4421,6 +4568,7 @@ export default function SettingsPage({
           {tab === 'backup' && (
             <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />
           )}
+          {tab === 'logs' && <ServerLogsSection wsRef={wsRef} />}
         </SettingsErrorBoundary>
       </div>
     </div>

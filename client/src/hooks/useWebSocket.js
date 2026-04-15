@@ -94,5 +94,5 @@ export function useWebSocket(onMessage) {
     return false;
   }, []);
 
-  return { send, connected, reconnecting };
+  return { send, connected, reconnecting, wsRef };
 }

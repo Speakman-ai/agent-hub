@@ -427,4 +427,7 @@ export const api = {
         return res.json().catch(() => null);
       },
     ),
+
+  // Server Logs
+  getServerLogs: () => fetchJSON('/server-logs'),
 };
