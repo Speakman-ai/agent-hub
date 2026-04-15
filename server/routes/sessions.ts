@@ -3,6 +3,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { Router, Request, Response } from 'express';
 import { defaultModelForEngine, buildSpawnEnv } from '../config.js';
 import { removeWorkspace } from '../worktree.js';
+import { manualCommitAndPR } from '../auto-git.js';
 import type {
   RouteDeps,
   AppConfig,
@@ -733,6 +734,43 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       res.status(201).json({ session: newSession, forwardedMessageId });
     } catch (err) {
       console.error('Forward session error:', err);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ─── Create ticket & PR from ad-hoc session ──────────────────────
+  router.post('/api/sessions/:sessionId/create-pr', async (req: Request, res: Response) => {
+    const { autoMerge = false, title } = req.body || {};
+    const sessionId = req.params.sessionId as string;
+
+    try {
+      const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      if (!session.worktree_path) {
+        return res.status(400).json({ error: 'Session has no worktree — nothing to commit' });
+      }
+
+      const agentLookup = findAgent(session.agent_id);
+      if (!agentLookup) return res.status(404).json({ error: 'Agent not found' });
+
+      const { project, agent } = agentLookup;
+
+      const result = await manualCommitAndPR(
+        sessionId,
+        session.agent_id,
+        project,
+        agent,
+        session.worktree_path,
+        { autoMerge: !!autoMerge, title: title || undefined },
+      );
+
+      if (!result) {
+        return res.status(422).json({ error: 'No changes to commit or PR creation failed' });
+      }
+
+      res.json({ prUrl: result.prUrl, cardId: result.cardId });
+    } catch (err) {
+      console.error('[create-pr] Error:', (err as Error).message);
       res.status(500).json({ error: (err as Error).message });
     }
   });

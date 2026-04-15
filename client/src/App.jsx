@@ -10,6 +10,7 @@ import SettingsPage from './components/SettingsPage.jsx';
 import SkillsPage from './components/SkillsPage.jsx';
 import RoomChat from './components/RoomChat.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
+import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import KanbanBoard from './components/KanbanBoard.jsx';
@@ -98,6 +99,8 @@ export default function App() {
   const [throttle, setThrottle] = useState({});
   // Subagent tracking: Map of sessionId -> { total, running, done, errored }
   const [subagents, setSubagents] = useState({});
+  // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
+  const [changesReady, setChangesReady] = useState({});
   // Wiki state
   const [wikiProjectId, setWikiProjectId] = useState(null);
   // Notes state
@@ -455,6 +458,26 @@ export default function App() {
           ]);
           notify({ title, body, type: 'success' });
         }
+        break;
+      case 'changes_ready':
+        setChangesReady((prev) => ({
+          ...prev,
+          [data.sessionId]: {
+            agentId: data.agentId,
+            branch: data.branch,
+            hasUncommitted: data.hasUncommitted,
+            hasUnpushed: data.hasUnpushed,
+          },
+        }));
+        break;
+      case 'auto_pr_created':
+        // Clear changes_ready state when a PR is created (manually or automatically)
+        setChangesReady((prev) => {
+          if (!prev[data.sessionId]) return prev;
+          const next = { ...prev };
+          delete next[data.sessionId];
+          return next;
+        });
         break;
       case 'session-updated':
         setSessions((prev) =>
@@ -1782,6 +1805,36 @@ export default function App() {
                               />
                             </div>
                           )}
+                        {/* Ad-hoc PR creation prompt — shown when agent finishes work with uncommitted changes */}
+                        {changesReady[activeSessionId] && !streamingMsgId && (
+                          <ChangesReadyBox
+                            sessionId={activeSessionId}
+                            changes={changesReady[activeSessionId]}
+                            onCreated={(sessionId, result) => {
+                              setChangesReady((prev) => {
+                                const next = { ...prev };
+                                delete next[sessionId];
+                                return next;
+                              });
+                              setToasts((prev) => [
+                                ...prev,
+                                {
+                                  id: `pr-created-${Date.now()}`,
+                                  type: 'success',
+                                  message: `PR created: ${result.prUrl}`,
+                                  duration: 8000,
+                                },
+                              ]);
+                            }}
+                            onDismiss={(sessionId) => {
+                              setChangesReady((prev) => {
+                                const next = { ...prev };
+                                delete next[sessionId];
+                                return next;
+                              });
+                            }}
+                          />
+                        )}
                         {/* Queued messages always render at the very bottom */}
                         {queued.map((msg) => (
                           <ChatMessage
