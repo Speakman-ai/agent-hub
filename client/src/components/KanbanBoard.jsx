@@ -12,6 +12,7 @@ import {
   Settings,
   Search,
   GitPullRequest,
+  Eye,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 
@@ -70,6 +71,10 @@ export default function KanbanBoard({
   // Search
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Review Activity
+  const [reviewLogs, setReviewLogs] = useState([]);
+  const [showReviewPanel, setShowReviewPanel] = useState(false);
+
   // Epics
   const [epics, setEpics] = useState([]);
   const [selectedEpicId, setSelectedEpicId] = useState(null);
@@ -98,7 +103,14 @@ export default function KanbanBoard({
   useEffect(() => {
     setLoading(true);
     fetchBoard();
-  }, [fetchBoard, refreshKey]);
+    // Fetch review logs for the project
+    if (projectId) {
+      api
+        .get(`/projects/${projectId}/reviews?limit=20`)
+        .then(setReviewLogs)
+        .catch(() => {});
+    }
+  }, [fetchBoard, refreshKey, projectId]);
 
   // Focus title input when add form opens
   useEffect(() => {
@@ -381,17 +393,92 @@ export default function KanbanBoard({
             {cards.length} card{cards.length !== 1 ? 's' : ''}
           </span>
         </div>
-        <button
-          onClick={() => {
-            const target = columns.find((c) => c.name.toLowerCase() !== 'backlog') || columns[0];
-            if (target) setAddingInColumn(target.id);
-          }}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded-lg text-sm transition-colors"
-        >
-          <Plus size={14} />
-          Add Card
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowReviewPanel(!showReviewPanel)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors ${
+              showReviewPanel
+                ? 'bg-indigo-600 text-white'
+                : 'bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white'
+            }`}
+          >
+            <Eye size={14} />
+            Reviews
+            {reviewLogs.length > 0 && (
+              <span className="text-xs bg-gray-700/50 px-1.5 py-0.5 rounded-full">
+                {reviewLogs.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => {
+              const target = columns.find((c) => c.name.toLowerCase() !== 'backlog') || columns[0];
+              if (target) setAddingInColumn(target.id);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded-lg text-sm transition-colors"
+          >
+            <Plus size={14} />
+            Add Card
+          </button>
+        </div>
       </div>
+
+      {/* Review Activity Panel */}
+      {showReviewPanel && (
+        <div className="px-6 py-3 border-b border-gray-800/50 bg-gray-850/50 space-y-2 max-h-48 overflow-y-auto">
+          <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+            Recent Review Activity
+          </h4>
+          {reviewLogs.length === 0 ? (
+            <p className="text-xs text-gray-600">No review activity yet.</p>
+          ) : (
+            <div className="space-y-1">
+              {reviewLogs.slice(0, 10).map((log) => (
+                <div
+                  key={log.id}
+                  className="flex items-center gap-3 text-xs py-1 px-2 rounded bg-gray-800/50"
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      log.outcome === 'approved'
+                        ? 'bg-emerald-400'
+                        : log.outcome === 'changes_requested'
+                          ? 'bg-red-400'
+                          : log.outcome === 'merge_conflict'
+                            ? 'bg-amber-400'
+                            : 'bg-gray-400'
+                    }`}
+                  />
+                  <span className="text-gray-300 truncate flex-1">
+                    {log.pr_url?.match(/\d+$/)?.[0] ? `PR #${log.pr_url.match(/\d+$/)[0]}` : 'PR'}
+                  </span>
+                  <span className="text-gray-500">{log.reviewer_agent}</span>
+                  <span
+                    className={`font-medium ${
+                      log.outcome === 'approved'
+                        ? 'text-emerald-400'
+                        : log.outcome === 'changes_requested'
+                          ? 'text-red-400'
+                          : 'text-gray-400'
+                    }`}
+                  >
+                    {log.outcome === 'approved'
+                      ? 'Approved'
+                      : log.outcome === 'changes_requested'
+                        ? 'Changes Requested'
+                        : log.outcome === 'merge_conflict'
+                          ? 'Merge Conflict'
+                          : 'Ambiguous'}
+                  </span>
+                  <span className="text-gray-600 flex-shrink-0">
+                    {new Date(log.completed_at).toLocaleDateString()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Epic Dropdown Bar + Search */}
       <div className="px-6 py-2 border-b border-gray-800/50 flex items-center gap-3">
@@ -717,6 +804,27 @@ export default function KanbanBoard({
                                   <GitPullRequest size={12} />#
                                   {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
                                 </a>
+                              )}
+                              {card.review_status && (
+                                <span
+                                  className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                                    card.review_status === 'approved'
+                                      ? 'bg-emerald-500/20 text-emerald-400'
+                                      : card.review_status === 'reviewing'
+                                        ? 'bg-amber-500/20 text-amber-400 animate-pulse'
+                                        : card.review_status === 'changes_requested'
+                                          ? 'bg-red-500/20 text-red-400'
+                                          : 'bg-blue-500/20 text-blue-400'
+                                  }`}
+                                >
+                                  {card.review_status === 'approved'
+                                    ? 'Approved'
+                                    : card.review_status === 'reviewing'
+                                      ? 'Reviewing...'
+                                      : card.review_status === 'changes_requested'
+                                        ? 'Changes Requested'
+                                        : 'Awaiting Review'}
+                                </span>
                               )}
                               {card.assignee && (
                                 <span

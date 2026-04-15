@@ -212,6 +212,7 @@ export interface KanbanCardRow {
   session_id: string | null;
   github_issue_url: string | null;
   pr_url: string | null;
+  review_status: 'awaiting_review' | 'reviewing' | 'approved' | 'changes_requested' | null;
   created_by: string | null;
   position: number;
   epic_id: string | null;
@@ -219,6 +220,20 @@ export interface KanbanCardRow {
   autonomous_iterations: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface ReviewLogRow {
+  id: string;
+  project_id: string;
+  card_id: string | null;
+  pr_url: string;
+  reviewer_agent: string;
+  author_agent: string | null;
+  session_id: string | null;
+  outcome: 'approved' | 'changes_requested' | 'merge_conflict' | 'ambiguous' | 'timeout';
+  review_body: string | null;
+  started_at: string;
+  completed_at: string;
 }
 
 export interface KanbanCardCommentRow {
@@ -659,6 +674,15 @@ export interface Stmts {
   getRecentEscalationByTypeAndPr: Stmt;
   getAnyRecentEscalationByTypeAndPr: Stmt;
 
+  // Review logs
+  createReviewLog: Stmt;
+  getReviewLogs: Stmt;
+  getReviewLogsByCard: Stmt;
+  getReviewLogsByPrUrl: Stmt;
+
+  // Card review status
+  setCardReviewStatus: Stmt;
+
   // Note processings
   createNoteProcessing: Stmt;
   updateNoteProcessing: Stmt;
@@ -717,6 +741,7 @@ export interface Agent {
   mcpServers?: Record<string, McpServerConfig>;
   installCommand?: string;
   reviewer?: string;
+  canReview?: boolean;
   model?: string;
   active?: boolean;
   [key: string]: unknown;
