@@ -653,6 +653,10 @@ function ClaudeAuthSection() {
         setTimeout(() => {
           clearInterval(poll);
           setLoginLoading(false);
+          setCallbackStatus({
+            type: 'error',
+            msg: 'Timed out waiting for login confirmation. Please try again.',
+          });
         }, 120_000);
       } else {
         setCallbackStatus({ type: 'error', msg: result.error || 'Failed to submit callback' });
