@@ -479,6 +479,9 @@ function ClaudeAuthSection() {
   const [apiKeySaving, setApiKeySaving] = useState(false);
   const [apiKeyValidating, setApiKeyValidating] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState(null); // { type: 'success'|'error', msg }
+  const [callbackInput, setCallbackInput] = useState('');
+  const [callbackSubmitting, setCallbackSubmitting] = useState(false);
+  const [callbackStatus, setCallbackStatus] = useState(null); // { type: 'success'|'error', msg }
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
@@ -503,6 +506,8 @@ function ClaudeAuthSection() {
   const handleOAuthLogin = async () => {
     setLoginLoading(true);
     setOauthUrl(null);
+    setCallbackInput('');
+    setCallbackStatus(null);
     try {
       const data = await api.startClaudeOAuthLogin();
       if (data.oauthUrl) {
@@ -546,6 +551,8 @@ function ClaudeAuthSection() {
     }
     setLoginLoading(false);
     setOauthUrl(null);
+    setCallbackInput('');
+    setCallbackStatus(null);
   };
 
   const handleLogout = async () => {
@@ -613,6 +620,27 @@ function ClaudeAuthSection() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  };
+
+  const handleSubmitCallback = async () => {
+    if (!callbackInput.trim()) return;
+    setCallbackSubmitting(true);
+    setCallbackStatus(null);
+    try {
+      const result = await api.submitOAuthCallback(callbackInput.trim());
+      if (result.ok) {
+        setCallbackStatus({
+          type: 'success',
+          msg: 'Callback submitted — waiting for confirmation...',
+        });
+        setCallbackInput('');
+      } else {
+        setCallbackStatus({ type: 'error', msg: result.error || 'Failed to submit callback' });
+      }
+    } catch (err) {
+      setCallbackStatus({ type: 'error', msg: err.message || 'Failed to submit callback' });
+    }
+    setCallbackSubmitting(false);
   };
 
   if (loading)
@@ -796,6 +824,55 @@ function ClaudeAuthSection() {
                 </div>
               </div>
             )}
+            {/* Callback URL paste input */}
+            <div className="bg-gray-900 rounded-lg p-3 space-y-2">
+              <p className="text-xs text-gray-400">
+                After logging in on Anthropic's site, paste the callback URL here:
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={callbackInput}
+                  onChange={(e) => {
+                    setCallbackInput(e.target.value);
+                    setCallbackStatus(null);
+                  }}
+                  className={`${inputClass} text-xs`}
+                  placeholder="Paste the URL from Anthropic here..."
+                  autoComplete="off"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSubmitCallback();
+                  }}
+                />
+                <button
+                  onClick={handleSubmitCallback}
+                  disabled={!callbackInput.trim() || callbackSubmitting}
+                  className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-2 rounded-lg transition-colors shrink-0"
+                >
+                  {callbackSubmitting ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <CheckCircle2 size={12} />
+                  )}
+                  {callbackSubmitting ? 'Submitting...' : 'Submit'}
+                </button>
+              </div>
+              {callbackStatus && (
+                <div
+                  className={`flex items-center gap-2 text-xs ${
+                    callbackStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+                  }`}
+                >
+                  {callbackStatus.type === 'success' ? (
+                    <CheckCircle2 size={12} />
+                  ) : (
+                    <AlertCircle size={12} />
+                  )}
+                  <span>{callbackStatus.msg}</span>
+                </div>
+              )}
+            </div>
+
             <button
               onClick={handleCancelLogin}
               className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
