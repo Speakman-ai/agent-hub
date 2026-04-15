@@ -271,7 +271,8 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     await autoCommitAndPR('sess-3', 'agent-1', project, agent, '/worktree', '');
 
     // Should persist changes_ready JSON to the session row
-    const updateCalls = (mockStmts.updateSessionChangesReady as { run: ReturnType<typeof vi.fn> }).run.mock.calls;
+    const updateCalls = (mockStmts.updateSessionChangesReady as { run: ReturnType<typeof vi.fn> })
+      .run.mock.calls;
     expect(updateCalls).toHaveLength(1);
     const [json, sessionId] = updateCalls[0];
     expect(sessionId).toBe('sess-3');
@@ -296,12 +297,14 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     await autoCommitAndPR('sess-4', 'agent-1', project, agent, '/worktree', '');
 
     // Should clear changes_ready from the session
-    const clearCalls = (mockStmts.clearSessionChangesReady as { run: ReturnType<typeof vi.fn> }).run.mock.calls;
+    const clearCalls = (mockStmts.clearSessionChangesReady as { run: ReturnType<typeof vi.fn> }).run
+      .mock.calls;
     expect(clearCalls).toHaveLength(1);
     expect(clearCalls[0][0]).toBe('sess-4');
 
     // Should NOT persist changes_ready
-    const updateCalls = (mockStmts.updateSessionChangesReady as { run: ReturnType<typeof vi.fn> }).run.mock.calls;
+    const updateCalls = (mockStmts.updateSessionChangesReady as { run: ReturnType<typeof vi.fn> })
+      .run.mock.calls;
     expect(updateCalls).toHaveLength(0);
   });
 });

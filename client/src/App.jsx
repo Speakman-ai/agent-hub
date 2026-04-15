@@ -1133,10 +1133,11 @@ export default function App() {
       for (const s of data) {
         if (s.changes_ready) {
           try {
-            persisted[s.id] = typeof s.changes_ready === 'string'
-              ? JSON.parse(s.changes_ready)
-              : s.changes_ready;
-          } catch { /* ignore malformed JSON */ }
+            persisted[s.id] =
+              typeof s.changes_ready === 'string' ? JSON.parse(s.changes_ready) : s.changes_ready;
+          } catch {
+            /* ignore malformed JSON */
+          }
         }
       }
       if (Object.keys(persisted).length > 0) {

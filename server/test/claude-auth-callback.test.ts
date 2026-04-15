@@ -29,4 +29,23 @@ describe('POST /api/config/claude-auth/callback', () => {
       .expect(409);
     expect(res.body.error).toMatch(/No login in progress/);
   });
+
+  it('accepts a bare authorization code string', async () => {
+    // With no login in progress, this returns 409 — but validates the code param is accepted
+    const res = await request
+      .post('/api/config/claude-auth/callback')
+      .send({ code: 'abc123-bare-code' })
+      .expect(409);
+    expect(res.body.error).toMatch(/No login in progress/);
+  });
+
+  it('accepts a full callback URL containing the code', async () => {
+    const res = await request
+      .post('/api/config/claude-auth/callback')
+      .send({
+        code: 'https://platform.claude.com/oauth/code/callback?code=the_real_code&state=abc123',
+      })
+      .expect(409);
+    expect(res.body.error).toMatch(/No login in progress/);
+  });
 });

@@ -1,9 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { execFile, spawn, ChildProcess } from 'child_process';
+import { promisify } from 'util';
+import http from 'http';
 import os from 'os';
 import path from 'path';
-import { spawn, ChildProcess } from 'child_process';
 import type { RouteDeps, AppConfig } from '../types.js';
+
+const execFileAsync = promisify(execFile);
 
 const HOME = os.homedir();
 const CREDENTIALS_PATH = path.join(HOME, '.claude', '.credentials.json');
@@ -49,9 +53,54 @@ function runClaude(
   });
 }
 
-function extractOAuthUrl(text: string): string | null {
+export function extractOAuthUrl(text: string): string | null {
   const match = text.match(/visit:\s*(https:\/\/\S+)/i);
   return match ? match[1] : null;
+}
+
+export function extractStateFromUrl(url: string): string | null {
+  const match = url.match(/[?&]state=([A-Za-z0-9_-]+)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Detect the localhost port that `claude auth login` opens for its OAuth callback server.
+ * NOTE: Uses `ss` which is Linux-only. On macOS, `lsof -i -P` would be needed instead.
+ * This is fine for now since the server runs on EC2 (Linux).
+ */
+async function detectCallbackPort(pid: number): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync('ss', ['-tlnp'], { timeout: 3000 });
+    const lines = stdout.split('\n').filter((l) => l.includes(`pid=${pid},`));
+    for (const line of lines) {
+      const match = line.match(/127\.0\.0\.1:(\d+)/);
+      if (match) return parseInt(match[1], 10);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Proxy the OAuth callback to the CLI's local HTTP server. */
+export function proxyCallbackToLocalServer(
+  port: number,
+  code: string,
+  state: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve) => {
+    const url = `http://127.0.0.1:${port}/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+    const req = http.get(url, (res) => {
+      let body = '';
+      res.on('data', (c: Buffer) => (body += c));
+      res.on('end', () => resolve({ status: res.statusCode ?? 500, body }));
+    });
+    req.setTimeout(10_000, () => {
+      req.destroy();
+      resolve({ status: 504, body: 'Timeout proxying to CLI callback server' });
+    });
+    req.on('error', (err) => resolve({ status: 500, body: err.message }));
+  });
 }
 
 export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
@@ -60,6 +109,8 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
 
   let activeLoginProc: ChildProcess | null = null;
   let activeLoginId: string | null = null;
+  let activeLoginPort: number | null = null;
+  let activeLoginState: string | null = null;
 
   router.get('/api/config/claude-auth', async (_req: Request, res: Response) => {
     try {
@@ -104,6 +155,8 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
         );
         activeLoginProc = null;
         activeLoginId = null;
+        activeLoginPort = null;
+        activeLoginState = null;
       }
       const loginInProgress = !!activeLoginProc;
 
@@ -136,6 +189,8 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       }
       activeLoginProc = null;
       activeLoginId = null;
+      activeLoginPort = null;
+      activeLoginState = null;
     }
 
     const { method, email, sso } = (req.body || {}) as {
@@ -174,6 +229,25 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       if (responded) return;
       responded = true;
       urlSent = true;
+
+      // Extract state from the OAuth URL for later callback proxying
+      activeLoginState = extractStateFromUrl(url);
+
+      // Detect the local callback server port the CLI opened
+      // Retry a few times since the server may start slightly after the URL is printed
+      const detectPort = async (retries: number): Promise<void> => {
+        const port = await detectCallbackPort(proc.pid!);
+        if (port) {
+          activeLoginPort = port;
+          console.log(`[claude-auth] Detected CLI callback server on port ${port}`);
+        } else if (retries > 0) {
+          setTimeout(() => detectPort(retries - 1), 500);
+        } else {
+          console.log('[claude-auth] Could not detect CLI callback server port');
+        }
+      };
+      detectPort(5);
+
       res.json({ ok: true, loginId, oauthUrl: url });
     };
 
@@ -193,6 +267,8 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       if (activeLoginId === loginId) {
         activeLoginProc = null;
         activeLoginId = null;
+        activeLoginPort = null;
+        activeLoginState = null;
       }
 
       if (!responded) {
@@ -233,6 +309,8 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       if (activeLoginId === loginId) {
         activeLoginProc = null;
         activeLoginId = null;
+        activeLoginPort = null;
+        activeLoginState = null;
       }
       if (!responded) {
         responded = true;
@@ -265,34 +343,70 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       }
       activeLoginProc = null;
       activeLoginId = null;
+      activeLoginPort = null;
+      activeLoginState = null;
       res.json({ ok: true, output: 'Login cancelled' });
     } else {
       res.json({ ok: true, output: 'No login in progress' });
     }
   });
 
-  router.post('/api/config/claude-auth/callback', (req: Request, res: Response) => {
+  router.post('/api/config/claude-auth/callback', async (req: Request, res: Response) => {
     const { code } = (req.body || {}) as { code?: string };
     if (!code || typeof code !== 'string') {
-      return res.status(400).json({ error: 'code is required (the URL copied from Anthropic)' });
+      return res
+        .status(400)
+        .json({ error: 'code is required (the authorization code from Anthropic)' });
     }
 
-    // Clean up stale process reference before checking
-    if (activeLoginProc && activeLoginProc.exitCode !== null) {
-      activeLoginProc = null;
-      activeLoginId = null;
-    }
-
-    if (!activeLoginProc || !activeLoginProc.stdin) {
+    if (!activeLoginProc) {
       return res.status(409).json({ error: 'No login in progress' });
     }
 
+    // Extract the authorization code — user may paste just the code or a full URL containing it
+    let authCode = code.trim();
+    const codeFromUrl = authCode.match(/[?&]code=([^&\s]+)/);
+    if (codeFromUrl) {
+      authCode = decodeURIComponent(codeFromUrl[1]);
+    }
+
+    // If we don't have the port yet, try one more time
+    if (!activeLoginPort && activeLoginProc.pid) {
+      activeLoginPort = await detectCallbackPort(activeLoginProc.pid);
+    }
+
+    if (!activeLoginPort || !activeLoginState) {
+      // Fallback: try stdin write (legacy approach, unlikely to work)
+      console.log('[claude-auth] No callback port/state — falling back to stdin write');
+      try {
+        activeLoginProc.stdin?.write(authCode + '\n');
+        return res.json({
+          ok: true,
+          output: 'Code submitted via stdin fallback (callback server not detected)',
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(500).json({ error: `Failed to submit code: ${message}` });
+      }
+    }
+
     try {
-      activeLoginProc.stdin.write(code.trim() + '\n');
-      res.json({ ok: true, output: 'Callback code submitted' });
+      console.log(
+        `[claude-auth] Proxying callback to localhost:${activeLoginPort} (state=${activeLoginState.slice(0, 8)}...)`,
+      );
+      const result = await proxyCallbackToLocalServer(activeLoginPort, authCode, activeLoginState);
+
+      if (result.status >= 200 && result.status < 400) {
+        res.json({ ok: true, output: 'Authorization code submitted successfully' });
+      } else {
+        res.status(502).json({
+          ok: false,
+          error: `CLI callback returned ${result.status}: ${result.body || 'unknown error'}`,
+        });
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: `Failed to submit callback: ${message}` });
+      res.status(500).json({ error: `Failed to proxy callback: ${message}` });
     }
   });
 
@@ -379,6 +493,8 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       }
       activeLoginProc = null;
       activeLoginId = null;
+      activeLoginPort = null;
+      activeLoginState = null;
     }
   };
   process.on('SIGTERM', cleanup);
