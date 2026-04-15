@@ -1,0 +1,45 @@
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: agent-hub-server
+    restart: unless-stopped
+    volumes:
+      - agent-hub-data:/data
+      - server-uploads:/app/uploads
+    environment:
+      - NODE_ENV=production
+      - AGENT_HUB_DATA_DIR=/data
+      - AGENT_HUB_PORT=3051
+      - AGENT_HUB_HOST=0.0.0.0
+      # Pass through optional secrets from host .env
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - AGENT_HUB_API_KEY=${AGENT_HUB_API_KEY:-}
+      - AGENT_HUB_BOT_GITHUB_TOKEN=${AGENT_HUB_BOT_GITHUB_TOKEN:-}
+      - AGENT_HUB_PUBLIC_URL=${AGENT_HUB_PUBLIC_URL:-}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+    expose:
+      - "3051"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3051/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: agent-hub-client
+    restart: unless-stopped
+    ports:
+      - "${AGENT_HUB_WEB_PORT:-80}:80"
+    depends_on:
+      server:
+        condition: service_healthy
+
+volumes:
+  agent-hub-data:
+  server-uploads:
