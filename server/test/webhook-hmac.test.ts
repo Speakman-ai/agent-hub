@@ -80,7 +80,10 @@ describe('Webhook HMAC verification', () => {
       .set('x-hub-signature-256', signature)
       .send(raw);
 
-    expect(res.status).toBe(200);
+    // 202 Accepted: fast-ack design enqueues the event for background
+    // processing instead of handling it inline. See webhook-worker.ts.
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ status: 'queued' });
     expect(res.body).not.toHaveProperty('error', 'Invalid signature');
   });
 
@@ -161,7 +164,9 @@ describe('Webhook HMAC verification', () => {
         .set('x-hub-signature-256', signature)
         .send(raw);
 
-      expect(res.status).toBe(200);
+      // 202 Accepted: fast-ack design (see webhook-worker.ts).
+      expect(res.status).toBe(202);
+      expect(res.body).toMatchObject({ status: 'queued' });
       expect(res.body).not.toHaveProperty('error', 'Invalid signature');
     } finally {
       mutableConfig.githubApp = originalGithubApp;

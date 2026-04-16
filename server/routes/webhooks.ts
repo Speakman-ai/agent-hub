@@ -29,6 +29,7 @@ import type {
   KanbanBoardRow,
   KanbanEpicRow,
   WebhookConfigRow,
+  WebhookEventRow,
   SessionRow,
   PrStateRow,
 } from '../types.js';
@@ -1731,18 +1732,26 @@ function handleWebhookReviewComment(
 }
 
 // ─── GitHub Webhook Handler (public — uses HMAC, not API key) ───
+//
+// Design: FAST-ACK + BACKGROUND WORKER.
+//
+// The POST handler only does work that must happen synchronously inside the
+// GitHub delivery window: signature check, config lookup, row insert. Kanban
+// lifecycle updates and Claude prompt execution happen in webhook-worker.ts,
+// which claims rows from the `webhook_events` queue with a strict concurrency
+// cap.
+//
+// This replaced an earlier inline design in which `handleKanbanWebhookEvent`
+// ran synchronously before the 200 response and `runClaude` was awaited on
+// the HTTP request. A webhook stampede on 2026-04-16 (254 events in 3 min,
+// handler latencies up to 292s) saturated the event loop and wedged the box
+// until PM2 restarted it. Fast-ack keeps inline work in the <50ms range.
 
 export function createGithubWebhookHandler(deps: RouteDeps): Router {
-  const { stmts, broadcast, getProjects } = deps;
-  const runClaudeFn = deps.runClaude as (
-    prompt: string,
-    cwd: string,
-    model?: string,
-    opts?: { timeoutMs: number },
-  ) => Promise<string>;
+  const { stmts } = deps;
   const router = Router();
 
-  router.post('/api/webhooks/github', async (req: Request, res: Response) => {
+  router.post('/api/webhooks/github', (req: Request, res: Response) => {
     const signature = req.headers['x-hub-signature-256'] as string | undefined;
     const event = req.headers['x-github-event'] as string | undefined;
     const deliveryId = req.headers['x-github-delivery'] as string | undefined;
@@ -1818,98 +1827,196 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
     const action = payload.action || '';
     const eventKey = action ? `${event}.${action}` : event;
 
-    let kanbanHandled = false;
-    try {
-      kanbanHandled = handleKanbanWebhookEvent(deps, event, action, payload, webhookConfig);
-      if (kanbanHandled) {
-        const logEntry = stmts.addWebhookLog.run(
-          webhookConfig.id,
-          eventKey,
-          action,
-          deliveryId || '',
-          'success',
-        );
-        stmts.updateWebhookLog.run(
-          'success',
-          `Kanban lifecycle: ${eventKey}`,
-          0,
-          logEntry.lastInsertRowid,
-        );
-        console.log(`[Webhook] ${eventKey} on ${repoFullName} — kanban lifecycle handled`);
+    // Idempotency: GitHub retries deliveries on timeout (10s HTTP window).
+    // If we already have a row for this delivery_id, respond 200 with the
+    // existing id and skip re-enqueue. The partial unique index on
+    // delivery_id is our last-resort safety net.
+    if (deliveryId) {
+      const existing = stmts.getWebhookEventByDelivery.get(deliveryId) as
+        | { id: number }
+        | undefined;
+      if (existing) {
+        return res.status(200).json({
+          status: 'duplicate',
+          id: existing.id,
+          event: eventKey,
+        });
       }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Webhook] Kanban lifecycle handler error for ${eventKey}:`, msg);
     }
 
-    const eventConfigs = JSON.parse(webhookConfig.events || '{}') as Record<
-      string,
-      { enabled?: boolean; prompt?: string } | undefined
-    >;
-    const handler = eventConfigs[eventKey] || eventConfigs[event];
-
-    if (!handler || !handler.enabled) {
-      if (kanbanHandled) {
-        return res.json({ status: 'accepted', event: eventKey, kanban: true });
-      }
-      stmts.addWebhookLog.run(webhookConfig.id, eventKey, action, deliveryId || '', 'skipped');
-      return res.json({ status: 'skipped', event: eventKey });
-    }
-
-    const logEntry = stmts.addWebhookLog.run(
-      webhookConfig.id,
-      eventKey,
-      action,
-      deliveryId || '',
-      'running',
-    );
-    const logId = logEntry.lastInsertRowid;
-    const startTime = Date.now();
-
-    res.json({ status: 'accepted', event: eventKey, logId, kanban: kanbanHandled });
-
-    const contextPayload = buildWebhookContext(event, action, payload);
-    const fullPrompt = `${handler.prompt}\n\n## Webhook Context\n${contextPayload}`;
-
-    const projects = getProjects();
-    const project = projects.find((p) => p.id === webhookConfig.project_id);
-    const cwd = project?.cwd || config.defaultCwd;
-
+    let insertResult: ReturnType<typeof stmts.insertWebhookEvent.run>;
     try {
-      const result = await runClaudeFn(fullPrompt, cwd, undefined, {
-        timeoutMs: config.defaultTimeoutMs,
-      });
-
-      const durationMs = Date.now() - startTime;
-      stmts.updateWebhookLog.run('success', result.substring(0, 10000), durationMs, logId);
-      console.log(`[Webhook] ${eventKey} on ${repoFullName} completed (${durationMs}ms)`);
-
-      broadcast({
-        type: 'webhook_event',
-        webhookConfigId: webhookConfig.id,
-        event: eventKey,
-        repo: repoFullName,
-        status: 'success',
-        logId,
-      });
+      insertResult = stmts.insertWebhookEvent.run(
+        webhookConfig.id,
+        deliveryId || null,
+        event,
+        action || null,
+        JSON.stringify(payload),
+        signature || null,
+      );
     } catch (err: unknown) {
-      const durationMs = Date.now() - startTime;
+      // UNIQUE constraint on delivery_id means a near-simultaneous duplicate
+      // raced us past the SELECT check above. Treat as a dup, not an error.
       const msg = err instanceof Error ? err.message : String(err);
-      stmts.updateWebhookLog.run('error', msg, durationMs, logId);
-      console.error(`[Webhook] ${eventKey} on ${repoFullName} failed:`, msg);
-
-      broadcast({
-        type: 'webhook_event',
-        webhookConfigId: webhookConfig.id,
-        event: eventKey,
-        repo: repoFullName,
-        status: 'error',
-        logId,
-      });
+      if (/UNIQUE constraint failed/i.test(msg) && deliveryId) {
+        const existing = stmts.getWebhookEventByDelivery.get(deliveryId) as
+          | { id: number }
+          | undefined;
+        if (existing) {
+          return res.status(200).json({
+            status: 'duplicate',
+            id: existing.id,
+            event: eventKey,
+          });
+        }
+      }
+      console.error('[Webhook] enqueue failed:', msg);
+      return res.status(500).json({ error: 'enqueue failed' });
     }
+
+    return res.status(202).json({
+      status: 'queued',
+      id: Number(insertResult.lastInsertRowid),
+      event: eventKey,
+    });
   });
 
   return router;
+}
+
+// ─── Background Processing Entry Point (called by webhook-worker) ───
+
+/**
+ * Process a single claimed webhook event row.
+ *
+ * This is the function the background worker calls per row. It does
+ * everything the old inline handler did: kanban lifecycle, then (if the
+ * event is enabled in the webhook config) Claude prompt execution, with
+ * webhook_logs bookkeeping and broadcast notifications.
+ *
+ * Throws on hard failures so the worker can mark the row as 'error'.
+ * Returns normally on success (including 'skipped' — i.e. no handler
+ * enabled and no kanban effect — which is not a failure).
+ */
+export async function processWebhookEvent(
+  deps: RouteDeps,
+  row: WebhookEventRow,
+): Promise<{ kanbanHandled: boolean; handlerRan: boolean; logId?: number }> {
+  const { stmts, broadcast, getProjects } = deps;
+  const runClaudeFn = deps.runClaude as (
+    prompt: string,
+    cwd: string,
+    model?: string,
+    opts?: { timeoutMs: number },
+  ) => Promise<string>;
+
+  const webhookConfig = stmts.getWebhookConfig.get(row.webhook_config_id) as
+    | WebhookConfigRow
+    | undefined;
+  if (!webhookConfig) {
+    // Config deleted since the event was enqueued. FK cascade should have
+    // removed this row, but belt-and-suspenders: treat as a no-op.
+    throw new Error(`webhook config ${row.webhook_config_id} no longer exists`);
+  }
+
+  const payload = JSON.parse(row.payload) as GitHubWebhookPayload;
+  const event = row.event_type;
+  const action = row.action || '';
+  const eventKey = action ? `${event}.${action}` : event;
+  const repoFullName = payload.repository?.full_name || '';
+  const deliveryId = row.delivery_id || '';
+
+  let kanbanHandled = false;
+  try {
+    kanbanHandled = handleKanbanWebhookEvent(deps, event, action, payload, webhookConfig);
+    if (kanbanHandled) {
+      const logEntry = stmts.addWebhookLog.run(
+        webhookConfig.id,
+        eventKey,
+        action,
+        deliveryId,
+        'success',
+      );
+      stmts.updateWebhookLog.run(
+        'success',
+        `Kanban lifecycle: ${eventKey}`,
+        0,
+        logEntry.lastInsertRowid,
+      );
+      console.log(`[Webhook] ${eventKey} on ${repoFullName} — kanban lifecycle handled`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Webhook] Kanban lifecycle handler error for ${eventKey}:`, msg);
+    // Intentionally continue — kanban failure shouldn't block the custom handler.
+  }
+
+  const eventConfigs = JSON.parse(webhookConfig.events || '{}') as Record<
+    string,
+    { enabled?: boolean; prompt?: string } | undefined
+  >;
+  const handler = eventConfigs[eventKey] || eventConfigs[event];
+
+  if (!handler || !handler.enabled) {
+    if (!kanbanHandled) {
+      stmts.addWebhookLog.run(webhookConfig.id, eventKey, action, deliveryId, 'skipped');
+    }
+    return { kanbanHandled, handlerRan: false };
+  }
+
+  const logEntry = stmts.addWebhookLog.run(
+    webhookConfig.id,
+    eventKey,
+    action,
+    deliveryId,
+    'running',
+  );
+  const logId = Number(logEntry.lastInsertRowid);
+  const startTime = Date.now();
+
+  const contextPayload = buildWebhookContext(event, action, payload);
+  const fullPrompt = `${handler.prompt}\n\n## Webhook Context\n${contextPayload}`;
+
+  const projects = getProjects();
+  const project = projects.find((p) => p.id === webhookConfig.project_id);
+  const cwd = project?.cwd || config.defaultCwd;
+
+  try {
+    const result = await runClaudeFn(fullPrompt, cwd, undefined, {
+      timeoutMs: config.defaultTimeoutMs,
+    });
+
+    const durationMs = Date.now() - startTime;
+    stmts.updateWebhookLog.run('success', result.substring(0, 10000), durationMs, logId);
+    console.log(`[Webhook] ${eventKey} on ${repoFullName} completed (${durationMs}ms)`);
+
+    broadcast({
+      type: 'webhook_event',
+      webhookConfigId: webhookConfig.id,
+      event: eventKey,
+      repo: repoFullName,
+      status: 'success',
+      logId,
+    });
+  } catch (err: unknown) {
+    const durationMs = Date.now() - startTime;
+    const msg = err instanceof Error ? err.message : String(err);
+    stmts.updateWebhookLog.run('error', msg, durationMs, logId);
+    console.error(`[Webhook] ${eventKey} on ${repoFullName} failed:`, msg);
+
+    broadcast({
+      type: 'webhook_event',
+      webhookConfigId: webhookConfig.id,
+      event: eventKey,
+      repo: repoFullName,
+      status: 'error',
+      logId,
+    });
+    // Re-throw so the worker records an 'error' row status with our message.
+    throw err instanceof Error ? err : new Error(msg);
+  }
+
+  return { kanbanHandled, handlerRan: true, logId };
 }
 
 // ─── Webhook CRUD routes (requires auth) ────────────────────────

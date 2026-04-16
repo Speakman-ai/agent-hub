@@ -328,6 +328,22 @@ export interface WebhookLogRow {
   created_at: string;
 }
 
+export interface WebhookEventRow {
+  id: number;
+  webhook_config_id: number;
+  delivery_id: string | null;
+  event_type: string;
+  action: string | null;
+  payload: string; // JSON-stringified GitHubWebhookPayload
+  signature: string | null;
+  status: 'pending' | 'processing' | 'done' | 'error';
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  attempts: number;
+  created_at: string;
+}
+
 export interface SkillRegistryRow {
   id: string;
   name: string;
@@ -764,6 +780,16 @@ export interface Stmts {
   updateWebhookLog: Stmt;
   getWebhookLogs: Stmt;
   getRecentWebhookLogs: Stmt;
+
+  // Webhook events queue (fast-ack + background worker)
+  insertWebhookEvent: Stmt;
+  getWebhookEventByDelivery: Stmt;
+  getWebhookEventById: Stmt;
+  claimPendingWebhookEvent: Stmt;
+  markWebhookEventDone: Stmt;
+  markWebhookEventError: Stmt;
+  resetStaleWebhookEvents: Stmt;
+  countWebhookEventsByStatus: Stmt;
 
   // Wiki pages
   getWikiPages: Stmt;

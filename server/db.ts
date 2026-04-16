@@ -376,6 +376,33 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_webhook_logs_config ON webhook_logs(webhook_config_id);
     CREATE INDEX IF NOT EXISTS idx_webhook_logs_created ON webhook_logs(created_at DESC);
 
+    -- Webhook events queue: raw delivered events awaiting async processing.
+    -- Writes here from the fast-ack handler; a background worker claims rows
+    -- for kanban lifecycle + Claude prompt execution. Keeps the HTTP handler
+    -- off the hot path (see: webhook starvation incident, 2026-04-16).
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      webhook_config_id INTEGER NOT NULL,
+      delivery_id TEXT,
+      event_type TEXT NOT NULL,
+      action TEXT,
+      payload TEXT NOT NULL,
+      signature TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','done','error')),
+      started_at TEXT,
+      completed_at TEXT,
+      error_message TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (webhook_config_id) REFERENCES webhook_configs(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_events_status ON webhook_events(status, created_at);
+    -- Partial unique index: idempotency on GitHub's x-github-delivery header
+    -- when present. NULL delivery_ids are allowed to repeat (legacy / manual replays).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_events_delivery
+      ON webhook_events(delivery_id)
+      WHERE delivery_id IS NOT NULL;
+
     -- Skill registry: central catalog of available skills
     CREATE TABLE IF NOT EXISTS skill_registry (
       id TEXT PRIMARY KEY,
@@ -1489,6 +1516,46 @@ function initDb(dataDir: string): void {
     ),
     getRecentWebhookLogs: db.prepare(
       'SELECT wl.*, wc.repo_url FROM webhook_logs wl JOIN webhook_configs wc ON wl.webhook_config_id = wc.id ORDER BY wl.created_at DESC LIMIT ?',
+    ),
+
+    // Webhook events queue (fast-ack + background worker)
+    insertWebhookEvent: db.prepare(
+      'INSERT INTO webhook_events (webhook_config_id, delivery_id, event_type, action, payload, signature) VALUES (?, ?, ?, ?, ?, ?)',
+    ),
+    getWebhookEventByDelivery: db.prepare(
+      'SELECT id FROM webhook_events WHERE delivery_id = ? LIMIT 1',
+    ),
+    getWebhookEventById: db.prepare('SELECT * FROM webhook_events WHERE id = ?'),
+    // Atomic claim: picks the oldest pending row and flips it to 'processing'
+    // in a single UPDATE, returning the row. Safe under WAL because
+    // better-sqlite3 is single-threaded per connection — no other writer
+    // can interleave inside this statement.
+    claimPendingWebhookEvent: db.prepare(`
+      UPDATE webhook_events
+      SET status = 'processing',
+          started_at = datetime('now'),
+          attempts = attempts + 1
+      WHERE id = (
+        SELECT id FROM webhook_events
+        WHERE status = 'pending'
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      )
+      RETURNING *
+    `),
+    markWebhookEventDone: db.prepare(
+      "UPDATE webhook_events SET status = 'done', completed_at = datetime('now') WHERE id = ?",
+    ),
+    markWebhookEventError: db.prepare(
+      "UPDATE webhook_events SET status = 'error', completed_at = datetime('now'), error_message = ? WHERE id = ?",
+    ),
+    // Stale-claim recovery: reset rows stuck in 'processing' back to 'pending'
+    // on server boot. Safe because the worker hasn't started yet.
+    resetStaleWebhookEvents: db.prepare(
+      "UPDATE webhook_events SET status = 'pending', started_at = NULL WHERE status = 'processing'",
+    ),
+    countWebhookEventsByStatus: db.prepare(
+      'SELECT status, COUNT(*) AS n FROM webhook_events GROUP BY status',
     ),
 
     // Wiki pages

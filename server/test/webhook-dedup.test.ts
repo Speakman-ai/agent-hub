@@ -1,5 +1,5 @@
 import type supertest from 'supertest';
-import { getRequest, createProject, createCard } from './helpers.js';
+import { getRequest, createProject, createCard, drainWebhookQueue } from './helpers.js';
 
 let request: supertest.Agent;
 let projectId: string;
@@ -52,7 +52,10 @@ describe('Webhook PR opened deduplication by title', () => {
           base: { ref: 'main' },
         },
       })
-      .expect(200);
+      .expect(202);
+
+    // Fast-ack queues the event; kanban linkage happens in the worker.
+    await drainWebhookQueue();
 
     // Board should have only one card with this title
     const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);

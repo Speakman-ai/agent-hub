@@ -1,5 +1,5 @@
 import type supertest from 'supertest';
-import { getRequest, createProject } from './helpers.js';
+import { getRequest, createProject, drainWebhookQueue } from './helpers.js';
 
 let request: supertest.Agent;
 let projectId: string;
@@ -61,8 +61,9 @@ describe('Webhook PR opened does not auto-create a kanban card', () => {
         },
       });
 
-    // Webhook should still 200 (handler succeeds; it just chose not to create)
-    expect(res.status).toBe(200);
+    // 202 Accepted: fast-ack enqueues the event, worker processes it next.
+    expect(res.status).toBe(202);
+    await drainWebhookQueue();
 
     // No card with this PR URL should exist
     const boardAfter = await request.get(`/api/projects/${projectId}/board`).expect(200);
@@ -102,7 +103,8 @@ describe('Webhook PR opened does not auto-create a kanban card', () => {
           body: '## Summary\nUsers requested a dark mode toggle in settings.\n\nCloses #45',
         },
       })
-      .expect(200);
+      .expect(202);
+    await drainWebhookQueue();
 
     const boardAfter = await request.get(`/api/projects/${projectId}/board`).expect(200);
     const board = boardAfter.body as { cards: Array<{ pr_url: string | null }> };

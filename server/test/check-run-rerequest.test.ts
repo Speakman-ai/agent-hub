@@ -9,7 +9,7 @@
  * load-bearing surface.
  */
 import type supertest from 'supertest';
-import { getRequest, createProject } from './helpers.js';
+import { getRequest, createProject, drainWebhookQueue } from './helpers.js';
 
 let request: supertest.Agent;
 let projectId: string;
@@ -51,12 +51,12 @@ describe('Webhook check_run.rerequested', () => {
           pull_requests: [{ number: 77, head: { sha: 'deadbeef1234' }, base: { sha: 'cafebabe' } }],
         },
       })
-      .expect(200);
+      .expect(202);
 
-    expect(res.body).toHaveProperty('status');
-    // `accepted` or `skipped` — both mean "we didn't crash"; the test project
-    // has no reviewer agent registered so dispatchReviewerForPR short-circuits.
-    expect(['accepted', 'skipped']).toContain((res.body as { status: string }).status);
+    // Fast-ack: handler enqueues the event and returns 202 `{status:'queued'}`.
+    // The worker subsequently processes it; we drain to exercise that path.
+    expect(res.body).toMatchObject({ status: 'queued' });
+    await drainWebhookQueue();
   });
 
   it('accepts a check_suite.rerequested payload without error', async () => {
@@ -79,10 +79,10 @@ describe('Webhook check_run.rerequested', () => {
           pull_requests: [{ number: 88, head: { sha: 'abc12300' }, base: { sha: 'aaa111' } }],
         },
       })
-      .expect(200);
+      .expect(202);
 
-    expect(res.body).toHaveProperty('status');
-    expect(['accepted', 'skipped']).toContain((res.body as { status: string }).status);
+    expect(res.body).toMatchObject({ status: 'queued' });
+    await drainWebhookQueue();
   });
 
   it('does not crash on a check_suite.rerequested with empty pull_requests[] (fork)', async () => {
@@ -106,8 +106,9 @@ describe('Webhook check_run.rerequested', () => {
           pull_requests: [],
         },
       })
-      .expect(200);
+      .expect(202);
 
-    expect(res.body).toHaveProperty('status');
+    expect(res.body).toMatchObject({ status: 'queued' });
+    await drainWebhookQueue();
   });
 });

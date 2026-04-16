@@ -80,6 +80,7 @@ import createCaptureRoutes, { createCaptureGlobalRoutes } from './routes/capture
 import createIosBuildRoutes from './routes/ios-builds.js';
 import { initIosBuildEngine } from './ios-build-engine.js';
 import { initCaptureEngine } from './capture-engine.js';
+import { initWebhookWorker } from './webhook-worker.js';
 import createPrActionRoutes from './routes/pr-actions.js';
 
 import {
@@ -250,7 +251,10 @@ function broadcast(data: Record<string, unknown>): void {
   _broadcast(data);
 }
 
-const webhookHandlerDeps = {
+// Exported for tests: test/helpers.ts initializes the webhook-worker with
+// these deps so `processOnce()` / `drainWebhookQueue()` can drive the queue
+// deterministically without starting the real polling interval.
+export const webhookHandlerDeps = {
   stmts: stmts!,
   broadcast,
   findAgent,
@@ -743,6 +747,7 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
 
     initIosBuildEngine({ stmts: stmts!, broadcast });
     initCaptureEngine({ stmts: stmts!, broadcast, uploadsDir: UPLOADS_DIR });
+    initWebhookWorker({ stmts: stmts!, routeDeps: webhookHandlerDeps });
 
     resumeOrphanedSessions(sessionsToResume);
   });
