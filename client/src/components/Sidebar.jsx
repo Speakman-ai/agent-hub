@@ -43,7 +43,7 @@ export default function Sidebar({
   wikiProjectId,
   notesProjectId,
   threadsProjectId,
-  previewsProjectId,
+  capturesProjectId,
   unreadThreadCounts = {},
   activeReviews = {},
   subagentsBySession = {},
@@ -551,17 +551,17 @@ export default function Sidebar({
                       )}
                     </button>
 
-                    {/* Preview environments */}
+                    {/* PR Captures */}
                     <button
-                      onClick={() => onNavigate('previews', project.id)}
+                      onClick={() => onNavigate('captures', project.id)}
                       className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView === 'previews' && previewsProjectId === project.id
+                        currentView === 'captures' && capturesProjectId === project.id
                           ? 'bg-gray-800 text-white'
                           : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
                       }`}
                     >
                       <Container size={14} className="flex-shrink-0" />
-                      <span className="truncate">Previews</span>
+                      <span className="truncate">Captures</span>
                     </button>
                   </div>
                 )}

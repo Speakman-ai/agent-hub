@@ -43,6 +43,12 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // Migration: drop legacy preview tables from the Docker-based preview
+  // system (replaced by pr_captures / pr_capture_artifacts). Safe if they
+  // don't exist.
+  db.exec('DROP TABLE IF EXISTS preview_captures');
+  db.exec('DROP TABLE IF EXISTS preview_containers');
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -460,8 +466,8 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_escalations_type ON escalations(project_id, type);
     CREATE INDEX IF NOT EXISTS idx_escalations_ack ON escalations(acknowledged);
 
-    -- Preview containers: isolated Docker environments per PR branch
-    CREATE TABLE IF NOT EXISTS preview_containers (
+    -- PR captures: screenshot/video capture jobs for PR branches
+    CREATE TABLE IF NOT EXISTS pr_captures (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       pr_number INTEGER NOT NULL,
@@ -469,25 +475,23 @@ function initDb(dataDir: string): void {
       branch TEXT NOT NULL,
       commit_sha TEXT,
       repo_url TEXT NOT NULL,
-      container_id TEXT,
-      port INTEGER,
-      url TEXT,
-      status TEXT NOT NULL DEFAULT 'building' CHECK(status IN ('building','running','stopping','stopped','error')),
+      status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','building','capturing','done','error')),
       error_message TEXT,
       build_log TEXT,
-      ttl_minutes INTEGER NOT NULL DEFAULT 60,
-      expires_at TEXT,
+      screenshot_count INTEGER NOT NULL DEFAULT 0,
+      has_video INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER,
+      comment_url TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE INDEX IF NOT EXISTS idx_preview_containers_project ON preview_containers(project_id);
-    CREATE INDEX IF NOT EXISTS idx_preview_containers_pr ON preview_containers(project_id, pr_number);
-    CREATE INDEX IF NOT EXISTS idx_preview_containers_status ON preview_containers(status);
+    CREATE INDEX IF NOT EXISTS idx_pr_captures_project ON pr_captures(project_id);
+    CREATE INDEX IF NOT EXISTS idx_pr_captures_pr ON pr_captures(project_id, pr_number);
 
-    -- Preview captures: screenshots and videos captured from preview containers
-    CREATE TABLE IF NOT EXISTS preview_captures (
+    -- PR capture artifacts: individual screenshots/videos from a capture job
+    CREATE TABLE IF NOT EXISTS pr_capture_artifacts (
       id TEXT PRIMARY KEY,
-      preview_id TEXT NOT NULL REFERENCES preview_containers(id) ON DELETE CASCADE,
+      capture_id TEXT NOT NULL REFERENCES pr_captures(id) ON DELETE CASCADE,
       type TEXT NOT NULL CHECK(type IN ('screenshot', 'video')),
       route TEXT,
       name TEXT NOT NULL,
@@ -495,9 +499,10 @@ function initDb(dataDir: string): void {
       filename TEXT NOT NULL,
       file_path TEXT NOT NULL,
       file_size INTEGER NOT NULL DEFAULT 0,
+      console_errors TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE INDEX IF NOT EXISTS idx_preview_captures_preview ON preview_captures(preview_id);
+    CREATE INDEX IF NOT EXISTS idx_pr_capture_artifacts_capture ON pr_capture_artifacts(capture_id);
 
     -- iOS builds: Xcode builds on macOS VMs for PR preview
     CREATE TABLE IF NOT EXISTS ios_builds (
@@ -1494,45 +1499,33 @@ function initDb(dataDir: string): void {
     ),
     getNoteProcessingBySession: db.prepare('SELECT * FROM note_processings WHERE session_id = ?'),
 
-    // Preview containers
-    getPreviewContainers: db.prepare('SELECT * FROM preview_containers ORDER BY created_at DESC'),
-    getPreviewContainersByProject: db.prepare(
-      'SELECT * FROM preview_containers WHERE project_id = ? ORDER BY created_at DESC',
+    // PR captures
+    getPrCaptures: db.prepare('SELECT * FROM pr_captures ORDER BY created_at DESC'),
+    getPrCapturesByProject: db.prepare(
+      'SELECT * FROM pr_captures WHERE project_id = ? ORDER BY created_at DESC',
     ),
-    getPreviewContainer: db.prepare('SELECT * FROM preview_containers WHERE id = ?'),
-    getPreviewContainerByPr: db.prepare(
-      "SELECT * FROM preview_containers WHERE project_id = ? AND pr_number = ? AND status NOT IN ('stopped', 'error') ORDER BY created_at DESC LIMIT 1",
+    getPrCapture: db.prepare('SELECT * FROM pr_captures WHERE id = ?'),
+    createPrCapture: db.prepare(
+      `INSERT INTO pr_captures (id, project_id, pr_number, pr_url, branch, commit_sha, repo_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
-    createPreviewContainer: db.prepare(
-      `INSERT INTO preview_containers (id, project_id, pr_number, pr_url, branch, commit_sha, repo_url, status, ttl_minutes, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'building', ?, datetime('now', '+' || ? || ' minutes'))`,
+    updatePrCapture: db.prepare(
+      `UPDATE pr_captures SET status = ?, error_message = ?, build_log = ?, screenshot_count = ?, has_video = ?, duration_ms = ?, comment_url = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
-    updatePreviewContainer: db.prepare(
-      `UPDATE preview_containers SET container_id = ?, port = ?, url = ?, status = ?, error_message = ?, build_log = ?, commit_sha = ?, updated_at = datetime('now') WHERE id = ?`,
+    updatePrCaptureStatus: db.prepare(
+      `UPDATE pr_captures SET status = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
-    updatePreviewContainerStatus: db.prepare(
-      `UPDATE preview_containers SET status = ?, updated_at = datetime('now') WHERE id = ?`,
-    ),
-    deletePreviewContainer: db.prepare('DELETE FROM preview_containers WHERE id = ?'),
-    getExpiredPreviews: db.prepare(
-      `SELECT * FROM preview_containers WHERE status = 'running' AND expires_at IS NOT NULL AND expires_at < datetime('now')`,
-    ),
-    getRunningPreviews: db.prepare(
-      `SELECT * FROM preview_containers WHERE status IN ('building', 'running')`,
-    ),
-    getRunningPreviewByPrNumber: db.prepare(
-      `SELECT * FROM preview_containers WHERE pr_number = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1`,
-    ),
+    deletePrCapture: db.prepare('DELETE FROM pr_captures WHERE id = ?'),
 
-    // Preview captures
-    getPreviewCaptures: db.prepare(
-      'SELECT * FROM preview_captures WHERE preview_id = ? ORDER BY type, name',
+    // PR capture artifacts
+    getPrCaptureArtifacts: db.prepare(
+      'SELECT * FROM pr_capture_artifacts WHERE capture_id = ? ORDER BY type, name',
     ),
-    createPreviewCapture: db.prepare(
-      `INSERT INTO preview_captures (id, preview_id, type, route, name, label, filename, file_path, file_size)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    createPrCaptureArtifact: db.prepare(
+      `INSERT INTO pr_capture_artifacts (id, capture_id, type, route, name, label, filename, file_path, file_size, console_errors)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
-    deletePreviewCaptures: db.prepare('DELETE FROM preview_captures WHERE preview_id = ?'),
+    deletePrCaptureArtifacts: db.prepare('DELETE FROM pr_capture_artifacts WHERE capture_id = ?'),
 
     // iOS builds
     getIosBuilds: db.prepare('SELECT * FROM ios_builds ORDER BY created_at DESC'),

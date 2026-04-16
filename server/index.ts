@@ -62,7 +62,6 @@ import createSkillRoutes, { DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import createWebhookRoutes, {
   createGithubWebhookHandler,
   pendingReviewComments,
-  handlePreviewStatusChange,
 } from './routes/webhooks.js';
 import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
@@ -76,14 +75,11 @@ import createHookRoutes from './routes/hooks.js';
 import createClaudeAuthRoutes from './routes/claude-auth.js';
 import createThreadRoutes from './routes/threads.js';
 import createEscalationRoutes from './routes/escalations.js';
-import createPreviewRoutes from './routes/previews.js';
+import createCaptureRoutes, { createCaptureGlobalRoutes } from './routes/captures.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
-import { initPreviewEngine } from './preview-engine.js';
 import { initIosBuildEngine } from './ios-build-engine.js';
-import { initCaptureEngine } from './preview-capture.js';
-import createPreviewDbRoutes from './routes/preview.js';
+import { initCaptureEngine } from './capture-engine.js';
 import createPrActionRoutes from './routes/pr-actions.js';
-import { createPreviewProxyMiddleware, createPreviewWsUpgradeHandler } from './preview-proxy.js';
 
 import {
   initDelegation,
@@ -328,16 +324,7 @@ initAutonomous({
 
 app.use(createGithubWebhookHandler(webhookHandlerDeps));
 
-// Preview proxy: route preview-pr-*.{domain} requests to the correct container.
-// Mounted before auth so preview traffic doesn't require an API key.
-if (config.previewDomain) {
-  app.use(
-    createPreviewProxyMiddleware({
-      stmts: stmts!,
-      previewDomain: config.previewDomain,
-    }),
-  );
-}
+// (Preview proxy removed — replaced by lightweight Playwright captures)
 
 app.use(authMiddleware);
 
@@ -420,9 +407,13 @@ app.use(createHookRoutes(routeDeps));
 app.use(createClaudeAuthRoutes(routeDeps));
 app.use(createThreadRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
-app.use(createPreviewRoutes(routeDeps));
+// `/api/captures/status` is the only non-project-scoped endpoint — everything
+// else must know which project it belongs to. Keeping these on separate routers
+// prevents accidental matches like `POST /api/captures` (which would have no
+// projectId and fail the NOT NULL on pr_captures.project_id).
+app.use('/api/captures', createCaptureGlobalRoutes());
+app.use('/api/projects/:projectId/captures', createCaptureRoutes(routeDeps));
 app.use(createIosBuildRoutes(routeDeps));
-app.use(createPreviewDbRoutes(routeDeps));
 app.use(createPrActionRoutes(routeDeps));
 
 const server = createServer(app);
@@ -443,29 +434,6 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
-
-// Preview WebSocket upgrade: intercept upgrade events for preview subdomains
-// and forward them to the correct preview container.
-if (config.previewDomain) {
-  const handlePreviewUpgrade = createPreviewWsUpgradeHandler({
-    stmts: stmts!,
-    previewDomain: config.previewDomain,
-  });
-
-  // Prepend our handler so it fires before the main WebSocketServer.
-  // If the host doesn't match a preview subdomain, let it fall through.
-  const originalListeners = server.listeners('upgrade').slice();
-  server.removeAllListeners('upgrade');
-  server.on('upgrade', (req, socket: import('net').Socket, head) => {
-    const handled = handlePreviewUpgrade(req, socket, head);
-    if (!handled) {
-      // Re-emit for the original ws handler
-      for (const listener of originalListeners) {
-        (listener as Function).call(server, req, socket, head);
-      }
-    }
-  });
-}
 
 const chatHandler = createChatHandler({
   broadcast,
@@ -780,12 +748,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       console.error('Failed to start Slack bots:', err.message);
     });
 
-    initPreviewEngine({
-      stmts: stmts!,
-      broadcast,
-      previewDomain: config.previewDomain,
-      onStatusChange: handlePreviewStatusChange,
-    });
     initIosBuildEngine({ stmts: stmts!, broadcast });
     initCaptureEngine({ stmts: stmts!, broadcast, uploadsDir: UPLOADS_DIR });
 

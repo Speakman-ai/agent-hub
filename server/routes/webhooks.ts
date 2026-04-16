@@ -5,13 +5,7 @@ import { Router, Request, Response } from 'express';
 import config, { defaultModelForEngine } from '../config.js';
 import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
-import {
-  createPreview,
-  stopPreview,
-  rebuildPreview,
-  isDockerAvailable,
-} from '../preview-engine.js';
-import type { PreviewStatusChange } from '../preview-engine.js';
+import { runCapture, postPrComment } from '../capture-engine.js';
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
 import type {
   RouteDeps,
@@ -27,7 +21,6 @@ import type {
   WebhookConfigRow,
   SessionRow,
   AppConfig,
-  PreviewContainerRow,
 } from '../types.js';
 
 // ─── GitHub Payload Types ────────────────────────────────────────
@@ -282,10 +275,10 @@ export function notifyDispatchFailure(
   }
 }
 
-// ─── Preview Environment on PR ──────────────────────────────────
+// ─── GitHub Commit Status ───────────────────────────────────────
 
 /**
- * Set a GitHub commit status for preview environment deployment.
+ * Set a GitHub commit status. Used for PR captures and other CI-like checks.
  * Uses GitHub App if available, falls back to `gh` CLI with bot token.
  */
 export async function setCommitStatus(
@@ -300,7 +293,7 @@ export async function setCommitStatus(
   const body: Record<string, unknown> = {
     state,
     description: description.substring(0, 140), // GitHub limit
-    context: 'agent-hub/preview',
+    context: 'agent-hub/capture',
   };
   if (targetUrl) {
     body.target_url = targetUrl;
@@ -319,11 +312,11 @@ export async function setCommitStatus(
           privateKey: app.privateKey,
           installationId: instId,
         });
-        console.log(`[Preview/Status] Set ${state} on ${owner}/${repo}@${sha.substring(0, 7)}`);
+        console.log(`[Webhook/Status] Set ${state} on ${owner}/${repo}@${sha.substring(0, 7)}`);
         return;
       } catch (err) {
         console.warn(
-          `[Preview/Status] GitHub App failed, trying gh CLI: ${(err as Error).message.split('\n')[0]}`,
+          `[Webhook/Status] GitHub App failed, trying gh CLI: ${(err as Error).message.split('\n')[0]}`,
         );
       }
     }
@@ -346,7 +339,7 @@ export async function setCommitStatus(
       '--field',
       `description=${body.description as string}`,
       '--field',
-      'context=agent-hub/preview',
+      'context=agent-hub/capture',
     ];
     if (targetUrl) {
       args.push('--field', `target_url=${targetUrl}`);
@@ -358,56 +351,37 @@ export async function setCommitStatus(
       env: ghEnv as NodeJS.ProcessEnv,
     });
     console.log(
-      `[Preview/Status] Set ${state} on ${owner}/${repo}@${sha.substring(0, 7)} (gh CLI)`,
+      `[Webhook/Status] Set ${state} on ${owner}/${repo}@${sha.substring(0, 7)} (gh CLI)`,
     );
   } catch (err) {
     console.error(
-      `[Preview/Status] Failed to set commit status: ${(err as Error).message.split('\n')[0]}`,
+      `[Webhook/Status] Failed to set commit status: ${(err as Error).message.split('\n')[0]}`,
     );
   }
 }
 
-/**
- * Handle preview engine status changes — updates GitHub commit status.
- */
-export function handlePreviewStatusChange(change: PreviewStatusChange): void {
-  if (!change.commitSha) return;
-
-  let state: 'pending' | 'success' | 'failure' | 'error';
-  let description: string;
-
-  switch (change.status) {
-    case 'building':
-      state = 'pending';
-      description = 'Preview environment is building...';
-      break;
-    case 'running':
-      state = 'success';
-      description = 'Preview environment is live';
-      break;
-    case 'error':
-      state = 'error';
-      description = change.errorMessage
-        ? `Preview failed: ${change.errorMessage.substring(0, 100)}`
-        : 'Preview environment build failed';
-      break;
-    case 'stopped':
-      // Don't set a failure status on intentional stops (e.g., PR merged/closed)
-      return;
-    default:
-      return;
-  }
-
-  setCommitStatus(change.repoUrl, change.commitSha, state, description, change.url).catch((err) => {
-    console.error('[Preview/Status] setCommitStatus error:', (err as Error).message);
-  });
-}
+// Input validators — these must match capture-engine's guard. We refuse
+// anything git could interpret as a flag, absolute path, or shell metachar
+// before persisting to the DB.
+const WEBHOOK_BRANCH_RE = /^(?!-)[A-Za-z0-9._/-]{1,255}$/;
+const WEBHOOK_SHA_RE = /^[a-f0-9]{7,64}$/i;
+const WEBHOOK_REPO_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\.git)?$/;
 
 /**
- * Trigger a preview environment for a PR.
- * Called from webhook handlers on PR open or synchronize.
+ * Trigger a PR capture (screenshot/video) when a PR is opened or updated.
+ *
+ * Called from webhook handlers on PR open or synchronize. Gated by
+ * config.capturesEnabled. The full pipeline runs fire-and-forget:
+ *   1. Validate inputs (refuse argument-injection attempts on branch/sha/url)
+ *   2. Set GitHub commit status to `pending` under `agent-hub/capture`
+ *   3. Run the capture (clone → build → serve → Playwright → DB)
+ *   4. On success: post the PR comment with embedded screenshots + video
+ *      link so the agent and reviewer can see the result.
+ *   5. Update commit status to `success` / `failure` with the comment URL as
+ *      the target_url (so GitHub's "Details" link goes straight to the
+ *      capture comment).
  */
-export async function triggerPreviewForPR(
+export async function triggerCaptureForPR(
   deps: { stmts: Stmts; broadcast: BroadcastFn },
   opts: {
     projectId: string;
@@ -418,58 +392,101 @@ export async function triggerPreviewForPR(
     repoUrl: string;
   },
 ): Promise<void> {
-  const { stmts } = deps;
+  if (!config.capturesEnabled) {
+    console.log(`[Webhook/Capture] Captures disabled — skipping PR #${opts.prNumber}`);
+    return;
+  }
 
-  // Check Docker availability
-  const dockerAvailable = await isDockerAvailable();
-  if (!dockerAvailable) {
-    console.log(
-      `[Webhook/Preview] Docker not available — skipping preview for PR #${opts.prNumber}`,
+  // Input validation — untrusted fields from GitHub webhook payload
+  if (!WEBHOOK_BRANCH_RE.test(opts.branch)) {
+    console.warn(
+      `[Webhook/Capture] Rejecting PR #${opts.prNumber} — invalid branch name: ${opts.branch}`,
+    );
+    return;
+  }
+  if (opts.commitSha && !WEBHOOK_SHA_RE.test(opts.commitSha)) {
+    console.warn(
+      `[Webhook/Capture] Rejecting PR #${opts.prNumber} — invalid commit sha: ${opts.commitSha}`,
+    );
+    return;
+  }
+  if (!WEBHOOK_REPO_URL_RE.test(opts.repoUrl)) {
+    console.warn(
+      `[Webhook/Capture] Rejecting PR #${opts.prNumber} — invalid repo url: ${opts.repoUrl}`,
     );
     return;
   }
 
-  // Check for existing preview — if exists, rebuild it
-  const existing = stmts.getPreviewContainerByPr.get(opts.projectId, opts.prNumber) as
-    | PreviewContainerRow
-    | undefined;
+  const { stmts } = deps;
+  const id = uuidv4();
 
-  if (existing) {
-    // Update the commit SHA if changed
-    if (opts.commitSha && opts.commitSha !== existing.commit_sha) {
-      stmts.updatePreviewContainer.run(
-        existing.container_id,
-        existing.port,
-        existing.url,
-        existing.status,
-        existing.error_message,
-        existing.build_log,
-        opts.commitSha,
-        existing.id,
+  try {
+    stmts.createPrCapture.run(
+      id,
+      opts.projectId,
+      opts.prNumber,
+      opts.prUrl,
+      opts.branch,
+      opts.commitSha,
+      opts.repoUrl,
+    );
+
+    console.log(`[Webhook/Capture] Capture triggered for PR #${opts.prNumber} (${id})`);
+
+    // Mark commit status as pending so GitHub reflects that a capture is in flight.
+    if (opts.commitSha) {
+      setCommitStatus(opts.repoUrl, opts.commitSha, 'pending', 'Capturing PR…', null).catch(
+        (err) => {
+          console.warn(`[Webhook/Capture] setCommitStatus(pending) failed: ${err.message}`);
+        },
       );
     }
 
-    console.log(`[Webhook/Preview] Existing preview for PR #${opts.prNumber} — rebuilding`);
-    await rebuildPreview(existing.id);
-    return;
-  }
+    // Fire-and-forget — the capture runs in the background. On completion we
+    // post the PR comment and update the commit status.
+    runCapture(id)
+      .then(async (result) => {
+        let commentUrl: string | null = null;
+        if (result.status === 'done') {
+          commentUrl = await postPrComment(id);
+          if (!commentUrl) {
+            console.warn(
+              `[Webhook/Capture] PR #${opts.prNumber} capture done but postPrComment returned null`,
+            );
+          }
+        }
 
-  // Create new preview
-  const id = uuidv4();
-  try {
-    await createPreview({
-      id,
-      projectId: opts.projectId,
-      prNumber: opts.prNumber,
-      prUrl: opts.prUrl,
-      branch: opts.branch,
-      commitSha: opts.commitSha,
-      repoUrl: opts.repoUrl,
-    });
-    console.log(`[Webhook/Preview] Preview triggered for PR #${opts.prNumber}`);
+        if (opts.commitSha) {
+          const state = result.status === 'done' ? 'success' : 'failure';
+          const description =
+            result.status === 'done'
+              ? `Captured ${result.screenshots.length} screenshot(s)`
+              : (result.error || 'Capture failed').slice(0, 140);
+          await setCommitStatus(opts.repoUrl, opts.commitSha, state, description, commentUrl).catch(
+            (err) => {
+              console.warn(`[Webhook/Capture] setCommitStatus(${state}) failed: ${err.message}`);
+            },
+          );
+        }
+      })
+      .catch((err) => {
+        console.error(
+          `[Webhook/Capture] Capture failed for PR #${opts.prNumber}:`,
+          (err as Error).message,
+        );
+        if (opts.commitSha) {
+          setCommitStatus(
+            opts.repoUrl,
+            opts.commitSha,
+            'error',
+            `Capture error: ${(err as Error).message}`.slice(0, 140),
+            null,
+          ).catch(() => {});
+        }
+      });
   } catch (err) {
     console.error(
-      `[Webhook/Preview] Failed to create preview for PR #${opts.prNumber}:`,
+      `[Webhook/Capture] Failed to create capture for PR #${opts.prNumber}:`,
       (err as Error).message,
     );
   }
@@ -801,10 +818,10 @@ function handleKanbanWebhookEvent(
       );
       card = existingByTitle;
 
-      // Still trigger preview for the PR even if card already exists
+      // Still trigger capture for the PR even if card already exists
       const repoHtmlUrl = payload.repository?.html_url;
       if (repoHtmlUrl && pr.head?.ref) {
-        triggerPreviewForPR(
+        triggerCaptureForPR(
           { stmts, broadcast },
           {
             projectId: project.id,
@@ -815,7 +832,7 @@ function handleKanbanWebhookEvent(
             repoUrl: repoHtmlUrl,
           },
         ).catch((err) => {
-          console.error(`[Webhook/Preview] trigger on opened failed:`, (err as Error).message);
+          console.error(`[Webhook/Capture] trigger on opened failed:`, (err as Error).message);
         });
       }
 
@@ -866,10 +883,10 @@ function handleKanbanWebhookEvent(
     broadcast({ type: 'kanban_update', projectId: project.id });
     card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
 
-    // Trigger preview environment for the new PR
+    // Trigger capture for the new PR
     const repoHtmlUrl = payload.repository?.html_url;
     if (repoHtmlUrl && pr.head?.ref) {
-      triggerPreviewForPR(
+      triggerCaptureForPR(
         { stmts, broadcast },
         {
           projectId: project.id,
@@ -880,7 +897,7 @@ function handleKanbanWebhookEvent(
           repoUrl: repoHtmlUrl,
         },
       ).catch((err) => {
-        console.error(`[Webhook/Preview] trigger on opened failed:`, (err as Error).message);
+        console.error(`[Webhook/Capture] trigger on opened failed:`, (err as Error).message);
       });
     }
 
@@ -1193,22 +1210,6 @@ function handleWebhookPrClosed(
   const merged = payload.pull_request?.merged === true;
   const prNumber = payload.pull_request?.number;
 
-  // Auto-stop preview container when PR is closed or merged
-  if (prNumber) {
-    const preview = stmts.getPreviewContainerByPr.get(project.id, prNumber) as
-      | PreviewContainerRow
-      | undefined;
-    if (preview) {
-      stopPreview(preview.id).catch((err) => {
-        console.error(
-          `[Webhook/Preview] Failed to stop preview for PR #${prNumber}:`,
-          (err as Error).message,
-        );
-      });
-      console.log(`[Webhook/Preview] PR #${prNumber} closed — stopping preview container`);
-    }
-  }
-
   if (merged) {
     const doneCol = cols.find((c) => c.name.toLowerCase() === 'done');
     if (doneCol && card.column_id !== doneCol.id) {
@@ -1288,11 +1289,11 @@ function handleWebhookPrSynchronize(
     }
   }
 
-  // Trigger preview rebuild on new commits
+  // Trigger capture on new commits
   if (prNumber && payload.pull_request?.head?.ref) {
     const repoHtmlUrl = payload.repository?.html_url;
     if (repoHtmlUrl) {
-      triggerPreviewForPR(
+      triggerCaptureForPR(
         { stmts, broadcast },
         {
           projectId: project.id,
@@ -1303,7 +1304,7 @@ function handleWebhookPrSynchronize(
           repoUrl: repoHtmlUrl,
         },
       ).catch((err) => {
-        console.error(`[Webhook/Preview] trigger on synchronize failed:`, (err as Error).message);
+        console.error(`[Webhook/Capture] trigger on synchronize failed:`, (err as Error).message);
       });
     }
   }

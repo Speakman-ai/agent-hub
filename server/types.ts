@@ -390,7 +390,11 @@ export interface NoteRow {
   updated_at: string;
 }
 
-export interface PreviewContainerRow {
+/**
+ * A PR capture job — tracks an attempt to screenshot/record a PR branch.
+ * Replaces the old Docker-based PreviewContainerRow.
+ */
+export interface PrCaptureRow {
   id: string;
   project_id: string;
   pr_number: number;
@@ -398,21 +402,24 @@ export interface PreviewContainerRow {
   branch: string;
   commit_sha: string | null;
   repo_url: string;
-  container_id: string | null;
-  port: number | null;
-  url: string | null;
-  status: 'building' | 'running' | 'stopping' | 'stopped' | 'error';
+  status: 'queued' | 'building' | 'capturing' | 'done' | 'error';
   error_message: string | null;
   build_log: string | null;
-  ttl_minutes: number;
-  expires_at: string | null;
+  /** Number of screenshots captured */
+  screenshot_count: number;
+  /** Whether a walkthrough video was captured */
+  has_video: boolean;
+  /** Duration of the capture process in ms */
+  duration_ms: number | null;
+  /** URL to the GitHub PR comment with screenshots (if posted) */
+  comment_url: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface PreviewCaptureRow {
+export interface PrCaptureArtifactRow {
   id: string;
-  preview_id: string;
+  capture_id: string;
   type: 'screenshot' | 'video';
   route: string | null;
   name: string;
@@ -420,6 +427,8 @@ export interface PreviewCaptureRow {
   filename: string;
   file_path: string;
   file_size: number;
+  /** Console errors captured from the page (for agent self-validation) */
+  console_errors: string | null;
   created_at: string;
 }
 
@@ -784,23 +793,19 @@ export interface Stmts {
   getNoteProcessingsByDate: Stmt;
   getNoteProcessingBySession: Stmt;
 
-  // Preview containers
-  getPreviewContainers: Stmt;
-  getPreviewContainersByProject: Stmt;
-  getPreviewContainer: Stmt;
-  getPreviewContainerByPr: Stmt;
-  createPreviewContainer: Stmt;
-  updatePreviewContainer: Stmt;
-  updatePreviewContainerStatus: Stmt;
-  deletePreviewContainer: Stmt;
-  getExpiredPreviews: Stmt;
-  getRunningPreviews: Stmt;
-  getRunningPreviewByPrNumber: Stmt;
+  // PR captures (screenshot/video for PRs)
+  getPrCaptures: Stmt;
+  getPrCapturesByProject: Stmt;
+  getPrCapture: Stmt;
+  createPrCapture: Stmt;
+  updatePrCapture: Stmt;
+  updatePrCaptureStatus: Stmt;
+  deletePrCapture: Stmt;
 
-  // Preview captures
-  getPreviewCaptures: Stmt;
-  createPreviewCapture: Stmt;
-  deletePreviewCaptures: Stmt;
+  // PR capture artifacts
+  getPrCaptureArtifacts: Stmt;
+  createPrCaptureArtifact: Stmt;
+  deletePrCaptureArtifacts: Stmt;
 
   // iOS builds
   getIosBuilds: Stmt;
@@ -932,7 +937,7 @@ export interface AppConfig {
   apiKey: string | null;
   anthropicApiKey: string | null;
   slackWebhookUrl: string | null;
-  previewDomain: string | null;
+  capturesEnabled: boolean;
   readonly allValidModels: string[];
 }
 
