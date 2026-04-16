@@ -6,6 +6,7 @@ import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
 import { markdownComponentsCompact } from './MarkdownRenderer.jsx';
 import { isFileModifyingTool, shortenPath, parseDiffLines } from '../utils/diff.js';
+import AskUserQuestion from './AskUserQuestion.jsx';
 import {
   Bot,
   Zap,
@@ -44,7 +45,16 @@ import {
  *   onEventsLoaded(messageId, events) — called after a successful HTTP fetch,
  *                  so the parent can hoist the events into shared state
  */
-function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, verboseMode }) {
+function SessionTail({
+  message,
+  events,
+  agentColor,
+  streaming,
+  onEventsLoaded,
+  verboseMode,
+  onAskSubmit,
+  askSubmittedIds,
+}) {
   const messageId = message?.id;
 
   // If we don't have events yet AND this isn't a live stream, lazy-fetch them.
@@ -136,6 +146,16 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, v
                 );
               case 'text':
                 return <TextBubble key={`b${i}`} text={block.text} />;
+              case 'ask_question':
+                return (
+                  <AskUserQuestion
+                    key={`b${i}`}
+                    askId={block.event.askId}
+                    questions={block.event.questions}
+                    submitted={askSubmittedIds?.has?.(block.event.askId)}
+                    onSubmit={(text) => onAskSubmit?.(block.event.askId, text)}
+                  />
+                );
               case 'result':
                 return <ResultFooter key={`b${i}`} result={block.event} />;
               case 'checkpoint':
@@ -220,6 +240,8 @@ function eventsToBlocks(events, verbose) {
       blocks.push({ kind: 'rate_limit', event });
     } else if (t === 'result') {
       blocks.push({ kind: 'result', event });
+    } else if (t === 'ask_user_question') {
+      blocks.push({ kind: 'ask_question', event });
     } else if (t === 'error') {
       blocks.push({ kind: 'error', event });
     } else {

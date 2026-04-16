@@ -960,6 +960,7 @@ export type StreamEventType =
   | 'result'
   | 'checkpoint'
   | 'rate_limit'
+  | 'ask_user_question'
   | 'error'
   | 'unknown';
 
@@ -1024,6 +1025,27 @@ export interface RateLimitEvent extends BaseStreamEvent {
   message: string | null;
 }
 
+export interface AskUserQuestionOption {
+  label: string;
+  description: string;
+  preview?: string;
+}
+
+export interface AskUserQuestionItem {
+  question: string;
+  header: string;
+  multiSelect: boolean;
+  options: AskUserQuestionOption[];
+}
+
+export interface AskUserQuestionEvent extends BaseStreamEvent {
+  type: 'ask_user_question';
+  // Stable id derived from the questions payload; used by the client to
+  // deduplicate if the same block is re-emitted (e.g. on resume).
+  askId: string;
+  questions: AskUserQuestionItem[];
+}
+
 export interface ErrorEvent extends BaseStreamEvent {
   type: 'error';
   message: string;
@@ -1043,6 +1065,7 @@ export type StreamEvent =
   | ResultEvent
   | CheckpointEvent
   | RateLimitEvent
+  | AskUserQuestionEvent
   | ErrorEvent
   | UnknownEvent;
 

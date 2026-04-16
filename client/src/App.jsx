@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import TopBar from './components/TopBar.jsx';
 import ChatMessage from './components/ChatMessage.jsx';
@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 import { migrateFromLegacy, fetchOrgs, getActiveOrg, getOrgs } from './utils/orgs.js';
 import { getApiBase, getAuthHeaders } from './utils/connection.js';
+import { extractSubmittedAskIds } from './utils/askAnswers.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -103,6 +104,24 @@ export default function App() {
   const [subagents, setSubagents] = useState({});
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  // Tracks which agenthub:ask prompts the user has already answered in this
+  // tab, so the picker renders as "Submitted" immediately after click. This is
+  // the optimistic, in-memory half; the authoritative source is the derived
+  // set below which scans persisted message history.
+  const [askSubmittedOptimistic, setAskSubmittedOptimistic] = useState(() => new Set());
+  // Derived from persisted message history: any user message containing an
+  // `agenthub:ask:answer` block with a matching askId marks that picker as
+  // submitted. Surviving page reloads requires this — in-memory state is lost
+  // on refresh, but the user message is persisted in the DB and re-fetched.
+  const askSubmittedFromHistory = useMemo(() => extractSubmittedAskIds(messages), [messages]);
+  // Union of optimistic (just-clicked) + history-derived (persisted). Passed to
+  // the picker's `submitted` prop and used to short-circuit duplicate sends.
+  const askSubmitted = useMemo(() => {
+    if (askSubmittedOptimistic.size === 0) return askSubmittedFromHistory;
+    const union = new Set(askSubmittedFromHistory);
+    for (const id of askSubmittedOptimistic) union.add(id);
+    return union;
+  }, [askSubmittedOptimistic, askSubmittedFromHistory]);
   // Wiki state
   const [wikiProjectId, setWikiProjectId] = useState(null);
   // Notes state
@@ -1496,6 +1515,23 @@ export default function App() {
     }
   };
 
+  // Handle submission from an <AskUserQuestion> picker. We dispatch the
+  // pre-formatted chat message (which already contains the agenthub:ask:answer
+  // fenced block) and mark the askId as submitted so the picker flips to a
+  // disabled "Submitted" state immediately. Once the user message persists to
+  // history, `askSubmittedFromHistory` below picks the id up from the
+  // fenced-block scan and the optimistic set becomes redundant — but the
+  // union in `askSubmitted` makes the brief overlap seamless.
+  const handleAskSubmit = (askId, messageText) => {
+    if (askSubmitted.has(askId)) return;
+    setAskSubmittedOptimistic((prev) => {
+      const next = new Set(prev);
+      next.add(askId);
+      return next;
+    });
+    handleSend(messageText);
+  };
+
   const handleSend = async (content, images = [], { interrupt = false } = {}) => {
     let sessionId = activeSessionId;
     if (!sessionId) {
@@ -1820,6 +1856,8 @@ export default function App() {
                               agentColor={activeAgent?.color}
                               onEventsLoaded={handleEventsLoaded}
                               verboseMode={verboseMode}
+                              onAskSubmit={handleAskSubmit}
+                              askSubmittedIds={askSubmitted}
                             />
                           ) : (
                             <ChatMessage
@@ -1846,6 +1884,8 @@ export default function App() {
                             agentColor={activeAgent?.color}
                             streaming
                             verboseMode={verboseMode}
+                            onAskSubmit={handleAskSubmit}
+                            askSubmittedIds={askSubmitted}
                           />
                         )}
                         {/* Delegation panel — shows when a lead agent delegates to sub-agents */}

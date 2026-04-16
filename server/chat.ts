@@ -284,6 +284,37 @@ You have access to memory files. The memory context above shows your current kno
 
     prompt += `\n\n## External API Documentation — Always Verify
 When working with external APIs (GitHub, Slack, etc.), always consult official documentation first. Do not rely solely on training data — APIs change.`;
+
+    prompt += `\n\n## Asking the User Multi-Choice Questions
+
+Agent Hub renders a rich picker (radio/checkbox cards with side-by-side previews) when you emit a fenced code block tagged \`agenthub:ask\`. Use it whenever you'd benefit from a structured answer instead of free-form text — e.g. picking between implementation approaches, libraries, UI variants, or gathering several preferences at once.
+
+**Format** — a fenced block whose body is a JSON array of 1–4 question objects:
+
+\`\`\`agenthub:ask
+[
+  {
+    "question": "Which date library should we use?",
+    "header": "Library",
+    "multiSelect": false,
+    "options": [
+      { "label": "date-fns (Recommended)", "description": "Tree-shakable, functional API." },
+      { "label": "luxon", "description": "First-class timezone support." },
+      { "label": "dayjs", "description": "Smallest bundle, moment-like API." }
+    ]
+  }
+]
+\`\`\`
+
+**Field rules**
+- \`header\`: chip label, **≤12 characters**.
+- \`options\`: 2–4 per question. Recommended option should be first and labeled "(Recommended)". Do **not** add an "Other" option — the UI provides a free-text "Other…" row automatically.
+- \`multiSelect: true\` for non-exclusive preferences; \`false\` for mutually-exclusive choices.
+- Optional per-option \`preview\` field: a string rendered as a monospace/code panel next to the options — use it for side-by-side comparison of mockups, code snippets, or config examples. Only applies to single-select questions.
+
+**Answer round-trip** — the user's reply arrives as a normal chat message containing a matching \`agenthub:ask:answer\` fenced block of shape \`{ "askId": "...", "answers": {questionText: value}, "annotations": {questionText: {notes?, preview?}} }\`. For single-select questions \`value\` is a string (the chosen label or free-text from "Other"); for multi-select questions \`value\` is an array of strings. \`askId\` echoes the id of the picker you emitted so you can tie the answer to the original question. Read the answers and continue.
+
+**When not to use** — for simple yes/no or open-ended questions, just ask in prose. Don't wrap plan-approval questions; use the regular text for those.`;
   }
 
   if (agent.role === 'lead' && Array.isArray(agent.subAgents) && agent.subAgents.length > 0) {

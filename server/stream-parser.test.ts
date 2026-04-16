@@ -1,5 +1,5 @@
-import { createStreamParser } from './stream-parser.js';
-import type { StreamEvent } from './types.js';
+import { createStreamParser, extractAskBlocks } from './stream-parser.js';
+import type { AskUserQuestionEvent, StreamEvent } from './types.js';
 
 describe('createStreamParser — Claude Code', () => {
   function parse(lines: string[]): StreamEvent[] {
@@ -231,6 +231,206 @@ describe('createStreamParser — Claude Code', () => {
   });
 });
 
+describe('extractAskBlocks — agenthub:ask protocol', () => {
+  it('returns original text unchanged when no fence is present', () => {
+    const { strippedText, asks } = extractAskBlocks('Hello, world. No questions here.');
+    expect(strippedText).toBe('Hello, world. No questions here.');
+    expect(asks).toEqual([]);
+  });
+
+  it('extracts a single valid ask block and strips it from the text', () => {
+    const text = `Sure, two options:
+
+\`\`\`agenthub:ask
+[
+  {
+    "question": "Which date library?",
+    "header": "Library",
+    "multiSelect": false,
+    "options": [
+      {"label":"date-fns","description":"Tree-shakable"},
+      {"label":"luxon","description":"Timezones"}
+    ]
+  }
+]
+\`\`\`
+
+Let me know.`;
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].askId).toMatch(/^ask-[a-z0-9]+$/);
+    expect(asks[0].questions).toHaveLength(1);
+    expect(asks[0].questions[0].header).toBe('Library');
+    expect(asks[0].questions[0].options).toHaveLength(2);
+    expect(strippedText).toBe('Sure, two options:\n\nLet me know.');
+  });
+
+  it('supports the object-shaped payload { questions: [...] }', () => {
+    const text = `\`\`\`agenthub:ask
+{"questions":[{"question":"X?","header":"X","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]}
+\`\`\``;
+    const { asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions[0].question).toBe('X?');
+  });
+
+  it('extracts multi-select and preview fields', () => {
+    const text = `\`\`\`agenthub:ask
+[{"question":"Features?","header":"Feat","multiSelect":true,"options":[{"label":"A","description":"a","preview":"code-a"},{"label":"B","description":"b"}]}]
+\`\`\``;
+    const { asks } = extractAskBlocks(text);
+    expect(asks[0].questions[0].multiSelect).toBe(true);
+    expect(asks[0].questions[0].options[0].preview).toBe('code-a');
+    expect(asks[0].questions[0].options[1].preview).toBeUndefined();
+  });
+
+  it('extracts multiple blocks', () => {
+    const text = `First:
+
+\`\`\`agenthub:ask
+[{"question":"Q1?","header":"H1","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]
+\`\`\`
+
+Second:
+
+\`\`\`agenthub:ask
+[{"question":"Q2?","header":"H2","multiSelect":false,"options":[{"label":"x","description":"X"},{"label":"y","description":"Y"}]}]
+\`\`\``;
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(2);
+    expect(asks[0].questions[0].question).toBe('Q1?');
+    expect(asks[1].questions[0].question).toBe('Q2?');
+    expect(strippedText).toBe('First:\n\nSecond:');
+  });
+
+  it('leaves malformed blocks in place without extracting', () => {
+    const text = '```agenthub:ask\nnot-json\n```';
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toEqual([]);
+    expect(strippedText).toBe(text);
+  });
+
+  it('rejects questions with fewer than 2 options', () => {
+    const text = `\`\`\`agenthub:ask
+[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"only","description":"one"}]}]
+\`\`\``;
+    const { asks } = extractAskBlocks(text);
+    expect(asks).toEqual([]);
+  });
+
+  it('rejects more than 4 questions', () => {
+    const q = (n: number) =>
+      `{"question":"Q${n}?","header":"H${n}","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}`;
+    const text = `\`\`\`agenthub:ask
+[${[1, 2, 3, 4, 5].map(q).join(',')}]
+\`\`\``;
+    const { asks } = extractAskBlocks(text);
+    expect(asks).toEqual([]);
+  });
+
+  it('produces the same askId for the same payload (stable)', () => {
+    const text = `\`\`\`agenthub:ask
+[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]
+\`\`\``;
+    const a = extractAskBlocks(text);
+    const b = extractAskBlocks(text);
+    expect(a.asks[0].askId).toBe(b.asks[0].askId);
+  });
+
+  it('treats missing option.description as optional (defaults to empty string)', () => {
+    // Previously a single option missing `description` invalidated the whole
+    // block and the fence rendered as raw JSON. Now the field is optional: the
+    // picker still extracts, with description=''.
+    const text = `\`\`\`agenthub:ask
+[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"a"},{"label":"b","description":"B"}]}]
+\`\`\``;
+    const { asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions[0].options).toHaveLength(2);
+    expect(asks[0].questions[0].options[0].description).toBe('');
+    expect(asks[0].questions[0].options[1].description).toBe('B');
+  });
+
+  it('still rejects options with missing label (label remains required)', () => {
+    const text = `\`\`\`agenthub:ask
+[{"question":"Q?","header":"H","multiSelect":false,"options":[{"description":"no label"},{"label":"b","description":"B"}]}]
+\`\`\``;
+    const { asks } = extractAskBlocks(text);
+    expect(asks).toEqual([]);
+  });
+});
+
+describe('createStreamParser — ask_user_question integration', () => {
+  function parse(lines: string[]): StreamEvent[] {
+    const parser = createStreamParser('claude-code');
+    const events: StreamEvent[] = [];
+    for (const line of lines) {
+      events.push(...parser.feed(line + '\n'));
+    }
+    events.push(...parser.flush());
+    return events;
+  }
+
+  it('emits ask_user_question alongside stripped assistant_text', () => {
+    const payload = `Here is a question:\n\n\`\`\`agenthub:ask\n[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]\n\`\`\`\n\nPick one.`;
+    const events = parse([
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: payload }] },
+      }),
+    ]);
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('assistant_text');
+    expect((events[0] as { text: string }).text).toBe('Here is a question:\n\nPick one.');
+    expect(events[1].type).toBe('ask_user_question');
+    const ask = events[1] as AskUserQuestionEvent;
+    expect(ask.askId).toMatch(/^ask-/);
+    expect(ask.questions[0].question).toBe('Q?');
+  });
+
+  it('emits only assistant_text when no ask block is present', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Plain prose.' }] },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('assistant_text');
+  });
+
+  it('suppresses empty stripped text but still emits the ask', () => {
+    const payload =
+      '```agenthub:ask\n[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]\n```';
+    const events = parse([
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: payload }] },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('ask_user_question');
+  });
+
+  it('does not apply ask detection to streaming text deltas (partials)', () => {
+    // Partial chunks may bisect a fenced block; extraction must wait for the
+    // finalized assistant event. The streaming delta should always emit the
+    // raw text as partial=true.
+    const events = parse([
+      JSON.stringify({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: '```agenthub:ask\n[{"qu' },
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('assistant_text');
+    expect((events[0] as { partial: boolean }).partial).toBe(true);
+  });
+});
+
 describe('createStreamParser — chunked input', () => {
   it('handles partial lines split across chunks', () => {
     const parser = createStreamParser('claude-code');
@@ -454,5 +654,34 @@ describe('createStreamParser — Cursor Agent', () => {
     expect((events[0] as { text: string }).text).toBe('Finished');
     expect((events[0] as { costUsd: number | null }).costUsd).toBeNull();
     expect((events[0] as { numTurns: number | null }).numTurns).toBeNull();
+  });
+
+  it('extracts ask blocks from the final result text (Cursor has no finalized assistant_text)', () => {
+    const resultText = `Pick one:\n\n\`\`\`agenthub:ask\n[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]\n\`\`\`\n\nDone.`;
+    const events = parse([
+      JSON.stringify({ type: 'result', result: resultText, duration_ms: 1, is_error: false }),
+    ]);
+
+    // Expect: finalized assistant_text (stripped) + ask_user_question + result.
+    expect(events).toHaveLength(3);
+    expect(events[0].type).toBe('assistant_text');
+    expect((events[0] as { text: string }).text).toBe('Pick one:\n\nDone.');
+    expect((events[0] as { partial: boolean }).partial).toBe(false);
+    expect(events[1].type).toBe('ask_user_question');
+    const ask = events[1] as AskUserQuestionEvent;
+    expect(ask.askId).toMatch(/^ask-/);
+    expect(ask.questions[0].question).toBe('Q?');
+    expect(events[2].type).toBe('result');
+    // The raw result text is preserved on the result event — only the
+    // broadcast/persistence path uses the stripped assistant_text.
+    expect((events[2] as { text: string }).text).toBe(resultText);
+  });
+
+  it('does not synthesize an extra assistant_text from result when no ask block is present', () => {
+    const events = parse([
+      JSON.stringify({ type: 'result', result: 'Plain final text', is_error: false }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('result');
   });
 });

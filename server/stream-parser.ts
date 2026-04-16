@@ -1,6 +1,161 @@
-import type { StreamEvent, StreamParser } from './types.js';
+import type {
+  AskUserQuestionEvent,
+  AskUserQuestionItem,
+  StreamEvent,
+  StreamParser,
+} from './types.js';
 
 type NormalizeFn = (raw: Record<string, unknown>) => StreamEvent[];
+
+// ─── agenthub:ask fenced-block protocol ────────────────────────────────
+//
+// We teach Claude (via the enriched system prompt) to emit a fenced code
+// block tagged `agenthub:ask` whenever it wants to ask the user a multi-
+// choice question. The block contains JSON matching AskUserQuestionItem[].
+// We detect these blocks in finalized assistant_text events, emit a typed
+// `ask_user_question` event, and strip the block from the visible text so
+// the raw JSON doesn't render in the transcript.
+//
+// Example block Claude would emit:
+//   ```agenthub:ask
+//   [{
+//     "question": "Which library?",
+//     "header": "Library",
+//     "multiSelect": false,
+//     "options": [
+//       { "label": "date-fns", "description": "tree-shakable" },
+//       { "label": "luxon", "description": "timezone-friendly" }
+//     ]
+//   }]
+//   ```
+//
+// Answers come back as a normal user chat message containing a matching
+// `agenthub:ask:answer` fenced block (handled on the client side).
+
+const ASK_FENCE_RE = /```agenthub:ask\s*\n([\s\S]*?)\n?```/g;
+
+export interface ExtractedAsk {
+  askId: string;
+  questions: AskUserQuestionItem[];
+}
+
+export interface AskExtractionResult {
+  strippedText: string;
+  asks: ExtractedAsk[];
+}
+
+/**
+ * Pull every `agenthub:ask` fenced block out of `text`, parse the JSON
+ * payload, validate the shape, and return the text with those blocks
+ * removed plus an array of extracted asks. Malformed blocks are left in
+ * place (so the user can still see the issue) and are not extracted.
+ *
+ * Exported for tests.
+ */
+export function extractAskBlocks(text: string): AskExtractionResult {
+  if (!text.includes('agenthub:ask')) {
+    return { strippedText: text, asks: [] };
+  }
+
+  const asks: ExtractedAsk[] = [];
+  let strippedText = text;
+
+  // Reset regex state for each call (the /g flag is stateful across calls).
+  ASK_FENCE_RE.lastIndex = 0;
+  const replacements: Array<{ start: number; end: number }> = [];
+
+  let match: RegExpExecArray | null;
+  while ((match = ASK_FENCE_RE.exec(text)) !== null) {
+    const payload = match[1].trim();
+    const questions = parseAskPayload(payload);
+    if (!questions) continue; // malformed — leave in place
+
+    // Stable-ish id: hash-lite of the payload. Not cryptographic — only used
+    // for React keys and dedup across re-parses of the same message.
+    const askId = 'ask-' + simpleHash(payload);
+    asks.push({ askId, questions });
+    replacements.push({ start: match.index, end: match.index + match[0].length });
+  }
+
+  if (replacements.length === 0) {
+    return { strippedText: text, asks: [] };
+  }
+
+  // Build stripped text by excluding the replaced ranges. Walk in reverse so
+  // indices stay valid.
+  for (let i = replacements.length - 1; i >= 0; i--) {
+    const { start, end } = replacements[i];
+    strippedText = strippedText.slice(0, start) + strippedText.slice(end);
+  }
+  // Collapse any blank-line runs left behind by block removal.
+  strippedText = strippedText.replace(/\n{3,}/g, '\n\n').trim();
+
+  return { strippedText, asks };
+}
+
+function parseAskPayload(raw: string): AskUserQuestionItem[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  // Accept either a bare array of questions or an object with a `questions`
+  // array (matches Claude's native AskUserQuestion tool input shape).
+  const list: unknown = Array.isArray(parsed)
+    ? parsed
+    : (parsed as Record<string, unknown>)?.questions;
+  if (!Array.isArray(list) || list.length === 0 || list.length > 4) return null;
+
+  const out: AskUserQuestionItem[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') return null;
+    const q = item as Record<string, unknown>;
+
+    const question = typeof q.question === 'string' ? q.question : null;
+    const header = typeof q.header === 'string' ? q.header : null;
+    const multiSelect = q.multiSelect === true;
+    const options = Array.isArray(q.options) ? q.options : null;
+
+    if (!question || !header || !options || options.length < 2 || options.length > 4) return null;
+
+    const validOptions: AskUserQuestionItem['options'] = [];
+    for (const opt of options) {
+      if (!opt || typeof opt !== 'object') return null;
+      const o = opt as Record<string, unknown>;
+      const label = typeof o.label === 'string' ? o.label : null;
+      if (!label) return null;
+      // `description` is recommended but not required — a single option with a
+      // missing description should not invalidate the whole picker. Default to
+      // empty string; the UI hides empty descriptions.
+      const description = typeof o.description === 'string' ? o.description : '';
+      const preview = typeof o.preview === 'string' ? o.preview : undefined;
+      validOptions.push(preview ? { label, description, preview } : { label, description });
+    }
+
+    out.push({ question, header, multiSelect, options: validOptions });
+  }
+
+  return out;
+}
+
+function simpleHash(s: string): string {
+  // Tiny non-crypto hash; deterministic for a given payload.
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
+
+function askEvent(ask: ExtractedAsk): AskUserQuestionEvent {
+  return {
+    type: 'ask_user_question',
+    askId: ask.askId,
+    questions: ask.questions,
+  };
+}
 
 export function createStreamParser(engine: string): StreamParser {
   let buffer = '';
@@ -73,7 +228,18 @@ function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
       const out: StreamEvent[] = [];
       for (const block of content) {
         if (block.type === 'text' && block.text) {
-          out.push({ type: 'assistant_text', text: block.text as string, partial: false });
+          const text = block.text as string;
+          const { strippedText, asks } = extractAskBlocks(text);
+          // If any asks were extracted, emit the stripped text first (so
+          // surrounding prose still renders) and then the typed ask events.
+          if (asks.length > 0) {
+            if (strippedText) {
+              out.push({ type: 'assistant_text', text: strippedText, partial: false });
+            }
+            for (const ask of asks) out.push(askEvent(ask));
+          } else {
+            out.push({ type: 'assistant_text', text, partial: false });
+          }
         } else if (block.type === 'thinking' && block.thinking) {
           out.push({ type: 'thinking', text: block.thinking as string });
         } else if (block.type === 'tool_use') {
@@ -244,18 +410,36 @@ function normalizeCursor(raw: Record<string, unknown>): StreamEvent[] {
       return [];
     }
 
-    case 'result':
-      return [
-        {
-          type: 'result',
-          text: (raw.result as string) ?? '',
-          durationMs: (raw.duration_ms as number) ?? null,
-          costUsd: null,
-          numTurns: null,
-          isError: raw.is_error === true,
-          stopReason: null,
-        },
-      ];
+    case 'result': {
+      // Cursor Agent only streams partials during the turn (no finalized
+      // assistant_text event). The full assistant message lands on `raw.result`.
+      // If it contains any agenthub:ask fenced blocks, extract them here so the
+      // picker renders in Cursor sessions too — mirroring the Claude path.
+      const resultText = typeof raw.result === 'string' ? raw.result : '';
+      const out: StreamEvent[] = [];
+      if (resultText) {
+        const { strippedText, asks } = extractAskBlocks(resultText);
+        if (asks.length > 0) {
+          // Emit a finalized assistant_text with the stripped text so chat.ts
+          // sets `finalText`, which replaces the raw-fence partialFallback on
+          // both the persisted message and the broadcasted stream content.
+          if (strippedText) {
+            out.push({ type: 'assistant_text', text: strippedText, partial: false });
+          }
+          for (const ask of asks) out.push(askEvent(ask));
+        }
+      }
+      out.push({
+        type: 'result',
+        text: resultText,
+        durationMs: (raw.duration_ms as number) ?? null,
+        costUsd: null,
+        numTurns: null,
+        isError: raw.is_error === true,
+        stopReason: null,
+      });
+      return out;
+    }
 
     default:
       return [{ type: 'unknown', text: `unhandled cursor event: ${raw.type as string}` }];
