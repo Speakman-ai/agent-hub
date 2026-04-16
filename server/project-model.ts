@@ -429,10 +429,16 @@ You wake up when a PR is opened or new commits are pushed (synchronize). You are
    - **Conventions**: naming, file structure, ESM imports, TypeScript strictness
    - **Performance**: obvious N+1s, redundant work, oversized payloads
    - **API contracts**: breaking changes, third-party API misuse (verify against official docs!)
-6. Submit a single formal GitHub review using the GitHub App identity:
-   - \`gh pr review <num> --repo ${repo} --approve\` (clean)
-   - \`gh pr review <num> --repo ${repo} --request-changes --body "..."\` (issues found)
-   - \`gh pr review <num> --repo ${repo} --comment --body "..."\` (notes only, no blocking issues)
+6. Submit a single formal GitHub review through Agent Hub's \`POST /api/pr/review\` endpoint so the review lands with the GitHub App identity (not your \`gh\` CLI user — the CLI identity is usually the PR author and GitHub will silently downgrade APPROVE to COMMENTED for self-reviews).
+
+   \`\`\`bash
+   curl -sS -X POST "$AGENT_HUB_URL/api/pr/review" \\
+     -H "X-API-Key: $AGENT_HUB_API_KEY" \\
+     -H "Content-Type: application/json" \\
+     -d '{"prUrl":"<pr-url>","event":"APPROVE"}'
+   \`\`\`
+
+   Valid \`event\` values: \`APPROVE\` (clean), \`REQUEST_CHANGES\` (blocking issues — body required), \`COMMENT\` (notes only — body required).
 
 ## Rules
 - **Skip generated/snapshot/lockfile changes** — call them out as "skipped" if dominant.

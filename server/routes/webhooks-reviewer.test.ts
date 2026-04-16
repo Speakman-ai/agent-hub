@@ -131,7 +131,7 @@ describe('dispatchReviewerForPR — debounce', () => {
 });
 
 describe('dispatchReviewerForPR — prompt content', () => {
-  it('includes PR url, number, repo, and gh review commands in the prompt', () => {
+  it('includes PR url, number, repo, and the App-backed review endpoint in the prompt', () => {
     const deps = makeDeps();
     const project = makeProject('reviewer');
 
@@ -142,8 +142,13 @@ describe('dispatchReviewerForPR — prompt content', () => {
     expect(msg.content).toContain('https://github.com/owner/repo/pull/42');
     expect(msg.content).toContain('owner/repo');
     expect(msg.content).toContain('PR Review Request (opened)');
-    expect(msg.content).toContain('gh pr review 42 --repo owner/repo --approve');
-    expect(msg.content).toContain('gh pr review 42 --repo owner/repo --request-changes');
+    // The reviewer must route reviews through Agent Hub's App-backed endpoint so
+    // self-approval works (App identity ≠ PR author identity). Using `gh pr review`
+    // directly would submit as the CLI user and silently downgrade APPROVE → COMMENTED.
+    expect(msg.content).toContain('/api/pr/review');
+    expect(msg.content).toContain('"event":"APPROVE"');
+    expect(msg.content).toContain('REQUEST_CHANGES');
+    expect(msg.content).toContain('COMMENT');
     // Reviewer should NEVER edit code or merge — those are non-negotiable.
     expect(msg.content).toMatch(/Do \*\*NOT\*\* edit code/);
     expect(msg.content).toMatch(/Do \*\*NOT\*\* merge/);

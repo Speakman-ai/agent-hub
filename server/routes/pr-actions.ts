@@ -1,8 +1,9 @@
 /**
- * routes/pr-actions.ts — API endpoints for human PR actions (merge/close).
+ * routes/pr-actions.ts — API endpoints for human PR actions (merge/close/review).
  *
- * POST /api/pr/merge  — Merge a PR by URL
- * POST /api/pr/close  — Close a PR by URL
+ * POST /api/pr/merge   — Merge a PR by URL
+ * POST /api/pr/close   — Close a PR by URL
+ * POST /api/pr/review  — Submit a formal GitHub review using the GitHub App identity
  * GET  /api/pr/status  — Get PR status (mergeable, CI, reviews)
  */
 
@@ -18,6 +19,19 @@ interface PrActionBody {
   prUrl: string;
   mergeMethod?: 'squash' | 'merge' | 'rebase';
 }
+
+interface PrReviewBody {
+  prUrl: string;
+  event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
+  body?: string;
+  commitId?: string;
+}
+
+const ALLOWED_REVIEW_EVENTS = new Set<PrReviewBody['event']>([
+  'APPROVE',
+  'REQUEST_CHANGES',
+  'COMMENT',
+]);
 
 interface ParsedPR {
   owner: string;
@@ -172,6 +186,128 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       const msg = err instanceof Error ? err.message : String(err);
       return res.status(500).json({ error: `Close failed: ${msg.split('\n')[0]}` });
     }
+  });
+
+  // ─── Submit a formal PR review (GitHub App → bot PAT → 501) ─────
+  //
+  // Exists because the lead/reviewer agent session runs `gh pr review` as the
+  // host's `gh` identity — which is the PR author, so GitHub rejects APPROVE
+  // with "pull request authors can't submit a review of their own changes".
+  // This endpoint routes the review through the GitHub App installation
+  // (a distinct identity), falling back to the bot PAT.
+
+  router.post('/api/pr/review', async (req: Request, res: Response) => {
+    const { prUrl, event, body, commitId } = req.body as PrReviewBody;
+    const pr = parsePrUrl(prUrl);
+    if (!pr) {
+      return res.status(400).json({ error: 'Invalid PR URL' });
+    }
+    if (!event || !ALLOWED_REVIEW_EVENTS.has(event)) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid review event (must be APPROVE, REQUEST_CHANGES, or COMMENT)' });
+    }
+    if ((event === 'REQUEST_CHANGES' || event === 'COMMENT') && !body?.trim()) {
+      return res
+        .status(400)
+        .json({ error: 'body is required when event is REQUEST_CHANGES or COMMENT' });
+    }
+
+    interface ReviewApiResponse {
+      id?: number;
+      html_url?: string;
+      user?: { login?: string };
+      state?: string;
+    }
+
+    const reviewPayload: Record<string, unknown> = { event };
+    if (body?.trim()) reviewPayload.body = body;
+    if (commitId) reviewPayload.commit_id = commitId;
+
+    // Tier 1: GitHub App (preferred — distinct identity from PR author)
+    if (hasGitHubApp(config)) {
+      try {
+        const app = config.githubApp as GitHubAppConfig;
+        const instId = resolveInstallationId(app, pr.owner);
+        if (instId) {
+          const data = (await githubApiRequest(
+            `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`,
+            {
+              method: 'POST',
+              body: reviewPayload,
+              appId: app.appId,
+              privateKey: app.privateKey,
+              installationId: instId,
+            },
+          )) as ReviewApiResponse;
+          return res.json({
+            ok: true,
+            method: 'github-app',
+            pr: pr.number,
+            event,
+            reviewId: data.id,
+            reviewUrl: data.html_url,
+            reviewer: data.user?.login,
+            state: data.state,
+          });
+        }
+        console.warn(
+          `[PR Review] GitHub App configured but no installation matched owner "${pr.owner}" — falling back to bot token`,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[PR Review] GitHub App review failed, trying bot token: ${msg.split('\n')[0]}`,
+        );
+      }
+    }
+
+    // Tier 2: bot PAT via direct GitHub API call (distinct identity if configured separately)
+    if (config.botGithubToken) {
+      try {
+        const ghRes = await fetch(
+          `https://api.github.com/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `token ${config.botGithubToken}`,
+              Accept: 'application/vnd.github+json',
+              'Content-Type': 'application/json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'agent-hub',
+            },
+            body: JSON.stringify(reviewPayload),
+          },
+        );
+        if (!ghRes.ok) {
+          const text = await ghRes.text().catch(() => '');
+          throw new Error(`GitHub API ${ghRes.status}: ${text.split('\n')[0]}`);
+        }
+        const data = (await ghRes.json()) as ReviewApiResponse;
+        return res.json({
+          ok: true,
+          method: 'bot-token',
+          pr: pr.number,
+          event,
+          reviewId: data.id,
+          reviewUrl: data.html_url,
+          reviewer: data.user?.login,
+          state: data.state,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return res.status(502).json({
+          error: `Bot token review failed: ${msg.split('\n')[0]}`,
+          hint: 'Configure a GitHub App installation for this repo owner so reviews submit as the App identity.',
+        });
+      }
+    }
+
+    // No viable auth — fallback chain exhausted
+    return res.status(501).json({
+      error: 'No GitHub App installation for this repo owner and no bot token configured',
+      hint: 'Install the Agent Hub Reviewer GitHub App on the target org, or set botGithubToken in config.',
+    });
   });
 
   // ─── Get PR status ──────────────────────────────────────────────

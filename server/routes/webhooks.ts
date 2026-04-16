@@ -682,10 +682,19 @@ You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullNa
 1. Fetch the PR metadata, diff, and recent commits using \`gh pr view ${opts.prNumber} --repo ${opts.repoFullName}\` and \`gh pr diff ${opts.prNumber} --repo ${opts.repoFullName}\`.
 2. Read the changed files in context.
 3. Identify issues across correctness, security, tests, conventions, and performance.
-4. Submit ONE formal GitHub review for this push:
-   - \`gh pr review ${opts.prNumber} --repo ${opts.repoFullName} --approve\` if clean
-   - \`gh pr review ${opts.prNumber} --repo ${opts.repoFullName} --request-changes --body "..."\` if blocking issues
-   - \`gh pr review ${opts.prNumber} --repo ${opts.repoFullName} --comment --body "..."\` for non-blocking notes
+4. Submit ONE formal GitHub review by POSTing to Agent Hub's \`/api/pr/review\` endpoint. This routes the review through the GitHub App installation so it lands with the App identity — \`gh pr review\` runs as your CLI user (usually the PR author) and GitHub silently downgrades APPROVE to COMMENTED for self-reviews.
+
+\`\`\`bash
+curl -sS -X POST "$AGENT_HUB_URL/api/pr/review" \\
+  -H "X-API-Key: $AGENT_HUB_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"prUrl":"${opts.prUrl}","event":"APPROVE"}'
+\`\`\`
+
+   Choose one \`event\`:
+   - \`APPROVE\` — clean PR (body optional)
+   - \`REQUEST_CHANGES\` — blocking issues (body required, markdown-formatted)
+   - \`COMMENT\` — non-blocking notes only (body required)
 
 Do **NOT** edit code. Do **NOT** merge. GitHub's native auto-merge handles landing approved PRs.`;
 
