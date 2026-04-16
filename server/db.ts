@@ -747,6 +747,32 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_review_logs_pr ON review_logs(pr_url);
   `);
 
+  // pr_state: per-PR reviewer run metadata, notably the GitHub Check Run id we
+  // created for the live progress panel. Keyed by the canonical PR identity
+  // (repo_full_name + pr_number). Each push (synchronize) rotates head_sha and
+  // creates a fresh check_run_id — the row is upserted, not appended.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pr_state (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      repo_full_name TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      head_sha TEXT,
+      check_run_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','in_progress','completed')),
+      conclusion TEXT,
+      phase TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_state_repo_pr
+      ON pr_state(repo_full_name, pr_number);
+    CREATE INDEX IF NOT EXISTS idx_pr_state_project ON pr_state(project_id);
+    CREATE INDEX IF NOT EXISTS idx_pr_state_check_run ON pr_state(check_run_id);
+  `);
+
   try {
     db.exec('ALTER TABLE crons ADD COLUMN project_id TEXT');
   } catch (_e) {
@@ -1322,6 +1348,33 @@ function initDb(dataDir: string): void {
     getReviewLogsByPrUrl: db.prepare(
       'SELECT * FROM review_logs WHERE pr_url = ? ORDER BY completed_at DESC',
     ),
+
+    // pr_state — per-PR reviewer/check-run tracking
+    upsertPrState: db.prepare(
+      `INSERT INTO pr_state (id, project_id, repo_full_name, pr_number, head_sha, check_run_id, status, phase, started_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(repo_full_name, pr_number) DO UPDATE SET
+         project_id = excluded.project_id,
+         head_sha = excluded.head_sha,
+         check_run_id = excluded.check_run_id,
+         status = excluded.status,
+         phase = excluded.phase,
+         started_at = datetime('now'),
+         completed_at = NULL,
+         conclusion = NULL,
+         updated_at = datetime('now')`,
+    ),
+    updatePrStatePhase: db.prepare(
+      `UPDATE pr_state SET phase = ?, status = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    completePrState: db.prepare(
+      `UPDATE pr_state SET status = 'completed', conclusion = ?, phase = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+    ),
+    getPrState: db.prepare('SELECT * FROM pr_state WHERE id = ?'),
+    getPrStateByRepoPr: db.prepare(
+      'SELECT * FROM pr_state WHERE repo_full_name = ? AND pr_number = ?',
+    ),
+    getPrStateByCheckRunId: db.prepare('SELECT * FROM pr_state WHERE check_run_id = ?'),
 
     // Card review status
     setCardReviewStatus: db.prepare(

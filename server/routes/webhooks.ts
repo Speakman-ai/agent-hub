@@ -7,6 +7,16 @@ import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
 import { runCapture, postPrComment } from '../capture-engine.js';
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
+import {
+  CHECK_RUN_NAME,
+  DEFAULT_REVIEWER_PHASES,
+  advancePhase,
+  createCheckRun,
+  finalizePhases,
+  renderProgressSummary,
+  updateCheckRun,
+  type CheckRunPhase,
+} from '../check-runs.js';
 import type {
   RouteDeps,
   Stmts,
@@ -20,6 +30,7 @@ import type {
   KanbanEpicRow,
   WebhookConfigRow,
   SessionRow,
+  PrStateRow,
 } from '../types.js';
 
 // ─── GitHub Payload Types ────────────────────────────────────────
@@ -44,9 +55,11 @@ interface GitHubPullRequest {
 }
 
 interface GitHubCheckSuite {
+  id?: number;
   status?: string;
   conclusion?: string;
-  pull_requests?: Array<{ number: number }>;
+  head_sha?: string;
+  pull_requests?: Array<{ number: number; head?: { sha: string }; base?: { sha: string } }>;
   app?: { name: string };
 }
 
@@ -610,16 +623,176 @@ interface ReviewerDispatchOpts {
   prNumber: number;
   prTitle: string;
   repoFullName: string;
-  reason: 'opened' | 'synchronize';
+  reason: 'opened' | 'synchronize' | 'rerequested';
+  /**
+   * Commit SHA of PR head. Required to create a GitHub Check Run (which is
+   * commit-scoped, not PR-scoped). Optional for backward-compat with callers
+   * that don't have it; the check-run overlay is simply skipped when missing.
+   */
+  headSha?: string;
+}
+
+/**
+ * Reviewer deps that include `config` can publish the live progress panel as a
+ * GitHub Check Run via the App installation. Tests that mock deps with only
+ * the narrow set still work — the check-run path is feature-detected, not
+ * required for the review itself to go out.
+ */
+type ReviewerDeps = Pick<RouteDeps, 'stmts' | 'handleChat' | 'broadcast' | 'findAgent'> & {
+  config?: RouteDeps['config'];
+};
+
+/**
+ * Create (or re-create, on each new head_sha) the "Agent Hub Reviewer" Check
+ * Run in the PR's Checks tab, and persist the id on `pr_state`. Fire-and-forget
+ * from the webhook path — any failure is logged but does not block the review.
+ *
+ * GitHub Check Runs are commit-scoped: each synchronize's `head_sha` gets its
+ * own check run, and GitHub's Checks strip always shows the latest commit's
+ * runs. So we upsert a fresh row on every call.
+ */
+async function ensureCheckRunForPR(
+  deps: ReviewerDeps,
+  project: Project,
+  opts: ReviewerDispatchOpts,
+): Promise<void> {
+  const { stmts, config: depsConfig } = deps;
+  if (!opts.headSha) return;
+  if (!depsConfig?.githubApp?.appId || !depsConfig.githubApp.privateKey) return;
+  if (!stmts.upsertPrState) return; // DB migration not yet applied
+
+  const [owner, repo] = opts.repoFullName.split('/');
+  if (!owner || !repo) return;
+
+  const prStateId = `${opts.repoFullName}#${opts.prNumber}`;
+  const phases: CheckRunPhase[] = DEFAULT_REVIEWER_PHASES.map((p, i) =>
+    i === 0 ? { ...p, state: 'in_progress' } : p,
+  );
+  const summary = renderProgressSummary(phases, {
+    headline: `Reviewing PR #${opts.prNumber} — _${opts.reason}_`,
+  });
+
+  // Seed the row as `queued` immediately (before the API call) so the
+  // webhook-side `head_sha` / `project_id` link is recorded even if the
+  // Check Runs POST fails (e.g. App missing `checks: write`).
+  try {
+    stmts.upsertPrState.run(
+      prStateId,
+      project.id,
+      opts.repoFullName,
+      opts.prNumber,
+      opts.headSha,
+      null,
+      'queued',
+      'queue',
+    );
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[CheckRun] Failed to seed pr_state for PR #${opts.prNumber}:`, msg);
+    return;
+  }
+
+  try {
+    const created = await createCheckRun(depsConfig, {
+      owner,
+      repo,
+      headSha: opts.headSha,
+      status: 'queued',
+      output: {
+        title: 'Reviewer scheduled',
+        summary,
+      },
+      externalId: prStateId,
+    });
+    if (!created) {
+      console.log(
+        `[CheckRun] No App installation for owner "${owner}" — skipping check run for PR #${opts.prNumber}`,
+      );
+      return;
+    }
+    stmts.upsertPrState.run(
+      prStateId,
+      project.id,
+      opts.repoFullName,
+      opts.prNumber,
+      opts.headSha,
+      created.id,
+      'queued',
+      'queue',
+    );
+    console.log(
+      `[CheckRun] Created Check Run #${created.id} for PR #${opts.prNumber} (${opts.repoFullName} @ ${opts.headSha.substring(0, 7)})`,
+    );
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[CheckRun] Failed to create Check Run for PR #${opts.prNumber}: ${msg.split('\n')[0]}`,
+    );
+  }
+}
+
+/**
+ * PATCH the check run to reflect a new phase transition. Best-effort — the
+ * review still proceeds even if GitHub is unreachable.
+ *
+ * Exported so `/api/pr/review` (the endpoint the reviewer agent posts to) can
+ * advance the panel into the `post` phase right before completing the run.
+ */
+export async function patchCheckRunPhase(
+  deps: ReviewerDeps,
+  repoFullName: string,
+  prNumber: number,
+  phaseKey: 'context' | 'analyze' | 'post',
+  opts: { headline?: string } = {},
+): Promise<void> {
+  const { stmts, config: depsConfig } = deps;
+  if (!depsConfig?.githubApp?.appId) return;
+  if (!stmts.getPrStateByRepoPr || !stmts.updatePrStatePhase) return;
+
+  const row = stmts.getPrStateByRepoPr.get(repoFullName, prNumber) as PrStateRow | undefined;
+  if (!row?.check_run_id) return;
+
+  const [owner, repo] = repoFullName.split('/');
+  if (!owner || !repo) return;
+
+  const prStateId = `${repoFullName}#${prNumber}`;
+  const startedAtMs = row.started_at ? new Date(row.started_at).getTime() : Date.now();
+  const phases = advancePhase(DEFAULT_REVIEWER_PHASES, phaseKey, Date.now(), startedAtMs);
+  const summary = renderProgressSummary(phases, { headline: opts.headline });
+
+  try {
+    stmts.updatePrStatePhase.run(phaseKey, 'in_progress', prStateId);
+  } catch {
+    /* non-critical */
+  }
+
+  try {
+    await updateCheckRun(depsConfig, owner, repo, row.check_run_id, {
+      status: 'in_progress',
+      output: {
+        title: `Reviewer: ${phaseKey}`,
+        summary,
+      },
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[CheckRun] PATCH failed for PR #${prNumber} (phase=${phaseKey}): ${msg.split('\n')[0]}`,
+    );
+  }
 }
 
 /**
  * Schedule a Reviewer agent dispatch for a PR. Coalesces rapid repeated
  * synchronizes into a single delayed run keyed by `${projectId}:${prNumber}`.
  * Returns true if a dispatch was scheduled, false if no Reviewer agent exists.
+ *
+ * Side-effect (fire-and-forget): creates/refreshes the "Agent Hub Reviewer"
+ * GitHub Check Run so the live progress panel appears in the Checks tab as
+ * soon as the webhook arrives, not only when the review lands 30s later.
  */
 export function dispatchReviewerForPR(
-  deps: Pick<RouteDeps, 'stmts' | 'handleChat' | 'broadcast' | 'findAgent'>,
+  deps: ReviewerDeps,
   project: Project,
   opts: ReviewerDispatchOpts,
 ): boolean {
@@ -630,6 +803,13 @@ export function dispatchReviewerForPR(
     );
     return false;
   }
+
+  // Fire-and-forget: create the Check Run in the PR's Checks tab immediately so
+  // the panel shows up before the debounce window closes.
+  ensureCheckRunForPR(deps, project, opts).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[CheckRun] ensureCheckRunForPR error: ${msg.split('\n')[0]}`);
+  });
 
   const key = `${project.id}:${opts.prNumber}`;
   const existing = reviewerDebounceTimers.get(key);
@@ -651,12 +831,21 @@ export function dispatchReviewerForPR(
 }
 
 async function runReviewerDispatch(
-  deps: Pick<RouteDeps, 'stmts' | 'handleChat' | 'broadcast' | 'findAgent'>,
+  deps: ReviewerDeps,
   project: Project,
   reviewer: Agent,
   opts: ReviewerDispatchOpts,
 ): Promise<void> {
   const { stmts, handleChat } = deps;
+
+  // Advance the Check Run to in_progress as soon as the debounce fires and the
+  // reviewer session actually starts — this is what makes the panel animate
+  // from "queued" to a running checklist in GitHub's Checks tab.
+  patchCheckRunPhase(deps, opts.repoFullName, opts.prNumber, 'context', {
+    headline: `Reviewing PR #${opts.prNumber} — gathering context`,
+  }).catch(() => {
+    /* best-effort */
+  });
 
   const sessionId = crypto.randomUUID();
   const engine = reviewer.engine || 'claude-code';
@@ -922,10 +1111,47 @@ function handleKanbanWebhookEvent(
     }
   }
 
+  const project = projects.find((p) => p.id === webhookConfig.project_id);
+
+  // ─── Check Run / Check Suite "Re-run" ───────────────────────────
+  // The user clicked the "Re-run" button in GitHub's Checks tab — either on our
+  // specific check (`check_run.rerequested`) or on the whole suite
+  // (`check_suite.rerequested`, the umbrella "Re-run all checks" button). Both
+  // carry `pull_requests[]` and `head_sha`, so we can re-trigger the reviewer
+  // without needing a kanban card to be linked.
+  if (
+    project &&
+    payload.repository?.full_name &&
+    ((event === 'check_run' && action === 'rerequested') ||
+      (event === 'check_suite' && action === 'rerequested'))
+  ) {
+    const src = payload.check_run || payload.check_suite;
+    const prs = src?.pull_requests || [];
+    const headSha = src?.head_sha;
+    const repoFullName = payload.repository.full_name;
+
+    for (const pr of prs) {
+      const prUrlFull = `${payload.repository.html_url}/pull/${pr.number}`;
+      dispatchReviewerForPR(deps, project, {
+        prUrl: prUrlFull,
+        prNumber: pr.number,
+        prTitle: card?.title || `PR #${pr.number}`,
+        repoFullName,
+        reason: 'rerequested',
+        headSha: headSha || pr.head?.sha,
+      });
+    }
+    if (prs.length > 0) {
+      console.log(
+        `[Webhook/CheckRun] ${event}.rerequested → re-dispatched reviewer for ${prs.length} PR(s) on "${project.name}"`,
+      );
+      return true;
+    }
+  }
+
   // Short-circuit: if no card and not a PR open event, nothing to do
   if (!card && !(event === 'pull_request' && action === 'opened')) return false;
 
-  const project = projects.find((p) => p.id === webhookConfig.project_id);
   if (!project) return false;
 
   // ─── Unified Reviewer Dispatch ──────────────────────────────────
@@ -944,7 +1170,8 @@ function handleKanbanWebhookEvent(
       prNumber: pr.number,
       prTitle: pr.title,
       repoFullName: payload.repository.full_name,
-      reason: action,
+      reason: action as 'opened' | 'synchronize',
+      headSha: pr.head?.sha,
     });
   }
 

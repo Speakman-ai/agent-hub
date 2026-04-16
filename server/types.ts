@@ -238,6 +238,32 @@ export interface ReviewLogRow {
   completed_at: string;
 }
 
+export type PrStateStatus = 'queued' | 'in_progress' | 'completed';
+export type PrStateConclusion =
+  | 'success'
+  | 'failure'
+  | 'neutral'
+  | 'cancelled'
+  | 'timed_out'
+  | 'action_required'
+  | 'skipped';
+
+export interface PrStateRow {
+  id: string;
+  project_id: string;
+  repo_full_name: string;
+  pr_number: number;
+  head_sha: string | null;
+  check_run_id: number | null;
+  status: PrStateStatus;
+  conclusion: PrStateConclusion | null;
+  phase: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface KanbanCardCommentRow {
   id: string;
   card_id: string;
@@ -782,6 +808,14 @@ export interface Stmts {
   getReviewLogs: Stmt;
   getReviewLogsByCard: Stmt;
   getReviewLogsByPrUrl: Stmt;
+
+  // pr_state — per-PR reviewer/check-run tracking
+  upsertPrState: Stmt;
+  updatePrStatePhase: Stmt;
+  completePrState: Stmt;
+  getPrState: Stmt;
+  getPrStateByRepoPr: Stmt;
+  getPrStateByCheckRunId: Stmt;
 
   // Card review status
   setCardReviewStatus: Stmt;

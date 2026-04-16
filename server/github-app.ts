@@ -138,10 +138,21 @@ export function buildAppManifest(serverUrl: string): GitHubAppManifest {
       pull_requests: 'write',
       contents: 'write',
       issues: 'write',
-      checks: 'read',
+      // `checks: write` lets us publish the Reviewer's progress as a first-class
+      // Check Run (Cursor-parity progress panel in the PR Checks tab), not just
+      // as a `pulls/{pr}/reviews` comment buried in the Conversation tab.
+      checks: 'write',
       statuses: 'write',
     },
-    default_events: ['pull_request', 'pull_request_review', 'check_suite'],
+    default_events: [
+      'pull_request',
+      'pull_request_review',
+      'check_suite',
+      // `check_run` is the "Re-run" button on a specific check (e.g. the user
+      // clicks Re-run on "Agent Hub Reviewer" alone); `check_suite.rerequested`
+      // handles the umbrella "Re-run all checks" button.
+      'check_run',
+    ],
   };
 }
 

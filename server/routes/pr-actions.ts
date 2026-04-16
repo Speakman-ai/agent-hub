@@ -10,8 +10,15 @@
 import { Router, Request, Response } from 'express';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import type { RouteDeps, AppConfig, GitHubAppConfig } from '../types.js';
+import type { RouteDeps, AppConfig, GitHubAppConfig, PrStateRow } from '../types.js';
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
+import {
+  DEFAULT_REVIEWER_PHASES,
+  completeCheckRun,
+  finalizePhases,
+  renderProgressSummary,
+  reviewEventToConclusion,
+} from '../check-runs.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -59,8 +66,64 @@ function botGhEnv(config: AppConfig): NodeJS.ProcessEnv | undefined {
 const ALLOWED_MERGE_METHODS = new Set(['squash', 'merge', 'rebase']);
 
 export default function createPrActionRoutes(deps: RouteDeps): Router {
-  const { config } = deps;
+  const { config, stmts } = deps;
   const router = Router();
+
+  /**
+   * Mark the "Agent Hub Reviewer" Check Run as completed after a successful
+   * GitHub review post. Conclusion mapping:
+   *   APPROVE          → success
+   *   COMMENT          → neutral   (issues found but non-blocking)
+   *   REQUEST_CHANGES  → action_required
+   *
+   * Best-effort: any failure is logged but does not fail the `/api/pr/review`
+   * response — the formal GitHub review has already landed by the time we
+   * reach here.
+   */
+  async function completeReviewerCheckRun(
+    pr: ParsedPR,
+    event: PrReviewBody['event'],
+    body: string | undefined,
+  ): Promise<void> {
+    try {
+      if (!stmts?.getPrStateByRepoPr) return;
+      const repoFullName = `${pr.owner}/${pr.repo}`;
+      const row = stmts.getPrStateByRepoPr.get(repoFullName, Number(pr.number)) as
+        | PrStateRow
+        | undefined;
+      if (!row?.check_run_id) return;
+
+      const startedAtMs = row.started_at ? new Date(row.started_at).getTime() : Date.now();
+      const phases = finalizePhases(DEFAULT_REVIEWER_PHASES, Date.now(), startedAtMs);
+      const conclusion = reviewEventToConclusion(event);
+
+      const headlineByEvent: Record<PrReviewBody['event'], string> = {
+        APPROVE: '✅ Review complete — PR is mergeable as-is',
+        COMMENT: '💬 Review complete — non-blocking notes',
+        REQUEST_CHANGES: '⚠️ Review complete — changes requested before merge',
+      };
+      const summary = renderProgressSummary(phases, {
+        headline: headlineByEvent[event],
+        footer: body ? `\n---\n${body.substring(0, 4000)}` : undefined,
+      });
+
+      await completeCheckRun(config, pr.owner, pr.repo, row.check_run_id, conclusion, {
+        title: `Reviewer: ${event}`,
+        summary,
+      });
+      if (stmts.completePrState) {
+        stmts.completePrState.run(conclusion, 'post', `${repoFullName}#${pr.number}`);
+      }
+      console.log(
+        `[CheckRun] Completed Check Run #${row.check_run_id} for PR #${pr.number} — ${conclusion}`,
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[CheckRun] Failed to complete Check Run for PR #${pr.number}: ${msg.split('\n')[0]}`,
+      );
+    }
+  }
 
   // ─── Merge a PR ─────────────────────────────────────────────────
 
@@ -240,6 +303,11 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
               installationId: instId,
             },
           )) as ReviewApiResponse;
+          // Fire-and-forget: mark the Check Run as completed with the mapped
+          // conclusion so the PR's Checks strip flips to green/yellow/red.
+          completeReviewerCheckRun(pr, event, body).catch(() => {
+            /* best-effort */
+          });
           return res.json({
             ok: true,
             method: 'github-app',
@@ -284,6 +352,9 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
           throw new Error(`GitHub API ${ghRes.status}: ${text.split('\n')[0]}`);
         }
         const data = (await ghRes.json()) as ReviewApiResponse;
+        completeReviewerCheckRun(pr, event, body).catch(() => {
+          /* best-effort */
+        });
         return res.json({
           ok: true,
           method: 'bot-token',
