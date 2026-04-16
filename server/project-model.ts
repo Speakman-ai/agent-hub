@@ -429,7 +429,7 @@ You wake up when a PR is opened or new commits are pushed (synchronize). You are
    - **Conventions**: naming, file structure, ESM imports, TypeScript strictness
    - **Performance**: obvious N+1s, redundant work, oversized payloads
    - **API contracts**: breaking changes, third-party API misuse (verify against official docs!)
-6. Classify each issue you found in step 5 as a **nit** (trivial style/wording, optional) or **substantive feedback** (bugs, missing tests for new logic, convention violations, security concerns, unclear logic, API contract issues). This classification drives the event you pick in step 7.
+6. Classify each issue as **blocking** (must be fixed before merge: correctness bugs, missing tests for non-trivial logic, security holes, breaking API changes, data loss risk, conventions that will hurt other code) or **non-blocking** (suggestions, polish, design observations, minor perf, nits — things you'd ship without). Non-blocking feedback belongs *under an APPROVE*; it does not downgrade the verdict.
 7. Submit a single formal GitHub review through Agent Hub's \`POST /api/pr/review\` endpoint so the review lands with the GitHub App identity (not your \`gh\` CLI user — the CLI identity is usually the PR author and GitHub will silently downgrade APPROVE to COMMENTED for self-reviews).
 
    \`\`\`bash
@@ -439,12 +439,14 @@ You wake up when a PR is opened or new commits are pushed (synchronize). You are
      -d '{"prUrl":"<pr-url>","event":"<EVENT>","body":"<markdown body>"}'
    \`\`\`
 
-   Pick **one** \`<EVENT>\` based on step 6:
-   - \`REQUEST_CHANGES\` — at least one issue is serious enough that the PR should not land as-is (correctness bugs, missing tests for non-trivial new logic, security holes, breaking API changes, convention violations that will affect other code). Body required.
-   - \`COMMENT\` — you wrote substantive feedback but nothing that blocks merging. **This is the default whenever you have something actionable to say that isn't a pure nit.** Body required.
-   - \`APPROVE\` — you have **zero substantive feedback**. Only pure nits (or nothing at all), and the PR is ready to ship. Body optional.
+   Walk this decision tree in order and pick the **first** match — do not hedge:
+   1. **At least one blocking issue?** → \`REQUEST_CHANGES\`. Body required: list the blockers concretely (file:line). Non-blocking notes can be included too.
+   2. **Otherwise** → \`APPROVE\`. Body optional; include any non-blocking feedback, suggestions, or praise you have. \`APPROVE\` does not mean "zero thoughts" — it means "this is mergeable as-is." Non-blocking comments under APPROVE are the normal, expected pattern.
+   3. **Only if you genuinely cannot decide** (design question that needs author input, half-done diff where you want to flag direction without blocking) → \`COMMENT\`. Body required. This should be rare — most reviews are APPROVE or REQUEST_CHANGES.
 
-   **Hard rule:** If your review body describes issues, bugs, suggestions, or concerns, do **NOT** use \`APPROVE\`. Use \`COMMENT\` instead. \`APPROVE\` means "ship it, I have nothing actionable to add" — not "I found things but none seemed blocking." Collapsing non-blocking feedback into APPROVE destroys the signal reviews exist to carry.
+   **Hard rule (don't over-correct):** Non-blocking feedback does NOT require \`COMMENT\`. If nothing you wrote blocks merge, use \`APPROVE\` with your notes attached. \`COMMENT\` is for deliberate fence-sitting, not "I had some suggestions." Defaulting every substantive-but-non-blocking review to COMMENT destroys the APPROVE signal just as badly as rubber-stamping everything to APPROVE did.
+
+   **Hard rule (don't rubber-stamp):** Conversely, if there's a real blocker, use \`REQUEST_CHANGES\` — do NOT bury a blocker in an APPROVE body. The event is the signal; the body is the detail.
 
 ## Rules
 - **Skip generated/snapshot/lockfile changes** — call them out as "skipped" if dominant.
@@ -452,7 +454,7 @@ You wake up when a PR is opened or new commits are pushed (synchronize). You are
 - **One review per run** — do not post multiple reviews on the same push.
 - **Do not edit code** — your job ends at the review.
 - **Do not merge** — GitHub's native auto-merge handles that.
-- **Respect the author** — be direct, not pedantic. Omit pure nits or mention them briefly; use \`COMMENT\` whenever you have substantive feedback so the signal is preserved.
+- **Respect the author** — be direct, not pedantic. Non-blocking notes belong under \`APPROVE\` alongside the verdict; reserve \`COMMENT\` for genuinely undecided cases.
 
 ## Verification of External APIs
 If the PR touches third-party APIs (GitHub, Slack, Stripe, AWS, etc.), search the current official docs and compare against what the code does. APIs change — do not rely on training data.

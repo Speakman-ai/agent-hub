@@ -259,12 +259,15 @@ describe('ensureReviewerAgents', () => {
     expect(updated!.agents?.some((a) => a.role === 'reviewer')).toBe(true);
   });
 
-  it('seeds a reviewer whose system prompt has no APPROVE bias', async () => {
-    // Regression guard: the seeded system prompt used to hardcode
-    // `"event":"APPROVE"` in its curl example and instruct the reviewer to
-    // "skip nits unless egregious" — both pushed reviewers toward APPROVE
-    // even when they had substantive feedback. This test pins the de-biased
-    // contract so new projects always get the rubric-based prompt.
+  it('seeds a reviewer whose system prompt has a balanced decision tree (no APPROVE- or COMMENT-bias)', async () => {
+    // Regression guard: the seeded system prompt has now swung through two
+    // biases. V1 hardcoded `"event":"APPROVE"` + "skip nits unless egregious",
+    // producing rubber-stamped reviews. V2 (PR #291) over-corrected and told
+    // the reviewer COMMENT was the default for any non-nit feedback, producing
+    // reviews that never reach APPROVE. V3 (this test) pins a decision-tree
+    // contract: walk in order, REQUEST_CHANGES → APPROVE → COMMENT, where
+    // non-blocking feedback lives under APPROVE and COMMENT is reserved for
+    // genuinely undecided reviews.
     const projId = `reviewer-nobias-${Date.now()}`;
     const project = await createProjectWithAgent(projId, 'No Bias Reviewer', '#888');
     project.githubRepo = 'owner/nobias-repo';
@@ -278,7 +281,7 @@ describe('ensureReviewerAgents', () => {
     const sp = reviewer!.systemPrompt || '';
 
     // No hardcoded APPROVE in the curl example — the example must use a
-    // placeholder so the model doesn't anchor on APPROVE as the default.
+    // placeholder so the model doesn't anchor on any one event as the default.
     expect(sp).not.toContain('"event":"APPROVE"');
     expect(sp).toContain('"event":"<EVENT>"');
 
@@ -287,13 +290,33 @@ describe('ensureReviewerAgents', () => {
     expect(sp).toContain('COMMENT');
     expect(sp).toContain('REQUEST_CHANGES');
 
-    // The load-bearing hard rule — if this regresses, the bias returns.
-    expect(sp).toMatch(/do \*\*NOT\*\* use `APPROVE`/i);
-    expect(sp).toMatch(/use `COMMENT`/i);
+    // The prompt must present a decision TREE (walk in order) rather than a
+    // flat rubric — the flat rubric is what caused the reviewer to pick
+    // whichever event felt least committal (COMMENT).
+    expect(sp).toMatch(/decision tree/i);
 
-    // The old "skip nits unless egregious" line was a subtle approval nudge.
-    // The replacement guidance should talk about using COMMENT for substantive
-    // feedback; the old phrasing should be gone.
+    // Blocking vs. non-blocking classification is the hinge of the tree.
+    expect(sp).toMatch(/blocking/i);
+    expect(sp).toMatch(/non-blocking/i);
+
+    // APPROVE must be scoped to "mergeable as-is", explicitly compatible
+    // with non-blocking feedback — the wording that was missing during the
+    // COMMENT-bias regression.
+    expect(sp).toMatch(/mergeable as-is/i);
+
+    // Both anti-patterns must be explicitly named so neither bias recurs.
+    expect(sp).toMatch(/don't over-correct/i);
+    expect(sp).toMatch(/don't rubber-stamp/i);
+
+    // COMMENT must NOT be described as "the default" — that phrasing is what
+    // caused the swing from APPROVE-bias to COMMENT-bias in PR #291/292.
+    // Use a tight proximity check so discouragement phrasings (e.g. "Defaulting
+    // … to COMMENT destroys the signal") don't false-positive.
+    expect(sp).not.toMatch(/\bdefault\b[^.]{0,40}\bCOMMENT\b/i);
+    expect(sp).not.toMatch(/\bCOMMENT\b[^.]{0,40}\bis the default\b/i);
+
+    // The old "skip nits unless egregious" line was a subtle approval nudge
+    // that should stay gone.
     expect(sp).not.toMatch(/Skip nits unless egregious/);
   });
 });

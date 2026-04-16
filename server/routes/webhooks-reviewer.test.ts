@@ -159,7 +159,7 @@ describe('dispatchReviewerForPR — prompt content', () => {
     expect(msg.content).toMatch(/Do \*\*NOT\*\* merge/);
   });
 
-  it('presents a decision rubric that discourages APPROVE when substantive feedback exists', () => {
+  it('presents a balanced decision tree that prevents both APPROVE-bias and COMMENT-bias', () => {
     const deps = makeDeps();
     const project = makeProject('reviewer');
 
@@ -167,16 +167,45 @@ describe('dispatchReviewerForPR — prompt content', () => {
     vi.runAllTimers();
 
     const msg = deps.handleChat.mock.calls[0]?.[1] as { content: string };
-    // The prompt must include an explicit rubric section, not just a list of events.
-    expect(msg.content).toMatch(/decision rubric/i);
-    // The nit vs. substantive distinction must be drawn so the reviewer can classify issues.
-    expect(msg.content).toMatch(/\bnit\b/i);
-    expect(msg.content).toMatch(/substantive/i);
-    // The hard rule tying written feedback to COMMENT (not APPROVE) must be present.
-    // This is the load-bearing sentence that prevents the "approve with non-blocking
-    // comments" anti-pattern — if it regresses, the bias returns.
-    expect(msg.content).toMatch(/do \*\*NOT\*\* use `APPROVE`/i);
-    expect(msg.content).toMatch(/use `COMMENT`/i);
+
+    // Must be a decision TREE (walk in order, first match), not a flat rubric —
+    // the flat rubric lets the reviewer pick whichever label feels comfortable,
+    // which is how we ended up defaulting to COMMENT for everything.
+    expect(msg.content).toMatch(/decision tree/i);
+
+    // The blocking vs. non-blocking distinction is what the tree branches on.
+    // If this disappears the reviewer falls back to the old ambiguous
+    // nit/substantive classification and starts hedging again.
+    expect(msg.content).toMatch(/blocking/i);
+    expect(msg.content).toMatch(/non-blocking/i);
+
+    // Load-bearing: APPROVE must be described as compatible with non-blocking
+    // feedback. The old wording ("zero substantive feedback") caused the
+    // COMMENT over-correction — reviewers always have *some* suggestion, so
+    // APPROVE became unreachable in practice.
+    expect(msg.content).toMatch(/mergeable as-is/i);
+
+    // Both anti-patterns must be explicitly named so neither bias recurs:
+    //   don't over-correct → defaulting non-blocking reviews to COMMENT
+    //   don't rubber-stamp → burying a real blocker in an APPROVE body
+    expect(msg.content).toMatch(/don't over-correct/i);
+    expect(msg.content).toMatch(/don't rubber-stamp/i);
+
+    // COMMENT must be scoped to its narrow, genuine use (undecided / design
+    // question), not "the default for non-nit feedback" as the prior prompt
+    // had it. Catch positive-framing phrasings that would re-introduce the bias.
+    // We intentionally use a tight proximity (≤40 non-period chars between the
+    // word "default" and "COMMENT") so discouragement phrasing like
+    // "Defaulting … to COMMENT destroys the signal" elsewhere in the prompt
+    // doesn't trip the check.
+    expect(msg.content).not.toMatch(/\bdefault\b[^.]{0,40}\bCOMMENT\b/i);
+    expect(msg.content).not.toMatch(/\bCOMMENT\b[^.]{0,40}\bis the default\b/i);
+
+    // All three events must still be presented (redundant with the earlier
+    // test but worth asserting alongside the tree wording).
+    expect(msg.content).toContain('APPROVE');
+    expect(msg.content).toContain('REQUEST_CHANGES');
+    expect(msg.content).toContain('COMMENT');
   });
 
   it('uses synchronize wording when reason is synchronize', () => {

@@ -681,20 +681,22 @@ You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullNa
 ## Your task
 1. Fetch the PR metadata, diff, and recent commits using \`gh pr view ${opts.prNumber} --repo ${opts.repoFullName}\` and \`gh pr diff ${opts.prNumber} --repo ${opts.repoFullName}\`.
 2. Read the changed files in context.
-3. Identify issues across correctness, security, tests, conventions, and performance. For each issue, classify it as a **nit** (trivial style/wording, optional to address) or **substantive feedback** (bugs, missing tests for new logic, convention violations, security concerns, unclear logic, API contract issues).
-4. Choose an event using the rubric below, then submit ONE formal GitHub review by POSTing to Agent Hub's \`/api/pr/review\` endpoint. This routes the review through the GitHub App installation so it lands with the App identity — \`gh pr review\` runs as your CLI user (usually the PR author) and GitHub silently downgrades APPROVE to COMMENTED for self-reviews.
+3. For every issue you find, classify it as **blocking** or **non-blocking**:
+   - **Blocking** — correctness bugs, missing tests for non-trivial new logic, security holes, breaking API changes, data loss risk, or clear convention violations that will hurt other code. These must be fixed before merge.
+   - **Non-blocking** — suggestions, polish, design observations, minor perf, nits, and anything you'd be fine shipping without. Non-blocking feedback is welcome *under an APPROVE* — it does not downgrade the verdict.
+4. Choose an event using the decision tree below, then submit ONE formal GitHub review by POSTing to Agent Hub's \`/api/pr/review\` endpoint. This routes the review through the GitHub App installation so it lands with the App identity — \`gh pr review\` runs as your CLI user (usually the PR author) and GitHub silently downgrades APPROVE to COMMENTED for self-reviews.
 
-## Event decision rubric
+## Event decision tree
 
-Pick **one** event based on what you found in step 3:
+Walk this in order and pick the **first** match — do not hedge:
 
-- \`REQUEST_CHANGES\` — at least one issue is serious enough that the PR should not land as-is: correctness bugs, missing tests for non-trivial new logic, security holes, breaking API changes, or clear convention violations that will affect other code. Body required.
-- \`COMMENT\` — you wrote substantive feedback but nothing that blocks merging. **This is the default whenever you have something actionable to say that isn't a pure nit.** Body required.
-- \`APPROVE\` — you have **zero substantive feedback**. Only pure nits (or none at all), and the PR is ready to ship. Body optional.
+1. **Is there at least one blocking issue?** → \`REQUEST_CHANGES\`. Body required: list the blockers concretely (file:line). Non-blocking notes can be included too.
+2. **Otherwise** → \`APPROVE\`. Body optional; include any non-blocking feedback, suggestions, or praise you have. \`APPROVE\` does not mean "zero thoughts" — it means "this is mergeable as-is." Non-blocking comments under APPROVE are the normal, expected pattern.
+3. **Only if you genuinely cannot decide** (e.g., you want the author's take on a design question before endorsing, or the diff is half-done and you want to flag direction without blocking) → \`COMMENT\`. Body required. This should be rare — most reviews are APPROVE or REQUEST_CHANGES.
 
-**Hard rule:** If your review body describes issues, bugs, suggestions, or concerns, do **NOT** use \`APPROVE\`. Use \`COMMENT\` instead. \`APPROVE\` means "ship it, I have nothing actionable to add" — not "I found things but none seemed blocking." That distinction is why reviews exist; collapsing everything non-blocking into APPROVE destroys the signal.
+**Hard rule (don't over-correct):** Non-blocking feedback does NOT require \`COMMENT\`. If nothing you wrote blocks merge, use \`APPROVE\` with your notes attached. \`COMMENT\` is for deliberate fence-sitting, not for "I had some suggestions." Defaulting every substantive-but-non-blocking review to COMMENT destroys the APPROVE signal just as badly as rubber-stamping everything to APPROVE did.
 
-Pure nits alone (e.g., "typo in a comment") can be omitted entirely or mentioned briefly under \`APPROVE\`, your call.
+**Hard rule (don't rubber-stamp):** Conversely, if there's a real blocker, use \`REQUEST_CHANGES\` — do NOT bury a blocker in an APPROVE body. The event is the signal; the body is the detail.
 
 ## Submitting the review
 
