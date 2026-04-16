@@ -423,6 +423,61 @@ export interface PreviewCaptureRow {
   created_at: string;
 }
 
+// ─── iOS Build Types ────────────────────────────────────────────
+
+export type IosBuildStatus =
+  | 'queued'
+  | 'provisioning'
+  | 'building'
+  | 'archiving'
+  | 'uploading'
+  | 'ready'
+  | 'error'
+  | 'cancelled';
+
+export interface IosBuildRow {
+  id: string;
+  project_id: string;
+  pr_number: number;
+  pr_url: string | null;
+  branch: string;
+  commit_sha: string | null;
+  repo_url: string;
+  status: IosBuildStatus;
+  error_message: string | null;
+  build_log: string | null;
+  /** EC2 Mac instance ID (e.g. i-0abc123) */
+  vm_instance_id: string | null;
+  /** URL to the .ipa artifact once built */
+  ipa_url: string | null;
+  /** TestFlight / internal install link */
+  install_url: string | null;
+  /** URL to simulator recording (MP4) */
+  simulator_recording_url: string | null;
+  /** QR code data URL for install link */
+  qr_code_url: string | null;
+  /** Build duration in seconds */
+  duration_seconds: number | null;
+  /** Xcode version used */
+  xcode_version: string | null;
+  /** iOS SDK version */
+  ios_sdk_version: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IosBuildArtifactRow {
+  id: string;
+  build_id: string;
+  type: 'ipa' | 'simulator_recording' | 'screenshot' | 'log';
+  name: string;
+  label: string;
+  filename: string;
+  file_path: string;
+  file_size: number;
+  created_at: string;
+}
+
 // ─── Prepared Statements ─────────────────────────────────────────
 
 type Stmt<TParams extends unknown[] = unknown[], TRow = unknown> = Database.Statement<
@@ -746,6 +801,22 @@ export interface Stmts {
   getPreviewCaptures: Stmt;
   createPreviewCapture: Stmt;
   deletePreviewCaptures: Stmt;
+
+  // iOS builds
+  getIosBuilds: Stmt;
+  getIosBuildsByProject: Stmt;
+  getIosBuild: Stmt;
+  createIosBuild: Stmt;
+  updateIosBuild: Stmt;
+  updateIosBuildStatus: Stmt;
+  deleteIosBuild: Stmt;
+  getRunningIosBuilds: Stmt;
+  appendIosBuildLog: Stmt;
+
+  // iOS build artifacts
+  getIosBuildArtifacts: Stmt;
+  createIosBuildArtifact: Stmt;
+  deleteIosBuildArtifacts: Stmt;
 
   // Notes (from notes tables)
   getNotes: Stmt;

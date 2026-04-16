@@ -77,7 +77,9 @@ import createClaudeAuthRoutes from './routes/claude-auth.js';
 import createThreadRoutes from './routes/threads.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createPreviewRoutes from './routes/previews.js';
+import createIosBuildRoutes from './routes/ios-builds.js';
 import { initPreviewEngine } from './preview-engine.js';
+import { initIosBuildEngine } from './ios-build-engine.js';
 import { initCaptureEngine } from './preview-capture.js';
 import createPreviewDbRoutes from './routes/preview.js';
 import createPrActionRoutes from './routes/pr-actions.js';
@@ -419,6 +421,7 @@ app.use(createClaudeAuthRoutes(routeDeps));
 app.use(createThreadRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
 app.use(createPreviewRoutes(routeDeps));
+app.use(createIosBuildRoutes(routeDeps));
 app.use(createPreviewDbRoutes(routeDeps));
 app.use(createPrActionRoutes(routeDeps));
 
@@ -783,6 +786,7 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       previewDomain: config.previewDomain,
       onStatusChange: handlePreviewStatusChange,
     });
+    initIosBuildEngine({ stmts: stmts!, broadcast });
     initCaptureEngine({ stmts: stmts!, broadcast, uploadsDir: UPLOADS_DIR });
 
     resumeOrphanedSessions(sessionsToResume);

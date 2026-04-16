@@ -3,6 +3,8 @@ import { api } from '../utils/api.js';
 import { getServerBase } from '../utils/connection.js';
 import { relativeTime } from '../utils/time.js';
 import PreviewPanel from './PreviewPanel.jsx';
+import IosBuildCard, { CreateIosBuildModal } from './IosBuildCard.jsx';
+import { isBuildActive } from '../utils/iosBuild.js';
 import { buildCaptureArtifacts, formatCaptureSize, buildUploadsUrl } from '../utils/capture.js';
 import {
   Container,
@@ -26,6 +28,8 @@ import {
   Video,
   ChevronDown,
   ChevronUp,
+  Smartphone,
+  Monitor,
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -636,7 +640,200 @@ function PreviewCard({ preview, projectId, onAction, onOpenPanel }) {
   );
 }
 
+// ─── Platform Toggle ─────────────────────────────────────────────
+
+const PLATFORMS = [
+  { id: 'web', label: 'Web', icon: Monitor, description: 'Docker containers' },
+  { id: 'ios', label: 'iOS', icon: Smartphone, description: 'Xcode builds' },
+];
+
+function PlatformToggle({ platform, onChange }) {
+  return (
+    <div className="flex items-center bg-gray-800 rounded-lg p-0.5 border border-gray-700">
+      {PLATFORMS.map((p) => {
+        const Icon = p.icon;
+        const active = platform === p.id;
+        return (
+          <button
+            key={p.id}
+            onClick={() => onChange(p.id)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              active ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <Icon size={14} />
+            {p.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── iOS Builds Section ──────────────────────────────────────────
+
+function IosBuildSection({ projectId }) {
+  const [builds, setBuilds] = useState([]);
+  const [iosStatus, setIosStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const fetchBuilds = useCallback(async () => {
+    try {
+      const [buildList, buildStatus] = await Promise.all([
+        api.getProjectIosBuilds(projectId),
+        api.getIosBuildStatus(),
+      ]);
+      setBuilds(buildList);
+      setIosStatus(buildStatus);
+    } catch (err) {
+      console.error('Failed to fetch iOS builds:', err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    fetchBuilds();
+    const interval = setInterval(fetchBuilds, 15000);
+    return () => clearInterval(interval);
+  }, [fetchBuilds]);
+
+  // Listen for WebSocket updates
+  useEffect(() => {
+    const handler = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'ios_build_update' && data.projectId === projectId) {
+          fetchBuilds();
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('ws_message', handler);
+    return () => window.removeEventListener('ws_message', handler);
+  }, [projectId, fetchBuilds]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 size={24} className="animate-spin text-gray-500" />
+      </div>
+    );
+  }
+
+  const activeBuilds = builds.filter((b) => isBuildActive(b.status));
+  const completedBuilds = builds.filter((b) => !isBuildActive(b.status));
+
+  return (
+    <>
+      {/* iOS infrastructure status */}
+      {iosStatus && !iosStatus.available && (
+        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4 mb-6">
+          <div className="flex items-center gap-3">
+            <Smartphone size={20} className="text-yellow-400" />
+            <div>
+              <p className="text-yellow-400 font-medium text-sm">
+                iOS build infrastructure not configured
+              </p>
+              <p className="text-gray-400 text-xs mt-0.5">
+                {iosStatus.reason ||
+                  'Requires a macOS VM (EC2 Mac dedicated host) with Xcode installed.'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stats bar */}
+      {iosStatus?.available && (
+        <div className="flex items-center gap-4 mb-6 text-sm text-gray-400">
+          <span className="flex items-center gap-1.5">
+            <Smartphone size={14} className="text-green-400" />
+            {iosStatus.runningCount} / {iosStatus.maxConcurrent} building
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Clock size={14} />
+            Timeout: {iosStatus.buildTimeoutMinutes}m
+          </span>
+        </div>
+      )}
+
+      {/* New build button */}
+      <div className="flex justify-end mb-4">
+        <button
+          onClick={() => setShowCreate(true)}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        >
+          <Plus size={16} />
+          New iOS Build
+        </button>
+      </div>
+
+      {/* Active builds */}
+      {activeBuilds.length > 0 && (
+        <div className="mb-6">
+          <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
+            Active ({activeBuilds.length})
+          </h3>
+          <div className="space-y-3">
+            {activeBuilds.map((b) => (
+              <IosBuildCard key={b.id} build={b} projectId={projectId} onAction={fetchBuilds} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Completed builds */}
+      {completedBuilds.length > 0 && (
+        <div className="mb-6">
+          <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
+            History ({completedBuilds.length})
+          </h3>
+          <div className="space-y-3">
+            {completedBuilds.map((b) => (
+              <IosBuildCard key={b.id} build={b} projectId={projectId} onAction={fetchBuilds} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {builds.length === 0 && (
+        <div className="text-center py-16">
+          <Smartphone size={48} className="mx-auto text-gray-600 mb-4" />
+          <h3 className="text-lg font-medium text-gray-300 mb-2">No iOS builds</h3>
+          <p className="text-gray-500 text-sm max-w-md mx-auto mb-6">
+            Build your Expo/React Native iOS app from a PR branch. Generates a simulator recording
+            and a TestFlight-style install link for real device testing.
+          </p>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
+          >
+            <Plus size={16} />
+            Queue First Build
+          </button>
+        </div>
+      )}
+
+      {/* Create build modal */}
+      {showCreate && (
+        <CreateIosBuildModal
+          projectId={projectId}
+          onClose={() => setShowCreate(false)}
+          onCreated={() => fetchBuilds()}
+        />
+      )}
+    </>
+  );
+}
+
+// ─── Main Page ───────────────────────────────────────────────────
+
 export default function PreviewsPage({ projectId }) {
+  const [platform, setPlatform] = useState('web');
   const [previews, setPreviews] = useState([]);
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -690,127 +887,146 @@ export default function PreviewsPage({ projectId }) {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <Loader2 size={24} className="animate-spin text-gray-500" />
-      </div>
-    );
-  }
-
   const running = previews.filter((p) => p.status === 'running' || p.status === 'building');
   const inactive = previews.filter((p) => p.status !== 'running' && p.status !== 'building');
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
-        {/* Header */}
+        {/* Header with platform toggle */}
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-2xl font-bold text-white flex items-center gap-3">
               <Container size={28} />
               Preview Environments
             </h2>
-            <p className="text-sm text-gray-400 mt-1">Isolated Docker containers for PR branches</p>
-          </div>
-          <button
-            onClick={() => setShowCreate(true)}
-            disabled={!status?.dockerAvailable}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
-          >
-            <Plus size={16} />
-            New Preview
-          </button>
-        </div>
-
-        {/* Docker status banner */}
-        {status && !status.dockerAvailable && (
-          <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4 mb-6">
-            <div className="flex items-center gap-3">
-              <Server size={20} className="text-yellow-400" />
-              <div>
-                <p className="text-yellow-400 font-medium text-sm">Docker not available</p>
-                <p className="text-gray-400 text-xs mt-0.5">
-                  Docker must be installed and running on the server to create preview containers.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Stats bar */}
-        {status?.dockerAvailable && (
-          <div className="flex items-center gap-4 mb-6 text-sm text-gray-400">
-            <span className="flex items-center gap-1.5">
-              <Container size={14} className="text-green-400" />
-              {status.runningCount} / {status.maxConcurrent} running
-            </span>
-            <span className="flex items-center gap-1.5">
-              <Clock size={14} />
-              Default TTL: {status.defaultTtlMinutes}m
-            </span>
-          </div>
-        )}
-
-        {/* Active previews */}
-        {running.length > 0 && (
-          <div className="mb-6">
-            <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
-              Active ({running.length})
-            </h3>
-            <div className="space-y-3">
-              {running.map((p) => (
-                <PreviewCard
-                  key={p.id}
-                  preview={p}
-                  projectId={projectId}
-                  onAction={(action, id) => handleAction(action, id)}
-                  onOpenPanel={(prev) => setPanelPreview(prev)}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Inactive previews */}
-        {inactive.length > 0 && (
-          <div className="mb-6">
-            <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
-              History ({inactive.length})
-            </h3>
-            <div className="space-y-3">
-              {inactive.map((p) => (
-                <PreviewCard
-                  key={p.id}
-                  preview={p}
-                  projectId={projectId}
-                  onAction={(action, id) => handleAction(action, id)}
-                  onOpenPanel={(prev) => setPanelPreview(prev)}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Empty state */}
-        {previews.length === 0 && (
-          <div className="text-center py-16">
-            <Container size={48} className="mx-auto text-gray-600 mb-4" />
-            <h3 className="text-lg font-medium text-gray-300 mb-2">No preview environments</h3>
-            <p className="text-gray-500 text-sm max-w-md mx-auto mb-6">
-              Create an isolated Docker container to preview a PR branch. Each container runs the
-              full Agent Hub stack and auto-stops after TTL expires.
+            <p className="text-sm text-gray-400 mt-1">
+              {platform === 'web'
+                ? 'Isolated Docker containers for PR branches'
+                : 'iOS builds from PR branches via Xcode on macOS VMs'}
             </p>
-            {status?.dockerAvailable && (
+          </div>
+          <div className="flex items-center gap-3">
+            <PlatformToggle platform={platform} onChange={setPlatform} />
+            {platform === 'web' && (
               <button
                 onClick={() => setShowCreate(true)}
-                className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
+                disabled={!status?.dockerAvailable}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
               >
                 <Plus size={16} />
-                Create First Preview
+                New Preview
               </button>
             )}
           </div>
+        </div>
+
+        {/* Platform content */}
+        {platform === 'ios' ? (
+          <IosBuildSection projectId={projectId} />
+        ) : (
+          <>
+            {/* Docker status banner */}
+            {loading ? (
+              <div className="flex items-center justify-center py-16">
+                <Loader2 size={24} className="animate-spin text-gray-500" />
+              </div>
+            ) : (
+              <>
+                {status && !status.dockerAvailable && (
+                  <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4 mb-6">
+                    <div className="flex items-center gap-3">
+                      <Server size={20} className="text-yellow-400" />
+                      <div>
+                        <p className="text-yellow-400 font-medium text-sm">Docker not available</p>
+                        <p className="text-gray-400 text-xs mt-0.5">
+                          Docker must be installed and running on the server to create preview
+                          containers.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stats bar */}
+                {status?.dockerAvailable && (
+                  <div className="flex items-center gap-4 mb-6 text-sm text-gray-400">
+                    <span className="flex items-center gap-1.5">
+                      <Container size={14} className="text-green-400" />
+                      {status.runningCount} / {status.maxConcurrent} running
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <Clock size={14} />
+                      Default TTL: {status.defaultTtlMinutes}m
+                    </span>
+                  </div>
+                )}
+
+                {/* Active previews */}
+                {running.length > 0 && (
+                  <div className="mb-6">
+                    <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
+                      Active ({running.length})
+                    </h3>
+                    <div className="space-y-3">
+                      {running.map((p) => (
+                        <PreviewCard
+                          key={p.id}
+                          preview={p}
+                          projectId={projectId}
+                          onAction={(action, id) => handleAction(action, id)}
+                          onOpenPanel={(prev) => setPanelPreview(prev)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Inactive previews */}
+                {inactive.length > 0 && (
+                  <div className="mb-6">
+                    <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
+                      History ({inactive.length})
+                    </h3>
+                    <div className="space-y-3">
+                      {inactive.map((p) => (
+                        <PreviewCard
+                          key={p.id}
+                          preview={p}
+                          projectId={projectId}
+                          onAction={(action, id) => handleAction(action, id)}
+                          onOpenPanel={(prev) => setPanelPreview(prev)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Empty state */}
+                {previews.length === 0 && (
+                  <div className="text-center py-16">
+                    <Container size={48} className="mx-auto text-gray-600 mb-4" />
+                    <h3 className="text-lg font-medium text-gray-300 mb-2">
+                      No preview environments
+                    </h3>
+                    <p className="text-gray-500 text-sm max-w-md mx-auto mb-6">
+                      Create an isolated Docker container to preview a PR branch. Each container
+                      runs the full Agent Hub stack and auto-stops after TTL expires.
+                    </p>
+                    {status?.dockerAvailable && (
+                      <button
+                        onClick={() => setShowCreate(true)}
+                        className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
+                      >
+                        <Plus size={16} />
+                        Create First Preview
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </>
         )}
       </div>
 

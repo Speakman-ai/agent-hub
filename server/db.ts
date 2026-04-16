@@ -498,6 +498,47 @@ function initDb(dataDir: string): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_preview_captures_preview ON preview_captures(preview_id);
+
+    -- iOS builds: Xcode builds on macOS VMs for PR preview
+    CREATE TABLE IF NOT EXISTS ios_builds (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      pr_url TEXT,
+      branch TEXT NOT NULL,
+      commit_sha TEXT,
+      repo_url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','provisioning','building','archiving','uploading','ready','error','cancelled')),
+      error_message TEXT,
+      build_log TEXT,
+      vm_instance_id TEXT,
+      ipa_url TEXT,
+      install_url TEXT,
+      simulator_recording_url TEXT,
+      qr_code_url TEXT,
+      duration_seconds INTEGER,
+      xcode_version TEXT,
+      ios_sdk_version TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ios_builds_project ON ios_builds(project_id);
+    CREATE INDEX IF NOT EXISTS idx_ios_builds_pr ON ios_builds(project_id, pr_number);
+    CREATE INDEX IF NOT EXISTS idx_ios_builds_status ON ios_builds(status);
+
+    -- iOS build artifacts: IPAs, simulator recordings, screenshots, logs
+    CREATE TABLE IF NOT EXISTS ios_build_artifacts (
+      id TEXT PRIMARY KEY,
+      build_id TEXT NOT NULL REFERENCES ios_builds(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK(type IN ('ipa', 'simulator_recording', 'screenshot', 'log')),
+      name TEXT NOT NULL,
+      label TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      file_size INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ios_build_artifacts_build ON ios_build_artifacts(build_id);
   `);
 
   try {
@@ -1492,6 +1533,43 @@ function initDb(dataDir: string): void {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     deletePreviewCaptures: db.prepare('DELETE FROM preview_captures WHERE preview_id = ?'),
+
+    // iOS builds
+    getIosBuilds: db.prepare('SELECT * FROM ios_builds ORDER BY created_at DESC'),
+    getIosBuildsByProject: db.prepare(
+      'SELECT * FROM ios_builds WHERE project_id = ? ORDER BY created_at DESC',
+    ),
+    getIosBuild: db.prepare('SELECT * FROM ios_builds WHERE id = ?'),
+    createIosBuild: db.prepare(
+      `INSERT INTO ios_builds (id, project_id, pr_number, pr_url, branch, commit_sha, repo_url, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    updateIosBuild: db.prepare(
+      `UPDATE ios_builds SET status = ?, error_message = ?, build_log = ?,
+       vm_instance_id = ?, ipa_url = ?, install_url = ?, simulator_recording_url = ?,
+       qr_code_url = ?, duration_seconds = ?, xcode_version = ?, ios_sdk_version = ?,
+       updated_at = datetime('now') WHERE id = ?`,
+    ),
+    updateIosBuildStatus: db.prepare(
+      `UPDATE ios_builds SET status = ?, error_message = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    deleteIosBuild: db.prepare('DELETE FROM ios_builds WHERE id = ?'),
+    appendIosBuildLog: db.prepare(
+      `UPDATE ios_builds SET build_log = COALESCE(build_log, '') || ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    getRunningIosBuilds: db.prepare(
+      `SELECT * FROM ios_builds WHERE status IN ('queued', 'provisioning', 'building', 'archiving', 'uploading')`,
+    ),
+
+    // iOS build artifacts
+    getIosBuildArtifacts: db.prepare(
+      'SELECT * FROM ios_build_artifacts WHERE build_id = ? ORDER BY type, name',
+    ),
+    createIosBuildArtifact: db.prepare(
+      `INSERT INTO ios_build_artifacts (id, build_id, type, name, label, filename, file_path, file_size)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    deleteIosBuildArtifacts: db.prepare('DELETE FROM ios_build_artifacts WHERE build_id = ?'),
   } as Stmts;
 
   dbRegistry.set(dataDir, { db, stmts });

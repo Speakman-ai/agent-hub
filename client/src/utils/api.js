@@ -465,6 +465,31 @@ export const api = {
   getPreviewCaptures: (projectId, previewId) =>
     fetchJSON(`/projects/${projectId}/previews/${previewId}/captures`),
 
+  // iOS Builds
+  getIosBuildStatus: () => fetchJSON('/ios-builds/status'),
+  getProjectIosBuilds: (projectId) => fetchJSON(`/projects/${projectId}/ios-builds`),
+  createIosBuild: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/ios-builds`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeout: 30000,
+    }),
+  getIosBuild: (projectId, buildId) => fetchJSON(`/projects/${projectId}/ios-builds/${buildId}`),
+  cancelIosBuild: (projectId, buildId) =>
+    fetchJSON(`/projects/${projectId}/ios-builds/${buildId}/cancel`, {
+      method: 'POST',
+      timeout: 30000,
+    }),
+  getIosBuildLogs: (projectId, buildId) =>
+    fetchJSON(`/projects/${projectId}/ios-builds/${buildId}/logs`),
+  deleteIosBuild: (projectId, buildId) =>
+    fetchJSON(`/projects/${projectId}/ios-builds/${buildId}`, {
+      method: 'DELETE',
+      timeout: 30000,
+    }),
+  getIosBuildArtifacts: (projectId, buildId) =>
+    fetchJSON(`/projects/${projectId}/ios-builds/${buildId}/artifacts`),
+
   // PR Actions
   mergePr: (prUrl, mergeMethod = 'squash') =>
     fetchJSON('/pr/merge', {
