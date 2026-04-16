@@ -939,7 +939,12 @@ function handleKanbanWebhookEvent(
   if (!boardData?.board) return false;
   const cols = stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
 
-  // Auto-create a kanban card when a PR is opened and no card exists yet
+  // When a PR is opened with no card yet linked, try to find an existing card
+  // by exact-title match and auto-link the PR URL to it. We intentionally do
+  // NOT create a new card here — agent-authored PRs race with the agent's own
+  // `PUT /cards/:id {pr_url}` call, which produced duplicate cards. Cards are
+  // now created exclusively by agents (or the "Create PR" button), and external
+  // PRs that don't match a card simply won't appear on the board.
   if (!card && event === 'pull_request' && action === 'opened' && payload.pull_request) {
     const pr = payload.pull_request;
 
@@ -957,7 +962,7 @@ function handleKanbanWebhookEvent(
         }
       }
       console.log(
-        `[Webhook/Kanban] Skipping auto-create — card "${existingByTitle.title}" already exists on board`,
+        `[Webhook/Kanban] Linked PR #${pr.number} to existing card "${existingByTitle.title}" by title match`,
       );
       card = existingByTitle;
 
@@ -982,69 +987,10 @@ function handleKanbanWebhookEvent(
       return true;
     }
 
-    const inProgressCol = cols.find((c) => c.name === 'In Progress');
-    const targetCol = inProgressCol || cols[0];
-    if (!targetCol) return false;
-
-    const cardId = uuidv4();
-    const sender = payload.sender?.login || 'unknown';
-
-    // Extract a short description from the PR body (first non-empty line, capped)
-    const bodyFirstLine =
-      pr.body
-        ?.split('\n')
-        .find((l: string) => l.trim() && !l.startsWith('#'))
-        ?.trim() || '';
-    const description =
-      bodyFirstLine.length > 200 ? bodyFirstLine.substring(0, 197) + '...' : bodyFirstLine;
-
-    stmts.createKanbanCard.run(
-      cardId,
-      targetCol.id,
-      boardData.board.id,
-      pr.title,
-      description,
-      'medium',
-      sender,
-      '',
-      '',
-      '',
-      sender,
-      0,
-    );
-
-    // Link the PR URL to the new card
-    try {
-      stmts.setCardPrUrl.run(prUrl, cardId);
-    } catch {
-      /* non-critical */
-    }
-
     console.log(
-      `[Webhook/Kanban] Auto-created card "${pr.title}" from PR #${pr.number} (${prUrl})`,
+      `[Webhook/Kanban] PR #${pr.number} "${pr.title}" opened with no matching card — not auto-creating (by design)`,
     );
-    broadcast({ type: 'kanban_update', projectId: project.id });
-    card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
-
-    // Trigger capture for the new PR
-    const repoHtmlUrl = payload.repository?.html_url;
-    if (repoHtmlUrl && pr.head?.ref) {
-      triggerCaptureForPR(
-        { stmts, broadcast },
-        {
-          projectId: project.id,
-          prNumber: pr.number,
-          prUrl: pr.html_url,
-          branch: pr.head.ref,
-          commitSha: pr.head.sha || null,
-          repoUrl: repoHtmlUrl,
-        },
-      ).catch((err) => {
-        console.error(`[Webhook/Capture] trigger on opened failed:`, (err as Error).message);
-      });
-    }
-
-    return true;
+    return false;
   }
 
   if (!card) return false;

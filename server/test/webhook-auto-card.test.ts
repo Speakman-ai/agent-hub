@@ -11,15 +11,20 @@ beforeAll(async () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// Webhook PR opened → auto-create kanban card
+// Webhook PR opened → does NOT auto-create kanban card
+//
+// Background: the webhook used to auto-create a card on `pull_request.opened`
+// when no existing card matched by pr_url / branch session-id / title. That
+// raced with agent-authored flows (agents link pr_url *after* `gh pr create`)
+// and produced duplicate cards. Cards are now created exclusively by agents
+// or the "Create PR" button; external PRs that don't match a card simply
+// won't appear on the board.
 // ═══════════════════════════════════════════════════════════════════
 
-describe('Webhook auto-creates kanban card on PR opened', () => {
-  let webhookConfigId: string;
-
+describe('Webhook PR opened does not auto-create a kanban card', () => {
   beforeAll(async () => {
     // Register a webhook config for this project
-    const res = await request
+    await request
       .post('/api/webhooks')
       .send({
         projectId,
@@ -28,15 +33,17 @@ describe('Webhook auto-creates kanban card on PR opened', () => {
         enabled: true,
       })
       .expect(200);
-    webhookConfigId = (res.body as { id: string }).id;
   });
 
-  it('creates a card when PR opened and no existing card', async () => {
-    // Send a pull_request.opened webhook
+  it('does NOT create a card when PR opens and no card matches', async () => {
+    const boardBefore = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const cardCountBefore = (boardBefore.body as { cards: unknown[] }).cards.length;
+
+    // Send a pull_request.opened webhook with no pre-existing card
     const res = await request
       .post('/api/webhooks/github')
       .set('x-github-event', 'pull_request')
-      .set('x-github-delivery', 'test-delivery-1')
+      .set('x-github-delivery', 'no-autocreate-delivery-1')
       .send({
         action: 'opened',
         repository: {
@@ -50,71 +57,35 @@ describe('Webhook auto-creates kanban card on PR opened', () => {
           html_url: 'https://github.com/test-org/test-repo/pull/42',
           head: { ref: 'fix/login-button', sha: 'abc123' },
           base: { ref: 'main' },
-          body: 'The login button was not firing the onClick handler.\n\n## Changes\n- Fixed event binding',
+          body: 'The login button was not firing the onClick handler.',
         },
       });
 
-    // Webhook should succeed (200)
+    // Webhook should still 200 (handler succeeds; it just chose not to create)
     expect(res.status).toBe(200);
 
-    // Verify a card was created on the board
-    const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
-    const board = boardRes.body as {
-      columns: Array<{ name: string; id: string }>;
-      cards: Array<{ title: string; pr_url: string; assignee: string }>;
-    };
-
-    const card = board.cards.find(
-      (c) => c.pr_url === 'https://github.com/test-org/test-repo/pull/42',
-    );
-    expect(card).toBeDefined();
-    expect(card!.title).toBe('Fix login button not responding');
-    expect(card!.assignee).toBe('test-user');
-
-    // Card should be in "In Progress" column
-    const inProgressCol = board.columns.find((c) => c.name === 'In Progress');
-    expect(inProgressCol).toBeDefined();
-  });
-
-  it('does NOT create a duplicate card for the same PR', async () => {
-    // Send the same webhook again
-    await request
-      .post('/api/webhooks/github')
-      .set('x-github-event', 'pull_request')
-      .set('x-github-delivery', 'test-delivery-2')
-      .send({
-        action: 'opened',
-        repository: {
-          full_name: 'test-org/test-repo',
-          html_url: 'https://github.com/test-org/test-repo',
-        },
-        sender: { login: 'test-user' },
-        pull_request: {
-          number: 42,
-          title: 'Fix login button not responding',
-          html_url: 'https://github.com/test-org/test-repo/pull/42',
-          head: { ref: 'fix/login-button', sha: 'abc123' },
-          base: { ref: 'main' },
-        },
-      })
-      .expect(200);
-
-    // Should still be only one card with this PR URL
-    const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
-    const board = boardRes.body as {
-      cards: Array<{ pr_url: string }>;
+    // No card with this PR URL should exist
+    const boardAfter = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const board = boardAfter.body as {
+      cards: Array<{ pr_url: string | null }>;
     };
     const matching = board.cards.filter(
       (c) => c.pr_url === 'https://github.com/test-org/test-repo/pull/42',
     );
-    expect(matching.length).toBe(1);
+    expect(matching.length).toBe(0);
+
+    // Card count should be unchanged
+    expect(board.cards.length).toBe(cardCountBefore);
   });
 
-  it('uses PR body first line as card description', async () => {
+  it('does NOT create a card even when PR body has rich content', async () => {
+    const boardBefore = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const cardCountBefore = (boardBefore.body as { cards: unknown[] }).cards.length;
+
     await request
       .post('/api/webhooks/github')
       .set('x-github-event', 'pull_request')
-      .set('x-github-delivery', 'test-delivery-3')
+      .set('x-github-delivery', 'no-autocreate-delivery-2')
       .send({
         action: 'opened',
         repository: {
@@ -133,15 +104,12 @@ describe('Webhook auto-creates kanban card on PR opened', () => {
       })
       .expect(200);
 
-    const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
-    const board = boardRes.body as {
-      cards: Array<{ title: string; pr_url: string; description: string }>;
-    };
-    const card = board.cards.find(
+    const boardAfter = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const board = boardAfter.body as { cards: Array<{ pr_url: string | null }> };
+    const matching = board.cards.filter(
       (c) => c.pr_url === 'https://github.com/test-org/test-repo/pull/99',
     );
-    expect(card).toBeDefined();
-    // Should skip the "## Summary" header and use the first non-header line
-    expect(card!.description).toBe('Users requested a dark mode toggle in settings.');
+    expect(matching.length).toBe(0);
+    expect(board.cards.length).toBe(cardCountBefore);
   });
 });
