@@ -64,6 +64,36 @@ export function extractStateFromUrl(url: string): string | null {
 }
 
 /**
+ * Detect whether the OAuth URL indicates the CLI is in "paste-the-code" mode
+ * (i.e., the user will paste the authorization code back into the terminal
+ * rather than being redirected to a localhost callback server).
+ *
+ * Signals:
+ *  - `code=true` query parameter — the CLI asks Anthropic to display the code
+ *    on a public page instead of redirecting.
+ *  - `redirect_uri` points at a public Anthropic host (not a loopback address).
+ *
+ * In paste-mode, any localhost port that happens to be open on the CLI
+ * subprocess is NOT the OAuth callback — proxying the code to it will fail.
+ * We must submit the code via stdin instead.
+ *
+ * Loopback detection covers the four common shapes the CLI could bind:
+ * `127.0.0.1`, `localhost`, `[::1]` (IPv6 loopback in URL syntax), and
+ * `0.0.0.0` (wildcard bind, reachable via loopback).
+ */
+export function isPasteCodeMode(url: string): boolean {
+  if (/[?&]code=true(?:&|$|#)/.test(url)) return true;
+  const redirectMatch = url.match(/[?&]redirect_uri=([^&]+)/);
+  if (redirectMatch) {
+    const redirect = decodeURIComponent(redirectMatch[1]);
+    if (!/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)(:|\/|$)/i.test(redirect)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Detect the localhost port that `claude auth login` opens for its OAuth callback server.
  * NOTE: Uses `ss` which is Linux-only. On macOS, `lsof -i -P` would be needed instead.
  * This is fine for now since the server runs on EC2 (Linux).
@@ -111,6 +141,15 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   let activeLoginId: string | null = null;
   let activeLoginPort: number | null = null;
   let activeLoginState: string | null = null;
+  let activeLoginPasteMode: boolean = false;
+
+  const resetActiveLogin = (): void => {
+    activeLoginProc = null;
+    activeLoginId = null;
+    activeLoginPort = null;
+    activeLoginState = null;
+    activeLoginPasteMode = false;
+  };
 
   router.get('/api/config/claude-auth', async (_req: Request, res: Response) => {
     try {
@@ -153,10 +192,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
         console.log(
           `[claude-auth] Cleaning up stale login process (exitCode=${activeLoginProc.exitCode}, loginId=${activeLoginId})`,
         );
-        activeLoginProc = null;
-        activeLoginId = null;
-        activeLoginPort = null;
-        activeLoginState = null;
+        resetActiveLogin();
       }
       const loginInProgress = !!activeLoginProc;
 
@@ -187,10 +223,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       } catch {
         /* already dead */
       }
-      activeLoginProc = null;
-      activeLoginId = null;
-      activeLoginPort = null;
-      activeLoginState = null;
+      resetActiveLogin();
     }
 
     const { method, email, sso } = (req.body || {}) as {
@@ -232,23 +265,30 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
 
       // Extract state from the OAuth URL for later callback proxying
       activeLoginState = extractStateFromUrl(url);
+      activeLoginPasteMode = isPasteCodeMode(url);
 
-      // Detect the local callback server port the CLI opened
-      // Retry a few times since the server may start slightly after the URL is printed
-      const detectPort = async (retries: number): Promise<void> => {
-        const port = await detectCallbackPort(proc.pid!);
-        if (port) {
-          activeLoginPort = port;
-          console.log(`[claude-auth] Detected CLI callback server on port ${port}`);
-        } else if (retries > 0) {
-          setTimeout(() => detectPort(retries - 1), 500);
-        } else {
-          console.log('[claude-auth] Could not detect CLI callback server port');
-        }
-      };
-      detectPort(5);
+      if (activeLoginPasteMode) {
+        console.log(
+          `[claude-auth] OAuth URL indicates paste-code mode — will submit code via stdin (loginId=${loginId})`,
+        );
+      } else {
+        // Detect the local callback server port the CLI opened
+        // Retry a few times since the server may start slightly after the URL is printed
+        const detectPort = async (retries: number): Promise<void> => {
+          const port = await detectCallbackPort(proc.pid!);
+          if (port) {
+            activeLoginPort = port;
+            console.log(`[claude-auth] Detected CLI callback server on port ${port}`);
+          } else if (retries > 0) {
+            setTimeout(() => detectPort(retries - 1), 500);
+          } else {
+            console.log('[claude-auth] Could not detect CLI callback server port');
+          }
+        };
+        detectPort(5);
+      }
 
-      res.json({ ok: true, loginId, oauthUrl: url });
+      res.json({ ok: true, loginId, oauthUrl: url, pasteMode: activeLoginPasteMode });
     };
 
     const onData = (chunk: Buffer): void => {
@@ -265,10 +305,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
 
     proc.on('close', (code) => {
       if (activeLoginId === loginId) {
-        activeLoginProc = null;
-        activeLoginId = null;
-        activeLoginPort = null;
-        activeLoginState = null;
+        resetActiveLogin();
       }
 
       if (!responded) {
@@ -307,10 +344,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
 
     proc.on('error', (err) => {
       if (activeLoginId === loginId) {
-        activeLoginProc = null;
-        activeLoginId = null;
-        activeLoginPort = null;
-        activeLoginState = null;
+        resetActiveLogin();
       }
       if (!responded) {
         responded = true;
@@ -341,10 +375,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       } catch {
         /* already dead */
       }
-      activeLoginProc = null;
-      activeLoginId = null;
-      activeLoginPort = null;
-      activeLoginState = null;
+      resetActiveLogin();
       res.json({ ok: true, output: 'Login cancelled' });
     } else {
       res.json({ ok: true, output: 'No login in progress' });
@@ -368,6 +399,72 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
     const codeFromUrl = authCode.match(/[?&]code=([^&\s]+)/);
     if (codeFromUrl) {
       authCode = decodeURIComponent(codeFromUrl[1]);
+    }
+
+    // Paste-mode: the CLI is waiting on stdin (no valid localhost callback).
+    // Proxying to whatever port happens to be open would silently fail, so
+    // write the code directly to the subprocess's stdin — then wait briefly
+    // to observe whether the CLI accepts it (exit 0) or rejects it (exit != 0)
+    // so we can report a truthful status instead of "ok" + later WS failure.
+    if (activeLoginPasteMode) {
+      console.log('[claude-auth] Paste-code mode — writing code to stdin');
+      const proc = activeLoginProc;
+      let tailOutput = '';
+      const onTail = (chunk: Buffer): void => {
+        tailOutput += chunk.toString();
+      };
+      proc.stdout?.on('data', onTail);
+      proc.stderr?.on('data', onTail);
+      const detachTail = (): void => {
+        proc.stdout?.off('data', onTail);
+        proc.stderr?.off('data', onTail);
+      };
+
+      try {
+        proc.stdin?.write(authCode + '\n');
+      } catch (err: unknown) {
+        detachTail();
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(500).json({ error: `Failed to submit code via stdin: ${message}` });
+      }
+
+      // Race subprocess close against a timeout. The CLI typically finishes the
+      // OAuth exchange (token write + exit) within a couple of seconds; 8s is
+      // generous. If it's still running past that, fall back to the WS update.
+      const closeResult = await new Promise<{ code: number | null; timedOut: boolean }>(
+        (resolve) => {
+          const onClose = (code: number | null): void => {
+            clearTimeout(timer);
+            resolve({ code, timedOut: false });
+          };
+          const timer = setTimeout(() => {
+            proc.off('close', onClose);
+            resolve({ code: null, timedOut: true });
+          }, 8_000);
+          proc.once('close', onClose);
+        },
+      );
+      detachTail();
+
+      if (closeResult.timedOut) {
+        // Still running — likely finishing the token exchange. Report pending
+        // and let the existing WS broadcast deliver the final status.
+        return res.json({
+          ok: true,
+          pending: true,
+          output:
+            'Code submitted via stdin — waiting for login to finalize (watch for status update)',
+        });
+      }
+      if (closeResult.code === 0) {
+        return res.json({ ok: true, output: 'Code accepted — login complete' });
+      }
+      return res.status(502).json({
+        ok: false,
+        error:
+          tailOutput.trim().slice(0, 500) ||
+          `CLI rejected the code (exit ${closeResult.code ?? 'unknown'})`,
+      });
     }
 
     // If we don't have the port yet, try one more time
@@ -395,6 +492,9 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
         `[claude-auth] Proxying callback to localhost:${activeLoginPort} (state=${activeLoginState.slice(0, 8)}...)`,
       );
       const result = await proxyCallbackToLocalServer(activeLoginPort, authCode, activeLoginState);
+      console.log(
+        `[claude-auth] Proxy response: status=${result.status} body=${(result.body || '').slice(0, 200)}`,
+      );
 
       if (result.status >= 200 && result.status < 400) {
         res.json({ ok: true, output: 'Authorization code submitted successfully' });
@@ -491,10 +591,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       } catch {
         /* already dead */
       }
-      activeLoginProc = null;
-      activeLoginId = null;
-      activeLoginPort = null;
-      activeLoginState = null;
+      resetActiveLogin();
     }
   };
   process.on('SIGTERM', cleanup);

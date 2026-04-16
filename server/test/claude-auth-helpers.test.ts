@@ -2,6 +2,7 @@ import http from 'http';
 import {
   extractOAuthUrl,
   extractStateFromUrl,
+  isPasteCodeMode,
   proxyCallbackToLocalServer,
 } from '../routes/claude-auth.js';
 
@@ -46,6 +47,64 @@ describe('extractStateFromUrl', () => {
 
   it('returns null for URL with no query params', () => {
     expect(extractStateFromUrl('https://example.com/cb')).toBeNull();
+  });
+});
+
+describe('isPasteCodeMode', () => {
+  it('detects paste-mode from code=true query param', () => {
+    const url =
+      'https://claude.com/cai/oauth/authorize?code=true&client_id=abc&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=xyz';
+    expect(isPasteCodeMode(url)).toBe(true);
+  });
+
+  it('detects paste-mode when code=true is the last param', () => {
+    const url = 'https://claude.com/cai/oauth/authorize?client_id=abc&code=true';
+    expect(isPasteCodeMode(url)).toBe(true);
+  });
+
+  it('detects paste-mode when redirect_uri is a non-localhost host', () => {
+    const url =
+      'https://claude.com/cai/oauth/authorize?client_id=abc&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback';
+    expect(isPasteCodeMode(url)).toBe(true);
+  });
+
+  it('returns false when redirect_uri is localhost', () => {
+    const url =
+      'https://claude.com/cai/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%3A41869%2Fcallback';
+    expect(isPasteCodeMode(url)).toBe(false);
+  });
+
+  it('returns false when redirect_uri is 127.0.0.1', () => {
+    const url =
+      'https://claude.com/cai/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2F127.0.0.1%3A41869%2Fcallback';
+    expect(isPasteCodeMode(url)).toBe(false);
+  });
+
+  it('returns false when redirect_uri is IPv6 loopback [::1]', () => {
+    const url =
+      'https://claude.com/cai/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%3A41869%2Fcallback';
+    expect(isPasteCodeMode(url)).toBe(false);
+  });
+
+  it('returns false when redirect_uri is 0.0.0.0 wildcard bind', () => {
+    const url =
+      'https://claude.com/cai/oauth/authorize?client_id=abc&redirect_uri=http%3A%2F%2F0.0.0.0%3A41869%2Fcallback';
+    expect(isPasteCodeMode(url)).toBe(false);
+  });
+
+  it('detects paste-mode with code=true followed by a fragment', () => {
+    const url = 'https://claude.com/cai/oauth/authorize?client_id=abc&code=true#section';
+    expect(isPasteCodeMode(url)).toBe(true);
+  });
+
+  it('returns false when no paste-mode signals are present', () => {
+    expect(isPasteCodeMode('https://example.com/oauth')).toBe(false);
+  });
+
+  it('does not false-positive on code=true-ish substrings', () => {
+    // "code=truelike" should NOT be treated as paste-mode
+    const url = 'https://example.com/oauth?code=truelike&state=x';
+    expect(isPasteCodeMode(url)).toBe(false);
   });
 });
 

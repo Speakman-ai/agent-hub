@@ -474,6 +474,7 @@ function ClaudeAuthSection() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [oauthUrl, setOauthUrl] = useState(null);
+  const [pasteMode, setPasteMode] = useState(false);
   const [copied, setCopied] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -507,12 +508,14 @@ function ClaudeAuthSection() {
   const handleOAuthLogin = async () => {
     setLoginLoading(true);
     setOauthUrl(null);
+    setPasteMode(false);
     setCallbackInput('');
     setCallbackStatus(null);
     try {
       const data = await api.startClaudeOAuthLogin();
       if (data.oauthUrl) {
         setOauthUrl(data.oauthUrl);
+        setPasteMode(!!data.pasteMode);
         window.open(data.oauthUrl, '_blank');
         // Poll for completion
         const poll = setInterval(async () => {
@@ -563,6 +566,7 @@ function ClaudeAuthSection() {
     }
     setLoginLoading(false);
     setOauthUrl(null);
+    setPasteMode(false);
     setCallbackInput('');
     setCallbackStatus(null);
   };
@@ -874,8 +878,9 @@ function ClaudeAuthSection() {
             {/* Callback URL paste input */}
             <div className="bg-gray-900 rounded-lg p-3 space-y-2">
               <p className="text-xs text-gray-400">
-                After logging in on Anthropic's site, paste the authorization code (or the full
-                callback URL) here:
+                {pasteMode
+                  ? 'After approving on Anthropic\u2019s site, copy the authorization code shown on that page and paste it here:'
+                  : 'After logging in on Anthropic\u2019s site, paste the authorization code (or the full callback URL) here:'}
               </p>
               <div className="flex items-center gap-2">
                 <input
@@ -886,7 +891,11 @@ function ClaudeAuthSection() {
                     setCallbackStatus(null);
                   }}
                   className={`${inputClass} text-xs`}
-                  placeholder="Paste the authorization code or URL from Anthropic here..."
+                  placeholder={
+                    pasteMode
+                      ? 'Paste the authorization code from the Anthropic page...'
+                      : 'Paste the authorization code or callback URL from Anthropic here...'
+                  }
                   autoComplete="off"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') handleSubmitCallback();
