@@ -885,7 +885,9 @@ export interface Stmts {
   // pr_state — per-PR reviewer/check-run tracking
   upsertPrState: Stmt;
   updatePrStatePhase: Stmt;
+  attachCheckRunId: Stmt;
   completePrState: Stmt;
+  deletePrStateByRepoPr: Stmt;
   getPrState: Stmt;
   getPrStateByRepoPr: Stmt;
   getPrStateByCheckRunId: Stmt;

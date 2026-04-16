@@ -6,6 +6,7 @@ import {
   advancePhase,
   chunkAnnotations,
   finalizePhases,
+  parseSqliteTimestampMs,
   renderProgressSummary,
   resolveCheckRunAuth,
   reviewEventToConclusion,
@@ -50,7 +51,7 @@ describe('reviewEventToConclusion', () => {
 describe('renderProgressSummary', () => {
   it('renders a checklist with markers for pending / in-progress / done', () => {
     const phases: CheckRunPhase[] = [
-      { key: 'a', label: 'Context', state: 'done', elapsedMs: 1500 },
+      { key: 'a', label: 'Context', state: 'done', cumulativeMs: 1500 },
       { key: 'b', label: 'Analyze', state: 'in_progress' },
       { key: 'c', label: 'Post', state: 'pending' },
     ];
@@ -61,13 +62,26 @@ describe('renderProgressSummary', () => {
     expect(md).toMatch(/⏳ \*\*Post\*\*/);
   });
 
-  it('formats elapsed ms as sub-second / seconds / minutes', () => {
-    const make = (ms: number): CheckRunPhase[] => [
-      { key: 'x', label: 'X', state: 'done', elapsedMs: ms },
+  it('prefixes done-phase timing with `@` to mark it as a checkpoint, not a duration', () => {
+    // Two phases that finished at the same cumulative timestamp would otherwise
+    // read as identical per-phase durations, which confused readers in PR #304.
+    // The `@` prefix explicitly says "checkpoint from start."
+    const phases: CheckRunPhase[] = [
+      { key: 'a', label: 'Context', state: 'done', cumulativeMs: 30_000 },
+      { key: 'b', label: 'Analyze', state: 'done', cumulativeMs: 30_000 },
     ];
-    expect(renderProgressSummary(make(450))).toMatch(/450ms/);
-    expect(renderProgressSummary(make(1500))).toMatch(/1\.5s/);
-    expect(renderProgressSummary(make(75_000))).toMatch(/1m15s/);
+    const md = renderProgressSummary(phases);
+    expect(md).toMatch(/Context\*\* — @30\.0s/);
+    expect(md).toMatch(/Analyze\*\* — @30\.0s/);
+  });
+
+  it('formats cumulative ms as sub-second / seconds / minutes', () => {
+    const make = (ms: number): CheckRunPhase[] => [
+      { key: 'x', label: 'X', state: 'done', cumulativeMs: ms },
+    ];
+    expect(renderProgressSummary(make(450))).toMatch(/@450ms/);
+    expect(renderProgressSummary(make(1500))).toMatch(/@1\.5s/);
+    expect(renderProgressSummary(make(75_000))).toMatch(/@1m15s/);
   });
 
   it('renders an optional footer', () => {
@@ -86,11 +100,11 @@ describe('advancePhase', () => {
     expect(byKey.post.state).toBe('pending');
   });
 
-  it('fills elapsedMs on phases that transitioned to done', () => {
+  it('fills cumulativeMs on phases that transitioned to done', () => {
     const phases = advancePhase(DEFAULT_REVIEWER_PHASES, 'post', 10_000, 5_000);
     const done = phases.filter((p) => p.state === 'done');
     expect(done.length).toBe(3);
-    expect(done.every((p) => typeof p.elapsedMs === 'number')).toBe(true);
+    expect(done.every((p) => typeof p.cumulativeMs === 'number')).toBe(true);
   });
 
   it('does not mutate the input array', () => {
@@ -101,10 +115,10 @@ describe('advancePhase', () => {
 });
 
 describe('finalizePhases', () => {
-  it('marks every phase done with elapsed', () => {
+  it('marks every phase done with cumulative timing', () => {
     const final = finalizePhases(DEFAULT_REVIEWER_PHASES, 10_000, 0);
     expect(final.every((p) => p.state === 'done')).toBe(true);
-    expect(final.every((p) => typeof p.elapsedMs === 'number')).toBe(true);
+    expect(final.every((p) => typeof p.cumulativeMs === 'number')).toBe(true);
   });
 });
 
@@ -132,6 +146,37 @@ describe('chunkAnnotations', () => {
     expect(chunks.length).toBe(2);
     expect(chunks[0].length).toBe(50);
     expect(chunks[1].length).toBe(10);
+  });
+});
+
+describe('parseSqliteTimestampMs', () => {
+  // SQLite's `datetime('now')` returns `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`),
+  // which V8's `Date` parser treats as LOCAL time. The TZ bug from PR #304's
+  // review was that elapsed timing was wrong by the host's UTC offset.
+  // `parseSqliteTimestampMs` normalizes the legacy format so it parses as UTC
+  // on every host and accepts the new strftime ISO-with-Z format unchanged.
+  it('parses the new strftime ISO format with Z as UTC', () => {
+    const ms = parseSqliteTimestampMs('2026-04-16T20:00:00.000Z');
+    expect(ms).toBe(Date.UTC(2026, 3, 16, 20, 0, 0));
+  });
+
+  it('parses the legacy `YYYY-MM-DD HH:MM:SS` format as UTC (NOT local time)', () => {
+    // The bug: prior code did `new Date(s).getTime()` which on a non-UTC host
+    // would shift this by the offset. Helper must always return the UTC value.
+    const ms = parseSqliteTimestampMs('2026-04-16 20:00:00');
+    expect(ms).toBe(Date.UTC(2026, 3, 16, 20, 0, 0));
+  });
+
+  it('parses the legacy format with sub-second precision', () => {
+    const ms = parseSqliteTimestampMs('2026-04-16 20:00:00.500');
+    expect(ms).toBe(Date.UTC(2026, 3, 16, 20, 0, 0, 500));
+  });
+
+  it('returns null for nullish, empty, or unparseable input', () => {
+    expect(parseSqliteTimestampMs(null)).toBeNull();
+    expect(parseSqliteTimestampMs(undefined)).toBeNull();
+    expect(parseSqliteTimestampMs('')).toBeNull();
+    expect(parseSqliteTimestampMs('not a date')).toBeNull();
   });
 });
 

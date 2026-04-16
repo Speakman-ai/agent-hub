@@ -74,6 +74,104 @@ describe('pr_state — upsert + lookup', () => {
     expect(row?.completed_at).toBeNull();
   });
 
+  it('upsert preserves started_at when head_sha is unchanged (same dispatch)', async () => {
+    const stmts = getStmts();
+    // Seed (same as ensureCheckRunForPR's first call: check_run_id=null)
+    stmts.upsertPrState.run(
+      ROW_ID,
+      'proj-1',
+      'owner/repo',
+      123,
+      'sha-same',
+      null,
+      'queued',
+      'queue',
+    );
+    const seedRow = stmts.getPrState.get(ROW_ID) as Record<string, unknown> | undefined;
+    const seedStartedAt = seedRow?.started_at as string;
+    expect(seedStartedAt).toBeTruthy();
+
+    // Wait long enough that a fresh `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
+    // would differ from the seed (sub-second precision).
+    await new Promise((r) => setTimeout(r, 25));
+
+    // Re-upsert with the SAME head_sha — simulates the pre-fix double-write.
+    // After the fix, this preserves started_at; before the fix, it overwrote it.
+    stmts.upsertPrState.run(
+      ROW_ID,
+      'proj-1',
+      'owner/repo',
+      123,
+      'sha-same',
+      9999,
+      'queued',
+      'queue',
+    );
+    const after = stmts.getPrState.get(ROW_ID) as Record<string, unknown> | undefined;
+    expect(after?.started_at).toBe(seedStartedAt);
+  });
+
+  it('upsert stores started_at as ISO-8601 with explicit `Z` (UTC-safe parsing)', () => {
+    const stmts = getStmts();
+    stmts.upsertPrState.run(
+      ROW_ID,
+      'proj-1',
+      'owner/repo',
+      123,
+      'sha-aaa',
+      null,
+      'queued',
+      'queue',
+    );
+    const row = stmts.getPrState.get(ROW_ID) as Record<string, unknown> | undefined;
+    const startedAt = row?.started_at as string;
+    // Format: YYYY-MM-DDTHH:MM:SS.fffZ — trailing `Z` is the load-bearing bit
+    // because V8's Date parser treats space-separated values as LOCAL time.
+    expect(startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/);
+  });
+
+  it('attachCheckRunId updates only check_run_id (does NOT touch started_at)', async () => {
+    const stmts = getStmts();
+    stmts.upsertPrState.run(
+      ROW_ID,
+      'proj-1',
+      'owner/repo',
+      123,
+      'sha-aaa',
+      null,
+      'queued',
+      'queue',
+    );
+    const seedRow = stmts.getPrState.get(ROW_ID) as Record<string, unknown> | undefined;
+    const seedStartedAt = seedRow?.started_at as string;
+
+    await new Promise((r) => setTimeout(r, 25));
+
+    stmts.attachCheckRunId.run(7777, ROW_ID);
+    const row = stmts.getPrState.get(ROW_ID) as Record<string, unknown> | undefined;
+    expect(row?.check_run_id).toBe(7777);
+    expect(row?.started_at).toBe(seedStartedAt);
+    expect(row?.head_sha).toBe('sha-aaa');
+    expect(row?.status).toBe('queued');
+  });
+
+  it('deletePrStateByRepoPr removes the row (PR close cleanup)', () => {
+    const stmts = getStmts();
+    stmts.upsertPrState.run(
+      ROW_ID,
+      'proj-1',
+      'owner/repo',
+      123,
+      'sha-aaa',
+      9999,
+      'queued',
+      'queue',
+    );
+    stmts.deletePrStateByRepoPr.run('owner/repo', 123);
+    const row = stmts.getPrState.get(ROW_ID) as Record<string, unknown> | undefined;
+    expect(row).toBeUndefined();
+  });
+
   it('looks up by (repo_full_name, pr_number) for webhook rehydration', () => {
     const stmts = getStmts();
     stmts.upsertPrState.run(

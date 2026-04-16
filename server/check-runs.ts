@@ -23,8 +23,17 @@ export interface CheckRunPhase {
   label: string;
   /** `pending` | `in_progress` | `done`. */
   state: 'pending' | 'in_progress' | 'done';
-  /** Elapsed ms for this phase (filled when state=done). */
-  elapsedMs?: number;
+  /**
+   * Cumulative elapsed ms from the reviewer dispatch start to the moment this
+   * phase transitioned to `done`. NOT the per-phase duration — see the
+   * rendered "@30.0s" prefix in `renderProgressSummary` for unambiguous
+   * read-out. We intentionally use a single baseline (one `started_at` in
+   * `pr_state`) instead of per-phase start columns because the panel only
+   * needs to show "this phase finished N seconds in," not "this phase took N
+   * seconds." Per-phase durations would require additional schema columns
+   * for marginal UX improvement.
+   */
+  cumulativeMs?: number;
 }
 
 export interface CheckRunAnnotation {
@@ -84,9 +93,12 @@ export function renderProgressSummary(
 
   for (const p of phases) {
     const marker = p.state === 'done' ? '✅' : p.state === 'in_progress' ? '🔄' : '⏳';
+    // `@N.Ns` makes it clear this is a checkpoint timestamp from the reviewer
+    // start — not the phase's own duration. Avoids the ambiguity flagged in
+    // PR #304 review where readers mistook cumulative timing for per-phase.
     const timing =
-      p.state === 'done' && typeof p.elapsedMs === 'number'
-        ? ` — ${formatElapsed(p.elapsedMs)}`
+      p.state === 'done' && typeof p.cumulativeMs === 'number'
+        ? ` — @${formatElapsed(p.cumulativeMs)}`
         : p.state === 'in_progress'
           ? ' — running…'
           : '';
@@ -246,7 +258,11 @@ export const DEFAULT_REVIEWER_PHASES: CheckRunPhase[] = [
 /**
  * Advance the phase list so a given `key` is marked `in_progress` and all
  * previous phases become `done`. Returns a NEW array (non-mutating) and fills
- * `elapsedMs` for phases transitioning from in_progress → done.
+ * `cumulativeMs` for phases transitioning from pending/in_progress → done.
+ *
+ * Note: `cumulativeMs` is the checkpoint timestamp (now - startedAt), NOT the
+ * per-phase duration. The render path prefixes it with "@" to make that
+ * explicit (e.g. "✅ Gather context — @12.0s"). See `CheckRunPhase.cumulativeMs`.
  */
 export function advancePhase(
   phases: CheckRunPhase[],
@@ -254,8 +270,6 @@ export function advancePhase(
   now: number,
   startedAt: number,
 ): CheckRunPhase[] {
-  // Elapsed for each completed phase is from `startedAt` until now for the
-  // phase that transitions; simpler-and-fine heuristic for our live panel.
   let reached = false;
   return phases.map((p) => {
     if (reached) return { ...p, state: 'pending' };
@@ -266,13 +280,15 @@ export function advancePhase(
     return {
       ...p,
       state: 'done',
-      elapsedMs: p.elapsedMs ?? Math.max(0, now - startedAt),
+      cumulativeMs: p.cumulativeMs ?? Math.max(0, now - startedAt),
     };
   });
 }
 
 /**
- * Finalize the phase list: every phase marked `done` with elapsed filled.
+ * Finalize the phase list: every phase marked `done` with `cumulativeMs`
+ * filled. Like `advancePhase`, the value is the checkpoint timestamp from the
+ * reviewer start, not per-phase duration.
  */
 export function finalizePhases(
   phases: CheckRunPhase[],
@@ -282,6 +298,33 @@ export function finalizePhases(
   return phases.map((p) => ({
     ...p,
     state: 'done',
-    elapsedMs: p.elapsedMs ?? Math.max(0, now - startedAt),
+    cumulativeMs: p.cumulativeMs ?? Math.max(0, now - startedAt),
   }));
+}
+
+/**
+ * Parse a SQLite timestamp string into ms since epoch, treating it as UTC even
+ * when the SQLite default `datetime('now')` format (no `T`, no `Z`) is used.
+ *
+ * V8's `Date` parser treats `YYYY-MM-DD HH:MM:SS` as LOCAL time — so on a
+ * non-UTC host, every elapsed-time computation against a `pr_state.started_at`
+ * stored with the legacy format would be off by the host's UTC offset. New
+ * rows use `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` which parses correctly
+ * everywhere, but this helper keeps the JS side defensive against legacy data
+ * and any future writers that forget the `Z`.
+ *
+ * Returns `null` for nullish/empty/unparseable input so callers can fall back
+ * to a sensible default (typically `Date.now()`).
+ */
+export function parseSqliteTimestampMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  // Already ISO with timezone — fast path.
+  if (/[Tt].*([Zz]|[+-]\d{2}:?\d{2})$/.test(value)) {
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  // Legacy `YYYY-MM-DD HH:MM:SS[.fff]` — treat as UTC by reformatting.
+  const normalized = value.replace(' ', 'T') + 'Z';
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? ms : null;
 }

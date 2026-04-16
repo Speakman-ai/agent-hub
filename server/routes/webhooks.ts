@@ -13,6 +13,7 @@ import {
   advancePhase,
   createCheckRun,
   finalizePhases,
+  parseSqliteTimestampMs,
   renderProgressSummary,
   updateCheckRun,
   type CheckRunPhase,
@@ -619,6 +620,34 @@ export function dispatchReviewFeedback(
 const REVIEWER_DEBOUNCE_MS = 30_000;
 const reviewerDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/**
+ * Without a fine-grained signal from the reviewer agent, we time-trigger the
+ * `context → analyze` phase advance so the live panel actually animates
+ * mid-run instead of jumping from "context spinning" straight to "all done."
+ * Picked to land *after* a typical `gh pr diff` + first file read finish but
+ * well before the `/api/pr/review` POST. Cancelled when the review completes.
+ */
+const ANALYZE_PHASE_DELAY_MS = 15_000;
+const analyzePhaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function analyzePhaseTimerKey(repoFullName: string, prNumber: number): string {
+  return `${repoFullName}#${prNumber}`;
+}
+
+/**
+ * Cancel a pending `analyze` phase advance for a PR. Called from
+ * `pr-actions.ts` when the formal review lands so we don't stomp on the
+ * completed Check Run with a late-firing PATCH.
+ */
+export function cancelAnalyzePhaseTimer(repoFullName: string, prNumber: number): void {
+  const key = analyzePhaseTimerKey(repoFullName, prNumber);
+  const t = analyzePhaseTimers.get(key);
+  if (t) {
+    clearTimeout(t);
+    analyzePhaseTimers.delete(key);
+  }
+}
+
 interface ReviewerDispatchOpts {
   prUrl: string;
   prNumber: number;
@@ -711,16 +740,12 @@ async function ensureCheckRunForPR(
       );
       return;
     }
-    stmts.upsertPrState.run(
-      prStateId,
-      project.id,
-      opts.repoFullName,
-      opts.prNumber,
-      opts.headSha,
-      created.id,
-      'queued',
-      'queue',
-    );
+    // Use the dedicated `attachCheckRunId` statement instead of a second
+    // `upsertPrState` so that `started_at` is preserved (the upsert UPDATE
+    // branch would otherwise reset the baseline used for elapsed timing).
+    if (stmts.attachCheckRunId) {
+      stmts.attachCheckRunId.run(created.id, prStateId);
+    }
     console.log(
       `[CheckRun] Created Check Run #${created.id} for PR #${opts.prNumber} (${opts.repoFullName} @ ${opts.headSha.substring(0, 7)})`,
     );
@@ -752,12 +777,16 @@ export async function patchCheckRunPhase(
 
   const row = stmts.getPrStateByRepoPr.get(repoFullName, prNumber) as PrStateRow | undefined;
   if (!row?.check_run_id) return;
+  // Once the run is completed the PATCH will 422; skip the noisy attempt.
+  // Also avoids a race where a slow `analyze` setTimeout fires after the
+  // reviewer already posted its final review.
+  if (row.status === 'completed') return;
 
   const [owner, repo] = repoFullName.split('/');
   if (!owner || !repo) return;
 
   const prStateId = `${repoFullName}#${prNumber}`;
-  const startedAtMs = row.started_at ? new Date(row.started_at).getTime() : Date.now();
+  const startedAtMs = parseSqliteTimestampMs(row.started_at) ?? Date.now();
   const phases = advancePhase(DEFAULT_REVIEWER_PHASES, phaseKey, Date.now(), startedAtMs);
   const summary = renderProgressSummary(phases, { headline: opts.headline });
 
@@ -847,6 +876,25 @@ async function runReviewerDispatch(
   }).catch(() => {
     /* best-effort */
   });
+
+  // Schedule the `context → analyze` transition so the panel actually animates
+  // mid-run. Cancelled by `cancelAnalyzePhaseTimer` when the formal review
+  // lands (and `patchCheckRunPhase` itself short-circuits on completed runs as
+  // a defense-in-depth backstop against the race window).
+  const analyzeKey = analyzePhaseTimerKey(opts.repoFullName, opts.prNumber);
+  const existingAnalyze = analyzePhaseTimers.get(analyzeKey);
+  if (existingAnalyze) clearTimeout(existingAnalyze);
+  const analyzeTimer = setTimeout(() => {
+    analyzePhaseTimers.delete(analyzeKey);
+    patchCheckRunPhase(deps, opts.repoFullName, opts.prNumber, 'analyze', {
+      headline: `Reviewing PR #${opts.prNumber} — analyzing diff`,
+    }).catch(() => {
+      /* best-effort */
+    });
+  }, ANALYZE_PHASE_DELAY_MS);
+  // Don't keep the Node event loop alive just for the panel animation.
+  if (typeof analyzeTimer.unref === 'function') analyzeTimer.unref();
+  analyzePhaseTimers.set(analyzeKey, analyzeTimer);
 
   const sessionId = crypto.randomUUID();
   const engine = reviewer.engine || 'claude-code';
@@ -944,6 +992,8 @@ Do **NOT** edit code. Do **NOT** merge. GitHub's native auto-merge handles landi
 export function _clearReviewerDebounce(): void {
   for (const t of reviewerDebounceTimers.values()) clearTimeout(t);
   reviewerDebounceTimers.clear();
+  for (const t of analyzePhaseTimers.values()) clearTimeout(t);
+  analyzePhaseTimers.clear();
 }
 
 // ─── Review Comment Batching ────────────────────────────────────
@@ -1461,6 +1511,22 @@ function handleWebhookPrClosed(
   const tryAutonomousDispatch = deps.tryAutonomousDispatch as () => void;
   const merged = payload.pull_request?.merged === true;
   const prNumber = payload.pull_request?.number;
+  const repoFullName = payload.repository?.full_name;
+
+  // Drop the per-PR check-run tracking row once the PR is terminal — keeps the
+  // table tidy and cancels any pending in-memory phase timers so a late
+  // setTimeout doesn't PATCH a check on a closed PR. Bounded by the unique
+  // (repo_full_name, pr_number) index, so this is housekeeping not safety.
+  if (repoFullName && typeof prNumber === 'number') {
+    cancelAnalyzePhaseTimer(repoFullName, prNumber);
+    if (stmts.deletePrStateByRepoPr) {
+      try {
+        stmts.deletePrStateByRepoPr.run(repoFullName, prNumber);
+      } catch {
+        /* non-critical */
+      }
+    }
+  }
 
   if (merged) {
     const doneCol = cols.find((c) => c.name.toLowerCase() === 'done');

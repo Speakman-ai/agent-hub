@@ -16,9 +16,11 @@ import {
   DEFAULT_REVIEWER_PHASES,
   completeCheckRun,
   finalizePhases,
+  parseSqliteTimestampMs,
   renderProgressSummary,
   reviewEventToConclusion,
 } from '../check-runs.js';
+import { cancelAnalyzePhaseTimer } from './webhooks.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -85,15 +87,19 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     event: PrReviewBody['event'],
     body: string | undefined,
   ): Promise<void> {
+    const repoFullName = `${pr.owner}/${pr.repo}`;
+    // Cancel any pending `analyze` phase advance up front — even if the
+    // GitHub completion call below fails, we don't want a late PATCH to
+    // animate the panel after the conclusion has been set elsewhere.
+    cancelAnalyzePhaseTimer(repoFullName, Number(pr.number));
     try {
       if (!stmts?.getPrStateByRepoPr) return;
-      const repoFullName = `${pr.owner}/${pr.repo}`;
       const row = stmts.getPrStateByRepoPr.get(repoFullName, Number(pr.number)) as
         | PrStateRow
         | undefined;
       if (!row?.check_run_id) return;
 
-      const startedAtMs = row.started_at ? new Date(row.started_at).getTime() : Date.now();
+      const startedAtMs = parseSqliteTimestampMs(row.started_at) ?? Date.now();
       const phases = finalizePhases(DEFAULT_REVIEWER_PHASES, Date.now(), startedAtMs);
       const conclusion = reviewEventToConclusion(event);
 

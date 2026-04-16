@@ -1459,25 +1459,59 @@ function initDb(dataDir: string): void {
     ),
 
     // pr_state — per-PR reviewer/check-run tracking
+    //
+    // started_at is stored as ISO 8601 with explicit `Z` so that JS
+    // `new Date(row.started_at).getTime()` parses it as UTC on every host.
+    // SQLite's `datetime('now')` returns `YYYY-MM-DD HH:MM:SS` (no `T`, no `Z`),
+    // which V8 treats as LOCAL time — that's how prior runs computed wrong
+    // elapsed values on non-UTC machines. The strftime form fixes that.
+    //
+    // Note the `started_at` clause in the UPDATE branch: we ONLY rebase the
+    // baseline when this is a brand-new commit (different head_sha). Repeated
+    // upserts during the same dispatch (e.g. seed → attach check_run_id)
+    // preserve the original baseline so per-phase elapsed math stays honest.
     upsertPrState: db.prepare(
       `INSERT INTO pr_state (id, project_id, repo_full_name, pr_number, head_sha, check_run_id, status, phase, started_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
        ON CONFLICT(repo_full_name, pr_number) DO UPDATE SET
          project_id = excluded.project_id,
          head_sha = excluded.head_sha,
          check_run_id = excluded.check_run_id,
          status = excluded.status,
          phase = excluded.phase,
-         started_at = datetime('now'),
-         completed_at = NULL,
-         conclusion = NULL,
+         started_at = CASE
+           WHEN excluded.head_sha IS NOT pr_state.head_sha
+             THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+           ELSE pr_state.started_at
+         END,
+         completed_at = CASE
+           WHEN excluded.head_sha IS NOT pr_state.head_sha THEN NULL
+           ELSE pr_state.completed_at
+         END,
+         conclusion = CASE
+           WHEN excluded.head_sha IS NOT pr_state.head_sha THEN NULL
+           ELSE pr_state.conclusion
+         END,
          updated_at = datetime('now')`,
     ),
     updatePrStatePhase: db.prepare(
       `UPDATE pr_state SET phase = ?, status = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
+    /**
+     * Attach the GitHub Check Run id after the POST /check-runs call lands.
+     * Distinct from `upsertPrState` so the second write of an `ensureCheckRunForPR`
+     * dispatch does NOT touch `started_at` (which would skew elapsed timing).
+     */
+    attachCheckRunId: db.prepare(
+      `UPDATE pr_state SET check_run_id = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
     completePrState: db.prepare(
       `UPDATE pr_state SET status = 'completed', conclusion = ?, phase = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+    ),
+    /** Cleanup hook: PR closed/merged → drop the row. Bounded already by the
+     * unique (repo_full_name, pr_number) index, but keeps the table tidy. */
+    deletePrStateByRepoPr: db.prepare(
+      'DELETE FROM pr_state WHERE repo_full_name = ? AND pr_number = ?',
     ),
     getPrState: db.prepare('SELECT * FROM pr_state WHERE id = ?'),
     getPrStateByRepoPr: db.prepare(
