@@ -1987,6 +1987,7 @@ export default function App() {
                 agentColor={activeAgent?.color}
                 skills={skills}
                 askMode={sessionAskMode}
+                draftKey={activeSessionId || activeAgentId || 'none'}
               />
             </>
           )}

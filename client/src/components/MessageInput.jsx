@@ -19,8 +19,18 @@ export default function MessageInput({
   agentColor,
   skills,
   askMode,
+  draftKey,
 }) {
+  // Per-session (per-draftKey) draft store. Lives for the component's lifetime
+  // so switching agents/sessions preserves each composer's unsent text.
+  // When `draftKey` changes, we stash the current draft under the previous key
+  // and load the new key's draft (empty if none). This uses React's
+  // "set state during render" pattern to keep the swap in sync with the prop.
+  const draftsRef = useRef(new Map());
+  const [activeKey, setActiveKey] = useState(draftKey);
+  // Fresh Map on mount means no stored draft is reachable here — start empty.
   const [value, setValue] = useState('');
+
   const [images, setImages] = useState([]); // [{id, name, dataUrl, file?, type?}]
   const [dragOver, setDragOver] = useState(false);
   const textareaRef = useRef(null);
@@ -31,6 +41,29 @@ export default function MessageInput({
   const [slashIndex, setSlashIndex] = useState(0); // highlighted item
   const [slashStart, setSlashStart] = useState(null); // cursor pos of the '/'
   const popupRef = useRef(null);
+
+  // Swap draft when draftKey changes (during render, before any effects run)
+  if (activeKey !== draftKey) {
+    draftsRef.current.set(activeKey, value);
+    setValue(draftsRef.current.get(draftKey) ?? '');
+    setActiveKey(draftKey);
+    // Reset transient slash-autocomplete state when switching sessions
+    setSlashQuery(null);
+    setSlashStart(null);
+    setSlashIndex(0);
+    // Clear media attachments on session switch. Per-session image stashing is
+    // deferred (blob URLs complicate it); for now keep the composer's attach
+    // state in lockstep with the text draft so A's thumbnails don't bleed into
+    // B's composer. Revoke any active blob URLs first to avoid leaks.
+    if (images.length > 0) {
+      for (const img of images) {
+        if (img.type === 'video' && img.dataUrl?.startsWith('blob:')) {
+          URL.revokeObjectURL(img.dataUrl);
+        }
+      }
+      setImages([]);
+    }
+  }
 
   useEffect(() => {
     if (textareaRef.current) {
