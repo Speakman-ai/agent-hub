@@ -66,7 +66,6 @@ interface DelegateTask {
 interface BuildEnrichedPromptOptions {
   useWorktree?: boolean;
   isFirstMessage?: boolean;
-  isAutonomous?: boolean;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -260,9 +259,6 @@ When creating cards: use a **concise title** (under 60 chars) summarizing the pr
   // Static instructional blocks — only on first message to save tokens
   if (isFirstMessage) {
     if (isGitHubConnected) {
-      const reviewer = agent.reviewer || project.defaultReviewer || '';
-      const reviewerNote = reviewer ? ` Add \`--reviewer ${reviewer}\` to \`gh pr create\`.` : '';
-
       prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
 This project is connected to GitHub. Follow this lifecycle for changes:
 
@@ -273,22 +269,14 @@ This project is connected to GitHub. Follow this lifecycle for changes:
    Move to "In Progress" when you begin.
 2. **Branch**: \`git checkout main && git pull && git checkout -b feature/<name>\`${options.useWorktree ? ' (worktree — safe to branch here)' : ''}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
-4. **Test & Lint**: ${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding${
-        options.isAutonomous
-          ? `
-5. **Commit & Push**: \`git push -u origin <branch>\`
-6. **Create PR**: \`gh pr create --title "<concise summary of what changed>" --body "## Summary\\n<1-3 bullets: what changed and why>\\n\\n## Acceptance Criteria\\n<copy from ticket — check off each item met>\\n\\n## Test plan\\n<how it was verified>"\`${reviewerNote}
-   The PR title must be concise (under 70 chars) and describe the **solution**, not restate the problem. The body must reference the ticket's acceptance criteria and confirm each is met.
-7. **CI + Hand Off**: Fix CI failures, link PR to card (\`PUT .../cards/:id {pr_url}\`), move card to "Review" — **you're done**, the server auto-triggers lead review`
-          : `
-5. **Commit**: Commit your changes to the feature branch. Do NOT push or create a PR — the server handles that automatically after your session ends.`
-      }
+4. **Test & Lint**: ${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding
+5. **Commit**: Commit your changes to the feature branch. **Do NOT push or run \`gh pr create\`** — PR creation is owned by the server. If your session is linked to a kanban card, the server will push, open the PR, and move the card to "Review" automatically when your session ends. If your session is ad-hoc (no card), the user will get a "Create PR" button after your session ends and decide from there.
 
-**Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit, push. No new cards/branches/PRs. Do NOT merge.
+**Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit. No new cards/branches/PRs. Do NOT push or merge.
 **Shortcuts**: Trivial fixes skip card creation. Found a bug? Create "Backlog" card.`;
     } else if (options.useWorktree) {
       prompt += `\n\n## Git Workflow
-You are in a git worktree. Never commit to main. Commit to the current feature branch. Use \`gh pr create\` for PRs against main.`;
+You are in a git worktree. Never commit to main. Commit to the current feature branch. Do NOT push or run \`gh pr create\` — the server owns PR creation.`;
     }
 
     prompt += `\n\n## Memory Instructions
@@ -553,7 +541,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       {
         useWorktree: !!session!.use_worktree,
         isFirstMessage,
-        isAutonomous: autonomousProjects.has(project.id),
         _getEnrichedAgent: getEnrichedAgent,
       },
     );

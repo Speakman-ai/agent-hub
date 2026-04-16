@@ -202,7 +202,7 @@ describe('buildEnrichedPrompt — first message gating', () => {
   });
 });
 
-describe('buildEnrichedPrompt — autonomous PR steps gating', () => {
+describe('buildEnrichedPrompt — server owns PR creation', () => {
   const gitTmp = path.join(os.tmpdir(), `prompt-auto-test-${Date.now()}`);
 
   beforeEach(() => {
@@ -221,41 +221,47 @@ describe('buildEnrichedPrompt — autonomous PR steps gating', () => {
     rmSync(gitTmp, { recursive: true, force: true });
   });
 
-  it('includes gh pr create steps when isAutonomous is true', () => {
+  it('never tells the agent to run `gh pr create` as an imperative', () => {
     const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
       isFirstMessage: true,
-      isAutonomous: true,
     });
-    expect(prompt).toContain('gh pr create');
-    expect(prompt).toContain('Create PR');
-    expect(prompt).toContain('CI + Hand Off');
+    // Legacy autonomous prompt had these imperative instructions — must be gone
+    expect(prompt).not.toMatch(/\*\*Create PR\*\*:\s*`gh pr create/);
+    expect(prompt).not.toMatch(/CI \+ Hand Off/);
+    expect(prompt).not.toMatch(/Commit & Push/);
+    // The phrase `git push -u origin` was the "push your branch" step — also gone
+    expect(prompt).not.toContain('git push -u origin');
   });
 
-  it('excludes gh pr create steps when isAutonomous is false', () => {
+  it('explicitly forbids pushing and PR creation', () => {
     const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
       isFirstMessage: true,
-      isAutonomous: false,
     });
-    expect(prompt).not.toContain('gh pr create');
-    expect(prompt).not.toContain('Create PR');
-    expect(prompt).not.toContain('CI + Hand Off');
+    expect(prompt).toMatch(/Do NOT push.*gh pr create/);
+    expect(prompt).toMatch(/server (will|handles|owns)/i);
   });
 
-  it('excludes gh pr create steps when isAutonomous is omitted', () => {
+  it('mentions both PR creation paths (card-linked auto, ad-hoc button)', () => {
     const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
       isFirstMessage: true,
     });
-    expect(prompt).not.toContain('gh pr create');
-    expect(prompt).not.toContain('CI + Hand Off');
+    // Card-linked path: server opens PR when session ends
+    expect(prompt).toMatch(/kanban card/i);
+    expect(prompt).toMatch(/server will push.*open the PR/i);
+    // Ad-hoc path: "Create PR" button appears after session
+    expect(prompt).toMatch(/ad-hoc.*Create PR.*button/i);
   });
 
-  it('tells non-autonomous agents to commit without pushing', () => {
-    const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
+  it('worktree-only fallback (no GitHub remote) also forbids pushing and PR creation', () => {
+    // makeProject defaults to tmpBase (no git remote → isGitHubConnected = false)
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: true,
-      isAutonomous: false,
+      useWorktree: true,
     });
-    expect(prompt).toContain('Do NOT push or create a PR');
-    expect(prompt).toContain('server handles that automatically');
+    expect(prompt).toContain('Git Workflow');
+    expect(prompt).toMatch(/Do NOT push.*gh pr create/);
+    // Legacy worktree fallback told agents "Use `gh pr create` for PRs" — must be gone
+    expect(prompt).not.toMatch(/Use `gh pr create`/);
   });
 });
 

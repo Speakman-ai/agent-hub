@@ -125,32 +125,75 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     });
   });
 
-  it('broadcasts auto_pr_created instead of changes_ready when a PR already exists', async () => {
-    mockExec({
-      'git remote -v': { stdout: 'origin\thttps://github.com/test/repo.git (fetch)\n' },
-      'git status --porcelain': { stdout: 'M file.ts\n' },
-      'git log @{upstream}..HEAD': { stdout: '' },
-      'git rev-parse --abbrev-ref HEAD': { stdout: 'feature/existing-pr\n' },
-      'gh pr view': { stdout: 'https://github.com/test/repo/pull/42\n' },
+  it('pushes the fix and broadcasts auto_pr_created (no new PR) when an open PR already exists', async () => {
+    // Regression: ad-hoc session fixing CI / review comments on an existing
+    // PR. Agent committed but did not push. We must push so GitHub sees the
+    // fix, and we must NOT open a new PR — the existing one gets reused.
+    const execCalls: string[] = [];
+    const mockStmtsAdHoc = {
+      getKanbanCardBySession: { get: vi.fn(() => undefined) },
+      getSession: { get: vi.fn(() => ({ name: 'Ad-hoc fix session' })) },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: mockStmtsAdHoc as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
     });
+
+    (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/existing-pr\n');
+        if (cmd.startsWith('gh pr view')) return ok('https://github.com/test/repo/pull/42\n');
+        if (cmd.startsWith('gh pr create')) {
+          // Simulate gh CLI's actual error when the branch already has a PR.
+          return fail(
+            'a pull request for branch "feature/existing-pr" already exists: https://github.com/test/repo/pull/42',
+          );
+        }
+        // git config / git add / git commit / git push — succeed silently.
+        return ok('');
+      },
+    );
 
     const project = { id: 'test', cwd: '/repo' } as never;
     const agent = { name: 'test-agent', role: 'dev' } as never;
 
     await autoCommitAndPR('sess-1', 'agent-1', project, agent, '/worktree', '');
 
-    // Should NOT broadcast changes_ready
+    // The bug fix: branch must be pushed so GitHub sees the agent's commit.
+    const pushCalls = execCalls.filter((c) => c.startsWith('git push'));
+    expect(pushCalls.length).toBeGreaterThan(0);
+    expect(pushCalls[0]).toContain('feature/existing-pr');
+
+    // No `changes_ready` banner — there's already a PR, button isn't useful.
     const changesReadyEvents = mockBroadcast.mock.calls.filter(
       (c: Array<Record<string, string>>) => c[0]?.type === 'changes_ready',
     );
     expect(changesReadyEvents).toHaveLength(0);
 
-    // Should broadcast auto_pr_created
+    // The existing PR URL is surfaced via auto_pr_created — no new PR opened.
     const autoPrEvents = mockBroadcast.mock.calls.filter(
       (c: Array<Record<string, string>>) => c[0]?.type === 'auto_pr_created',
     );
-    expect(autoPrEvents).toHaveLength(1);
-    expect(autoPrEvents[0][0].prUrl).toBe('https://github.com/test/repo/pull/42');
+    expect(autoPrEvents.length).toBeGreaterThan(0);
+    const lastPrUrl = autoPrEvents[autoPrEvents.length - 1][0].prUrl;
+    expect(lastPrUrl).toBe('https://github.com/test/repo/pull/42');
   });
 
   it('sets git identity before commit when not configured in worktree', async () => {

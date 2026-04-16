@@ -413,53 +413,58 @@ export async function autoCommitAndPR(
 
     const card = d.stmts.getKanbanCardBySession?.get(sessionId) as KanbanCardRow | undefined;
 
-    // Ad-hoc sessions (no kanban card): broadcast changes_ready and let the
-    // user decide whether to create a ticket + PR via the UI.
+    // Ad-hoc sessions (no kanban card): two sub-cases.
+    //   1. Existing PR on this branch → agent was likely fixing CI or a
+    //      reviewer comment. Push (and commit if needed) so GitHub sees the
+    //      fix. No new PR is opened.
+    //   2. No existing PR → broadcast `changes_ready` so the "Create PR"
+    //      button surfaces in the UI for the user to decide.
     if (!card) {
       const changes = await checkWorktreeChanges(effectiveCwd);
-      if (changes.hasUncommitted || changes.hasUnpushed) {
-        // Check if a PR already exists for this branch — if so, don't show the
-        // "Create ticket & PR" banner (clicking it would fail with 422).
-        try {
-          const { stdout: prOut } = await execAsync(
-            `gh pr view --json url,state --jq 'select(.state == "OPEN") | .url'`,
-            { cwd: effectiveCwd, timeout: 15000 },
-          );
-          const existingPrUrl = prOut.trim();
-          if (existingPrUrl) {
-            console.log(
-              `[auto-commit] Session ${sessionId} — PR already exists (${existingPrUrl}), skipping changes_ready`,
-            );
-            d.stmts.clearSessionChangesReady.run(sessionId);
-            d.broadcast({
-              type: 'auto_pr_created',
-              sessionId,
-              agentId,
-              prUrl: existingPrUrl,
-              cardTitle: '',
-            });
-            return;
-          }
-        } catch {
-          // No open PR — fall through to show the banner
-        }
-
-        console.log(
-          `[auto-commit] Session ${sessionId} — ad-hoc session with changes, broadcasting changes_ready`,
-        );
-        const changesReadyData = {
-          agentId,
-          branch: changes.branch,
-          hasUncommitted: changes.hasUncommitted,
-          hasUnpushed: changes.hasUnpushed,
-        };
-        d.stmts.updateSessionChangesReady.run(JSON.stringify(changesReadyData), sessionId);
-        d.broadcast({
-          type: 'changes_ready',
-          sessionId,
-          ...changesReadyData,
-        });
+      if (!changes.hasUncommitted && !changes.hasUnpushed) {
+        return;
       }
+
+      // Does an open PR already exist for this branch?
+      let existingPrUrl: string | null = null;
+      try {
+        const { stdout: prOut } = await execAsync(
+          `gh pr view --json url,state --jq 'select(.state == "OPEN") | .url'`,
+          { cwd: effectiveCwd, timeout: 15000 },
+        );
+        existingPrUrl = prOut.trim() || null;
+      } catch {
+        // No open PR for this branch — fall through to the banner path.
+      }
+
+      if (existingPrUrl) {
+        console.log(
+          `[auto-commit] Session ${sessionId} — ad-hoc with existing PR (${existingPrUrl}), pushing fix`,
+        );
+        // Reuse the card-driven path with no card: it commits (if needed),
+        // pushes the branch, and gracefully handles "PR already exists" by
+        // broadcasting `auto_pr_created` with the existing URL via the catch
+        // branch in commitPushAndCreatePR. No new PR is opened.
+        await commitPushAndCreatePR(sessionId, agentId, project, agent, effectiveCwd, undefined);
+        d.stmts.clearSessionChangesReady.run(sessionId);
+        return;
+      }
+
+      console.log(
+        `[auto-commit] Session ${sessionId} — ad-hoc session with changes, broadcasting changes_ready`,
+      );
+      const changesReadyData = {
+        agentId,
+        branch: changes.branch,
+        hasUncommitted: changes.hasUncommitted,
+        hasUnpushed: changes.hasUnpushed,
+      };
+      d.stmts.updateSessionChangesReady.run(JSON.stringify(changesReadyData), sessionId);
+      d.broadcast({
+        type: 'changes_ready',
+        sessionId,
+        ...changesReadyData,
+      });
       return;
     }
 
