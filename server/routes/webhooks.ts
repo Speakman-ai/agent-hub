@@ -5,7 +5,14 @@ import { Router, Request, Response } from 'express';
 import config, { defaultModelForEngine } from '../config.js';
 import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
-import { stopPreview } from '../preview-engine.js';
+import {
+  createPreview,
+  stopPreview,
+  rebuildPreview,
+  isDockerAvailable,
+} from '../preview-engine.js';
+import type { PreviewStatusChange } from '../preview-engine.js';
+import { githubApiRequest, resolveInstallationId } from '../github-app.js';
 import type {
   RouteDeps,
   Stmts,
@@ -272,6 +279,199 @@ export function notifyDispatchFailure(
       const msg = slackErr instanceof Error ? slackErr.message : String(slackErr);
       console.error(`[${source}] Failed to send Slack notification:`, msg);
     });
+  }
+}
+
+// ─── Preview Environment on PR ──────────────────────────────────
+
+/**
+ * Set a GitHub commit status for preview environment deployment.
+ * Uses GitHub App if available, falls back to `gh` CLI with bot token.
+ */
+export async function setCommitStatus(
+  repoUrl: string,
+  sha: string,
+  state: 'pending' | 'success' | 'failure' | 'error',
+  description: string,
+  targetUrl: string | null,
+): Promise<void> {
+  const { owner, repo } = parseGitHubRepo(repoUrl);
+
+  const body: Record<string, unknown> = {
+    state,
+    description: description.substring(0, 140), // GitHub limit
+    context: 'agent-hub/preview',
+  };
+  if (targetUrl) {
+    body.target_url = targetUrl;
+  }
+
+  // Try GitHub App first
+  const app = config.githubApp;
+  if (app?.appId && app?.privateKey) {
+    const instId = resolveInstallationId(app, owner);
+    if (instId) {
+      try {
+        await githubApiRequest(`/repos/${owner}/${repo}/statuses/${sha}`, {
+          method: 'POST',
+          body,
+          appId: app.appId,
+          privateKey: app.privateKey,
+          installationId: instId,
+        });
+        console.log(`[Preview/Status] Set ${state} on ${owner}/${repo}@${sha.substring(0, 7)}`);
+        return;
+      } catch (err) {
+        console.warn(
+          `[Preview/Status] GitHub App failed, trying gh CLI: ${(err as Error).message.split('\n')[0]}`,
+        );
+      }
+    }
+  }
+
+  // Fallback: gh CLI with bot token
+  try {
+    const ghEnv: Record<string, string | undefined> = { ...process.env };
+    if (config.botGithubToken) {
+      ghEnv.GH_TOKEN = config.botGithubToken;
+    }
+
+    const args = [
+      'api',
+      `repos/${owner}/${repo}/statuses/${sha}`,
+      '--method',
+      'POST',
+      '--field',
+      `state=${state}`,
+      '--field',
+      `description=${body.description as string}`,
+      '--field',
+      'context=agent-hub/preview',
+    ];
+    if (targetUrl) {
+      args.push('--field', `target_url=${targetUrl}`);
+    }
+
+    execFileSync('gh', args, {
+      encoding: 'utf-8',
+      timeout: 15000,
+      env: ghEnv as NodeJS.ProcessEnv,
+    });
+    console.log(
+      `[Preview/Status] Set ${state} on ${owner}/${repo}@${sha.substring(0, 7)} (gh CLI)`,
+    );
+  } catch (err) {
+    console.error(
+      `[Preview/Status] Failed to set commit status: ${(err as Error).message.split('\n')[0]}`,
+    );
+  }
+}
+
+/**
+ * Handle preview engine status changes — updates GitHub commit status.
+ */
+export function handlePreviewStatusChange(change: PreviewStatusChange): void {
+  if (!change.commitSha) return;
+
+  let state: 'pending' | 'success' | 'failure' | 'error';
+  let description: string;
+
+  switch (change.status) {
+    case 'building':
+      state = 'pending';
+      description = 'Preview environment is building...';
+      break;
+    case 'running':
+      state = 'success';
+      description = 'Preview environment is live';
+      break;
+    case 'error':
+      state = 'error';
+      description = change.errorMessage
+        ? `Preview failed: ${change.errorMessage.substring(0, 100)}`
+        : 'Preview environment build failed';
+      break;
+    case 'stopped':
+      // Don't set a failure status on intentional stops (e.g., PR merged/closed)
+      return;
+    default:
+      return;
+  }
+
+  setCommitStatus(change.repoUrl, change.commitSha, state, description, change.url).catch((err) => {
+    console.error('[Preview/Status] setCommitStatus error:', (err as Error).message);
+  });
+}
+
+/**
+ * Trigger a preview environment for a PR.
+ * Called from webhook handlers on PR open or synchronize.
+ */
+export async function triggerPreviewForPR(
+  deps: { stmts: Stmts; broadcast: BroadcastFn },
+  opts: {
+    projectId: string;
+    prNumber: number;
+    prUrl: string;
+    branch: string;
+    commitSha: string | null;
+    repoUrl: string;
+  },
+): Promise<void> {
+  const { stmts } = deps;
+
+  // Check Docker availability
+  const dockerAvailable = await isDockerAvailable();
+  if (!dockerAvailable) {
+    console.log(
+      `[Webhook/Preview] Docker not available — skipping preview for PR #${opts.prNumber}`,
+    );
+    return;
+  }
+
+  // Check for existing preview — if exists, rebuild it
+  const existing = stmts.getPreviewContainerByPr.get(opts.projectId, opts.prNumber) as
+    | PreviewContainerRow
+    | undefined;
+
+  if (existing) {
+    // Update the commit SHA if changed
+    if (opts.commitSha && opts.commitSha !== existing.commit_sha) {
+      stmts.updatePreviewContainer.run(
+        existing.container_id,
+        existing.port,
+        existing.url,
+        existing.status,
+        existing.error_message,
+        existing.build_log,
+        opts.commitSha,
+        existing.id,
+      );
+    }
+
+    console.log(`[Webhook/Preview] Existing preview for PR #${opts.prNumber} — rebuilding`);
+    await rebuildPreview(existing.id);
+    return;
+  }
+
+  // Create new preview
+  const id = uuidv4();
+  try {
+    await createPreview({
+      id,
+      projectId: opts.projectId,
+      prNumber: opts.prNumber,
+      prUrl: opts.prUrl,
+      branch: opts.branch,
+      commitSha: opts.commitSha,
+      repoUrl: opts.repoUrl,
+    });
+    console.log(`[Webhook/Preview] Preview triggered for PR #${opts.prNumber}`);
+  } catch (err) {
+    console.error(
+      `[Webhook/Preview] Failed to create preview for PR #${opts.prNumber}:`,
+      (err as Error).message,
+    );
   }
 }
 
@@ -600,6 +800,25 @@ function handleKanbanWebhookEvent(
         `[Webhook/Kanban] Skipping auto-create — card "${existingByTitle.title}" already exists on board`,
       );
       card = existingByTitle;
+
+      // Still trigger preview for the PR even if card already exists
+      const repoHtmlUrl = payload.repository?.html_url;
+      if (repoHtmlUrl && pr.head?.ref) {
+        triggerPreviewForPR(
+          { stmts, broadcast },
+          {
+            projectId: project.id,
+            prNumber: pr.number,
+            prUrl: pr.html_url,
+            branch: pr.head.ref,
+            commitSha: pr.head.sha || null,
+            repoUrl: repoHtmlUrl,
+          },
+        ).catch((err) => {
+          console.error(`[Webhook/Preview] trigger on opened failed:`, (err as Error).message);
+        });
+      }
+
       return true;
     }
 
@@ -646,6 +865,25 @@ function handleKanbanWebhookEvent(
     );
     broadcast({ type: 'kanban_update', projectId: project.id });
     card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+
+    // Trigger preview environment for the new PR
+    const repoHtmlUrl = payload.repository?.html_url;
+    if (repoHtmlUrl && pr.head?.ref) {
+      triggerPreviewForPR(
+        { stmts, broadcast },
+        {
+          projectId: project.id,
+          prNumber: pr.number,
+          prUrl: pr.html_url,
+          branch: pr.head.ref,
+          commitSha: pr.head.sha || null,
+          repoUrl: repoHtmlUrl,
+        },
+      ).catch((err) => {
+        console.error(`[Webhook/Preview] trigger on opened failed:`, (err as Error).message);
+      });
+    }
+
     return true;
   }
 
@@ -1047,6 +1285,26 @@ function handleWebhookPrSynchronize(
           source: 'webhook',
         },
       );
+    }
+  }
+
+  // Trigger preview rebuild on new commits
+  if (prNumber && payload.pull_request?.head?.ref) {
+    const repoHtmlUrl = payload.repository?.html_url;
+    if (repoHtmlUrl) {
+      triggerPreviewForPR(
+        { stmts, broadcast },
+        {
+          projectId: project.id,
+          prNumber,
+          prUrl: payload.pull_request.html_url,
+          branch: payload.pull_request.head.ref,
+          commitSha: payload.pull_request.head.sha || null,
+          repoUrl: repoHtmlUrl,
+        },
+      ).catch((err) => {
+        console.error(`[Webhook/Preview] trigger on synchronize failed:`, (err as Error).message);
+      });
     }
   }
 

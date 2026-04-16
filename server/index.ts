@@ -62,6 +62,7 @@ import createSkillRoutes, { DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import createWebhookRoutes, {
   createGithubWebhookHandler,
   pendingReviewComments,
+  handlePreviewStatusChange,
 } from './routes/webhooks.js';
 import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
@@ -776,7 +777,12 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       console.error('Failed to start Slack bots:', err.message);
     });
 
-    initPreviewEngine({ stmts: stmts!, broadcast, previewDomain: config.previewDomain });
+    initPreviewEngine({
+      stmts: stmts!,
+      broadcast,
+      previewDomain: config.previewDomain,
+      onStatusChange: handlePreviewStatusChange,
+    });
     initCaptureEngine({ stmts: stmts!, broadcast, uploadsDir: UPLOADS_DIR });
 
     resumeOrphanedSessions(sessionsToResume);

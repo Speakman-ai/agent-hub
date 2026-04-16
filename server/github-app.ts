@@ -139,6 +139,7 @@ export function buildAppManifest(serverUrl: string): GitHubAppManifest {
       contents: 'write',
       issues: 'write',
       checks: 'read',
+      statuses: 'write',
     },
     default_events: ['pull_request', 'pull_request_review', 'check_suite'],
   };

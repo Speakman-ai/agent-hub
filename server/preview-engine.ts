@@ -24,14 +24,49 @@ export const DEFAULT_TTL_MINUTES = 60;
 /** Maximum concurrent preview containers */
 export const MAX_CONCURRENT_PREVIEWS = 10;
 
+export interface PreviewStatusChange {
+  previewId: string;
+  projectId: string;
+  prNumber: number;
+  commitSha: string | null;
+  repoUrl: string;
+  status: string;
+  url: string | null;
+  errorMessage: string | null;
+}
+
 export interface PreviewEngineDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
   previewDomain: string | null;
+  onStatusChange?: (change: PreviewStatusChange) => void;
 }
 
 let _deps: PreviewEngineDeps | null = null;
 let _cleanupInterval: ReturnType<typeof setInterval> | null = null;
+
+function notifyStatusChange(
+  row: PreviewContainerRow,
+  status: string,
+  url: string | null,
+  errorMessage: string | null,
+): void {
+  if (!_deps?.onStatusChange) return;
+  try {
+    _deps.onStatusChange({
+      previewId: row.id,
+      projectId: row.project_id,
+      prNumber: row.pr_number,
+      commitSha: row.commit_sha,
+      repoUrl: row.repo_url,
+      status,
+      url,
+      errorMessage,
+    });
+  } catch (err) {
+    console.error('[Preview] onStatusChange callback error:', (err as Error).message);
+  }
+}
 
 export function initPreviewEngine(deps: PreviewEngineDeps): void {
   _deps = deps;
@@ -133,6 +168,8 @@ export async function createPreview(opts: {
     preview: row,
   });
 
+  notifyStatusChange(row, 'building', null, null);
+
   // Kick off async build (non-blocking)
   buildAndStart(opts.id).catch((err) => {
     console.error(`[Preview] Build failed for ${opts.id}:`, (err as Error).message);
@@ -217,6 +254,7 @@ async function buildAndStart(previewId: string): Promise<void> {
       'running',
       null, // no error
       buildLog,
+      row.commit_sha,
       previewId,
     );
 
@@ -226,6 +264,8 @@ async function buildAndStart(previewId: string): Promise<void> {
       projectId: row.project_id,
       preview: updated,
     });
+
+    notifyStatusChange(row, 'running', url, null);
 
     console.log(
       `[Preview] PR #${row.pr_number} preview running at ${url} (container: ${trimmedContainerId.slice(0, 12)})`,
@@ -241,8 +281,11 @@ async function buildAndStart(previewId: string): Promise<void> {
       'error',
       errorMessage,
       buildLog || null,
+      row.commit_sha,
       previewId,
     );
+
+    notifyStatusChange(row, 'error', null, errorMessage);
 
     const updated = stmts.getPreviewContainer.get(previewId) as PreviewContainerRow;
     broadcast({
@@ -291,6 +334,8 @@ export async function stopPreview(previewId: string): Promise<PreviewContainerRo
     });
 
     stmts.updatePreviewContainerStatus.run('stopped', previewId);
+
+    notifyStatusChange(row, 'stopped', null, null);
 
     const updated = stmts.getPreviewContainer.get(previewId) as PreviewContainerRow;
     broadcast({

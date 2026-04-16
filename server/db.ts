@@ -1467,7 +1467,7 @@ function initDb(dataDir: string): void {
        VALUES (?, ?, ?, ?, ?, ?, ?, 'building', ?, datetime('now', '+' || ? || ' minutes'))`,
     ),
     updatePreviewContainer: db.prepare(
-      `UPDATE preview_containers SET container_id = ?, port = ?, url = ?, status = ?, error_message = ?, build_log = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE preview_containers SET container_id = ?, port = ?, url = ?, status = ?, error_message = ?, build_log = ?, commit_sha = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     updatePreviewContainerStatus: db.prepare(
       `UPDATE preview_containers SET status = ?, updated_at = datetime('now') WHERE id = ?`,
