@@ -188,7 +188,8 @@ export default function MessageInput({
   const handleSubmit = ({ interrupt = false } = {}) => {
     const trimmed = value.trim();
     if ((!trimmed && images.length === 0) || disabled) return;
-    // During processing: default is interrupt, shift+enter queues
+    // Mid-stream: queue by default; interrupt only when explicitly requested
+    // (e.g. the amber Interrupt button). Enter never interrupts on its own.
     const shouldInterrupt = isProcessing && interrupt;
     const hasVideo = images.some((img) => img.type === 'video');
     const fallbackText = hasVideo ? '(media attached)' : '(image attached)';
@@ -231,8 +232,9 @@ export default function MessageInput({
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      // During processing: Enter = interrupt (stop + send), messages are queued by default
-      handleSubmit({ interrupt: isProcessing });
+      // Enter queues by default, even mid-stream. To interrupt, click the
+      // explicit amber Interrupt button (or edit the message while queued).
+      handleSubmit();
     }
     if (e.key === 'Escape' && isProcessing) {
       onCancel?.();
@@ -487,25 +489,47 @@ export default function MessageInput({
           </button>
         )}
         {isProcessing && value.trim() ? (
-          /* During processing with text: show Interrupt button (Enter) */
-          <button
-            onClick={() => handleSubmit({ interrupt: true })}
-            disabled={disabled}
-            className="px-3 py-3 rounded-xl font-medium text-white bg-amber-600 hover:bg-amber-500 transition-all active:scale-95 flex items-center gap-1.5"
-            title="Interrupt agent and send this message (Enter)"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-5 w-5"
-              viewBox="0 0 24 24"
-              fill="currentColor"
+          /* During processing with text: expose both Interrupt (explicit) and Queue (Enter default) */
+          <>
+            <button
+              onClick={() => handleSubmit({ interrupt: true })}
+              disabled={disabled}
+              className="px-3 py-3 rounded-xl font-medium text-white bg-amber-600 hover:bg-amber-500 transition-all active:scale-95"
+              title="Interrupt agent and send this message now"
+              aria-label="Interrupt agent and send now"
             >
-              <path d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            {queueLength > 0 && (
-              <span className="text-xs bg-white/20 rounded-full px-1.5">{queueLength}</span>
-            )}
-          </button>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+            </button>
+            <button
+              onClick={() => handleSubmit()}
+              disabled={disabled}
+              className="px-4 py-3 rounded-xl font-medium text-white transition-all hover:brightness-110 active:scale-95 flex items-center gap-1.5"
+              style={{
+                backgroundColor: disabled ? '#4b5563' : agentColor || '#4F46E5',
+              }}
+              title="Queue message to send after agent finishes (Enter)"
+              aria-label="Queue message"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+              </svg>
+              {queueLength > 0 && (
+                <span className="text-xs bg-white/20 rounded-full px-1.5">{queueLength}</span>
+              )}
+            </button>
+          </>
         ) : (
           <button
             onClick={() => handleSubmit()}
