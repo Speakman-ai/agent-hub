@@ -39,6 +39,10 @@ server/uploads/
 
 # Claude Code local settings (session-specific, may contain hooks/keys)
 .claude/settings.json
+# Claude Code ephemeral worktrees — created per-session by EnterWorktree.
+# These contain local-only commits that won't resolve for other clones; if
+# accidentally added they appear as dangling submodule gitlinks in PRs.
+.claude/worktrees/
 
 # OS files
 .DS_Store
@@ -49,6 +53,3 @@ server/connection.json
 server/active-org.json
 server/remote-orgs.json
 server/server.log
-
-# Claude Code instance-specific settings
-.claude/settings.json
