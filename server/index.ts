@@ -623,6 +623,7 @@ function reconcileOrphanedTasks(): ResumeEntry[] {
         t.engine,
         t.model,
         null,
+        null,
       );
       stmts!.touchSession.run(t.session_id);
     } catch (err) {

@@ -532,6 +532,18 @@ export default function App() {
           return next;
         });
         break;
+      case 'message_added':
+        // A new message (e.g. the system 'PR created' marker persisted by the
+        // server) was inserted on the backend. If it belongs to the active
+        // session, append it to the timeline — guarded by an id-dedup check
+        // so a double broadcast can never duplicate-render.
+        if (forActiveSession && data.message?.id) {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === data.message.id)) return prev;
+            return [...prev, data.message];
+          });
+        }
+        break;
       case 'session-updated':
         setSessions((prev) =>
           prev.map((s) => (s.id === data.session.id ? { ...s, name: data.session.name } : s)),

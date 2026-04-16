@@ -362,7 +362,7 @@ async function commitPushAndCreatePR(
   ];
   const prBody = prBodyLines.filter((line): line is string => line != null).join('\n');
 
-  const broadcastAndMove = (prUrl: string) => {
+  const broadcastAndMove = async (prUrl: string) => {
     d.broadcast({
       type: 'auto_pr_created',
       sessionId,
@@ -370,6 +370,61 @@ async function commitPushAndCreatePR(
       prUrl,
       cardTitle: card?.title || commitTitle,
     });
+
+    // Persist a permanent "PR created" marker in the chat timeline as a
+    // system-role message. This gives the user a timestamped receipt of the
+    // action (manual click OR auto-PR at session end). Failure here is
+    // non-fatal — the PR still exists and the auto_pr_created broadcast fires
+    // regardless.
+    try {
+      let commitSha = '';
+      try {
+        const { stdout: shaOut } = await execAsync('git rev-parse HEAD', {
+          cwd: effectiveCwd,
+          timeout: 5000,
+        });
+        commitSha = shaOut.trim().substring(0, 12);
+      } catch {
+        /* commit SHA is best-effort — the marker is still useful without it */
+      }
+      const prNumberMatch = prUrl.match(/\/pull\/(\d+)/);
+      const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
+      const msgId = crypto.randomUUID();
+      const metadata = JSON.stringify({
+        kind: 'pr_created',
+        prUrl,
+        prNumber,
+        commitSha,
+        commitTitle,
+        cardId: card?.id ?? null,
+        cardTitle: card?.title ?? null,
+      });
+      d.stmts.addMessage.run(
+        msgId,
+        sessionId,
+        'system',
+        'PR created from these changes',
+        null,
+        null,
+        null,
+        metadata,
+      );
+      const insertedMessage = (d.stmts.getMessageById?.get(msgId) as MessageRow | undefined) ?? {
+        id: msgId,
+        session_id: sessionId,
+        role: 'system' as const,
+        content: 'PR created from these changes',
+        engine: null,
+        model: null,
+        attachments: null,
+        metadata,
+        created_at: new Date().toISOString(),
+      };
+      d.broadcast({ type: 'message_added', sessionId, message: insertedMessage });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[auto-commit] Failed to persist PR-created marker: ${msg}`);
+    }
 
     // Reconciliation: ensure card has pr_url linked
     if (card && !card.pr_url) {
@@ -403,7 +458,7 @@ async function commitPushAndCreatePR(
     console.log(`[auto-commit] PR created: ${prOutput.trim()}`);
 
     const prUrl = prOutput.match(/https:\/\/github\.com\/.+\/pull\/\d+/)?.[0] || prOutput.trim();
-    broadcastAndMove(prUrl);
+    await broadcastAndMove(prUrl);
     return { prUrl };
   } catch (prErr: unknown) {
     const errMsg = prErr instanceof Error ? prErr.message : String(prErr);
@@ -411,7 +466,7 @@ async function commitPushAndCreatePR(
     if (existingMatch) {
       const prUrl = existingMatch[0];
       console.log(`[auto-commit] PR already exists: ${prUrl} — continuing flow`);
-      broadcastAndMove(prUrl);
+      await broadcastAndMove(prUrl);
       return { prUrl };
     }
 
@@ -425,7 +480,7 @@ async function commitPushAndCreatePR(
       const discoveredUrl = prDiscovery.trim();
       if (discoveredUrl) {
         console.log(`[auto-commit] Discovered PR by branch name: ${discoveredUrl}`);
-        broadcastAndMove(discoveredUrl);
+        await broadcastAndMove(discoveredUrl);
         return { prUrl: discoveredUrl };
       }
     } catch {

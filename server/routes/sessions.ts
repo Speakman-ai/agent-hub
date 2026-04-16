@@ -705,6 +705,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           null,
           null,
           null,
+          null,
         );
         stmts.touchSession.run(newSessionId);
       }

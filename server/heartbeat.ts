@@ -518,7 +518,16 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       }
       const msgId = uuidv4();
-      stmts.addMessage.run(msgId, session!.id, 'assistant', result, 'claude-code', null, null);
+      stmts.addMessage.run(
+        msgId,
+        session!.id,
+        'assistant',
+        result,
+        'claude-code',
+        null,
+        null,
+        null,
+      );
       stmts.touchSession.run(session!.id);
 
       await sendPushNotifications(cronJob.name, result, session!.id, cronJob.id);

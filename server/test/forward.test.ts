@@ -49,7 +49,7 @@ async function createSessionWithMessages(
   const ids: string[] = [];
   for (const msg of messages) {
     const id = uuidv4();
-    stmts.addMessage.run(id, session.id as string, msg.role, msg.content, null, null, null);
+    stmts.addMessage.run(id, session.id as string, msg.role, msg.content, null, null, null, null);
     ids.push(id);
   }
 

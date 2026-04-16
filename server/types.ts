@@ -24,11 +24,12 @@ export interface SessionRow {
 export interface MessageRow {
   id: string;
   session_id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   engine: string | null;
   model: string | null;
   attachments: string | null;
+  metadata: string | null;
   created_at: string;
 }
 
@@ -539,6 +540,7 @@ export interface Stmts {
   // Messages
   addMessage: Stmt;
   getMessages: Stmt;
+  getMessageById: Stmt;
   getLastMessage: Stmt;
   getLastAssistantMessage: Stmt;
 

@@ -30,6 +30,7 @@ function makeMsg(role: 'user' | 'assistant', content: string): MessageRow {
     engine: null,
     model: null,
     attachments: null,
+    metadata: null,
     created_at: new Date().toISOString(),
   };
 }
@@ -476,6 +477,254 @@ describe('commitPushAndCreatePR — existing PR early return re-applies auto-mer
 
     const autoMergeCalls = execCalls.filter((c) => c.includes('gh pr merge --auto'));
     expect(autoMergeCalls).toHaveLength(0);
+  });
+});
+
+describe('broadcastAndMove — persists PR-created marker as a system message', () => {
+  // When a PR is created (manual click OR auto-PR at session end), we persist
+  // a permanent `role='system'` message in the chat timeline and broadcast a
+  // `message_added` event so live clients can render it without a refetch.
+  // This gives the user a timestamped, scrollable receipt of the action.
+
+  const mockBroadcast = vi.fn();
+
+  function makeStmtsWithMessageTable(opts?: { card?: Record<string, unknown> }) {
+    // Capture the metadata argument passed to addMessage.run so the companion
+    // getMessageById mock can return a faithful row (mirrors better-sqlite3's
+    // round-trip behavior).
+    let capturedMetadata: string | null = null;
+    const addMessageRun = vi.fn((_id, _s, _role, _c, _e, _m, _att, metadata) => {
+      capturedMetadata = metadata ?? null;
+    });
+    const getMessageByIdGet = vi.fn((id: string) => ({
+      id,
+      session_id: 'sess-1',
+      role: 'system',
+      content: 'PR created from these changes',
+      engine: null,
+      model: null,
+      attachments: null,
+      metadata: capturedMetadata,
+      created_at: '2026-04-16T16:30:00.000Z',
+    }));
+
+    return {
+      stmts: {
+        getKanbanCardBySession: { get: vi.fn(() => opts?.card ?? undefined) },
+        getSession: { get: vi.fn(() => ({ name: 'Test session' })) },
+        setCardPrUrl: { run: vi.fn() },
+        getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+        getKanbanColumns: {
+          all: vi.fn(() => [
+            { id: 'col-review', name: 'Review' },
+            { id: 'col-done', name: 'Done' },
+          ]),
+        },
+        moveKanbanCard: { run: vi.fn() },
+        updateKanbanCard: { run: vi.fn() },
+        updateSessionChangesReady: { run: vi.fn() },
+        clearSessionChangesReady: { run: vi.fn() },
+        addMessage: { run: addMessageRun },
+        getMessageById: { get: getMessageByIdGet },
+      } as Record<string, unknown>,
+      addMessageRun,
+      getMessageByIdGet,
+    };
+  }
+
+  function mockExecForPRCreation(
+    prUrl: string,
+    commitSha: string,
+    opts: { existingPR: boolean; probeReturnsUrl?: boolean },
+    execCalls: string[],
+  ) {
+    (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        // Non-empty status → we go through the commit/push/create path, which
+        // is the path that exercises broadcastAndMove.
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git log main..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/pr-marker\n');
+        if (cmd.startsWith('git rev-parse HEAD')) return ok(`${commitSha}\n`);
+        // `gh pr view --json` is used by BOTH the ad-hoc pre-check in
+        // autoCommitAndPR AND the clean-worktree early-return inside
+        // commitPushAndCreatePR. For the ad-hoc flow we want it to return a
+        // URL so we take the "fix existing PR" branch; inside
+        // commitPushAndCreatePR the worktree is not clean so the early return
+        // is skipped anyway.
+        if (cmd.startsWith('gh pr view --json'))
+          return ok(opts.probeReturnsUrl ? `${prUrl}\n` : '');
+        if (cmd.startsWith('gh pr view')) return ok('');
+        if (cmd.startsWith('gh pr create')) {
+          return opts.existingPR
+            ? fail(`a pull request for branch "feature/pr-marker" already exists: ${prUrl}`)
+            : ok(`${prUrl}\n`);
+        }
+        // git config / git add / git commit / git push — succeed silently.
+        return ok('');
+      },
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('inserts a system message + broadcasts message_added on successful PR creation', async () => {
+    const execCalls: string[] = [];
+    const { stmts, addMessageRun, getMessageByIdGet } = makeStmtsWithMessageTable({
+      card: {
+        id: 'card-42',
+        title: 'Fix login bug',
+        description: 'desc',
+        priority: 'medium',
+      },
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecForPRCreation(
+      'https://github.com/test/repo/pull/123',
+      'abc123def456',
+      { existingPR: false },
+      execCalls,
+    );
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-1', 'agent-1', project, agent, '/worktree', '');
+
+    // Flush fire-and-forget auto-merge microtasks so subsequent assertions are stable.
+    await new Promise((r) => setImmediate(r));
+
+    // 1. A row was inserted into the messages table with role='system'.
+    expect(addMessageRun).toHaveBeenCalledTimes(1);
+    const args = addMessageRun.mock.calls[0];
+    expect(args[2]).toBe('system');
+    expect(args[3]).toBe('PR created from these changes');
+    // Positional: id, session_id, role, content, engine, model, attachments, metadata
+    expect(args[4]).toBeNull(); // engine
+    expect(args[5]).toBeNull(); // model
+    expect(args[6]).toBeNull(); // attachments
+
+    // 2. Metadata is valid JSON with the expected fields.
+    const metadata = JSON.parse(args[7]);
+    expect(metadata.kind).toBe('pr_created');
+    expect(metadata.prUrl).toBe('https://github.com/test/repo/pull/123');
+    expect(metadata.prNumber).toBe(123);
+    expect(metadata.commitSha).toBe('abc123def456');
+    expect(metadata.commitTitle).toBe('Fix login bug');
+    expect(metadata.cardId).toBe('card-42');
+    expect(metadata.cardTitle).toBe('Fix login bug');
+
+    // 3. The inserted row was re-read and broadcast as message_added.
+    expect(getMessageByIdGet).toHaveBeenCalled();
+    const messageAddedEvents = mockBroadcast.mock.calls.filter(
+      (c: Array<Record<string, unknown>>) => c[0]?.type === 'message_added',
+    );
+    expect(messageAddedEvents).toHaveLength(1);
+    expect((messageAddedEvents[0][0] as { sessionId: string }).sessionId).toBe('sess-1');
+    const msg = (messageAddedEvents[0][0] as { message: { role: string; metadata: string } })
+      .message;
+    expect(msg.role).toBe('system');
+    expect(JSON.parse(msg.metadata).prNumber).toBe(123);
+  });
+
+  it('sets cardId/cardTitle to null when session has no linked kanban card (ad-hoc flow)', async () => {
+    // Ad-hoc flow: no card in DB for this session. The marker must still be
+    // persisted, but with cardId/cardTitle both null so the client can render
+    // the stripped-down variant.
+    const execCalls: string[] = [];
+    const { stmts, addMessageRun } = makeStmtsWithMessageTable({ card: undefined });
+
+    // For the ad-hoc path (no card), autoCommitAndPR uses a different code
+    // path that only goes through broadcastAndMove via the catch-existing-PR
+    // branch. Mock gh pr create to fail with "already exists" so we reach the
+    // broadcastAndMove call in commitPushAndCreatePR's catch handler.
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    // probeReturnsUrl=true → ad-hoc branch treats this as "fix an existing
+    // PR" and falls through to commitPushAndCreatePR without a card. That
+    // call's `gh pr create` then fails with "already exists", reaching the
+    // catch branch where broadcastAndMove is invoked with the matched URL.
+    mockExecForPRCreation(
+      'https://github.com/test/repo/pull/200',
+      'sha-no-card',
+      { existingPR: true, probeReturnsUrl: true },
+      execCalls,
+    );
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-adhoc', 'agent-1', project, agent, '/worktree', '');
+    await new Promise((r) => setImmediate(r));
+
+    expect(addMessageRun).toHaveBeenCalledTimes(1);
+    const metadata = JSON.parse(addMessageRun.mock.calls[0][7]);
+    expect(metadata.cardId).toBeNull();
+    expect(metadata.cardTitle).toBeNull();
+    expect(metadata.prUrl).toBe('https://github.com/test/repo/pull/200');
+    expect(metadata.prNumber).toBe(200);
+  });
+
+  it('does not crash the PR flow if addMessage fails (marker persistence is best-effort)', async () => {
+    // Defensive: if the system-message insert blows up for any reason, the
+    // surrounding PR-creation flow must still succeed — the marker is a
+    // cosmetic receipt, not a correctness guarantee.
+    const execCalls: string[] = [];
+    const { stmts } = makeStmtsWithMessageTable({
+      card: { id: 'c', title: 'T', description: 'd', priority: 'medium' },
+    });
+    (stmts.addMessage as { run: ReturnType<typeof vi.fn> }).run.mockImplementation(() => {
+      throw new Error('simulated insert failure');
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecForPRCreation(
+      'https://github.com/test/repo/pull/9',
+      'sha-fail',
+      { existingPR: false },
+      execCalls,
+    );
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+
+    // Should not throw.
+    await expect(
+      autoCommitAndPR('sess-fail', 'agent-1', project, agent, '/worktree', ''),
+    ).resolves.toBeUndefined();
+    await new Promise((r) => setImmediate(r));
+
+    // The original auto_pr_created broadcast still fires.
+    const autoPrEvents = mockBroadcast.mock.calls.filter(
+      (c: Array<Record<string, unknown>>) => c[0]?.type === 'auto_pr_created',
+    );
+    expect(autoPrEvents).toHaveLength(1);
   });
 });
 

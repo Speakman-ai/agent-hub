@@ -61,7 +61,7 @@ function initDb(dataDir: string): void {
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
       content TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -641,6 +641,49 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE room_messages ADD COLUMN attachments TEXT');
   }
 
+  // Nullable metadata column for system-role messages (e.g. PR-created markers).
+  // Stores stringified JSON; plain user/assistant rows leave this NULL.
+  try {
+    db.prepare('SELECT metadata FROM messages LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE messages ADD COLUMN metadata TEXT');
+  }
+
+  // Relax the messages.role CHECK constraint to include 'system'. SQLite can't
+  // ALTER a CHECK in place, so we rebuild the table when the stored DDL doesn't
+  // already contain 'system'. Idempotent and runs inside a transaction so a
+  // partial failure can't leave the schema half-migrated.
+  {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'")
+      .get() as { sql?: string } | undefined;
+    const ddl = row?.sql ?? '';
+    if (ddl && !/role[^)]*'system'/.test(ddl)) {
+      const handle = db;
+      handle.transaction(() => {
+        handle.exec(`
+          CREATE TABLE messages_new (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+            content TEXT NOT NULL,
+            engine TEXT,
+            model TEXT,
+            attachments TEXT,
+            metadata TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+          );
+          INSERT INTO messages_new (id, session_id, role, content, engine, model, attachments, metadata, created_at)
+            SELECT id, session_id, role, content, engine, model, attachments, NULL, created_at FROM messages;
+          DROP TABLE messages;
+          ALTER TABLE messages_new RENAME TO messages;
+          CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+        `);
+      })();
+    }
+  }
+
   try {
     db.prepare('SELECT cron_id FROM sessions LIMIT 1').get();
   } catch {
@@ -969,9 +1012,10 @@ function initDb(dataDir: string): void {
 
     // Messages
     addMessage: db.prepare(
-      'INSERT INTO messages (id, session_id, role, content, engine, model, attachments) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO messages (id, session_id, role, content, engine, model, attachments, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     getMessages: db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC'),
+    getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getLastMessage: db.prepare(
       'SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1',
     ),

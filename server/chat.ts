@@ -393,7 +393,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
   ): string {
     const content = `⚠️ Error: ${errorText}`;
     try {
-      stmts.addMessage.run(messageId, sessionId, 'assistant', content, engine, model, null);
+      stmts.addMessage.run(messageId, sessionId, 'assistant', content, engine, model, null, null);
       stmts.touchSession.run(sessionId);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -495,7 +495,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         position = (maxPos?.max_pos ?? -1) + 1;
       }
 
-      stmts.addMessage.run(queueMsgId, sessionId, 'user', content, null, null, attachments);
+      stmts.addMessage.run(queueMsgId, sessionId, 'user', content, null, null, attachments, null);
       stmts.touchSession.run(sessionId);
 
       stmts.enqueueMessage.run(queueMsgId, sessionId, agentId, content, attachments, position);
@@ -543,7 +543,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       broadcast({ type: 'queue_item_processing', sessionId, messageId: userMsgId });
     } else {
       userMsgId = uuidv4();
-      stmts.addMessage.run(userMsgId, sessionId, 'user', content, null, null, attachments);
+      stmts.addMessage.run(userMsgId, sessionId, 'user', content, null, null, attachments, null);
       stmts.touchSession.run(sessionId);
 
       broadcast({
@@ -916,7 +916,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const finalContent = assembled || errorOutput.trim() || '(empty response)';
 
       try {
-        S.addMessage.run(assistantMsgId, sessionId, 'assistant', finalContent, engine, model, null);
+        S.addMessage.run(
+          assistantMsgId,
+          sessionId,
+          'assistant',
+          finalContent,
+          engine,
+          model,
+          null,
+          null,
+        );
         S.touchSession.run(sessionId);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);

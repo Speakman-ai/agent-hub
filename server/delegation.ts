@@ -405,7 +405,16 @@ export async function synthesizeResults(
 
     activeProcesses.delete(sessionId);
 
-    stmts.addMessage.run(assistantMsgId, sessionId, 'assistant', finalOutput, engine, model, null);
+    stmts.addMessage.run(
+      assistantMsgId,
+      sessionId,
+      'assistant',
+      finalOutput,
+      engine,
+      model,
+      null,
+      null,
+    );
     stmts.touchSession.run(sessionId);
 
     broadcast({

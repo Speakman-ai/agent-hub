@@ -2,9 +2,11 @@ import React, { memo, useState, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { GitPullRequest } from 'lucide-react';
 import { relativeTime } from '../utils/time.js';
 import { getServerBase } from '../utils/connection.js';
 import { markdownComponents } from './MarkdownRenderer.jsx';
+import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage.js';
 
 function ImageLightbox({ src, alt, onClose }) {
   return (
@@ -176,18 +178,64 @@ const ENGINE_BADGES = {
   'claude-code': { icon: 'purple', label: 'Claude Code' },
 };
 
+function SystemPrCreatedMessage({ message }) {
+  const meta = parsePrCreatedMetadata(message.metadata);
+  if (!meta) {
+    // Malformed metadata — render a minimal generic system callout so we
+    // never crash the timeline on unexpected payloads.
+    return (
+      <div className="flex justify-center mb-4">
+        <div className="text-xs text-gray-500 italic">{message.content || 'System event'}</div>
+      </div>
+    );
+  }
+  const prLabel = meta.prNumber ? `#${meta.prNumber}` : 'View PR';
+  return (
+    <div className="flex justify-center mb-4">
+      <div className="max-w-[95%] sm:max-w-[80%] w-full bg-emerald-950/30 border border-emerald-700/40 rounded-xl px-4 py-3">
+        <div className="flex items-center gap-2 mb-2">
+          <GitPullRequest className="w-4 h-4 text-emerald-400" />
+          <span className="text-sm font-medium text-emerald-300">
+            Pull request created from these changes
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+          <a
+            href={meta.prUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-emerald-400 hover:text-emerald-300 underline font-medium"
+          >
+            {prLabel}
+          </a>
+          {meta.commitSha && (
+            <code className="text-xs text-gray-400 bg-gray-900/60 px-1.5 py-0.5 rounded">
+              {shortSha(meta.commitSha)}
+            </code>
+          )}
+          {meta.commitTitle && <span className="text-gray-300 truncate">{meta.commitTitle}</span>}
+        </div>
+        {meta.cardTitle && (
+          <div className="mt-1.5 text-xs text-gray-500">
+            Linked card: <span className="text-gray-400">{meta.cardTitle}</span>
+          </div>
+        )}
+        {message.created_at && (
+          <div className="text-[11px] text-gray-600 mt-1.5">{relativeTime(message.created_at)}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
+  const isSystem = message.role === 'system';
   const isUser = message.role === 'user';
   const isQueued = message.queued;
   const isInterrupted = message.interrupted;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(message.content);
   const editRef = React.useRef(null);
-  const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;
-  const modelLabel =
-    !isUser && message.model ? message.model.replace('claude-', '').replace('-', ' ') : null;
-
-  const components = markdownComponents;
 
   // Don't show "(image attached)" as text if it was auto-generated and there are actual attachments
   const displayContent = useMemo(() => {
@@ -198,6 +246,16 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
       return '';
     return message.content;
   }, [message.content, message.attachments]);
+
+  if (isSystem) {
+    return <SystemPrCreatedMessage message={message} />;
+  }
+
+  const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;
+  const modelLabel =
+    !isUser && message.model ? message.model.replace('claude-', '').replace('-', ' ') : null;
+
+  const components = markdownComponents;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
