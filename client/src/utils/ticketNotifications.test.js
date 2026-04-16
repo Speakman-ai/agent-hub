@@ -3,6 +3,7 @@ import {
   cardStartedNotification,
   cardReviewNotification,
   prMergedNotification,
+  prReadyNotification,
   sessionCompleteNotification,
   threadCreatedNotification,
   threadEntryNotification,
@@ -61,6 +62,40 @@ describe('prMergedNotification', () => {
   it('handles empty mergedBy string', () => {
     const result = prMergedNotification({ cardTitle: 'Task', prNumber: 1, mergedBy: '' });
     expect(result.body).toBe('PR #1 merged: "Task"');
+  });
+});
+
+describe('prReadyNotification', () => {
+  it('formats with agent, session, and branch', () => {
+    const result = prReadyNotification({
+      agentName: 'Hub Frontend',
+      sessionName: 'Fix sidebar bug',
+      branch: 'feature/sidebar',
+    });
+    expect(result.title).toBe('Changes Ready — Create PR?');
+    expect(result.body).toBe(
+      'Hub Frontend — "Fix sidebar bug" has changes on `feature/sidebar` awaiting PR creation',
+    );
+  });
+
+  it('formats without a branch', () => {
+    const result = prReadyNotification({
+      agentName: 'Hub Backend',
+      sessionName: 'Add route',
+    });
+    expect(result.title).toBe('Changes Ready — Create PR?');
+    expect(result.body).toBe('Hub Backend — "Add route" has changes awaiting PR creation');
+  });
+
+  it('formats with only a branch', () => {
+    const result = prReadyNotification({ branch: 'feature/x' });
+    expect(result.body).toBe('An agent has changes on `feature/x` awaiting PR creation');
+  });
+
+  it('falls back when no fields provided', () => {
+    const result = prReadyNotification({});
+    expect(result.title).toBe('Changes Ready — Create PR?');
+    expect(result.body).toBe('An agent has changes awaiting PR creation');
   });
 });
 

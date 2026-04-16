@@ -9,6 +9,7 @@ import {
   StickyNote,
   Trash2,
   GitFork,
+  GitPullRequest,
   List,
   AlertTriangle,
   Container,
@@ -47,6 +48,7 @@ export default function Sidebar({
   unreadThreadCounts = {},
   activeReviews = {},
   subagentsBySession = {},
+  changesReadyBySession = {},
   deletingSessionIds = new Set(),
   deletingBulk = null,
 }) {
@@ -293,6 +295,7 @@ export default function Sidebar({
                                 {sessions.map((session) => {
                                   const isRunning = !!activeTaskSessionIds[session.id];
                                   const isEditing = editingSessionId === session.id;
+                                  const prReady = changesReadyBySession[session.id];
                                   return (
                                     <div
                                       key={session.id}
@@ -366,6 +369,15 @@ export default function Sidebar({
                                             >
                                               <GitFork size={10} />
                                               {subagentsBySession[session.id].running}
+                                            </span>
+                                          )}
+                                          {prReady && (
+                                            <span
+                                              data-testid="pr-ready-indicator"
+                                              className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
+                                              title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
+                                            >
+                                              <GitPullRequest size={11} />
                                             </span>
                                           )}
                                           <span className="truncate">{session.name}</span>

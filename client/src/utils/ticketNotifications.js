@@ -36,6 +36,28 @@ export function prMergedNotification({ cardTitle, prNumber, mergedBy }) {
 }
 
 /**
+ * Build notification content for a session whose agent is prompting to create a PR.
+ * Fires when the server broadcasts `changes_ready` — the agent completed work in
+ * a worktree with uncommitted/unpushed changes and the user needs to decide
+ * whether to create a ticket + PR.
+ *
+ * @param {{ agentName?: string, sessionName?: string, branch?: string }} data
+ * @returns {{ title: string, body: string }}
+ */
+export function prReadyNotification({ agentName, sessionName, branch }) {
+  const title = 'Changes Ready — Create PR?';
+  const parts = [];
+  if (agentName) parts.push(agentName);
+  if (sessionName) parts.push(`"${sessionName}"`);
+  const who = parts.join(' — ');
+  const where = branch ? ` on \`${branch}\`` : '';
+  const body = who
+    ? `${who} has changes${where} awaiting PR creation`
+    : `An agent has changes${where} awaiting PR creation`;
+  return { title, body };
+}
+
+/**
  * Build notification content for a completed agent session.
  * @param {{ agentName: string, sessionName?: string, preview?: string }} data
  * @returns {{ title: string, body: string }}

@@ -26,6 +26,7 @@ import {
   cardStartedNotification,
   cardReviewNotification,
   prMergedNotification,
+  prReadyNotification,
   sessionCompleteNotification,
   threadCreatedNotification,
   threadEntryNotification,
@@ -150,6 +151,10 @@ export default function App() {
   sessionsRef.current = sessions;
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
+  // Mirror of `changesReady` accessible inside WebSocket callbacks (used to
+  // detect whether a `changes_ready` event is a fresh prompt vs a replay).
+  const changesReadyRef = useRef(changesReady);
+  changesReadyRef.current = changesReady;
 
   // Track when a session was explicitly navigated to (e.g. from kanban assign)
   // so the agent-change useEffect doesn't overwrite it with a stale session ID.
@@ -462,7 +467,8 @@ export default function App() {
           notify({ title, body, type: 'success' });
         }
         break;
-      case 'changes_ready':
+      case 'changes_ready': {
+        const alreadyPrompted = !!changesReadyRef.current[data.sessionId];
         setChangesReady((prev) => ({
           ...prev,
           [data.sessionId]: {
@@ -472,7 +478,32 @@ export default function App() {
             hasUnpushed: data.hasUnpushed,
           },
         }));
+        // Only notify on a fresh prompt — avoids re-firing on reconnect/replay.
+        if (!alreadyPrompted) {
+          const session = sessionsRef.current.find((s) => s.id === data.sessionId);
+          const agent = agentsRef.current.find((a) => a.id === data.agentId);
+          const { title, body } = prReadyNotification({
+            agentName: agent?.name,
+            sessionName: session?.name,
+            branch: data.branch,
+          });
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: `pr-ready-${data.sessionId}-${Date.now()}`,
+              type: 'info',
+              message: body,
+              duration: 10000,
+              onClick: () => {
+                setActiveSessionId(data.sessionId);
+                setCurrentView('chat');
+              },
+            },
+          ]);
+          notify({ title, body, type: 'info' });
+        }
         break;
+      }
       case 'auto_pr_created':
         // Clear changes_ready state when a PR is created (manually or automatically)
         setChangesReady((prev) => {
@@ -1630,6 +1661,7 @@ export default function App() {
             currentView={currentView}
             activeTaskSessionIds={activeTasks}
             subagentsBySession={subagents}
+            changesReadyBySession={changesReady}
             rooms={rooms}
             activeRoomId={activeRoomId}
             onSelectRoom={(id) => {
