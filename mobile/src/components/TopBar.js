@@ -14,6 +14,7 @@ import { colors } from '../theme/colors';
 import { SidebarContext } from '../context/SidebarContext';
 import { getApiBaseUrl, getWsUrl } from '../utils/config';
 import { getActiveOrg } from '../utils/orgs';
+import BugReportButton from './BugReportButton';
 
 const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
@@ -40,9 +41,10 @@ const ENGINE_MODELS = {
   ],
 };
 
-export default function TopBar() {
+export default function TopBar({ projectId, agentId } = {}) {
   const {
     activeAgent,
+    activeAgentId,
     connected,
     reconnecting,
     sessionEngine,
@@ -52,6 +54,10 @@ export default function TopBar() {
     handleNewSession,
   } = useApp();
   const { openSidebar } = useContext(SidebarContext);
+
+  // Prefer explicit props, fall back to the active agent from context.
+  const effectiveAgentId = agentId || activeAgentId || activeAgent?.id || '';
+  const effectiveProjectId = projectId || activeAgent?.projectId || '';
 
   const [showPicker, setShowPicker] = useState(false);
 
@@ -68,6 +74,11 @@ export default function TopBar() {
         >
           <Ionicons name="menu" size={24} color={colors.gray400} />
         </TouchableOpacity>
+        <BugReportButton
+          projectId={effectiveProjectId}
+          agentId={effectiveAgentId}
+          sourceUrl={activeAgent?.name ? `agent:${activeAgent.name}` : ''}
+        />
         {activeAgent && (
           <View style={styles.agentInfo}>
             <View style={[styles.agentDot, { backgroundColor: activeAgent.color }]} />

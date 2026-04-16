@@ -82,6 +82,7 @@ import { initIosBuildEngine } from './ios-build-engine.js';
 import { initCaptureEngine } from './capture-engine.js';
 import { initWebhookWorker } from './webhook-worker.js';
 import createPrActionRoutes from './routes/pr-actions.js';
+import createBugReportRoutes from './routes/bug-reports.js';
 
 import {
   initDelegation,
@@ -429,6 +430,7 @@ app.use('/api/captures', createCaptureGlobalRoutes());
 app.use('/api/projects/:projectId/captures', createCaptureRoutes(routeDeps));
 app.use(createIosBuildRoutes(routeDeps));
 app.use(createPrActionRoutes(routeDeps));
+app.use(createBugReportRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();

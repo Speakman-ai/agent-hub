@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { formatSessionExport, copyToClipboard } from '../utils/export.js';
 import { api } from '../utils/api.js';
+import BugReportButton from './BugReportButton.jsx';
 
 const ENGINE_OPTIONS = [{ id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' }];
 
@@ -32,6 +33,8 @@ export default function TopBar({
   onAskModeChange,
   verboseMode,
   onVerboseModeChange,
+  projectId,
+  showToast,
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -80,6 +83,7 @@ export default function TopBar({
             />
           </svg>
         </button>
+        <BugReportButton projectId={projectId} agentId={agent?.id} onToast={showToast} />
         {agent && (
           <>
             <span

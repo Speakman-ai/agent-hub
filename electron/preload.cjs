@@ -43,4 +43,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** Check if the system supports native notifications. */
   isNotificationSupported: () => ipcRenderer.sendSync('get-notification-support'),
+
+  // ─── Bug Report ─────────────────────────────────────────────────
+
+  /**
+   * Capture the current window as a PNG data URL using Electron's native
+   * webContents.capturePage(). Returns null if capture fails or no window
+   * is available. Used by the Bug Report button in place of html2canvas.
+   */
+  captureBugScreenshot: () => ipcRenderer.invoke('bug-report:capture-page'),
 });

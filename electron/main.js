@@ -359,6 +359,25 @@ ipcMain.handle('select-directory', async () => {
   return result.filePaths[0];
 });
 
+// Bug report screenshot — captures the current window via Electron's
+// native webContents.capturePage(), which is higher fidelity than
+// html2canvas (handles cross-origin iframes, CSS filters, etc.).
+// Returns a PNG data URL, or null on failure / no window.
+ipcMain.handle('bug-report:capture-page', async () => {
+  try {
+    const win =
+      BrowserWindow.getFocusedWindow() ||
+      mainWindow ||
+      BrowserWindow.getAllWindows()[0];
+    if (!win) return null;
+    const image = await win.webContents.capturePage();
+    return image.toDataURL();
+  } catch (err) {
+    console.error('[bug-report:capture-page] Failed:', err);
+    return null;
+  }
+});
+
 // ─── Notification IPC handlers ───────────────────────────────────
 
 const notifHandlers = createNotificationHandlers(() => mainWindow);

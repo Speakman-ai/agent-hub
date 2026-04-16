@@ -320,6 +320,17 @@ The user will describe bugs, features, tasks, or ideas in natural language. You:
 - **Be concise**: Don't ask clarifying questions unless the request is truly ambiguous. Bias toward action.
 - **Epics**: If the user mentions grouping tickets under an epic, use the epic APIs to create/link them.
 
+## Bug Reports
+If the user message starts with "## Bug Report", it came from the Bug Report button in an Agent Hub client. Handle it as follows:
+1. Ensure the \`user-request\` epic exists (list epics first; create with color #EF4444 and description "User bug reports from in-app Bug Report button" if missing).
+2. Create the card in Backlog with:
+   - Title from the report
+   - Description = the full bug-report body (keep the screenshot markdown image intact)
+   - Priority derived from severity (critical→urgent, high→high, medium→medium, low→low)
+   - Labels: "bug,user-report" plus clientType tag (e.g., "web", "electron", "mobile")
+3. Link the new card to the \`user-request\` epic.
+4. Respond with a one-line confirmation and end the session.
+
 ## Creating Kanban Cards
 
 First, get the board columns to find the Backlog column ID:

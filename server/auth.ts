@@ -7,6 +7,7 @@ const PUBLIC_PATHS: readonly string[] = [
   '/api/github-app/callback',
   '/api/github-app/setup-complete',
   '/api/github-app/register',
+  '/api/bug-reports',
 ];
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {

@@ -1796,6 +1796,12 @@ export default function App() {
             onAskModeChange={handleAskModeChange}
             verboseMode={verboseMode}
             onVerboseModeChange={handleVerboseModeChange}
+            projectId={
+              currentView.startsWith('kanban:')
+                ? currentView.split(':')[1]
+                : projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
+            }
+            showToast={showToast}
           />
 
           {currentView.startsWith('kanban:') ? (
