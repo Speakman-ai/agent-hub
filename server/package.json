@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@browserbasehq/stagehand": "^3.2.1",
     "@slack/bolt": "^4.6.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
@@ -20,7 +21,8 @@
     "playwright": "^1.59.1",
     "tsx": "^4.21.0",
     "uuid": "^10.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
