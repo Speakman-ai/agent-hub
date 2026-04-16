@@ -136,6 +136,16 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (!title) return res.status(400).json({ error: 'title is required' });
     if (!columnId) return res.status(400).json({ error: 'columnId is required' });
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+
+    // Deduplication: check for existing card with same title (case-insensitive) on this board
+    const allBoardCards = stmts.getKanbanCards.all(board.id) as KanbanCardRow[];
+    const titleLower = title.toLowerCase().trim();
+    const duplicate = allBoardCards.find((c) => c.title.toLowerCase().trim() === titleLower);
+    if (duplicate) {
+      // Return the existing card instead of creating a duplicate
+      return res.json(duplicate);
+    }
+
     const existingCards = stmts.getKanbanCardsByColumn.all(columnId) as KanbanCardRow[];
     const maxPos =
       existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;

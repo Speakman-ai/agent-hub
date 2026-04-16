@@ -33,6 +33,7 @@ interface GitHubPullRequest {
   number: number;
   title: string;
   html_url: string;
+  user?: GitHubUser;
   head?: { ref: string; sha: string };
   base?: { ref: string };
   body?: string;
@@ -581,6 +582,27 @@ function handleKanbanWebhookEvent(
   // Auto-create a kanban card when a PR is opened and no card exists yet
   if (!card && event === 'pull_request' && action === 'opened' && payload.pull_request) {
     const pr = payload.pull_request;
+
+    // Dedup: check for existing card with same title (case-insensitive) on this board
+    const allCards = stmts.getKanbanCards.all(boardData.board.id) as KanbanCardRow[];
+    const titleLower = pr.title.toLowerCase().trim();
+    const existingByTitle = allCards.find((c) => c.title.toLowerCase().trim() === titleLower);
+    if (existingByTitle) {
+      // Link the PR URL to the existing card if not already set
+      if (!existingByTitle.pr_url) {
+        try {
+          stmts.setCardPrUrl.run(prUrl, existingByTitle.id);
+        } catch {
+          /* non-critical */
+        }
+      }
+      console.log(
+        `[Webhook/Kanban] Skipping auto-create — card "${existingByTitle.title}" already exists on board`,
+      );
+      card = existingByTitle;
+      return true;
+    }
+
     const inProgressCol = cols.find((c) => c.name === 'In Progress');
     const targetCol = inProgressCol || cols[0];
     if (!targetCol) return false;
@@ -880,6 +902,30 @@ function handleWebhookReviewRequested(
     const session = stmts.getSession?.get(card.session_id) as SessionRow | undefined;
     if (session) {
       subAgent = project.agents?.find((a) => a.id === session.agent_id) || null;
+    }
+  }
+
+  // If we couldn't find the author via session, check if the PR was authored by
+  // one of our known bot identities — if so, it's one of our agents' work and we
+  // must prevent self-review. Treat the lead as the author when we can't determine
+  // the specific sub-agent, so selectReviewerAgent can exclude them.
+  if (!subAgent) {
+    const prAuthor = payload.pull_request?.user?.login;
+    if (prAuthor) {
+      const isOurBot =
+        (ghAuthenticatedUser && prAuthor === ghAuthenticatedUser) ||
+        (ghBotUser && prAuthor === ghBotUser) ||
+        (appBotLogin && prAuthor === appBotLogin);
+      if (isOurBot) {
+        // PR was created by our bot — find the lead agent so we don't self-review
+        const leadAgent = project.agents?.find((a) => a.role === 'lead');
+        if (leadAgent) {
+          console.log(
+            `[Webhook/Kanban] PR authored by our bot "${prAuthor}" — marking lead "${leadAgent.name}" as author to prevent self-review`,
+          );
+          subAgent = leadAgent;
+        }
+      }
     }
   }
 
