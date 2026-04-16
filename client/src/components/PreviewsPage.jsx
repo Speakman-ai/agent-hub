@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
+import PreviewPanel from './PreviewPanel.jsx';
 import {
   Container,
   Play,
@@ -17,6 +18,7 @@ import {
   X,
   GitPullRequest,
   Server,
+  PanelRightOpen,
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -281,7 +283,7 @@ function LogViewer({ projectId, previewId, onClose }) {
   );
 }
 
-function PreviewCard({ preview, projectId, onAction }) {
+function PreviewCard({ preview, projectId, onAction, onOpenPanel }) {
   const [acting, setActing] = useState(null);
   const config = STATUS_CONFIG[preview.status] || STATUS_CONFIG.error;
 
@@ -314,13 +316,20 @@ function PreviewCard({ preview, projectId, onAction }) {
           <StatusBadge status={preview.status} />
         </div>
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => onOpenPanel(preview)}
+            className="text-blue-400 hover:text-blue-300 p-1.5 rounded-lg hover:bg-gray-700/50 transition-colors"
+            title="Open preview panel"
+          >
+            <PanelRightOpen size={16} />
+          </button>
           {preview.url && preview.status === 'running' && (
             <a
               href={preview.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-400 hover:text-blue-300 p-1.5 rounded-lg hover:bg-gray-700/50 transition-colors"
-              title="Open preview"
+              className="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-gray-700/50 transition-colors"
+              title="Open in new tab"
             >
               <ExternalLink size={16} />
             </a>
@@ -448,6 +457,7 @@ export default function PreviewsPage({ projectId }) {
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [showLogs, setShowLogs] = useState(null);
+  const [panelPreview, setPanelPreview] = useState(null);
 
   const fetchPreviews = useCallback(async () => {
     try {
@@ -570,6 +580,7 @@ export default function PreviewsPage({ projectId }) {
                   preview={p}
                   projectId={projectId}
                   onAction={(action, id) => handleAction(action, id)}
+                  onOpenPanel={(prev) => setPanelPreview(prev)}
                 />
               ))}
             </div>
@@ -589,6 +600,7 @@ export default function PreviewsPage({ projectId }) {
                   preview={p}
                   projectId={projectId}
                   onAction={(action, id) => handleAction(action, id)}
+                  onOpenPanel={(prev) => setPanelPreview(prev)}
                 />
               ))}
             </div>
@@ -627,6 +639,13 @@ export default function PreviewsPage({ projectId }) {
       )}
       {showLogs && (
         <LogViewer projectId={projectId} previewId={showLogs} onClose={() => setShowLogs(null)} />
+      )}
+      {panelPreview && (
+        <PreviewPanel
+          preview={panelPreview}
+          projectId={projectId}
+          onClose={() => setPanelPreview(null)}
+        />
       )}
     </div>
   );

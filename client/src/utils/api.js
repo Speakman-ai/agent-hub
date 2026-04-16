@@ -454,4 +454,29 @@ export const api = {
     fetchJSON(`/projects/${projectId}/previews/${previewId}/logs?tail=${tail}`),
   deletePreview: (projectId, previewId) =>
     fetchJSON(`/projects/${projectId}/previews/${previewId}`, { method: 'DELETE', timeout: 30000 }),
+
+  // Preview Captures
+  getPreviewCaptures: (projectId, previewId) =>
+    fetchJSON(`/projects/${projectId}/previews/${previewId}/captures`),
+  triggerPreviewCapture: (projectId, previewId, options = {}) =>
+    fetchJSON(`/projects/${projectId}/previews/${previewId}/capture`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+      timeout: 30000,
+    }),
+
+  // PR Actions
+  mergePr: (prUrl, mergeMethod = 'squash') =>
+    fetchJSON('/pr/merge', {
+      method: 'POST',
+      body: JSON.stringify({ prUrl, mergeMethod }),
+      timeout: 60000,
+    }),
+  closePr: (prUrl) =>
+    fetchJSON('/pr/close', {
+      method: 'POST',
+      body: JSON.stringify({ prUrl }),
+      timeout: 30000,
+    }),
+  getPrStatus: (prUrl) => fetchJSON(`/pr/status?prUrl=${encodeURIComponent(prUrl)}`),
 };

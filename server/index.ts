@@ -78,6 +78,7 @@ import createEscalationRoutes from './routes/escalations.js';
 import createPreviewRoutes from './routes/previews.js';
 import { initPreviewEngine } from './preview-engine.js';
 import createPreviewDbRoutes from './routes/preview.js';
+import createPrActionRoutes from './routes/pr-actions.js';
 import { createPreviewProxyMiddleware, createPreviewWsUpgradeHandler } from './preview-proxy.js';
 
 import {
@@ -417,6 +418,7 @@ app.use(createThreadRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
 app.use(createPreviewRoutes(routeDeps));
 app.use(createPreviewDbRoutes(routeDeps));
+app.use(createPrActionRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();
