@@ -88,15 +88,15 @@ const config: AppConfig = {
   ) as string,
 
   // ── Models ─────────────────────────────────────────────────────
-  defaultModel: resolve(null, 'defaultModel', 'claude-opus-4-6') as string,
+  defaultModel: resolve(null, 'defaultModel', 'claude-opus-4-7') as string,
 
   engineDefaultModels: (fileConfig.engineDefaultModels as Record<string, string>) || {
-    'claude-code': 'claude-opus-4-6',
+    'claude-code': 'claude-opus-4-7',
     'cursor-agent': 'gpt-5.3-codex-high',
   },
 
   engineValidModels: (fileConfig.engineValidModels as Record<string, string[]>) || {
-    'claude-code': ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-6'],
+    'claude-code': ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-6'],
     'cursor-agent': [
       'gpt-5.3-codex-high',
       'gpt-5.3-codex',

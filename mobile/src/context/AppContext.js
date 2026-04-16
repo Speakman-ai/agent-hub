@@ -7,7 +7,7 @@ import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
 const AppContext = createContext(null);
 
 const ENGINE_DEFAULT_MODELS = {
-  'claude-code': 'claude-opus-4-6',
+  'claude-code': 'claude-opus-4-7',
   'cursor-agent': 'gpt-5.3-codex-high',
 };
 
@@ -23,7 +23,7 @@ export function AppProvider({ children }) {
   const [streamingMsgId, setStreamingMsgId] = useState(null);
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
-  const [sessionModel, setSessionModel] = useState('claude-opus-4-6');
+  const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
   // Map of sessionId -> running task state. Populated from server snapshot on
   // connect and kept in sync via stream events so it survives session switches.
   const [activeTasks, setActiveTasks] = useState({});
@@ -468,13 +468,13 @@ export function AppProvider({ children }) {
         setActiveSessionId(data[0].id);
         const agent = agents.find((a) => a.id === activeAgentId);
         setSessionEngine(data[0].engine || agent?.engine || 'claude-code');
-        setSessionModel(data[0].model || 'claude-opus-4-6');
+        setSessionModel(data[0].model || 'claude-opus-4-7');
       } else {
         setActiveSessionId(null);
         setMessages([]);
         const agent = agents.find((a) => a.id === activeAgentId);
         setSessionEngine(agent?.engine || 'claude-code');
-        setSessionModel('claude-opus-4-6');
+        setSessionModel('claude-opus-4-7');
       }
     }).catch((err) => console.error('Failed to load sessions:', err));
   }, [configReady, activeAgentId]);
@@ -580,13 +580,13 @@ export function AppProvider({ children }) {
     setActiveSessionId(session.id);
     const agent = agents.find((a) => a.id === activeAgentId);
     setSessionEngine(session.engine || agent?.engine || 'claude-code');
-    setSessionModel(session.model || 'claude-opus-4-6');
+    setSessionModel(session.model || 'claude-opus-4-7');
     setMessages([]);
   }, [activeAgentId, agents]);
 
   const handleEngineChange = useCallback(async (engine) => {
     setSessionEngine(engine);
-    const defaultModel = ENGINE_DEFAULT_MODELS[engine] || 'claude-opus-4-6';
+    const defaultModel = ENGINE_DEFAULT_MODELS[engine] || 'claude-opus-4-7';
     setSessionModel(defaultModel);
     const sid = activeSessionIdRef.current;
     if (sid) {

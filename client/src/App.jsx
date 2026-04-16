@@ -60,7 +60,7 @@ export default function App() {
   const [streamingMsgId, setStreamingMsgId] = useState(null);
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
-  const [sessionModel, setSessionModel] = useState('claude-opus-4-6');
+  const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
   const [sessionWorktree, setSessionWorktree] = useState(true);
   const [gitWorktreeDetected, setGitWorktreeDetected] = useState(null); // null = unknown, true/false from CLI
   const [sessionAskMode, setSessionAskMode] = useState(false);
@@ -1187,7 +1187,7 @@ export default function App() {
       if (target) {
         setActiveSessionId(target.id);
         setSessionEngine(target.engine || activeAgent?.engine || 'claude-code');
-        setSessionModel(target.model || 'claude-opus-4-6');
+        setSessionModel(target.model || 'claude-opus-4-7');
         setSessionWorktree(target.use_worktree !== 0);
         setGitWorktreeDetected(
           target.git_worktree_detected != null ? target.git_worktree_detected === 1 : null,
@@ -1197,7 +1197,7 @@ export default function App() {
         setActiveSessionId(null);
         setMessages([]);
         setSessionEngine(agents.find((a) => a.id === activeAgentId)?.engine || 'claude-code');
-        setSessionModel('claude-opus-4-6');
+        setSessionModel('claude-opus-4-7');
         setSessionWorktree(true);
         setGitWorktreeDetected(null);
         setSessionAskMode(false);
@@ -1357,7 +1357,7 @@ export default function App() {
     setSessions((prev) => [session, ...prev]);
     setActiveSessionId(session.id);
     setSessionEngine(session.engine || activeAgent?.engine || 'claude-code');
-    setSessionModel(session.model || 'claude-opus-4-6');
+    setSessionModel(session.model || 'claude-opus-4-7');
     setSessionWorktree(session.use_worktree !== 0);
     setGitWorktreeDetected(null); // New session, not yet detected
     setSessionAskMode(session.ask_mode !== 0);
@@ -1366,12 +1366,12 @@ export default function App() {
   };
 
   const ENGINE_DEFAULT_MODELS = {
-    'claude-code': 'claude-opus-4-6',
+    'claude-code': 'claude-opus-4-7',
   };
 
   const handleEngineChange = async (engine) => {
     setSessionEngine(engine);
-    const defaultModel = ENGINE_DEFAULT_MODELS[engine] || 'claude-opus-4-6';
+    const defaultModel = ENGINE_DEFAULT_MODELS[engine] || 'claude-opus-4-7';
     setSessionModel(defaultModel);
     if (activeSessionId) {
       const updated = await api.setSessionEngine(activeSessionId, engine);

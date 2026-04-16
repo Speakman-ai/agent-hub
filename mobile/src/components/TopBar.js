@@ -22,7 +22,8 @@ const ENGINE_OPTIONS = [
 
 const ENGINE_MODELS = {
   'claude-code': [
-    { id: 'claude-opus-4-6', label: 'Opus', short: 'Opus' },
+    { id: 'claude-opus-4-7', label: 'Opus 4.7', short: 'Opus' },
+    { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
     { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
   ],
   'cursor-agent': [

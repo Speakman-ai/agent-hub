@@ -510,7 +510,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
           '_cron',
           sessionName,
           'claude-code',
-          'claude-opus-4-6',
+          'claude-opus-4-7',
           0,
           0,
         );
