@@ -1,0 +1,64 @@
+# Dockerfile.preview — Self-contained PR preview environment
+# Clones the repo at a specific branch, installs deps, builds the client,
+# and serves both server + built client from a single container.
+#
+# Build args:
+#   REPO_URL    — Git clone URL (https)
+#   BRANCH      — Branch to check out
+#   COMMIT_SHA  — (optional) Pin to exact commit after checkout
+#
+# The container exposes a single port (3051) that serves:
+#   - The Express API + WebSocket at /api/* and /ws
+#   - The built client static files at /
+
+FROM node:22-slim
+
+# Install git + build tools for native modules (better-sqlite3)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG REPO_URL
+ARG BRANCH=main
+ARG COMMIT_SHA=""
+
+WORKDIR /app
+
+# Clone the repo at the target branch (shallow for speed)
+RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" . || \
+    (git clone --depth 50 "${REPO_URL}" . && git checkout "${BRANCH}")
+
+# If a specific commit SHA is provided, reset to it
+RUN if [ -n "${COMMIT_SHA}" ]; then \
+      git fetch --depth 50 origin "${BRANCH}" && \
+      git checkout "${COMMIT_SHA}"; \
+    fi
+
+# Install all dependencies (root + server + client)
+RUN npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
+RUN cd server && npm ci 2>/dev/null || (cd server && npm install)
+RUN cd client && npm ci 2>/dev/null || (cd client && npm install)
+
+# Rebuild native modules (better-sqlite3)
+RUN cd server && npm rebuild better-sqlite3
+
+# Build the client
+RUN cd client && npm run build
+
+# Create data directory
+RUN mkdir -p /data /app/server/uploads
+
+ENV NODE_ENV=production
+ENV AGENT_HUB_DATA_DIR=/data
+ENV AGENT_HUB_HOST=0.0.0.0
+ENV AGENT_HUB_PORT=3051
+# Tell the server to serve the built client from dist
+ENV AGENT_HUB_SERVE_CLIENT=/app/client/dist
+
+EXPOSE 3051
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "fetch('http://localhost:3051/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+
+WORKDIR /app/server
+CMD ["node_modules/.bin/tsx", "index.ts"]

@@ -5,6 +5,7 @@ import { Router, Request, Response } from 'express';
 import config, { defaultModelForEngine } from '../config.js';
 import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
+import { stopPreview } from '../preview-engine.js';
 import type {
   RouteDeps,
   Stmts,
@@ -19,6 +20,7 @@ import type {
   WebhookConfigRow,
   SessionRow,
   AppConfig,
+  PreviewContainerRow,
 } from '../types.js';
 
 // ─── GitHub Payload Types ────────────────────────────────────────
@@ -906,6 +908,22 @@ function handleWebhookPrClosed(
   const tryAutonomousDispatch = deps.tryAutonomousDispatch as () => void;
   const merged = payload.pull_request?.merged === true;
   const prNumber = payload.pull_request?.number;
+
+  // Auto-stop preview container when PR is closed or merged
+  if (prNumber) {
+    const preview = stmts.getPreviewContainerByPr.get(project.id, prNumber) as
+      | PreviewContainerRow
+      | undefined;
+    if (preview) {
+      stopPreview(preview.id).catch((err) => {
+        console.error(
+          `[Webhook/Preview] Failed to stop preview for PR #${prNumber}:`,
+          (err as Error).message,
+        );
+      });
+      console.log(`[Webhook/Preview] PR #${prNumber} closed — stopping preview container`);
+    }
+  }
 
   if (merged) {
     const doneCol = cols.find((c) => c.name.toLowerCase() === 'done');

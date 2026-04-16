@@ -430,4 +430,28 @@ export const api = {
 
   // Server Logs
   getServerLogs: () => fetchJSON('/server-logs'),
+
+  // Preview Containers
+  getPreviewStatus: () => fetchJSON('/previews/status'),
+  getProjectPreviews: (projectId) => fetchJSON(`/projects/${projectId}/previews`),
+  createPreview: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/previews`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeout: 30000,
+    }),
+  stopPreview: (projectId, previewId) =>
+    fetchJSON(`/projects/${projectId}/previews/${previewId}/stop`, {
+      method: 'POST',
+      timeout: 30000,
+    }),
+  rebuildPreview: (projectId, previewId) =>
+    fetchJSON(`/projects/${projectId}/previews/${previewId}/rebuild`, {
+      method: 'POST',
+      timeout: 30000,
+    }),
+  getPreviewLogs: (projectId, previewId, tail = 200) =>
+    fetchJSON(`/projects/${projectId}/previews/${previewId}/logs?tail=${tail}`),
+  deletePreview: (projectId, previewId) =>
+    fetchJSON(`/projects/${projectId}/previews/${previewId}`, { method: 'DELETE', timeout: 30000 }),
 };

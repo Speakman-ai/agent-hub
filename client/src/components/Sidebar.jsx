@@ -11,6 +11,7 @@ import {
   GitFork,
   List,
   AlertTriangle,
+  Container,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
@@ -42,6 +43,7 @@ export default function Sidebar({
   wikiProjectId,
   notesProjectId,
   threadsProjectId,
+  previewsProjectId,
   unreadThreadCounts = {},
   activeReviews = {},
   subagentsBySession = {},
@@ -547,6 +549,19 @@ export default function Sidebar({
                             : unreadThreadCounts[project.id]}
                         </span>
                       )}
+                    </button>
+
+                    {/* Preview environments */}
+                    <button
+                      onClick={() => onNavigate('previews', project.id)}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                        currentView === 'previews' && previewsProjectId === project.id
+                          ? 'bg-gray-800 text-white'
+                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                      }`}
+                    >
+                      <Container size={14} className="flex-shrink-0" />
+                      <span className="truncate">Previews</span>
                     </button>
                   </div>
                 )}

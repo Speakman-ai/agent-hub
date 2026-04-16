@@ -390,6 +390,26 @@ export interface NoteRow {
   updated_at: string;
 }
 
+export interface PreviewContainerRow {
+  id: string;
+  project_id: string;
+  pr_number: number;
+  pr_url: string | null;
+  branch: string;
+  commit_sha: string | null;
+  repo_url: string;
+  container_id: string | null;
+  port: number | null;
+  url: string | null;
+  status: 'building' | 'running' | 'stopping' | 'stopped' | 'error';
+  error_message: string | null;
+  build_log: string | null;
+  ttl_minutes: number;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ─── Prepared Statements ─────────────────────────────────────────
 
 type Stmt<TParams extends unknown[] = unknown[], TRow = unknown> = Database.Statement<
@@ -695,6 +715,18 @@ export interface Stmts {
   getNoteProcessingsByProject: Stmt;
   getNoteProcessingsByDate: Stmt;
   getNoteProcessingBySession: Stmt;
+
+  // Preview containers
+  getPreviewContainers: Stmt;
+  getPreviewContainersByProject: Stmt;
+  getPreviewContainer: Stmt;
+  getPreviewContainerByPr: Stmt;
+  createPreviewContainer: Stmt;
+  updatePreviewContainer: Stmt;
+  updatePreviewContainerStatus: Stmt;
+  deletePreviewContainer: Stmt;
+  getExpiredPreviews: Stmt;
+  getRunningPreviews: Stmt;
 
   // Notes (from notes tables)
   getNotes: Stmt;

@@ -75,6 +75,8 @@ import createHookRoutes from './routes/hooks.js';
 import createClaudeAuthRoutes from './routes/claude-auth.js';
 import createThreadRoutes from './routes/threads.js';
 import createEscalationRoutes from './routes/escalations.js';
+import createPreviewRoutes from './routes/previews.js';
+import { initPreviewEngine } from './preview-engine.js';
 
 import {
   initDelegation,
@@ -400,6 +402,7 @@ app.use(createHookRoutes(routeDeps));
 app.use(createClaudeAuthRoutes(routeDeps));
 app.use(createThreadRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
+app.use(createPreviewRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();
@@ -732,6 +735,8 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     startSlack(allAgents(), stmts!).catch((err: Error) => {
       console.error('Failed to start Slack bots:', err.message);
     });
+
+    initPreviewEngine({ stmts: stmts!, broadcast });
 
     resumeOrphanedSessions(sessionsToResume);
   });

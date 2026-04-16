@@ -18,6 +18,7 @@ import WikiBrowser from './components/WikiBrowser.jsx';
 import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
 import NotesEditor from './components/NotesEditor.jsx';
+import PreviewsPage from './components/PreviewsPage.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { api } from './utils/api.js';
@@ -105,6 +106,8 @@ export default function App() {
   const [wikiProjectId, setWikiProjectId] = useState(null);
   // Notes state
   const [notesProjectId, setNotesProjectId] = useState(null);
+  // Previews state
+  const [previewsProjectId, setPreviewsProjectId] = useState(null);
   // Threads state
   const [threadsProjectId, setThreadsProjectId] = useState(null);
   const [activeThreadId, setActiveThreadId] = useState(null);
@@ -1609,6 +1612,7 @@ export default function App() {
               setCurrentView(view);
               if (view === 'wiki' && extra) setWikiProjectId(extra);
               if (view === 'notes' && extra) setNotesProjectId(extra);
+              if (view === 'previews' && extra) setPreviewsProjectId(extra);
               if (view === 'threads' && extra) {
                 setThreadsProjectId(extra);
                 setActiveThreadId(null);
@@ -1640,6 +1644,7 @@ export default function App() {
             wikiProjectId={wikiProjectId}
             notesProjectId={notesProjectId}
             threadsProjectId={threadsProjectId}
+            previewsProjectId={previewsProjectId}
             unreadThreadCounts={unreadThreadCounts}
             activeReviews={activeReviews}
           />
@@ -1730,6 +1735,8 @@ export default function App() {
                 }}
               />
             )
+          ) : currentView === 'previews' && previewsProjectId ? (
+            <PreviewsPage projectId={previewsProjectId} />
           ) : currentView === 'skills' ? (
             <SkillsPage agents={agents} projects={projects} />
           ) : currentView === 'room' && activeRoom ? (

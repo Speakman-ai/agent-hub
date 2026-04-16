@@ -17,9 +17,9 @@
     "express": "^4.21.0",
     "gray-matter": "^4.0.3",
     "node-cron": "^4.2.1",
+    "tsx": "^4.21.0",
     "uuid": "^10.0.0",
-    "ws": "^8.18.0",
-    "tsx": "^4.21.0"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

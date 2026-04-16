@@ -459,6 +459,30 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_escalations_project ON escalations(project_id);
     CREATE INDEX IF NOT EXISTS idx_escalations_type ON escalations(project_id, type);
     CREATE INDEX IF NOT EXISTS idx_escalations_ack ON escalations(acknowledged);
+
+    -- Preview containers: isolated Docker environments per PR branch
+    CREATE TABLE IF NOT EXISTS preview_containers (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      pr_url TEXT,
+      branch TEXT NOT NULL,
+      commit_sha TEXT,
+      repo_url TEXT NOT NULL,
+      container_id TEXT,
+      port INTEGER,
+      url TEXT,
+      status TEXT NOT NULL DEFAULT 'building' CHECK(status IN ('building','running','stopping','stopped','error')),
+      error_message TEXT,
+      build_log TEXT,
+      ttl_minutes INTEGER NOT NULL DEFAULT 60,
+      expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_preview_containers_project ON preview_containers(project_id);
+    CREATE INDEX IF NOT EXISTS idx_preview_containers_pr ON preview_containers(project_id, pr_number);
+    CREATE INDEX IF NOT EXISTS idx_preview_containers_status ON preview_containers(status);
   `);
 
   try {
@@ -1413,6 +1437,33 @@ function initDb(dataDir: string): void {
       'SELECT * FROM note_processings WHERE project_id = ? AND note_date = ? ORDER BY created_at DESC',
     ),
     getNoteProcessingBySession: db.prepare('SELECT * FROM note_processings WHERE session_id = ?'),
+
+    // Preview containers
+    getPreviewContainers: db.prepare('SELECT * FROM preview_containers ORDER BY created_at DESC'),
+    getPreviewContainersByProject: db.prepare(
+      'SELECT * FROM preview_containers WHERE project_id = ? ORDER BY created_at DESC',
+    ),
+    getPreviewContainer: db.prepare('SELECT * FROM preview_containers WHERE id = ?'),
+    getPreviewContainerByPr: db.prepare(
+      "SELECT * FROM preview_containers WHERE project_id = ? AND pr_number = ? AND status NOT IN ('stopped', 'error') ORDER BY created_at DESC LIMIT 1",
+    ),
+    createPreviewContainer: db.prepare(
+      `INSERT INTO preview_containers (id, project_id, pr_number, pr_url, branch, commit_sha, repo_url, status, ttl_minutes, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'building', ?, datetime('now', '+' || ? || ' minutes'))`,
+    ),
+    updatePreviewContainer: db.prepare(
+      `UPDATE preview_containers SET container_id = ?, port = ?, url = ?, status = ?, error_message = ?, build_log = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    updatePreviewContainerStatus: db.prepare(
+      `UPDATE preview_containers SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    deletePreviewContainer: db.prepare('DELETE FROM preview_containers WHERE id = ?'),
+    getExpiredPreviews: db.prepare(
+      `SELECT * FROM preview_containers WHERE status = 'running' AND expires_at IS NOT NULL AND expires_at < datetime('now')`,
+    ),
+    getRunningPreviews: db.prepare(
+      `SELECT * FROM preview_containers WHERE status IN ('building', 'running')`,
+    ),
   } as Stmts;
 
   dbRegistry.set(dataDir, { db, stmts });
