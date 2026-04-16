@@ -117,6 +117,16 @@ export default function RoomChat({
     setMentionIndex(0);
   }, [mentionQuery]);
 
+  // Auto-resize textarea to fit its content (capped to ~200px).
+  // Matches the behavior of the normal chat input so long messages grow
+  // the composer without scrolling internally.
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+      inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 200) + 'px';
+    }
+  }, [input]);
+
   // Close export dropdown on outside click
   useEffect(() => {
     const handler = (e) => {
@@ -194,11 +204,18 @@ export default function RoomChat({
         return;
       }
     }
+
+    // Multi-line support: Enter sends, Shift+Enter inserts a newline.
+    // Matches the normal chat composer so users can compose longer messages.
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
   };
 
   const handleSend = (e) => {
-    e.preventDefault();
-    if (!input.trim()) return;
+    e?.preventDefault?.();
+    if (!input.trim() || !room.agents?.length) return;
     closeMention();
     send({
       type: 'room_chat',
@@ -602,8 +619,8 @@ export default function RoomChat({
               agents finish
             </div>
           )}
-          <form onSubmit={handleSend} className="flex gap-2">
-            <input
+          <form onSubmit={handleSend} className="flex items-end gap-2">
+            <textarea
               ref={inputRef}
               value={input}
               onChange={handleInputChange}
@@ -616,11 +633,12 @@ export default function RoomChat({
                 roomProcessing
                   ? 'Type to queue a message while agents respond...'
                   : room.agents?.length > 0
-                    ? 'Message the room — type @ to mention an agent'
+                    ? 'Message the room — @ to mention, Shift+Enter for newline'
                     : 'Add agents to start chatting'
               }
               disabled={!room.agents?.length}
-              className="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 focus:outline-none focus:border-gray-500 disabled:opacity-50"
+              rows={1}
+              className="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 focus:outline-none focus:border-gray-500 disabled:opacity-50 resize-none"
             />
             <div className="flex gap-1">
               {roomProcessing && (
