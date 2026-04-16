@@ -28,6 +28,7 @@ import {
   reloadProjects,
   ensureDocsAgents,
   ensureIntakeAgents,
+  ensureReviewerAgents,
   ensureContextFiles,
   ensureProjectRoom,
 } from './project-model.js';
@@ -111,13 +112,9 @@ import {
   autonomousCrons,
   autonomousProjects,
   lastDispatchedReviewId,
-  reviewSessionCards,
   runAutonomousLoop,
   tryAutonomousDispatch,
   scheduleAutonomousEpic,
-  triggerReviewForCard,
-  leadReviewPR,
-  handleReviewOutcome,
   restoreAutonomousCrons,
   startReviewPollingFallback,
 } from './autonomous.js';
@@ -215,6 +212,7 @@ if (_startupOrgId !== 'default') {
 migrateAhwDirectories();
 ensureDocsAgents();
 ensureIntakeAgents();
+ensureReviewerAgents();
 ensureContextFiles();
 
 function ensureWorktree(
@@ -264,15 +262,11 @@ const webhookHandlerDeps = {
   getGhAuthenticatedUser: () => ghAuthenticatedUser,
   getGhBotUser: () => ghBotUser,
   getGhAppSlug: () => ghAppSlug,
-  getReviewSessionCards: () => reviewSessionCards,
-  leadReviewPR,
 } as unknown as RouteDeps;
 
 initAutoGit({
   stmts: stmts!,
   broadcast,
-  triggerReviewForCard,
-  leadReviewPR,
   getConfig: () => config,
   DEFAULT_SKILLS_DIR,
 });
@@ -350,7 +344,6 @@ const routeDeps: RouteDeps = {
   saveProjects,
   ensureProjectRoom,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
-  triggerReviewForCard,
   pendingReviewComments,
   lastDispatchedReviewId: lastDispatchedReviewId as unknown as Map<string, string>,
   scheduleAutonomousEpic,
@@ -375,6 +368,7 @@ const routeDeps: RouteDeps = {
   getProjectDataDir,
   ensureDocsAgents,
   ensureIntakeAgents,
+  ensureReviewerAgents,
   getClaudeBin: () => CLAUDE_BIN,
   setClaudeBin: (v: string) => {
     CLAUDE_BIN = v;
@@ -441,7 +435,6 @@ const chatHandler = createChatHandler({
   getEnrichedAgent,
   activeProcesses,
   activeDelegationSessions,
-  reviewSessionCards,
   autonomousProjects,
   getClaudeBin: () => CLAUDE_BIN,
   getCursorBin: () => CURSOR_BIN,
@@ -456,7 +449,6 @@ const chatHandler = createChatHandler({
   synthesizeResults: synthesizeResults as ChatHandlerDeps['synthesizeResults'],
   parseDelegateBlock,
   autoCommitAndPR,
-  handleReviewOutcome,
   tryAutonomousDispatch,
 } as ChatHandlerDeps);
 handleChat = chatHandler.handleChat as (ws: unknown, msg: ChatMessage) => Promise<void>;

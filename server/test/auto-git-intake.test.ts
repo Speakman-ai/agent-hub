@@ -36,8 +36,6 @@ describe('autoCommitAndPR — intake agent skip', () => {
     initAutoGit({
       stmts: mockStmts as never,
       broadcast: vi.fn(),
-      triggerReviewForCard: vi.fn(),
-      leadReviewPR: vi.fn(),
       getConfig: () => ({ botGithubToken: null }) as never,
       DEFAULT_SKILLS_DIR: '/tmp/skills',
     });

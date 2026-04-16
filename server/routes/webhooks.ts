@@ -20,7 +20,6 @@ import type {
   KanbanEpicRow,
   WebhookConfigRow,
   SessionRow,
-  AppConfig,
 } from '../types.js';
 
 // ─── GitHub Payload Types ────────────────────────────────────────
@@ -596,6 +595,121 @@ export function dispatchReviewFeedback(
   }
 }
 
+// ─── Reviewer Agent Dispatch (PR opened / synchronize) ───────────
+//
+// Single trigger surface: every `pull_request.opened` or `pull_request.synchronize`
+// webhook fires a Reviewer-agent session for the project's dedicated Reviewer.
+// Multiple rapid pushes within a debounce window coalesce into one dispatch
+// (the latest push wins) so a burst of force-pushes doesn't burn N sessions.
+
+const REVIEWER_DEBOUNCE_MS = 30_000;
+const reviewerDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+interface ReviewerDispatchOpts {
+  prUrl: string;
+  prNumber: number;
+  prTitle: string;
+  repoFullName: string;
+  reason: 'opened' | 'synchronize';
+}
+
+/**
+ * Schedule a Reviewer agent dispatch for a PR. Coalesces rapid repeated
+ * synchronizes into a single delayed run keyed by `${projectId}:${prNumber}`.
+ * Returns true if a dispatch was scheduled, false if no Reviewer agent exists.
+ */
+export function dispatchReviewerForPR(
+  deps: Pick<RouteDeps, 'stmts' | 'handleChat' | 'broadcast' | 'findAgent'>,
+  project: Project,
+  opts: ReviewerDispatchOpts,
+): boolean {
+  const reviewer = project.agents.find((a) => a.role === 'reviewer');
+  if (!reviewer) {
+    console.log(
+      `[Reviewer] No reviewer agent on project "${project.name}" — skipping dispatch for PR #${opts.prNumber}`,
+    );
+    return false;
+  }
+
+  const key = `${project.id}:${opts.prNumber}`;
+  const existing = reviewerDebounceTimers.get(key);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(() => {
+    reviewerDebounceTimers.delete(key);
+    runReviewerDispatch(deps, project, reviewer, opts).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Reviewer] Dispatch failed for PR #${opts.prNumber}:`, msg);
+    });
+  }, REVIEWER_DEBOUNCE_MS);
+
+  reviewerDebounceTimers.set(key, timer);
+  console.log(
+    `[Reviewer] Debounced dispatch scheduled for PR #${opts.prNumber} (${opts.reason}) on "${project.name}"`,
+  );
+  return true;
+}
+
+async function runReviewerDispatch(
+  deps: Pick<RouteDeps, 'stmts' | 'handleChat' | 'broadcast' | 'findAgent'>,
+  project: Project,
+  reviewer: Agent,
+  opts: ReviewerDispatchOpts,
+): Promise<void> {
+  const { stmts, handleChat } = deps;
+
+  const sessionId = crypto.randomUUID();
+  const engine = reviewer.engine || 'claude-code';
+  stmts.createSession.run(
+    sessionId,
+    reviewer.id,
+    `Review: PR #${opts.prNumber} ${opts.prTitle}`.substring(0, 200),
+    engine,
+    (reviewer.model as string | undefined) || defaultModelForEngine(engine),
+    1,
+    0,
+  );
+
+  const prompt = `# PR Review Request (${opts.reason})
+
+You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullName}\`.
+
+- **PR URL**: ${opts.prUrl}
+- **Title**: ${opts.prTitle}
+- **Trigger**: ${opts.reason === 'opened' ? 'PR was just opened' : 'New commits were pushed (synchronize)'}
+
+## Your task
+1. Fetch the PR metadata, diff, and recent commits using \`gh pr view ${opts.prNumber} --repo ${opts.repoFullName}\` and \`gh pr diff ${opts.prNumber} --repo ${opts.repoFullName}\`.
+2. Read the changed files in context.
+3. Identify issues across correctness, security, tests, conventions, and performance.
+4. Submit ONE formal GitHub review for this push:
+   - \`gh pr review ${opts.prNumber} --repo ${opts.repoFullName} --approve\` if clean
+   - \`gh pr review ${opts.prNumber} --repo ${opts.repoFullName} --request-changes --body "..."\` if blocking issues
+   - \`gh pr review ${opts.prNumber} --repo ${opts.repoFullName} --comment --body "..."\` for non-blocking notes
+
+Do **NOT** edit code. Do **NOT** merge. GitHub's native auto-merge handles landing approved PRs.`;
+
+  console.log(
+    `[Reviewer] Dispatching "${reviewer.name}" → PR #${opts.prNumber} (session ${sessionId})`,
+  );
+
+  await handleChat(null, {
+    type: 'chat',
+    agentId: reviewer.id,
+    sessionId,
+    content: prompt,
+    hookSpecificOutput: {
+      sessionTitle: `Review: PR #${opts.prNumber} ${opts.prTitle}`.substring(0, 200),
+    },
+  });
+}
+
+/** Test-only helper. */
+export function _clearReviewerDebounce(): void {
+  for (const t of reviewerDebounceTimers.values()) clearTimeout(t);
+  reviewerDebounceTimers.clear();
+}
+
 // ─── Review Comment Batching ────────────────────────────────────
 
 export const pendingReviewComments = new Map<string, PendingReviewEntry>();
@@ -792,6 +906,26 @@ function handleKanbanWebhookEvent(
   const project = projects.find((p) => p.id === webhookConfig.project_id);
   if (!project) return false;
 
+  // ─── Unified Reviewer Dispatch ──────────────────────────────────
+  // Every PR `opened` or `synchronize` event triggers the project's dedicated
+  // Reviewer agent (debounced). This is the SINGLE trigger surface for review —
+  // no longer tied to autonomous mode, kanban column moves, or review_requested.
+  if (
+    event === 'pull_request' &&
+    payload.pull_request &&
+    payload.repository?.full_name &&
+    (action === 'opened' || action === 'synchronize')
+  ) {
+    const pr = payload.pull_request;
+    dispatchReviewerForPR(deps, project, {
+      prUrl: pr.html_url,
+      prNumber: pr.number,
+      prTitle: pr.title,
+      repoFullName: payload.repository.full_name,
+      reason: action,
+    });
+  }
+
   const boardData = getOrCreateBoard(stmts, project.id) as BoardData | null;
   if (!boardData?.board) return false;
   const cols = stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
@@ -912,8 +1046,6 @@ function handleKanbanWebhookEvent(
   switch (eventKey) {
     case 'pull_request_review.submitted':
       return handleWebhookPrReview(deps, card, project, cols, payload, sender);
-    case 'pull_request.review_requested':
-      return handleWebhookReviewRequested(deps, card, project, cols, payload, sender);
     case 'pull_request.closed':
       return handleWebhookPrClosed(deps, card, project, cols, payload, sender);
     case 'pull_request.synchronize':
@@ -1095,106 +1227,6 @@ ${reviewBody}
   }
 
   return false;
-}
-
-function handleWebhookReviewRequested(
-  deps: RouteDeps,
-  card: KanbanCardRow,
-  project: Project,
-  cols: KanbanColumnRow[],
-  payload: GitHubWebhookPayload,
-  sender: string,
-): boolean {
-  const { stmts, broadcast, getGhBotUser } = deps;
-  const getGhAuthenticatedUser = deps.getGhAuthenticatedUser as () => string | null;
-  const getReviewSessionCards = deps.getReviewSessionCards as () => Map<string, { prUrl: string }>;
-  const leadReviewPR = deps.leadReviewPR as (
-    project: Project,
-    prUrl: string,
-    card: KanbanCardRow,
-    subAgent: Agent | null,
-  ) => Promise<void>;
-  const prUrl = payload.pull_request?.html_url;
-  if (!prUrl) return false;
-
-  const ghAuthenticatedUser = getGhAuthenticatedUser();
-  const ghBotUser = getGhBotUser();
-  const ghAppSlug = deps.getGhAppSlug?.();
-
-  const requestedReviewer = payload.requested_reviewer?.login;
-  const reviewer =
-    ((project as Record<string, unknown>).defaultReviewer as string | undefined) ||
-    config.defaultReviewer;
-
-  // Match against all known bot identities including the GitHub App bot login (slug[bot])
-  const appBotLogin = ghAppSlug ? `${ghAppSlug}[bot]` : null;
-  const isOurReviewer =
-    (ghAuthenticatedUser && requestedReviewer === ghAuthenticatedUser) ||
-    (ghBotUser && requestedReviewer === ghBotUser) ||
-    (reviewer && requestedReviewer === reviewer) ||
-    (appBotLogin && requestedReviewer === appBotLogin);
-
-  if (!isOurReviewer) {
-    console.log(
-      `[Webhook/Kanban] review_requested for "${requestedReviewer}" — not our reviewer, skipping`,
-    );
-    return false;
-  }
-
-  const reviewSessionCards = getReviewSessionCards();
-  const existingReviewSession = [...reviewSessionCards.values()].find((r) => r.prUrl === prUrl);
-  if (existingReviewSession) {
-    console.log(`[Webhook/Kanban] Review session already exists for ${prUrl} — skipping`);
-    return true;
-  }
-
-  console.log(
-    `[Webhook/Kanban] Review requested on "${card.title}" by ${sender} for ${requestedReviewer} — triggering lead review`,
-  );
-
-  let subAgent: Agent | null = null;
-  if (card.session_id) {
-    const session = stmts.getSession?.get(card.session_id) as SessionRow | undefined;
-    if (session) {
-      subAgent = project.agents?.find((a) => a.id === session.agent_id) || null;
-    }
-  }
-
-  // If we couldn't find the author via session, check if the PR was authored by
-  // one of our known bot identities — if so, it's one of our agents' work and we
-  // must prevent self-review. Treat the lead as the author when we can't determine
-  // the specific sub-agent, so selectReviewerAgent can exclude them.
-  if (!subAgent) {
-    const prAuthor = payload.pull_request?.user?.login;
-    if (prAuthor) {
-      const isOurBot =
-        (ghAuthenticatedUser && prAuthor === ghAuthenticatedUser) ||
-        (ghBotUser && prAuthor === ghBotUser) ||
-        (appBotLogin && prAuthor === appBotLogin);
-      if (isOurBot) {
-        // PR was created by our bot — find the lead agent so we don't self-review
-        const leadAgent = project.agents?.find((a) => a.role === 'lead');
-        if (leadAgent) {
-          console.log(
-            `[Webhook/Kanban] PR authored by our bot "${prAuthor}" — marking lead "${leadAgent.name}" as author to prevent self-review`,
-          );
-          subAgent = leadAgent;
-        }
-      }
-    }
-  }
-
-  const reviewCol = cols.find((c) => c.name.toLowerCase() === 'review');
-  if (reviewCol && card.column_id !== reviewCol.id) {
-    stmts.moveKanbanCard.run(reviewCol.id, 0, card.id);
-    broadcast({ type: 'kanban_update', projectId: project.id });
-  }
-
-  leadReviewPR(project, prUrl, card, subAgent).catch((err: Error) => {
-    console.error(`[Lead Review] Failed to start from webhook:`, err.message);
-  });
-
-  return true;
 }
 
 function handleWebhookPrClosed(
@@ -1644,7 +1676,7 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
 // ─── Webhook CRUD routes (requires auth) ────────────────────────
 
 export default function createWebhookRoutes(deps: RouteDeps): Router {
-  const { stmts } = deps;
+  const { stmts, ensureReviewerAgents } = deps;
   const router = Router();
 
   router.get('/api/webhooks', (_req: Request, res: Response) => {
@@ -1676,6 +1708,13 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
     );
 
     const created = stmts.getWebhookConfig.get(result.lastInsertRowid) as WebhookConfigRow;
+
+    // Seed a Reviewer agent for the project now that GitHub integration exists.
+    try {
+      ensureReviewerAgents();
+    } catch (err: unknown) {
+      console.warn(`[Webhooks] ensureReviewerAgents failed: ${(err as Error).message}`);
+    }
 
     if (autoRegister) {
       try {

@@ -740,7 +740,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   // ─── Create ticket & PR from ad-hoc session ──────────────────────
   router.post('/api/sessions/:sessionId/create-pr', async (req: Request, res: Response) => {
-    const { autoMerge = false, title } = req.body || {};
+    // `autoMerge` is accepted for backwards compatibility but ignored — auto-merge
+    // is now handled exclusively by GitHub's native branch protection / auto-merge
+    // settings. The server no longer attempts to merge PRs.
+    const { title } = req.body || {};
     const sessionId = req.params.sessionId as string;
 
     try {
@@ -761,7 +764,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         project,
         agent,
         session.worktree_path,
-        { autoMerge: !!autoMerge, title: title || undefined },
+        { title: title || undefined },
       );
 
       if (!result) {

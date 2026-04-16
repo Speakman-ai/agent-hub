@@ -62,7 +62,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     broadcast,
     stmts,
     handleChat,
-    triggerReviewForCard,
     pendingReviewComments,
     lastDispatchedReviewId,
     scheduleAutonomousEpic,
@@ -229,18 +228,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
             prUrl: updatedCard.pr_url,
           });
         }
-
-        if (col && col.name.toLowerCase() === 'review') {
-          console.log(
-            `[Lead Review] Card "${updatedCard.title}" moved to Review column — checking for review trigger`,
-          );
-          const project = findProject(req.params.projectId as string);
-          if (project) {
-            triggerReviewForCard(req.params.cardId as string, project);
-          } else {
-            console.log(`[Lead Review] No project found for ${req.params.projectId} — skipping`);
-          }
-        }
+        // Note: PR review is now triggered by the GitHub webhook handler
+        // (pull_request.opened/synchronize) rather than by a card moving into
+        // the Review column. The Review column is a UI signal only.
       } catch (err) {
         console.error(`[Card Move] Error in post-move hooks:`, (err as Error).message);
       }
@@ -586,24 +576,35 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     res.json(rows);
   });
 
-  router.get('/api/projects/:projectId/reviews/active', (_req: Request, res: Response) => {
-    const reviewSessionCards = deps.getReviewSessionCards?.() as
-      | Map<string, { cardId: string | null; prUrl: string }>
-      | undefined;
-    if (!reviewSessionCards) return res.json([]);
+  // Active review sessions are now driven by the Reviewer agent's regular
+  // sessions list (sessions whose title starts with "Review: PR #..."). The
+  // legacy in-memory tracking map is gone, so this endpoint reports them by
+  // querying the sessions table for each Reviewer agent on the project.
+  router.get('/api/projects/:projectId/reviews/active', (req: Request, res: Response) => {
+    const project = deps.getProjects().find((p) => p.id === req.params.projectId);
+    if (!project) return res.json([]);
 
-    const active = [...reviewSessionCards.entries()].map(([sessionId, { cardId, prUrl }]) => {
-      const card = cardId
-        ? (stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined)
-        : undefined;
-      return {
-        sessionId,
-        cardId,
-        prUrl,
-        cardTitle: card?.title || null,
-        assignee: card?.assignee || null,
-      };
-    });
+    const reviewerIds = (project.agents || [])
+      .filter((a) => a.role === 'reviewer')
+      .map((a) => a.id);
+    if (reviewerIds.length === 0) return res.json([]);
+
+    type SessionLite = { id: string; agent_id: string; name: string };
+    const active: Array<{
+      sessionId: string;
+      cardId: null;
+      prUrl: null;
+      cardTitle: string;
+    }> = [];
+
+    for (const reviewerId of reviewerIds) {
+      const rows = (stmts.getSessions.all(reviewerId) || []) as SessionLite[];
+      for (const s of rows) {
+        if (s.name && s.name.startsWith('Review: PR #')) {
+          active.push({ sessionId: s.id, cardId: null, prUrl: null, cardTitle: s.name });
+        }
+      }
+    }
     res.json(active);
   });
 

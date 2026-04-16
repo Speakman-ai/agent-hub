@@ -168,6 +168,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     getGhAppSlug,
     setGhAppSlug,
     serverDir,
+    ensureReviewerAgents,
   } = deps;
   const router = Router();
 
@@ -504,6 +505,16 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         console.log(
           `[GitHub App] Auto-setup complete — ${installations.length} installation(s): ${installations.map((i) => i.account?.login).join(', ')}`,
         );
+
+        // Seed Reviewer agents for any projects that already have GitHub
+        // integration. The GitHub App now provides the formal-review identity,
+        // so existing projects should pick up a Reviewer the moment the app
+        // is connected.
+        try {
+          ensureReviewerAgents();
+        } catch (err: unknown) {
+          console.warn(`[GitHub App] ensureReviewerAgents failed: ${(err as Error).message}`);
+        }
         return res.redirect(`${clientUrl}/#/settings?githubApp=ready`);
       }
 

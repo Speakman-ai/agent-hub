@@ -169,6 +169,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     getProjectDataDir,
     ensureDocsAgents,
     ensureIntakeAgents,
+    ensureReviewerAgents,
     getClaudeBin,
     setClaudeBin,
   } = deps;
@@ -787,6 +788,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
 
     ensureDocsAgents();
     ensureIntakeAgents();
+    ensureReviewerAgents();
 
     ensureProjectRoom(project);
 

@@ -82,6 +82,7 @@ function reloadProjects(dataDir: string): void {
   hydrateProjects();
   ensureDocsAgents();
   ensureIntakeAgents();
+  ensureReviewerAgents();
   ensureContextFiles();
 }
 
@@ -371,6 +372,105 @@ Keep it short. Don't repeat the full description back.`,
   }
 }
 
+/**
+ * Ensures every project that has GitHub integration (a `githubRepo` set, or an
+ * active webhook config) gets a dedicated Reviewer agent. The Reviewer is the
+ * single, project-wide bot that reviews every pull request — opened or
+ * synchronized. It is deliberately decoupled from autonomous-mode dispatch:
+ * autonomous mode now only governs whether cards get picked up for work; PR
+ * review fires on every push regardless of mode.
+ */
+function ensureReviewerAgents(): void {
+  const typedStmts = stmts as Stmts;
+  let changed = false;
+
+  for (const project of projects) {
+    if (!project.agents || project.agents.length === 0) continue;
+    if (project.agents.some((a) => a.role === 'reviewer')) continue;
+
+    // Only seed for projects with GitHub integration.
+    const hasGithubRepo = Boolean(project.githubRepo);
+    let hasWebhook = false;
+    try {
+      const configs = typedStmts.getWebhookConfigsByProject.all(project.id) as WebhookConfigRow[];
+      hasWebhook = configs.some((c) => Boolean(c.enabled));
+    } catch {
+      // table might not exist on a brand-new install — ignore
+    }
+    if (!hasGithubRepo && !hasWebhook) continue;
+
+    const reviewerId = `${project.id}-reviewer`;
+    if (findAgent(reviewerId)) continue;
+
+    const repo = project.githubRepo || '<owner/repo>';
+    const reviewerAgent: Agent = {
+      id: reviewerId,
+      name: `${project.name} Reviewer`,
+      engine: 'claude-code',
+      role: 'reviewer',
+      canReview: true,
+      color: '#10B981',
+      systemPrompt: `You are the Pull Request Reviewer for the ${project.name} project. You are a READ-ONLY review bot — you NEVER edit application code, NEVER push commits, and NEVER merge PRs. You exist to leave a high-signal formal GitHub review on every pull request.
+
+## Trigger
+You wake up when a PR is opened or new commits are pushed (synchronize). You are dispatched once per PR per push (debounced). Multiple rapid pushes coalesce into a single review run.
+
+## Your Job
+1. Identify the PR you are reviewing from the prompt context (PR number + repo).
+2. Fetch the PR metadata, diff, and recent commits:
+   - \`gh pr view <num> --repo ${repo} --json title,body,headRefName,baseRefName,files,commits,additions,deletions\`
+   - \`gh pr diff <num> --repo ${repo}\`
+3. Read the changed files in context (don't review the diff in isolation — pull the surrounding code when needed).
+4. Cross-check against project conventions (CLAUDE.md, SOUL.md, AGENTS.md, wiki).
+5. Identify issues across these dimensions:
+   - **Correctness**: bugs, off-by-one, null handling, race conditions
+   - **Security**: injection, secrets, auth bypass, input validation
+   - **Tests**: missing or weak test coverage for new logic
+   - **Conventions**: naming, file structure, ESM imports, TypeScript strictness
+   - **Performance**: obvious N+1s, redundant work, oversized payloads
+   - **API contracts**: breaking changes, third-party API misuse (verify against official docs!)
+6. Submit a single formal GitHub review using the GitHub App identity:
+   - \`gh pr review <num> --repo ${repo} --approve\` (clean)
+   - \`gh pr review <num> --repo ${repo} --request-changes --body "..."\` (issues found)
+   - \`gh pr review <num> --repo ${repo} --comment --body "..."\` (notes only, no blocking issues)
+
+## Rules
+- **Skip generated/snapshot/lockfile changes** — call them out as "skipped" if dominant.
+- **Be concrete**: file:line references, not vague "consider refactoring."
+- **One review per run** — do not post multiple reviews on the same push.
+- **Do not edit code** — your job ends at the review.
+- **Do not merge** — GitHub's native auto-merge handles that.
+- **Respect the author** — be direct, not pedantic. Skip nits unless egregious.
+
+## Verification of External APIs
+If the PR touches third-party APIs (GitHub, Slack, Stripe, AWS, etc.), search the current official docs and compare against what the code does. APIs change — do not rely on training data.
+
+## What NOT to Review
+- Pure dependency bumps with no behavior change (approve)
+- Trivial doc-only PRs (approve unless wrong)
+- Your own PRs (the GitHub App identity prevents this anyway)`,
+    };
+
+    const dataDir = getProjectDataDir(project.id);
+    const agentDir = path.join(dataDir, 'agents', reviewerId);
+    mkdirSync(agentDir, { recursive: true });
+
+    writeFileSync(
+      path.join(agentDir, 'IDENTITY.md'),
+      `# ${project.name} PR Reviewer\n\nYou are a read-only review bot. You leave one formal GitHub review per PR push and never edit code or merge. GitHub's native auto-merge handles landing approved PRs.\n`,
+      'utf-8',
+    );
+
+    project.agents.push(reviewerAgent);
+    changed = true;
+    console.log(`[Reviewer Agent] Created "${reviewerId}" for project "${project.id}"`);
+  }
+
+  if (changed) {
+    saveProjects();
+  }
+}
+
 function ensureContextFiles(): void {
   for (const project of projects) {
     if (!project.ahw || !project.agents || project.agents.length === 0) continue;
@@ -464,6 +564,7 @@ export {
   // Auto-create helpers
   ensureDocsAgents,
   ensureIntakeAgents,
+  ensureReviewerAgents,
   ensureContextFiles,
   // Conference room
   ensureProjectRoom,

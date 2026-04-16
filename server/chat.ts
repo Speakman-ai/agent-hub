@@ -96,7 +96,6 @@ export interface ChatHandlerDeps {
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;
   activeProcesses: Map<string, ChildProcess>;
   activeDelegationSessions: Set<string>;
-  reviewSessionCards: Map<string, unknown>;
   autonomousProjects: Set<string>;
   getClaudeBin: () => string;
   getCursorBin: () => string;
@@ -137,7 +136,6 @@ export interface ChatHandlerDeps {
     cwd: string,
     finalContent: string,
   ) => Promise<void>;
-  handleReviewOutcome: (project: Project, sessionId: string, finalContent: string) => Promise<void>;
   tryAutonomousDispatch: () => void;
 }
 
@@ -351,7 +349,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     getEnrichedAgent,
     activeProcesses,
     activeDelegationSessions,
-    reviewSessionCards,
     autonomousProjects,
     getClaudeBin,
     getCursorBin,
@@ -365,7 +362,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     synthesizeResults,
     parseDelegateBlock,
     autoCommitAndPR,
-    handleReviewOutcome,
     tryAutonomousDispatch,
   } = deps;
 
@@ -734,7 +730,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
     const spawnEnv: NodeJS.ProcessEnv = (() => {
       const base = buildSpawnEnv(config);
-      if (config.botGithubToken && reviewSessionCards.has(sessionId)) {
+      // Reviewer agents post formal GitHub reviews via the bot identity so they
+      // bypass GitHub's "can't review your own PR" rule for human-author PRs.
+      if (config.botGithubToken && agent.role === 'reviewer') {
         base.GH_TOKEN = config.botGithubToken;
       }
       if (config.apiKey) {
@@ -1107,14 +1105,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             console.error('[auto-commit] Unexpected error:', message);
           },
         );
-      }
-
-      const sessionForReview = stmts.getSession.get(sessionId) as SessionRow | undefined;
-      if (sessionForReview?.name?.startsWith('Review: ')) {
-        handleReviewOutcome(project, sessionId, finalContent).catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error('[Autonomous] Review outcome error:', message);
-        });
       }
 
       if (autonomousProjects.size > 0) {

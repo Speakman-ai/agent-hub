@@ -120,8 +120,6 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     initAutoGit({
       stmts: mockStmts as never,
       broadcast: mockBroadcast,
-      triggerReviewForCard: vi.fn(),
-      leadReviewPR: vi.fn(),
       getConfig: vi.fn(() => ({}) as never),
       DEFAULT_SKILLS_DIR: '/tmp/skills',
     });
@@ -169,8 +167,6 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     initAutoGit({
       stmts: mockStmtsWithCard as never,
       broadcast: mockBroadcast,
-      triggerReviewForCard: vi.fn(),
-      leadReviewPR: vi.fn(),
       getConfig: vi.fn(() => ({}) as never),
       DEFAULT_SKILLS_DIR: '/tmp/skills',
     });

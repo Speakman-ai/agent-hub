@@ -1114,11 +1114,6 @@ export interface RouteDeps {
   saveProjects: () => void;
   ensureProjectRoom: (project: Project) => RoomWithAgents | null;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
-  triggerReviewForCard: (
-    cardId: string,
-    project: Project,
-    options?: { autoMergeOverride?: boolean },
-  ) => void;
   pendingReviewComments: Map<string, unknown>;
   lastDispatchedReviewId: Map<string, string>;
   scheduleAutonomousEpic: (projectId: string, epic: KanbanEpicRow) => void;
@@ -1146,6 +1141,7 @@ export interface RouteDeps {
   getProjectDataDir: (projectId: string) => string;
   ensureDocsAgents: () => void;
   ensureIntakeAgents: () => void;
+  ensureReviewerAgents: () => void;
   getClaudeBin: () => string;
   setClaudeBin: (v: string) => void;
   initDb: (dataDir: string) => void;
@@ -1154,8 +1150,6 @@ export interface RouteDeps {
   restoreAutonomousCrons: () => void;
   scheduleAll?: (agents: EnrichedAgent[]) => void;
   getGhAuthenticatedUser?: () => string | null;
-  getReviewSessionCards?: () => Map<string, unknown>;
-  leadReviewPR?: (...args: unknown[]) => unknown;
   tryAutonomousDispatch?: () => void;
   runClaude?: (...args: unknown[]) => unknown;
 }

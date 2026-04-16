@@ -20,18 +20,6 @@ const execAsync = promisify(exec);
 interface AutoGitDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
-  triggerReviewForCard: (
-    cardId: string,
-    project: Project,
-    options?: { autoMergeOverride?: boolean },
-  ) => void;
-  leadReviewPR: (
-    project: Project,
-    prUrl: string,
-    card: KanbanCardRow | null,
-    agent: Agent | undefined,
-    options?: { autoMergeOverride?: boolean },
-  ) => Promise<void>;
   getConfig: () => AppConfig;
   DEFAULT_SKILLS_DIR: string;
 }
@@ -108,12 +96,16 @@ export function resolveSlashSkill(
 
 // ─── Auto-commit & PR on agent completion ───────────────────────────
 
-function moveCardToReviewAndTrigger(
-  card: KanbanCardRow,
-  project: Project,
-  prUrl: string | null,
-  options?: { autoMergeOverride?: boolean },
-): void {
+/**
+ * Move a card to the Review column and persist the PR URL on it.
+ *
+ * NOTE: This used to also dispatch the lead-review pipeline. As of the unified
+ * reviewer refactor, PR review fires from the GitHub webhook on
+ * `pull_request.opened` / `pull_request.synchronize`, so this function is now
+ * purely a UI/state update — the dedicated Reviewer agent will be dispatched
+ * by the webhook handler when GitHub announces the new PR/push.
+ */
+function moveCardToReview(card: KanbanCardRow, project: Project, prUrl: string | null): void {
   const d = getDeps();
   if (prUrl) {
     try {
@@ -131,26 +123,7 @@ function moveCardToReviewAndTrigger(
       d.stmts.moveKanbanCard.run(reviewCol.id, 0, card.id);
       d.broadcast({ type: 'kanban_update', projectId: project.id });
       console.log(`[auto-commit] Card "${card.title}" moved to Review`);
-      d.triggerReviewForCard(card.id, project, options);
     }
-  }
-}
-
-function triggerReview(
-  card: KanbanCardRow | undefined,
-  project: Project,
-  prUrl: string,
-  agent: Agent,
-  options?: { autoMergeOverride?: boolean },
-): void {
-  const d = getDeps();
-  if (card) {
-    moveCardToReviewAndTrigger(card, project, prUrl, options);
-  } else {
-    d.leadReviewPR(project, prUrl, null, agent, options).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Lead Review] Failed to start:`, msg);
-    });
   }
 }
 
@@ -231,7 +204,6 @@ async function commitPushAndCreatePR(
   agent: Agent,
   effectiveCwd: string,
   card: KanbanCardRow | undefined,
-  options?: { autoMergeOverride?: boolean },
 ): Promise<{ prUrl: string } | null> {
   const d = getDeps();
 
@@ -249,9 +221,9 @@ async function commitPushAndCreatePR(
       const existingPrUrl = prOut.trim();
       if (existingPrUrl) {
         console.log(
-          `[auto-commit] Found existing open PR: ${existingPrUrl} — triggering lead review`,
+          `[auto-commit] Found existing open PR: ${existingPrUrl} — moving card to Review`,
         );
-        triggerReview(card, project, existingPrUrl, agent, options);
+        if (card) moveCardToReview(card, project, existingPrUrl);
         return { prUrl: existingPrUrl };
       }
     } catch {
@@ -346,7 +318,7 @@ async function commitPushAndCreatePR(
   ];
   const prBody = prBodyLines.filter((line): line is string => line != null).join('\n');
 
-  const broadcastAndTrigger = (prUrl: string) => {
+  const broadcastAndMove = (prUrl: string) => {
     d.broadcast({
       type: 'auto_pr_created',
       sessionId,
@@ -365,7 +337,9 @@ async function commitPushAndCreatePR(
       }
     }
 
-    triggerReview(card, project, prUrl, agent, options);
+    // Move the card to Review for visibility. The Reviewer agent will be
+    // dispatched by the GitHub webhook handler when the PR opens/syncs.
+    if (card) moveCardToReview(card, project, prUrl);
   };
 
   try {
@@ -376,7 +350,7 @@ async function commitPushAndCreatePR(
     console.log(`[auto-commit] PR created: ${prOutput.trim()}`);
 
     const prUrl = prOutput.match(/https:\/\/github\.com\/.+\/pull\/\d+/)?.[0] || prOutput.trim();
-    broadcastAndTrigger(prUrl);
+    broadcastAndMove(prUrl);
     return { prUrl };
   } catch (prErr: unknown) {
     const errMsg = prErr instanceof Error ? prErr.message : String(prErr);
@@ -384,7 +358,7 @@ async function commitPushAndCreatePR(
     if (existingMatch) {
       const prUrl = existingMatch[0];
       console.log(`[auto-commit] PR already exists: ${prUrl} — continuing flow`);
-      broadcastAndTrigger(prUrl);
+      broadcastAndMove(prUrl);
       return { prUrl };
     }
 
@@ -398,7 +372,7 @@ async function commitPushAndCreatePR(
       const discoveredUrl = prDiscovery.trim();
       if (discoveredUrl) {
         console.log(`[auto-commit] Discovered PR by branch name: ${discoveredUrl}`);
-        broadcastAndTrigger(discoveredUrl);
+        broadcastAndMove(discoveredUrl);
         return { prUrl: discoveredUrl };
       }
     } catch {
@@ -489,7 +463,9 @@ export async function autoCommitAndPR(
       return;
     }
 
-    // Autonomous/card-driven sessions: commit, push, create PR, trigger review.
+    // Autonomous/card-driven sessions: commit, push, create PR, move card to
+    // Review. The Reviewer agent is dispatched separately by the GitHub
+    // webhook handler when the PR opens or syncs.
     await commitPushAndCreatePR(sessionId, agentId, project, agent, effectiveCwd, card);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -556,7 +532,7 @@ export async function manualCommitAndPR(
   project: Project,
   agent: Agent,
   effectiveCwd: string,
-  options: { autoMerge: boolean; title?: string },
+  options: { title?: string },
 ): Promise<{ prUrl: string; cardId: string } | null> {
   const d = getDeps();
 
@@ -627,7 +603,6 @@ export async function manualCommitAndPR(
     agent,
     effectiveCwd,
     card,
-    { autoMergeOverride: options.autoMerge },
   );
 
   if (result?.prUrl) {

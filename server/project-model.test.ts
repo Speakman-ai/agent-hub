@@ -6,6 +6,7 @@ import {
   findProject,
   getProjects,
   saveProjects,
+  ensureReviewerAgents,
 } from './project-model.js';
 import type { Stmts, Project } from './types.js';
 
@@ -160,5 +161,101 @@ describe('migrateWebhookRepoToProject', () => {
 
     const updated = findProject(projId);
     expect(updated!.githubRepo).toBe('some-org/some-repo');
+  });
+});
+
+describe('ensureReviewerAgents', () => {
+  /**
+   * Helper to create a project and seed a single dummy agent on it (the
+   * ensure-* functions short-circuit on agentless projects, matching the
+   * behaviour of ensureDocsAgents/ensureIntakeAgents).
+   */
+  async function createProjectWithAgent(
+    projId: string,
+    name: string,
+    color: string,
+  ): Promise<Project> {
+    const request = await getRequest();
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name, cwd: '/tmp', color })
+      .expect(201);
+    createdProjectIds.push(projId);
+
+    const project = findProject(projId)!;
+    project.agents = project.agents || [];
+    project.agents.push({
+      id: `${projId}-dev`,
+      name: 'Dev',
+      role: 'sub',
+      engine: 'claude-code',
+    });
+    saveProjects();
+    return project;
+  }
+
+  it('seeds a reviewer agent when project has githubRepo', async () => {
+    const projId = `reviewer-seed-${Date.now()}`;
+    const project = await createProjectWithAgent(projId, 'Reviewer Seed Test', '#444');
+    expect(project.agents?.some((a) => a.role === 'reviewer')).toBe(false);
+
+    project.githubRepo = 'owner/seed-repo';
+    saveProjects();
+
+    ensureReviewerAgents();
+
+    const updated = findProject(projId);
+    const reviewer = updated!.agents?.find((a) => a.role === 'reviewer');
+    expect(reviewer).toBeTruthy();
+    expect(reviewer!.id).toBe(`${projId}-reviewer`);
+    expect(reviewer!.canReview).toBe(true);
+  });
+
+  it('does NOT seed a reviewer when project has neither githubRepo nor enabled webhook', async () => {
+    const projId = `reviewer-noseed-${Date.now()}`;
+    await createProjectWithAgent(projId, 'No Reviewer Seed', '#555');
+
+    ensureReviewerAgents();
+
+    const updated = findProject(projId);
+    expect(updated!.agents?.some((a) => a.role === 'reviewer')).toBe(false);
+  });
+
+  it('is idempotent — calling twice does not duplicate the reviewer', async () => {
+    const projId = `reviewer-idem-${Date.now()}`;
+    const project = await createProjectWithAgent(projId, 'Idempotent Reviewer', '#666');
+    project.githubRepo = 'owner/idem-repo';
+    saveProjects();
+
+    ensureReviewerAgents();
+    ensureReviewerAgents();
+
+    const updated = findProject(projId);
+    const reviewers = (updated!.agents || []).filter((a) => a.role === 'reviewer');
+    expect(reviewers).toHaveLength(1);
+  });
+
+  it('seeds reviewer when project has an enabled webhook config but no githubRepo', async () => {
+    const projId = `reviewer-webhook-${Date.now()}`;
+    await createProjectWithAgent(projId, 'Webhook Only Reviewer', '#777');
+
+    (stmts as Stmts).createWebhookConfig.run(
+      projId,
+      'https://github.com/whonly/repo',
+      'sec',
+      '["pull_request.opened"]',
+      1,
+    );
+
+    ensureReviewerAgents();
+
+    const updated = findProject(projId);
+    expect(updated!.agents?.some((a) => a.role === 'reviewer')).toBe(true);
   });
 });
