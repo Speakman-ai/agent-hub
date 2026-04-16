@@ -1,9 +1,11 @@
 import http from 'http';
+import { spawn } from 'child_process';
 import {
   extractOAuthUrl,
   extractStateFromUrl,
   isPasteCodeMode,
   proxyCallbackToLocalServer,
+  waitForLoginCompletion,
 } from '../routes/claude-auth.js';
 
 describe('extractOAuthUrl', () => {
@@ -180,6 +182,53 @@ describe('proxyCallbackToLocalServer', () => {
       'state/with/slashes',
     );
     expect(result.status).toBe(200);
+  });
+});
+
+describe('waitForLoginCompletion', () => {
+  it('resolves with code=0 and captured tail when subprocess exits cleanly', async () => {
+    const proc = spawn('bash', ['-c', 'echo hello stdout; echo bye stderr 1>&2; exit 0'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const result = await waitForLoginCompletion(proc, 5_000);
+    expect(result.timedOut).toBe(false);
+    expect(result.code).toBe(0);
+    expect(result.tailOutput).toContain('hello stdout');
+    expect(result.tailOutput).toContain('bye stderr');
+  });
+
+  it('resolves with non-zero exit code when subprocess fails', async () => {
+    const proc = spawn('bash', ['-c', 'echo "nope" 1>&2; exit 7'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const result = await waitForLoginCompletion(proc, 5_000);
+    expect(result.timedOut).toBe(false);
+    expect(result.code).toBe(7);
+    expect(result.tailOutput).toContain('nope');
+  });
+
+  it('resolves with timedOut=true when subprocess does not exit before deadline', async () => {
+    // Long-running subprocess; we time out at 200ms
+    const proc = spawn('bash', ['-c', 'sleep 5'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    try {
+      const result = await waitForLoginCompletion(proc, 200);
+      expect(result.timedOut).toBe(true);
+      expect(result.code).toBeNull();
+    } finally {
+      proc.kill('SIGKILL');
+    }
+  });
+
+  it('detaches its stream listeners after resolving (no leak)', async () => {
+    const proc = spawn('bash', ['-c', 'echo done; exit 0'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    await waitForLoginCompletion(proc, 5_000);
+    // After resolution, the listener counts on stdout/stderr should be 0
+    expect(proc.stdout?.listenerCount('data') ?? 0).toBe(0);
+    expect(proc.stderr?.listenerCount('data') ?? 0).toBe(0);
   });
 });
 

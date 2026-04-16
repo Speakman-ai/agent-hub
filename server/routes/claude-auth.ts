@@ -133,6 +133,48 @@ export function proxyCallbackToLocalServer(
   });
 }
 
+/**
+ * Wait for the `claude auth login` subprocess to exit, capturing any stdout/stderr
+ * tail along the way. Used after submitting an OAuth callback so we can return a
+ * truthful success/failure response instead of "ok" + a later WS surprise.
+ *
+ * Returns once the subprocess exits OR `timeoutMs` elapses (whichever first).
+ * On timeout, the caller should report `pending` and rely on the WS broadcast
+ * to deliver the final outcome.
+ */
+export function waitForLoginCompletion(
+  proc: ChildProcess,
+  timeoutMs: number,
+): Promise<{ code: number | null; tailOutput: string; timedOut: boolean }> {
+  return new Promise((resolve) => {
+    let tailOutput = '';
+    const onTail = (chunk: Buffer): void => {
+      tailOutput += chunk.toString();
+    };
+    proc.stdout?.on('data', onTail);
+    proc.stderr?.on('data', onTail);
+
+    const detach = (): void => {
+      proc.stdout?.off('data', onTail);
+      proc.stderr?.off('data', onTail);
+    };
+
+    const onClose = (code: number | null): void => {
+      clearTimeout(timer);
+      detach();
+      resolve({ code, tailOutput, timedOut: false });
+    };
+
+    const timer = setTimeout(() => {
+      proc.off('close', onClose);
+      detach();
+      resolve({ code: null, tailOutput, timedOut: true });
+    }, timeoutMs);
+
+    proc.once('close', onClose);
+  });
+}
+
 export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   const { config, broadcast } = deps;
   const router = Router();
@@ -268,25 +310,26 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       activeLoginPasteMode = isPasteCodeMode(url);
 
       if (activeLoginPasteMode) {
-        console.log(
-          `[claude-auth] OAuth URL indicates paste-code mode — will submit code via stdin (loginId=${loginId})`,
-        );
-      } else {
-        // Detect the local callback server port the CLI opened
-        // Retry a few times since the server may start slightly after the URL is printed
-        const detectPort = async (retries: number): Promise<void> => {
-          const port = await detectCallbackPort(proc.pid!);
-          if (port) {
-            activeLoginPort = port;
-            console.log(`[claude-auth] Detected CLI callback server on port ${port}`);
-          } else if (retries > 0) {
-            setTimeout(() => detectPort(retries - 1), 500);
-          } else {
-            console.log('[claude-auth] Could not detect CLI callback server port');
-          }
-        };
-        detectPort(5);
+        console.log(`[claude-auth] OAuth URL indicates paste-code mode (loginId=${loginId})`);
       }
+
+      // Detect the local callback server port the CLI opened.
+      // The CLI binds a localhost HTTP server in BOTH paste-code mode and
+      // standard (browser-redirect) mode — we proxy the OAuth callback there
+      // in either case. Retry a few times since the server may start slightly
+      // after the URL is printed.
+      const detectPort = async (retries: number): Promise<void> => {
+        const port = await detectCallbackPort(proc.pid!);
+        if (port) {
+          activeLoginPort = port;
+          console.log(`[claude-auth] Detected CLI callback server on port ${port}`);
+        } else if (retries > 0) {
+          setTimeout(() => detectPort(retries - 1), 500);
+        } else {
+          console.log('[claude-auth] Could not detect CLI callback server port');
+        }
+      };
+      detectPort(5);
 
       res.json({ ok: true, loginId, oauthUrl: url, pasteMode: activeLoginPasteMode });
     };
@@ -401,113 +444,87 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       authCode = decodeURIComponent(codeFromUrl[1]);
     }
 
-    // Paste-mode: the CLI is waiting on stdin (no valid localhost callback).
-    // Proxying to whatever port happens to be open would silently fail, so
-    // write the code directly to the subprocess's stdin — then wait briefly
-    // to observe whether the CLI accepts it (exit 0) or rejects it (exit != 0)
-    // so we can report a truthful status instead of "ok" + later WS failure.
-    if (activeLoginPasteMode) {
-      console.log('[claude-auth] Paste-code mode — writing code to stdin');
-      const proc = activeLoginProc;
-      let tailOutput = '';
-      const onTail = (chunk: Buffer): void => {
-        tailOutput += chunk.toString();
-      };
-      proc.stdout?.on('data', onTail);
-      proc.stderr?.on('data', onTail);
-      const detachTail = (): void => {
-        proc.stdout?.off('data', onTail);
-        proc.stderr?.off('data', onTail);
-      };
+    const proc = activeLoginProc;
 
+    // If we don't have the port yet, try one more time. The CLI opens a
+    // localhost HTTP callback server in BOTH paste-code mode and standard mode,
+    // so we proxy through it in either case.
+    if (!activeLoginPort && proc.pid) {
+      activeLoginPort = await detectCallbackPort(proc.pid);
+    }
+
+    // ─── Preferred path: proxy through the CLI's localhost callback server ───
+    if (activeLoginPort && activeLoginState) {
+      console.log(
+        `[claude-auth] Proxying callback to localhost:${activeLoginPort} (state=${activeLoginState.slice(0, 8)}..., pasteMode=${activeLoginPasteMode})`,
+      );
+
+      let proxyResult: { status: number; body: string };
       try {
-        proc.stdin?.write(authCode + '\n');
+        proxyResult = await proxyCallbackToLocalServer(activeLoginPort, authCode, activeLoginState);
       } catch (err: unknown) {
-        detachTail();
         const message = err instanceof Error ? err.message : String(err);
-        return res.status(500).json({ error: `Failed to submit code via stdin: ${message}` });
+        return res.status(500).json({ error: `Failed to proxy callback: ${message}` });
+      }
+      console.log(
+        `[claude-auth] Proxy response: status=${proxyResult.status} body=${(proxyResult.body || '').slice(0, 200)}`,
+      );
+
+      if (proxyResult.status < 200 || proxyResult.status >= 400) {
+        return res.status(502).json({
+          ok: false,
+          error: `CLI callback returned ${proxyResult.status}: ${proxyResult.body || 'unknown error'}`,
+        });
       }
 
-      // Race subprocess close against a timeout. The CLI typically finishes the
-      // OAuth exchange (token write + exit) within a couple of seconds; 8s is
-      // generous. If it's still running past that, fall back to the WS update.
-      const closeResult = await new Promise<{ code: number | null; timedOut: boolean }>(
-        (resolve) => {
-          const onClose = (code: number | null): void => {
-            clearTimeout(timer);
-            resolve({ code, timedOut: false });
-          };
-          const timer = setTimeout(() => {
-            proc.off('close', onClose);
-            resolve({ code: null, timedOut: true });
-          }, 8_000);
-          proc.once('close', onClose);
-        },
-      );
-      detachTail();
-
-      if (closeResult.timedOut) {
-        // Still running — likely finishing the token exchange. Report pending
-        // and let the existing WS broadcast deliver the final status.
+      // CLI accepted the callback. Wait briefly for the token exchange + exit
+      // so we can return a truthful success/failure rather than just "submitted".
+      const completion = await waitForLoginCompletion(proc, 8_000);
+      if (completion.timedOut) {
         return res.json({
           ok: true,
           pending: true,
-          output:
-            'Code submitted via stdin — waiting for login to finalize (watch for status update)',
+          output: 'Code submitted — waiting for login to finalize (watch for status update)',
         });
       }
-      if (closeResult.code === 0) {
+      if (completion.code === 0) {
         return res.json({ ok: true, output: 'Code accepted — login complete' });
       }
       return res.status(502).json({
         ok: false,
         error:
-          tailOutput.trim().slice(0, 500) ||
-          `CLI rejected the code (exit ${closeResult.code ?? 'unknown'})`,
+          completion.tailOutput.trim().slice(0, 500) ||
+          `CLI rejected the code (exit ${completion.code ?? 'unknown'})`,
       });
     }
 
-    // If we don't have the port yet, try one more time
-    if (!activeLoginPort && activeLoginProc.pid) {
-      activeLoginPort = await detectCallbackPort(activeLoginProc.pid);
-    }
-
-    if (!activeLoginPort || !activeLoginState) {
-      // Fallback: try stdin write (legacy approach, unlikely to work)
-      console.log('[claude-auth] No callback port/state — falling back to stdin write');
-      try {
-        activeLoginProc.stdin?.write(authCode + '\n');
-        return res.json({
-          ok: true,
-          output: 'Code submitted via stdin fallback (callback server not detected)',
-        });
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        return res.status(500).json({ error: `Failed to submit code: ${message}` });
-      }
-    }
-
+    // ─── Fallback: stdin write (only when port detection failed entirely) ───
+    console.log('[claude-auth] No callback port/state — falling back to stdin write');
     try {
-      console.log(
-        `[claude-auth] Proxying callback to localhost:${activeLoginPort} (state=${activeLoginState.slice(0, 8)}...)`,
-      );
-      const result = await proxyCallbackToLocalServer(activeLoginPort, authCode, activeLoginState);
-      console.log(
-        `[claude-auth] Proxy response: status=${result.status} body=${(result.body || '').slice(0, 200)}`,
-      );
-
-      if (result.status >= 200 && result.status < 400) {
-        res.json({ ok: true, output: 'Authorization code submitted successfully' });
-      } else {
-        res.status(502).json({
-          ok: false,
-          error: `CLI callback returned ${result.status}: ${result.body || 'unknown error'}`,
-        });
-      }
+      proc.stdin?.write(authCode + '\n');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: `Failed to proxy callback: ${message}` });
+      return res.status(500).json({ error: `Failed to submit code via stdin: ${message}` });
     }
+
+    const fallback = await waitForLoginCompletion(proc, 8_000);
+    if (fallback.timedOut) {
+      return res.json({
+        ok: true,
+        pending: true,
+        output:
+          'Code submitted via stdin fallback — waiting for login to finalize (watch for status update)',
+      });
+    }
+    if (fallback.code === 0) {
+      return res.json({ ok: true, output: 'Code accepted — login complete' });
+    }
+    return res.status(502).json({
+      ok: false,
+      error:
+        fallback.tailOutput.trim().slice(0, 500) ||
+        `CLI rejected the code (exit ${fallback.code ?? 'unknown'})`,
+    });
   });
 
   router.post('/api/config/claude-auth/api-key', (req: Request, res: Response) => {
