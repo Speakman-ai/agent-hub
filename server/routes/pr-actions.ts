@@ -42,6 +42,8 @@ function botGhEnv(config: AppConfig): NodeJS.ProcessEnv | undefined {
   return { ...process.env, GH_TOKEN: config.botGithubToken };
 }
 
+const ALLOWED_MERGE_METHODS = new Set(['squash', 'merge', 'rebase']);
+
 export default function createPrActionRoutes(deps: RouteDeps): Router {
   const { config } = deps;
   const router = Router();
@@ -53,6 +55,9 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     const pr = parsePrUrl(prUrl);
     if (!pr) {
       return res.status(400).json({ error: 'Invalid PR URL' });
+    }
+    if (!ALLOWED_MERGE_METHODS.has(mergeMethod)) {
+      return res.status(400).json({ error: 'Invalid merge method' });
     }
 
     // Try GitHub App first

@@ -456,14 +456,14 @@ export const api = {
     fetchJSON(`/projects/${projectId}/previews/${previewId}`, { method: 'DELETE', timeout: 30000 }),
 
   // Preview Captures
-  getPreviewCaptures: (projectId, previewId) =>
-    fetchJSON(`/projects/${projectId}/previews/${previewId}/captures`),
-  triggerPreviewCapture: (projectId, previewId, options = {}) =>
+  capturePreview: (projectId, previewId, { skipVideo } = {}) =>
     fetchJSON(`/projects/${projectId}/previews/${previewId}/capture`, {
       method: 'POST',
-      body: JSON.stringify(options),
+      body: JSON.stringify({ skipVideo }),
       timeout: 30000,
     }),
+  getPreviewCaptures: (projectId, previewId) =>
+    fetchJSON(`/projects/${projectId}/previews/${previewId}/captures`),
 
   // PR Actions
   mergePr: (prUrl, mergeMethod = 'squash') =>

@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../utils/api.js';
+import { getServerBase } from '../utils/connection.js';
 import { relativeTime } from '../utils/time.js';
 import PreviewPanel from './PreviewPanel.jsx';
+import { buildCaptureArtifacts, formatCaptureSize, buildUploadsUrl } from '../utils/capture.js';
 import {
   Container,
   Play,
@@ -19,6 +21,11 @@ import {
   GitPullRequest,
   Server,
   PanelRightOpen,
+  Camera,
+  Image,
+  Video,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 const STATUS_CONFIG = {
@@ -283,8 +290,154 @@ function LogViewer({ projectId, previewId, onClose }) {
   );
 }
 
+function ScreenshotModal({ src, label, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <div className="relative max-w-5xl w-full" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-white font-medium text-sm">{label}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white p-1">
+            <X size={18} />
+          </button>
+        </div>
+        <img
+          src={src}
+          alt={label}
+          className="w-full rounded-lg border border-gray-700 shadow-2xl"
+        />
+      </div>
+    </div>
+  );
+}
+
+function CaptureGallery({ projectId, previewId }) {
+  const [captures, setCaptures] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedScreenshot, setSelectedScreenshot] = useState(null);
+
+  const fetchCaptures = useCallback(async () => {
+    try {
+      const data = await api.getPreviewCaptures(projectId, previewId);
+      setCaptures(data);
+    } catch (err) {
+      console.error('Failed to fetch captures:', err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId, previewId]);
+
+  useEffect(() => {
+    fetchCaptures();
+  }, [fetchCaptures]);
+
+  // Listen for capture complete events
+  useEffect(() => {
+    const handler = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'preview_capture_complete' && data.previewId === previewId) {
+          fetchCaptures();
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('ws_message', handler);
+    return () => window.removeEventListener('ws_message', handler);
+  }, [previewId, fetchCaptures]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-gray-500 text-xs py-2">
+        <Loader2 size={12} className="animate-spin" />
+        Loading captures...
+      </div>
+    );
+  }
+
+  if (captures.length === 0) return null;
+
+  const { screenshots, videos } = buildCaptureArtifacts(captures);
+  const serverBase = getServerBase();
+
+  return (
+    <div className="mt-3 pt-3 border-t border-gray-700/50">
+      <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+        <Camera size={12} />
+        Captures ({captures.length})
+      </h4>
+
+      {/* Screenshot thumbnails */}
+      {screenshots.length > 0 && (
+        <div className="grid grid-cols-3 gap-2 mb-2">
+          {screenshots.map((ss) => (
+            <button
+              key={ss.id}
+              onClick={() => setSelectedScreenshot(ss)}
+              className="group relative rounded-lg overflow-hidden border border-gray-700 hover:border-blue-500/50 transition-colors"
+            >
+              <img
+                src={buildUploadsUrl(serverBase, ss.file_path)}
+                alt={ss.label}
+                className="w-full h-20 object-cover object-top"
+              />
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                <Image
+                  size={16}
+                  className="text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                />
+              </div>
+              <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1.5 py-0.5">
+                <span className="text-[10px] text-gray-300">{ss.label}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Video */}
+      {videos.length > 0 && (
+        <div className="space-y-2">
+          {videos.map((vid) => (
+            <div key={vid.id} className="rounded-lg overflow-hidden border border-gray-700">
+              <video
+                src={buildUploadsUrl(serverBase, vid.file_path)}
+                controls
+                className="w-full"
+                preload="metadata"
+              >
+                <track kind="captions" />
+              </video>
+              <div className="bg-gray-800/50 px-2 py-1 flex items-center gap-1.5">
+                <Video size={12} className="text-gray-400" />
+                <span className="text-[10px] text-gray-400">
+                  {vid.label} — {formatCaptureSize(vid.file_size)}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Screenshot modal */}
+      {selectedScreenshot && (
+        <ScreenshotModal
+          src={buildUploadsUrl(serverBase, selectedScreenshot.file_path)}
+          label={selectedScreenshot.label}
+          onClose={() => setSelectedScreenshot(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 function PreviewCard({ preview, projectId, onAction, onOpenPanel }) {
   const [acting, setActing] = useState(null);
+  const [capturing, setCapturing] = useState(false);
+  const [showCaptures, setShowCaptures] = useState(false);
   const config = STATUS_CONFIG[preview.status] || STATUS_CONFIG.error;
 
   const handleAction = async (action) => {
@@ -302,6 +455,18 @@ function PreviewCard({ preview, projectId, onAction, onOpenPanel }) {
       console.error(`Preview ${action} failed:`, err.message);
     } finally {
       setActing(null);
+    }
+  };
+
+  const handleCapture = async () => {
+    setCapturing(true);
+    try {
+      await api.capturePreview(projectId, preview.id);
+      setShowCaptures(true);
+    } catch (err) {
+      console.error('Capture failed:', err.message);
+    } finally {
+      setCapturing(false);
     }
   };
 
@@ -334,6 +499,23 @@ function PreviewCard({ preview, projectId, onAction, onOpenPanel }) {
               <ExternalLink size={16} />
             </a>
           )}
+          {preview.status === 'running' && (
+            <button
+              onClick={handleCapture}
+              disabled={capturing}
+              className="text-purple-400 hover:text-purple-300 p-1.5 rounded-lg hover:bg-gray-700/50 transition-colors disabled:opacity-50"
+              title="Capture screenshots & video"
+            >
+              {capturing ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
+            </button>
+          )}
+          <button
+            onClick={() => setShowCaptures((prev) => !prev)}
+            className="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-gray-700/50 transition-colors"
+            title="Toggle captures"
+          >
+            {showCaptures ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
           <button
             onClick={() => onAction('logs', preview.id)}
             className="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-gray-700/50 transition-colors"
@@ -447,6 +629,9 @@ function PreviewCard({ preview, projectId, onAction, onOpenPanel }) {
           </code>
         )}
       </div>
+
+      {/* Capture gallery */}
+      {showCaptures && <CaptureGallery projectId={projectId} previewId={preview.id} />}
     </div>
   );
 }

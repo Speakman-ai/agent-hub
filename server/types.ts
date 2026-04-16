@@ -410,6 +410,19 @@ export interface PreviewContainerRow {
   updated_at: string;
 }
 
+export interface PreviewCaptureRow {
+  id: string;
+  preview_id: string;
+  type: 'screenshot' | 'video';
+  route: string | null;
+  name: string;
+  label: string;
+  filename: string;
+  file_path: string;
+  file_size: number;
+  created_at: string;
+}
+
 // ─── Prepared Statements ─────────────────────────────────────────
 
 type Stmt<TParams extends unknown[] = unknown[], TRow = unknown> = Database.Statement<
@@ -728,6 +741,11 @@ export interface Stmts {
   getExpiredPreviews: Stmt;
   getRunningPreviews: Stmt;
   getRunningPreviewByPrNumber: Stmt;
+
+  // Preview captures
+  getPreviewCaptures: Stmt;
+  createPreviewCapture: Stmt;
+  deletePreviewCaptures: Stmt;
 
   // Notes (from notes tables)
   getNotes: Stmt;

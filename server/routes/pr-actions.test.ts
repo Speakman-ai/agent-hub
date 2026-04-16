@@ -113,4 +113,68 @@ describe('PR Actions route', () => {
       expect(res.status).not.toBe(400);
     });
   });
+
+  describe('mergeMethod validation', () => {
+    let app: express.Express;
+
+    beforeEach(async () => {
+      vi.resetModules();
+      const { default: createPrActionRoutes } = await import('./pr-actions.js');
+      const mockDeps = {
+        config: { port: 3051, dataDir: '/tmp' },
+        stmts: {},
+        broadcast: vi.fn() as unknown,
+        findProject: vi.fn(),
+        findAgent: vi.fn(),
+        getEnrichedAgent: vi.fn(),
+        allAgents: vi.fn(),
+        saveProjects: vi.fn(),
+        ensureProjectRoom: vi.fn(),
+        handleChat: vi.fn(),
+        triggerReviewForCard: vi.fn(),
+        pendingReviewComments: new Map(),
+        lastDispatchedReviewId: new Map(),
+        scheduleAutonomousEpic: vi.fn(),
+        autonomousCrons: new Map(),
+        runAutonomousLoop: vi.fn(),
+        getProjects: vi.fn().mockReturnValue([]),
+        setProjects: vi.fn(),
+        getGhBotUser: vi.fn().mockReturnValue(null),
+        setGhBotUser: vi.fn(),
+        getGhAppSlug: vi.fn().mockReturnValue(null),
+        setGhAppSlug: vi.fn(),
+        serverDir: '/tmp',
+        buildTranscript: vi.fn(),
+        summarizeTranscript: vi.fn(),
+      } as unknown as RouteDeps;
+      app = express();
+      app.use(express.json());
+      app.use(createPrActionRoutes(mockDeps));
+    });
+
+    it('rejects invalid merge method (command injection attempt)', async () => {
+      const res = await request(app)
+        .post('/api/pr/merge')
+        .send({ prUrl: 'https://github.com/owner/repo/pull/42', mergeMethod: 'squash --admin' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Invalid merge method/);
+    });
+
+    it('rejects arbitrary merge method strings', async () => {
+      const res = await request(app)
+        .post('/api/pr/merge')
+        .send({ prUrl: 'https://github.com/owner/repo/pull/42', mergeMethod: 'foo' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/Invalid merge method/);
+    });
+
+    it('accepts squash, merge, and rebase methods', async () => {
+      for (const method of ['squash', 'merge', 'rebase']) {
+        const res = await request(app)
+          .post('/api/pr/merge')
+          .send({ prUrl: 'https://github.com/owner/repo/pull/42', mergeMethod: method });
+        expect(res.status).not.toBe(400);
+      }
+    });
+  });
 });

@@ -10,11 +10,13 @@
  *   POST   /api/projects/:projectId/previews/:id/rebuild — Rebuild a preview
  *   GET    /api/projects/:projectId/previews/:id/logs — Get container logs
  *   DELETE /api/projects/:projectId/previews/:id — Delete preview record
+ *   POST   /api/projects/:projectId/previews/:id/capture — Trigger screenshot/video capture
+ *   GET    /api/projects/:projectId/previews/:id/captures — List capture artifacts
  */
 
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import type { RouteDeps, PreviewContainerRow } from '../types.js';
+import type { RouteDeps, PreviewContainerRow, PreviewCaptureRow } from '../types.js';
 import {
   isDockerAvailable,
   createPreview,
@@ -24,6 +26,13 @@ import {
   DEFAULT_TTL_MINUTES,
   MAX_CONCURRENT_PREVIEWS,
 } from '../preview-engine.js';
+import {
+  capturePreview,
+  getPreviewCaptures,
+  deletePreviewCaptures,
+  isPlaywrightAvailable,
+  isCaptureInProgress,
+} from '../preview-capture.js';
 
 export default function createPreviewRoutes(deps: RouteDeps): Router {
   const { stmts, findProject } = deps;
@@ -191,8 +200,69 @@ export default function createPreviewRoutes(deps: RouteDeps): Router {
       await stopPreview(preview.id).catch(() => {});
     }
 
+    // Clean up captures
+    deletePreviewCaptures(preview.id);
     stmts.deletePreviewContainer.run(preview.id);
     res.json({ ok: true });
+  });
+
+  // ─── Trigger screenshot/video capture ──────────────────────────
+
+  router.post(
+    '/api/projects/:projectId/previews/:id/capture',
+    async (req: Request, res: Response) => {
+      const preview = stmts.getPreviewContainer.get(req.params.id as string) as
+        | PreviewContainerRow
+        | undefined;
+      if (!preview || preview.project_id !== (req.params.projectId as string)) {
+        return res.status(404).json({ error: 'Preview not found' });
+      }
+
+      if (preview.status !== 'running') {
+        return res
+          .status(400)
+          .json({ error: `Preview must be running to capture (current: ${preview.status})` });
+      }
+
+      // Reject concurrent capture requests for the same preview
+      if (isCaptureInProgress(preview.id)) {
+        return res.status(409).json({ error: 'Capture already in progress for this preview' });
+      }
+
+      const skipVideo = req.body?.skipVideo === true;
+
+      try {
+        const available = await isPlaywrightAvailable();
+        if (!available) {
+          return res
+            .status(503)
+            .json({ error: 'Playwright/Chromium is not available on this host' });
+        }
+
+        // Run capture asynchronously — return immediately
+        res.json({ status: 'capturing', previewId: preview.id });
+
+        capturePreview(preview.id, { skipVideo }).catch((err) => {
+          console.error(`[Preview] Capture failed for ${preview.id}:`, (err as Error).message);
+        });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    },
+  );
+
+  // ─── List capture artifacts ──────────────────────────────────────
+
+  router.get('/api/projects/:projectId/previews/:id/captures', (req: Request, res: Response) => {
+    const preview = stmts.getPreviewContainer.get(req.params.id as string) as
+      | PreviewContainerRow
+      | undefined;
+    if (!preview || preview.project_id !== (req.params.projectId as string)) {
+      return res.status(404).json({ error: 'Preview not found' });
+    }
+
+    const captures = getPreviewCaptures(preview.id);
+    res.json(captures);
   });
 
   return router;

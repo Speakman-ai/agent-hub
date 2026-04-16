@@ -483,6 +483,21 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_preview_containers_project ON preview_containers(project_id);
     CREATE INDEX IF NOT EXISTS idx_preview_containers_pr ON preview_containers(project_id, pr_number);
     CREATE INDEX IF NOT EXISTS idx_preview_containers_status ON preview_containers(status);
+
+    -- Preview captures: screenshots and videos captured from preview containers
+    CREATE TABLE IF NOT EXISTS preview_captures (
+      id TEXT PRIMARY KEY,
+      preview_id TEXT NOT NULL REFERENCES preview_containers(id) ON DELETE CASCADE,
+      type TEXT NOT NULL CHECK(type IN ('screenshot', 'video')),
+      route TEXT,
+      name TEXT NOT NULL,
+      label TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      file_size INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_preview_captures_preview ON preview_captures(preview_id);
   `);
 
   try {
@@ -1467,6 +1482,16 @@ function initDb(dataDir: string): void {
     getRunningPreviewByPrNumber: db.prepare(
       `SELECT * FROM preview_containers WHERE pr_number = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1`,
     ),
+
+    // Preview captures
+    getPreviewCaptures: db.prepare(
+      'SELECT * FROM preview_captures WHERE preview_id = ? ORDER BY type, name',
+    ),
+    createPreviewCapture: db.prepare(
+      `INSERT INTO preview_captures (id, preview_id, type, route, name, label, filename, file_path, file_size)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    deletePreviewCaptures: db.prepare('DELETE FROM preview_captures WHERE preview_id = ?'),
   } as Stmts;
 
   dbRegistry.set(dataDir, { db, stmts });

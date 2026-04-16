@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../utils/api.js';
 import { getServerBase } from '../utils/connection.js';
 import { relativeTime } from '../utils/time.js';
@@ -34,16 +34,18 @@ const TABS = [
 function ScreenshotLightbox({ screenshots, initialIndex, uploadsPrefix, onClose }) {
   const [index, setIndex] = useState(initialIndex);
   const current = screenshots[index];
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     const handler = (e) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
       if (e.key === 'ArrowLeft' && index > 0) setIndex(index - 1);
       if (e.key === 'ArrowRight' && index < screenshots.length - 1) setIndex(index + 1);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [index, screenshots.length, onClose]);
+  }, [index, screenshots.length]);
 
   if (!current) return null;
 
@@ -556,7 +558,7 @@ function PrActionsTab({ preview }) {
             <div className="flex gap-3">
               <button
                 onClick={() => setConfirmAction('merge')}
-                disabled={!!acting || (prStatus && !prStatus.mergeable)}
+                disabled={!!acting || prStatus?.mergeable === false}
                 className="flex-1 flex items-center justify-center gap-2 bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium px-4 py-3 rounded-xl transition-colors"
               >
                 <GitMerge size={16} />
@@ -573,7 +575,7 @@ function PrActionsTab({ preview }) {
             </div>
           )}
 
-          {prStatus && !prStatus.mergeable && !confirmAction && (
+          {prStatus?.mergeable === false && !confirmAction && (
             <p className="text-yellow-400 text-xs flex items-center gap-1.5">
               <AlertTriangle size={12} />
               PR has merge conflicts or is not in a mergeable state
@@ -637,29 +639,14 @@ export default function PreviewPanel({ preview, projectId, onClose }) {
     fetchCaptures();
   }, [fetchCaptures]);
 
-  // Listen for capture complete events via WebSocket
-  useEffect(() => {
-    const handler = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.type === 'preview_capture_complete' && data.previewId === preview.id) {
-          setCapturing(false);
-          fetchCaptures();
-        }
-      } catch {
-        // ignore
-      }
-    };
-    window.addEventListener('ws_message', handler);
-    return () => window.removeEventListener('ws_message', handler);
-  }, [preview.id, fetchCaptures]);
-
   const handleCapture = async () => {
     setCapturing(true);
     try {
-      await api.triggerPreviewCapture(projectId, preview.id);
+      await api.capturePreview(projectId, preview.id);
+      await fetchCaptures();
     } catch (err) {
       console.error('Capture trigger failed:', err.message);
+    } finally {
       setCapturing(false);
     }
   };

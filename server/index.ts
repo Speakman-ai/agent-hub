@@ -77,6 +77,7 @@ import createThreadRoutes from './routes/threads.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createPreviewRoutes from './routes/previews.js';
 import { initPreviewEngine } from './preview-engine.js';
+import { initCaptureEngine } from './preview-capture.js';
 import createPreviewDbRoutes from './routes/preview.js';
 import createPrActionRoutes from './routes/pr-actions.js';
 import { createPreviewProxyMiddleware, createPreviewWsUpgradeHandler } from './preview-proxy.js';
@@ -776,6 +777,7 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     });
 
     initPreviewEngine({ stmts: stmts!, broadcast, previewDomain: config.previewDomain });
+    initCaptureEngine({ stmts: stmts!, broadcast, uploadsDir: UPLOADS_DIR });
 
     resumeOrphanedSessions(sessionsToResume);
   });
