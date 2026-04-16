@@ -1525,21 +1525,41 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
 
     if (signature && webhookConfig.secret) {
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-      const expected =
-        'sha256=' +
-        crypto
-          .createHmac('sha256', webhookConfig.secret)
-          .update(rawBody || JSON.stringify(req.body))
-          .digest('hex');
+      const bodyBuf = rawBody || Buffer.from(JSON.stringify(req.body));
+      const appSecret = config.githubApp?.webhookSecret;
 
-      try {
-        if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
-          console.warn(
-            `[Webhook] HMAC verification failed for ${repoFullName} — check that the webhook signing secret in GitHub repo/org settings matches Agent Hub’s webhook config for this repository (and that the server build includes raw-body HMAC verification).`,
-          );
-          return res.status(401).json({ error: 'Invalid signature' });
+      const verifyAgainst = (secret: string): boolean => {
+        const expected =
+          'sha256=' + crypto.createHmac('sha256', secret).update(bodyBuf).digest('hex');
+        try {
+          const sigBuf = Buffer.from(signature);
+          const expBuf = Buffer.from(expected);
+          if (sigBuf.length !== expBuf.length) return false;
+          return crypto.timingSafeEqual(sigBuf, expBuf);
+        } catch {
+          return false;
         }
-      } catch {
+      };
+
+      // Accept either the per-repo webhook secret OR the GitHub App's webhook
+      // secret. Installed GitHub Apps deliver events to the same endpoint but
+      // sign them with the App's secret rather than the repo webhook's secret,
+      // so verifying only one source rejects legitimate App-delivered events.
+      const matchedSource = verifyAgainst(webhookConfig.secret)
+        ? 'repo'
+        : appSecret && verifyAgainst(appSecret)
+          ? 'github-app'
+          : null;
+
+      if (!matchedSource) {
+        const eventLabel = payload.action ? `${event}.${payload.action}` : event;
+        const triedSources = appSecret ? 'repo + github-app' : 'repo';
+        console.warn(
+          `[Webhook] HMAC verification failed for ${repoFullName} ` +
+            `(event=${eventLabel}, delivery=${deliveryId || 'unknown'}, tried=${triedSources}) — ` +
+            `check that the signing secret in GitHub repo/App settings matches Agent Hub’s ` +
+            `webhook config (and that the server build includes raw-body HMAC verification).`,
+        );
         return res.status(401).json({ error: 'Invalid signature' });
       }
     }
