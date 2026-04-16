@@ -180,6 +180,24 @@ export interface SessionEventRow {
   timestamp: string;
 }
 
+/**
+ * Per-session progress step row. Populated whenever a running agent emits a
+ * `[[STEP:...]]` marker; backs the in-Hub ProgressPanel so reopening a session
+ * rehydrates the live checklist.
+ */
+export interface SessionProgressRow {
+  id: number;
+  session_id: string;
+  message_id: string | null;
+  step: string;
+  status: 'started' | 'completed' | 'failed';
+  /** Epoch ms when the step started. */
+  started_at: number;
+  /** Epoch ms when the step finished (completed or failed). Null while in-flight. */
+  finished_at: number | null;
+  created_at: string;
+}
+
 export interface HeartbeatStateRow {
   agent_id: string;
   next_run_at: string | null;
@@ -597,6 +615,12 @@ export interface Stmts {
   deleteSessionEvents: Stmt;
   countSessionEvents: Stmt;
 
+  // Session progress steps (in-Hub ProgressPanel rehydration)
+  addSessionProgress: Stmt;
+  completeSessionProgress: Stmt;
+  getSessionProgress: Stmt;
+  deleteSessionProgress: Stmt;
+
   // Checkpoints
   addCheckpoint: Stmt;
   getCheckpoints: Stmt;
@@ -997,8 +1021,11 @@ export type StreamEventType =
   | 'checkpoint'
   | 'rate_limit'
   | 'ask_user_question'
+  | 'progress_step'
   | 'error'
   | 'unknown';
+
+export type ProgressStepStatus = 'started' | 'completed' | 'failed';
 
 export interface BaseStreamEvent {
   type: StreamEventType;
@@ -1082,6 +1109,19 @@ export interface AskUserQuestionEvent extends BaseStreamEvent {
   questions: AskUserQuestionItem[];
 }
 
+export interface ProgressStepEvent extends BaseStreamEvent {
+  type: 'progress_step';
+  /** Human-readable step name, e.g. "Gathered PR context". */
+  step: string;
+  /** Lifecycle state for this step. */
+  status: ProgressStepStatus;
+  /** Epoch ms when the step was marked `started`. For `completed` / `failed`,
+   *  this is the same value originally emitted so clients can compute elapsed. */
+  startedAt: number;
+  /** Epoch ms when the step reached `completed` or `failed`. Absent for `started`. */
+  finishedAt?: number;
+}
+
 export interface ErrorEvent extends BaseStreamEvent {
   type: 'error';
   message: string;
@@ -1102,6 +1142,7 @@ export type StreamEvent =
   | CheckpointEvent
   | RateLimitEvent
   | AskUserQuestionEvent
+  | ProgressStepEvent
   | ErrorEvent
   | UnknownEvent;
 

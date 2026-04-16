@@ -1,6 +1,8 @@
 import type {
   AskUserQuestionEvent,
   AskUserQuestionItem,
+  ProgressStepEvent,
+  ProgressStepStatus,
   StreamEvent,
   StreamParser,
 } from './types.js';
@@ -140,6 +142,90 @@ function parseAskPayload(raw: string): AskUserQuestionItem[] | null {
   return out;
 }
 
+// ─── [[STEP:...]] progress-marker protocol ─────────────────────────────
+//
+// Long-running sessions (reviewer, autofix, heartbeat, cron) can emit
+// `[[STEP:<status>:<label>]]` markers in their assistant text to drive a
+// Cursor-Bugbot–style timed checklist inside Agent Hub's chat view.
+//
+// Supported statuses:
+//   `[[STEP:started:Gather PR context]]`
+//   `[[STEP:completed:Gather PR context]]`
+//   `[[STEP:failed:Gather PR context]]`
+//
+// The marker itself is stripped from the rendered assistant text (the same
+// way agenthub:ask blocks are) so the user never sees the raw syntax — they
+// see the rendered ProgressPanel instead.
+
+// Tolerant parser — allows spaces around the colon separators and any
+// visible character in the label up to the closing `]]`. Label is trimmed.
+const STEP_MARKER_RE = /\[\[STEP:\s*(started|completed|failed)\s*:\s*([^\]\n]+?)\s*\]\]/gi;
+
+export interface ExtractedStep {
+  step: string;
+  status: ProgressStepStatus;
+}
+
+export interface StepExtractionResult {
+  strippedText: string;
+  steps: ExtractedStep[];
+}
+
+/**
+ * Pull every `[[STEP:status:label]]` marker out of `text`, returning the
+ * stripped text and the ordered list of extracted steps. Unrecognized or
+ * malformed markers are left in place.
+ *
+ * Exported for tests.
+ */
+export function extractStepMarkers(text: string): StepExtractionResult {
+  if (!text.includes('[[STEP:')) {
+    return { strippedText: text, steps: [] };
+  }
+
+  const steps: ExtractedStep[] = [];
+  const replacements: Array<{ start: number; end: number }> = [];
+
+  STEP_MARKER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = STEP_MARKER_RE.exec(text)) !== null) {
+    const status = m[1].toLowerCase() as ProgressStepStatus;
+    const step = m[2].trim();
+    if (!step) continue;
+    steps.push({ step, status });
+    replacements.push({ start: m.index, end: m.index + m[0].length });
+  }
+
+  if (replacements.length === 0) {
+    return { strippedText: text, steps: [] };
+  }
+
+  let strippedText = text;
+  for (let i = replacements.length - 1; i >= 0; i--) {
+    const { start, end } = replacements[i];
+    strippedText = strippedText.slice(0, start) + strippedText.slice(end);
+  }
+  // Collapse blank-line runs and strip trailing whitespace left by removal.
+  strippedText = strippedText
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return { strippedText, steps };
+}
+
+function stepEvent(extracted: ExtractedStep): ProgressStepEvent {
+  const now = Date.now();
+  const base: ProgressStepEvent = {
+    type: 'progress_step',
+    step: extracted.step,
+    status: extracted.status,
+    startedAt: now,
+  };
+  if (extracted.status !== 'started') base.finishedAt = now;
+  return base;
+}
+
 function simpleHash(s: string): string {
   // Tiny non-crypto hash; deterministic for a given payload.
   let h = 0;
@@ -229,13 +315,16 @@ function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
       for (const block of content) {
         if (block.type === 'text' && block.text) {
           const text = block.text as string;
-          const { strippedText, asks } = extractAskBlocks(text);
-          // If any asks were extracted, emit the stripped text first (so
-          // surrounding prose still renders) and then the typed ask events.
-          if (asks.length > 0) {
-            if (strippedText) {
-              out.push({ type: 'assistant_text', text: strippedText, partial: false });
+          // Extract asks first, then step markers from the stripped-of-asks text
+          // so we don't accidentally parse markers nested inside a fenced ask.
+          const { strippedText: afterAsk, asks } = extractAskBlocks(text);
+          const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+          const displayText = afterSteps;
+          if (asks.length > 0 || steps.length > 0) {
+            if (displayText) {
+              out.push({ type: 'assistant_text', text: displayText, partial: false });
             }
+            for (const s of steps) out.push(stepEvent(s));
             for (const ask of asks) out.push(askEvent(ask));
           } else {
             out.push({ type: 'assistant_text', text, partial: false });
@@ -418,14 +507,16 @@ function normalizeCursor(raw: Record<string, unknown>): StreamEvent[] {
       const resultText = typeof raw.result === 'string' ? raw.result : '';
       const out: StreamEvent[] = [];
       if (resultText) {
-        const { strippedText, asks } = extractAskBlocks(resultText);
-        if (asks.length > 0) {
+        const { strippedText: afterAsk, asks } = extractAskBlocks(resultText);
+        const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+        if (asks.length > 0 || steps.length > 0) {
           // Emit a finalized assistant_text with the stripped text so chat.ts
           // sets `finalText`, which replaces the raw-fence partialFallback on
           // both the persisted message and the broadcasted stream content.
-          if (strippedText) {
-            out.push({ type: 'assistant_text', text: strippedText, partial: false });
+          if (afterSteps) {
+            out.push({ type: 'assistant_text', text: afterSteps, partial: false });
           }
+          for (const s of steps) out.push(stepEvent(s));
           for (const ask of asks) out.push(askEvent(ask));
         }
       }

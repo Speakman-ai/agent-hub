@@ -867,6 +867,30 @@ You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullNa
 - **Title**: ${opts.prTitle}
 - **Trigger**: ${opts.reason === 'opened' ? 'PR was just opened' : 'New commits were pushed (synchronize)'}
 
+## Progress markers (drives the in-Hub ProgressPanel + GitHub Check Run)
+
+As you work, emit \`[[STEP:<status>:<label>]]\` markers on their own line at
+phase boundaries. These are stripped from the rendered output and drive the
+live Cursor-style checklist. Valid statuses: \`started\`, \`completed\`, \`failed\`.
+
+Use these exact labels in order so the panel lines up with the GitHub Check Run:
+
+1. \`Gather PR context\`
+2. \`Analyze diff and files\`
+3. \`Post formal review\`
+
+Example:
+
+    [[STEP:started:Gather PR context]]
+    ...do the work...
+    [[STEP:completed:Gather PR context]]
+    [[STEP:started:Analyze diff and files]]
+    ...
+    [[STEP:completed:Analyze diff and files]]
+    [[STEP:started:Post formal review]]
+    ...POST to /api/pr/review...
+    [[STEP:completed:Post formal review]]
+
 ## Your task
 1. Fetch the PR metadata, diff, and recent commits using \`gh pr view ${opts.prNumber} --repo ${opts.repoFullName}\` and \`gh pr diff ${opts.prNumber} --repo ${opts.repoFullName}\`.
 2. Read the changed files in context.

@@ -821,6 +821,60 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         toolResultOutputs += '\n' + event.output;
       }
 
+      // Progress-panel persistence: mirror progress_step events into the
+      // session_progress table so reopening the session rehydrates the
+      // ProgressPanel. Also broadcast a typed `session-progress` WS message
+      // so the client can update without having to parse the raw session
+      // event stream. Best-effort — failures don't block the chat turn.
+      if (event.type === 'progress_step') {
+        try {
+          if (event.status === 'started') {
+            S.addSessionProgress.run(
+              sessionId,
+              assistantMsgId,
+              event.step,
+              'started',
+              event.startedAt,
+              null,
+            );
+          } else {
+            // `completed` / `failed` — close the most recent open row for
+            // (session_id, step). If no matching row exists (e.g. agent
+            // skipped the `started` marker), insert a one-shot row so the
+            // panel still shows the outcome.
+            const finishedAt = event.finishedAt ?? event.startedAt;
+            const info = S.completeSessionProgress.run(
+              event.status,
+              finishedAt,
+              sessionId,
+              event.step,
+            );
+            if ((info as { changes?: number }).changes === 0) {
+              S.addSessionProgress.run(
+                sessionId,
+                assistantMsgId,
+                event.step,
+                event.status,
+                event.startedAt,
+                finishedAt,
+              );
+            }
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn('[chat] Failed to persist session_progress:', message);
+        }
+        broadcast({
+          type: 'session-progress',
+          sessionId,
+          messageId: assistantMsgId,
+          step: event.step,
+          status: event.status,
+          startedAt: event.startedAt,
+          finishedAt: event.finishedAt ?? null,
+        });
+      }
+
       broadcast({
         type: 'session-event',
         messageId: assistantMsgId,

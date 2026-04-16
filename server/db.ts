@@ -192,6 +192,25 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_session_events_parent
       ON session_events(parent_kind, parent_id, seq);
 
+    -- session_progress: per-session Cursor-style progress checklist. One row
+    -- per step emitted by a long-running session (reviewer, autofix, etc.)
+    -- via a [[STEP:...]] marker. Rehydrates the in-Hub ProgressPanel when
+    -- a session is reopened. started_at / finished_at are epoch ms so we
+    -- don't have to do the SQLite naive-datetime timezone dance that pr_state
+    -- had to fix up in review.
+    CREATE TABLE IF NOT EXISTS session_progress (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      message_id TEXT,
+      step TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_progress_session
+      ON session_progress(session_id, started_at ASC);
+
     -- Delegations: tracks sub-agent tasks spawned by a lead agent
     CREATE TABLE IF NOT EXISTS delegations (
       id TEXT PRIMARY KEY,
@@ -1106,6 +1125,30 @@ function initDb(dataDir: string): void {
     countSessionEvents: db.prepare(
       'SELECT COUNT(*) as count FROM session_events WHERE parent_kind = ? AND parent_id = ?',
     ),
+
+    // Session progress steps (Cursor-style ProgressPanel rehydration)
+    addSessionProgress: db.prepare(
+      `INSERT INTO session_progress (session_id, message_id, step, status, started_at, finished_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    // Mark the most recent `started` row for this (session,step) as done.
+    // Using the latest id disambiguates when the same step is re-emitted across
+    // a session (e.g. re-review) — we only close the most recent open one.
+    completeSessionProgress: db.prepare(
+      `UPDATE session_progress
+         SET status = ?, finished_at = ?
+       WHERE id = (
+         SELECT id FROM session_progress
+         WHERE session_id = ? AND step = ? AND status = 'started'
+         ORDER BY id DESC LIMIT 1
+       )`,
+    ),
+    getSessionProgress: db.prepare(
+      `SELECT * FROM session_progress
+        WHERE session_id = ?
+        ORDER BY started_at ASC, id ASC`,
+    ),
+    deleteSessionProgress: db.prepare('DELETE FROM session_progress WHERE session_id = ?'),
 
     // Checkpoints (Claude Code auto-save restore points)
     addCheckpoint: db.prepare(

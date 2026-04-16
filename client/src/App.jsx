@@ -11,6 +11,7 @@ import SkillsPage from './components/SkillsPage.jsx';
 import RoomChat from './components/RoomChat.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
+import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import KanbanBoard from './components/KanbanBoard.jsx';
@@ -104,6 +105,9 @@ export default function App() {
   const [subagents, setSubagents] = useState({});
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  // Cursor-style ProgressPanel state — keyed by sessionId.
+  // Each value: Array<{ step, status, startedAt, finishedAt? }> in emit order.
+  const [sessionProgress, setSessionProgress] = useState({});
   // Tracks which agenthub:ask prompts the user has already answered in this
   // tab, so the picker renders as "Submitted" immediately after click. This is
   // the optimistic, in-memory half; the authoritative source is the derived
@@ -425,6 +429,23 @@ export default function App() {
             });
           }, retryMs + 1000);
         }
+        break;
+      }
+      case 'session-progress': {
+        // Drives the in-Hub ProgressPanel for this session. The server sends
+        // one message per progress_step event; we reduce it into the ordered
+        // list keyed by sessionId.
+        const sid = data.sessionId;
+        if (!sid) break;
+        setSessionProgress((prev) => ({
+          ...prev,
+          [sid]: mergeProgressEvent(prev[sid] || [], {
+            step: data.step,
+            status: data.status,
+            startedAt: data.startedAt,
+            finishedAt: data.finishedAt ?? undefined,
+          }),
+        }));
         break;
       }
       case 'done':
@@ -1274,6 +1295,29 @@ export default function App() {
     api.getMessages(activeSessionId).then(setMessages);
   }, [activeSessionId]);
 
+  // Rehydrate the in-Hub ProgressPanel for the active session whenever the
+  // session changes. Skip if we already have live steps in memory (avoid
+  // clobbering in-flight state on a quick tab-toggle).
+  useEffect(() => {
+    if (!activeSessionId) return;
+    if ((sessionProgress[activeSessionId] || []).length > 0) return;
+    let cancelled = false;
+    api
+      .getSessionProgress(activeSessionId)
+      .then((res) => {
+        if (cancelled || !res || !Array.isArray(res.steps)) return;
+        if (res.steps.length === 0) return;
+        setSessionProgress((prev) => ({ ...prev, [activeSessionId]: res.steps }));
+      })
+      .catch(() => {
+        /* best-effort — missing endpoint / offline should not break chat */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId]);
+
   // When the user switches sessions, rehydrate streaming state from the
   // in-memory active-tasks map so an in-flight task on another session becomes
   // visible as soon as you click into it.
@@ -1840,6 +1884,17 @@ export default function App() {
                 className="flex-1 overflow-y-auto p-3 md:p-6 relative"
               >
                 <div className="mx-auto">
+                  {/* Cursor-style timed checklist — rendered at top of chat
+                      whenever the session has emitted `[[STEP:...]]` markers.
+                      Collapses automatically once all steps resolve. */}
+                  {(sessionProgress[activeSessionId] || []).length > 0 && (
+                    <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
+                      <ProgressPanel
+                        steps={sessionProgress[activeSessionId]}
+                        sessionRunning={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                      />
+                    </div>
+                  )}
                   {messages.length === 0 && !thinking && !streamingContent && (
                     <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
                       <MessageCircle size={48} className="mb-4 text-gray-600" />

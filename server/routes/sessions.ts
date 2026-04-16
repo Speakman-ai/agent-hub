@@ -12,6 +12,7 @@ import type {
   BackgroundTaskRow,
   ActiveTaskRow,
   SessionEventRow,
+  SessionProgressRow,
   CheckpointRow,
   AgentLookup,
   EnrichedAgent,
@@ -228,6 +229,22 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json({ ...task, status: 'error' });
   });
 
+  // Cursor-style progress checklist for a session. Used by the in-Hub
+  // ProgressPanel to rehydrate state on page-load / session-switch so the
+  // panel survives reloads. Steps are ordered by `started_at` ASC, falling
+  // back to insertion order for ties.
+  router.get('/api/sessions/:sessionId/progress', (req: Request, res: Response) => {
+    const rows = stmts.getSessionProgress.all(req.params.sessionId) as SessionProgressRow[];
+    const steps = rows.map((r) => ({
+      id: r.id,
+      step: r.step,
+      status: r.status,
+      startedAt: r.started_at,
+      finishedAt: r.finished_at ?? undefined,
+    }));
+    res.json({ sessionId: req.params.sessionId, steps });
+  });
+
   router.get('/api/messages/:messageId/events', (req: Request, res: Response) => {
     const rows = stmts.getSessionEvents.all('message', req.params.messageId) as SessionEventRow[];
     const events = rows.map((r) => ({
@@ -276,6 +293,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (session?.worktree_path) {
       removeWorkspace(session.worktree_path);
+    }
+    // Clean up session_progress rows so dead sessions don't leak rows into the
+    // table (session_progress doesn't have an FK cascade).
+    try {
+      stmts.deleteSessionProgress.run(req.params.sessionId);
+    } catch {
+      /* best-effort */
     }
     stmts.deleteSession.run(req.params.sessionId);
     res.json({ ok: true });

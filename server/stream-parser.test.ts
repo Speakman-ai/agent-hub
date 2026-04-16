@@ -1,5 +1,5 @@
-import { createStreamParser, extractAskBlocks } from './stream-parser.js';
-import type { AskUserQuestionEvent, StreamEvent } from './types.js';
+import { createStreamParser, extractAskBlocks, extractStepMarkers } from './stream-parser.js';
+import type { AskUserQuestionEvent, ProgressStepEvent, StreamEvent } from './types.js';
 
 describe('createStreamParser — Claude Code', () => {
   function parse(lines: string[]): StreamEvent[] {
@@ -683,5 +683,137 @@ describe('createStreamParser — Cursor Agent', () => {
     ]);
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe('result');
+  });
+});
+
+describe('extractStepMarkers — [[STEP:...]] progress protocol', () => {
+  it('returns input unchanged when there are no markers', () => {
+    const result = extractStepMarkers('just regular prose');
+    expect(result.strippedText).toBe('just regular prose');
+    expect(result.steps).toEqual([]);
+  });
+
+  it('extracts a single started marker', () => {
+    const result = extractStepMarkers('[[STEP:started:Gather PR context]]\nworking on it');
+    expect(result.steps).toEqual([{ step: 'Gather PR context', status: 'started' }]);
+    expect(result.strippedText).toBe('working on it');
+  });
+
+  it('extracts started → completed pair preserving order', () => {
+    const text = [
+      'Kicking off review.',
+      '[[STEP:started:Gather PR context]]',
+      '...fetching...',
+      '[[STEP:completed:Gather PR context]]',
+      'Next phase.',
+    ].join('\n');
+    const result = extractStepMarkers(text);
+    expect(result.steps).toEqual([
+      { step: 'Gather PR context', status: 'started' },
+      { step: 'Gather PR context', status: 'completed' },
+    ]);
+    expect(result.strippedText).not.toContain('[[STEP:');
+    expect(result.strippedText).toContain('Kicking off review.');
+    expect(result.strippedText).toContain('Next phase.');
+  });
+
+  it('accepts failed status', () => {
+    const result = extractStepMarkers('[[STEP:failed:Analyze diff and files]]');
+    expect(result.steps).toEqual([{ step: 'Analyze diff and files', status: 'failed' }]);
+  });
+
+  it('is case-insensitive on status and trims labels', () => {
+    const result = extractStepMarkers('[[STEP: STARTED :  Post formal review  ]]');
+    expect(result.steps).toEqual([{ step: 'Post formal review', status: 'started' }]);
+  });
+
+  it('ignores malformed markers (no status)', () => {
+    const text = '[[STEP:Post formal review]] leftover';
+    const result = extractStepMarkers(text);
+    expect(result.steps).toEqual([]);
+    // Malformed markers are left in place for visibility.
+    expect(result.strippedText).toContain('[[STEP:Post formal review]]');
+  });
+
+  it('emits progress_step events from a Claude assistant text block, in order', () => {
+    const parser = createStreamParser('claude-code');
+    const events: StreamEvent[] = [];
+    const assistantLine = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: [
+              '[[STEP:started:Gather PR context]]',
+              'done gathering',
+              '[[STEP:completed:Gather PR context]]',
+              '[[STEP:started:Analyze diff and files]]',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+    events.push(...parser.feed(assistantLine + '\n'));
+
+    const progress = events.filter((e) => e.type === 'progress_step') as ProgressStepEvent[];
+    expect(progress.map((p) => p.status)).toEqual(['started', 'completed', 'started']);
+    expect(progress.map((p) => p.step)).toEqual([
+      'Gather PR context',
+      'Gather PR context',
+      'Analyze diff and files',
+    ]);
+    // All events carry a numeric startedAt; completed carries a finishedAt.
+    for (const p of progress) {
+      expect(typeof p.startedAt).toBe('number');
+    }
+    const completed = progress.find((p) => p.status === 'completed')!;
+    expect(typeof completed.finishedAt).toBe('number');
+
+    // The visible assistant_text should have the markers stripped.
+    const assistantText = events.find((e) => e.type === 'assistant_text') as
+      | { text: string }
+      | undefined;
+    expect(assistantText).toBeDefined();
+    expect(assistantText!.text).not.toContain('[[STEP:');
+    expect(assistantText!.text).toContain('done gathering');
+  });
+
+  it('does not emit assistant_text when the text is *only* markers', () => {
+    const parser = createStreamParser('claude-code');
+    const events: StreamEvent[] = [];
+    const assistantLine = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '[[STEP:started:X]]\n[[STEP:completed:X]]',
+          },
+        ],
+      },
+    });
+    events.push(...parser.feed(assistantLine + '\n'));
+
+    const assistantTexts = events.filter((e) => e.type === 'assistant_text');
+    expect(assistantTexts).toHaveLength(0);
+    const progress = events.filter((e) => e.type === 'progress_step');
+    expect(progress).toHaveLength(2);
+  });
+
+  it('picks up markers from a Cursor result event', () => {
+    const parser = createStreamParser('cursor-agent');
+    const events: StreamEvent[] = [];
+    const resultLine = JSON.stringify({
+      type: 'result',
+      result: 'prose\n[[STEP:started:Analyze diff and files]]\nmore prose',
+      is_error: false,
+    });
+    events.push(...parser.feed(resultLine + '\n'));
+
+    const progress = events.filter((e) => e.type === 'progress_step') as ProgressStepEvent[];
+    expect(progress).toHaveLength(1);
+    expect(progress[0].step).toBe('Analyze diff and files');
+    expect(progress[0].status).toBe('started');
   });
 });
