@@ -14,6 +14,12 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import { hookHandled, clearCompleted } from './routes/hooks.js';
 import type { DelegationResult } from './delegation.js';
+import {
+  parseHandoffBlock,
+  handoffHasTrailingContent,
+  handleHandoff,
+  buildHandoffPromptSection,
+} from './handoff.js';
 import type {
   Project,
   Agent,
@@ -66,6 +72,13 @@ interface DelegateTask {
 interface BuildEnrichedPromptOptions {
   useWorktree?: boolean;
   isFirstMessage?: boolean;
+  /**
+   * Target session id for which the prompt is being built. When provided,
+   * the builder checks for an incoming (delivered) handoff and appends a
+   * `## HANDOFF FROM ...` section on the first turn so the agent picks up
+   * the source session's transcript + handoff note.
+   */
+  sessionId?: string;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -317,6 +330,24 @@ Agent Hub renders a rich picker (radio/checkbox cards with side-by-side previews
 **When not to use** — for simple yes/no or open-ended questions, just ask in prose. Don't wrap plan-approval questions; use the regular text for those.`;
   }
 
+  // Incoming handoff (target-side): if this session was created as the
+  // target of a <handoff>, append the HANDOFF FROM section on the first
+  // message so the agent picks up the source's transcript + note. Only
+  // runs on the first message because the source's context is persistent
+  // once read — re-injecting on every turn would bloat the prompt.
+  if (options.sessionId && isFirstMessage) {
+    const getEnrichedAgentForHandoff = options._getEnrichedAgent;
+    if (getEnrichedAgentForHandoff) {
+      const handoffSection = buildHandoffPromptSection(options.sessionId, {
+        stmts,
+        getEnrichedAgent: getEnrichedAgentForHandoff,
+      });
+      if (handoffSection) {
+        prompt += '\n\n' + handoffSection;
+      }
+    }
+  }
+
   if (agent.role === 'lead' && Array.isArray(agent.subAgents) && agent.subAgents.length > 0) {
     // Delegation: sub-agent list is dynamic (agents can change), so always include
     const getEnrichedAgent = options._getEnrichedAgent;
@@ -349,7 +380,24 @@ Your available sub-agents:
 ${subAgentDescriptions}
 
 Guidelines: Delegate only for parallel specialist work. Each task must be self-contained. For simple tasks, just do it directly.
-**IMPORTANT: Do NOT use the Agent tool for delegation.** Use the \`<delegate>\` block — the server spawns sub-agents as separate CLI processes.`;
+**IMPORTANT: Do NOT use the Agent tool for delegation.** Use the \`<delegate>\` block — the server spawns sub-agents as separate CLI processes.
+
+## Handoff
+
+\`<delegate>\` spawns parallel one-shot helpers; \`<handoff>\` transfers ownership. Use \`<handoff>\` at the END of your turn when another agent on your team should take over the work — e.g. you've finished discovery/planning and a specialist should now implement. Your session ends; a fresh session is created for the target agent with your full transcript + a handoff note pre-loaded as context. You will not see the target's reply — the user interacts with them directly.
+
+Format (single target, JSON payload):
+\`\`\`
+<handoff>
+{"toAgent": "sub-agent-id", "note": "Summary of what's done + what they should do next."}
+</handoff>
+\`\`\`
+
+Rules:
+- Handoff is **terminal** in the turn — anything you emit after \`</handoff>\` is dropped.
+- Target must be one of your listed sub-agents (same project).
+- Use a meaty \`note\`: file paths with line numbers, linked card id, the exact next action. The transcript comes along for free, but the note is what the target reads first.
+- Prefer \`<handoff>\` over \`<delegate>\` when the specialist will take multiple turns, needs full context, or is expected to commit/PR. Prefer \`<delegate>\` for short parallel side-quests whose results you'll synthesize.`;
     } else {
       // On subsequent messages, just remind of available sub-agents (compact)
       prompt += `\n\n## Sub-Agents\n${subAgentDescriptions}\nDelegate via \`<delegate>\` block (not Agent tool).`;
@@ -572,6 +620,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       {
         useWorktree: !!session!.use_worktree,
         isFirstMessage,
+        sessionId,
         _getEnrichedAgent: getEnrichedAgent,
       },
     );
@@ -1104,6 +1153,30 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               const message = err instanceof Error ? err.message : String(err);
               console.error('[Auto-summarize] Failed:', message);
             });
+        }
+      }
+
+      // Handoff takes precedence over delegate — if the agent emitted a
+      // <handoff> block, ownership transfers to the target agent and we do
+      // not run the delegate/synthesize flow for this turn. Per design,
+      // <handoff> is terminal: any prose after the closing tag is dropped.
+      if (enrichedAgent) {
+        const handoffTask = parseHandoffBlock(finalContent);
+        if (handoffTask) {
+          if (handoffHasTrailingContent(finalContent)) {
+            console.warn(
+              `[Handoff] Trailing content after </handoff> in session ${sessionId} — dropped (handoff is terminal).`,
+            );
+          }
+          handleHandoff(sessionId, assistantMsgId, handoffTask, enrichedAgent, project).catch(
+            (err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error('[Handoff] Failed:', message);
+              broadcast({ type: 'handoff_error', sessionId, error: message });
+            },
+          );
+          drainQueue(sessionId);
+          return;
         }
       }
 

@@ -92,6 +92,8 @@ import {
   synthesizeResults,
 } from './delegation.js';
 
+import { initHandoff } from './handoff.js';
+
 import {
   initRoomChat,
   activeRoomProcesses,
@@ -288,6 +290,20 @@ initDelegation({
   getClaudeBin: () => CLAUDE_BIN,
   getDefaultModel: () => DEFAULT_MODEL,
   getConfig: () => config,
+});
+
+initHandoff({
+  stmts: stmts!,
+  broadcast,
+  getEnrichedAgent,
+  findAgent,
+  getActiveProcesses: () => activeProcesses,
+  getClaudeBin: () => CLAUDE_BIN,
+  getDefaultModel: () => DEFAULT_MODEL,
+  getConfig: () => config,
+  // handleChat is assigned after createChatHandler below, so we read it
+  // lazily via a getter.
+  getHandleChat: () => handleChat,
 });
 
 initRoomChat({

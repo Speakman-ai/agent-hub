@@ -132,6 +132,20 @@ export interface DelegationRow {
   completed_at: string | null;
 }
 
+export interface HandoffRow {
+  id: string;
+  from_session_id: string;
+  to_session_id: string | null;
+  from_agent_id: string;
+  to_agent_id: string;
+  project_id: string;
+  note: string;
+  status: 'pending' | 'delivered' | 'failed';
+  error: string | null;
+  created_at: string;
+  delivered_at: string | null;
+}
+
 export interface BackgroundTaskRow {
   id: string;
   session_id: string;
@@ -696,6 +710,15 @@ export interface Stmts {
   updateDelegation: Stmt;
   getDelegations: Stmt;
   getDelegationsBySession: Stmt;
+
+  // Handoffs
+  createHandoff: Stmt;
+  setHandoffToSession: Stmt;
+  markHandoffDelivered: Stmt;
+  markHandoffFailed: Stmt;
+  getHandoffById: Stmt;
+  getHandoffByToSession: Stmt;
+  getHandoffsFromSession: Stmt;
 
   // Message queue
   enqueueMessage: Stmt;

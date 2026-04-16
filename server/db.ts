@@ -229,6 +229,27 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_delegations_session ON delegations(session_id);
     CREATE INDEX IF NOT EXISTS idx_delegations_parent ON delegations(parent_message_id);
 
+    -- Handoffs: tracks async session handoff from one agent to another via
+    -- the <handoff> block protocol. One handoff row per emitted block; the
+    -- target session is created lazily so to_session_id is nullable until
+    -- the handler links them.
+    CREATE TABLE IF NOT EXISTS handoffs (
+      id TEXT PRIMARY KEY,
+      from_session_id TEXT NOT NULL,
+      to_session_id TEXT,
+      from_agent_id TEXT NOT NULL,
+      to_agent_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT '',
+      note TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','delivered','failed')),
+      error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      delivered_at TEXT,
+      FOREIGN KEY (from_session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_handoffs_from_session ON handoffs(from_session_id);
+    CREATE INDEX IF NOT EXISTS idx_handoffs_to_session ON handoffs(to_session_id);
+
     CREATE TABLE IF NOT EXISTS background_tasks (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -1288,6 +1309,24 @@ function initDb(dataDir: string): void {
     ),
     getDelegationsBySession: db.prepare(
       'SELECT * FROM delegations WHERE session_id = ? ORDER BY started_at DESC',
+    ),
+
+    // Handoffs
+    createHandoff: db.prepare(
+      `INSERT INTO handoffs (id, from_session_id, from_agent_id, to_agent_id, project_id, note, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+    ),
+    setHandoffToSession: db.prepare(`UPDATE handoffs SET to_session_id = ? WHERE id = ?`),
+    markHandoffDelivered: db.prepare(
+      `UPDATE handoffs SET status = 'delivered', delivered_at = datetime('now') WHERE id = ?`,
+    ),
+    markHandoffFailed: db.prepare(`UPDATE handoffs SET status = 'failed', error = ? WHERE id = ?`),
+    getHandoffById: db.prepare('SELECT * FROM handoffs WHERE id = ?'),
+    getHandoffByToSession: db.prepare(
+      'SELECT * FROM handoffs WHERE to_session_id = ? AND status = ? LIMIT 1',
+    ),
+    getHandoffsFromSession: db.prepare(
+      'SELECT * FROM handoffs WHERE from_session_id = ? ORDER BY created_at ASC',
     ),
 
     // Message queue
