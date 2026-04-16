@@ -1867,6 +1867,10 @@ export default function App() {
                           <ChangesReadyBox
                             sessionId={activeSessionId}
                             changes={changesReady[activeSessionId]}
+                            defaultAutoMerge={
+                              projects.find((p) => p.id === activeAgent?.projectId)?.githubWorkflow
+                                ?.autoMerge ?? false
+                            }
                             onCreated={(sessionId, result) => {
                               setChangesReady((prev) => {
                                 const next = { ...prev };

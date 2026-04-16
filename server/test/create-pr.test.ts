@@ -34,4 +34,28 @@ describe('POST /api/sessions/:sessionId/create-pr', () => {
     // Should fail with no-worktree before reaching git operations
     expect(res.status).toBe(400);
   });
+
+  it('accepts autoMerge=true in the body without crashing', async () => {
+    const session = await createSession();
+    const res = await request
+      .post(`/api/sessions/${session.id}/create-pr`)
+      .send({ autoMerge: true });
+    // Still short-circuits on the missing worktree, but the endpoint must
+    // not reject requests that include an explicit opt-in.
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts explicit autoMerge=false (opt-out) in the body', async () => {
+    const session = await createSession();
+    const res = await request
+      .post(`/api/sessions/${session.id}/create-pr`)
+      .send({ autoMerge: false });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a body with no autoMerge field (falls through to project default)', async () => {
+    const session = await createSession();
+    const res = await request.post(`/api/sessions/${session.id}/create-pr`).send({});
+    expect(res.status).toBe(400);
+  });
 });

@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
 import { buildSpawnEnv } from '../config.js';
-import type { RouteDeps, Agent, Project, StreamEvent } from '../types.js';
+import type { RouteDeps, Agent, Project, StreamEvent, GithubWorkflowSettings } from '../types.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
 
@@ -147,13 +147,6 @@ interface ProjectCommands {
   build: string | null;
   test: string | null;
   lint: string | null;
-}
-
-interface GithubWorkflowSettings {
-  autoMerge?: boolean;
-  autoReview?: boolean;
-  waitForCI?: boolean;
-  waitForResolvedComments?: boolean;
 }
 
 export default function createProjectRoutes(deps: RouteDeps): Router {

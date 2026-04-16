@@ -740,10 +740,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   // ─── Create ticket & PR from ad-hoc session ──────────────────────
   router.post('/api/sessions/:sessionId/create-pr', async (req: Request, res: Response) => {
-    // `autoMerge` is accepted for backwards compatibility but ignored — auto-merge
-    // is now handled exclusively by GitHub's native branch protection / auto-merge
-    // settings. The server no longer attempts to merge PRs.
-    const { title } = req.body || {};
+    // `autoMerge` is a per-PR override (from ChangesReadyBox). When omitted,
+    // the project's `githubWorkflow.autoMerge` setting is used. When it's an
+    // explicit boolean — including `false` — that wins over the project
+    // default. GitHub's native auto-merge (`gh pr merge --auto --squash`) is
+    // what actually performs the merge once branch-protection checks pass.
+    const { title, autoMerge } = req.body || {};
     const sessionId = req.params.sessionId as string;
 
     try {
@@ -764,7 +766,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         project,
         agent,
         session.worktree_path,
-        { title: title || undefined },
+        {
+          title: title || undefined,
+          autoMerge: typeof autoMerge === 'boolean' ? autoMerge : undefined,
+        },
       );
 
       if (!result) {

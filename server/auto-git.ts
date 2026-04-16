@@ -12,6 +12,7 @@ import type {
   BroadcastFn,
   MessageRow,
 } from './types.js';
+import { resolveShouldAutoMerge } from './auto-merge.js';
 
 const execAsync = promisify(exec);
 
@@ -197,6 +198,36 @@ export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges
 
 // ─── Core commit + PR + review pipeline ─────────────────────────────
 
+/**
+ * Fire-and-forget enable of GitHub's native auto-merge on a PR.
+ *
+ * Resolves the auto-merge decision via `resolveShouldAutoMerge` (per-PR
+ * override wins; otherwise the project's `githubWorkflow.autoMerge`).
+ *
+ * Failures here NEVER bubble up — they must not block PR creation:
+ *   - Repo doesn't have "Allow auto-merge" enabled → logged, PR still succeeds
+ *   - PR requirements not met → logged warning, PR still succeeds
+ *   - Any other failure → logged, doesn't cascade
+ */
+async function enableAutoMergeIfNeeded(
+  prUrl: string,
+  project: Project,
+  override: boolean | undefined,
+  cwd: string,
+): Promise<void> {
+  if (!resolveShouldAutoMerge(override, project.githubWorkflow)) return;
+  try {
+    await execAsync(`gh pr merge --auto --squash ${JSON.stringify(prUrl)}`, {
+      cwd,
+      timeout: 15000,
+    });
+    console.log(`[auto-merge] Enabled GitHub native auto-merge for ${prUrl}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[auto-merge] Failed to enable auto-merge for ${prUrl}: ${msg}`);
+  }
+}
+
 async function commitPushAndCreatePR(
   sessionId: string,
   agentId: string,
@@ -204,6 +235,7 @@ async function commitPushAndCreatePR(
   agent: Agent,
   effectiveCwd: string,
   card: KanbanCardRow | undefined,
+  options?: { autoMergeOverride?: boolean },
 ): Promise<{ prUrl: string } | null> {
   const d = getDeps();
 
@@ -224,6 +256,18 @@ async function commitPushAndCreatePR(
           `[auto-commit] Found existing open PR: ${existingPrUrl} — moving card to Review`,
         );
         if (card) moveCardToReview(card, project, existingPrUrl);
+        // Re-apply auto-merge intent in case the user flipped the toggle ON
+        // and re-clicked "Create PR" against a branch with no new changes.
+        // Idempotent on GitHub's side if already enabled.
+        enableAutoMergeIfNeeded(
+          existingPrUrl,
+          project,
+          options?.autoMergeOverride,
+          effectiveCwd,
+        ).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
+        });
         return { prUrl: existingPrUrl };
       }
     } catch {
@@ -340,6 +384,15 @@ async function commitPushAndCreatePR(
     // Move the card to Review for visibility. The Reviewer agent will be
     // dispatched by the GitHub webhook handler when the PR opens/syncs.
     if (card) moveCardToReview(card, project, prUrl);
+
+    // Fire-and-forget: enable GitHub native auto-merge if the project or
+    // per-PR override requests it. Failure here never blocks PR creation.
+    enableAutoMergeIfNeeded(prUrl, project, options?.autoMergeOverride, effectiveCwd).catch(
+      (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
+      },
+    );
   };
 
   try {
@@ -537,7 +590,7 @@ export async function manualCommitAndPR(
   project: Project,
   agent: Agent,
   effectiveCwd: string,
-  options: { title?: string },
+  options: { title?: string; autoMerge?: boolean },
 ): Promise<{ prUrl: string; cardId: string } | null> {
   const d = getDeps();
 
@@ -608,6 +661,7 @@ export async function manualCommitAndPR(
     agent,
     effectiveCwd,
     card,
+    { autoMergeOverride: options.autoMerge },
   );
 
   if (result?.prUrl) {

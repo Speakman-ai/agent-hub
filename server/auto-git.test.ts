@@ -322,6 +322,10 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     expect(parsed.agentId).toBe('agent-1');
   });
 
+  // Note: the two auto-merge-on-existing-PR tests for the card-driven path
+  // live in the dedicated `commitPushAndCreatePR — existing PR early return`
+  // describe block below, where the card stmts are wired up correctly.
+
   it('clears changes_ready when a PR already exists', async () => {
     mockExec({
       'git remote -v': { stdout: 'origin\thttps://github.com/test/repo.git (fetch)\n' },
@@ -346,6 +350,132 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     const updateCalls = (mockStmts.updateSessionChangesReady as { run: ReturnType<typeof vi.fn> })
       .run.mock.calls;
     expect(updateCalls).toHaveLength(0);
+  });
+});
+
+describe('commitPushAndCreatePR — existing PR early return re-applies auto-merge', () => {
+  // When an autonomous/card-driven re-run finds an existing open PR on a
+  // branch with no new changes, commitPushAndCreatePR takes its early-return
+  // path. That path must still re-apply the project's auto-merge intent so
+  // that flipping the Settings toggle ON after the PR was created actually
+  // takes effect on the next re-run. Idempotent on GitHub's side.
+  const mockBroadcast = vi.fn();
+  const mockCard = {
+    id: 'card-1',
+    title: 'Existing PR task',
+    description: 'desc',
+    priority: 'medium',
+  };
+
+  function makeStmts() {
+    return {
+      getKanbanCardBySession: { get: vi.fn(() => mockCard) },
+      setCardPrUrl: { run: vi.fn() },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-review', name: 'Review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      moveKanbanCard: { run: vi.fn() },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+    } as Record<string, unknown>;
+  }
+
+  function mockExecExistingPR(prUrl: string, execCalls: string[]) {
+    (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        if (cmd.includes('git remote -v')) {
+          if (callback)
+            callback(null, {
+              stdout: 'origin\thttps://github.com/test/repo.git (fetch)\n',
+              stderr: '',
+            });
+          return;
+        }
+        // Empty status + empty log → clean worktree → early-return path.
+        if (cmd.includes('git status --porcelain')) {
+          if (callback) callback(null, { stdout: '', stderr: '' });
+          return;
+        }
+        if (cmd.includes('git log')) {
+          if (callback) callback(null, { stdout: '', stderr: '' });
+          return;
+        }
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) {
+          if (callback) callback(null, { stdout: 'feature/existing-pr\n', stderr: '' });
+          return;
+        }
+        if (cmd.includes('gh pr view')) {
+          if (callback) callback(null, { stdout: `${prUrl}\n`, stderr: '' });
+          return;
+        }
+        if (callback) callback(null, { stdout: '', stderr: '' });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('enables auto-merge when project.githubWorkflow.autoMerge is true', async () => {
+    const execCalls: string[] = [];
+    initAutoGit({
+      stmts: makeStmts() as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecExistingPR('https://github.com/test/repo/pull/77', execCalls);
+
+    const project = {
+      id: 'proj-1',
+      cwd: '/repo',
+      githubWorkflow: { autoMerge: true },
+    } as never;
+    const agent = { name: 'test-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-am-on', 'agent-1', project, agent, '/worktree', '');
+
+    // Fire-and-forget is scheduled via Promise.catch — flush microtasks AND
+    // the setImmediate queue so the inner await execAsync(gh pr merge)
+    // resolves before we assert.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const autoMergeCalls = execCalls.filter((c) => c.includes('gh pr merge --auto --squash'));
+    expect(autoMergeCalls).toHaveLength(1);
+    expect(autoMergeCalls[0]).toContain('https://github.com/test/repo/pull/77');
+  });
+
+  it('does not enable auto-merge when project setting is off', async () => {
+    const execCalls: string[] = [];
+    initAutoGit({
+      stmts: makeStmts() as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecExistingPR('https://github.com/test/repo/pull/78', execCalls);
+
+    const project = { id: 'proj-1', cwd: '/repo' } as never; // no githubWorkflow
+    const agent = { name: 'test-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-am-off', 'agent-1', project, agent, '/worktree', '');
+
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const autoMergeCalls = execCalls.filter((c) => c.includes('gh pr merge --auto'));
+    expect(autoMergeCalls).toHaveLength(0);
   });
 });
 

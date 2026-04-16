@@ -878,6 +878,13 @@ export interface Agent {
   [key: string]: unknown;
 }
 
+export interface GithubWorkflowSettings {
+  autoMerge?: boolean;
+  autoReview?: boolean;
+  waitForCI?: boolean;
+  waitForResolvedComments?: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -885,6 +892,7 @@ export interface Project {
   ahw: string;
   color?: string;
   githubRepo?: string;
+  githubWorkflow?: GithubWorkflowSettings;
   agents: Agent[];
   [key: string]: unknown;
 }

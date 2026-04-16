@@ -10,13 +10,23 @@ import { api } from '../utils/api.js';
  * an optional auto-merge toggle.
  *
  * Props:
- *   sessionId  — the session that has pending changes
- *   changes    — { agentId, branch, hasUncommitted, hasUnpushed }
- *   onCreated  — (sessionId, { prUrl, cardId }) => void
- *   onDismiss  — (sessionId) => void
+ *   sessionId         — the session that has pending changes
+ *   changes           — { agentId, branch, hasUncommitted, hasUnpushed }
+ *   defaultAutoMerge  — initial value for the per-PR auto-merge toggle. Comes
+ *                       from the project's `githubWorkflow.autoMerge` setting
+ *                       (Layer 1). The user can still flip it locally before
+ *                       creating the PR (Layer 2 overrides Layer 1).
+ *   onCreated         — (sessionId, { prUrl, cardId }) => void
+ *   onDismiss         — (sessionId) => void
  */
-export default function ChangesReadyBox({ sessionId, changes, onCreated, onDismiss }) {
-  const [autoMerge, setAutoMerge] = useState(false);
+export default function ChangesReadyBox({
+  sessionId,
+  changes,
+  defaultAutoMerge = false,
+  onCreated,
+  onDismiss,
+}) {
+  const [autoMerge, setAutoMerge] = useState(!!defaultAutoMerge);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
