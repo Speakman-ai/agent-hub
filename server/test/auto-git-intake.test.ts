@@ -1,25 +1,29 @@
 import { vi, type Mock } from 'vitest';
 
-// Mock child_process before importing auto-git
-vi.mock('child_process', () => ({
-  exec: vi.fn(
-    (
-      _cmd: string,
-      _opts: unknown,
-      cb?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
-    ) => {
-      if (typeof _opts === 'function') {
-        (_opts as (err: Error | null, result: { stdout: string; stderr: string }) => void)(null, {
-          stdout: '',
-          stderr: '',
-        });
-      } else if (cb) {
-        cb(null, { stdout: '', stderr: '' });
-      }
-      return { stdout: '', stderr: '' };
-    },
-  ),
-}));
+// Mock child_process before importing auto-git (keep execFile so auto-git can promisify it)
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return {
+    ...actual,
+    exec: vi.fn(
+      (
+        _cmd: string,
+        _opts: unknown,
+        cb?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (typeof _opts === 'function') {
+          (_opts as (err: Error | null, result: { stdout: string; stderr: string }) => void)(null, {
+            stdout: '',
+            stderr: '',
+          });
+        } else if (cb) {
+          cb(null, { stdout: '', stderr: '' });
+        }
+        return { stdout: '', stderr: '' };
+      },
+    ),
+  };
+});
 
 const { initAutoGit, autoCommitAndPR } = await import('../auto-git.js');
 

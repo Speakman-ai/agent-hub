@@ -12,7 +12,6 @@ import { getMemoryContext, appendDailyNote, reconcileMemoryAfterSession } from '
 import { collectSkillsFromDir, DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
-import { hookHandled, clearCompleted } from './routes/hooks.js';
 import type { DelegationResult } from './delegation.js';
 import {
   parseHandoffBlock,
@@ -690,12 +689,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       }
       if (imgPaths.length > 0) {
+        const n = imgPaths.length;
         imagePromptSuffix =
           '\n\n[The user has attached ' +
-          (imgPaths.length === 1 ? 'an image' : `${imgPaths.length} images`) +
-          '. View ' +
-          (imgPaths.length === 1 ? 'it' : 'them') +
-          ' using the Read tool at: ' +
+          (n === 1 ? 'a file' : `${n} files`) +
+          '. Open ' +
+          (n === 1 ? 'it' : 'them') +
+          ' with the Read tool at: ' +
           imgPaths.map((p) => `"${p}"`).join(', ') +
           ']';
       }
@@ -1240,26 +1240,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       }
 
-      const hooksWillHandle = engine === 'claude-code' && effectiveCwd !== project.cwd;
-      if (hooksWillHandle) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+      // Isolated (git worktree) + Claude: give the filesystem a moment to settle
+      // after the CLI exits before `git status` / `gh`. The old flow ran auto-commit
+      // from the HTTP stop hook immediately; if git still looked clean, the hook
+      // path marked the session "handled" and proc skipped — no `changes_ready`
+      // / Create PR banner even with Isolated ON.
+      const worktreeClaude = engine === 'claude-code' && effectiveCwd !== project.cwd;
+      if (worktreeClaude) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1200));
       }
-      const handledByHook = hooksWillHandle && hookHandled(sessionId);
-      if (handledByHook) {
-        clearCompleted(sessionId);
-      } else {
-        if (hooksWillHandle) {
-          console.log(
-            `[auto-commit] Hooks did not fire for ${sessionId}, falling back to proc.on('close')`,
-          );
-        }
-        await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent).catch(
-          (err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error('[auto-commit] Unexpected error:', message);
-          },
-        );
-      }
+      await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent).catch(
+        (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('[auto-commit] Unexpected error:', message);
+        },
+      );
 
       if (autonomousProjects.size > 0) {
         setTimeout(() => tryAutonomousDispatch(), 2000);

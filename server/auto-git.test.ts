@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock child_process before importing module
 vi.mock('child_process', () => ({
   exec: vi.fn(),
+  execFile: vi.fn(),
 }));
 
 vi.mock('fs', () => ({
@@ -11,7 +12,7 @@ vi.mock('fs', () => ({
   statSync: vi.fn(),
 }));
 
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import {
   checkWorktreeChanges,
   initAutoGit,
@@ -35,30 +36,76 @@ function makeMsg(role: 'user' | 'assistant', content: string): MessageRow {
   };
 }
 
-// Helper to mock execAsync results
+// Helper to mock execAsync / execFileAsync results (git uses exec; gh uses execFile)
 function mockExec(results: Record<string, { stdout?: string; stderr?: string; error?: Error }>) {
+  const run = (
+    cmd: string,
+    callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+  ) => {
+    for (const [pattern, result] of Object.entries(results)) {
+      if (cmd.includes(pattern)) {
+        if (callback) {
+          if (result.error) {
+            callback(result.error, { stdout: '', stderr: '' });
+          } else {
+            callback(null, { stdout: result.stdout || '', stderr: result.stderr || '' });
+          }
+        }
+        return;
+      }
+    }
+    if (callback) {
+      callback(null, { stdout: '', stderr: '' });
+    }
+  };
+
   (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     (
       cmd: string,
       _opts: Record<string, unknown>,
       callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
     ) => {
-      // promisify wraps exec, so the mock needs to support the callback style
-      for (const [pattern, result] of Object.entries(results)) {
-        if (cmd.includes(pattern)) {
-          if (callback) {
-            if (result.error) {
-              callback(result.error, { stdout: '', stderr: '' });
-            } else {
-              callback(null, { stdout: result.stdout || '', stderr: result.stderr || '' });
-            }
-          }
-          return;
-        }
+      run(cmd, callback);
+    },
+  );
+
+  (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    (
+      file: string,
+      args: string[],
+      _opts: Record<string, unknown>,
+      callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+    ) => {
+      if (file === 'gh') {
+        const cmd = ['gh', ...args].join(' ');
+        run(cmd, callback);
+      } else if (callback) {
+        callback(new Error(`unexpected execFile(${file})`), { stdout: '', stderr: '' });
       }
-      // Default: empty output
-      if (callback) {
-        callback(null, { stdout: '', stderr: '' });
+    },
+  );
+}
+
+/** Same handler for `exec('sh -c')` and `execFile('gh', …)` so tests track both. */
+function installExecAndGhMock(
+  impl: (
+    cmd: string,
+    _opts: Record<string, unknown>,
+    callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+  ) => void,
+) {
+  (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(impl);
+  (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    (
+      file: string,
+      args: string[],
+      opts: Record<string, unknown>,
+      callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+    ) => {
+      if (file === 'gh') {
+        impl(['gh', ...args].join(' '), opts, callback);
+      } else if (callback) {
+        callback(new Error(`unexpected execFile(${file})`), { stdout: '', stderr: '' });
       }
     },
   );
@@ -145,7 +192,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       DEFAULT_SKILLS_DIR: '/tmp/skills',
     });
 
-    (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    installExecAndGhMock(
       (
         cmd: string,
         _opts: Record<string, unknown>,
@@ -215,7 +262,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       DEFAULT_SKILLS_DIR: '/tmp/skills',
     });
 
-    (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    installExecAndGhMock(
       (
         cmd: string,
         opts: Record<string, unknown>,
@@ -386,7 +433,7 @@ describe('commitPushAndCreatePR — existing PR early return re-applies auto-mer
   }
 
   function mockExecExistingPR(prUrl: string, execCalls: string[]) {
-    (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    installExecAndGhMock(
       (
         cmd: string,
         _opts: Record<string, unknown>,
@@ -538,7 +585,7 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
     opts: { existingPR: boolean; probeReturnsUrl?: boolean },
     execCalls: string[],
   ) {
-    (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    installExecAndGhMock(
       (
         cmd: string,
         _opts: Record<string, unknown>,
@@ -643,6 +690,50 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
       .message;
     expect(msg.role).toBe('system');
     expect(JSON.parse(msg.metadata).prNumber).toBe(123);
+  });
+
+  it('invokes gh pr create via execFile so PR bodies can contain backticks and shell metacharacters', async () => {
+    const execCalls: string[] = [];
+    const { stmts } = makeStmtsWithMessageTable({
+      card: {
+        id: 'card-shell',
+        title: 'Shell-safe PR body',
+        description: 'Refs `pulls/{pr}/reviews` and ${HOME} must not break /bin/sh.',
+        priority: 'medium',
+      },
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecForPRCreation(
+      'https://github.com/test/repo/pull/555',
+      'deadbeef',
+      { existingPR: false },
+      execCalls,
+    );
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-shell', 'agent-1', project, agent, '/worktree', '');
+    await new Promise((r) => setImmediate(r));
+
+    const ghCreateCalls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c: unknown[]) =>
+        c[0] === 'gh' &&
+        Array.isArray(c[1]) &&
+        (c[1] as string[])[0] === 'pr' &&
+        (c[1] as string[])[1] === 'create',
+    );
+    expect(ghCreateCalls.length).toBe(1);
+    const argv = ghCreateCalls[0][1] as string[];
+    const bodyIdx = argv.indexOf('--body');
+    expect(bodyIdx).toBeGreaterThan(-1);
+    expect(argv[bodyIdx + 1]).toContain('`pulls/');
+    expect(argv[bodyIdx + 1]).toContain('${HOME}');
   });
 
   it('sets cardId/cardTitle to null when session has no linked kanban card (ad-hoc flow)', async () => {

@@ -57,7 +57,7 @@ export default function MessageInput({
     // B's composer. Revoke any active blob URLs first to avoid leaks.
     if (images.length > 0) {
       for (const img of images) {
-        if (img.type === 'video' && img.dataUrl?.startsWith('blob:')) {
+        if ((img.type === 'video' || img.type === 'file') && img.dataUrl?.startsWith('blob:')) {
           URL.revokeObjectURL(img.dataUrl);
         }
       }
@@ -150,25 +150,24 @@ export default function MessageInput({
 
   const addImageFiles = useCallback(
     async (files) => {
-      const mediaFiles = Array.from(files).filter(
-        (f) => f.type.startsWith('image/') || f.type.startsWith('video/'),
-      );
-      if (mediaFiles.length === 0) return;
+      const list = Array.from(files).filter((f) => f.size > 0);
+      if (list.length === 0) return;
 
       const newImages = [];
-      for (const file of mediaFiles) {
+      for (const file of list) {
         if (file.type.startsWith('video/')) {
-          // Videos: keep the raw File object for binary upload (no base64)
           const previewUrl = URL.createObjectURL(file);
           newImages.push({
             id: genId(),
             name: file.name,
             dataUrl: previewUrl,
-            file, // raw File for upload
+            file,
             type: 'video',
           });
-        } else {
-          // Images: read as data URL and resize
+        } else if (
+          file.type.startsWith('image/') ||
+          (!file.type && /\.(jpe?g|png|gif|webp|bmp|svg)$/i.test(file.name))
+        ) {
           const dataUrl = await new Promise((resolve) => {
             const reader = new FileReader();
             reader.onload = () => resolve(reader.result);
@@ -181,6 +180,14 @@ export default function MessageInput({
             dataUrl: resized,
             type: 'image',
           });
+        } else {
+          newImages.push({
+            id: genId(),
+            name: file.name,
+            dataUrl: null,
+            file,
+            type: 'file',
+          });
         }
       }
       setImages((prev) => [...prev, ...newImages]);
@@ -191,7 +198,10 @@ export default function MessageInput({
   const removeImage = useCallback((id) => {
     setImages((prev) => {
       const removed = prev.find((img) => img.id === id);
-      if (removed?.type === 'video' && removed.dataUrl?.startsWith('blob:')) {
+      if (
+        (removed?.type === 'video' || removed?.type === 'file') &&
+        removed.dataUrl?.startsWith('blob:')
+      ) {
         URL.revokeObjectURL(removed.dataUrl);
       }
       return prev.filter((img) => img.id !== id);
@@ -225,12 +235,17 @@ export default function MessageInput({
     // (e.g. the amber Interrupt button). Enter never interrupts on its own.
     const shouldInterrupt = isProcessing && interrupt;
     const hasVideo = images.some((img) => img.type === 'video');
-    const fallbackText = hasVideo ? '(media attached)' : '(image attached)';
+    const hasFile = images.some((img) => img.type === 'file');
+    const fallbackText = hasFile
+      ? '(file attached)'
+      : hasVideo
+        ? '(media attached)'
+        : '(image attached)';
     onSend(trimmed || fallbackText, images, { interrupt: shouldInterrupt });
     setValue('');
     // Revoke blob URLs for videos before clearing to prevent memory leaks
     images.forEach((img) => {
-      if (img.type === 'video' && img.dataUrl?.startsWith('blob:')) {
+      if ((img.type === 'video' || img.type === 'file') && img.dataUrl?.startsWith('blob:')) {
         URL.revokeObjectURL(img.dataUrl);
       }
     });
@@ -355,7 +370,7 @@ export default function MessageInput({
         </div>
       )}
 
-      {/* Media previews (images + videos) */}
+      {/* Media / file previews */}
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2 px-1">
           {images.map((img) => (
@@ -379,6 +394,24 @@ export default function MessageInput({
                   </div>
                   <span className="absolute bottom-0.5 left-0.5 text-[9px] text-white/70 bg-black/60 px-1 rounded">
                     {img.name?.split('.').pop()?.toUpperCase()}
+                  </span>
+                </div>
+              ) : img.type === 'file' ? (
+                <div className="h-16 max-w-[140px] px-2 rounded-lg border border-gray-700 bg-gray-800 flex items-center gap-2">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-8 w-8 flex-shrink-0 text-gray-400"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  <span className="text-[11px] text-gray-300 truncate" title={img.name}>
+                    {img.name}
                   </span>
                 </div>
               ) : (
@@ -455,7 +488,7 @@ export default function MessageInput({
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled && !isProcessing}
           className="px-2 py-3 text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-30"
-          title="Attach image or video (or paste/drop)"
+          title="Attach file, image, or video (or paste/drop)"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -473,7 +506,7 @@ export default function MessageInput({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*,video/mp4,video/webm,video/quicktime,video/x-matroska"
+          accept="*/*"
           multiple
           className="hidden"
           onChange={handleFileSelect}
@@ -495,7 +528,7 @@ export default function MessageInput({
                   : 'Ask a question... (read-only mode)'
                 : window.innerWidth < 640
                   ? 'Message...'
-                  : 'Type a message... (paste or drop images/videos)'
+                  : 'Type a message... (paste or drop files)'
           }
           disabled={disabled && !isProcessing}
           rows={1}

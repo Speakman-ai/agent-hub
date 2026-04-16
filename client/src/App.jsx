@@ -1605,11 +1605,9 @@ export default function App() {
       try {
         uploadedImages = await Promise.all(
           images.map((img) => {
-            if (img.type === 'video' && img.file) {
-              // Videos use binary upload to avoid base64 overhead
+            if ((img.type === 'video' || img.type === 'file') && img.file) {
               return api.uploadFile(img.file);
             }
-            // Images use the existing data-URL upload
             return api.uploadImage(img.dataUrl, img.name);
           }),
         );

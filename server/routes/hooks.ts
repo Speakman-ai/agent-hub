@@ -1,22 +1,27 @@
 import { Router, Request, Response } from 'express';
-import { autoCommitAndPR } from '../auto-git.js';
-import type { RouteDeps } from '../types.js';
+import type { RouteDeps, SessionRow } from '../types.js';
 
-const inFlight = new Set<string>();
-const completed = new Set<string>();
-
-export function hookHandled(sessionId: string): boolean {
-  return inFlight.has(sessionId) || completed.has(sessionId);
-}
-
-export function clearCompleted(sessionId: string): void {
-  completed.delete(sessionId);
+/**
+ * Must match chat.ts: when worktree is off, the CLI runs in project.cwd even if
+ * a stale worktree_path remains on the session row.
+ */
+export function effectiveCwdForSession(projectCwd: string, session: SessionRow): string {
+  if (session.use_worktree && session.worktree_path) {
+    return session.worktree_path;
+  }
+  return projectCwd;
 }
 
 export default function createHookRoutes(deps: RouteDeps): Router {
   const { stmts, findAgent } = deps;
   const router = Router();
 
+  /**
+   * Claude Code invokes this when a session stops. Auto-commit / `changes_ready`
+   * runs from `chat.ts` proc.on('close') after a short filesystem settle delay, so
+   * we only log here — the old hook-first path could mark "handled" while git was
+   * still clean and skip the proc fallback (missing Create PR banner).
+   */
   router.post('/api/hooks/stop', async (req: Request, res: Response) => {
     const { sessionId } = req.body as { sessionId?: string };
 
@@ -31,54 +36,16 @@ export default function createHookRoutes(deps: RouteDeps): Router {
 
     res.json({ ok: true, sessionId });
 
-    if (inFlight.has(sessionId)) {
-      console.log(`[hooks/stop] Skipping duplicate hook for session ${sessionId}`);
-      return;
-    }
-    inFlight.add(sessionId);
-
     const found = findAgent((session as { agent_id: string }).agent_id);
     if (!found) {
       console.warn(`[hooks/stop] Agent not found for session ${sessionId}`);
       return;
     }
     const { project, agent } = found;
-
-    const effectiveCwd = (session as { worktree_path?: string }).worktree_path || project.cwd;
-
+    const cwd = effectiveCwdForSession(project.cwd, session as SessionRow);
     console.log(
-      `[hooks/stop] Hook fired for session ${sessionId} (agent: ${agent.name}, cwd: ${effectiveCwd})`,
+      `[hooks/stop] Stop hook for session ${sessionId} (agent: ${agent.name}, cwd: ${cwd}) — auto-commit runs from chat proc`,
     );
-
-    let finalContent = '';
-    try {
-      const lastMsg = stmts.getLastAssistantMessage.get(sessionId) as
-        | { content?: string }
-        | undefined;
-      finalContent = lastMsg?.content || '';
-    } catch {
-      // Non-critical — auto-commit works without it
-    }
-
-    try {
-      await autoCommitAndPR(
-        sessionId,
-        (session as { agent_id: string }).agent_id,
-        project,
-        agent,
-        effectiveCwd,
-        finalContent,
-      );
-    } catch (err) {
-      console.error(
-        `[hooks/stop] Auto-commit failed for session ${sessionId}:`,
-        (err as Error).message,
-      );
-    } finally {
-      inFlight.delete(sessionId);
-      completed.add(sessionId);
-      setTimeout(() => completed.delete(sessionId), 300_000);
-    }
   });
 
   return router;

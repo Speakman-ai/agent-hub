@@ -44,6 +44,26 @@ function isVideoAttachment(att) {
   return VIDEO_EXTENSIONS.has(ext);
 }
 
+const IMAGE_EXTENSIONS = new Set([
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'svg',
+  'bmp',
+  'ico',
+  'heic',
+  'avif',
+]);
+
+function isImageLikeAttachment(att) {
+  if (att.contentType?.startsWith('image/')) return true;
+  const ext = (att.filename || att.originalName || att.url || '').split('.').pop()?.toLowerCase();
+  if (ext && IMAGE_EXTENSIONS.has(ext)) return true;
+  return false;
+}
+
 function VideoLightbox({ src, onClose }) {
   return (
     <div
@@ -108,6 +128,8 @@ function MessageAttachments({ attachments }) {
           const src = getDisplayUrl(att);
           if (!src) return null;
           const isVideo = isVideoAttachment(att);
+          const isImage = isImageLikeAttachment(att);
+          const fileLabel = att.originalName || att.name || att.filename || 'attachment';
 
           if (isVideo) {
             return (
@@ -146,6 +168,22 @@ function MessageAttachments({ attachments }) {
                     'VIDEO'}
                 </span>
               </div>
+            );
+          }
+
+          if (!isImage) {
+            return (
+              <a
+                key={att.id || i}
+                href={src}
+                target="_blank"
+                rel="noopener noreferrer"
+                download={fileLabel}
+                className="inline-flex items-center gap-2 max-w-xs px-3 py-2 rounded-lg border border-gray-600/50 bg-gray-800/50 text-sm text-blue-300 hover:bg-gray-800 hover:text-blue-200 transition-colors truncate"
+                title={fileLabel}
+              >
+                <span className="truncate">{fileLabel}</span>
+              </a>
             );
           }
 

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import path from 'path';
 import { readFileSync, existsSync, statSync } from 'fs';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import type {
   Stmts,
@@ -15,6 +15,16 @@ import type {
 import { resolveShouldAutoMerge } from './auto-merge.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+/** Run `gh` without a shell so PR bodies can contain backticks, `$`, `{`, etc. */
+async function runGh(
+  args: string[],
+  cwd: string,
+  timeout?: number,
+): Promise<{ stdout: string; stderr: string }> {
+  return execFileAsync('gh', args, { cwd, timeout });
+}
 
 // ─── Dependency Types ────────────────────────────────────────────────
 
@@ -217,10 +227,7 @@ async function enableAutoMergeIfNeeded(
 ): Promise<void> {
   if (!resolveShouldAutoMerge(override, project.githubWorkflow)) return;
   try {
-    await execAsync(`gh pr merge --auto --squash ${JSON.stringify(prUrl)}`, {
-      cwd,
-      timeout: 15000,
-    });
+    await runGh(['pr', 'merge', '--auto', '--squash', prUrl], cwd, 15000);
     console.log(`[auto-merge] Enabled GitHub native auto-merge for ${prUrl}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -246,9 +253,10 @@ async function commitPushAndCreatePR(
       `[auto-commit] Session ${sessionId} — skipping commit/push (no changes)${card ? ` [card: "${card.title}"]` : ''}`,
     );
     try {
-      const { stdout: prOut } = await execAsync(
-        `gh pr view --json url,state --jq 'select(.state == "OPEN") | .url'`,
-        { cwd: effectiveCwd, timeout: 15000 },
+      const { stdout: prOut } = await runGh(
+        ['pr', 'view', '--json', 'url,state', '--jq', 'select(.state == "OPEN") | .url'],
+        effectiveCwd,
+        15000,
       );
       const existingPrUrl = prOut.trim();
       if (existingPrUrl) {
@@ -340,9 +348,8 @@ async function commitPushAndCreatePR(
     agent.reviewer ||
     ((project as Record<string, unknown>).defaultReviewer as string | undefined) ||
     config.defaultReviewer;
-  const reviewerFlag =
-    reviewer && /^[a-zA-Z0-9_-]+$/.test(reviewer) ? `--reviewer ${reviewer}` : '';
-  if (reviewer && !reviewerFlag) {
+  const validReviewer = reviewer && /^[a-zA-Z0-9_-]+$/.test(reviewer) ? reviewer : null;
+  if (reviewer && !validReviewer) {
     console.warn(
       `[auto-commit] Invalid reviewer username "${reviewer}" — creating PR without reviewer`,
     );
@@ -451,10 +458,20 @@ async function commitPushAndCreatePR(
   };
 
   try {
-    const { stdout: prOutput } = await execAsync(
-      `gh pr create --head ${JSON.stringify(changes.branch)} --title ${JSON.stringify(prTitle)} --body ${JSON.stringify(prBody)} ${reviewerFlag}`.trim(),
-      { cwd: effectiveCwd, timeout: 30000 },
-    );
+    const createArgs = [
+      'pr',
+      'create',
+      '--head',
+      changes.branch,
+      '--title',
+      prTitle,
+      '--body',
+      prBody,
+    ];
+    if (validReviewer) {
+      createArgs.push('--reviewer', validReviewer);
+    }
+    const { stdout: prOutput } = await runGh(createArgs, effectiveCwd, 30000);
     console.log(`[auto-commit] PR created: ${prOutput.trim()}`);
 
     const prUrl = prOutput.match(/https:\/\/github\.com\/.+\/pull\/\d+/)?.[0] || prOutput.trim();
@@ -473,9 +490,18 @@ async function commitPushAndCreatePR(
     console.error(`[auto-commit] PR creation failed: ${errMsg}`);
     // Fallback: try to discover PR by branch name
     try {
-      const { stdout: prDiscovery } = await execAsync(
-        `gh pr view ${JSON.stringify(changes.branch)} --json url,state --jq 'select(.state == "OPEN") | .url'`,
-        { cwd: effectiveCwd, timeout: 15000 },
+      const { stdout: prDiscovery } = await runGh(
+        [
+          'pr',
+          'view',
+          changes.branch,
+          '--json',
+          'url,state',
+          '--jq',
+          'select(.state == "OPEN") | .url',
+        ],
+        effectiveCwd,
+        15000,
       );
       const discoveredUrl = prDiscovery.trim();
       if (discoveredUrl) {
@@ -536,9 +562,10 @@ export async function autoCommitAndPR(
       // Does an open PR already exist for this branch?
       let existingPrUrl: string | null = null;
       try {
-        const { stdout: prOut } = await execAsync(
-          `gh pr view --json url,state --jq 'select(.state == "OPEN") | .url'`,
-          { cwd: effectiveCwd, timeout: 15000 },
+        const { stdout: prOut } = await runGh(
+          ['pr', 'view', '--json', 'url,state', '--jq', 'select(.state == "OPEN") | .url'],
+          effectiveCwd,
+          15000,
         );
         existingPrUrl = prOut.trim() || null;
       } catch {
