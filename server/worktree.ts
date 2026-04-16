@@ -260,6 +260,16 @@ export function ensureSessionWorkspace(
   const branchName = `agent-hub/${agentId}/${safeName}`;
 
   if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
+    // Refresh remote-tracking refs so origin/<default> reflects current main.
+    // Do NOT reset the checked-out feature branch — it may carry in-progress
+    // work. Agents that want to see merged PRs can `git log origin/<default>`
+    // or rebase explicitly.
+    try {
+      execSync('git fetch origin --quiet', { cwd: cloneDir, stdio: 'pipe', timeout: 30000 });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Workspace] Fetch failed for session "${safeName}", reusing as-is:`, message);
+    }
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     persistFn(cloneDir, branchName, session.id);
     return cloneDir;
