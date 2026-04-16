@@ -146,12 +146,37 @@ describe('dispatchReviewerForPR — prompt content', () => {
     // self-approval works (App identity ≠ PR author identity). Using `gh pr review`
     // directly would submit as the CLI user and silently downgrade APPROVE → COMMENTED.
     expect(msg.content).toContain('/api/pr/review');
-    expect(msg.content).toContain('"event":"APPROVE"');
+    // All three events must be presented — the curl example must NOT hardcode one,
+    // or the reviewer will anchor on that event as the default (historically APPROVE,
+    // which is how the "always approve with non-blocking comments" bias was produced).
+    expect(msg.content).toContain('"event":"<EVENT>"');
+    expect(msg.content).not.toContain('"event":"APPROVE"');
+    expect(msg.content).toContain('APPROVE');
     expect(msg.content).toContain('REQUEST_CHANGES');
     expect(msg.content).toContain('COMMENT');
     // Reviewer should NEVER edit code or merge — those are non-negotiable.
     expect(msg.content).toMatch(/Do \*\*NOT\*\* edit code/);
     expect(msg.content).toMatch(/Do \*\*NOT\*\* merge/);
+  });
+
+  it('presents a decision rubric that discourages APPROVE when substantive feedback exists', () => {
+    const deps = makeDeps();
+    const project = makeProject('reviewer');
+
+    dispatchReviewerForPR(deps as never, project, OPTS);
+    vi.runAllTimers();
+
+    const msg = deps.handleChat.mock.calls[0]?.[1] as { content: string };
+    // The prompt must include an explicit rubric section, not just a list of events.
+    expect(msg.content).toMatch(/decision rubric/i);
+    // The nit vs. substantive distinction must be drawn so the reviewer can classify issues.
+    expect(msg.content).toMatch(/\bnit\b/i);
+    expect(msg.content).toMatch(/substantive/i);
+    // The hard rule tying written feedback to COMMENT (not APPROVE) must be present.
+    // This is the load-bearing sentence that prevents the "approve with non-blocking
+    // comments" anti-pattern — if it regresses, the bias returns.
+    expect(msg.content).toMatch(/do \*\*NOT\*\* use `APPROVE`/i);
+    expect(msg.content).toMatch(/use `COMMENT`/i);
   });
 
   it('uses synchronize wording when reason is synchronize', () => {

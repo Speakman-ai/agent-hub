@@ -681,20 +681,31 @@ You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullNa
 ## Your task
 1. Fetch the PR metadata, diff, and recent commits using \`gh pr view ${opts.prNumber} --repo ${opts.repoFullName}\` and \`gh pr diff ${opts.prNumber} --repo ${opts.repoFullName}\`.
 2. Read the changed files in context.
-3. Identify issues across correctness, security, tests, conventions, and performance.
-4. Submit ONE formal GitHub review by POSTing to Agent Hub's \`/api/pr/review\` endpoint. This routes the review through the GitHub App installation so it lands with the App identity — \`gh pr review\` runs as your CLI user (usually the PR author) and GitHub silently downgrades APPROVE to COMMENTED for self-reviews.
+3. Identify issues across correctness, security, tests, conventions, and performance. For each issue, classify it as a **nit** (trivial style/wording, optional to address) or **substantive feedback** (bugs, missing tests for new logic, convention violations, security concerns, unclear logic, API contract issues).
+4. Choose an event using the rubric below, then submit ONE formal GitHub review by POSTing to Agent Hub's \`/api/pr/review\` endpoint. This routes the review through the GitHub App installation so it lands with the App identity — \`gh pr review\` runs as your CLI user (usually the PR author) and GitHub silently downgrades APPROVE to COMMENTED for self-reviews.
+
+## Event decision rubric
+
+Pick **one** event based on what you found in step 3:
+
+- \`REQUEST_CHANGES\` — at least one issue is serious enough that the PR should not land as-is: correctness bugs, missing tests for non-trivial new logic, security holes, breaking API changes, or clear convention violations that will affect other code. Body required.
+- \`COMMENT\` — you wrote substantive feedback but nothing that blocks merging. **This is the default whenever you have something actionable to say that isn't a pure nit.** Body required.
+- \`APPROVE\` — you have **zero substantive feedback**. Only pure nits (or none at all), and the PR is ready to ship. Body optional.
+
+**Hard rule:** If your review body describes issues, bugs, suggestions, or concerns, do **NOT** use \`APPROVE\`. Use \`COMMENT\` instead. \`APPROVE\` means "ship it, I have nothing actionable to add" — not "I found things but none seemed blocking." That distinction is why reviews exist; collapsing everything non-blocking into APPROVE destroys the signal.
+
+Pure nits alone (e.g., "typo in a comment") can be omitted entirely or mentioned briefly under \`APPROVE\`, your call.
+
+## Submitting the review
 
 \`\`\`bash
 curl -sS -X POST "$AGENT_HUB_URL/api/pr/review" \\
   -H "X-API-Key: $AGENT_HUB_API_KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{"prUrl":"${opts.prUrl}","event":"APPROVE"}'
+  -d '{"prUrl":"${opts.prUrl}","event":"<EVENT>","body":"<markdown body>"}'
 \`\`\`
 
-   Choose one \`event\`:
-   - \`APPROVE\` — clean PR (body optional)
-   - \`REQUEST_CHANGES\` — blocking issues (body required, markdown-formatted)
-   - \`COMMENT\` — non-blocking notes only (body required)
+Replace \`<EVENT>\` with exactly one of \`APPROVE\`, \`COMMENT\`, or \`REQUEST_CHANGES\` per the rubric above. For \`COMMENT\` and \`REQUEST_CHANGES\`, \`body\` is required and should be markdown-formatted with concrete file:line references.
 
 Do **NOT** edit code. Do **NOT** merge. GitHub's native auto-merge handles landing approved PRs.`;
 

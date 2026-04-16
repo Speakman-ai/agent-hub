@@ -258,4 +258,42 @@ describe('ensureReviewerAgents', () => {
     const updated = findProject(projId);
     expect(updated!.agents?.some((a) => a.role === 'reviewer')).toBe(true);
   });
+
+  it('seeds a reviewer whose system prompt has no APPROVE bias', async () => {
+    // Regression guard: the seeded system prompt used to hardcode
+    // `"event":"APPROVE"` in its curl example and instruct the reviewer to
+    // "skip nits unless egregious" — both pushed reviewers toward APPROVE
+    // even when they had substantive feedback. This test pins the de-biased
+    // contract so new projects always get the rubric-based prompt.
+    const projId = `reviewer-nobias-${Date.now()}`;
+    const project = await createProjectWithAgent(projId, 'No Bias Reviewer', '#888');
+    project.githubRepo = 'owner/nobias-repo';
+    saveProjects();
+
+    ensureReviewerAgents();
+
+    const updated = findProject(projId);
+    const reviewer = updated!.agents?.find((a) => a.role === 'reviewer');
+    expect(reviewer).toBeTruthy();
+    const sp = reviewer!.systemPrompt || '';
+
+    // No hardcoded APPROVE in the curl example — the example must use a
+    // placeholder so the model doesn't anchor on APPROVE as the default.
+    expect(sp).not.toContain('"event":"APPROVE"');
+    expect(sp).toContain('"event":"<EVENT>"');
+
+    // All three events must be presented, not just APPROVE.
+    expect(sp).toContain('APPROVE');
+    expect(sp).toContain('COMMENT');
+    expect(sp).toContain('REQUEST_CHANGES');
+
+    // The load-bearing hard rule — if this regresses, the bias returns.
+    expect(sp).toMatch(/do \*\*NOT\*\* use `APPROVE`/i);
+    expect(sp).toMatch(/use `COMMENT`/i);
+
+    // The old "skip nits unless egregious" line was a subtle approval nudge.
+    // The replacement guidance should talk about using COMMENT for substantive
+    // feedback; the old phrasing should be gone.
+    expect(sp).not.toMatch(/Skip nits unless egregious/);
+  });
 });
