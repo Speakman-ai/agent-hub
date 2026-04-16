@@ -268,7 +268,13 @@ export const webhookHandlerDeps = {
   getConfig: () => config,
   getGhAuthenticatedUser: () => ghAuthenticatedUser,
   getGhBotUser: () => ghBotUser,
+  setGhBotUser: (v: string | null) => {
+    ghBotUser = v;
+  },
   getGhAppSlug: () => ghAppSlug,
+  setGhAppSlug: (v: string | null) => {
+    ghAppSlug = v;
+  },
 } as unknown as RouteDeps;
 
 initAutoGit({

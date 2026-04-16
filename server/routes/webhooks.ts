@@ -1964,6 +1964,52 @@ export async function processWebhookEvent(
     return { kanbanHandled, handlerRan: false };
   }
 
+  // Self-origin filter: drop events where the sender is the Agent Hub bot
+  // itself (GitHub App installation user, authenticated `gh` CLI user, or
+  // github-actions) before spawning the LLM handler.
+  //
+  // The kanban lifecycle handler above already ran, so state stays
+  // consistent — we only gate the expensive Claude dispatch here. Without
+  // this filter the bot's own pushes, reviews, and review comments
+  // re-trigger autofix and reviewer sessions, producing a tight feedback
+  // loop (bot push → synchronize → bot reviews → review.submitted → autofix
+  // → bot push → …). `enqueueReviewComment` has the same guard for the
+  // review-comment pipeline; this extends it to the generic handler path.
+  const sender = payload.sender?.login || '';
+  const ghBotUser = deps.getGhBotUser();
+  const ghAuthenticatedUser = deps.getGhAuthenticatedUser?.() ?? null;
+  const isSelfOrigin =
+    sender === 'github-actions[bot]' ||
+    sender === 'github-actions' ||
+    (ghBotUser !== null && sender === ghBotUser) ||
+    (ghAuthenticatedUser !== null && sender === ghAuthenticatedUser);
+
+  if (isSelfOrigin) {
+    // Use the existing 'skipped' status (the webhook_logs CHECK
+    // constraint whitelists ['pending','running','success','error',
+    // 'skipped']) and store the reason in `result` so operators can
+    // distinguish no-handler skips from self-origin skips without a
+    // schema migration. The `self-origin:<sender>` prefix is matched by
+    // the scale-back regression tests.
+    const selfOriginLog = stmts.addWebhookLog.run(
+      webhookConfig.id,
+      eventKey,
+      action,
+      deliveryId,
+      'skipped',
+    );
+    stmts.updateWebhookLog.run(
+      'skipped',
+      `self-origin:${sender}`,
+      0,
+      selfOriginLog.lastInsertRowid,
+    );
+    console.log(
+      `[Webhook] ${eventKey} on ${repoFullName} — skipping handler (self-origin: ${sender})`,
+    );
+    return { kanbanHandled, handlerRan: false };
+  }
+
   const logEntry = stmts.addWebhookLog.run(
     webhookConfig.id,
     eventKey,

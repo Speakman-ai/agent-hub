@@ -130,8 +130,13 @@ describe('migrateWebhookRepoToProject', () => {
     const events = JSON.parse(wh!.events) as Record<string, { enabled: boolean }>;
     expect(events).toBeTypeOf('object');
     expect(Array.isArray(events)).toBe(false);
+    // Each entry is an object (not a bare boolean) so the UI can attach a
+    // prompt override per event without reshaping the record.
     expect(events['pull_request.opened']).toEqual({ enabled: true });
-    expect(events['pull_request_review.submitted']).toEqual({ enabled: true });
+    // Post scale-back (2026-04-16 webhook storm fix): three events ship
+    // seeded but disabled — operator opts them on per-repo in the UI.
+    // See server/routes/projects.ts for the rationale.
+    expect(events['pull_request_review.submitted']).toEqual({ enabled: false });
   });
 
   it('only captures owner/repo, ignoring trailing path segments', async () => {

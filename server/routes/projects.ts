@@ -449,13 +449,24 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         | undefined;
       if (!existing) {
         const secret = crypto.randomBytes(32).toString('hex');
+        // Default-on set is deliberately scoped to events the autonomous-mode
+        // polling safety net in `autonomous.ts` does NOT already cover. The
+        // three events seeded as `enabled: false` below are handled by the
+        // every-3-minute poll:
+        //   - pull_request.closed           → reconcileKanbanWithGitHub sweeps merged PRs to Done
+        //   - pull_request_review.submitted → pollForMissedReviews catches changes_requested
+        //   - check_suite.completed         → not polled by default; autofix-on-CI is opt-in
+        // They're still seeded (rather than omitted) so they appear in the
+        // webhook config UI pre-wired for operators to flip on per-repo.
+        // Prior default-on all six caused 1,079 Claude invocations in one
+        // log window under routine PR activity (incident 2026-04-16).
         const defaultEvents = JSON.stringify({
           'pull_request.opened': { enabled: true },
-          'pull_request.closed': { enabled: true },
           'pull_request.synchronize': { enabled: true },
-          'pull_request_review.submitted': { enabled: true },
           'pull_request_review_comment.created': { enabled: true },
-          'check_suite.completed': { enabled: true },
+          'pull_request.closed': { enabled: false },
+          'pull_request_review.submitted': { enabled: false },
+          'check_suite.completed': { enabled: false },
         });
         stmts.createWebhookConfig.run(project.id, repoUrl, secret, defaultEvents, 1);
       }
