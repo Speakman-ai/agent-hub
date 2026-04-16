@@ -77,6 +77,7 @@ import createThreadRoutes from './routes/threads.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createPreviewRoutes from './routes/previews.js';
 import { initPreviewEngine } from './preview-engine.js';
+import createPreviewDbRoutes from './routes/preview.js';
 
 import {
   initDelegation,
@@ -403,6 +404,7 @@ app.use(createClaudeAuthRoutes(routeDeps));
 app.use(createThreadRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
 app.use(createPreviewRoutes(routeDeps));
+app.use(createPreviewDbRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();
