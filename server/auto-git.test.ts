@@ -17,6 +17,7 @@ import {
   initAutoGit,
   autoCommitAndPR,
   buildCardDescription,
+  isGarbageTitle,
 } from './auto-git.js';
 import type { MessageRow } from './types.js';
 
@@ -362,5 +363,46 @@ describe('buildCardDescription', () => {
     const result = buildCardDescription(messages, '');
     expect(result).toContain('Fix the bug in auth');
     expect(result).not.toContain('How can I help you?');
+  });
+});
+
+describe('isGarbageTitle', () => {
+  it('rejects titles with newlines', () => {
+    expect(isGarbageTitle('line one\nline two')).toBe(true);
+  });
+
+  it('rejects titles starting with status symbols', () => {
+    expect(isGarbageTitle('✓ Success')).toBe(true);
+    expect(isGarbageTitle('✗ Failed')).toBe(true);
+    expect(isGarbageTitle('⚠ Warning')).toBe(true);
+  });
+
+  it('rejects titles starting with timestamps', () => {
+    expect(isGarbageTitle('4/15/2026, 9:00:00 AM')).toBe(true);
+    expect(isGarbageTitle('12/31/2025 some output')).toBe(true);
+  });
+
+  it('rejects titles starting with markdown headers', () => {
+    expect(isGarbageTitle('## Update Report')).toBe(true);
+    expect(isGarbageTitle('### Key highlights')).toBe(true);
+  });
+
+  it('rejects very long titles (>120 chars)', () => {
+    expect(isGarbageTitle('A'.repeat(121))).toBe(true);
+  });
+
+  it('accepts clean titles', () => {
+    expect(isGarbageTitle('Fix login page crash')).toBe(false);
+    expect(isGarbageTitle('Add dark mode support')).toBe(false);
+    expect(isGarbageTitle('Update dependencies to v2.1.109')).toBe(false);
+  });
+
+  it('accepts empty string (not garbage, just empty)', () => {
+    expect(isGarbageTitle('')).toBe(false);
+  });
+
+  it('rejects real cron output like the screenshot bug', () => {
+    const cronTitle = '✓ Success\n4/15/2026, 9:00:00 AM\n88.5s\nX\n---\n\n## Update Report';
+    expect(isGarbageTitle(cronTitle)).toBe(true);
   });
 });

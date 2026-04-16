@@ -1109,7 +1109,11 @@ export interface RouteDeps {
   saveProjects: () => void;
   ensureProjectRoom: (project: Project) => RoomWithAgents | null;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
-  triggerReviewForCard: (cardId: string, project: Project) => void;
+  triggerReviewForCard: (
+    cardId: string,
+    project: Project,
+    options?: { autoMergeOverride?: boolean },
+  ) => void;
   pendingReviewComments: Map<string, unknown>;
   lastDispatchedReviewId: Map<string, string>;
   scheduleAutonomousEpic: (projectId: string, epic: KanbanEpicRow) => void;

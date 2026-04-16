@@ -148,15 +148,15 @@ Ready to implement <feature-name>
 
 ## Quick Reference
 
-| Situation | Action |
-|-----------|--------|
-| `.worktrees/` exists | Use it (verify ignored) |
-| `worktrees/` exists | Use it (verify ignored) |
-| Both exist | Use `.worktrees/` |
-| Neither exists | Check CLAUDE.md, then ask user |
-| Directory not ignored | Add to .gitignore + commit |
-| Tests fail during baseline | Report failures + ask |
-| No package.json/Cargo.toml | Skip dependency install |
+| Situation                  | Action                         |
+| -------------------------- | ------------------------------ |
+| `.worktrees/` exists       | Use it (verify ignored)        |
+| `worktrees/` exists        | Use it (verify ignored)        |
+| Both exist                 | Use `.worktrees/`              |
+| Neither exists             | Check CLAUDE.md, then ask user |
+| Directory not ignored      | Add to .gitignore + commit     |
+| Tests fail during baseline | Report failures + ask          |
+| No package.json/Cargo.toml | Skip dependency install        |
 
 ## Common Mistakes
 
@@ -183,6 +183,7 @@ Ready to implement <feature-name>
 ## Red Flags
 
 **Never:**
+
 - Create worktree without verifying it's ignored (project-local)
 - Skip baseline test verification
 - Proceed with failing tests without asking
@@ -190,6 +191,7 @@ Ready to implement <feature-name>
 - Skip CLAUDE.md check
 
 **Always:**
+
 - Follow directory priority: existing > CLAUDE.md > ask
 - Verify directory is ignored for project-local
 - Auto-detect and run project setup

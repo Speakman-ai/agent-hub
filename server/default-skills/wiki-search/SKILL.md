@@ -51,6 +51,7 @@ curl -s -X PUT "$AGENT_HUB_URL/api/projects/$PROJECT_ID/wiki/page-slug" \
 ```
 
 ## Categories
+
 - `general` - General project notes
 - `api-docs` - API documentation
 - `architecture` - Architecture decisions and patterns

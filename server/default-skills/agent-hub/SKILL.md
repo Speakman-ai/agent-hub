@@ -41,6 +41,7 @@ curl -s "$BASE/api/projects" | jq '.[].id'
 Every project has a kanban board for task tracking. Default columns: **Backlog, To Do, In Progress, Review, Done**.
 
 ### Read the board
+
 ```bash
 # Get board with all columns and their IDs
 curl -s "$BASE/api/projects/$PROJECT_ID/board" | jq
@@ -50,6 +51,7 @@ curl -s "$BASE/api/projects/$PROJECT_ID/board/cards" | jq
 ```
 
 ### Create a card
+
 ```bash
 curl -s -X POST "$BASE/api/projects/$PROJECT_ID/board/cards" \
   -H "Content-Type: application/json" \
@@ -66,6 +68,7 @@ curl -s -X POST "$BASE/api/projects/$PROJECT_ID/board/cards" \
 Priority values: `urgent`, `high`, `medium`, `low`
 
 ### Move a card between columns
+
 ```bash
 curl -s -X POST "$BASE/api/projects/$PROJECT_ID/board/cards/$CARD_ID/move" \
   -H "Content-Type: application/json" \
@@ -73,6 +76,7 @@ curl -s -X POST "$BASE/api/projects/$PROJECT_ID/board/cards/$CARD_ID/move" \
 ```
 
 ### Update a card
+
 ```bash
 curl -s -X PUT "$BASE/api/projects/$PROJECT_ID/board/cards/$CARD_ID" \
   -H "Content-Type: application/json" \
@@ -80,6 +84,7 @@ curl -s -X PUT "$BASE/api/projects/$PROJECT_ID/board/cards/$CARD_ID" \
 ```
 
 ### Add a comment to a card
+
 ```bash
 curl -s -X POST "$BASE/api/projects/$PROJECT_ID/board/cards/$CARD_ID/comments" \
   -H "Content-Type: application/json" \
@@ -87,6 +92,7 @@ curl -s -X POST "$BASE/api/projects/$PROJECT_ID/board/cards/$CARD_ID/comments" \
 ```
 
 ### Epics
+
 Cards can be grouped into epics. Epics with `autonomous: true` can drive automated task dispatch.
 
 ```bash
@@ -109,22 +115,26 @@ curl -s -X PUT "$BASE/api/projects/$PROJECT_ID/board/cards/$CARD_ID" \
 Every project has a wiki with full-text search (FTS5). Use it to find and share knowledge.
 
 ### Search
+
 ```bash
 curl -s "$BASE/api/projects/$PROJECT_ID/wiki?q=deployment" | jq
 ```
 
 ### Read a page
+
 ```bash
 curl -s "$BASE/api/projects/$PROJECT_ID/wiki/page-slug" | jq
 ```
 
 ### List all pages (optionally filter by category)
+
 ```bash
 curl -s "$BASE/api/projects/$PROJECT_ID/wiki" | jq
 curl -s "$BASE/api/projects/$PROJECT_ID/wiki?category=api-docs" | jq
 ```
 
 ### Create a page
+
 ```bash
 curl -s -X POST "$BASE/api/projects/$PROJECT_ID/wiki" \
   -H "Content-Type: application/json" \
@@ -137,6 +147,7 @@ curl -s -X POST "$BASE/api/projects/$PROJECT_ID/wiki" \
 ```
 
 ### Update a page
+
 ```bash
 curl -s -X PUT "$BASE/api/projects/$PROJECT_ID/wiki/page-slug" \
   -H "Content-Type: application/json" \
@@ -195,13 +206,13 @@ As an agent on Agent Hub, you should:
 
 ## Architecture Quick Reference
 
-| Component | Stack | Location |
-|-----------|-------|----------|
-| Server | Express.js + SQLite + WebSocket | `server/` |
-| Web Client | React + Vite + Tailwind CSS | `client/` |
-| Mobile | React Native + Expo | `mobile/` |
-| Desktop | Electron wrapper | `electron/` |
-| Deployment | EC2 + Nginx + PM2 | `3.22.232.193` |
+| Component  | Stack                           | Location       |
+| ---------- | ------------------------------- | -------------- |
+| Server     | Express.js + SQLite + WebSocket | `server/`      |
+| Web Client | React + Vite + Tailwind CSS     | `client/`      |
+| Mobile     | React Native + Expo             | `mobile/`      |
+| Desktop    | Electron wrapper                | `electron/`    |
+| Deployment | EC2 + Nginx + PM2               | `3.22.232.193` |
 
 **Database:** SQLite with WAL mode (`better-sqlite3`). Tables include `sessions`, `messages`, `heartbeat_logs`, `crons`, `wiki_pages`, `kanban_boards`, `kanban_columns`, `kanban_cards`, `kanban_epics`, `skill_registry`, `webhook_configs`, `device_tokens`.
 

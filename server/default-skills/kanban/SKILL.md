@@ -7,6 +7,7 @@ description: >-
 version: 1.0.0
 keep-coding-instructions: true
 ---
+
 # Kanban Board Management
 
 You can manage the project's kanban board to track and organize tasks.
@@ -14,12 +15,15 @@ You can manage the project's kanban board to track and organize tasks.
 ## Available Actions
 
 ### List cards
+
 Use the API to list all cards on the board:
+
 ```
 curl $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards
 ```
 
 ### Create a card
+
 ```
 curl -X POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards \
   -H "Content-Type: application/json" \
@@ -27,6 +31,7 @@ curl -X POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards \
 ```
 
 ### Move a card
+
 ```
 curl -X POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards/$CARD_ID/move \
   -H "Content-Type: application/json" \
@@ -34,6 +39,7 @@ curl -X POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards/$CARD_ID/move \
 ```
 
 ### Update a card
+
 ```
 curl -X PUT $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards/$CARD_ID \
   -H "Content-Type: application/json" \
@@ -41,6 +47,7 @@ curl -X PUT $AGENT_HUB_URL/api/projects/$PROJECT_ID/board/cards/$CARD_ID \
 ```
 
 ## Workflow
+
 1. Check the board for "To Do" cards
 2. Pick the highest priority card
 3. Move it to "In Progress"

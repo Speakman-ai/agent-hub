@@ -504,7 +504,11 @@ export function scheduleAutonomousEpic(projectId: string, epic: KanbanEpicRow): 
 
 // ─── Lead Review ───────────────────────────────────────────────────────────
 
-export function triggerReviewForCard(cardId: string, project: Project): void {
+export function triggerReviewForCard(
+  cardId: string,
+  project: Project,
+  options?: { autoMergeOverride?: boolean },
+): void {
   const d = getDeps();
   const card = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
   if (!card) return;
@@ -535,7 +539,7 @@ export function triggerReviewForCard(cardId: string, project: Project): void {
   console.log(
     `[Lead Review] Card "${card.title}" moved to Review — triggering lead review for ${prUrl}`,
   );
-  leadReviewPR(project, prUrl, card, subAgent ?? undefined).catch((err: unknown) => {
+  leadReviewPR(project, prUrl, card, subAgent ?? undefined, options).catch((err: unknown) => {
     const webhookHandlerDeps = d.getWebhookHandlerDeps();
     notifyDispatchFailure(webhookHandlerDeps, {
       source: 'LeadReview',

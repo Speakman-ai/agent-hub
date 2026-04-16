@@ -1638,6 +1638,36 @@ describe('triggerReviewForCard', () => {
     // The prompt should be sent — Dev is not the lead, so no self-review block
     expect(mockDeps.handleChat).toHaveBeenCalled();
   });
+
+  it('passes autoMergeOverride options through to leadReviewPR', async () => {
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_fake' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    const card = makeCard({ assignee: 'Dev' });
+    mockDeps.stmts.getKanbanCard.get.mockReturnValue(card);
+
+    // Call with autoMergeOverride: true
+    triggerReviewForCard(card.id, makeProject(), { autoMergeOverride: true });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // The review should be triggered (handleChat called)
+    expect(mockDeps.handleChat).toHaveBeenCalled();
+    expect(mockDeps.stmts.setCardReviewStatus.run).toHaveBeenCalledWith('awaiting_review', card.id);
+  });
+
+  it('works without options (backward compatibility)', async () => {
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_fake' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    const card = makeCard({ assignee: 'Dev' });
+    mockDeps.stmts.getKanbanCard.get.mockReturnValue(card);
+
+    // Call without options — should still work
+    triggerReviewForCard(card.id, makeProject());
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockDeps.handleChat).toHaveBeenCalled();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

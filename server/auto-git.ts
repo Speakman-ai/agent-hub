@@ -20,7 +20,11 @@ const execAsync = promisify(exec);
 interface AutoGitDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
-  triggerReviewForCard: (cardId: string, project: Project) => void;
+  triggerReviewForCard: (
+    cardId: string,
+    project: Project,
+    options?: { autoMergeOverride?: boolean },
+  ) => void;
   leadReviewPR: (
     project: Project,
     prUrl: string,
@@ -108,6 +112,7 @@ function moveCardToReviewAndTrigger(
   card: KanbanCardRow,
   project: Project,
   prUrl: string | null,
+  options?: { autoMergeOverride?: boolean },
 ): void {
   const d = getDeps();
   if (prUrl) {
@@ -126,7 +131,7 @@ function moveCardToReviewAndTrigger(
       d.stmts.moveKanbanCard.run(reviewCol.id, 0, card.id);
       d.broadcast({ type: 'kanban_update', projectId: project.id });
       console.log(`[auto-commit] Card "${card.title}" moved to Review`);
-      d.triggerReviewForCard(card.id, project);
+      d.triggerReviewForCard(card.id, project, options);
     }
   }
 }
@@ -140,7 +145,7 @@ function triggerReview(
 ): void {
   const d = getDeps();
   if (card) {
-    moveCardToReviewAndTrigger(card, project, prUrl);
+    moveCardToReviewAndTrigger(card, project, prUrl, options);
   } else {
     d.leadReviewPR(project, prUrl, null, agent, options).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -492,6 +497,57 @@ export async function autoCommitAndPR(
   }
 }
 
+// ─── Title sanitization ─────────────────────────────────────────────
+
+/**
+ * Check if a string looks like raw cron/heartbeat output rather than a clean title.
+ * Raw output typically contains newlines, status symbols, timestamps, or markdown headers.
+ */
+export function isGarbageTitle(title: string): boolean {
+  if (title.includes('\n')) return true;
+  if (/^[✓✗⚠●]/.test(title)) return true;
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(title)) return true;
+  if (/^#{1,3}\s/.test(title)) return true;
+  if (title.length > 120) return true;
+  return false;
+}
+
+/**
+ * Derive a clean PR title from the git log when the session name is unusable.
+ * Falls back to a generic agent-based title.
+ */
+async function deriveCleanTitle(cwd: string, agentName: string): Promise<string> {
+  try {
+    // Use the most recent commit message on this branch vs main
+    const { stdout } = await execAsync(
+      'git log main..HEAD --format=%s --reverse 2>/dev/null | head -1',
+      { cwd, timeout: 10000 },
+    );
+    const firstCommitMsg = stdout.trim();
+    if (firstCommitMsg && !isGarbageTitle(firstCommitMsg)) {
+      return firstCommitMsg.length > 70 ? firstCommitMsg.substring(0, 67) + '...' : firstCommitMsg;
+    }
+  } catch {
+    // fall through
+  }
+
+  try {
+    // Fall back to diffstat summary
+    const { stdout } = await execAsync('git diff --stat main...HEAD 2>/dev/null | tail -1', {
+      cwd,
+      timeout: 10000,
+    });
+    const stat = stdout.trim();
+    if (stat) {
+      return `${agentName}: ${stat}`.substring(0, 70);
+    }
+  } catch {
+    // fall through
+  }
+
+  return `${agentName}: ad-hoc changes`;
+}
+
 // ─── Manual commit & PR (triggered by user from UI) ─────────────────
 
 export async function manualCommitAndPR(
@@ -506,7 +562,11 @@ export async function manualCommitAndPR(
 
   // Create a kanban card for tracking
   const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
-  const cardTitle = options.title || session?.name || 'Ad-hoc fix';
+  const rawName = options.title || session?.name || '';
+  const cardTitle =
+    rawName && !isGarbageTitle(rawName)
+      ? rawName
+      : await deriveCleanTitle(effectiveCwd, agent.name || 'Agent');
   const cardId = crypto.randomUUID();
 
   const board = d.stmts.getKanbanBoard?.get(project.id) as { id: string } | undefined;
