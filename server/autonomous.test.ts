@@ -1038,6 +1038,78 @@ describe('handleReviewOutcome — outcome detection', () => {
       expect.objectContaining({ outcome: 'merge_conflict' }),
     );
   });
+
+  it('detects "Must fix" as changes_requested', async () => {
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_fake' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    const card = makeCard();
+    seedReviewSession(mockDeps, 'sess-mustfix', { card });
+
+    await handleReviewOutcome(
+      makeProject(),
+      'sess-mustfix',
+      'Must fix: Host header rewrite in proxy-server.ts',
+    );
+
+    expect(mockDeps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'lead_review_complete', outcome: 'changes_requested' }),
+    );
+  });
+
+  it('detects "Blocking:" as changes_requested', async () => {
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_fake' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    const card = makeCard();
+    seedReviewSession(mockDeps, 'sess-blocking', { card });
+
+    await handleReviewOutcome(
+      makeProject(),
+      'sess-blocking',
+      'Blocking: Rebase onto main and resolve merge conflicts so CI can run.',
+    );
+
+    expect(mockDeps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'lead_review_complete', outcome: 'changes_requested' }),
+    );
+  });
+
+  it('detects "Should fix" as changes_requested', async () => {
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_fake' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    const card = makeCard();
+    seedReviewSession(mockDeps, 'sess-shouldfix', { card });
+
+    await handleReviewOutcome(
+      makeProject(),
+      'sess-shouldfix',
+      'Should fix: add proxy request timeouts to prevent hung connections.',
+    );
+
+    expect(mockDeps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'lead_review_complete', outcome: 'changes_requested' }),
+    );
+  });
+
+  it('prioritizes changes_requested over approved when both match', async () => {
+    const { mockDeps } = makeDeps({ botGithubToken: 'ghp_fake' });
+    initAutonomous(mockDeps as unknown as Parameters<typeof initAutonomous>[0]);
+
+    const card = makeCard();
+    seedReviewSession(mockDeps, 'sess-priority', { card });
+
+    await handleReviewOutcome(
+      makeProject(),
+      'sess-priority',
+      'Blocking: Rebase onto main.\n\nMust fix:\n1. Host header rewrite\n\nThe code looks good overall but approved these changes cannot proceed without fixes.',
+    );
+
+    expect(mockDeps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'lead_review_complete', outcome: 'changes_requested' }),
+    );
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

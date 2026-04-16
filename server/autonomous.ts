@@ -1426,9 +1426,10 @@ export async function handleReviewOutcome(
     const approved = /approv|pr review.*--approve|ready for.*merge|looks good|lgtm|no issues/i.test(
       finalContent,
     );
-    const changesRequested = /request.changes|changes.needed|needs?.+fix|--request-changes/i.test(
-      finalContent,
-    );
+    const changesRequested =
+      /request.changes|changes.needed|needs?.+fix|--request-changes|must.fix|blocking:|should.fix/i.test(
+        finalContent,
+      );
     const mergeFailed =
       /merge failed|merge conflict|cannot.*merge|not mergeable|could not.*resolve.*conflict|conflicts? could not/i.test(
         finalContent,
@@ -1470,13 +1471,16 @@ export async function handleReviewOutcome(
     const webhookHandlerDeps = d.getWebhookHandlerDeps();
 
     // Determine outcome for logging
+    // changesRequested takes priority over approved — if both match,
+    // the reviewer found issues (the "approv" regex is greedy and can
+    // match incidental text even when the overall verdict is negative)
     const reviewOutcome =
-      mergeFailed && approved
+      mergeFailed && approved && !changesRequested
         ? 'merge_conflict'
-        : approved
-          ? 'approved'
-          : changesRequested
-            ? 'changes_requested'
+        : changesRequested
+          ? 'changes_requested'
+          : approved
+            ? 'approved'
             : 'ambiguous';
 
     // Update card review_status
@@ -1518,7 +1522,69 @@ export async function handleReviewOutcome(
       }
     }
 
-    if (mergeFailed && approved && card) {
+    if (reviewOutcome === 'changes_requested' && card) {
+      if (prUrl) {
+        const reviewBody = extractReviewBody(finalContent, 'request_changes');
+        submitGitHubReview(prUrl, 'REQUEST_CHANGES', reviewBody).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[Review] Server-side request-changes submission failed:`, msg);
+        });
+      }
+
+      const prNumForFeedback = card.pr_url?.match(/\d+$/)?.[0] || '';
+      const feedbackMessage = `# PR Review Feedback
+
+Your PR has received review feedback from the lead reviewer. Please read the comments on the PR, address each issue, and push your fixes to the same branch.
+
+## What to do:
+1. Read the review comments: \`gh pr view ${prNumForFeedback} --comments\`
+2. Address each comment — fix the code or explain why no change is needed
+3. Check for merge conflicts before pushing:
+   \`\`\`bash
+   git fetch origin main
+   git rebase origin/main
+   \`\`\`
+   If there are conflicts, resolve them before continuing.
+4. Commit and push to the same branch:
+   \`\`\`bash
+   git add -A
+   git commit -m "Address review feedback"
+   git push
+   \`\`\`
+   If you rebased, use \`git push --force-with-lease\` instead.
+5. Once done, the lead will re-review automatically.
+
+## Review summary:
+${finalContent.slice(-2000)}`;
+
+      const inProgressCol = cols.find((c) => c.name === 'In Progress');
+      if (inProgressCol) {
+        d.stmts.moveKanbanCard.run(inProgressCol.id, 0, card.id);
+        d.broadcast({ type: 'kanban_update', projectId: project.id });
+      }
+
+      const feedbackSessionId = dispatchReviewFeedback(
+        webhookHandlerDeps,
+        card,
+        project,
+        feedbackMessage,
+      );
+      console.log(
+        `[Review] Changes requested on "${titleMatch[1]}" — dispatched to session ${feedbackSessionId || '(no eligible agent)'}`,
+      );
+
+      d.broadcast({
+        type: 'lead_review_complete',
+        sessionId,
+        outcome: 'changes_requested',
+        projectId: project.id,
+        prUrl,
+        cardId: card?.id || null,
+        cardTitle: titleMatch[1],
+        reviewerAgent: project.agents.find((a) => a.role === 'lead')?.name || null,
+        authorAgent: card?.assignee || null,
+      });
+    } else if (reviewOutcome === 'merge_conflict' && card) {
       console.log(
         `[Review] PR approved but merge failed for "${titleMatch[1]}" — dispatching conflict resolution to author`,
       );
@@ -1579,7 +1645,7 @@ ${finalContent.slice(-1500)}`;
         reviewerAgent: project.agents.find((a) => a.role === 'lead')?.name || null,
         authorAgent: card?.assignee || null,
       });
-    } else if (approved) {
+    } else if (reviewOutcome === 'approved') {
       if (prUrl) {
         // Server-side mergeability check — catch conflicts the reviewer missed
         const pr = parsePrUrl(prUrl);
@@ -1732,68 +1798,6 @@ ${finalContent.slice(-1500)}`;
         type: 'lead_review_complete',
         sessionId,
         outcome: 'approved',
-        projectId: project.id,
-        prUrl,
-        cardId: card?.id || null,
-        cardTitle: titleMatch[1],
-        reviewerAgent: project.agents.find((a) => a.role === 'lead')?.name || null,
-        authorAgent: card?.assignee || null,
-      });
-    } else if (changesRequested && card) {
-      if (prUrl) {
-        const reviewBody = extractReviewBody(finalContent, 'request_changes');
-        submitGitHubReview(prUrl, 'REQUEST_CHANGES', reviewBody).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(`[Review] Server-side request-changes submission failed:`, msg);
-        });
-      }
-
-      const prNumForFeedback = card.pr_url?.match(/\d+$/)?.[0] || '';
-      const feedbackMessage = `# PR Review Feedback
-
-Your PR has received review feedback from the lead reviewer. Please read the comments on the PR, address each issue, and push your fixes to the same branch.
-
-## What to do:
-1. Read the review comments: \`gh pr view ${prNumForFeedback} --comments\`
-2. Address each comment — fix the code or explain why no change is needed
-3. Check for merge conflicts before pushing:
-   \`\`\`bash
-   git fetch origin main
-   git rebase origin/main
-   \`\`\`
-   If there are conflicts, resolve them before continuing.
-4. Commit and push to the same branch:
-   \`\`\`bash
-   git add -A
-   git commit -m "Address review feedback"
-   git push
-   \`\`\`
-   If you rebased, use \`git push --force-with-lease\` instead.
-5. Once done, the lead will re-review automatically.
-
-## Review summary:
-${finalContent.slice(-2000)}`;
-
-      const inProgressCol = cols.find((c) => c.name === 'In Progress');
-      if (inProgressCol) {
-        d.stmts.moveKanbanCard.run(inProgressCol.id, 0, card.id);
-        d.broadcast({ type: 'kanban_update', projectId: project.id });
-      }
-
-      const feedbackSessionId = dispatchReviewFeedback(
-        webhookHandlerDeps,
-        card,
-        project,
-        feedbackMessage,
-      );
-      console.log(
-        `[Review] Changes requested on "${titleMatch[1]}" — dispatched to session ${feedbackSessionId || '(no eligible agent)'}`,
-      );
-
-      d.broadcast({
-        type: 'lead_review_complete',
-        sessionId,
-        outcome: 'changes_requested',
         projectId: project.id,
         prUrl,
         cardId: card?.id || null,
