@@ -131,6 +131,9 @@ const config: AppConfig = {
   slackWebhookUrl:
     (process.env.SLACK_WEBHOOK_URL as string) || (fileConfig.slackWebhookUrl as string) || null,
 
+  // ── Preview ───────────────────────────────────────────────────
+  previewDomain: resolve('AGENT_HUB_PREVIEW_DOMAIN', 'previewDomain', null),
+
   // ── Derived / helpers ──────────────────────────────────────────
   get allValidModels(): string[] {
     return Object.values(this.engineValidModels).flat();

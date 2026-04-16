@@ -78,6 +78,7 @@ import createEscalationRoutes from './routes/escalations.js';
 import createPreviewRoutes from './routes/previews.js';
 import { initPreviewEngine } from './preview-engine.js';
 import createPreviewDbRoutes from './routes/preview.js';
+import { createPreviewProxyMiddleware, createPreviewWsUpgradeHandler } from './preview-proxy.js';
 
 import {
   initDelegation,
@@ -322,6 +323,17 @@ initAutonomous({
 
 app.use(createGithubWebhookHandler(webhookHandlerDeps));
 
+// Preview proxy: route preview-pr-*.{domain} requests to the correct container.
+// Mounted before auth so preview traffic doesn't require an API key.
+if (config.previewDomain) {
+  app.use(
+    createPreviewProxyMiddleware({
+      stmts: stmts!,
+      previewDomain: config.previewDomain,
+    }),
+  );
+}
+
 app.use(authMiddleware);
 
 const UPLOADS_DIR: string = path.join(__dirname, 'uploads');
@@ -424,6 +436,29 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
+
+// Preview WebSocket upgrade: intercept upgrade events for preview subdomains
+// and forward them to the correct preview container.
+if (config.previewDomain) {
+  const handlePreviewUpgrade = createPreviewWsUpgradeHandler({
+    stmts: stmts!,
+    previewDomain: config.previewDomain,
+  });
+
+  // Prepend our handler so it fires before the main WebSocketServer.
+  // If the host doesn't match a preview subdomain, let it fall through.
+  const originalListeners = server.listeners('upgrade').slice();
+  server.removeAllListeners('upgrade');
+  server.on('upgrade', (req, socket: import('net').Socket, head) => {
+    const handled = handlePreviewUpgrade(req, socket, head);
+    if (!handled) {
+      // Re-emit for the original ws handler
+      for (const listener of originalListeners) {
+        (listener as Function).call(server, req, socket, head);
+      }
+    }
+  });
+}
 
 const chatHandler = createChatHandler({
   broadcast,
@@ -738,7 +773,7 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       console.error('Failed to start Slack bots:', err.message);
     });
 
-    initPreviewEngine({ stmts: stmts!, broadcast });
+    initPreviewEngine({ stmts: stmts!, broadcast, previewDomain: config.previewDomain });
 
     resumeOrphanedSessions(sessionsToResume);
   });

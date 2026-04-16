@@ -727,6 +727,7 @@ export interface Stmts {
   deletePreviewContainer: Stmt;
   getExpiredPreviews: Stmt;
   getRunningPreviews: Stmt;
+  getRunningPreviewByPrNumber: Stmt;
 
   // Notes (from notes tables)
   getNotes: Stmt;
@@ -842,6 +843,7 @@ export interface AppConfig {
   apiKey: string | null;
   anthropicApiKey: string | null;
   slackWebhookUrl: string | null;
+  previewDomain: string | null;
   readonly allValidModels: string[];
 }
 

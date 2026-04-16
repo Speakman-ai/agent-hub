@@ -167,6 +167,7 @@ describe('preview-engine', () => {
     initPreviewEngine({
       stmts: mockStmts as unknown as Stmts,
       broadcast: mockBroadcast,
+      previewDomain: null,
     });
   });
 

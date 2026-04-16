@@ -1464,6 +1464,9 @@ function initDb(dataDir: string): void {
     getRunningPreviews: db.prepare(
       `SELECT * FROM preview_containers WHERE status IN ('building', 'running')`,
     ),
+    getRunningPreviewByPrNumber: db.prepare(
+      `SELECT * FROM preview_containers WHERE pr_number = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1`,
+    ),
   } as Stmts;
 
   dbRegistry.set(dataDir, { db, stmts });

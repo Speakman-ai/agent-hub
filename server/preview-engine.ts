@@ -10,6 +10,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { Stmts, PreviewContainerRow, BroadcastFn } from './types.js';
+import { buildPreviewUrl } from './preview-proxy.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -26,6 +27,7 @@ export const MAX_CONCURRENT_PREVIEWS = 10;
 export interface PreviewEngineDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
+  previewDomain: string | null;
 }
 
 let _deps: PreviewEngineDeps | null = null;
@@ -180,9 +182,9 @@ async function buildAndStart(previewId: string): Promise<void> {
     );
     buildLog = (buildStdout + '\n' + buildStderr).trim();
 
-    // 2. Find a port
+    // 2. Find a port and build URL (subdomain-based when previewDomain is set)
     const port = await findAvailablePort(stmts);
-    const url = `http://localhost:${port}`;
+    const url = buildPreviewUrl(row.pr_number, port, _deps.previewDomain);
 
     // 3. Start the container
     console.log(`[Preview] Starting container on port ${port}...`);
