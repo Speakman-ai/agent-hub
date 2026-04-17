@@ -215,19 +215,31 @@ function createWindow() {
   const port = process.env.AGENT_HUB_PORT || 3051;
   const connConfig = readConnectionConfig();
 
-  if (isDev) {
-    // In dev, always load the Vite dev server — it proxies /api to the
-    // local server, and the React app handles remote org connections itself.
-    mainWindow.loadURL('http://localhost:3050');
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
-  } else if (connConfig.mode === 'remote' && connConfig.remoteUrl) {
-    // Remote mode — load the remote server's UI directly
-    mainWindow.loadURL(connConfig.remoteUrl.replace(/\/+$/, ''));
-    console.log('[electron] Loading remote URL:', connConfig.remoteUrl);
-  } else {
-    // In production, the Express server serves the built client
-    mainWindow.loadURL(`http://localhost:${port}`);
-  }
+  // Clear the renderer's HTTP cache before the first load so a packaged
+  // rebuild-and-relaunch actually fetches the new index.html / asset bundle
+  // instead of serving a stale cached copy from a previous install. We only
+  // clear the HTTP cache — cookies and localStorage are preserved so the
+  // user's connection/org settings survive the restart.
+  const loadAppUrl = () => {
+    if (isDev) {
+      // In dev, always load the Vite dev server — it proxies /api to the
+      // local server, and the React app handles remote org connections itself.
+      mainWindow.loadURL('http://localhost:3050');
+      mainWindow.webContents.openDevTools({ mode: 'detach' });
+    } else if (connConfig.mode === 'remote' && connConfig.remoteUrl) {
+      // Remote mode — load the remote server's UI directly
+      mainWindow.loadURL(connConfig.remoteUrl.replace(/\/+$/, ''));
+      console.log('[electron] Loading remote URL:', connConfig.remoteUrl);
+    } else {
+      // In production, the Express server serves the built client
+      mainWindow.loadURL(`http://localhost:${port}`);
+    }
+  };
+
+  session.defaultSession
+    .clearCache()
+    .catch((err) => console.warn('[electron] clearCache failed:', err?.message || err))
+    .finally(loadAppUrl);
 
   // Open external links in the default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

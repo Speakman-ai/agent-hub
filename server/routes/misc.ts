@@ -8,8 +8,15 @@ import type { RouteDeps, EnrichedAgent, AppConfig, Stmts, Project } from '../typ
 import { getLogBuffer } from '../server-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Resolve the server version from server/package.json (one level up from
+// server/routes/). We deliberately avoid the repo-root package.json because in
+// the packaged Electron app only `server/**/*` is listed in asarUnpack — the
+// root package.json lives inside app.asar and is not reachable from
+// app.asar.unpacked/server/routes/. Reading server/package.json keeps the dev
+// and production paths symmetric and both package.json files are kept in
+// lockstep at the same version.
 const serverVersion: string = JSON.parse(
-  readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8'),
+  readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'),
 ).version;
 
 interface HealthRouteDeps {
