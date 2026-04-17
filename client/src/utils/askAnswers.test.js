@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractSubmittedAskIds } from './askAnswers.js';
+import { extractSubmittedAskIds, stripAskAnswerBlocks } from './askAnswers.js';
 
 describe('extractSubmittedAskIds', () => {
   it('returns an empty set for an empty or missing list', () => {
@@ -88,5 +88,48 @@ describe('extractSubmittedAskIds', () => {
     ];
     const ids = extractSubmittedAskIds(messages);
     expect(ids.size).toBe(2);
+  });
+});
+
+describe('stripAskAnswerBlocks', () => {
+  it('returns non-string inputs unchanged', () => {
+    expect(stripAskAnswerBlocks(null)).toBe(null);
+    expect(stripAskAnswerBlocks(undefined)).toBe(undefined);
+    expect(stripAskAnswerBlocks(42)).toBe(42);
+  });
+
+  it('returns content without an answer block unchanged', () => {
+    expect(stripAskAnswerBlocks('hello world')).toBe('hello world');
+    expect(stripAskAnswerBlocks('```js\nconsole.log(1)\n```')).toBe('```js\nconsole.log(1)\n```');
+  });
+
+  it('strips the full "Here are my answers" + fenced block payload emitted by <AskUserQuestion>', () => {
+    const content =
+      'Here are my answers:\n\n```agenthub:ask:answer\n' +
+      '{\n  "askId": "ask-abc",\n  "answers": {"Q?": "a"},\n  "annotations": {}\n}\n' +
+      '```';
+    expect(stripAskAnswerBlocks(content)).toBe('');
+  });
+
+  it('strips a bare fenced block (without the "Here are my answers" prefix)', () => {
+    const content = '```agenthub:ask:answer\n{"askId":"ask-1","answers":{}}\n```';
+    expect(stripAskAnswerBlocks(content)).toBe('');
+  });
+
+  it('preserves surrounding prose while removing the block', () => {
+    const content =
+      'Sounds good — ' +
+      '```agenthub:ask:answer\n{"askId":"ask-1","answers":{"Q":"y"}}\n```' +
+      ' thanks!';
+    // Surrounding prose is kept; only the fenced block is excised. The
+    // trailing/leading whitespace is trimmed by the helper.
+    expect(stripAskAnswerBlocks(content)).toBe('Sounds good —  thanks!');
+  });
+
+  it('strips multiple answer blocks in one message', () => {
+    const content =
+      '```agenthub:ask:answer\n{"askId":"a","answers":{}}\n```\n' +
+      '```agenthub:ask:answer\n{"askId":"b","answers":{}}\n```';
+    expect(stripAskAnswerBlocks(content)).toBe('');
   });
 });

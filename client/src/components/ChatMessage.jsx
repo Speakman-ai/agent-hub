@@ -7,6 +7,7 @@ import { relativeTime } from '../utils/time.js';
 import { getServerBase } from '../utils/connection.js';
 import { markdownComponents } from './MarkdownRenderer.jsx';
 import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage.js';
+import { stripAskAnswerBlocks } from '../utils/askAnswers.js';
 
 function ImageLightbox({ src, alt, onClose }) {
   return (
@@ -275,18 +276,35 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
   const [editValue, setEditValue] = useState(message.content);
   const editRef = React.useRef(null);
 
-  // Don't show "(image attached)" as text if it was auto-generated and there are actual attachments
+  // Don't show "(image attached)" as text if it was auto-generated and there are actual attachments.
+  // Also strip any `agenthub:ask:answer` fenced blocks — the picker UI already
+  // shows "Answers submitted" so the raw JSON payload in the transcript is noise.
   const displayContent = useMemo(() => {
     if (
       (message.content === '(image attached)' || message.content === '(media attached)') &&
       message.attachments
     )
       return '';
-    return message.content;
+    return stripAskAnswerBlocks(message.content);
   }, [message.content, message.attachments]);
 
   if (isSystem) {
     return <SystemPrCreatedMessage message={message} />;
+  }
+
+  // If a user message had nothing but an ask-answer payload (no prose, no
+  // attachments, no queued/interrupted affordances), suppress the bubble
+  // entirely — the picker already reflects the submission.
+  if (
+    isUser &&
+    !displayContent &&
+    !message.attachments &&
+    !isQueued &&
+    !isInterrupted &&
+    typeof message.content === 'string' &&
+    message.content.includes('agenthub:ask:answer')
+  ) {
+    return null;
   }
 
   const engineBadge = !isUser && message.engine ? ENGINE_BADGES[message.engine] : null;

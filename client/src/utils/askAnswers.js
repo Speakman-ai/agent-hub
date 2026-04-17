@@ -15,6 +15,14 @@
 
 const ANSWER_FENCE_RE = /```agenthub:ask:answer\s*\n([\s\S]*?)\n?```/g;
 
+// Matches an `agenthub:ask:answer` fenced block along with the optional
+// "Here are my answers:" prose prefix that <AskUserQuestion> prepends when it
+// submits. Used to strip the raw JSON from the chat transcript — the picker
+// UI itself already provides the visual "Submitted" confirmation, so showing
+// the payload again in the message thread is pure noise.
+const ANSWER_FENCE_WITH_PREFIX_RE =
+  /(?:Here are my answers:\s*\n+)?```agenthub:ask:answer\s*\n[\s\S]*?\n?```/g;
+
 /**
  * Extract every `askId` referenced by an `agenthub:ask:answer` block across a
  * list of messages. Returns a Set<string>.
@@ -48,4 +56,26 @@ export function extractSubmittedAskIds(messages) {
   }
 
   return out;
+}
+
+/**
+ * Strip any `agenthub:ask:answer` fenced blocks (and their optional
+ * "Here are my answers:" prose prefix) from a chat message's content.
+ *
+ * The picker UI in <AskUserQuestion> already shows "Answers submitted" once
+ * the user submits, so rendering the raw JSON payload as a separate user
+ * bubble in the transcript is redundant noise. The block is preserved in the
+ * persisted message content (the assistant/LLM still receives it as context),
+ * but hidden from the visible transcript.
+ *
+ * Returns the cleaned content, with surrounding whitespace trimmed. Non-string
+ * inputs are returned as-is.
+ *
+ * @param {string} content
+ * @returns {string}
+ */
+export function stripAskAnswerBlocks(content) {
+  if (typeof content !== 'string') return content;
+  if (!content.includes('agenthub:ask:answer')) return content;
+  return content.replace(ANSWER_FENCE_WITH_PREFIX_RE, '').trim();
 }
