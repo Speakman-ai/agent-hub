@@ -21,7 +21,8 @@
     "electron:build": "npm run build && npx electron-builder --mac",
     "electron:start": "npx electron .",
     "electron:pack": "npm run build && npx electron-builder --dir",
-    "postinstall": "electron-builder install-app-deps",
+    "rebuild:native": "npm rebuild better-sqlite3",
+    "postinstall": "npm rebuild better-sqlite3",
     "test:watch": "cd server && npx vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -32,6 +33,9 @@
     "test:e2e:ui": "cd e2e && npx playwright test --ui",
     "test:e2e:headed": "cd e2e && npx playwright test --headed",
     "test:e2e:report": "cd e2e && npx playwright show-report"
+  },
+  "engines": {
+    "node": ">=22.14.0 <23.0.0"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0"
