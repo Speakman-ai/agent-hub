@@ -6,17 +6,19 @@
  *   <handoff>{"toAgent": "...", "note": "..."}</handoff>
  *     — transfers ownership of the session to another agent (terminal).
  *
- *   <delegate>[{"toAgent": "...", "task": "..."}, ...]</delegate>
+ *   <delegate>[{"agentId": "...", "task": "..."}, ...]</delegate>
  *     — spawns one or more parallel sub-agent sessions (lead keeps running).
  *
- * Server-side (`server/handoff.ts`, `server/delegation.ts`) parses these the
- * same way and acts on them, but the raw block stays in the saved message
- * content. Without this helper the chat UI renders a wall of JSON inside angle
- * brackets, which the user described as "ugly".
+ * The canonical delegate field is `agentId` (matches the prompt wired in
+ * `server/chat.ts` and the validator in `server/delegation.ts`). Earlier
+ * iterations of this helper used `toAgent`; we still accept that as a
+ * tolerant alias so in-flight messages / mis-schooled agents still strip
+ * cleanly. See `server/delegation.ts#parseDelegateBlock` for the source of
+ * truth.
  *
  * This module gives the renderer:
  *   - parseHandoffBlock(text)   → { toAgent, note } | null
- *   - parseDelegateBlock(text)  → Array<{ toAgent, task }> | null
+ *   - parseDelegateBlock(text)  → Array<{ agentId, task }> | null
  *   - extractCoordinationBlocks(text)
  *       → { stripped, handoff, delegate }
  *     so the rendered text can be the conversational prose alone, with the
@@ -53,9 +55,13 @@ export function parseHandoffBlock(text) {
 }
 
 /**
- * Parse a `<delegate>` block. Returns an array of `{toAgent, task}` entries
+ * Parse a `<delegate>` block. Returns an array of `{agentId, task}` entries
  * (single-object blocks are coerced to a 1-element array) or null on missing
  * / malformed input. Mirrors `server/delegation.ts#parseDelegateBlock`.
+ *
+ * Field names: the canonical target field is `agentId`; we also accept
+ * `toAgent` as a tolerant alias so messages authored before the schemas
+ * were aligned still strip cleanly in the chat UI.
  */
 export function parseDelegateBlock(text) {
   if (typeof text !== 'string' || !text.includes('<delegate>')) return null;
@@ -71,10 +77,16 @@ export function parseDelegateBlock(text) {
   const tasks = [];
   for (const entry of list) {
     if (!entry || typeof entry !== 'object') continue;
-    const toAgent = typeof entry.toAgent === 'string' ? entry.toAgent.trim() : '';
+    const rawAgentId =
+      typeof entry.agentId === 'string'
+        ? entry.agentId
+        : typeof entry.toAgent === 'string'
+          ? entry.toAgent
+          : '';
+    const agentId = rawAgentId.trim();
     const task = typeof entry.task === 'string' ? entry.task.trim() : '';
-    if (!toAgent || !task) continue;
-    tasks.push({ toAgent, task });
+    if (!agentId || !task) continue;
+    tasks.push({ agentId, task });
   }
   return tasks.length > 0 ? tasks : null;
 }

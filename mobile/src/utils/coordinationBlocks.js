@@ -43,10 +43,19 @@ export function parseDelegateBlock(text) {
   const tasks = [];
   for (const entry of list) {
     if (!entry || typeof entry !== 'object') continue;
-    const toAgent = typeof entry.toAgent === 'string' ? entry.toAgent.trim() : '';
+    // Canonical field is `agentId` (matches server/delegation.ts). Accept
+    // `toAgent` as a tolerant alias so mis-schooled / legacy messages still
+    // strip cleanly in the UI.
+    const rawAgentId =
+      typeof entry.agentId === 'string'
+        ? entry.agentId
+        : typeof entry.toAgent === 'string'
+          ? entry.toAgent
+          : '';
+    const agentId = rawAgentId.trim();
     const task = typeof entry.task === 'string' ? entry.task.trim() : '';
-    if (!toAgent || !task) continue;
-    tasks.push({ toAgent, task });
+    if (!agentId || !task) continue;
+    tasks.push({ agentId, task });
   }
   return tasks.length > 0 ? tasks : null;
 }

@@ -41,26 +41,31 @@ describe('parseHandoffBlock', () => {
 });
 
 describe('parseDelegateBlock', () => {
-  it('parses an array of tasks', () => {
-    const text = `<delegate>[{"toAgent":"a","task":"do A"},{"toAgent":"b","task":"do B"}]</delegate>`;
+  it('parses an array of tasks using the canonical agentId field', () => {
+    const text = `<delegate>[{"agentId":"a","task":"do A"},{"agentId":"b","task":"do B"}]</delegate>`;
     expect(parseDelegateBlock(text)).toEqual([
-      { toAgent: 'a', task: 'do A' },
-      { toAgent: 'b', task: 'do B' },
+      { agentId: 'a', task: 'do A' },
+      { agentId: 'b', task: 'do B' },
     ]);
   });
 
+  it('also accepts the legacy toAgent alias (regression: server-spec mismatch made delegate blocks render raw)', () => {
+    const text = `<delegate>[{"toAgent":"a","task":"do A"}]</delegate>`;
+    expect(parseDelegateBlock(text)).toEqual([{ agentId: 'a', task: 'do A' }]);
+  });
+
   it('coerces a single object into a one-element array', () => {
-    const text = `<delegate>{"toAgent":"a","task":"do A"}</delegate>`;
-    expect(parseDelegateBlock(text)).toEqual([{ toAgent: 'a', task: 'do A' }]);
+    const text = `<delegate>{"agentId":"a","task":"do A"}</delegate>`;
+    expect(parseDelegateBlock(text)).toEqual([{ agentId: 'a', task: 'do A' }]);
   });
 
   it('skips entries with missing fields', () => {
-    const text = `<delegate>[{"toAgent":"a","task":"x"},{"toAgent":"","task":"y"},{"task":"z"}]</delegate>`;
-    expect(parseDelegateBlock(text)).toEqual([{ toAgent: 'a', task: 'x' }]);
+    const text = `<delegate>[{"agentId":"a","task":"x"},{"agentId":"","task":"y"},{"task":"z"}]</delegate>`;
+    expect(parseDelegateBlock(text)).toEqual([{ agentId: 'a', task: 'x' }]);
   });
 
   it('returns null when no valid entries remain', () => {
-    const text = `<delegate>[{"toAgent":""}]</delegate>`;
+    const text = `<delegate>[{"agentId":""}]</delegate>`;
     expect(parseDelegateBlock(text)).toBeNull();
   });
 
@@ -89,12 +94,20 @@ describe('extractCoordinationBlocks', () => {
     expect(out.delegate).toBeNull();
   });
 
-  it('strips a delegate block and returns the parsed tasks', () => {
-    const text = `Splitting work.\n<delegate>[{"toAgent":"a","task":"x"}]</delegate>`;
+  it('strips a delegate block and returns the parsed tasks (server-spec agentId format)', () => {
+    const text = `Splitting work.\n<delegate>[{"agentId":"a","task":"x"}]</delegate>`;
     const out = extractCoordinationBlocks(text);
     expect(out.stripped).toBe('Splitting work.');
-    expect(out.delegate).toEqual([{ toAgent: 'a', task: 'x' }]);
+    expect(out.delegate).toEqual([{ agentId: 'a', task: 'x' }]);
     expect(out.handoff).toBeNull();
+  });
+
+  it('strips a delegate block authored with the legacy toAgent alias so the raw JSON never leaks', () => {
+    const text = `Splitting work.\n<delegate>[{"toAgent":"a","task":"x"}]</delegate>`;
+    const out = extractCoordinationBlocks(text);
+    // The critical assertion: stripped must not retain the raw <delegate> JSON.
+    expect(out.stripped).toBe('Splitting work.');
+    expect(out.delegate).toEqual([{ agentId: 'a', task: 'x' }]);
   });
 
   it('collapses excess blank lines left by stripping', () => {
@@ -104,11 +117,11 @@ describe('extractCoordinationBlocks', () => {
   });
 
   it('handles both block kinds in a single message (rare but possible)', () => {
-    const text = `Prose.\n<handoff>{"toAgent":"a","note":"b"}</handoff>\n<delegate>[{"toAgent":"c","task":"d"}]</delegate>`;
+    const text = `Prose.\n<handoff>{"toAgent":"a","note":"b"}</handoff>\n<delegate>[{"agentId":"c","task":"d"}]</delegate>`;
     const out = extractCoordinationBlocks(text);
     expect(out.stripped).toBe('Prose.');
     expect(out.handoff).toEqual({ toAgent: 'a', note: 'b' });
-    expect(out.delegate).toEqual([{ toAgent: 'c', task: 'd' }]);
+    expect(out.delegate).toEqual([{ agentId: 'c', task: 'd' }]);
   });
 
   it('leaves a malformed block in place but returns null for the parsed value', () => {
