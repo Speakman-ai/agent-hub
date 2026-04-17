@@ -215,7 +215,7 @@ function SessionTail({
  * partial-vs-final precedence rule (final wins; partials are the streaming
  * preview that gets replaced when the final arrives).
  */
-function eventsToBlocks(events, verbose) {
+export function eventsToBlocks(events, verbose) {
   const blocks = [];
 
   // First pass: index tool_results by tool_use_id for pairing.
@@ -253,6 +253,11 @@ function eventsToBlocks(events, verbose) {
     if (t === 'tool_result') continue; // shown inside its paired tool card
     if (t === 'checkpoint' && !verbose) continue; // internal restore-point bookkeeping
     if (t === 'rate_limit' && !verbose) continue; // no visual representation
+    // progress_step events drive the out-of-tail ProgressPanel; rendering
+    // them inline would produce "unhandled event" noise (e.g. autonomous
+    // review sessions emit Gather/Analyze/Post steps). In verbose mode we
+    // still hide them because the panel already shows them.
+    if (t === 'progress_step') continue;
     if (t === 'system') {
       blocks.push({ kind: 'system', event });
     } else if (t === 'thinking') {
