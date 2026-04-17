@@ -62,16 +62,24 @@ export default function Sidebar({
   const [editingSessionName, setEditingSessionName] = useState('');
   const [confirmAction, setConfirmAction] = useState(null); // 'clear-all' | 'clear-inactive' | null
   const [serverVersion, setServerVersion] = useState(null);
+  const [serverGitHash, setServerGitHash] = useState(null);
   const renameSavedRef = useRef(false);
 
   const clientVersion = import.meta.env.VITE_APP_VERSION || 'unknown';
+  const clientGitHash = import.meta.env.VITE_GIT_HASH || '';
 
   useEffect(() => {
     const base = getServerBase();
     fetch(`${base}/api/health`)
       .then((r) => r.json())
-      .then((data) => setServerVersion(data.version || null))
-      .catch(() => setServerVersion(null));
+      .then((data) => {
+        setServerVersion(data.version || null);
+        setServerGitHash(data.gitHash || null);
+      })
+      .catch(() => {
+        setServerVersion(null);
+        setServerGitHash(null);
+      });
   }, []);
 
   const toggleProjectCollapse = (projectId, e) => {
@@ -705,16 +713,36 @@ export default function Sidebar({
           </span>
         </button>
         {/* Version display */}
-        <div className="px-3 pt-2 text-xs text-gray-500 flex items-center gap-1.5">
-          <span>v{clientVersion}</span>
-          {serverVersion && serverVersion !== clientVersion && (
-            <span
-              className="inline-flex items-center gap-1 text-amber-400"
-              title={`Client v${clientVersion} · Server v${serverVersion}`}
+        <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
+          <div className="flex items-center gap-1.5">
+            <span>v{clientVersion}</span>
+            {serverVersion && serverVersion !== clientVersion && (
+              <span
+                className="inline-flex items-center gap-1 text-amber-400"
+                title={`Client v${clientVersion} · Server v${serverVersion}`}
+              >
+                <AlertTriangle size={12} />
+                <span>server v{serverVersion}</span>
+              </span>
+            )}
+          </div>
+          {(clientGitHash || serverGitHash) && (
+            <div
+              className="flex items-center gap-1.5 text-[10px] text-gray-600 font-mono"
+              title={
+                serverGitHash && clientGitHash && serverGitHash !== clientGitHash
+                  ? `Client ${clientGitHash} · Server ${serverGitHash} (mismatch — rebuild/redeploy)`
+                  : `Build ${clientGitHash || serverGitHash}`
+              }
             >
-              <AlertTriangle size={12} />
-              <span>server v{serverVersion}</span>
-            </span>
+              <span>{clientGitHash || '—'}</span>
+              {serverGitHash && clientGitHash && serverGitHash !== clientGitHash && (
+                <span className="inline-flex items-center gap-1 text-amber-400">
+                  <AlertTriangle size={10} />
+                  <span>server {serverGitHash}</span>
+                </span>
+              )}
+            </div>
           )}
         </div>
       </div>

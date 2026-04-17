@@ -62,6 +62,20 @@ describe('GET /api/health', () => {
     expect(typeof res.body.uptime).toBe('number');
   });
 
+  it('exposes gitHash as a string (empty when git metadata is unavailable)', async () => {
+    const app = buildApp();
+    const res = await supertest(app).get('/api/health');
+    expect(res.status).toBe(200);
+    // Shape only — the actual value depends on the checkout's git state or
+    // the AGENT_HUB_GIT_HASH env. Either a short SHA or '' when neither is
+    // available (packaged Electron/asar without .git).
+    expect(typeof res.body.gitHash).toBe('string');
+    if (res.body.gitHash.length > 0) {
+      // Short SHAs are hex and at least 7 chars.
+      expect(res.body.gitHash).toMatch(/^[0-9a-f]{7,40}$/);
+    }
+  });
+
   it('reflects authRequired when the config has an apiKey', async () => {
     const app = express();
     app.use(

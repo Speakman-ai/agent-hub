@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { statSync, readdirSync, readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 import { db } from '../db.js';
 import { getSlackStatus, restartSlack, getSlackMessages, getAllSlackMessages } from '../slack.js';
 import type { RouteDeps, EnrichedAgent, AppConfig, Stmts, Project } from '../types.js';
@@ -18,6 +19,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverVersion: string = JSON.parse(
   readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'),
 ).version;
+
+// Short git SHA of the running server, resolved once at module load. Used by
+// the sidebar to surface stale-bundle / client-vs-server build drift.
+// Prefer the AGENT_HUB_GIT_HASH env (set by deploy scripts / Dockerfile);
+// otherwise shell out to git. Empty string when neither is available
+// (packaged Electron/asar with no .git).
+function resolveGitHash(): string {
+  if (process.env.AGENT_HUB_GIT_HASH) return process.env.AGENT_HUB_GIT_HASH;
+  try {
+    return execSync('git rev-parse --short HEAD', {
+      cwd: path.join(__dirname, '..', '..'),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+  } catch {
+    return '';
+  }
+}
+const serverGitHash: string = resolveGitHash();
 
 interface HealthRouteDeps {
   allAgents: () => EnrichedAgent[];
@@ -39,6 +60,7 @@ export function createHealthRoute(deps: HealthRouteDeps): Router {
     res.json({
       status: 'ok',
       version: serverVersion,
+      gitHash: serverGitHash,
       uptime: process.uptime(),
       projects: getProjects().length,
       agents: allAgents().length,
