@@ -12,7 +12,7 @@
  * The unified org list shown in the UI is a merge of both sources.
  */
 
-import { getLocalApiBase, saveConnectionConfig } from './connection.js';
+import { getConnectionConfig, getLocalApiBase, saveConnectionConfig } from './connection.js';
 
 const REMOTE_ORGS_KEY = 'agent-hub-remote-orgs';
 
@@ -77,6 +77,20 @@ function saveRemoteOrgs() {
 export async function fetchOrgs() {
   // Load remote orgs from localStorage
   loadRemoteOrgs();
+
+  // In remote mode there is no local server to consult — skip the fetch to
+  // avoid ECONNREFUSED noise in the Vite dev proxy / browser network panel.
+  // The App.jsx init flow already gates the matching /orgs/:id/switch call
+  // on `activeOrg.mode !== 'remote'`; mirror that here.
+  const { mode } = getConnectionConfig();
+  if (mode === 'remote') {
+    const merged = allOrgs();
+    if (!_activeOrgId && merged.length > 0) {
+      _activeOrgId = merged[0].id;
+      _saveActiveOrgId(_activeOrgId);
+    }
+    return { orgs: merged, activeOrgId: _activeOrgId };
+  }
 
   // Fetch local orgs from the server
   try {
