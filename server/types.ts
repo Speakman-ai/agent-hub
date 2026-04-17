@@ -53,6 +53,12 @@ export interface CronRow {
   last_result: string | null;
   next_run_at: string | null;
   project_id: string | null;
+  /**
+   * Per-cron execution timeout in milliseconds. When null, falls back to
+   * `config.defaultTimeoutMs`. Exposed so long-running crons can opt out of
+   * the shared default without dragging every cron along with them.
+   */
+  timeout_ms: number | null;
   created_at: string;
 }
 

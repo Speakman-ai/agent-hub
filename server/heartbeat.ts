@@ -454,7 +454,12 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
   const logId = logEntry.lastInsertRowid;
   const startTime = Date.now();
 
-  const timeoutMs = config.defaultTimeoutMs;
+  // Honor per-cron timeout override; fall back to the shared default. Stored
+  // as NULL in the DB when unset, which coerces to the default here.
+  const timeoutMs =
+    typeof cronJob.timeout_ms === 'number' && cronJob.timeout_ms > 0
+      ? cronJob.timeout_ms
+      : config.defaultTimeoutMs;
 
   const thread = getOrCreateCronThread(cronJob);
 

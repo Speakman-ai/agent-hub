@@ -112,7 +112,7 @@ const config: AppConfig = {
   },
 
   // ── Timeouts ───────────────────────────────────────────────────
-  defaultTimeoutMs: resolveInt(null, 'defaultTimeoutMs', 5 * 60 * 1000),
+  defaultTimeoutMs: resolveInt(null, 'defaultTimeoutMs', 15 * 60 * 1000),
   docsTimeoutMs: resolveInt(null, 'docsTimeoutMs', 10 * 60 * 1000),
   slackTimeoutMs: resolveInt(null, 'slackTimeoutMs', 5 * 60 * 1000),
   conferenceTimeoutMs: resolveInt(null, 'conferenceTimeoutMs', 10 * 60 * 1000),

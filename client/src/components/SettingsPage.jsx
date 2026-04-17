@@ -2139,6 +2139,8 @@ function CronSection({ projects = [], onNavigate, showToast }) {
     cwd: defaultCwd,
     project_id: projects[0]?.id || '',
     enabled: true,
+    // Timeout expressed in minutes in the form; '' means "use server default".
+    timeoutMinutes: '',
   });
 
   /** Fetch last-3 logs for every cron */
@@ -2213,9 +2215,30 @@ function CronSection({ projects = [], onNavigate, showToast }) {
     setCrons((prev) => prev.filter((c) => c.id !== id));
   };
 
+  /**
+   * Convert the form's minutes field into the API's `timeout_ms` contract:
+   *   - blank → null (use server default)
+   *   - positive integer → minutes * 60_000
+   * Returns `undefined` when the field is invalid so the caller can surface an
+   * error instead of silently wiping the existing override.
+   */
+  const minutesToTimeoutMs = (minutes) => {
+    if (minutes === '' || minutes === null || minutes === undefined) return null;
+    const n = Number(minutes);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return Math.round(n * 60_000);
+  };
+
   const createCron = async (e) => {
     e.preventDefault();
-    const created = await api.createCron(form);
+    const timeout_ms = minutesToTimeoutMs(form.timeoutMinutes);
+    if (timeout_ms === undefined) {
+      showToast?.('Timeout must be a positive number of minutes.', 'error');
+      return;
+    }
+    const payload = { ...form, timeout_ms };
+    delete payload.timeoutMinutes;
+    const created = await api.createCron(payload);
     setCrons((prev) => [...prev, created]);
     setShowForm(false);
     setForm({
@@ -2225,6 +2248,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
       cwd: defaultCwd,
       project_id: projects[0]?.id || '',
       enabled: true,
+      timeoutMinutes: '',
     });
   };
 
@@ -2236,12 +2260,20 @@ function CronSection({ projects = [], onNavigate, showToast }) {
       prompt: cronJob.prompt,
       cwd: cronJob.cwd || '',
       project_id: cronJob.project_id || '',
+      timeoutMinutes: cronJob.timeout_ms ? String(Math.round(cronJob.timeout_ms / 60_000)) : '',
     });
   };
 
   const saveEdit = async (e) => {
     e.preventDefault();
-    const updated = await api.updateCron(editingId, editForm);
+    const timeout_ms = minutesToTimeoutMs(editForm.timeoutMinutes);
+    if (timeout_ms === undefined) {
+      showToast?.('Timeout must be a positive number of minutes.', 'error');
+      return;
+    }
+    const payload = { ...editForm, timeout_ms };
+    delete payload.timeoutMinutes;
+    const updated = await api.updateCron(editingId, payload);
     setCrons((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
     setEditingId(null);
     setEditForm({});
@@ -2303,6 +2335,20 @@ function CronSection({ projects = [], onNavigate, showToast }) {
             placeholder="Working directory"
             className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
           />
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">
+              Timeout (minutes) <span className="text-gray-600">— blank uses server default</span>
+            </label>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={form.timeoutMinutes}
+              onChange={(e) => setForm({ ...form, timeoutMinutes: e.target.value })}
+              placeholder="e.g. 30"
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+            />
+          </div>
           <button
             type="submit"
             className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
@@ -2363,6 +2409,21 @@ function CronSection({ projects = [], onNavigate, showToast }) {
                   placeholder="Working directory"
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                 />
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Timeout (minutes){' '}
+                    <span className="text-gray-600">— blank uses server default</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={editForm.timeoutMinutes ?? ''}
+                    onChange={(e) => setEditForm({ ...editForm, timeoutMinutes: e.target.value })}
+                    placeholder="e.g. 30"
+                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                  />
+                </div>
                 <div className="flex gap-2">
                   <button
                     type="submit"
@@ -2408,6 +2469,9 @@ function CronSection({ projects = [], onNavigate, showToast }) {
                   <p className="text-xs text-gray-500 truncate mt-0.5">{cronJob.prompt}</p>
                   <p className="text-xs text-gray-600 mt-0.5">
                     cwd: {cronJob.cwd}
+                    {cronJob.timeout_ms ? (
+                      <> · Timeout: {Math.round(cronJob.timeout_ms / 60_000)}m</>
+                    ) : null}
                     {cronJob.last_run && <> · Last: {relativeTime(cronJob.last_run)}</>}
                   </p>
                   {/* Recent runs — clickable status dots */}

@@ -20,10 +20,36 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     res.json(crons);
   });
 
+  /**
+   * Coerce a `timeout_ms` value from a request body into the DB-friendly
+   * form: either a positive integer (the override) or null (use default).
+   * Throws on non-numeric or non-positive input so the API returns 400
+   * instead of silently persisting garbage that would bypass the timeout.
+   */
+  function normalizeTimeoutMs(raw: unknown): number | null {
+    if (raw === null || raw === undefined || raw === '') return null;
+    // Explicitly reject booleans — `Number(true)` is 1, which would otherwise
+    // sneak through as a valid 1 ms timeout and silently kill every run.
+    if (typeof raw === 'boolean') {
+      throw new Error('timeout_ms must be a positive integer (milliseconds)');
+    }
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+      throw new Error('timeout_ms must be a positive integer (milliseconds)');
+    }
+    return n;
+  }
+
   router.post('/api/crons', (req: Request, res: Response) => {
-    const { name, schedule, prompt, cwd, enabled, project_id } = req.body;
+    const { name, schedule, prompt, cwd, enabled, project_id, timeout_ms } = req.body;
     if (!name || !schedule || !prompt) {
       return res.status(400).json({ error: 'name, schedule, and prompt are required' });
+    }
+    let normalizedTimeout: number | null;
+    try {
+      normalizedTimeout = normalizeTimeoutMs(timeout_ms);
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
     }
     const result = stmts.createCron.run(
       name,
@@ -32,6 +58,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       cwd || config.defaultCwd,
       enabled !== undefined ? (enabled ? 1 : 0) : 1,
       project_id || null,
+      normalizedTimeout,
     );
     const cronJob = stmts.getCron.get(result.lastInsertRowid) as CronRow;
     rescheduleCron(cronJob);
@@ -42,7 +69,15 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     const existing = stmts.getCron.get(parseInt(req.params.id as string)) as CronRow | undefined;
     if (!existing) return res.status(404).json({ error: 'Cron not found' });
 
-    const { name, schedule, prompt, cwd, enabled, project_id } = req.body;
+    const { name, schedule, prompt, cwd, enabled, project_id, timeout_ms } = req.body;
+    let nextTimeout: number | null = existing.timeout_ms;
+    if (Object.prototype.hasOwnProperty.call(req.body, 'timeout_ms')) {
+      try {
+        nextTimeout = normalizeTimeoutMs(timeout_ms);
+      } catch (err) {
+        return res.status(400).json({ error: (err as Error).message });
+      }
+    }
     stmts.updateCron.run(
       name || existing.name,
       schedule || existing.schedule,
@@ -50,6 +85,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       cwd || existing.cwd,
       enabled !== undefined ? (enabled ? 1 : 0) : existing.enabled,
       project_id !== undefined ? project_id : existing.project_id || null,
+      nextTimeout,
       existing.id,
     );
     const updated = stmts.getCron.get(existing.id) as CronRow;

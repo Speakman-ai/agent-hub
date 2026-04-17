@@ -85,6 +85,7 @@ function initDb(dataDir: string): void {
       enabled INTEGER NOT NULL DEFAULT 1,
       last_run TEXT,
       last_result TEXT,
+      timeout_ms INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -620,6 +621,12 @@ function initDb(dataDir: string): void {
   }
 
   try {
+    db.prepare('SELECT timeout_ms FROM crons LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE crons ADD COLUMN timeout_ms INTEGER');
+  }
+
+  try {
     db.prepare('SELECT engine FROM sessions LIMIT 1').get();
   } catch {
     db.exec("ALTER TABLE sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude-code'");
@@ -1132,10 +1139,10 @@ function initDb(dataDir: string): void {
     getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
     getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
     createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ),
     updateCron: db.prepare(
-      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ? WHERE id = ?',
+      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ? WHERE id = ?',
     ),
     deleteCron: db.prepare('DELETE FROM crons WHERE id = ?'),
     updateCronResult: db.prepare(
