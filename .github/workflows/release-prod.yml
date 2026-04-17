@@ -186,11 +186,15 @@ jobs:
           EOF
           )
 
+          # See deploy-dev.yml for the explanation: shorthand --parameters
+          # does not decode JSON \n escapes, so we must pass the script via a
+          # JSON file.
+          jq -Rs '{commands: [.]}' <<< "$DEPLOY_SCRIPT" > "$RUNNER_TEMP/ssm-params.json"
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
             --comment "release ${TAG} prod-1" \
-            --parameters "commands=[$(jq -Rs . <<< "$DEPLOY_SCRIPT")]" \
+            --parameters "file://$RUNNER_TEMP/ssm-params.json" \
             --cloud-watch-output-config CloudWatchOutputEnabled=true \
             --query 'Command.CommandId' \
             --output text)
@@ -310,11 +314,15 @@ jobs:
           EOF
           )
 
+          # See deploy-dev.yml for the explanation: shorthand --parameters
+          # does not decode JSON \n escapes, so we must pass the script via a
+          # JSON file.
+          jq -Rs '{commands: [.]}' <<< "$DEPLOY_SCRIPT" > "$RUNNER_TEMP/ssm-params.json"
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
             --comment "release ${TAG} prod-2" \
-            --parameters "commands=[$(jq -Rs . <<< "$DEPLOY_SCRIPT")]" \
+            --parameters "file://$RUNNER_TEMP/ssm-params.json" \
             --cloud-watch-output-config CloudWatchOutputEnabled=true \
             --query 'Command.CommandId' \
             --output text)

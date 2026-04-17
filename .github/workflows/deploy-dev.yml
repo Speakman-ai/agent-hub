@@ -101,11 +101,18 @@ jobs:
           EOF
           )
 
+          # IMPORTANT: build the parameters as a JSON file and pass via
+          # file://. The AWS CLI --parameters *shorthand* form (commands=[...])
+          # does NOT decode JSON \n escapes, so `jq -Rs .` would collapse the
+          # multi-line script onto one line with literal \n characters and the
+          # remote shell chokes on the first `(` it sees. See PR that
+          # introduced this fix for the failing run.
+          jq -Rs '{commands: [.]}' <<< "$DEPLOY_SCRIPT" > "$RUNNER_TEMP/ssm-params.json"
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
             --comment "deploy-dev ${GITHUB_SHA::7}" \
-            --parameters "commands=[$(jq -Rs . <<< "$DEPLOY_SCRIPT")]" \
+            --parameters "file://$RUNNER_TEMP/ssm-params.json" \
             --cloud-watch-output-config CloudWatchOutputEnabled=true \
             --query 'Command.CommandId' \
             --output text)
