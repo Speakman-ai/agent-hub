@@ -480,11 +480,59 @@ function formatCompact(n) {
  * so `items` is the primary case in the wild.
  */
 function normalizeList(data) {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.items)) return data.items;
-  if (Array.isArray(data?.skills)) return data.skills;
-  if (Array.isArray(data?.results)) return data.results;
-  return [];
+  const raw = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.items)
+      ? data.items
+      : Array.isArray(data?.skills)
+        ? data.skills
+        : Array.isArray(data?.results)
+          ? data.results
+          : [];
+  return raw.map(normalizeSkill);
+}
+
+/**
+ * Flatten a ClawHub skill/result object so the card renderer can read a
+ * single, stable shape regardless of which upstream endpoint produced it.
+ *
+ * Why this exists:
+ *   - `/api/v1/search` returns flat objects with `displayName`/`summary`/
+ *     `version` and **no** `stats` object at all.
+ *   - `/api/v1/skills/:slug` returns `{displayName, summary, tags:{latest},
+ *     stats:{stars, installsAllTime, downloads, …}, moderation}`.
+ *   - `/api/v1/skills` list — same nested stats pattern when populated.
+ *
+ * PR #332 assumed flat top-level `stars`/`installsAllTime`/`verdict` etc.,
+ * which is why chips were invisible. This normalizer preserves any already-
+ * flat values (tests mock the flat shape) and additionally hoists nested
+ * fields so real upstream data renders too.
+ */
+export function normalizeSkill(skill) {
+  if (!skill || typeof skill !== 'object') return skill;
+  const stats = skill.stats && typeof skill.stats === 'object' ? skill.stats : null;
+  const tags = skill.tags && typeof skill.tags === 'object' ? skill.tags : null;
+  const moderation =
+    skill.moderation && typeof skill.moderation === 'object' ? skill.moderation : null;
+
+  return {
+    ...skill,
+    // Title / description / version — accept upstream's displayName/summary
+    // and tags.latest while keeping any flat values the caller set.
+    name: skill.name ?? skill.displayName ?? undefined,
+    description: skill.description ?? skill.summary ?? undefined,
+    latest_version:
+      skill.latest_version ?? tags?.latest ?? skill.version ?? skill.latestVersion ?? undefined,
+    // Trust signals — hoist from stats if not already flattened.
+    stars: skill.stars ?? stats?.stars ?? undefined,
+    installsAllTime: skill.installsAllTime ?? stats?.installsAllTime ?? undefined,
+    // Security verdict — upstream puts these under `moderation` when present.
+    verdict: skill.verdict ?? moderation?.verdict ?? undefined,
+    confidence: skill.confidence ?? moderation?.confidence ?? undefined,
+    status: skill.status ?? moderation?.status ?? undefined,
+    llmAnalysis: skill.llmAnalysis ?? moderation?.llmAnalysis ?? moderation?.llm ?? undefined,
+    vtAnalysis: skill.vtAnalysis ?? moderation?.vtAnalysis ?? moderation?.virustotal ?? undefined,
+  };
 }
 
 function normalizeVersions(data) {

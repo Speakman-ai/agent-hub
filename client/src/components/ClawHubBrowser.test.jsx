@@ -11,7 +11,7 @@ vi.mock('../utils/api.js', () => ({
   },
 }));
 
-import ClawHubBrowser from './ClawHubBrowser.jsx';
+import ClawHubBrowser, { normalizeSkill } from './ClawHubBrowser.jsx';
 import { api } from '../utils/api.js';
 
 describe('ClawHubBrowser', () => {
@@ -162,6 +162,93 @@ describe('ClawHubBrowser', () => {
       renderWith({ slug: 'plain', name: 'Plain' });
       await settle();
       expect(screen.queryByTestId('verdict-chip')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('upstream shape normalization (regression for bug #1)', () => {
+    it('renders star + install chips from nested `stats` on list responses', async () => {
+      // Real upstream `/api/v1/skills/:slug` shape — stats nested, displayName
+      // instead of name, summary instead of description, tags.latest instead
+      // of latest_version. Before the fix these fields were ignored and chips
+      // never rendered.
+      api.clawhubListSkills.mockResolvedValueOnce({
+        items: [
+          {
+            slug: 'test-runner',
+            displayName: 'Test Runner',
+            summary: 'Run tests everywhere.',
+            tags: { latest: '1.0.0' },
+            stats: { stars: 12, installsAllTime: 106, downloads: 11528 },
+          },
+        ],
+        nextCursor: null,
+      });
+
+      render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+      await settle();
+
+      // Name comes from displayName, description from summary, version from tags.latest.
+      expect(screen.getByRole('heading', { name: 'Test Runner' })).toBeInTheDocument();
+      expect(screen.getByText('Run tests everywhere.')).toBeInTheDocument();
+      expect(screen.getByText('v1.0.0')).toBeInTheDocument();
+      // Trust chips hoisted from stats.
+      expect(screen.getByTitle(/12 stars/i)).toBeInTheDocument();
+      expect(screen.getByTitle(/106 installs all time/i)).toBeInTheDocument();
+    });
+
+    it('renders the verdict chip when moderation.verdict is present', async () => {
+      api.clawhubListSkills.mockResolvedValueOnce([
+        {
+          slug: 'scanned',
+          displayName: 'Scanned Skill',
+          moderation: { verdict: 'benign', confidence: 0.87 },
+        },
+      ]);
+
+      render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+      await settle();
+
+      const chips = screen.getAllByTestId('verdict-chip');
+      expect(chips[0]).toHaveAttribute('data-verdict', 'benign');
+    });
+
+    it('prefers flat values over nested ones when both are present', () => {
+      // If a caller passes { stars: 99, stats: { stars: 1 } } we should keep
+      // the flat 99 — mocks in other tests rely on this and we don't want
+      // nested data to shadow explicit top-level values.
+      const out = normalizeSkill({ slug: 's', stars: 99, stats: { stars: 1 } });
+      expect(out.stars).toBe(99);
+    });
+
+    it('preserves the value 0 so count-zero chips correctly hide', () => {
+      // `?? 0` preserves the zero — important for the gating logic
+      // (`stars > 0`) which must not flip to truthy.
+      const out = normalizeSkill({ slug: 's', stars: 0, installsAllTime: 0 });
+      expect(out.stars).toBe(0);
+      expect(out.installsAllTime).toBe(0);
+    });
+
+    it('returns undefined for missing trust signals instead of null', () => {
+      // `skill.stars > 0` must be false for undefined — ensuring chips hide
+      // when upstream omits stats entirely (true for search responses today).
+      const out = normalizeSkill({ slug: 's', displayName: 'Plain' });
+      expect(out.stars).toBeUndefined();
+      expect(out.installsAllTime).toBeUndefined();
+      expect(out.verdict).toBeUndefined();
+    });
+
+    it('hoists llmAnalysis / vtAnalysis from moderation block', () => {
+      const out = normalizeSkill({
+        slug: 's',
+        moderation: {
+          verdict: 'benign',
+          llmAnalysis: { status: 'benign', reason: 'ok' },
+          vtAnalysis: { malicious: 0, total: 70 },
+        },
+      });
+      expect(out.verdict).toBe('benign');
+      expect(out.llmAnalysis).toEqual({ status: 'benign', reason: 'ok' });
+      expect(out.vtAnalysis).toEqual({ malicious: 0, total: 70 });
     });
   });
 
