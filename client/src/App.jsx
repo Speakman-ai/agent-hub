@@ -1929,6 +1929,8 @@ export default function App() {
                               verboseMode={verboseMode}
                               onAskSubmit={handleAskSubmit}
                               askSubmittedIds={askSubmitted}
+                              fromAgent={activeAgent}
+                              agents={agents}
                             />
                           ) : (
                             <ChatMessage
@@ -1957,6 +1959,8 @@ export default function App() {
                             verboseMode={verboseMode}
                             onAskSubmit={handleAskSubmit}
                             askSubmittedIds={askSubmitted}
+                            fromAgent={activeAgent}
+                            agents={agents}
                           />
                         )}
                         {/* Delegation panel — shows when a lead agent delegates to sub-agents */}

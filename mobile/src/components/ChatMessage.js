@@ -4,6 +4,8 @@ import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { getApiBaseUrl } from '../utils/config';
+import { extractCoordinationBlocks } from '../utils/coordinationBlocks';
+import HandoffCard from './HandoffCard';
 
 const ENGINE_BADGES = {
   'claude-code': { color: '#8B5CF6', label: 'Claude Code' },
@@ -200,7 +202,7 @@ const imageStyles = StyleSheet.create({
   },
 });
 
-function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
+function ChatMessage({ message, agentColor, onDequeue, onEditQueued, fromAgent, agents }) {
   const isQueued = message.queued;
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
@@ -214,6 +216,13 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
     if (message.content === '(image attached)' && message.attachments) return '';
     return message.content;
   }, [message.content, message.attachments]);
+
+  // For assistant messages, extract any `<handoff>` block so the JSON wall
+  // doesn't render as raw text. The block is shown as a HandoffCard instead.
+  const assistantBlocks = useMemo(() => {
+    if (isUser) return { stripped: message.content, handoff: null };
+    return extractCoordinationBlocks(message.content);
+  }, [isUser, message.content]);
 
   return (
     <View style={[styles.container, isUser ? styles.containerUser : styles.containerAssistant]}>
@@ -288,7 +297,19 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
             )}
           </>
         ) : (
-          <Markdown style={markdownStyles}>{message.content}</Markdown>
+          <>
+            {assistantBlocks.stripped ? (
+              <Markdown style={markdownStyles}>{assistantBlocks.stripped}</Markdown>
+            ) : null}
+            {assistantBlocks.handoff && (
+              <HandoffCard
+                toAgentId={assistantBlocks.handoff.toAgent}
+                note={assistantBlocks.handoff.note}
+                fromAgent={fromAgent}
+                agents={agents}
+              />
+            )}
+          </>
         )}
 
         {/* Timestamp */}

@@ -6,7 +6,9 @@ import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
 import { markdownComponentsCompact } from './MarkdownRenderer.jsx';
 import { isFileModifyingTool, shortenPath, parseDiffLines } from '../utils/diff.js';
+import { extractCoordinationBlocks } from '../utils/coordinationBlocks.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
+import HandoffCard from './HandoffCard.jsx';
 import {
   Bot,
   Zap,
@@ -54,6 +56,8 @@ function SessionTail({
   verboseMode,
   onAskSubmit,
   askSubmittedIds,
+  fromAgent,
+  agents,
 }) {
   const messageId = message?.id;
 
@@ -90,7 +94,14 @@ function SessionTail({
   // events fetch is in flight, and is the permanent rendering for messages
   // saved before stream-json capture was added.
   if (!streaming && !hasEvents && message?.content) {
-    return <LegacyAssistantBubble message={message} agentColor={agentColor} />;
+    return (
+      <LegacyAssistantBubble
+        message={message}
+        agentColor={agentColor}
+        fromAgent={fromAgent}
+        agents={agents}
+      />
+    );
   }
 
   return (
@@ -110,7 +121,7 @@ function SessionTail({
         {streaming && blocks.length === 0 && (
           <div className="mt-2">
             {message?.content ? (
-              <TextBubble text={message.content} />
+              <TextBubble text={message.content} fromAgent={fromAgent} agents={agents} />
             ) : (
               <span className="text-xs text-gray-500 italic">Waiting for first event…</span>
             )}
@@ -145,7 +156,14 @@ function SessionTail({
                   />
                 );
               case 'text':
-                return <TextBubble key={`b${i}`} text={block.text} />;
+                return (
+                  <TextBubble
+                    key={`b${i}`}
+                    text={block.text}
+                    fromAgent={fromAgent}
+                    agents={agents}
+                  />
+                );
               case 'ask_question':
                 return (
                   <AskUserQuestion
@@ -600,17 +618,33 @@ function formatToolInput(input) {
   }
 }
 
-function TextBubble({ text }) {
+function TextBubble({ text, fromAgent, agents }) {
+  // Strip any <handoff>/<delegate> blocks from the prose so the raw JSON
+  // wall doesn't end up rendered inline. The blocks are surfaced separately
+  // as a card below the prose.
+  const { stripped, handoff } = extractCoordinationBlocks(text);
   return (
-    <div className="markdown-content text-gray-200 text-sm leading-relaxed">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-        components={MARKDOWN_COMPONENTS}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
+    <>
+      {stripped && (
+        <div className="markdown-content text-gray-200 text-sm leading-relaxed">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+            components={MARKDOWN_COMPONENTS}
+          >
+            {stripped}
+          </ReactMarkdown>
+        </div>
+      )}
+      {handoff && (
+        <HandoffCard
+          toAgentId={handoff.toAgent}
+          note={handoff.note}
+          fromAgent={fromAgent}
+          agents={agents}
+        />
+      )}
+    </>
   );
 }
 
@@ -690,7 +724,10 @@ function UnknownBlock({ event }) {
  * Fallback bubble for legacy assistant messages that pre-date stream-json
  * event capture. Same shape as the old ChatMessage assistant case.
  */
-function LegacyAssistantBubble({ message, agentColor }) {
+function LegacyAssistantBubble({ message, agentColor, fromAgent, agents }) {
+  // Strip coordination blocks here too — legacy messages were saved with the
+  // raw `<handoff>...</handoff>` JSON in their content.
+  const { stripped, handoff } = extractCoordinationBlocks(message.content);
   return (
     <div className="flex justify-start mb-4">
       <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
@@ -701,15 +738,25 @@ function LegacyAssistantBubble({ message, agentColor }) {
           streaming={false}
           createdAt={message.created_at}
         />
-        <div className="markdown-content text-gray-200 mt-1">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-            components={MARKDOWN_COMPONENTS}
-          >
-            {message.content}
-          </ReactMarkdown>
-        </div>
+        {stripped && (
+          <div className="markdown-content text-gray-200 mt-1">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
+              components={MARKDOWN_COMPONENTS}
+            >
+              {stripped}
+            </ReactMarkdown>
+          </div>
+        )}
+        {handoff && (
+          <HandoffCard
+            toAgentId={handoff.toAgent}
+            note={handoff.note}
+            fromAgent={fromAgent}
+            agents={agents}
+          />
+        )}
       </div>
     </div>
   );
