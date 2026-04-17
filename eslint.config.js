@@ -116,6 +116,21 @@ export default [
     },
   },
 
+  // Helper scripts — Node.js ESM (.mjs)
+  {
+    files: ['**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+  },
+
   // Prettier must be last to disable conflicting formatting rules
   prettierConfig,
 ];

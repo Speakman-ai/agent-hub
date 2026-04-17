@@ -1,0 +1,165 @@
+name: Deploy Dev
+
+# Triggered by the CI workflow completing successfully on main.
+# Using workflow_run (instead of push + job needs) guarantees we never deploy
+# a commit whose CI failed: GitHub only fires this event when the upstream
+# workflow's top-level conclusion is available, and we gate the job on success.
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  # Manual escape hatch for on-demand redeploys of whatever is currently on main.
+  workflow_dispatch:
+
+# Collapse stacked pushes: only the latest commit on main gets deployed.
+# The "Wait for SSM command" step traps cancellation and calls ssm cancel-command
+# so the in-flight deploy on EC2 stops too — otherwise cancel-in-progress would
+# orphan the SSM invocation and allow two deploys to race on the same checkout.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+permissions:
+  id-token: write # OIDC federation with AWS
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to agent-hub-server
+    runs-on: ubuntu-latest
+    # Guard: on workflow_run, only proceed when upstream CI succeeded.
+    # On workflow_dispatch, there's no triggering workflow, so fall through.
+    # Also skip release-bump commits from release-prod.yml — those push via
+    # RELEASE_PAT which does re-trigger workflows, and we don't want every
+    # prod release to also force-deploy dev.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):')) }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/agenthub/agent-hub' }}
+      INSTANCE_NAME_TAG: agent-hub-server
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-deploy-dev-${{ github.run_id }}
+
+      - name: Resolve instance ID
+        id: resolve
+        run: |
+          set -euo pipefail
+          IDS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=${INSTANCE_NAME_TAG}" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text)
+          COUNT=$(echo "$IDS" | wc -w)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No running instances found with Name=${INSTANCE_NAME_TAG}"
+            exit 1
+          fi
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::Expected exactly 1 running instance with Name=${INSTANCE_NAME_TAG}, found $COUNT: $IDS"
+            exit 1
+          fi
+          echo "instance_id=$IDS" >> "$GITHUB_OUTPUT"
+          echo "Resolved instance: $IDS"
+
+      - name: Send deploy command via SSM
+        id: send
+        env:
+          INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+          # Build the deploy script. Quoting is defensive: we embed $DEPLOY_PATH
+          # into the JSON parameter value so it's expanded on the target, not here.
+          DEPLOY_SCRIPT=$(cat <<EOF
+          set -euo pipefail
+          cd ${DEPLOY_PATH}
+          git fetch --all --prune
+          git reset --hard origin/main
+          npm ci
+          (cd server && npm ci)
+          (cd client && npm ci)
+          npm run build
+          pm2 restart agent-hub
+          # Health check: 12 attempts × 5s = 60s ceiling. Matches prod so a
+          # slow cold-restart (sqlite open, route mounting) doesn't false-fail.
+          for i in \$(seq 1 12); do
+            if curl -fsS http://localhost:3051/api/health >/dev/null; then
+              echo "health ok on attempt \$i"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "health check FAILED after 12 attempts" >&2
+          exit 1
+          EOF
+          )
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy-dev ${GITHUB_SHA::7}" \
+            --parameters "commands=[$(jq -Rs . <<< "$DEPLOY_SCRIPT")]" \
+            --cloud-watch-output-config CloudWatchOutputEnabled=true \
+            --query 'Command.CommandId' \
+            --output text)
+          echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "SSM CommandId: $CMD_ID"
+
+      - name: Wait for SSM command to finish
+        env:
+          INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
+          COMMAND_ID: ${{ steps.send.outputs.command_id }}
+        run: |
+          set -euo pipefail
+          # If the GHA job is cancelled (e.g. by concurrency: cancel-in-progress
+          # when a newer push comes in), tell SSM to stop the in-flight command
+          # on EC2. Otherwise `aws ssm send-command` returns immediately and the
+          # deploy script keeps running on the instance, racing with the next
+          # deploy on the same checkout.
+          trap 'echo "Received signal; cancelling SSM command $COMMAND_ID..."; aws ssm cancel-command --command-id "$COMMAND_ID" --instance-ids "$INSTANCE_ID" || true; exit 130' INT TERM
+          # Poll up to 20 minutes (120 * 10s). npm ci + build typically finishes
+          # in well under 5 minutes; the ceiling accounts for cold caches.
+          for i in $(seq 1 120); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+            echo "[$i] status=$STATUS"
+            case "$STATUS" in
+              Success)
+                echo "Deploy succeeded."
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardOutputContent' --output text | tail -n 40
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                echo "::error::SSM command finished with status=$STATUS"
+                echo "--- stdout ---"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardOutputContent' --output text || true
+                echo "--- stderr ---"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardErrorContent' --output text || true
+                exit 1
+                ;;
+              *)
+                sleep 10
+                ;;
+            esac
+          done
+          echo "::error::Timed out waiting for SSM command $COMMAND_ID"
+          exit 1
