@@ -496,7 +496,7 @@ export default function App() {
             {
               id: `session-done-${data.sessionId}-${Date.now()}`,
               type: 'success',
-              message: body,
+              message: session?.name || 'Session completed',
               duration: 10000,
               onClick: () => {
                 setActiveSessionId(data.sessionId);
@@ -532,7 +532,7 @@ export default function App() {
             {
               id: `pr-ready-${data.sessionId}-${Date.now()}`,
               type: 'info',
-              message: body,
+              message: session?.name || 'Changes ready for PR',
               duration: 10000,
               onClick: () => {
                 setActiveSessionId(data.sessionId);
