@@ -226,7 +226,11 @@ export function buildEnrichedPrompt(
 
     if (allSkills.length > 0) {
       const skillsList = allSkills.map((s) => `- **${s.name}**: ${s.description}`);
-      prompt += `\n\n## Available Skills\n${skillsList.join('\n')}`;
+      const exampleName = allSkills[0]?.name ?? 'skill-name';
+      prompt += `\n\n## Available Skills
+Invoke a skill by calling the \`Skill\` tool with its **exact name** from the list below (e.g. \`Skill({ skill: "${exampleName}" })\`). These are the **only** skills registered for this agent — calling \`Skill\` with any other name (for example a third-party service like "linear" or "jira") will fail with \`Unknown skill\`. If the user asks for a capability that isn't in this list, complete the work directly using Bash, WebFetch, or other tools rather than guessing a skill name.
+
+${skillsList.join('\n')}`;
     }
   }
 
