@@ -163,11 +163,14 @@ jobs:
           INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
         run: |
           set -euo pipefail
-          # AWS-RunShellScript runs under /bin/sh (dash on Ubuntu), which
-          # rejects `set -o pipefail`. Wrap the real script in `bash <<'BASH'`
-          # so dash just hands execution to bash and pipefail works.
+          # AWS-RunShellScript runs under /bin/sh (dash on Ubuntu) as root.
+          # dash rejects `set -o pipefail`, and root touching a repo owned by
+          # `agenthub` trips git's "dubious ownership" guard (>= 2.35.2); pm2's
+          # daemon also lives in agenthub's $HOME. Hand off to
+          # `sudo -u agenthub -H bash -l` to run as the repo owner with the
+          # user's login PATH (pm2 reachable) and bash's pipefail.
           DEPLOY_SCRIPT=$(cat <<EOF
-          bash <<'BASH'
+          sudo -u agenthub -H bash -l <<'BASH'
           set -euo pipefail
           cd ${DEPLOY_PATH}
           git fetch --all --tags --prune
@@ -297,7 +300,11 @@ jobs:
           INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
         run: |
           set -euo pipefail
+          # Same constraints as prod-1/dev: dash + root → use
+          # `sudo -u agenthub -H bash -l` so pipefail works, git sees the
+          # correct owner, and pm2's per-user daemon is reachable.
           DEPLOY_SCRIPT=$(cat <<EOF
+          sudo -u agenthub -H bash -l <<'BASH'
           set -euo pipefail
           cd ${DEPLOY_PATH}
           git fetch --all --tags --prune
@@ -316,6 +323,7 @@ jobs:
           done
           echo "health check FAILED after 12 attempts" >&2
           exit 1
+          BASH
           EOF
           )
 
