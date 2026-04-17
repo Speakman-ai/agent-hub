@@ -100,6 +100,7 @@ export default function KanbanBoard({
     }
   }, [projectId]);
 
+  // Initial load / project switch — show loading spinner
   useEffect(() => {
     setLoading(true);
     fetchBoard();
@@ -110,7 +111,25 @@ export default function KanbanBoard({
         .then(setReviewLogs)
         .catch(() => {});
     }
-  }, [fetchBoard, refreshKey, projectId]);
+  }, [fetchBoard, projectId]);
+
+  // Background refresh triggered by WebSocket events (card moves, updates,
+  // comments, etc). Deliberately does NOT toggle `loading`, so the UI updates
+  // in place without flashing the full "Loading board..." screen. Skip the
+  // very first render — the initial-load effect above handles that.
+  const isFirstRefresh = useRef(true);
+  useEffect(() => {
+    if (isFirstRefresh.current) {
+      isFirstRefresh.current = false;
+      return;
+    }
+    if (!projectId) return;
+    fetchBoard();
+    api
+      .get(`/projects/${projectId}/reviews?limit=20`)
+      .then(setReviewLogs)
+      .catch(() => {});
+  }, [refreshKey, projectId, fetchBoard]);
 
   // Focus title input when add form opens
   useEffect(() => {
