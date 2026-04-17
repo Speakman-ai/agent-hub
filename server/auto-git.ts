@@ -547,13 +547,28 @@ export async function autoCommitAndPR(
 
     const card = d.stmts.getKanbanCardBySession?.get(sessionId) as KanbanCardRow | undefined;
 
-    // Ad-hoc sessions (no kanban card): two sub-cases.
+    // A card being linked via `session_id` is NOT sufficient to force the
+    // autonomous auto-PR path. Users/agents may manually link a card to a
+    // session mid-stream for UI cross-reference or to attach a PR URL later.
+    // Only cards that were actually *dispatched* by the autonomous system
+    // should hijack session-end into auto-PR. Reliable markers:
+    //   - `autonomous_iterations > 0` — autonomous.ts increments this at
+    //     dispatch (0 → 1), so any non-zero value means "dispatched".
+    //   - `epic_id` non-null — the card belongs to an epic-driven run
+    //     (mirrors the heuristic in server/index.ts around line 589).
+    const isAutonomousCard = !!card && ((card.autonomous_iterations ?? 0) > 0 || !!card.epic_id);
+
+    // Ad-hoc sessions (no card, OR a card not dispatched by the autonomous
+    // system): two sub-cases.
     //   1. Existing PR on this branch → agent was likely fixing CI or a
     //      reviewer comment. Push (and commit if needed) so GitHub sees the
     //      fix. No new PR is opened.
     //   2. No existing PR → broadcast `changes_ready` so the "Create PR"
     //      button surfaces in the UI for the user to decide.
-    if (!card) {
+    // A manually-linked (non-autonomous) card still goes through this path:
+    // `manualCommitAndPR` (the button handler) re-queries by sessionId and
+    // will attach the PR URL to the card when the user clicks.
+    if (!isAutonomousCard) {
       const changes = await checkWorktreeChanges(effectiveCwd);
       if (!changes.hasUncommitted && !changes.hasUnpushed) {
         return;
@@ -603,9 +618,10 @@ export async function autoCommitAndPR(
       return;
     }
 
-    // Autonomous/card-driven sessions: commit, push, create PR, move card to
-    // Review. The Reviewer agent is dispatched separately by the GitHub
-    // webhook handler when the PR opens or syncs.
+    // Autonomous/card-driven sessions (card actually dispatched by the
+    // autonomous system): commit, push, create PR, move card to Review. The
+    // Reviewer agent is dispatched separately by the GitHub webhook handler
+    // when the PR opens or syncs.
     await commitPushAndCreatePR(sessionId, agentId, project, agent, effectiveCwd, card);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

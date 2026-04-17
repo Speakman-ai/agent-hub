@@ -248,7 +248,14 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     // When commitPushAndCreatePR runs and git user.name is not set in the worktree,
     // it should copy identity from the project repo before committing.
     const execCalls: string[] = [];
-    const mockCard = { id: 'card-1', title: 'Test card', description: 'desc', priority: 'medium' };
+    const mockCard = {
+      id: 'card-1',
+      title: 'Test card',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 1,
+      epic_id: null,
+    };
     const mockStmtsWithCard = {
       getKanbanCardBySession: { get: vi.fn(() => mockCard) },
       getSession: { get: vi.fn(() => ({ name: 'Test session' })) },
@@ -413,6 +420,8 @@ describe('commitPushAndCreatePR — existing PR early return re-applies auto-mer
     title: 'Existing PR task',
     description: 'desc',
     priority: 'medium',
+    autonomous_iterations: 1,
+    epic_id: null,
   };
 
   function makeStmts() {
@@ -636,6 +645,8 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
         title: 'Fix login bug',
         description: 'desc',
         priority: 'medium',
+        autonomous_iterations: 1,
+        epic_id: null,
       },
     });
 
@@ -700,6 +711,8 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
         title: 'Shell-safe PR body',
         description: 'Refs `pulls/{pr}/reviews` and ${HOME} must not break /bin/sh.',
         priority: 'medium',
+        autonomous_iterations: 1,
+        epic_id: null,
       },
     });
 
@@ -783,7 +796,14 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
     // cosmetic receipt, not a correctness guarantee.
     const execCalls: string[] = [];
     const { stmts } = makeStmtsWithMessageTable({
-      card: { id: 'c', title: 'T', description: 'd', priority: 'medium' },
+      card: {
+        id: 'c',
+        title: 'T',
+        description: 'd',
+        priority: 'medium',
+        autonomous_iterations: 1,
+        epic_id: null,
+      },
     });
     (stmts.addMessage as { run: ReturnType<typeof vi.fn> }).run.mockImplementation(() => {
       throw new Error('simulated insert failure');
@@ -816,6 +836,171 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
       (c: Array<Record<string, unknown>>) => c[0]?.type === 'auto_pr_created',
     );
     expect(autoPrEvents).toHaveLength(1);
+  });
+});
+
+describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched)', () => {
+  // Regression: manually linking a kanban card to a session via `session_id`
+  // must NOT hijack session-end into the autonomous auto-PR path. Only cards
+  // that were actually dispatched by the autonomous system
+  // (autonomous_iterations > 0 OR epic_id set) should take that path.
+  const mockBroadcast = vi.fn();
+
+  function makeStmtsWithCard(card: Record<string, unknown>) {
+    return {
+      getKanbanCardBySession: { get: vi.fn(() => card) },
+      getSession: { get: vi.fn(() => ({ name: 'Test session' })) },
+      setCardPrUrl: { run: vi.fn() },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-review', name: 'Review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      moveKanbanCard: { run: vi.fn() },
+      updateKanbanCard: { run: vi.fn() },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      getMessageById: { get: vi.fn() },
+    } as Record<string, unknown>;
+  }
+
+  function mockExecAdHocStyle(execCalls: string[]) {
+    // No existing PR, clean-ish worktree with one modified file, no upstream.
+    // This is the shape that should trigger the `changes_ready` banner path
+    // when we're on the ad-hoc branch.
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git log main..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/manual-link\n');
+        if (cmd.startsWith('gh pr view')) return fail('no pull requests found');
+        if (cmd.startsWith('gh pr create')) return ok('https://github.com/test/repo/pull/999\n');
+        return ok('');
+      },
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('manually-linked card (iters=0, epic=null) takes AD-HOC path → broadcasts changes_ready, does NOT open a PR', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeStmtsWithCard({
+      id: 'card-manual',
+      title: 'Manually linked card',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 0,
+      epic_id: null,
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecAdHocStyle(execCalls);
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-manual', 'agent-1', project, agent, '/worktree', '');
+
+    // Must broadcast changes_ready → "Create PR" button appears in UI.
+    const changesReadyEvents = mockBroadcast.mock.calls.filter(
+      (c: Array<Record<string, unknown>>) => c[0]?.type === 'changes_ready',
+    );
+    expect(changesReadyEvents).toHaveLength(1);
+    expect((changesReadyEvents[0][0] as { branch: string }).branch).toBe('feature/manual-link');
+
+    // Must NOT have auto-created a PR.
+    const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(ghCreateCalls).toHaveLength(0);
+    const autoPrEvents = mockBroadcast.mock.calls.filter(
+      (c: Array<Record<string, unknown>>) => c[0]?.type === 'auto_pr_created',
+    );
+    expect(autoPrEvents).toHaveLength(0);
+  });
+
+  it('card with autonomous_iterations=1 takes AUTONOMOUS path → opens PR, no changes_ready', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeStmtsWithCard({
+      id: 'card-auto',
+      title: 'Autonomous card',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 1,
+      epic_id: null,
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecAdHocStyle(execCalls);
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-auto', 'agent-1', project, agent, '/worktree', '');
+
+    // Autonomous path creates the PR.
+    const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(ghCreateCalls).toHaveLength(1);
+
+    // No changes_ready banner on the autonomous path.
+    const changesReadyEvents = mockBroadcast.mock.calls.filter(
+      (c: Array<Record<string, unknown>>) => c[0]?.type === 'changes_ready',
+    );
+    expect(changesReadyEvents).toHaveLength(0);
+  });
+
+  it('card with epic_id set (iters=0) takes AUTONOMOUS path → opens PR', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeStmtsWithCard({
+      id: 'card-epic',
+      title: 'Epic card',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 0,
+      epic_id: 'epic-xyz',
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecAdHocStyle(execCalls);
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-epic', 'agent-1', project, agent, '/worktree', '');
+
+    const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(ghCreateCalls).toHaveLength(1);
+
+    const changesReadyEvents = mockBroadcast.mock.calls.filter(
+      (c: Array<Record<string, unknown>>) => c[0]?.type === 'changes_ready',
+    );
+    expect(changesReadyEvents).toHaveLength(0);
   });
 });
 
