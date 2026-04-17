@@ -211,6 +211,51 @@ export const api = {
     }),
   getSkillOverrides: (agentId) => fetchJSON(`/agents/${agentId}/skills/overrides`),
 
+  // ClawHub Registry (proxied via /api/clawhub/*)
+  clawhubSearch: (q, limit) => {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return fetchJSON(`/clawhub/search${qs ? '?' + qs : ''}`);
+  },
+  clawhubListSkills: (limit) => {
+    const qs = limit ? `?limit=${encodeURIComponent(limit)}` : '';
+    return fetchJSON(`/clawhub/skills${qs}`);
+  },
+  clawhubGetSkill: (slug) => fetchJSON(`/clawhub/skills/${encodeURIComponent(slug)}`),
+  clawhubGetVersions: (slug) => fetchJSON(`/clawhub/skills/${encodeURIComponent(slug)}/versions`),
+  clawhubInstall: async ({ slug, version, target, agentId }) => {
+    // We bypass fetchJSON here so the `stderrTail` field from a 500
+    // response can be surfaced on the thrown error (fetchJSON would
+    // strip it).
+    const base = getApiBase();
+    const headers = {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+    };
+    const res = await fetch(`${base}/clawhub/install`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ slug, version, target, agentId }),
+      signal: AbortSignal.timeout(120000),
+    });
+    let body = null;
+    try {
+      body = await res.json();
+    } catch {
+      /* non-JSON */
+    }
+    if (!res.ok) {
+      const message = body?.error || body?.message || `API error: ${res.status}`;
+      const err = new Error(`${res.status}: ${message}`);
+      if (body?.stderrTail) err.stderrTail = body.stderrTail;
+      err.status = res.status;
+      throw err;
+    }
+    return body;
+  },
+
   // Plugin packaging
   getPluginInfo: () => fetchJSON('/skills/plugin-info'),
   exportPlugin: (data) =>

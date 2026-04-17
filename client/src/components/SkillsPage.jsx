@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
+import ClawHubBrowser from './ClawHubBrowser.jsx';
 import {
   BookOpen,
   Loader2,
@@ -24,6 +25,7 @@ import {
   Check,
   Shield,
   RefreshCw,
+  Cloud,
 } from 'lucide-react';
 
 const CATEGORIES = [
@@ -818,6 +820,18 @@ export default function SkillsPage({ agents, projects }) {
               <Plug size={14} /> Plugin
             </span>
           </button>
+          <button
+            onClick={() => setActiveTab('clawhub')}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'clawhub'
+                ? 'border-indigo-500 text-white'
+                : 'border-transparent text-gray-400 hover:text-white'
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
+              <Cloud size={14} /> ClawHub
+            </span>
+          </button>
         </div>
 
         {activeTab === 'installed' && (
@@ -987,6 +1001,21 @@ export default function SkillsPage({ agents, projects }) {
           </>
         )}
         {activeTab === 'plugin' && <PluginPanel />}
+        {activeTab === 'clawhub' && (
+          <ClawHubBrowser
+            activeAgent={activeAgent}
+            installedSlugs={installedIds}
+            onInstalled={async () => {
+              if (!activeAgentId) return;
+              try {
+                const updated = await api.getSkills(activeAgentId);
+                setSkills(updated);
+              } catch {
+                /* non-fatal — list will refresh on next tab visit */
+              }
+            }}
+          />
+        )}
       </div>
 
       {showImport && (
