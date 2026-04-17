@@ -105,6 +105,175 @@ export function resolveSlashSkill(
   return { error: `Skill "/${skillName}" not found` };
 }
 
+// ─── PR title / body formatting ─────────────────────────────────────
+
+/**
+ * Turn a raw commit/card title into a clean PR title.
+ *
+ * - Collapses whitespace, trims trailing punctuation.
+ * - Sentence-cases the first letter (unless it's already uppercased).
+ * - Hard-caps at 70 chars, preferring a word boundary and appending an
+ *   ellipsis (`…`) rather than `...` mid-word.
+ */
+export function buildPrTitle(rawTitle: string): string {
+  const normalized = (rawTitle ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'Untitled change';
+
+  // Strip trailing punctuation/whitespace (GitHub convention: no period).
+  let t = normalized.replace(/[.!?:;,\s]+$/, '');
+
+  // Sentence-case the first letter if it's a lowercase ASCII letter. Leave
+  // existing capitalization alone for acronyms / scoped prefixes like `fix:`.
+  if (/^[a-z]/.test(t)) {
+    t = t.charAt(0).toUpperCase() + t.slice(1);
+  }
+
+  const MAX = 70;
+  if (t.length <= MAX) return t;
+
+  // Truncate at the last word boundary within the limit, falling back to a
+  // hard clip only when the first "word" exceeds MAX.
+  const clipped = t.substring(0, MAX - 1);
+  const lastSpace = clipped.lastIndexOf(' ');
+  const cut = lastSpace > Math.floor(MAX * 0.6) ? clipped.substring(0, lastSpace) : clipped;
+  return cut.replace(/[.!?:;,\s]+$/, '') + '…';
+}
+
+export interface PrBodyInput {
+  card?: KanbanCardRow;
+  agentName: string;
+  commits?: string[];
+  diffStat?: string;
+}
+
+/**
+ * Render a clean, readable PR body:
+ *
+ *   ## Summary
+ *   <card description OR "Task completed by <agent>.">
+ *
+ *   ## Commits   (only when >1 commit — one commit is already the title)
+ *   - commit subject
+ *   - ...
+ *
+ *   ## Files changed   (only when a diffstat is available)
+ *   ```
+ *   path/to/file | 12 ++++------
+ *   ...
+ *   ```
+ *
+ *   ---
+ *   Agent: **dev** · Priority: `medium` · Labels: `bug`, `p1`
+ *
+ *   _Automated PR from Agent Hub · kanban card card-abc123_
+ *
+ * Empty priority/labels are omitted rather than rendered as dangling headers.
+ */
+export function buildPrBody(input: PrBodyInput): string {
+  const { card, agentName, commits, diffStat } = input;
+  const sections: string[] = [];
+
+  // Summary — card description if we have one, else a generic marker.
+  sections.push('## Summary');
+  const summary = card?.description?.trim() || `Task completed by ${agentName}.`;
+  sections.push(summary);
+
+  // Commits — only list when there's more than one, otherwise the single
+  // commit subject is already the PR title and listing it is noise.
+  const commitList = (commits ?? []).filter((c) => c.trim());
+  if (commitList.length > 1) {
+    sections.push('');
+    sections.push('## Commits');
+    const MAX_COMMITS = 20;
+    const shown = commitList.slice(0, MAX_COMMITS);
+    for (const c of shown) sections.push(`- ${c}`);
+    if (commitList.length > MAX_COMMITS) {
+      sections.push(`- …and ${commitList.length - MAX_COMMITS} more`);
+    }
+  }
+
+  // Files changed — render the git diff --stat output verbatim in a code
+  // block, capped so huge refactors don't blow up the PR body.
+  const statTrimmed = (diffStat ?? '').trim();
+  if (statTrimmed) {
+    sections.push('');
+    sections.push('## Files changed');
+    sections.push('```');
+    const statLines = statTrimmed.split('\n');
+    const MAX_FILE_LINES = 20;
+    const rendered =
+      statLines.length > MAX_FILE_LINES
+        ? [
+            ...statLines.slice(0, MAX_FILE_LINES - 1),
+            `…and ${statLines.length - (MAX_FILE_LINES - 1)} more`,
+          ].join('\n')
+        : statLines.join('\n');
+    sections.push(rendered);
+    sections.push('```');
+  }
+
+  // Metadata footer — single-line, fields omitted when empty.
+  const meta: string[] = [`Agent: **${agentName}**`];
+  if (card?.priority) meta.push(`Priority: \`${card.priority}\``);
+  if (card?.labels) {
+    const labels = card.labels
+      .split(',')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (labels.length) {
+      meta.push(`Labels: ${labels.map((l) => `\`${l}\``).join(', ')}`);
+    }
+  }
+
+  sections.push('');
+  sections.push('---');
+  sections.push(meta.join(' · '));
+  sections.push('');
+  sections.push(
+    card
+      ? `_Automated PR from Agent Hub · kanban card ${card.id}_`
+      : '_Automated PR from Agent Hub_',
+  );
+
+  return sections.join('\n');
+}
+
+/**
+ * Collect the commit subjects that would appear in this PR: commits on the
+ * current branch that are not on `main`. Newest first. Best-effort — returns
+ * an empty array on any git failure (missing `main` ref, detached HEAD, etc.).
+ */
+async function collectCommitSubjects(cwd: string): Promise<string[]> {
+  try {
+    const { stdout } = await execAsync('git log main..HEAD --format=%s', {
+      cwd,
+      timeout: 10000,
+    });
+    return stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Collect a `git diff --stat` summary of the branch vs. `main`. Best-effort —
+ * returns an empty string on failure.
+ */
+async function collectDiffStat(cwd: string): Promise<string> {
+  try {
+    const { stdout } = await execAsync('git diff --stat main...HEAD', {
+      cwd,
+      timeout: 10000,
+    });
+    return stdout;
+  } catch {
+    return '';
+  }
+}
+
 // ─── Auto-commit & PR on agent completion ───────────────────────────
 
 /**
@@ -355,19 +524,17 @@ async function commitPushAndCreatePR(
     );
   }
 
-  const prTitle = commitTitle.length > 70 ? commitTitle.substring(0, 67) + '...' : commitTitle;
-  const prBodyLines: Array<string | null> = [
-    '## Summary',
-    card?.description || `Task completed by ${agent.name}.`,
-    '',
-    `**Agent:** ${agent.name}`,
-    card?.priority ? `**Priority:** ${card.priority}` : null,
-    card?.labels ? `**Labels:** ${card.labels}` : null,
-    '',
-    '---',
-    card ? `Automated PR from Agent Hub kanban task.` : `Automated PR from Agent Hub.`,
-  ];
-  const prBody = prBodyLines.filter((line): line is string => line != null).join('\n');
+  const prTitle = buildPrTitle(commitTitle);
+  const [commits, diffStat] = await Promise.all([
+    collectCommitSubjects(effectiveCwd),
+    collectDiffStat(effectiveCwd),
+  ]);
+  const prBody = buildPrBody({
+    card,
+    agentName: agent.name,
+    commits,
+    diffStat,
+  });
 
   const broadcastAndMove = async (prUrl: string) => {
     d.broadcast({

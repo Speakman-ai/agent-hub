@@ -18,6 +18,8 @@ import {
   initAutoGit,
   autoCommitAndPR,
   buildCardDescription,
+  buildPrTitle,
+  buildPrBody,
   isGarbageTitle,
 } from './auto-git.js';
 import type { MessageRow } from './types.js';
@@ -1057,6 +1059,153 @@ describe('buildCardDescription', () => {
     const result = buildCardDescription(messages, '');
     expect(result).toContain('Fix the bug in auth');
     expect(result).not.toContain('How can I help you?');
+  });
+});
+
+describe('buildPrTitle', () => {
+  it('passes short clean titles through unchanged', () => {
+    expect(buildPrTitle('Add dark mode support')).toBe('Add dark mode support');
+  });
+
+  it('trims whitespace and collapses internal whitespace', () => {
+    expect(buildPrTitle('  Fix   login   crash  ')).toBe('Fix login crash');
+  });
+
+  it('strips trailing punctuation (GitHub convention: no period)', () => {
+    expect(buildPrTitle('Fix login crash.')).toBe('Fix login crash');
+    expect(buildPrTitle('Did it!')).toBe('Did it');
+    expect(buildPrTitle('Why?')).toBe('Why');
+  });
+
+  it('sentence-cases a lowercase first letter', () => {
+    expect(buildPrTitle('fix login crash')).toBe('Fix login crash');
+  });
+
+  it('preserves scoped prefixes like `fix:` when already starting uppercase', () => {
+    expect(buildPrTitle('Fix: login crash')).toBe('Fix: login crash');
+  });
+
+  it('truncates long titles at a word boundary with an ellipsis', () => {
+    const raw =
+      'Refactor the authentication middleware to handle concurrent refresh tokens gracefully across tabs';
+    const result = buildPrTitle(raw);
+    expect(result.length).toBeLessThanOrEqual(70);
+    expect(result.endsWith('…')).toBe(true);
+    // The portion before the ellipsis must be a whole-word prefix of the
+    // input — i.e. the original continues with a space after the cut point.
+    const stem = result.slice(0, -1);
+    expect(raw.startsWith(stem + ' ')).toBe(true);
+  });
+
+  it('hard-clips when the first word alone exceeds the limit', () => {
+    const raw = 'A'.repeat(100);
+    const result = buildPrTitle(raw);
+    expect(result.length).toBeLessThanOrEqual(70);
+    expect(result.endsWith('…')).toBe(true);
+  });
+
+  it('returns a safe default for empty input', () => {
+    expect(buildPrTitle('')).toBe('Untitled change');
+    expect(buildPrTitle('   ')).toBe('Untitled change');
+  });
+});
+
+describe('buildPrBody', () => {
+  const agentName = 'dev';
+
+  it('renders a minimal body when no card / commits / diff are available', () => {
+    const body = buildPrBody({ agentName });
+    expect(body).toContain('## Summary');
+    expect(body).toContain(`Task completed by ${agentName}.`);
+    expect(body).toContain('Agent: **dev**');
+    expect(body).toContain('_Automated PR from Agent Hub_');
+    // No empty section headers.
+    expect(body).not.toContain('## Commits');
+    expect(body).not.toContain('## Files changed');
+  });
+
+  it('uses the card description as the summary when present', () => {
+    const card = {
+      id: 'c1',
+      description: 'Fix the login crash when email is empty',
+    } as never;
+    const body = buildPrBody({ agentName, card });
+    expect(body).toContain('## Summary');
+    expect(body).toContain('Fix the login crash when email is empty');
+    expect(body).not.toContain(`Task completed by ${agentName}.`);
+  });
+
+  it('omits the Commits section when only one commit is present', () => {
+    const body = buildPrBody({ agentName, commits: ['Fix login'] });
+    expect(body).not.toContain('## Commits');
+  });
+
+  it('lists commits when there are multiple, newest first', () => {
+    const body = buildPrBody({
+      agentName,
+      commits: ['Fix null pointer', 'Add regression test', 'Tidy imports'],
+    });
+    expect(body).toContain('## Commits');
+    expect(body).toContain('- Fix null pointer');
+    expect(body).toContain('- Add regression test');
+    expect(body).toContain('- Tidy imports');
+  });
+
+  it('caps the commit list at 20 entries with an overflow note', () => {
+    const commits = Array.from({ length: 25 }, (_, i) => `Commit ${i}`);
+    const body = buildPrBody({ agentName, commits });
+    expect(body).toContain('- Commit 0');
+    expect(body).toContain('- Commit 19');
+    expect(body).not.toContain('- Commit 20');
+    expect(body).toContain('…and 5 more');
+  });
+
+  it('renders a diff stat inside a Files changed code block', () => {
+    const diffStat =
+      ' src/App.jsx | 12 ++++++------\n 1 file changed, 6 insertions(+), 6 deletions(-)';
+    const body = buildPrBody({ agentName, diffStat });
+    expect(body).toContain('## Files changed');
+    expect(body).toContain('src/App.jsx');
+    expect(body).toMatch(/```[\s\S]*src\/App\.jsx[\s\S]*```/);
+  });
+
+  it('caps the diff stat at 20 lines with an overflow note', () => {
+    const diffStat = Array.from({ length: 25 }, (_, i) => ` file${i}.ts | 1 +`).join('\n');
+    const body = buildPrBody({ agentName, diffStat });
+    expect(body).toContain('file0.ts');
+    expect(body).toContain('file18.ts');
+    expect(body).not.toContain('file19.ts');
+    expect(body).toContain('…and 6 more');
+  });
+
+  it('renders priority and labels in the metadata footer when present', () => {
+    const card = {
+      id: 'c2',
+      description: 'desc',
+      priority: 'high',
+      labels: 'bug, p1 ,regression',
+    } as never;
+    const body = buildPrBody({ agentName, card });
+    expect(body).toContain('Agent: **dev**');
+    expect(body).toContain('Priority: `high`');
+    expect(body).toContain('Labels: `bug`, `p1`, `regression`');
+    expect(body).toContain('_Automated PR from Agent Hub · kanban card c2_');
+  });
+
+  it('omits priority/labels rather than showing empty headers', () => {
+    const card = { id: 'c3', description: 'desc', priority: '', labels: '' } as never;
+    const body = buildPrBody({ agentName, card });
+    expect(body).not.toContain('Priority:');
+    expect(body).not.toContain('Labels:');
+    // Footer still renders agent + card id.
+    expect(body).toContain('Agent: **dev**');
+    expect(body).toContain('kanban card c3');
+  });
+
+  it('uses the ad-hoc footer when no card is linked', () => {
+    const body = buildPrBody({ agentName });
+    expect(body).toContain('_Automated PR from Agent Hub_');
+    expect(body).not.toContain('kanban card');
   });
 });
 
