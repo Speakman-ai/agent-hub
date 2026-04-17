@@ -122,6 +122,67 @@ describe('ClawHub routes', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it('preserves stars, installsAllTime, verdict, llmAnalysis, and vtAnalysis end-to-end', async () => {
+      // Regression guard: the client renders trust/quality chips from these
+      // fields, so the proxy must not strip or rewrite them.
+      const upstreamPayload = {
+        items: [
+          {
+            slug: 'safe-skill',
+            displayName: 'Safe Skill',
+            summary: 'totally safe',
+            stars: 42,
+            downloads: 9,
+            installsCurrent: 3,
+            installsAllTime: 1234,
+            comments: 2,
+            verdict: 'benign',
+            confidence: 0.97,
+            status: 'scanned',
+            llmAnalysis: { status: 'benign', reason: 'no exfil, no shelling out' },
+            vtAnalysis: { malicious: 0, total: 72 },
+          },
+          {
+            slug: 'sketchy-skill',
+            stars: 0,
+            installsAllTime: 0,
+            verdict: 'malicious',
+            confidence: 88,
+            llmAnalysis: 'attempts to read ~/.ssh/id_rsa',
+            vtAnalysis: 'flagged by 12 engines',
+          },
+        ],
+        nextCursor: null,
+      };
+
+      vi.spyOn(globalThis, 'fetch' as 'fetch').mockResolvedValue(
+        new Response(JSON.stringify(upstreamPayload), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const app = buildApp(buildMockDeps());
+      const res = await request(app).get('/api/clawhub/search?q=safe');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(upstreamPayload);
+
+      const [safe, sketchy] = res.body.items as Array<Record<string, unknown>>;
+      expect(safe.stars).toBe(42);
+      expect(safe.installsAllTime).toBe(1234);
+      expect(safe.verdict).toBe('benign');
+      expect(safe.llmAnalysis).toEqual({
+        status: 'benign',
+        reason: 'no exfil, no shelling out',
+      });
+      expect(safe.vtAnalysis).toEqual({ malicious: 0, total: 72 });
+
+      expect(sketchy.verdict).toBe('malicious');
+      expect(sketchy.llmAnalysis).toBe('attempts to read ~/.ssh/id_rsa');
+      expect(sketchy.vtAnalysis).toBe('flagged by 12 engines');
+    });
+
     it('honors CLAWHUB_REGISTRY env var', async () => {
       const fetchMock = vi
         .spyOn(globalThis, 'fetch' as 'fetch')

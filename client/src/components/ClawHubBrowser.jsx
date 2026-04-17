@@ -9,6 +9,10 @@ import {
   ChevronDown,
   ChevronRight,
   AlertTriangle,
+  Star,
+  Shield,
+  ShieldCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 
@@ -187,6 +191,23 @@ function ClawHubCard({ skill, activeAgent, installedSlugs, expanded, onExpand, o
               {skill.latest_version && (
                 <span className="text-[10px] text-gray-500">v{skill.latest_version}</span>
               )}
+              <VerdictChip verdict={skill.verdict} />
+              {skill.stars > 0 && (
+                <span
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 flex items-center gap-1"
+                  title={`${skill.stars} star${skill.stars === 1 ? '' : 's'}`}
+                >
+                  <Star size={10} /> {formatCompact(skill.stars)}
+                </span>
+              )}
+              {skill.installsAllTime > 0 && (
+                <span
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-900/40 text-sky-300 flex items-center gap-1"
+                  title={`${skill.installsAllTime} install${skill.installsAllTime === 1 ? '' : 's'} all time`}
+                >
+                  <Download size={10} /> {formatCompact(skill.installsAllTime)}
+                </span>
+              )}
               {isAlreadyInstalled && (
                 <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 flex items-center gap-1">
                   <Check size={10} /> installed
@@ -206,6 +227,9 @@ function ClawHubCard({ skill, activeAgent, installedSlugs, expanded, onExpand, o
 
       {expanded && (
         <div className="border-t border-gray-700 p-4 space-y-4">
+          {/* Security */}
+          <SecurityPanel skill={skill} />
+
           {/* Version picker */}
           <div className="flex items-center gap-2">
             <label className="text-xs text-gray-400" htmlFor={`v-${skill.slug}`}>
@@ -306,15 +330,158 @@ function ClawHubCard({ skill, activeAgent, installedSlugs, expanded, onExpand, o
   );
 }
 
+// ─── Trust signal UI ──────────────────────────────────────────────
+
+/**
+ * Small verdict pill: green/amber/red depending on the composite security
+ * scan. Renders nothing when `verdict` is absent — we deliberately do NOT
+ * show a neutral "unknown" chip, which would be visual noise.
+ */
+function VerdictChip({ verdict }) {
+  if (!verdict) return null;
+  const v = String(verdict).toLowerCase();
+  if (v === 'benign' || v === 'safe' || v === 'clean') {
+    return (
+      <span
+        className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 flex items-center gap-1"
+        title="Security scan: benign"
+        data-testid="verdict-chip"
+        data-verdict="benign"
+      >
+        <ShieldCheck size={10} /> benign
+      </span>
+    );
+  }
+  if (v === 'malicious' || v === 'dangerous') {
+    return (
+      <span
+        className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 flex items-center gap-1"
+        title="Security scan: malicious"
+        data-testid="verdict-chip"
+        data-verdict="malicious"
+      >
+        <ShieldAlert size={10} /> malicious
+      </span>
+    );
+  }
+  // Anything else ("suspicious", "warn", "review", etc.) renders as amber.
+  return (
+    <span
+      className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 flex items-center gap-1"
+      title={`Security scan: ${v}`}
+      data-testid="verdict-chip"
+      data-verdict="suspicious"
+    >
+      <Shield size={10} /> {v}
+    </span>
+  );
+}
+
+/**
+ * Expanded-panel Security section. Renders `verdict`+`confidence` summary,
+ * plus short lines for `llmAnalysis` and `vtAnalysis` if present. Returns
+ * null when the skill has no security fields at all, so cards without
+ * upstream scan data don't get an empty panel.
+ */
+function SecurityPanel({ skill }) {
+  const { verdict, confidence, status, llmAnalysis, vtAnalysis } = skill || {};
+  const hasAny =
+    verdict != null ||
+    confidence != null ||
+    status != null ||
+    llmAnalysis != null ||
+    vtAnalysis != null;
+  if (!hasAny) return null;
+
+  const confidencePct =
+    typeof confidence === 'number'
+      ? confidence > 1
+        ? `${Math.round(confidence)}%`
+        : `${Math.round(confidence * 100)}%`
+      : null;
+
+  return (
+    <div
+      data-testid="security-panel"
+      className="rounded-md bg-gray-900/60 border border-gray-700 px-3 py-2 space-y-1"
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-medium text-gray-300 uppercase tracking-wide">
+          Security
+        </span>
+        <VerdictChip verdict={verdict} />
+        {confidencePct && (
+          <span className="text-[11px] text-gray-400">confidence {confidencePct}</span>
+        )}
+        {status && !verdict && <span className="text-[11px] text-gray-400">{status}</span>}
+      </div>
+      {llmAnalysis && <LlmAnalysisLine analysis={llmAnalysis} />}
+      {vtAnalysis && <VtAnalysisLine analysis={vtAnalysis} />}
+    </div>
+  );
+}
+
+function LlmAnalysisLine({ analysis }) {
+  if (typeof analysis === 'string') {
+    return <p className="text-[11px] text-gray-400">LLM: {analysis}</p>;
+  }
+  const status = analysis?.status || analysis?.verdict;
+  const reason = analysis?.reason || analysis?.summary || analysis?.notes;
+  if (!status && !reason) return null;
+  return (
+    <p className="text-[11px] text-gray-400">
+      LLM{status ? `: ${status}` : ''}
+      {reason ? ` — ${reason}` : ''}
+    </p>
+  );
+}
+
+function VtAnalysisLine({ analysis }) {
+  if (typeof analysis === 'string') {
+    return <p className="text-[11px] text-gray-400">VirusTotal: {analysis}</p>;
+  }
+  const malicious = analysis?.malicious ?? analysis?.stats?.malicious;
+  const total =
+    analysis?.total ??
+    analysis?.stats?.total ??
+    (analysis?.stats
+      ? Object.values(analysis.stats).reduce((sum, n) => (typeof n === 'number' ? sum + n : sum), 0)
+      : undefined);
+  if (typeof malicious === 'number' && typeof total === 'number' && total > 0) {
+    return (
+      <p className="text-[11px] text-gray-400">
+        VirusTotal: {malicious}/{total} detections
+      </p>
+    );
+  }
+  const status = analysis?.status || analysis?.verdict;
+  if (status) {
+    return <p className="text-[11px] text-gray-400">VirusTotal: {status}</p>;
+  }
+  return null;
+}
+
+/** Compact formatter — 1.2k / 3.4M — so chips stay narrow. */
+function formatCompact(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '';
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, '')}k`;
+  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────
 
 /**
  * The ClawHub backend is a thin proxy — the upstream shape isn't fully
  * locked down, so accept either a bare array or a `{ skills: [...] }`/
- * `{ results: [...] }` envelope and normalize.
+ * `{ results: [...] }`/`{ items: [...] }` envelope and normalize.
+ *
+ * Upstream `GET /api/v1/skills` currently returns `{items, nextCursor}`,
+ * so `items` is the primary case in the wild.
  */
 function normalizeList(data) {
   if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.items)) return data.items;
   if (Array.isArray(data?.skills)) return data.skills;
   if (Array.isArray(data?.results)) return data.results;
   return [];

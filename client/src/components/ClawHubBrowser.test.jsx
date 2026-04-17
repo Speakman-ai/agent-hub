@@ -81,4 +81,126 @@ describe('ClawHubBrowser', () => {
     await settle();
     expect(api.clawhubSearch).toHaveBeenCalledWith('postgres', 50);
   });
+
+  it('unpacks upstream `{items: [...]}` envelope', async () => {
+    // Upstream `GET /api/v1/skills` returns `{items, nextCursor}`; the client
+    // must handle that shape in addition to `skills[]` / `results[]`.
+    api.clawhubListSkills.mockResolvedValueOnce({
+      items: [
+        {
+          slug: 'from-items',
+          name: 'From Items',
+          description: 'delivered via items envelope',
+        },
+      ],
+      nextCursor: null,
+    });
+
+    render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+    await settle();
+
+    expect(screen.getByText('From Items')).toBeInTheDocument();
+  });
+
+  describe('trust chips', () => {
+    function renderWith(skill) {
+      api.clawhubListSkills.mockResolvedValueOnce([skill]);
+      return render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+    }
+
+    it('renders the star chip when stars > 0 and hides it otherwise', async () => {
+      renderWith({ slug: 'with-stars', name: 'With Stars', stars: 128 });
+      await settle();
+      // amber star chip text is "128" (compact formatter leaves < 1000 alone)
+      expect(screen.getByTitle(/128 stars/i)).toBeInTheDocument();
+    });
+
+    it('hides the star chip when stars is 0 or undefined', async () => {
+      renderWith({ slug: 'no-stars', name: 'No Stars', stars: 0 });
+      await settle();
+      expect(screen.queryByTitle(/star/i)).not.toBeInTheDocument();
+    });
+
+    it('renders the install chip when installsAllTime > 0', async () => {
+      renderWith({ slug: 'pop', name: 'Pop', installsAllTime: 2500 });
+      await settle();
+      expect(screen.getByTitle(/2500 installs all time/i)).toBeInTheDocument();
+    });
+
+    it('hides the install chip when installsAllTime is 0 or undefined', async () => {
+      renderWith({ slug: 'unpop', name: 'Unpop', installsAllTime: 0 });
+      await settle();
+      expect(screen.queryByTitle(/installs all time/i)).not.toBeInTheDocument();
+    });
+
+    it('renders a green benign verdict chip', async () => {
+      renderWith({ slug: 'benign-skill', name: 'Benign', verdict: 'benign' });
+      await settle();
+      const chips = screen.getAllByTestId('verdict-chip');
+      expect(chips.length).toBeGreaterThan(0);
+      expect(chips[0]).toHaveAttribute('data-verdict', 'benign');
+      expect(chips[0].className).toMatch(/emerald/);
+    });
+
+    it('renders an amber suspicious verdict chip', async () => {
+      renderWith({ slug: 'sus-skill', name: 'Sus', verdict: 'suspicious' });
+      await settle();
+      const chips = screen.getAllByTestId('verdict-chip');
+      expect(chips[0]).toHaveAttribute('data-verdict', 'suspicious');
+      expect(chips[0].className).toMatch(/amber/);
+    });
+
+    it('renders a red malicious verdict chip', async () => {
+      renderWith({ slug: 'mal-skill', name: 'Mal', verdict: 'malicious' });
+      await settle();
+      const chips = screen.getAllByTestId('verdict-chip');
+      expect(chips[0]).toHaveAttribute('data-verdict', 'malicious');
+      expect(chips[0].className).toMatch(/red/);
+    });
+
+    it('renders no verdict chip when verdict is absent', async () => {
+      renderWith({ slug: 'plain', name: 'Plain' });
+      await settle();
+      expect(screen.queryByTestId('verdict-chip')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('expanded Security panel', () => {
+    async function expandCardByName(name) {
+      await settle();
+      // Name renders in the <h4> header; slug can repeat below in <p>, so
+      // scope the click to the heading.
+      fireEvent.click(screen.getByRole('heading', { name }));
+      await settle(0);
+    }
+
+    it('renders the Security section with llmAnalysis/vtAnalysis fields', async () => {
+      api.clawhubListSkills.mockResolvedValueOnce([
+        {
+          slug: 'safe-skill',
+          name: 'Safe Skill',
+          verdict: 'benign',
+          confidence: 0.92,
+          llmAnalysis: { status: 'benign', reason: 'no suspicious calls' },
+          vtAnalysis: { malicious: 0, total: 70 },
+        },
+      ]);
+      render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+      await expandCardByName('Safe Skill');
+
+      const panel = screen.getByTestId('security-panel');
+      expect(panel).toBeInTheDocument();
+      expect(panel.textContent).toMatch(/confidence 92%/i);
+      expect(panel.textContent).toMatch(/LLM.*benign/i);
+      expect(panel.textContent).toMatch(/VirusTotal.*0\/70/i);
+    });
+
+    it('omits the Security section entirely when no security fields present', async () => {
+      api.clawhubListSkills.mockResolvedValueOnce([{ slug: 'plain', name: 'Plain' }]);
+      render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+      await expandCardByName('Plain');
+
+      expect(screen.queryByTestId('security-panel')).not.toBeInTheDocument();
+    });
+  });
 });
