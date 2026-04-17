@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Build Commands  
 - `npm run build` - Build the client React application
-- `npm install:all` - Install dependencies for root, server, client, and mobile
+- `npm run install:all` - Install dependencies for root, server, client, and mobile
 
 ### Individual Component Commands
 - **Client**: `cd client && npm run dev` (Vite dev server on port 3050)
