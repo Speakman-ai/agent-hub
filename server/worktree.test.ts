@@ -134,6 +134,83 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(refreshedOriginTip).toBe(newOriginTip);
   });
 
+  it('recovers from a zombie clone dir (exists but no .git) on next call', () => {
+    const persist = vi.fn();
+
+    // Pre-create the expected cloneDir as a zombie: has files but no .git.
+    // This mimics what's left behind when an earlier `git clone` is
+    // interrupted (OOM, disk-full, SIGKILL) after creating the target dir
+    // but before populating the .git subdir.
+    const wsRoot = path.join(homedir(), '.agent-hub', 'workspaces', path.basename(sourceRepo));
+    const shortId = sessionId.slice(0, 8);
+    const expectedCloneDir = path.join(wsRoot, `session-${shortId}`);
+    mkdirSync(expectedCloneDir, { recursive: true });
+    writeFileSync(path.join(expectedCloneDir, 'leftover.txt'), 'zombie file\n');
+    expect(existsSync(expectedCloneDir)).toBe(true);
+    expect(existsSync(path.join(expectedCloneDir, '.git'))).toBe(false);
+
+    // ensureSessionWorkspace should nuke the zombie and successfully clone.
+    const clonePath = ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    createdWorkspace = clonePath;
+
+    expect(clonePath).toBe(expectedCloneDir);
+    expect(existsSync(path.join(clonePath, '.git'))).toBe(true);
+    // Leftover file from the zombie must be gone — the dir was replaced.
+    expect(existsSync(path.join(clonePath, 'leftover.txt'))).toBe(false);
+    // Persist fn must be called with a real workspace path + branch name.
+    expect(persist).toHaveBeenCalledTimes(1);
+    const persistArgs = persist.mock.calls[0];
+    expect(persistArgs[0]).toBe(clonePath);
+    expect(persistArgs[1]).toMatch(/^agent-hub\/test-agent\/session-/);
+    expect(persistArgs[2]).toBe(sessionId);
+  });
+
+  it('invokes onFailure and returns projectCwd when the source is not a git repo', () => {
+    const persist = vi.fn();
+    const onFailure = vi.fn();
+
+    // Non-git directory
+    const nonGitDir = path.join(tmpRoot, 'not-a-git-repo');
+    mkdirSync(nonGitDir, { recursive: true });
+
+    const result = ensureSessionWorkspace(
+      makeSession(null),
+      nonGitDir,
+      'test-agent',
+      persist,
+      null,
+      onFailure,
+    );
+
+    expect(result).toBe(nonGitDir); // silent-fallback-shaped return value
+    expect(persist).not.toHaveBeenCalled();
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    const [failSid, failMsg] = onFailure.mock.calls[0];
+    expect(failSid).toBe(sessionId);
+    expect(typeof failMsg).toBe('string');
+    expect(failMsg).toMatch(/not a git repo/);
+  });
+
+  it('does not invoke onFailure when the clone succeeds', () => {
+    const persist = vi.fn();
+    const onFailure = vi.fn();
+
+    const clonePath = ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      onFailure,
+    );
+    createdWorkspace = clonePath;
+
+    expect(clonePath).not.toBe(sourceRepo);
+    expect(existsSync(path.join(clonePath, '.git'))).toBe(true);
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
   it('does not reset the checked-out feature branch on reuse', () => {
     const persist = vi.fn();
 

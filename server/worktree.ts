@@ -57,6 +57,29 @@ function ensureWorkspaceDir(projectCwd: string): string {
   return dir;
 }
 
+/**
+ * If `cloneDir` exists but is not a git repo (no `.git` subdir), remove it so
+ * `git clone` can succeed. This recovers from zombie directories left behind
+ * by interrupted clones (OOM, disk-full, SIGKILL mid-clone, etc.) — without
+ * this, every subsequent clone attempt fails because `git clone` refuses a
+ * non-empty target directory, permanently trapping the session/process.
+ *
+ * Returns true if a zombie directory was removed.
+ */
+function removeZombieCloneDir(cloneDir: string): boolean {
+  if (!existsSync(cloneDir)) return false;
+  if (existsSync(path.join(cloneDir, '.git'))) return false;
+  try {
+    rmSync(cloneDir, { recursive: true, force: true });
+    console.warn(`[Workspace] Removed zombie clone dir (no .git inside): ${cloneDir}`);
+    return true;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[Workspace] Failed to remove zombie clone dir ${cloneDir}:`, message);
+    return false;
+  }
+}
+
 function getDefaultBranch(cwd: string): string {
   try {
     const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd, stdio: 'pipe' })
@@ -210,6 +233,11 @@ export function getOrCreateProcessWorktree(
     return cloneDir;
   }
 
+  // If a prior clone left a zombie directory (exists but no .git), remove it
+  // before attempting to clone — otherwise `git clone` will fail with
+  // "destination path already exists and is not an empty directory" forever.
+  removeZombieCloneDir(cloneDir);
+
   try {
     const remoteUrl = getRemoteUrl(projectCwd);
     if (remoteUrl) {
@@ -236,6 +264,7 @@ export function getOrCreateProcessWorktree(
 }
 
 type PersistFn = (workspacePath: string, branchName: string, sessionId: string) => void;
+type OnFailureFn = (sessionId: string, errorMessage: string) => void;
 
 export function ensureSessionWorkspace(
   session: SessionRow,
@@ -243,13 +272,16 @@ export function ensureSessionWorkspace(
   agentId: string,
   persistFn: PersistFn,
   installCommand?: string | null,
+  onFailure?: OnFailureFn,
 ): string {
   if (session.worktree_path && existsSync(session.worktree_path)) {
     return session.worktree_path;
   }
 
   if (!isGitRepo(projectCwd)) {
-    console.warn(`Workspace requested but ${projectCwd} is not a git repo — falling back`);
+    const message = `${projectCwd} is not a git repo`;
+    console.warn(`[Workspace] Workspace requested but ${message} — falling back`);
+    onFailure?.(session.id, message);
     return projectCwd;
   }
 
@@ -274,6 +306,12 @@ export function ensureSessionWorkspace(
     persistFn(cloneDir, branchName, session.id);
     return cloneDir;
   }
+
+  // If a prior clone attempt left a zombie directory (cloneDir exists but
+  // without a .git), `git clone` will fail with "destination path already
+  // exists and is not an empty directory". Remove it first so this session
+  // isn't permanently trapped by a transient earlier failure.
+  removeZombieCloneDir(cloneDir);
 
   try {
     const remoteUrl = getRemoteUrl(projectCwd);
@@ -300,6 +338,7 @@ export function ensureSessionWorkspace(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[Workspace] Failed to create session clone:`, message);
+    onFailure?.(session.id, message);
     return projectCwd;
   }
 }

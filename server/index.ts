@@ -235,6 +235,34 @@ function ensureWorktree(
       stmts!.updateSessionWorktreePath.run(wsPath, branch, sid);
     },
     installCommand,
+    // Worktree creation failed — surface it instead of silently letting the
+    // session fall back onto the main project repo. Flipping use_worktree to
+    // 0 stops subsequent turns from retrying (and masking the failure) and
+    // makes downstream behavior (auto-git skipping, edits landing in the main
+    // repo) explicit rather than a surprise. Broadcasting `worktree_failed`
+    // gives the UI a hook to warn the user that isolation was lost.
+    (sid: string, errorMessage: string) => {
+      try {
+        stmts!.updateSessionWorktree.run(0, sid);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[worktree] Failed to clear use_worktree for session ${sid} after worktree failure: ${message}`,
+        );
+      }
+      try {
+        broadcast({
+          type: 'worktree_failed',
+          sessionId: sid,
+          error: errorMessage,
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[worktree] Failed to broadcast worktree_failed for session ${sid}: ${message}`,
+        );
+      }
+    },
   );
 }
 
