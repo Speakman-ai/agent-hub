@@ -38,6 +38,31 @@ export const colors = {
 
   // Purple (Claude Code)
   purple500: '#8B5CF6',
+  purple400: '#A78BFA',
+  purple900_40: 'rgba(76, 29, 149, 0.4)',
+
+  // Indigo
+  indigo600: '#4F46E5',
+  indigo500: '#6366F1',
+  indigo400: '#818CF8',
+  indigo900_40: 'rgba(49, 46, 129, 0.4)',
+
+  // Amber
+  amber400: '#FBBF24',
+  amber900_40: 'rgba(120, 53, 15, 0.4)',
+
+  // Rose
+  rose400: '#FB7185',
+  rose900_40: 'rgba(136, 19, 55, 0.4)',
+
+  // Blue (dark backgrounds)
+  blue900_40: 'rgba(30, 58, 138, 0.4)',
+
+  // Emerald (dark backgrounds)
+  emerald900_40: 'rgba(6, 78, 59, 0.4)',
+
+  // Gray (dark backgrounds)
+  gray700_40: 'rgba(55, 65, 81, 0.4)',
 
   // Transparent
   black50: 'rgba(0, 0, 0, 0.5)',

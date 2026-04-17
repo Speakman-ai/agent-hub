@@ -132,6 +132,34 @@ export const api = {
       body: JSON.stringify({ content }),
     }),
 
+  // Skill Registry / Marketplace
+  getRegistry: (category, q) => {
+    const params = new URLSearchParams();
+    if (category) params.set('category', category);
+    if (q) params.set('q', q);
+    const qs = params.toString();
+    return fetchJSON(`/skills/registry${qs ? '?' + qs : ''}`);
+  },
+  getRegistrySkill: (id) => fetchJSON(`/skills/registry/${id}`),
+  installSkill: (projectId, skillId) =>
+    fetchJSON(`/projects/${projectId}/skills/install`, {
+      method: 'POST',
+      body: JSON.stringify({ skillId }),
+    }),
+  uninstallSkill: (projectId, skillId) =>
+    fetchJSON(`/projects/${projectId}/skills/${skillId}`, { method: 'DELETE' }),
+  importGithubSkill: (url) =>
+    fetchJSON('/skills/import-github', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
+  toggleSkill: (agentId, skillId, enabled) =>
+    fetchJSON(`/agents/${agentId}/skills/${skillId}/toggle`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  getSkillOverrides: (agentId) => fetchJSON(`/agents/${agentId}/skills/overrides`),
+
   // Upload
   uploadImage: (dataUrl, filename) =>
     fetchJSON('/upload', {
