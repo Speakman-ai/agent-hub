@@ -23,6 +23,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cd server && npx tsc --noEmit` - Same as above, directly
 - The server uses `tsx` for runtime (no build step) and `tsc --noEmit` for type checking only
 
+### Lint & Format
+- `npm run lint` - Run ESLint across the repo
+- `npm run lint:fix` - Run ESLint with `--fix` to auto-correct where possible
+- `npm run format` - Format `server/`, `client/src/`, and `electron/` with Prettier
+- `npm run format:check` - Check formatting without writing (used in CI/pre-commit)
+
 ## Architecture Overview
 
 This is a full-stack Agent Hub application that manages and interfaces with AI agents (Claude Code and Cursor Agent).
