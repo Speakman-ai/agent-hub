@@ -128,25 +128,61 @@ function ClawHubCard({ skill, activeAgent, installedSlugs, expanded, onExpand, o
   const [installResult, setInstallResult] = useState(null);
   const [installError, setInstallError] = useState(null);
   const [showStderr, setShowStderr] = useState(false);
+  // Detail payload (`/api/v1/skills/:slug`) fetched lazily on expand. Merged
+  // over the list/search record so stars, installs, and the security verdict
+  // render even when the parent came from `/api/v1/search` (which returns
+  // flat rows with no `stats` / `moderation`).
+  const [detailSkill, setDetailSkill] = useState(null);
   const versionsLoadedRef = useRef(false);
+  const detailLoadedRef = useRef(false);
 
+  // Use the merged record for rendering so trust chips + SecurityPanel get
+  // upstream fields that only the detail endpoint provides.
+  const effectiveSkill = detailSkill || skill;
   const isAlreadyInstalled = installedSlugs?.has(skill.slug);
 
-  // Lazy-load versions when the card expands for the first time.
+  // Lazy-load versions and full detail when the card expands for the first
+  // time. Both run in parallel — they hit independent upstream endpoints.
   useEffect(() => {
-    if (!expanded || versionsLoadedRef.current) return;
-    versionsLoadedRef.current = true;
-    setVersionsLoading(true);
-    api
-      .clawhubGetVersions(skill.slug)
-      .then((data) => {
-        const list = normalizeVersions(data);
-        setVersions(list);
-        if (list[0]?.version) setSelectedVersion(list[0].version);
-      })
-      .catch(() => setVersions([]))
-      .finally(() => setVersionsLoading(false));
-  }, [expanded, skill.slug]);
+    if (!expanded) return;
+    if (!versionsLoadedRef.current) {
+      versionsLoadedRef.current = true;
+      setVersionsLoading(true);
+      api
+        .clawhubGetVersions(skill.slug)
+        .then((data) => {
+          const list = normalizeVersions(data);
+          setVersions(list);
+          if (list[0]?.version) setSelectedVersion(list[0].version);
+        })
+        .catch(() => setVersions([]))
+        .finally(() => setVersionsLoading(false));
+    }
+    if (!detailLoadedRef.current) {
+      detailLoadedRef.current = true;
+      api
+        .clawhubGetSkill(skill.slug)
+        .then((data) => {
+          if (!data || typeof data !== 'object') return;
+          // Normalize each side independently so flat list fields don't
+          // shadow nested detail fields (the list row had `stars: 1` flat;
+          // the detail response has `stats.stars: 999` — detail must win).
+          // Then merge, keeping list values where detail is undefined so we
+          // don't wipe caller-provided fields like `category`.
+          const normList = normalizeSkill(skill) || {};
+          const normDetail = normalizeSkill(data) || {};
+          const merged = { ...normList };
+          for (const k of Object.keys(normDetail)) {
+            if (normDetail[k] !== undefined) merged[k] = normDetail[k];
+          }
+          setDetailSkill(merged);
+        })
+        .catch(() => {
+          // Detail failure is non-fatal — the card remains usable without
+          // trust chips, matching the pre-fix behavior.
+        });
+    }
+  }, [expanded, skill]);
 
   const handleInstall = useCallback(
     async (target) => {
@@ -182,30 +218,32 @@ function ClawHubCard({ skill, activeAgent, installedSlugs, expanded, onExpand, o
         <div className="flex items-center justify-between gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h4 className="font-medium text-sm text-gray-100">{skill.name || skill.slug}</h4>
-              {skill.category && (
+              <h4 className="font-medium text-sm text-gray-100">
+                {effectiveSkill.name || effectiveSkill.slug}
+              </h4>
+              {effectiveSkill.category && (
                 <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300">
-                  {skill.category}
+                  {effectiveSkill.category}
                 </span>
               )}
-              {skill.latest_version && (
-                <span className="text-[10px] text-gray-500">v{skill.latest_version}</span>
+              {effectiveSkill.latest_version && (
+                <span className="text-[10px] text-gray-500">v{effectiveSkill.latest_version}</span>
               )}
-              <VerdictChip verdict={skill.verdict} />
-              {skill.stars > 0 && (
+              <VerdictChip verdict={effectiveSkill.verdict} />
+              {effectiveSkill.stars > 0 && (
                 <span
                   className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 flex items-center gap-1"
-                  title={`${skill.stars} star${skill.stars === 1 ? '' : 's'}`}
+                  title={`${effectiveSkill.stars} star${effectiveSkill.stars === 1 ? '' : 's'}`}
                 >
-                  <Star size={10} /> {formatCompact(skill.stars)}
+                  <Star size={10} /> {formatCompact(effectiveSkill.stars)}
                 </span>
               )}
-              {skill.installsAllTime > 0 && (
+              {effectiveSkill.installsAllTime > 0 && (
                 <span
                   className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-900/40 text-sky-300 flex items-center gap-1"
-                  title={`${skill.installsAllTime} install${skill.installsAllTime === 1 ? '' : 's'} all time`}
+                  title={`${effectiveSkill.installsAllTime} install${effectiveSkill.installsAllTime === 1 ? '' : 's'} all time`}
                 >
-                  <Download size={10} /> {formatCompact(skill.installsAllTime)}
+                  <Download size={10} /> {formatCompact(effectiveSkill.installsAllTime)}
                 </span>
               )}
               {isAlreadyInstalled && (
@@ -214,10 +252,12 @@ function ClawHubCard({ skill, activeAgent, installedSlugs, expanded, onExpand, o
                 </span>
               )}
             </div>
-            {skill.description && (
-              <p className="text-xs text-gray-400 mt-1 line-clamp-2">{skill.description}</p>
+            {effectiveSkill.description && (
+              <p className="text-xs text-gray-400 mt-1 line-clamp-2">
+                {effectiveSkill.description}
+              </p>
             )}
-            <p className="text-[11px] text-gray-500 mt-1 font-mono">{skill.slug}</p>
+            <p className="text-[11px] text-gray-500 mt-1 font-mono">{effectiveSkill.slug}</p>
           </div>
           <span className="text-gray-500 flex items-center">
             {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
@@ -228,7 +268,7 @@ function ClawHubCard({ skill, activeAgent, installedSlugs, expanded, onExpand, o
       {expanded && (
         <div className="border-t border-gray-700 p-4 space-y-4">
           {/* Security */}
-          <SecurityPanel skill={skill} />
+          <SecurityPanel skill={effectiveSkill} />
 
           {/* Version picker */}
           <div className="flex items-center gap-2">
@@ -523,9 +563,13 @@ export function normalizeSkill(skill) {
     description: skill.description ?? skill.summary ?? undefined,
     latest_version:
       skill.latest_version ?? tags?.latest ?? skill.version ?? skill.latestVersion ?? undefined,
-    // Trust signals — hoist from stats if not already flattened.
+    // Trust signals — hoist from stats if not already flattened. `downloads`
+    // is an older upstream alias for the lifetime install count (kept in the
+    // test fixture); treat it as a last-resort fallback so the install chip
+    // still renders for records that haven't been re-indexed.
     stars: skill.stars ?? stats?.stars ?? undefined,
-    installsAllTime: skill.installsAllTime ?? stats?.installsAllTime ?? undefined,
+    installsAllTime:
+      skill.installsAllTime ?? stats?.installsAllTime ?? stats?.downloads ?? undefined,
     // Security verdict — upstream puts these under `moderation` when present.
     verdict: skill.verdict ?? moderation?.verdict ?? undefined,
     confidence: skill.confidence ?? moderation?.confidence ?? undefined,

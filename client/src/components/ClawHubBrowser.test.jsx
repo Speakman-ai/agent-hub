@@ -6,6 +6,7 @@ vi.mock('../utils/api.js', () => ({
   api: {
     clawhubSearch: vi.fn(),
     clawhubListSkills: vi.fn(),
+    clawhubGetSkill: vi.fn(),
     clawhubGetVersions: vi.fn(),
     clawhubInstall: vi.fn(),
   },
@@ -28,6 +29,9 @@ describe('ClawHubBrowser', () => {
       },
     ]);
     api.clawhubGetVersions.mockResolvedValue([{ version: '0.4.1' }, { version: '0.4.0' }]);
+    // Default: detail fetch resolves empty so existing tests don't need to
+    // mock it. Tests exercising the merge path override per-case.
+    api.clawhubGetSkill.mockResolvedValue({});
     api.clawhubInstall.mockResolvedValue({
       slug: 'postgres-helper',
       installedAt: '2026-04-17T00:00:00Z',
@@ -288,6 +292,105 @@ describe('ClawHubBrowser', () => {
       await expandCardByName('Plain');
 
       expect(screen.queryByTestId('security-panel')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('detail fetch on expand (regression: search response has no stats)', () => {
+    async function expandCardByName(name) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(260);
+      });
+      fireEvent.click(screen.getByRole('heading', { name }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+
+    it('fetches detail + versions in parallel when a card expands', async () => {
+      // Search-style flat row — no stats, no moderation.
+      api.clawhubSearch.mockResolvedValueOnce([
+        { slug: 'datadog-mcp', displayName: 'Datadog MCP', summary: 'Datadog observability' },
+      ]);
+      render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+
+      const input = screen.getByLabelText('Search ClawHub registry');
+      fireEvent.change(input, { target: { value: 'datadog' } });
+      await expandCardByName('Datadog MCP');
+
+      expect(api.clawhubGetSkill).toHaveBeenCalledWith('datadog-mcp');
+      expect(api.clawhubGetVersions).toHaveBeenCalledWith('datadog-mcp');
+    });
+
+    it('renders stars + install chips after the detail fetch resolves', async () => {
+      // List row is bare (the search shape) — chips should appear only once
+      // the detail endpoint fills in `stats`.
+      api.clawhubListSkills.mockResolvedValueOnce([{ slug: 'datadog-mcp', name: 'Datadog MCP' }]);
+      api.clawhubGetSkill.mockResolvedValueOnce({
+        slug: 'datadog-mcp',
+        displayName: 'Datadog MCP',
+        stats: { stars: 42, installsAllTime: 1337 },
+        moderation: { verdict: 'benign', confidence: 0.9 },
+      });
+
+      render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+
+      // Pre-expand: no chips yet.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(260);
+      });
+      expect(screen.queryByTitle(/42 stars/i)).not.toBeInTheDocument();
+
+      // Expand: detail fetch fires, chips appear.
+      await expandCardByName('Datadog MCP');
+      expect(screen.getByTitle(/42 stars/i)).toBeInTheDocument();
+      expect(screen.getByTitle(/1337 installs all time/i)).toBeInTheDocument();
+      const chips = screen.getAllByTestId('verdict-chip');
+      expect(chips[0]).toHaveAttribute('data-verdict', 'benign');
+      expect(screen.getByTestId('security-panel')).toBeInTheDocument();
+    });
+
+    it('stays usable when the detail endpoint errors', async () => {
+      api.clawhubListSkills.mockResolvedValueOnce([{ slug: 'broken', name: 'Broken' }]);
+      api.clawhubGetSkill.mockRejectedValueOnce(new Error('502: upstream down'));
+
+      render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+      await expandCardByName('Broken');
+
+      // Card still renders; Version picker + install buttons still present.
+      expect(screen.getByLabelText(/version/i)).toBeInTheDocument();
+      // No chips, no security panel — degrades cleanly.
+      expect(screen.queryByTestId('security-panel')).not.toBeInTheDocument();
+    });
+
+    it('prefers the merged detail values over the list row', async () => {
+      // List row had stale stats; detail refreshes them.
+      api.clawhubListSkills.mockResolvedValueOnce([{ slug: 's', name: 'S', stars: 1 }]);
+      api.clawhubGetSkill.mockResolvedValueOnce({
+        slug: 's',
+        stats: { stars: 999 },
+      });
+
+      render(<ClawHubBrowser activeAgent={null} installedSlugs={new Set()} />);
+      await expandCardByName('S');
+
+      // Merge is `{ ...skill, ...data }`, so detail wins.
+      expect(screen.getByTitle(/999 stars/i)).toBeInTheDocument();
+      expect(screen.queryByTitle(/^1 star$/i)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('normalizeSkill — stats.downloads fallback', () => {
+    it('uses stats.downloads when installsAllTime is absent', () => {
+      const out = normalizeSkill({ slug: 's', stats: { downloads: 11528 } });
+      expect(out.installsAllTime).toBe(11528);
+    });
+
+    it('prefers stats.installsAllTime over stats.downloads when both are set', () => {
+      const out = normalizeSkill({
+        slug: 's',
+        stats: { installsAllTime: 100, downloads: 99999 },
+      });
+      expect(out.installsAllTime).toBe(100);
     });
   });
 });
