@@ -147,6 +147,16 @@ export default function KanbanBoard({
       .catch(() => setComments([]));
   }, [selectedCard, projectId]);
 
+  // Close detail modal on Escape key
+  useEffect(() => {
+    if (!selectedCard) return;
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setSelectedCard(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedCard]);
+
   const cardsForColumn = (columnId) => {
     const q = searchQuery.toLowerCase().trim();
     return cards
@@ -942,271 +952,348 @@ export default function KanbanBoard({
         </div>
       </div>
 
-      {/* Card Detail Panel (slide-over) */}
+      {/* Card Detail Modal (centered) */}
       {selectedCard && (
-        <div className="fixed inset-0 z-50 flex justify-end">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          data-testid="card-detail-modal"
+        >
           {/* Backdrop */}
-          <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedCard(null)} />
+          <div className="absolute inset-0 bg-black/60" onClick={() => setSelectedCard(null)} />
           {/* Panel */}
-          <div className="relative w-full max-w-lg bg-gray-900 border-l border-gray-800 overflow-y-auto">
-            <div className="p-6">
-              {/* Header */}
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-lg font-semibold text-white">Card Details</h2>
+          <div className="relative w-full max-w-6xl h-[85vh] bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden shadow-2xl">
+            {/* Header */}
+            <div className="shrink-0 flex items-center justify-between px-6 py-3 border-b border-gray-800">
+              <div className="flex items-center gap-2 text-xs text-gray-500">
+                <span>Card</span>
+                {selectedCard?.id && (
+                  <span className="font-mono text-gray-600">
+                    #{String(selectedCard.id).slice(0, 8)}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSaveDetail}
+                  disabled={saving}
+                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  {saving ? 'Saving...' : 'Save'}
+                </button>
                 <button
                   onClick={() => setSelectedCard(null)}
-                  className="text-gray-500 hover:text-gray-300"
+                  className="p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 rounded-lg transition-colors"
+                  aria-label="Close"
                 >
-                  <X size={20} />
+                  <X size={18} />
                 </button>
               </div>
+            </div>
 
-              {/* Title */}
-              <label className="block text-xs text-gray-500 mb-1">Title</label>
-              <input
-                type="text"
-                value={detailForm.title}
-                onChange={(e) => setDetailForm((f) => ({ ...f, title: e.target.value }))}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500 mb-4"
-              />
-
-              {/* Description */}
-              <label className="block text-xs text-gray-500 mb-1">Description</label>
-              <textarea
-                value={detailForm.description}
-                onChange={(e) => setDetailForm((f) => ({ ...f, description: e.target.value }))}
-                rows={4}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500 mb-4 resize-none"
-              />
-
-              {/* Priority */}
-              <label className="block text-xs text-gray-500 mb-1">Priority</label>
-              <select
-                value={detailForm.priority}
-                onChange={(e) => setDetailForm((f) => ({ ...f, priority: e.target.value }))}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500 mb-4"
-              >
-                {PRIORITIES.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-
-              {/* Assignee */}
-              <label className="block text-xs text-gray-500 mb-1">Assignee</label>
-              {selectedCard?.session_id ? (
-                <div className="mb-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-sm text-white">{detailForm.assignee || 'Assigned'}</span>
-                    <span className="text-xs bg-emerald-900/40 text-emerald-400 px-2 py-0.5 rounded">
-                      Session active
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const agent = agents.find((a) => a.name === selectedCard.assignee);
-                      if (agent && onNavigateToSession) {
-                        onNavigateToSession(agent.id, selectedCard.session_id);
-                      }
-                    }}
-                    className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors"
-                  >
-                    Open Session
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 mb-4">
-                  <select
-                    value={detailForm.assignee}
-                    onChange={(e) => setDetailForm((f) => ({ ...f, assignee: e.target.value }))}
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
-                  >
-                    <option value="">Unassigned</option>
-                    {agents.map((a) => (
-                      <option key={a.id} value={a.name}>
-                        {a.name}
-                      </option>
-                    ))}
-                  </select>
-                  {detailForm.assignee && (
-                    <button
-                      onClick={async () => {
-                        const agent = agents.find((a) => a.name === detailForm.assignee);
-                        if (!agent) return;
-                        setAssigning(true);
-                        try {
-                          const result = await api.assignCard(projectId, selectedCard.id, agent.id);
-                          setSelectedCard(null);
-                          fetchBoard();
-                          if (onNavigateToSession) {
-                            onNavigateToSession(agent.id, result.sessionId);
-                          }
-                        } catch (err) {
-                          console.error('Failed to assign card:', err);
-                        } finally {
-                          setAssigning(false);
-                        }
-                      }}
-                      disabled={assigning}
-                      className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
-                    >
-                      {assigning ? 'Starting...' : 'Assign & Start'}
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* Labels */}
-              <label className="block text-xs text-gray-500 mb-1">Labels (comma separated)</label>
-              <input
-                type="text"
-                value={detailForm.labels}
-                onChange={(e) => setDetailForm((f) => ({ ...f, labels: e.target.value }))}
-                placeholder="bug, feature, docs"
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500 mb-4"
-              />
-
-              {/* Epic */}
-              <label className="block text-xs text-gray-500 mb-1">Epic</label>
-              <select
-                value={detailForm.epic_id}
-                onChange={(e) => handleLinkCardEpic(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500 mb-4"
-              >
-                <option value="">None</option>
-                {epics.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name}
-                  </option>
-                ))}
-              </select>
-
-              {/* GitHub Issue URL */}
-              <label className="block text-xs text-gray-500 mb-1">GitHub Issue URL</label>
-              <div className="flex items-center gap-2 mb-3">
-                <input
-                  type="text"
-                  value={detailForm.github_issue_url}
-                  onChange={(e) =>
-                    setDetailForm((f) => ({ ...f, github_issue_url: e.target.value }))
-                  }
-                  placeholder="https://github.com/..."
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
-                />
-                {detailForm.github_issue_url && (
-                  <a
-                    href={detailForm.github_issue_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-gray-500 hover:text-gray-300"
-                  >
-                    <ExternalLink size={16} />
-                  </a>
-                )}
-              </div>
-
-              {/* PR URL */}
-              <label className="block text-xs text-gray-500 mb-1">Pull Request</label>
-              <div className="flex items-center gap-2 mb-6">
-                <input
-                  type="text"
-                  value={detailForm.pr_url}
-                  onChange={(e) => setDetailForm((f) => ({ ...f, pr_url: e.target.value }))}
-                  placeholder="https://github.com/.../pull/123"
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
-                />
-                {detailForm.pr_url && (
-                  <a
-                    href={detailForm.pr_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-gray-500 hover:text-gray-300"
-                  >
-                    <ExternalLink size={16} />
-                  </a>
-                )}
-              </div>
-
-              {/* Save */}
-              <button
-                onClick={handleSaveDetail}
-                disabled={saving}
-                className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 text-white rounded-lg text-sm font-medium transition-colors mb-6"
-              >
-                {saving ? 'Saving...' : 'Save'}
-              </button>
-
-              {/* Comments */}
-              <div className="border-t border-gray-800 pt-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <MessageSquare size={14} className="text-gray-500" />
-                  <span className="text-sm font-medium text-gray-400">
-                    Comments ({comments.length})
-                  </span>
-                </div>
-
-                <div className="space-y-3 mb-4">
-                  {comments.map((c) => (
-                    <div key={c.id} className="bg-gray-800 rounded-lg p-3">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs font-medium text-gray-300">{c.author}</span>
-                        <span className="text-xs text-gray-600">
-                          {new Date(c.created_at).toLocaleString()}
-                        </span>
-                      </div>
-                      <p className="text-sm text-gray-400">{c.content}</p>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex gap-2">
+            {/* Body — two-column on lg+, stacked on smaller screens */}
+            <div className="flex-1 overflow-y-auto">
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6 p-6">
+                {/* Main column: title + description */}
+                <div className="min-w-0 flex flex-col gap-4">
                   <input
                     type="text"
-                    value={newComment}
-                    onChange={(e) => setNewComment(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleAddComment();
-                    }}
-                    placeholder="Add a comment..."
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
+                    value={detailForm.title}
+                    onChange={(e) => setDetailForm((f) => ({ ...f, title: e.target.value }))}
+                    placeholder="Card title"
+                    className="w-full bg-transparent border-0 border-b border-transparent hover:border-gray-800 focus:border-gray-700 px-0 py-1 text-2xl font-semibold text-white placeholder-gray-600 focus:outline-none"
                   />
-                  <button
-                    onClick={handleAddComment}
-                    className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors"
-                  >
-                    Send
-                  </button>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                      Description
+                    </label>
+                    <textarea
+                      value={detailForm.description}
+                      onChange={(e) =>
+                        setDetailForm((f) => ({ ...f, description: e.target.value }))
+                      }
+                      rows={18}
+                      placeholder="Add a description — problem, acceptance criteria, context..."
+                      className="w-full bg-gray-950/60 border border-gray-800 rounded-lg px-4 py-3 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-gray-600 resize-y min-h-[320px] leading-relaxed font-sans"
+                    />
+                  </div>
                 </div>
+
+                {/* Sidebar: metadata */}
+                <aside className="flex flex-col gap-5 lg:border-l lg:border-gray-800 lg:pl-6">
+                  {/* Priority */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                      Priority
+                    </label>
+                    <select
+                      value={detailForm.priority}
+                      onChange={(e) => setDetailForm((f) => ({ ...f, priority: e.target.value }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                    >
+                      {PRIORITIES.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Assignee */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                      Assignee
+                    </label>
+                    {selectedCard?.session_id ? (
+                      <div>
+                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                          <span className="text-sm text-white">
+                            {detailForm.assignee || 'Assigned'}
+                          </span>
+                          <span className="text-xs bg-emerald-900/40 text-emerald-400 px-2 py-0.5 rounded">
+                            Session active
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const agent = agents.find((a) => a.name === selectedCard.assignee);
+                            if (agent && onNavigateToSession) {
+                              onNavigateToSession(agent.id, selectedCard.session_id);
+                            }
+                          }}
+                          className="w-full text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          Open Session
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        <select
+                          value={detailForm.assignee}
+                          onChange={(e) =>
+                            setDetailForm((f) => ({ ...f, assignee: e.target.value }))
+                          }
+                          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                        >
+                          <option value="">Unassigned</option>
+                          {agents.map((a) => (
+                            <option key={a.id} value={a.name}>
+                              {a.name}
+                            </option>
+                          ))}
+                        </select>
+                        {detailForm.assignee && (
+                          <button
+                            onClick={async () => {
+                              const agent = agents.find((a) => a.name === detailForm.assignee);
+                              if (!agent) return;
+                              setAssigning(true);
+                              try {
+                                const result = await api.assignCard(
+                                  projectId,
+                                  selectedCard.id,
+                                  agent.id,
+                                );
+                                setSelectedCard(null);
+                                fetchBoard();
+                                if (onNavigateToSession) {
+                                  onNavigateToSession(agent.id, result.sessionId);
+                                }
+                              } catch (err) {
+                                console.error('Failed to assign card:', err);
+                              } finally {
+                                setAssigning(false);
+                              }
+                            }}
+                            disabled={assigning}
+                            className="w-full text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
+                          >
+                            {assigning ? 'Starting...' : 'Assign & Start'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Epic */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                      Epic
+                    </label>
+                    <select
+                      value={detailForm.epic_id}
+                      onChange={(e) => handleLinkCardEpic(e.target.value)}
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                    >
+                      <option value="">None</option>
+                      {epics.map((e) => (
+                        <option key={e.id} value={e.id}>
+                          {e.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Labels */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                      Labels
+                    </label>
+                    <input
+                      type="text"
+                      value={detailForm.labels}
+                      onChange={(e) => setDetailForm((f) => ({ ...f, labels: e.target.value }))}
+                      placeholder="bug, feature, docs"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
+                    />
+                  </div>
+
+                  {/* GitHub Issue URL */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                      GitHub Issue URL
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={detailForm.github_issue_url}
+                        onChange={(e) =>
+                          setDetailForm((f) => ({ ...f, github_issue_url: e.target.value }))
+                        }
+                        placeholder="https://github.com/..."
+                        className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
+                      />
+                      {detailForm.github_issue_url && (
+                        <a
+                          href={detailForm.github_issue_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gray-500 hover:text-gray-300 shrink-0"
+                        >
+                          <ExternalLink size={16} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* PR URL */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                      Pull Request
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={detailForm.pr_url}
+                        onChange={(e) => setDetailForm((f) => ({ ...f, pr_url: e.target.value }))}
+                        placeholder="https://github.com/.../pull/123"
+                        className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
+                      />
+                      {detailForm.pr_url && (
+                        <a
+                          href={detailForm.pr_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gray-500 hover:text-gray-300 shrink-0"
+                        >
+                          <ExternalLink size={16} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Timestamps */}
+                  {(selectedCard?.created_at || selectedCard?.updated_at) && (
+                    <div className="text-xs text-gray-600 space-y-1 pt-1">
+                      {selectedCard?.created_at && (
+                        <div>
+                          <span className="text-gray-500">Created:</span>{' '}
+                          {new Date(selectedCard.created_at).toLocaleString()}
+                        </div>
+                      )}
+                      {selectedCard?.updated_at && (
+                        <div>
+                          <span className="text-gray-500">Updated:</span>{' '}
+                          {new Date(selectedCard.updated_at).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Delete */}
+                  <div className="border-t border-gray-800 pt-4 mt-auto">
+                    {confirmDelete ? (
+                      <div className="flex flex-col gap-2">
+                        <span className="text-sm text-red-400">Delete this card?</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={handleDeleteCard}
+                            className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs transition-colors"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            onClick={() => setConfirmDelete(false)}
+                            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-400 rounded text-xs transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDelete(true)}
+                        className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-red-400 transition-colors"
+                      >
+                        <Trash2 size={14} />
+                        Delete card
+                      </button>
+                    )}
+                  </div>
+                </aside>
+              </div>
+            </div>
+
+            {/* Comments — full-width footer */}
+            <div className="shrink-0 border-t border-gray-800 bg-gray-950/40 px-6 py-4 max-h-[40%] overflow-y-auto">
+              <div className="flex items-center gap-2 mb-3">
+                <MessageSquare size={14} className="text-gray-500" />
+                <span className="text-sm font-medium text-gray-400">
+                  Comments ({comments.length})
+                </span>
               </div>
 
-              {/* Delete */}
-              <div className="border-t border-gray-800 pt-4 mt-6">
-                {confirmDelete ? (
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-red-400">Delete this card?</span>
-                    <button
-                      onClick={handleDeleteCard}
-                      className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs transition-colors"
-                    >
-                      Confirm
-                    </button>
-                    <button
-                      onClick={() => setConfirmDelete(false)}
-                      className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-400 rounded text-xs transition-colors"
-                    >
-                      Cancel
-                    </button>
+              <div className="space-y-3 mb-4">
+                {comments.map((c) => (
+                  <div key={c.id} className="bg-gray-800 rounded-lg p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-medium text-gray-300">{c.author}</span>
+                      <span className="text-xs text-gray-600">
+                        {new Date(c.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-400 whitespace-pre-wrap">{c.content}</p>
                   </div>
-                ) : (
-                  <button
-                    onClick={() => setConfirmDelete(true)}
-                    className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-red-400 transition-colors"
-                  >
-                    <Trash2 size={14} />
-                    Delete card
-                  </button>
-                )}
+                ))}
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleAddComment();
+                  }}
+                  placeholder="Add a comment..."
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
+                />
+                <button
+                  onClick={handleAddComment}
+                  className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors"
+                >
+                  Send
+                </button>
               </div>
             </div>
           </div>

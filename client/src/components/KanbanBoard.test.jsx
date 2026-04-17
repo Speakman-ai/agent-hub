@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import KanbanBoard from './KanbanBoard.jsx';
 import { api } from '../utils/api.js';
 
@@ -23,6 +23,11 @@ vi.mock('../utils/api.js', () => ({
     get: vi.fn(),
     getCardComments: vi.fn(),
     moveCard: vi.fn(),
+    updateCard: vi.fn(),
+    deleteCard: vi.fn(),
+    addCardComment: vi.fn(),
+    linkCardToEpic: vi.fn(),
+    assignCard: vi.fn(),
   },
 }));
 
@@ -83,5 +88,55 @@ describe('KanbanBoard background refresh', () => {
 
     // And fetchBoard was called again for the refresh.
     await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('KanbanBoard card detail modal', () => {
+  beforeEach(() => {
+    api.getBoard.mockReset();
+    api.get.mockReset();
+    api.getCardComments.mockReset();
+    api.get.mockResolvedValue([]);
+    api.getCardComments.mockResolvedValue([]);
+  });
+
+  it('renders the card detail as a centered modal with sidebar metadata (not a right slide-over)', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-1',
+          title: 'A big card',
+          description: 'Some description',
+          column_id: 'col-todo',
+          position: 0,
+          priority: 'high',
+        },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('A big card')).toBeInTheDocument());
+
+    // Open the card detail
+    fireEvent.click(screen.getByText('A big card'));
+
+    // Modal is rendered and uses a centered-modal layout, not a right slide-over.
+    const modal = await screen.findByTestId('card-detail-modal');
+    expect(modal.className).toMatch(/items-center/);
+    expect(modal.className).toMatch(/justify-center/);
+    expect(modal.className).not.toMatch(/justify-end/);
+
+    // The description textarea has a larger row count than the old (rows=4).
+    const description = within(modal).getByPlaceholderText(/add a description/i);
+    expect(description.tagName).toBe('TEXTAREA');
+    expect(Number(description.getAttribute('rows'))).toBeGreaterThanOrEqual(10);
+
+    // Sidebar contains the metadata labels.
+    expect(within(modal).getByText(/^Priority$/i)).toBeInTheDocument();
+    expect(within(modal).getByText(/^Assignee$/i)).toBeInTheDocument();
+    expect(within(modal).getByText(/^Epic$/i)).toBeInTheDocument();
+    expect(within(modal).getByText(/^Labels$/i)).toBeInTheDocument();
+    expect(within(modal).getByText(/GitHub Issue URL/i)).toBeInTheDocument();
+    expect(within(modal).getByText(/Pull Request/i)).toBeInTheDocument();
   });
 });
