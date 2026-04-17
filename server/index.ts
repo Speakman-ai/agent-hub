@@ -436,6 +436,7 @@ const routeDeps: RouteDeps = {
     _activeDataDir = v;
   },
   restoreAutonomousCrons,
+  scheduleAll,
 };
 
 app.use(createMemoryRoutes(routeDeps));

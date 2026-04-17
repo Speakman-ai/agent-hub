@@ -9,7 +9,7 @@ import {
   orgDataDir,
   setActiveOrgId,
 } from '../orgs.js';
-import type { RouteDeps, EnrichedAgent } from '../types.js';
+import type { RouteDeps } from '../types.js';
 
 export default function createOrgRoutes(deps: RouteDeps): Router {
   const {
@@ -21,8 +21,8 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
     autonomousCrons,
     restoreAutonomousCrons,
     setActiveDataDir,
+    scheduleAll,
   } = deps;
-  const scheduleAll = deps.scheduleAll as (agents: EnrichedAgent[]) => void;
   const router = Router();
 
   function performOrgSwitch(orgId: string): void {

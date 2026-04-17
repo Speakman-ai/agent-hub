@@ -1318,7 +1318,7 @@ export interface RouteDeps {
   reloadProjects: (dataDir: string) => void;
   setActiveDataDir: (v: string) => void;
   restoreAutonomousCrons: () => void;
-  scheduleAll?: (agents: EnrichedAgent[]) => void;
+  scheduleAll: (agents: EnrichedAgent[]) => void;
   getGhAuthenticatedUser?: () => string | null;
   tryAutonomousDispatch?: () => void;
   runClaude?: (...args: unknown[]) => unknown;
