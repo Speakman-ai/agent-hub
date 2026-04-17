@@ -241,6 +241,41 @@ describe('ClawHubBrowser', () => {
       expect(out.verdict).toBeUndefined();
     });
 
+    it('coerces object-shaped `latestVersion` to its version string', () => {
+      // Upstream detail endpoint returns `latestVersion` as an object
+      // `{version, createdAt, changelog, license}`. Rendering that directly
+      // via `v{latest_version}` crashes React ("Objects are not valid as a
+      // React child"). normalizeSkill must extract the `.version` string.
+      const out = normalizeSkill({
+        slug: 's',
+        latestVersion: {
+          version: '1.2.3',
+          createdAt: '2026-04-17T00:00:00Z',
+          changelog: 'bug fixes',
+          license: 'MIT',
+        },
+      });
+      expect(out.latest_version).toBe('1.2.3');
+    });
+
+    it('also coerces an object under `tags.latest`', () => {
+      const out = normalizeSkill({
+        slug: 's',
+        tags: { latest: { version: '2.0.0', createdAt: '2026-04-17T00:00:00Z' } },
+      });
+      expect(out.latest_version).toBe('2.0.0');
+    });
+
+    it('returns undefined when no source yields a string version', () => {
+      // Neither flat string nor an object with a string `.version` — should
+      // render nothing rather than crashing on a partial object.
+      const out = normalizeSkill({
+        slug: 's',
+        latestVersion: { createdAt: '2026-04-17T00:00:00Z' }, // no version field
+      });
+      expect(out.latest_version).toBeUndefined();
+    });
+
     it('hoists llmAnalysis / vtAnalysis from moderation block', () => {
       const out = normalizeSkill({
         slug: 's',

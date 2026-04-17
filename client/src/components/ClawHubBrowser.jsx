@@ -555,6 +555,17 @@ export function normalizeSkill(skill) {
   const moderation =
     skill.moderation && typeof skill.moderation === 'object' ? skill.moderation : null;
 
+  // `latestVersion` from the upstream detail endpoint is an object shaped
+  // `{version, createdAt, changelog, license}` — rendering it directly as a
+  // React child (via `v{latest_version}`) crashes the card. Coerce to its
+  // `.version` string when we get an object; leave plain strings alone.
+  const coerceVersion = (v) => {
+    if (v == null) return undefined;
+    if (typeof v === 'string') return v;
+    if (typeof v === 'object' && typeof v.version === 'string') return v.version;
+    return undefined;
+  };
+
   return {
     ...skill,
     // Title / description / version — accept upstream's displayName/summary
@@ -562,7 +573,11 @@ export function normalizeSkill(skill) {
     name: skill.name ?? skill.displayName ?? undefined,
     description: skill.description ?? skill.summary ?? undefined,
     latest_version:
-      skill.latest_version ?? tags?.latest ?? skill.version ?? skill.latestVersion ?? undefined,
+      coerceVersion(skill.latest_version) ??
+      coerceVersion(tags?.latest) ??
+      coerceVersion(skill.version) ??
+      coerceVersion(skill.latestVersion) ??
+      undefined,
     // Trust signals — hoist from stats if not already flattened. `downloads`
     // is an older upstream alias for the lifetime install count (kept in the
     // test fixture); treat it as a last-resort fallback so the install chip

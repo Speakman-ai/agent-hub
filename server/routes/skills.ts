@@ -156,6 +156,20 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     }
   });
 
+  // NOTE: `/skills/overrides` MUST be registered before `/skills/:skillId`,
+  // otherwise Express matches the later route first with `:skillId='overrides'`
+  // and returns 404 (no skill on disk with that name).
+  router.get('/api/agents/:agentId/skills/overrides', (req: Request, res: Response) => {
+    try {
+      const overrides = stmts.getAgentSkillOverrides.all(
+        req.params.agentId,
+      ) as AgentSkillOverrideRow[];
+      res.json(overrides);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   router.get('/api/agents/:agentId/skills/:skillId', (req: Request, res: Response) => {
     const found = findAgent(req.params.agentId as string);
     if (!found) return res.status(404).json({ error: 'Agent not found' });
@@ -399,17 +413,6 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
         },
       });
       res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.get('/api/agents/:agentId/skills/overrides', (req: Request, res: Response) => {
-    try {
-      const overrides = stmts.getAgentSkillOverrides.all(
-        req.params.agentId,
-      ) as AgentSkillOverrideRow[];
-      res.json(overrides);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
