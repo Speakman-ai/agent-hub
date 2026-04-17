@@ -1061,6 +1061,7 @@ export interface AppConfig {
   githubApp: GitHubAppConfig | null;
   apiKey: string | null;
   anthropicApiKey: string | null;
+  openaiApiKey: string | null;
   slackWebhookUrl: string | null;
   capturesEnabled: boolean;
   readonly allValidModels: string[];

@@ -126,6 +126,7 @@ const config: AppConfig = {
   // ── Auth ───────────────────────────────────────────────────────
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
   anthropicApiKey: resolve('ANTHROPIC_API_KEY', 'anthropicApiKey', null),
+  openaiApiKey: resolve('OPENAI_API_KEY', 'openaiApiKey', null),
 
   // ── Slack ──────────────────────────────────────────────────────
   slackWebhookUrl:
