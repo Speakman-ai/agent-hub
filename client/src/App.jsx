@@ -925,6 +925,13 @@ export default function App() {
         setKanbanRefreshKey((k) => k + 1);
         break;
 
+      case 'projects_updated':
+        // Server added/changed an agent or project (e.g. GitHub App auto-setup
+        // seeded a Reviewer agent). Re-fetch so the sidebar reflects it
+        // without requiring a page refresh.
+        refreshAgents();
+        break;
+
       case 'dispatch_failure': {
         const dispatchMsg = `Dispatch failed (${data.source}): ${data.cardTitle} — ${data.reason}`;
         const toast = {

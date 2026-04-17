@@ -1306,7 +1306,7 @@ export interface RouteDeps {
   getProjectDataDir: (projectId: string) => string;
   ensureDocsAgents: () => void;
   ensureIntakeAgents: () => void;
-  ensureReviewerAgents: () => void;
+  ensureReviewerAgents: () => boolean;
   getClaudeBin: () => string;
   setClaudeBin: (v: string) => void;
   initDb: (dataDir: string) => void;

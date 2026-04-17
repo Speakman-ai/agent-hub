@@ -170,6 +170,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     setGhAppSlug,
     serverDir,
     ensureReviewerAgents,
+    broadcast,
   } = deps;
   const router = Router();
 
@@ -512,7 +513,13 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         // so existing projects should pick up a Reviewer the moment the app
         // is connected.
         try {
-          ensureReviewerAgents();
+          const reviewersChanged = ensureReviewerAgents();
+          if (reviewersChanged) {
+            // Notify any connected clients so their sidebar picks up the new
+            // Reviewer agent without requiring a page refresh (fixes GitHub
+            // App not creating a sidebar agent after auto-setup).
+            broadcast({ type: 'projects_updated', reason: 'github-app-setup' });
+          }
         } catch (err: unknown) {
           console.warn(`[GitHub App] ensureReviewerAgents failed: ${(err as Error).message}`);
         }

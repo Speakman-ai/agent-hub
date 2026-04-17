@@ -796,6 +796,11 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
 
     ensureProjectRoom(project);
 
+    // Notify any connected clients so their sidebar picks up the new
+    // project (and any auto-seeded Docs/Intake/Reviewer agents) without
+    // requiring a full page refresh.
+    broadcast({ type: 'projects_updated', reason: 'project-created' });
+
     const enriched = {
       ...project,
       agents: project.agents.map((a) => ({

@@ -1168,7 +1168,7 @@ function GeneralSection() {
   );
 }
 
-function GitHubSection({ projects = [], onProjectsChange }) {
+export function GitHubSection({ projects = [], onProjectsChange }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -1237,12 +1237,18 @@ function GitHubSection({ projects = [], onProjectsChange }) {
         .get('/github-app/status')
         .then(setAppStatus)
         .catch(() => {});
+      // The server may have just seeded a Reviewer agent via
+      // `ensureReviewerAgents()` during setup-complete. A `projects_updated`
+      // WS broadcast is emitted, but the WebSocket may have been disconnected
+      // mid-redirect and missed the event. Refresh projects/agents locally
+      // too so the sidebar reflects the new Reviewer without a page reload.
+      if (onProjectsChange) onProjectsChange();
     }
     if (status === 'error') {
       const msgMatch = hash.match(/message=([^&]*)/);
       if (msgMatch) alert(decodeURIComponent(msgMatch[1]));
     }
-  }, []);
+  }, [onProjectsChange]);
 
   // Init per-project state when projects arrive
   useEffect(() => {

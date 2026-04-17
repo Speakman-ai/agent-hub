@@ -2146,7 +2146,7 @@ export async function processWebhookEvent(
 // ─── Webhook CRUD routes (requires auth) ────────────────────────
 
 export default function createWebhookRoutes(deps: RouteDeps): Router {
-  const { stmts, ensureReviewerAgents } = deps;
+  const { stmts, ensureReviewerAgents, broadcast } = deps;
   const router = Router();
 
   router.get('/api/webhooks', (_req: Request, res: Response) => {
@@ -2181,7 +2181,12 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
 
     // Seed a Reviewer agent for the project now that GitHub integration exists.
     try {
-      ensureReviewerAgents();
+      const reviewersChanged = ensureReviewerAgents();
+      if (reviewersChanged) {
+        // Let connected clients refresh the sidebar so the new Reviewer
+        // shows up immediately after the webhook is configured.
+        broadcast({ type: 'projects_updated', reason: 'webhook-configured' });
+      }
     } catch (err: unknown) {
       console.warn(`[Webhooks] ensureReviewerAgents failed: ${(err as Error).message}`);
     }

@@ -391,7 +391,7 @@ Keep it short. Don't repeat the full description back.`,
  * autonomous mode now only governs whether cards get picked up for work; PR
  * review fires on every push regardless of mode.
  */
-function ensureReviewerAgents(): void {
+function ensureReviewerAgents(): boolean {
   const typedStmts = stmts as Stmts;
   let changed = false;
 
@@ -508,6 +508,7 @@ If the PR touches third-party APIs (GitHub, Slack, Stripe, AWS, etc.), search th
   if (changed) {
     saveProjects();
   }
+  return changed;
 }
 
 function ensureContextFiles(): void {

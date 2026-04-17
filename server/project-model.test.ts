@@ -364,4 +364,40 @@ describe('ensureReviewerAgents', () => {
     // Decision tree must branch on the score, not on vibes.
     expect(sp).toMatch(/score\b[^.]*\b(greater than|>)\s*3/i);
   });
+
+  // Regression guard for the bug: "GitHub App not creating PR button or
+  // sidebar agent". The function must report whether it changed anything so
+  // route handlers can decide whether to broadcast `projects_updated` to
+  // WebSocket clients. If this returns void again, the broadcast wiring
+  // in server/routes/config.ts and server/routes/webhooks.ts silently
+  // no-ops and the sidebar never refreshes.
+  it('returns true when a reviewer is seeded', async () => {
+    const projId = `reviewer-ret-true-${Date.now()}`;
+    const project = await createProjectWithAgent(projId, 'Return True Reviewer', '#111');
+    project.githubRepo = 'owner/ret-true-repo';
+    saveProjects();
+
+    const changed = ensureReviewerAgents();
+    expect(changed).toBe(true);
+  });
+
+  it('returns false when no reviewer needs to be seeded', async () => {
+    const projId = `reviewer-ret-false-${Date.now()}`;
+    const project = await createProjectWithAgent(projId, 'Return False Reviewer', '#222');
+    project.githubRepo = 'owner/ret-false-repo';
+    saveProjects();
+
+    // First call seeds the reviewer.
+    expect(ensureReviewerAgents()).toBe(true);
+    // Second call is a no-op — idempotent and must report no change so
+    // callers don't emit a spurious `projects_updated` broadcast.
+    expect(ensureReviewerAgents()).toBe(false);
+  });
+
+  it('returns false when project has no GitHub integration', async () => {
+    const projId = `reviewer-ret-nogh-${Date.now()}`;
+    await createProjectWithAgent(projId, 'No GitHub Reviewer', '#333');
+    // No githubRepo, no webhook → nothing to seed.
+    expect(ensureReviewerAgents()).toBe(false);
+  });
 });
