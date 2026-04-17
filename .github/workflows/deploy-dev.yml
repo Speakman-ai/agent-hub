@@ -83,11 +83,17 @@ jobs:
           #   2. root touching a repo owned by `agenthub` trips git's
           #      "dubious ownership" guard (git >= 2.35.2), and pm2's daemon
           #      lives in the agenthub user's $HOME, not root's.
-          # Fix both by handing the payload to `sudo -u agenthub -H bash -l`:
-          # it flips to the repo owner (git happy), sources the user's login
-          # PATH (pm2 reachable), and bash accepts pipefail.
+          # Fix by handing the payload to `runuser -u agenthub -- bash -l`: it
+          # flips to the repo owner (git happy), sources the user's login PATH
+          # (pm2 reachable), and bash accepts pipefail.
+          # NOTE: we specifically use `runuser`, not `sudo -u`. Under SSM
+          # (non-interactive, no TTY) sudo opens a PAM session that sometimes
+          # fails to close cleanly — sudo then returns exit 1 even though the
+          # inner `bash -l` exited 0 (health check green). `runuser` skips the
+          # PAM session setup/teardown, so the child's exit code propagates
+          # faithfully. See: actions run 24587084751 (PR #358 follow-up).
           DEPLOY_SCRIPT=$(cat <<EOF
-          sudo -u agenthub -H bash -l <<'BASH'
+          runuser -u agenthub -- bash -l <<'BASH'
           set -euo pipefail
           cd ${DEPLOY_PATH}
           git fetch --all --prune
