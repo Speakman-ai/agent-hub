@@ -943,17 +943,29 @@ Example:
 ## Your task
 1. Fetch the PR metadata, diff, and recent commits using \`gh pr view ${opts.prNumber} --repo ${opts.repoFullName}\` and \`gh pr diff ${opts.prNumber} --repo ${opts.repoFullName}\`.
 2. Read the changed files in context.
-3. For every issue you find, classify it as **blocking** or **non-blocking**:
-   - **Blocking** — correctness bugs, missing tests for non-trivial new logic, security holes, breaking API changes, data loss risk, or clear convention violations that will hurt other code. These must be fixed before merge.
-   - **Non-blocking** — suggestions, polish, design observations, minor perf, nits, and anything you'd be fine shipping without. Non-blocking feedback is welcome *under an APPROVE* — it does not downgrade the verdict.
+3. For every issue you find, **assign a severity score from 1 to 10** using the rubric below, then classify it as **blocking** or **non-blocking** based on that score.
+
+   ### Severity rubric (1–10)
+   - **1–2**: pure nit — whitespace, naming preference, wording in a comment, stylistic taste.
+   - **3**: minor polish — small refactor opportunity, redundant code, slightly clearer API shape. No correctness impact.
+   - **4–5**: real issue — missing test for non-trivial new logic, unclear error handling, moderate performance smell, convention violation that will propagate.
+   - **6–7**: correctness concern — likely bug in an edge case, weak input validation, brittle assumption, subtle race, under-documented breaking change.
+   - **8–9**: serious defect — reproducible bug on the happy path, real security hole, data-loss risk, breaking API change for public consumers.
+   - **10**: showstopper — production will be down, credentials leaked, destructive migration, or a third-party API misuse that will fail immediately.
+
+   ### Severity → classification
+   - **Any finding scoring > 3 is BLOCKING.** There is no "non-blocking 4." A single finding scoring 4+ forces \`REQUEST_CHANGES\` for the whole review.
+   - **Findings scoring ≤ 3 are non-blocking** and may be included under an \`APPROVE\`.
+   - When in doubt about a score, **round up, not down.** Under-scoring to avoid blocking is the exact failure mode this rubric exists to prevent.
+
 4. Choose an event using the decision tree below, then submit ONE formal GitHub review by POSTing to Agent Hub's \`/api/pr/review\` endpoint. This routes the review through the GitHub App installation so it lands with the App identity — \`gh pr review\` runs as your CLI user (usually the PR author) and GitHub silently downgrades APPROVE to COMMENTED for self-reviews.
 
 ## Event decision tree
 
 Walk this in order and pick the **first** match — do not hedge:
 
-1. **Is there at least one blocking issue?** → \`REQUEST_CHANGES\`. Body required: list the blockers concretely (file:line). Non-blocking notes can be included too.
-2. **Otherwise** → \`APPROVE\`. Body optional; include any non-blocking feedback, suggestions, or praise you have. \`APPROVE\` does not mean "zero thoughts" — it means "this is mergeable as-is." Non-blocking comments under APPROVE are the normal, expected pattern.
+1. **Does any finding score greater than 3 on the severity rubric?** → \`REQUEST_CHANGES\`. Body required: list every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`), blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the PR; do NOT downgrade to APPROVE because "the rest looked fine."
+2. **Otherwise (every finding scored ≤ 3)** → \`APPROVE\`. Body optional; if included, still prefix each note with its score (\`**[2/10]** …\`). \`APPROVE\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking comments under APPROVE are the normal, expected pattern.
 3. **Only if you genuinely cannot decide** (e.g., you want the author's take on a design question before endorsing, or the diff is half-done and you want to flag direction without blocking) → \`COMMENT\`. Body required. This should be rare — most reviews are APPROVE or REQUEST_CHANGES.
 
 **Hard rule (don't over-correct):** Non-blocking feedback does NOT require \`COMMENT\`. If nothing you wrote blocks merge, use \`APPROVE\` with your notes attached. \`COMMENT\` is for deliberate fence-sitting, not for "I had some suggestions." Defaulting every substantive-but-non-blocking review to COMMENT destroys the APPROVE signal just as badly as rubber-stamping everything to APPROVE did.

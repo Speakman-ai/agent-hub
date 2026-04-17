@@ -324,4 +324,44 @@ describe('ensureReviewerAgents', () => {
     // that should stay gone.
     expect(sp).not.toMatch(/Skip nits unless egregious/);
   });
+
+  it('seeds a reviewer whose system prompt requires a 1–10 severity score and blocks on >3', async () => {
+    // Regression guard: the reviewer kept letting real issues slip under an
+    // APPROVE because "blocking vs non-blocking" was a judgment call with no
+    // calibration. The 1–10 rubric anchors the judgment, and the hard
+    // ">3 → REQUEST_CHANGES" rule removes the escape hatch.
+    const projId = `reviewer-severity-${Date.now()}`;
+    const project = await createProjectWithAgent(projId, 'Severity Reviewer', '#0EA5E9');
+    project.githubRepo = 'owner/severity-repo';
+    saveProjects();
+
+    ensureReviewerAgents();
+
+    const updated = findProject(projId);
+    const reviewer = updated!.agents?.find((a) => a.role === 'reviewer');
+    expect(reviewer).toBeTruthy();
+    const sp = reviewer!.systemPrompt || '';
+
+    // Rubric must be presented as a 1–10 scale.
+    expect(sp).toMatch(/severity (score|rubric)/i);
+    expect(sp).toMatch(/1\s*[–-]\s*10/);
+
+    // All six calibration bands present.
+    expect(sp).toMatch(/\b1\s*[–-]\s*2\b/);
+    expect(sp).toMatch(/\b3\b/);
+    expect(sp).toMatch(/\b4\s*[–-]\s*5\b/);
+    expect(sp).toMatch(/\b6\s*[–-]\s*7\b/);
+    expect(sp).toMatch(/\b8\s*[–-]\s*9\b/);
+    expect(sp).toMatch(/\b10\b/);
+
+    // Hard threshold: >3 forces REQUEST_CHANGES.
+    expect(sp).toMatch(/>\s*3/);
+    expect(sp).toMatch(/REQUEST_CHANGES/);
+
+    // Tie-break rule prevents under-scoring as an escape hatch.
+    expect(sp).toMatch(/round up/i);
+
+    // Decision tree must branch on the score, not on vibes.
+    expect(sp).toMatch(/score\b[^.]*\b(greater than|>)\s*3/i);
+  });
 });

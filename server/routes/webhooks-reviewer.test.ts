@@ -208,6 +208,47 @@ describe('dispatchReviewerForPR — prompt content', () => {
     expect(msg.content).toContain('COMMENT');
   });
 
+  it('instructs the reviewer to score every finding 1–10 and block on >3', () => {
+    // Regression guard for the severity-scoring rubric. Before this was
+    // introduced, the reviewer would classify issues as "blocking" vs
+    // "non-blocking" based on feel, which let real issues slip under APPROVE
+    // because they weren't as bad as a showstopper. The 1–10 rubric plus the
+    // hard ">3 → REQUEST_CHANGES" rule removes that hedge.
+    const deps = makeDeps();
+    const project = makeProject('reviewer');
+
+    dispatchReviewerForPR(deps as never, project, OPTS);
+    vi.runAllTimers();
+
+    const msg = deps.handleChat.mock.calls[0]?.[1] as { content: string };
+
+    // The rubric must be presented as a 1–10 scale.
+    expect(msg.content).toMatch(/severity (score|rubric)/i);
+    expect(msg.content).toMatch(/1\s*[–-]\s*10/);
+
+    // All six rubric bands must be present so the reviewer has calibration
+    // anchors rather than picking a number from thin air.
+    expect(msg.content).toMatch(/\b1\s*[–-]\s*2\b/);
+    expect(msg.content).toMatch(/\b3\b/);
+    expect(msg.content).toMatch(/\b4\s*[–-]\s*5\b/);
+    expect(msg.content).toMatch(/\b6\s*[–-]\s*7\b/);
+    expect(msg.content).toMatch(/\b8\s*[–-]\s*9\b/);
+    expect(msg.content).toMatch(/\b10\b/);
+
+    // The hard threshold: anything >3 is blocking. This wording is
+    // load-bearing — if it drifts to ">=5" or "major issues" the reviewer
+    // regains wiggle room and the rubric loses its teeth.
+    expect(msg.content).toMatch(/>\s*3/);
+    expect(msg.content).toMatch(/REQUEST_CHANGES/);
+
+    // The tie-break rule (round up, not down) prevents under-scoring as
+    // an escape hatch from the >3 rule.
+    expect(msg.content).toMatch(/round up/i);
+
+    // The decision tree itself must branch on the score, not on vibes.
+    expect(msg.content).toMatch(/score\b[^.]*\b(greater than|>)\s*3/i);
+  });
+
   it('uses synchronize wording when reason is synchronize', () => {
     const deps = makeDeps();
     const project = makeProject('reviewer');
