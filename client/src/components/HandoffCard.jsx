@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ArrowRight, Send } from 'lucide-react';
+import { ArrowRight, Send, ExternalLink, AlertTriangle } from 'lucide-react';
 
 /**
  * HandoffCard
@@ -21,13 +21,30 @@ import { ArrowRight, Send } from 'lucide-react';
  *   agents          — full agents list (from App state) used to resolve
  *                     `toAgentId` → display name + color. Optional; falls
  *                     back to showing the raw id.
+ *   handoff         — optional DB row for the handoff (from
+ *                     GET /api/sessions/:sessionId/handoffs). When present we
+ *                     use its resolved `to_agent_id` + `to_session_id` to
+ *                     show a clickable "Open session" link; otherwise the
+ *                     card renders without navigation (pre-delivery or
+ *                     legacy messages).
+ *   onOpenSession   — optional callback invoked as
+ *                     `(agentId, sessionId) => void` when the user clicks
+ *                     the "Open session" link.
  */
-function HandoffCard({ note, toAgentId, fromAgent, agents }) {
-  const toAgent = resolveAgent(toAgentId, agents);
+function HandoffCard({ note, toAgentId, fromAgent, agents, handoff, onOpenSession }) {
+  // Prefer the resolved agent id stored on the DB row — the server's fuzzy
+  // resolver rewrites things like "agent-hub-backend" to the real id. Fall
+  // back to the raw block id so legacy / pre-delivery renders still work.
+  const resolvedToAgentId = handoff?.to_agent_id || toAgentId;
+  const toAgent = resolveAgent(resolvedToAgentId, agents);
   const fromName = fromAgent?.name ?? null;
   const fromColor = fromAgent?.color ?? '#6b7280';
-  const toName = toAgent?.name ?? toAgentId;
+  const toName = toAgent?.name ?? resolvedToAgentId;
   const toColor = toAgent?.color ?? '#6b7280';
+  const toSessionId = handoff?.to_session_id ?? null;
+  const status = handoff?.status ?? null;
+  const errorText = handoff?.error ?? null;
+  const canOpen = !!(toSessionId && resolvedToAgentId && typeof onOpenSession === 'function');
 
   return (
     <div
@@ -62,11 +79,42 @@ function HandoffCard({ note, toAgentId, fromAgent, agents }) {
         </div>
       </div>
 
-      {/* Footer — explanatory tagline */}
-      <div className="px-4 pb-2 -mt-1">
-        <p className="text-[11px] text-gray-500 italic">
+      {/* Footer — explanatory tagline + navigation link */}
+      <div className="px-4 pb-3 pt-1 flex items-center gap-3 flex-wrap">
+        <p className="text-[11px] text-gray-500 italic flex-1 min-w-[12rem]">
           Ownership transferred — the new session continues with the transcript above as context.
         </p>
+        {canOpen && (
+          <button
+            type="button"
+            data-testid="handoff-open-session"
+            onClick={() => onOpenSession(resolvedToAgentId, toSessionId)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-amber-900/40 hover:bg-amber-800/60 text-amber-100 border border-amber-700/50 transition-colors"
+            title={`Open the ${toName} session started by this handoff`}
+          >
+            <ExternalLink size={12} />
+            Open session
+          </button>
+        )}
+        {!canOpen && status === 'pending' && (
+          <span
+            data-testid="handoff-pending"
+            className="text-[11px] text-amber-300/70 font-medium inline-flex items-center gap-1"
+          >
+            <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-pulse" />
+            Delivering…
+          </span>
+        )}
+        {status === 'failed' && (
+          <span
+            data-testid="handoff-failed"
+            className="text-[11px] text-red-300 font-medium inline-flex items-center gap-1"
+            title={errorText || 'Handoff failed'}
+          >
+            <AlertTriangle size={11} />
+            Failed{errorText ? ` — ${errorText}` : ''}
+          </span>
+        )}
       </div>
     </div>
   );

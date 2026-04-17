@@ -58,6 +58,8 @@ function SessionTail({
   askSubmittedIds,
   fromAgent,
   agents,
+  sessionHandoffs,
+  onOpenSession,
 }) {
   const messageId = message?.id;
 
@@ -100,6 +102,8 @@ function SessionTail({
         agentColor={agentColor}
         fromAgent={fromAgent}
         agents={agents}
+        sessionHandoffs={sessionHandoffs}
+        onOpenSession={onOpenSession}
       />
     );
   }
@@ -121,7 +125,13 @@ function SessionTail({
         {streaming && blocks.length === 0 && (
           <div className="mt-2">
             {message?.content ? (
-              <TextBubble text={message.content} fromAgent={fromAgent} agents={agents} />
+              <TextBubble
+                text={message.content}
+                fromAgent={fromAgent}
+                agents={agents}
+                sessionHandoffs={sessionHandoffs}
+                onOpenSession={onOpenSession}
+              />
             ) : (
               <span className="text-xs text-gray-500 italic">Waiting for first event…</span>
             )}
@@ -162,6 +172,8 @@ function SessionTail({
                     text={block.text}
                     fromAgent={fromAgent}
                     agents={agents}
+                    sessionHandoffs={sessionHandoffs}
+                    onOpenSession={onOpenSession}
                   />
                 );
               case 'ask_question':
@@ -624,11 +636,12 @@ function formatToolInput(input) {
   }
 }
 
-function TextBubble({ text, fromAgent, agents }) {
+function TextBubble({ text, fromAgent, agents, sessionHandoffs, onOpenSession }) {
   // Strip any <handoff>/<delegate> blocks from the prose so the raw JSON
   // wall doesn't end up rendered inline. The blocks are surfaced separately
   // as a card below the prose.
   const { stripped, handoff } = extractCoordinationBlocks(text);
+  const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
   return (
     <>
       {stripped && (
@@ -648,9 +661,41 @@ function TextBubble({ text, fromAgent, agents }) {
           note={handoff.note}
           fromAgent={fromAgent}
           agents={agents}
+          handoff={handoffRow}
+          onOpenSession={onOpenSession}
         />
       )}
     </>
+  );
+}
+
+/**
+ * Correlate a parsed <handoff> block back to its DB row. The server's fuzzy
+ * resolver may have rewritten the id (e.g. "agent-hub-backend" →
+ * "hub-backend"), so we accept either the raw block's `toAgent` or the
+ * resolved `to_agent_id`, preferring delivered rows and then falling back
+ * to the most recent matching row. When there's only one handoff row for
+ * the whole source session (the common case — handoff is terminal) we
+ * just use it unconditionally.
+ */
+function pickHandoffRow(block, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const wanted = (block?.toAgent || '').trim().toLowerCase();
+  const match = (r) => {
+    const rowAgent = (r?.to_agent_id || '').toLowerCase();
+    if (!wanted || !rowAgent) return false;
+    return (
+      rowAgent === wanted ||
+      rowAgent.endsWith(`-${wanted}`) ||
+      wanted.endsWith(`-${rowAgent}`) ||
+      wanted.includes(rowAgent) ||
+      rowAgent.includes(wanted)
+    );
+  };
+  return (
+    rows.find((r) => r.status === 'delivered' && match(r)) ||
+    rows.find((r) => match(r)) ||
+    (rows.length === 1 ? rows[0] : null)
   );
 }
 
@@ -730,10 +775,18 @@ function UnknownBlock({ event }) {
  * Fallback bubble for legacy assistant messages that pre-date stream-json
  * event capture. Same shape as the old ChatMessage assistant case.
  */
-function LegacyAssistantBubble({ message, agentColor, fromAgent, agents }) {
+function LegacyAssistantBubble({
+  message,
+  agentColor,
+  fromAgent,
+  agents,
+  sessionHandoffs,
+  onOpenSession,
+}) {
   // Strip coordination blocks here too — legacy messages were saved with the
   // raw `<handoff>...</handoff>` JSON in their content.
   const { stripped, handoff } = extractCoordinationBlocks(message.content);
+  const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
   return (
     <div className="flex justify-start mb-4">
       <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
@@ -761,6 +814,8 @@ function LegacyAssistantBubble({ message, agentColor, fromAgent, agents }) {
             note={handoff.note}
             fromAgent={fromAgent}
             agents={agents}
+            handoff={handoffRow}
+            onOpenSession={onOpenSession}
           />
         )}
       </div>

@@ -248,6 +248,52 @@ describe('handleHandoff — end-to-end', () => {
     expect(section).toBe('');
   });
 
+  it('fuzzy-resolves an "agent-hub-backend"-style target to the real agent id and delivers', async () => {
+    // Regression: previously the lead agent's AGENTS.md uses
+    // `agent-hub-backend` as a label, while the canonical id is
+    // `hub-backend`. That mismatch quietly stranded every handoff until
+    // resolveTargetAgentId was introduced.
+    const stmts = getStmts();
+    const srcSessionId = `${testPrefix}-src-fuzzy`;
+    stmts.createSession.run(
+      srcSessionId,
+      'agent-lead',
+      'src',
+      'claude-code',
+      'claude-opus-4-7',
+      0,
+      0,
+    );
+
+    // Simulate the source project exposing both agents so the resolver
+    // has a universe to search across. The requested id
+    // "agent-hub-backend" progressively strips the "agent-" / "hub-"
+    // prefix to land on the canonical id "agent-backend" via a unique
+    // "-backend" suffix match.
+    const projectWithAgents = {
+      ...project,
+      agents: [
+        { id: 'agent-lead', name: 'Lead' },
+        { id: 'agent-backend', name: 'Backend' },
+      ],
+    } as unknown as Project;
+
+    const result = await handleHandoff(
+      srcSessionId,
+      'parent-msg-fuzzy',
+      { toAgent: 'agent-hub-backend', note: 'please ship' },
+      sourceAgent,
+      projectWithAgents,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.toAgentId).toBe('agent-backend');
+    const row = stmts.getHandoffById.get(result!.handoffId) as HandoffRow;
+    // Persisted id is the *resolved* one, so UI correlation works.
+    expect(row.to_agent_id).toBe('agent-backend');
+    expect(row.status).toBe('delivered');
+  });
+
   it('buildHandoffPromptSection returns empty for a pending (not yet delivered) handoff', () => {
     const stmts = getStmts();
     const srcSessionId = `${testPrefix}-src-pending`;

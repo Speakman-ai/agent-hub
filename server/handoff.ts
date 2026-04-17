@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import type {
+  Agent,
   EnrichedAgent,
   Project,
   Stmts,
@@ -100,6 +101,93 @@ export function initHandoff(d: HandoffDeps): void {
  */
 export function _peekDepsForInternalUse(): HandoffDeps | null {
   return deps;
+}
+
+// ─── Fuzzy target resolution ─────────────────────────────────────────────
+//
+// Agents authoring <handoff> blocks often transcribe an id from their AGENTS.md
+// context file rather than from the canonical `Hub Backend (`hub-backend`)`
+// delegation list. That means we frequently see requests like
+// `toAgent: "agent-hub-backend"` when the real id is `hub-backend`, which
+// would previously fail with "Unknown target agent" and silently strand the
+// session. Be tolerant: try exact id → prefix-stripped id → name match →
+// suffix match, but only within the source project so we never resolve
+// across project boundaries.
+//
+// Exported for tests.
+export function resolveTargetAgentId(
+  requested: string,
+  projectAgents: readonly Agent[],
+): string | null {
+  if (!requested || !Array.isArray(projectAgents) || projectAgents.length === 0) {
+    return null;
+  }
+  const want = requested.trim();
+  if (!want) return null;
+
+  // 1. Exact id match.
+  const exact = projectAgents.find((a) => a.id === want);
+  if (exact) return exact.id;
+
+  const wantLower = want.toLowerCase();
+
+  // 2. Case-insensitive id match.
+  const ci = projectAgents.find((a) => a.id.toLowerCase() === wantLower);
+  if (ci) return ci.id;
+
+  // 3. Case-insensitive name match (e.g. "Hub Backend", "hub backend").
+  const byName = projectAgents.find((a) => (a.name || '').toLowerCase() === wantLower);
+  if (byName) return byName.id;
+
+  // 4. Name-with-spaces → id-with-dashes (e.g. "hub-backend" ↔ "Hub Backend").
+  const wantAsName = wantLower.replace(/[-_]+/g, ' ').trim();
+  const byNormalizedName = projectAgents.find(
+    (a) => (a.name || '').toLowerCase().replace(/\s+/g, ' ').trim() === wantAsName,
+  );
+  if (byNormalizedName) return byNormalizedName.id;
+
+  // 5. Progressively drop leading hyphen-delimited tokens from the
+  // requested id, looking for an exact or suffix match. This handles the
+  // common AGENTS.md style where prose prefixes the project slug:
+  // "agent-hub-backend" → try "agent-hub-backend", then "hub-backend",
+  // then "backend". Also try after stripping a leading "agent-".
+  const tokens = wantLower.split('-');
+  const candidates = new Set<string>();
+  for (let i = 0; i < tokens.length; i += 1) {
+    const c = tokens.slice(i).join('-');
+    if (c) candidates.add(c);
+  }
+  if (wantLower.startsWith('agent-')) {
+    const stripped = wantLower.replace(/^agent-/, '');
+    const strippedTokens = stripped.split('-');
+    for (let i = 0; i < strippedTokens.length; i += 1) {
+      const c = strippedTokens.slice(i).join('-');
+      if (c) candidates.add(c);
+    }
+  }
+  candidates.delete(wantLower); // already tried above
+
+  for (const candidate of candidates) {
+    const exactMatch = projectAgents.find((a) => a.id.toLowerCase() === candidate);
+    if (exactMatch) return exactMatch.id;
+  }
+  for (const candidate of candidates) {
+    const suffixMatches = projectAgents.filter(
+      (a) => a.id.toLowerCase() === candidate || a.id.toLowerCase().endsWith(`-${candidate}`),
+    );
+    if (suffixMatches.length === 1) return suffixMatches[0].id;
+  }
+
+  // 6. Suffix match on the original input — last ditch. Only accept a
+  // unique match to avoid grabbing the wrong agent when several share the
+  // suffix (e.g. "-dev").
+  const suffixMatches = projectAgents.filter((a) => {
+    const id = a.id.toLowerCase();
+    return id === wantLower || id.endsWith(`-${wantLower}`);
+  });
+  if (suffixMatches.length === 1) return suffixMatches[0].id;
+
+  return null;
 }
 
 // ─── Parser ──────────────────────────────────────────────────────────────
@@ -274,13 +362,32 @@ export async function handleHandoff(
     (sourceAgent as EnrichedAgent & { projectId?: string }).projectId ||
     '';
 
-  // Step 1: create pending row so failures are still observable.
+  // Resolve the requested target id against the source project. This
+  // forgives the common AGENTS.md/system-prompt mismatch where the lead
+  // author writes e.g. `agent-hub-backend` but the canonical id is
+  // `hub-backend` — previously those handoffs would fail silently and
+  // strand the session.
+  const projectAgents: readonly Agent[] = Array.isArray(
+    (sourceProject as Project & { agents?: Agent[] }).agents,
+  )
+    ? ((sourceProject as Project & { agents?: Agent[] }).agents as readonly Agent[])
+    : [];
+  const resolvedTargetId = resolveTargetAgentId(task.toAgent, projectAgents) ?? task.toAgent;
+  if (resolvedTargetId !== task.toAgent) {
+    console.log(
+      `[Handoff] Fuzzy-resolved target "${task.toAgent}" → "${resolvedTargetId}" in project ${projectId}`,
+    );
+  }
+
+  // Step 1: create pending row so failures are still observable. Persist
+  // the *resolved* id so downstream UI / prompt builders see the real
+  // target.
   try {
     stmts.createHandoff.run(
       handoffId,
       srcSessionId,
       sourceAgent.id,
-      task.toAgent,
+      resolvedTargetId,
       projectId,
       task.note,
     );
@@ -295,9 +402,12 @@ export async function handleHandoff(
   }
 
   // Step 2: validate target.
-  const targetAgent = getEnrichedAgent(task.toAgent);
+  const targetAgent = getEnrichedAgent(resolvedTargetId);
   if (!targetAgent) {
-    const reason = `Unknown target agent: ${task.toAgent}`;
+    const reason =
+      resolvedTargetId === task.toAgent
+        ? `Unknown target agent: ${task.toAgent}`
+        : `Unknown target agent: ${task.toAgent} (resolved to "${resolvedTargetId}" which does not exist)`;
     try {
       stmts.markHandoffFailed.run(reason, handoffId);
     } catch {}
@@ -305,11 +415,11 @@ export async function handleHandoff(
     return null;
   }
 
-  const targetLookup = findAgent(task.toAgent);
+  const targetLookup = findAgent(resolvedTargetId);
   const targetProjectId =
     (targetLookup?.project as (Project & { id?: string }) | undefined)?.id ?? '';
   if (projectId && targetProjectId && projectId !== targetProjectId) {
-    const reason = `Target agent ${task.toAgent} is not in the same project as ${sourceAgent.id}`;
+    const reason = `Target agent ${resolvedTargetId} is not in the same project as ${sourceAgent.id}`;
     try {
       stmts.markHandoffFailed.run(reason, handoffId);
     } catch {}

@@ -390,6 +390,19 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
+  // Return every handoff emitted from this source session (any status).
+  // Used by the chat UI to resolve <handoff> blocks in saved messages to a
+  // clickable link into the target session. Mirrors the delegations shape
+  // so the client can lazy-fetch on session open.
+  router.get('/api/sessions/:sessionId/handoffs', (req: Request, res: Response) => {
+    try {
+      const handoffs = stmts.getHandoffsFromSession.all(req.params.sessionId);
+      res.json(handoffs);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   router.get('/api/sessions/:sessionId/queue', (req: Request, res: Response) => {
     try {
       const queue = stmts.getQueuedMessages.all(req.params.sessionId);

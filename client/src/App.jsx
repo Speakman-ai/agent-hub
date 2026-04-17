@@ -57,6 +57,9 @@ export default function App() {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
+  // Handoffs (rows from GET /api/sessions/:id/handoffs) for the active
+  // source session — used by HandoffCard to render an "Open session" link.
+  const [sessionHandoffs, setSessionHandoffs] = useState([]);
   const [thinking, setThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingMsgId, setStreamingMsgId] = useState(null);
@@ -1111,6 +1114,63 @@ export default function App() {
           setActiveSessionId(null);
         }
         break;
+
+      case 'handoff_start': {
+        // Append the just-created handoff row to the source session's list
+        // so the HandoffCard "Open session" link appears without needing a
+        // refresh. Only relevant when the source session is currently open.
+        if (data.sessionId === activeSessionIdRef.current) {
+          setSessionHandoffs((prev) => {
+            if (prev.some((h) => h.id === data.handoffId)) return prev;
+            return [
+              ...prev,
+              {
+                id: data.handoffId,
+                from_session_id: data.sessionId,
+                to_session_id: data.toSessionId,
+                from_agent_id: data.fromAgentId,
+                to_agent_id: data.toAgentId,
+                note: null,
+                status: 'delivered',
+                error: null,
+              },
+            ];
+          });
+        }
+        break;
+      }
+
+      case 'handoff_error': {
+        // Surface the failure on the source session's handoff list so the
+        // UI can render a "Failed — <reason>" chip on the card instead of
+        // the usual "Delivering…" placeholder.
+        if (data.sessionId === activeSessionIdRef.current && data.handoffId) {
+          setSessionHandoffs((prev) => {
+            const existing = prev.find((h) => h.id === data.handoffId);
+            if (existing) {
+              return prev.map((h) =>
+                h.id === data.handoffId
+                  ? { ...h, status: 'failed', error: data.error || 'Handoff failed' }
+                  : h,
+              );
+            }
+            return [
+              ...prev,
+              {
+                id: data.handoffId,
+                from_session_id: data.sessionId,
+                to_session_id: null,
+                from_agent_id: null,
+                to_agent_id: null,
+                note: null,
+                status: 'failed',
+                error: data.error || 'Handoff failed',
+              },
+            ];
+          });
+        }
+        break;
+      }
     }
   }, []);
 
@@ -1301,6 +1361,41 @@ export default function App() {
     }
     api.getMessages(activeSessionId).then(setMessages);
   }, [activeSessionId]);
+
+  // Load any handoffs emitted from this session so HandoffCard can resolve
+  // `toSessionId` and render a clickable "Open session" link. Best-effort —
+  // missing endpoint / offline must never block the chat render.
+  useEffect(() => {
+    if (!activeSessionId) {
+      setSessionHandoffs([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getSessionHandoffs(activeSessionId)
+      .then((rows) => {
+        if (cancelled) return;
+        setSessionHandoffs(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionHandoffs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId]);
+
+  // Navigate into a handoff's target session (called from HandoffCard).
+  const handleOpenHandoffSession = useCallback(
+    (targetAgentId, targetSessionId) => {
+      if (!targetAgentId || !targetSessionId) return;
+      pendingSessionIdRef.current = targetSessionId;
+      setActiveAgentId(targetAgentId);
+      setActiveSessionId(targetSessionId);
+      setCurrentView('chat');
+    },
+    [setActiveAgentId],
+  );
 
   // Rehydrate the in-Hub ProgressPanel for the active session whenever the
   // session changes. Skip if we already have live steps in memory (avoid
@@ -1938,6 +2033,8 @@ export default function App() {
                               askSubmittedIds={askSubmitted}
                               fromAgent={activeAgent}
                               agents={agents}
+                              sessionHandoffs={sessionHandoffs}
+                              onOpenSession={handleOpenHandoffSession}
                             />
                           ) : (
                             <ChatMessage
@@ -1968,6 +2065,8 @@ export default function App() {
                             askSubmittedIds={askSubmitted}
                             fromAgent={activeAgent}
                             agents={agents}
+                            sessionHandoffs={sessionHandoffs}
+                            onOpenSession={handleOpenHandoffSession}
                           />
                         )}
                         {/* Delegation panel — shows when a lead agent delegates to sub-agents */}

@@ -2,8 +2,10 @@ import {
   parseHandoffBlock,
   handoffHasTrailingContent,
   buildHandoffContextBlock,
+  resolveTargetAgentId,
   HANDOFF_TRANSCRIPT_MAX_TURNS,
 } from './handoff.js';
+import type { Agent } from './types.js';
 
 describe('parseHandoffBlock', () => {
   it('extracts a valid handoff block with toAgent and note', () => {
@@ -184,5 +186,69 @@ describe('buildHandoffContextBlock', () => {
       messages: [],
     });
     expect(out).toContain('_(no prior messages)_');
+  });
+});
+
+describe('resolveTargetAgentId', () => {
+  const agents: Agent[] = [
+    { id: 'agent-hub', name: 'Hub Lead Dev' } as Agent,
+    { id: 'hub-frontend', name: 'Hub Frontend' } as Agent,
+    { id: 'hub-backend', name: 'Hub Backend' } as Agent,
+    { id: 'hub-electron', name: 'Hub Electron' } as Agent,
+    { id: 'hub-mobile', name: 'Hub Mobile' } as Agent,
+  ];
+
+  it('returns the exact id when it matches', () => {
+    expect(resolveTargetAgentId('hub-backend', agents)).toBe('hub-backend');
+  });
+
+  it('resolves "agent-hub-backend" (AGENTS.md style) to "hub-backend"', () => {
+    // The common failure mode: AGENTS.md prose uses "Agent Hub Backend
+    // (agent-hub-backend)" but the canonical id is "hub-backend". Without
+    // this fuzzy path, handoffs silently fail.
+    expect(resolveTargetAgentId('agent-hub-backend', agents)).toBe('hub-backend');
+  });
+
+  it('resolves "agent-hub-frontend" to "hub-frontend"', () => {
+    expect(resolveTargetAgentId('agent-hub-frontend', agents)).toBe('hub-frontend');
+  });
+
+  it('resolves by display name (case-insensitive)', () => {
+    expect(resolveTargetAgentId('Hub Backend', agents)).toBe('hub-backend');
+    expect(resolveTargetAgentId('hub backend', agents)).toBe('hub-backend');
+  });
+
+  it('resolves a bare suffix when it is unambiguous', () => {
+    expect(resolveTargetAgentId('backend', agents)).toBe('hub-backend');
+  });
+
+  it('returns null for completely unknown ids', () => {
+    expect(resolveTargetAgentId('ghost-agent', agents)).toBeNull();
+  });
+
+  it('returns null for empty / invalid input', () => {
+    expect(resolveTargetAgentId('', agents)).toBeNull();
+    expect(resolveTargetAgentId('   ', agents)).toBeNull();
+  });
+
+  it('returns null when no agents are provided', () => {
+    expect(resolveTargetAgentId('hub-backend', [])).toBeNull();
+  });
+
+  it('refuses an ambiguous suffix match', () => {
+    const ambiguous: Agent[] = [
+      { id: 'alpha-backend', name: 'Alpha Backend' } as Agent,
+      { id: 'beta-backend', name: 'Beta Backend' } as Agent,
+    ];
+    // "backend" matches both suffixes; must not guess.
+    expect(resolveTargetAgentId('backend', ambiguous)).toBeNull();
+  });
+
+  it('prefers exact id over a suffix match on the same input', () => {
+    const mix: Agent[] = [
+      { id: 'backend', name: 'Plain Backend' } as Agent,
+      { id: 'hub-backend', name: 'Hub Backend' } as Agent,
+    ];
+    expect(resolveTargetAgentId('backend', mix)).toBe('backend');
   });
 });

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
 import HandoffCard from './HandoffCard.jsx';
 
 const AGENTS = [
@@ -53,5 +53,85 @@ describe('HandoffCard', () => {
     // Only the to-agent (Hub Backend) chip should appear.
     expect(screen.queryByText('Hub Frontend')).not.toBeInTheDocument();
     expect(screen.getByText('Hub Backend')).toBeInTheDocument();
+  });
+
+  it('renders an "Open session" button when the handoff row has a to_session_id', () => {
+    const onOpen = vi.fn();
+    render(
+      <HandoffCard
+        toAgentId="hub-backend"
+        note="do the thing"
+        agents={AGENTS}
+        handoff={{
+          id: 'h1',
+          to_agent_id: 'hub-backend',
+          to_session_id: 'sess-abc',
+          status: 'delivered',
+        }}
+        onOpenSession={onOpen}
+      />,
+    );
+    const btn = screen.getByTestId('handoff-open-session');
+    expect(btn).toBeInTheDocument();
+    fireEvent.click(btn);
+    expect(onOpen).toHaveBeenCalledWith('hub-backend', 'sess-abc');
+  });
+
+  it("uses the handoff row's resolved to_agent_id instead of the raw block id", () => {
+    // Simulates the server fuzzy-resolving "agent-hub-backend" → "hub-backend".
+    render(
+      <HandoffCard
+        toAgentId="agent-hub-backend"
+        note="x"
+        agents={AGENTS}
+        handoff={{
+          id: 'h1',
+          to_agent_id: 'hub-backend',
+          to_session_id: 'sess-xyz',
+          status: 'delivered',
+        }}
+        onOpenSession={() => {}}
+      />,
+    );
+    // Should show "Hub Backend" (resolved), not the raw "agent-hub-backend".
+    expect(screen.getByText('Hub Backend')).toBeInTheDocument();
+    expect(screen.queryByText('agent-hub-backend')).not.toBeInTheDocument();
+  });
+
+  it('does not render the link when onOpenSession is missing', () => {
+    render(
+      <HandoffCard
+        toAgentId="hub-backend"
+        note="x"
+        agents={AGENTS}
+        handoff={{
+          id: 'h1',
+          to_agent_id: 'hub-backend',
+          to_session_id: 'sess-abc',
+          status: 'delivered',
+        }}
+      />,
+    );
+    expect(screen.queryByTestId('handoff-open-session')).not.toBeInTheDocument();
+  });
+
+  it('renders a "Failed" badge when the handoff row has status=failed', () => {
+    render(
+      <HandoffCard
+        toAgentId="hub-backend"
+        note="x"
+        agents={AGENTS}
+        handoff={{
+          id: 'h1',
+          to_agent_id: 'hub-backend',
+          to_session_id: null,
+          status: 'failed',
+          error: 'Unknown target agent: agent-hub-backend',
+        }}
+        onOpenSession={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('handoff-failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('handoff-open-session')).not.toBeInTheDocument();
   });
 });
