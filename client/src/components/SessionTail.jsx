@@ -364,7 +364,7 @@ const TOOL_STYLES = {
  * Edit: shows old_string lines as removals (red) and new_string as additions (green).
  * Write: shows all content as additions (green).
  */
-function DiffView({ tool, input }) {
+export function DiffView({ tool, input }) {
   const { filePath, action, removals, additions } = parseDiffLines(tool, input);
 
   const addedCount = additions.filter((l) => l.trim()).length;
@@ -381,24 +381,30 @@ function DiffView({ tool, input }) {
           {removedCount > 0 && <span className="text-red-400 ml-1">-{removedCount}</span>}
         </span>
       </div>
-      {/* Diff lines */}
+      {/* Diff lines — whitespace-pre preserves leading indentation; the gutter
+          marker is in a flex-shrink-0 span so the code portion keeps its
+          original column alignment even when the container wraps. */}
       <div className="overflow-x-auto max-h-64 overflow-y-auto">
         {removals.map((line, i) => (
           <div
             key={`r${i}`}
-            className="px-2 py-px bg-red-950/40 text-red-300 border-l-2 border-red-600"
+            className="flex px-2 py-px bg-red-950/40 text-red-300 border-l-2 border-red-600"
           >
-            <span className="text-red-500/60 select-none mr-2">-</span>
-            {line}
+            <span className="text-red-500/60 select-none mr-2 flex-shrink-0">-</span>
+            <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
+              {line}
+            </span>
           </div>
         ))}
         {additions.map((line, i) => (
           <div
             key={`a${i}`}
-            className="px-2 py-px bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-600"
+            className="flex px-2 py-px bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-600"
           >
-            <span className="text-emerald-500/60 select-none mr-2">+</span>
-            {line}
+            <span className="text-emerald-500/60 select-none mr-2 flex-shrink-0">+</span>
+            <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
+              {line}
+            </span>
           </div>
         ))}
       </div>

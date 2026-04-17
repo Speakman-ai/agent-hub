@@ -25,9 +25,16 @@ pre {
   @apply bg-gray-900 rounded-lg p-4 overflow-x-auto my-2;
   -webkit-overflow-scrolling: touch;
   max-width: 100%;
+  /* Preserve leading whitespace/indentation in code previews and diffs.
+     Keep spaces & tabs as-authored; render tabs at a consistent width. */
+  white-space: pre;
+  tab-size: 2;
+  -moz-tab-size: 2;
 }
 code {
   @apply text-sm;
+  tab-size: 2;
+  -moz-tab-size: 2;
 }
 :not(pre) > code {
   @apply bg-gray-800 px-1.5 py-0.5 rounded text-emerald-400;
@@ -37,6 +44,14 @@ code {
 pre code.hljs {
   background: transparent !important;
   padding: 0 !important;
+}
+
+/* Elements explicitly opting into wrapping (e.g., tool input/output blocks)
+   should still preserve leading indentation. */
+pre.whitespace-pre-wrap,
+.whitespace-pre-wrap {
+  tab-size: 2;
+  -moz-tab-size: 2;
 }
 
 /* Markdown content */
