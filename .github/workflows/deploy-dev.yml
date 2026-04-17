@@ -83,17 +83,23 @@ jobs:
           #   2. root touching a repo owned by `agenthub` trips git's
           #      "dubious ownership" guard (git >= 2.35.2), and pm2's daemon
           #      lives in the agenthub user's $HOME, not root's.
-          # Fix by handing the payload to `runuser -u agenthub -- bash -l`: it
-          # flips to the repo owner (git happy), sources the user's login PATH
-          # (pm2 reachable), and bash accepts pipefail.
-          # NOTE: we specifically use `runuser`, not `sudo -u`. Under SSM
-          # (non-interactive, no TTY) sudo opens a PAM session that sometimes
-          # fails to close cleanly — sudo then returns exit 1 even though the
-          # inner `bash -l` exited 0 (health check green). `runuser` skips the
-          # PAM session setup/teardown, so the child's exit code propagates
-          # faithfully. See: actions run 24587084751 (PR #358 follow-up).
+          # Fix by handing the payload to `setpriv ... -- bash -l`: setpriv
+          # flips uid/gid without touching PAM, sources the user's login PATH
+          # via bash -l (pm2 reachable), and bash accepts pipefail.
+          # NOTE: we specifically use `setpriv`, not `sudo -u` OR `runuser`.
+          # Under SSM (non-interactive, no TTY) both sudo and runuser open PAM
+          # sessions — Ubuntu's /etc/pam.d/{sudo,runuser} include pam_keyinit
+          # + pam_unix session modules whose close sometimes fails to tear
+          # down cleanly, so the wrapper returns exit 1 even though the inner
+          # `bash -l` exited 0 (health check green). setpriv has no PAM
+          # integration at all, so the child's exit code propagates
+          # faithfully. See: actions runs 24587084751 (#358) and 24588494694
+          # (#359 follow-up — runuser also PAM-bound, same leak).
+          # --init-groups reads /etc/group for supplementary groups; --reset-env
+          # reinitialises HOME/USER/LOGNAME/PATH/SHELL from the target user's
+          # passwd entry so bash -l can find ~/.bash_profile etc.
           DEPLOY_SCRIPT=$(cat <<EOF
-          runuser -u agenthub -- bash -l <<'BASH'
+          setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash -l <<'BASH'
           set -euo pipefail
           cd ${DEPLOY_PATH}
           git fetch --all --prune

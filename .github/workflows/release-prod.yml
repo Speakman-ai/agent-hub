@@ -167,13 +167,14 @@ jobs:
           # dash rejects `set -o pipefail`, and root touching a repo owned by
           # `agenthub` trips git's "dubious ownership" guard (>= 2.35.2); pm2's
           # daemon also lives in agenthub's $HOME. Hand off to
-          # `runuser -u agenthub -- bash -l` to run as the repo owner with the
-          # user's login PATH (pm2 reachable) and bash's pipefail.
-          # NOTE: runuser (not sudo) because sudo under SSM can return exit 1
-          # on PAM session teardown even when the inner shell exited 0. See
-          # deploy-dev.yml for the full comment.
+          # `setpriv ... -- bash -l` to run as the repo owner with the user's
+          # login PATH (pm2 reachable) and bash's pipefail.
+          # NOTE: setpriv (not sudo, not runuser) because both sudo and
+          # runuser open PAM sessions whose close sometimes returns exit 1
+          # under SSM even when the inner shell exited 0. setpriv has no PAM
+          # integration. See deploy-dev.yml for the full comment.
           DEPLOY_SCRIPT=$(cat <<EOF
-          runuser -u agenthub -- bash -l <<'BASH'
+          setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash -l <<'BASH'
           set -euo pipefail
           cd ${DEPLOY_PATH}
           git fetch --all --tags --prune
@@ -304,12 +305,12 @@ jobs:
         run: |
           set -euo pipefail
           # Same constraints as prod-1/dev: dash + root → use
-          # `runuser -u agenthub -- bash -l` so pipefail works, git sees the
-          # correct owner, and pm2's per-user daemon is reachable. runuser
-          # (not sudo) avoids the PAM-session exit-code leak documented in
+          # `setpriv ... -- bash -l` so pipefail works, git sees the correct
+          # owner, and pm2's per-user daemon is reachable. setpriv (not sudo,
+          # not runuser) avoids the PAM-session exit-code leak documented in
           # deploy-dev.yml.
           DEPLOY_SCRIPT=$(cat <<EOF
-          runuser -u agenthub -- bash -l <<'BASH'
+          setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash -l <<'BASH'
           set -euo pipefail
           cd ${DEPLOY_PATH}
           git fetch --all --tags --prune

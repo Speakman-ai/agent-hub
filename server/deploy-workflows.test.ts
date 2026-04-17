@@ -72,6 +72,48 @@ describe('SSM deploy workflows', () => {
           ).toBe(true);
         }
       });
+
+      // ---------------------------------------------------------------------
+      // Privilege-drop wrapper: setpriv (NOT sudo, NOT runuser).
+      //
+      // Both `sudo -u agenthub -H bash -l` (PR #358) and `runuser -u agenthub
+      // -- bash -l` (PR #359) opened PAM sessions via /etc/pam.d/{sudo,runuser}
+      // whose teardown sometimes returns exit 1 under SSM's non-interactive
+      // context even when the inner `bash -l` exited 0 (health check green).
+      // That made the GitHub Actions job go red despite a successful deploy.
+      //
+      // `setpriv` from util-linux has zero PAM integration — it performs a
+      // raw uid/gid switch and exec's the target command, so the child's
+      // exit code propagates faithfully. These guards keep us on setpriv.
+      // See actions runs 24587084751 and 24588494694.
+      // ---------------------------------------------------------------------
+      if (/aws ssm send-command/.test(content)) {
+        it('uses setpriv (PAM-free) to drop privileges to agenthub', () => {
+          // Matches `setpriv --reuid agenthub --regid agenthub` with any
+          // intervening flags/whitespace, followed by `-- bash -l`.
+          const setprivPattern =
+            /setpriv\s+(?:--[a-z-]+(?:\s+\S+)?\s+)*--reuid\s+agenthub\s+(?:--[a-z-]+(?:\s+\S+)?\s+)*--regid\s+agenthub\b[^\n]*--\s+bash\s+-l/;
+          expect(
+            setprivPattern.test(content),
+            `${wf} must drop privileges with \`setpriv --reuid agenthub --regid agenthub ... -- bash -l\`. ` +
+              `sudo and runuser both leak a non-zero exit under SSM via PAM session teardown.`,
+          ).toBe(true);
+        });
+
+        it('does not fall back to sudo -u agenthub or runuser -u agenthub', () => {
+          // `sudo -u agenthub` and `runuser -u agenthub` are the two
+          // regressions we're explicitly guarding against. Both have PAM
+          // session teardown that leaks exit 1 under SSM.
+          expect(
+            /\bsudo\s+-u\s+agenthub\b/.test(content),
+            `${wf} re-introduced \`sudo -u agenthub\`, which leaks exit 1 via PAM session teardown under SSM. Use setpriv instead.`,
+          ).toBe(false);
+          expect(
+            /\brunuser\s+-u\s+agenthub\b/.test(content),
+            `${wf} re-introduced \`runuser -u agenthub\`, which also leaks exit 1 via PAM session teardown under SSM (Ubuntu's /etc/pam.d/runuser includes session modules). Use setpriv instead.`,
+          ).toBe(false);
+        });
+      }
     });
   }
 });
