@@ -349,24 +349,73 @@ export interface WorktreeChanges {
   branch: string;
 }
 
+/**
+ * Detect the repo's default branch (e.g. `main` or `master`). Mirrors the
+ * logic in `worktree.ts` so `checkWorktreeChanges` doesn't silently assume
+ * `main` and miss "has commits ahead of default branch" for master repos
+ * (or any fresh local branch whose upstream is not yet set).
+ *
+ * Order:
+ *   1. `origin/HEAD` symbolic ref (most reliable; tracks remote's default).
+ *   2. Local `main` if it exists.
+ *   3. Local `master` if it exists.
+ *   4. `null` — caller should treat this as "unknown" rather than silently
+ *      assuming `hasUnpushed = false`.
+ */
+async function resolveDefaultBranch(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync('git symbolic-ref refs/remotes/origin/HEAD', { cwd });
+    const ref = stdout.trim().replace('refs/remotes/origin/', '');
+    if (ref) return ref;
+  } catch {
+    // origin/HEAD not set — try local branches
+  }
+  for (const candidate of ['main', 'master']) {
+    try {
+      await execAsync(`git rev-parse --verify ${candidate}`, { cwd });
+      return candidate;
+    } catch {
+      // branch doesn't exist locally
+    }
+  }
+  return null;
+}
+
 export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges> {
   const { stdout: status } = await execAsync('git status --porcelain', { cwd });
   const hasUncommitted = !!status.trim();
 
   let hasUnpushed = false;
+  let hasUpstream = false;
   try {
     const { stdout: logOut } = await execAsync('git log @{upstream}..HEAD --oneline', {
       cwd,
     });
+    hasUpstream = true;
     hasUnpushed = !!logOut.trim();
   } catch {
-    try {
-      const { stdout: logOut2 } = await execAsync('git log main..HEAD --oneline', {
-        cwd,
-      });
-      hasUnpushed = !!logOut2.trim();
-    } catch {
-      // no upstream or main ref
+    // No upstream configured for this branch — fall through to default-branch
+    // comparison so a fresh, never-pushed branch with local commits still
+    // surfaces the "Create PR" banner.
+  }
+
+  if (!hasUpstream) {
+    const defaultBranch = await resolveDefaultBranch(cwd);
+    if (defaultBranch) {
+      // Try both the local ref and the remote-tracking ref. Prefer
+      // `origin/<default>` when available because the local default branch
+      // may be stale or absent in a linked worktree.
+      for (const ref of [`origin/${defaultBranch}`, defaultBranch]) {
+        try {
+          const { stdout: logOut2 } = await execAsync(`git log ${ref}..HEAD --oneline`, {
+            cwd,
+          });
+          hasUnpushed = !!logOut2.trim();
+          break;
+        } catch {
+          // ref not available — try next candidate
+        }
+      }
     }
   }
 

@@ -155,6 +155,60 @@ describe('checkWorktreeChanges', () => {
     expect(result.hasUnpushed).toBe(false);
     expect(result.branch).toBe('main');
   });
+
+  // Regression: bug report "PR Button didnt show".
+  // The old fallback hard-coded `git log main..HEAD`, so repos whose default
+  // branch is `master` (or anything other than `main`) would silently report
+  // `hasUnpushed = false` — suppressing the "Create PR" banner in the UI.
+  it('detects unpushed commits against `master` when default branch is master', async () => {
+    mockExec({
+      'git status --porcelain': { stdout: '' },
+      'git log @{upstream}..HEAD': { error: new Error('no upstream') },
+      // origin/HEAD not configured → fall through to local branch probe
+      'git symbolic-ref refs/remotes/origin/HEAD': { error: new Error('not set') },
+      // `main` doesn't exist; `master` does
+      'git rev-parse --verify main': { error: new Error('bad ref') },
+      'git rev-parse --verify master': { stdout: 'deadbeef\n' },
+      // Commits ahead of origin/master
+      'git log origin/master..HEAD --oneline': { stdout: 'abc123 work in progress\n' },
+      'git rev-parse --abbrev-ref HEAD': { stdout: 'feature/fix-docs\n' },
+    });
+
+    const result = await checkWorktreeChanges('/tmp/test');
+    expect(result.hasUnpushed).toBe(true);
+    expect(result.branch).toBe('feature/fix-docs');
+  });
+
+  it('uses origin/HEAD symbolic-ref when available to resolve default branch', async () => {
+    mockExec({
+      'git status --porcelain': { stdout: '' },
+      'git log @{upstream}..HEAD': { error: new Error('no upstream') },
+      'git symbolic-ref refs/remotes/origin/HEAD': {
+        stdout: 'refs/remotes/origin/develop\n',
+      },
+      'git log origin/develop..HEAD --oneline': { stdout: 'abc123 feature commit\n' },
+      'git rev-parse --abbrev-ref HEAD': { stdout: 'feature/thing\n' },
+    });
+
+    const result = await checkWorktreeChanges('/tmp/test');
+    expect(result.hasUnpushed).toBe(true);
+  });
+
+  it('stays false when neither upstream, origin/HEAD, main, nor master can be resolved', async () => {
+    mockExec({
+      'git status --porcelain': { stdout: '' },
+      'git log @{upstream}..HEAD': { error: new Error('no upstream') },
+      'git symbolic-ref refs/remotes/origin/HEAD': { error: new Error('not set') },
+      'git rev-parse --verify main': { error: new Error('bad ref') },
+      'git rev-parse --verify master': { error: new Error('bad ref') },
+      'git rev-parse --abbrev-ref HEAD': { stdout: 'solo-branch\n' },
+    });
+
+    const result = await checkWorktreeChanges('/tmp/test');
+    expect(result.hasUncommitted).toBe(false);
+    expect(result.hasUnpushed).toBe(false);
+    expect(result.branch).toBe('solo-branch');
+  });
 });
 
 describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
