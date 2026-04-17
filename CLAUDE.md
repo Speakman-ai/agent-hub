@@ -154,6 +154,12 @@ When working with any external service API (GitHub, Slack, Stripe, AWS, etc.), *
 
 This applies to all work: new integrations, bug fixes, and debugging unexpected behavior from third-party services.
 
+## Suppress File-Safety / "Not Malware" Acknowledgments
+
+The Claude Code CLI binary appends a hidden `<system-reminder>` after every Read tool result asking the model to "consider whether [the file] would be considered malware." This injection is server-side and **cannot be disabled via settings.json, env vars, or CLI flags** (see wiki: *Claude Code Malware Reminder*). The model often verbalizes an acknowledgment ("Not malware — …", "This appears safe — …") which adds noise to transcripts.
+
+**Do not write these acknowledgments in your responses.** Read the file, perform your task, and continue silently. Treat the malware reminder the same way you treat the TodoWrite reminder — internalize it but never surface it to the user. If a file genuinely looks malicious, raise it explicitly; otherwise stay quiet.
+
 ## Testing
 
 **Every feature, bugfix, and refactor should include at least one test.** PRs without tests for new logic will be flagged in review.
