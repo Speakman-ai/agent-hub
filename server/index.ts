@@ -60,6 +60,7 @@ import createCronRoutes from './routes/crons.js';
 import createMemoryRoutes from './routes/memory.js';
 import createRoomRoutes from './routes/rooms.js';
 import createSkillRoutes, { DEFAULT_SKILLS_DIR } from './routes/skills.js';
+import createClawhubRoutes from './routes/clawhub.js';
 import createWebhookRoutes, {
   createGithubWebhookHandler,
   pendingReviewComments,
@@ -415,6 +416,7 @@ app.use(createHeartbeatRoutes(routeDeps));
 app.use(createCronRoutes(routeDeps));
 app.use(createRoomRoutes(routeDeps));
 app.use(createSkillRoutes(routeDeps));
+app.use(createClawhubRoutes(routeDeps));
 app.use(createWebhookRoutes(routeDeps));
 app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
