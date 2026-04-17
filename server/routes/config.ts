@@ -63,6 +63,7 @@ interface WebhookImportData {
   secret?: string;
   events?: string;
   enabled?: boolean | number;
+  author_allowlist?: string;
 }
 
 interface WikiImportData {
@@ -974,6 +975,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             secret,
             w.events || '{}',
             w.enabled ? 1 : 0,
+            typeof w.author_allowlist === 'string' ? w.author_allowlist : '[]',
           );
           imported++;
         }

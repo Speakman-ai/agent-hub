@@ -332,6 +332,10 @@ export interface WebhookConfigRow {
   secret: string;
   events: string;
   enabled: number;
+  // JSON array of GitHub logins. Empty array = review-all (backwards compatible).
+  // When non-empty, only PRs whose pull_request.user.login matches (case-insensitive)
+  // trigger the reviewer dispatch. See shouldReviewPrAuthor() in routes/webhooks.ts.
+  author_allowlist: string;
   created_at: string;
   updated_at: string;
 }

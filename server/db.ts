@@ -378,6 +378,7 @@ function initDb(dataDir: string): void {
       secret TEXT NOT NULL,
       events TEXT NOT NULL DEFAULT '{}',
       enabled INTEGER NOT NULL DEFAULT 1,
+      author_allowlist TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -849,6 +850,15 @@ function initDb(dataDir: string): void {
 
   try {
     db.exec('ALTER TABLE crons ADD COLUMN project_id TEXT');
+  } catch (_e) {
+    /* already exists */
+  }
+
+  // Per-webhook author allowlist — when non-empty, only PRs whose
+  // pull_request.user.login matches (case-insensitive) trigger the reviewer.
+  // Empty array (default) = review-all, backwards compatible.
+  try {
+    db.exec("ALTER TABLE webhook_configs ADD COLUMN author_allowlist TEXT NOT NULL DEFAULT '[]'");
   } catch (_e) {
     /* already exists */
   }
@@ -1576,10 +1586,10 @@ function initDb(dataDir: string): void {
     ),
     getWebhookConfig: db.prepare('SELECT * FROM webhook_configs WHERE id = ?'),
     createWebhookConfig: db.prepare(
-      'INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled, author_allowlist) VALUES (?, ?, ?, ?, ?, ?)',
     ),
     updateWebhookConfig: db.prepare(
-      "UPDATE webhook_configs SET repo_url = ?, events = ?, enabled = ?, updated_at = datetime('now') WHERE id = ?",
+      "UPDATE webhook_configs SET repo_url = ?, events = ?, enabled = ?, author_allowlist = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     deleteWebhookConfig: db.prepare('DELETE FROM webhook_configs WHERE id = ?'),
     getWebhookConfigByProjectAndRepo: db.prepare(

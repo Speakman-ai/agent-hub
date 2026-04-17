@@ -610,6 +610,66 @@ export function dispatchReviewFeedback(
   }
 }
 
+// ─── Per-webhook author allowlist ────────────────────────────────
+//
+// When two Agent Hub instances are both installed on the same repo (e.g. Kevin's
+// Hub + mine on `mcsteen/surveytracker`), GitHub fans every `pull_request` event
+// out to both webhook endpoints. Without a gate, both instances dispatch a
+// reviewer for every PR — each reviewing each other's work.
+//
+// The allowlist solves this by letting each webhook config declare which PR
+// authors it cares about. Stored as a JSON array of GitHub logins in
+// `webhook_configs.author_allowlist`. Empty array = review-all (default,
+// backwards compatible). Non-empty = only PRs whose `pull_request.user.login`
+// matches any entry (case-insensitive) trigger the reviewer.
+
+/**
+ * Validate + normalize a user-supplied allowlist payload.
+ * Returns the normalized array, or `null` if input is not a valid string[].
+ * Accepts `undefined`/`null`/missing → empty array (review-all).
+ * Trims each entry and drops empty strings.
+ */
+export function normalizeAuthorAllowlist(input: unknown): string[] | null {
+  if (input === undefined || input === null) return [];
+  if (!Array.isArray(input)) return null;
+  const out: string[] = [];
+  for (const entry of input) {
+    if (typeof entry !== 'string') return null;
+    const trimmed = entry.trim();
+    if (trimmed.length > 0) out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Gate check for reviewer dispatch. Parses the webhook config's author_allowlist
+ * JSON column and decides whether this PR's author should trigger a review from
+ * this Agent Hub instance.
+ *
+ * - Empty allowlist → true (review-all, backwards compatible)
+ * - Malformed JSON → treated as empty (review-all, fail-open)
+ * - Non-empty allowlist + author in list (case-insensitive) → true
+ * - Non-empty allowlist + author not in list / undefined → false
+ */
+export function shouldReviewPrAuthor(
+  webhookConfig: Pick<WebhookConfigRow, 'author_allowlist'>,
+  authorLogin: string | undefined,
+): boolean {
+  let allowlist: unknown;
+  try {
+    allowlist = JSON.parse(webhookConfig.author_allowlist || '[]');
+  } catch {
+    // Fail-open on parse error — safer than silently dropping reviews.
+    return true;
+  }
+  if (!Array.isArray(allowlist) || allowlist.length === 0) return true;
+  if (!authorLogin) return false;
+  const needle = authorLogin.toLowerCase();
+  return allowlist.some(
+    (entry) => typeof entry === 'string' && entry.trim().toLowerCase() === needle,
+  );
+}
+
 // ─── Reviewer Agent Dispatch (PR opened / synchronize) ───────────
 //
 // Single trigger surface: every `pull_request.opened` or `pull_request.synchronize`
@@ -1219,6 +1279,11 @@ function handleKanbanWebhookEvent(
 
     for (const pr of prs) {
       const prUrlFull = `${payload.repository.html_url}/pull/${pr.number}`;
+      // Note: author_allowlist gate is intentionally SKIPPED for rerequest
+      // events. The `check_run`/`check_suite` payloads don't carry PR author
+      // login directly, and rerequests are manually triggered (rare + already
+      // user-initiated), so fail-open here is safe. If this path becomes
+      // high-volume we can fetch the PR via the GitHub API to apply the gate.
       dispatchReviewerForPR(deps, project, {
         prUrl: prUrlFull,
         prNumber: pr.number,
@@ -1245,6 +1310,9 @@ function handleKanbanWebhookEvent(
   // Every PR `opened` or `synchronize` event triggers the project's dedicated
   // Reviewer agent (debounced). This is the SINGLE trigger surface for review —
   // no longer tied to autonomous mode, kanban column moves, or review_requested.
+  //
+  // Gated by the webhook config's author_allowlist so two Agent Hub instances
+  // installed on the same repo don't cross-review each other's PRs.
   if (
     event === 'pull_request' &&
     payload.pull_request &&
@@ -1252,14 +1320,21 @@ function handleKanbanWebhookEvent(
     (action === 'opened' || action === 'synchronize')
   ) {
     const pr = payload.pull_request;
-    dispatchReviewerForPR(deps, project, {
-      prUrl: pr.html_url,
-      prNumber: pr.number,
-      prTitle: pr.title,
-      repoFullName: payload.repository.full_name,
-      reason: action as 'opened' | 'synchronize',
-      headSha: pr.head?.sha,
-    });
+    const authorLogin = pr.user?.login;
+    if (!shouldReviewPrAuthor(webhookConfig, authorLogin)) {
+      console.log(
+        `[Webhook/Reviewer] skipping PR #${pr.number} on "${project.name}" — author "${authorLogin ?? '?'}" not in author_allowlist`,
+      );
+    } else {
+      dispatchReviewerForPR(deps, project, {
+        prUrl: pr.html_url,
+        prNumber: pr.number,
+        prTitle: pr.title,
+        repoFullName: payload.repository.full_name,
+        reason: action as 'opened' | 'synchronize',
+        headSha: pr.head?.sha,
+      });
+    }
   }
 
   const boardData = getOrCreateBoard(stmts, project.id) as BoardData | null;
@@ -2158,15 +2233,21 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/webhooks', async (req: Request, res: Response) => {
-    const { projectId, repoUrl, events, enabled, autoRegister } = req.body as {
+    const { projectId, repoUrl, events, enabled, autoRegister, authorAllowlist } = req.body as {
       projectId?: string;
       repoUrl?: string;
       events?: Record<string, unknown>;
       enabled?: boolean;
       autoRegister?: boolean;
+      authorAllowlist?: unknown;
     };
     if (!projectId || !repoUrl)
       return res.status(400).json({ error: 'projectId and repoUrl required' });
+
+    const normalizedAllowlist = normalizeAuthorAllowlist(authorAllowlist);
+    if (normalizedAllowlist === null) {
+      return res.status(400).json({ error: 'authorAllowlist must be an array of strings' });
+    }
 
     const secret = crypto.randomBytes(32).toString('hex');
     const result = stmts.createWebhookConfig.run(
@@ -2175,6 +2256,7 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
       secret,
       JSON.stringify(events || {}),
       enabled !== false ? 1 : 0,
+      JSON.stringify(normalizedAllowlist),
     );
 
     const created = stmts.getWebhookConfig.get(result.lastInsertRowid) as WebhookConfigRow;
@@ -2205,20 +2287,31 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
   });
 
   router.put('/api/webhooks/:id', (req: Request, res: Response) => {
-    const { repoUrl, events, enabled } = req.body as {
+    const { repoUrl, events, enabled, authorAllowlist } = req.body as {
       repoUrl?: string;
       events?: Record<string, unknown>;
       enabled?: boolean;
+      authorAllowlist?: unknown;
     };
     const existing = stmts.getWebhookConfig.get(parseInt(req.params.id as string)) as
       | WebhookConfigRow
       | undefined;
     if (!existing) return res.status(404).json({ error: 'Not found' });
 
+    let allowlistJson = existing.author_allowlist || '[]';
+    if (authorAllowlist !== undefined) {
+      const normalized = normalizeAuthorAllowlist(authorAllowlist);
+      if (normalized === null) {
+        return res.status(400).json({ error: 'authorAllowlist must be an array of strings' });
+      }
+      allowlistJson = JSON.stringify(normalized);
+    }
+
     stmts.updateWebhookConfig.run(
       repoUrl || existing.repo_url,
       JSON.stringify(events || JSON.parse(existing.events)),
       enabled !== undefined ? (enabled ? 1 : 0) : existing.enabled,
+      allowlistJson,
       existing.id,
     );
 

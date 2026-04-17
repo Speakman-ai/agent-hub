@@ -468,7 +468,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
           'pull_request_review.submitted': { enabled: false },
           'check_suite.completed': { enabled: false },
         });
-        stmts.createWebhookConfig.run(project.id, repoUrl, secret, defaultEvents, 1);
+        stmts.createWebhookConfig.run(project.id, repoUrl, secret, defaultEvents, 1, '[]');
       }
     }
     saveProjects();
@@ -780,7 +780,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         'check_suite.completed',
       ]);
       try {
-        stmts.createWebhookConfig.run(project.id, repoUrl, null, defaultEvents, 1);
+        stmts.createWebhookConfig.run(project.id, repoUrl, null, defaultEvents, 1, '[]');
       } catch (err: unknown) {
         console.warn(`[Onboard] Failed to create webhook config: ${(err as Error).message}`);
       }

@@ -58,6 +58,7 @@ describe('migrateWebhookRepoToProject', () => {
       'secret123',
       '["pull_request.opened"]',
       1,
+      '[]',
     );
 
     migrateWebhookRepoToProject();
@@ -92,6 +93,7 @@ describe('migrateWebhookRepoToProject', () => {
       'secret456',
       '["push"]',
       1,
+      '[]',
     );
 
     migrateWebhookRepoToProject();
@@ -160,6 +162,7 @@ describe('migrateWebhookRepoToProject', () => {
       'secret789',
       '["push"]',
       1,
+      '[]',
     );
 
     migrateWebhookRepoToProject();
@@ -256,6 +259,7 @@ describe('ensureReviewerAgents', () => {
       'sec',
       '["pull_request.opened"]',
       1,
+      '[]',
     );
 
     ensureReviewerAgents();

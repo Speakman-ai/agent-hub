@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef, Component } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
+import {
+  parseAllowlist,
+  serializeAllowlist,
+  parseAllowlistFromBackend,
+} from '../utils/authorAllowlist.js';
 import humanCron from '../../../shared/utils/humanCron.js';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
 
@@ -1197,6 +1202,12 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
   const [repoTesting, setRepoTesting] = useState({});
   const [repoTestResult, setRepoTestResult] = useState({});
 
+  // Per-project author allowlist (comma-separated input, per-project webhook)
+  const [allowlistInput, setAllowlistInput] = useState({});
+  const [allowlistSaving, setAllowlistSaving] = useState({});
+  const [allowlistStatus, setAllowlistStatus] = useState({});
+  const [webhookIds, setWebhookIds] = useState({}); // projectId → first webhook id
+
   // Project delete confirmation (inline toggle pattern)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(null);
 
@@ -1250,6 +1261,46 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
     }
   }, [onProjectsChange]);
 
+  // Load each project's first webhook config to pick up its author_allowlist.
+  // There's typically one webhook per project (auto-managed when the repo is
+  // linked), so we grab [0] and use its id for subsequent PUTs.
+  const loadAllowlistFor = async (projectId) => {
+    try {
+      const hooks = await api.getProjectWebhooks(projectId);
+      const first = Array.isArray(hooks) && hooks.length > 0 ? hooks[0] : null;
+      if (!first) return;
+      setWebhookIds((prev) => ({ ...prev, [projectId]: first.id }));
+      const list = parseAllowlistFromBackend(first.author_allowlist);
+      setAllowlistInput((prev) => ({ ...prev, [projectId]: serializeAllowlist(list) }));
+    } catch {
+      /* ignore — project may not have a webhook yet */
+    }
+  };
+
+  const saveAllowlist = async (projectId) => {
+    const webhookId = webhookIds[projectId];
+    if (!webhookId) {
+      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'no-webhook' }));
+      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
+      return;
+    }
+    setAllowlistSaving((prev) => ({ ...prev, [projectId]: true }));
+    setAllowlistStatus((prev) => ({ ...prev, [projectId]: null }));
+    try {
+      const normalized = parseAllowlist(allowlistInput[projectId] || '');
+      await api.updateWebhook(webhookId, { authorAllowlist: normalized });
+      // Normalize the input back so the user sees what was actually saved.
+      setAllowlistInput((prev) => ({ ...prev, [projectId]: serializeAllowlist(normalized) }));
+      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
+      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
+    } catch {
+      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'error' }));
+      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
+    } finally {
+      setAllowlistSaving((prev) => ({ ...prev, [projectId]: false }));
+    }
+  };
+
   // Init per-project state when projects arrive
   useEffect(() => {
     const wf = {};
@@ -1262,6 +1313,8 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
         waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
       };
       repos[p.id] = p.githubRepo || '';
+      // Fire-and-forget: hydrate allowlist from the webhook API.
+      loadAllowlistFor(p.id);
     });
     setProjectWorkflow(wf);
     setProjectRepos(repos);
@@ -1813,6 +1866,50 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
                           </span>
                         )}
                       </div>
+                    </div>
+
+                    {/* Author Allowlist */}
+                    <div className="pt-2 border-t border-gray-800 space-y-2">
+                      <label className={labelClass}>Author Allowlist</label>
+                      <p className="text-xs text-gray-500">
+                        Only review PRs authored by these GitHub usernames. Comma-separated. Leave
+                        blank to review all PRs. Use this to prevent two Agent Hub instances on the
+                        same repo from cross-reviewing each other&apos;s PRs.
+                      </p>
+                      <div className="flex gap-2">
+                        <input
+                          value={allowlistInput[p.id] ?? ''}
+                          onChange={(e) =>
+                            setAllowlistInput((prev) => ({ ...prev, [p.id]: e.target.value }))
+                          }
+                          placeholder="e.g. mcsteen, alice"
+                          disabled={!webhookIds[p.id]}
+                          className={inputClass}
+                        />
+                        <button
+                          onClick={() => saveAllowlist(p.id)}
+                          disabled={allowlistSaving[p.id] || !webhookIds[p.id]}
+                          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap"
+                        >
+                          {allowlistSaving[p.id] ? 'Saving...' : 'Save'}
+                        </button>
+                      </div>
+                      {allowlistStatus[p.id] === 'saved' && (
+                        <span className="text-xs text-emerald-400">Saved</span>
+                      )}
+                      {allowlistStatus[p.id] === 'error' && (
+                        <span className="text-xs text-red-400">Failed to save</span>
+                      )}
+                      {allowlistStatus[p.id] === 'no-webhook' && (
+                        <span className="text-xs text-amber-400">
+                          Save a repo first to configure the webhook
+                        </span>
+                      )}
+                      {!webhookIds[p.id] && !allowlistStatus[p.id] && (
+                        <span className="text-xs text-gray-600">
+                          No webhook yet — save a repo above to enable this field
+                        </span>
+                      )}
                     </div>
 
                     {/* Delete Project */}
