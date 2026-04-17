@@ -163,7 +163,11 @@ jobs:
           INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
         run: |
           set -euo pipefail
+          # AWS-RunShellScript runs under /bin/sh (dash on Ubuntu), which
+          # rejects `set -o pipefail`. Wrap the real script in `bash <<'BASH'`
+          # so dash just hands execution to bash and pipefail works.
           DEPLOY_SCRIPT=$(cat <<EOF
+          bash <<'BASH'
           set -euo pipefail
           cd ${DEPLOY_PATH}
           git fetch --all --tags --prune
@@ -183,6 +187,7 @@ jobs:
           done
           echo "health check FAILED after 12 attempts" >&2
           exit 1
+          BASH
           EOF
           )
 
