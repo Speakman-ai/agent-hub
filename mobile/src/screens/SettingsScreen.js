@@ -18,6 +18,7 @@ import { colors } from '../theme/colors';
 import { relativeTime, relativeFuture } from '../utils/time';
 import humanCron from '../utils/humanCron';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, testConnection, loadOrgs } from '../utils/orgs';
+import { parseAllowlist, serializeAllowlist, parseAllowlistFromBackend } from '../utils/authorAllowlist';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
@@ -1738,6 +1739,623 @@ function AgentConfigSection() {
   );
 }
 
+// ─── Webhooks Tab ───────────────────────────────────────────
+const WEBHOOK_EVENTS = [
+  { id: 'pull_request', label: 'pull_request' },
+  { id: 'pull_request_review', label: 'pull_request_review' },
+  { id: 'pull_request_review_comment', label: 'pull_request_review_comment' },
+  { id: 'issue_comment', label: 'issue_comment' },
+  { id: 'issues', label: 'issues' },
+  { id: 'push', label: 'push' },
+  { id: 'check_suite', label: 'check_suite' },
+  { id: 'check_run', label: 'check_run' },
+];
+
+const DEFAULT_WEBHOOK_EVENTS = {
+  pull_request: true,
+  pull_request_review: true,
+  pull_request_review_comment: true,
+  issue_comment: true,
+};
+
+function parseEvents(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function WebhookSection() {
+  const { projects } = useApp();
+  const [webhooks, setWebhooks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [expanded, setExpanded] = useState(null); // webhook id currently being edited
+  const [expandedLogs, setExpandedLogs] = useState(null); // webhook id whose logs are shown
+  const [logs, setLogs] = useState({}); // webhookId → logs[]
+  const [regStatus, setRegStatus] = useState({}); // webhookId → registration info
+  const [regBusy, setRegBusy] = useState({}); // webhookId → boolean
+  const [saving, setSaving] = useState({});
+  const [saveStatus, setSaveStatus] = useState({}); // webhookId → 'saved'|'error'|null
+  const [edits, setEdits] = useState({}); // webhookId → { repoUrl, events, enabled, allowlistInput }
+  const [newForm, setNewForm] = useState({
+    projectId: '',
+    repoUrl: '',
+    events: { ...DEFAULT_WEBHOOK_EVENTS },
+    enabled: true,
+    autoRegister: false,
+    allowlistInput: '',
+  });
+
+  const load = async () => {
+    try {
+      const data = await api.getWebhooks();
+      setWebhooks(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  // Seed the new-form project picker once projects arrive.
+  useEffect(() => {
+    if (!newForm.projectId && projects?.length) {
+      setNewForm((f) => ({ ...f, projectId: projects[0].id }));
+    }
+  }, [projects, newForm.projectId]);
+
+  const getEdit = (wh) => {
+    if (edits[wh.id]) return edits[wh.id];
+    return {
+      repoUrl: wh.repo_url || '',
+      events: parseEvents(wh.events),
+      enabled: wh.enabled !== 0 && wh.enabled !== false,
+      allowlistInput: serializeAllowlist(parseAllowlistFromBackend(wh.author_allowlist)),
+    };
+  };
+
+  const setEdit = (whId, patch) => {
+    setEdits((prev) => ({ ...prev, [whId]: { ...prev[whId], ...patch } }));
+  };
+
+  const handleExpand = (wh) => {
+    if (expanded === wh.id) {
+      setExpanded(null);
+      return;
+    }
+    setEdits((prev) => ({
+      ...prev,
+      [wh.id]: {
+        repoUrl: wh.repo_url || '',
+        events: parseEvents(wh.events),
+        enabled: wh.enabled !== 0 && wh.enabled !== false,
+        allowlistInput: serializeAllowlist(parseAllowlistFromBackend(wh.author_allowlist)),
+      },
+    }));
+    setExpanded(wh.id);
+    // Fire-and-forget: get GitHub registration status so the toggle renders
+    // accurately when the card expands.
+    loadRegistration(wh.id);
+  };
+
+  const toggleEditEvent = (whId, eventId) => {
+    const current = getEdit(webhooks.find((w) => w.id === whId)).events || {};
+    const next = { ...current, [eventId]: !current[eventId] };
+    setEdit(whId, { events: next });
+  };
+
+  const handleSave = async (whId) => {
+    const edit = getEdit(webhooks.find((w) => w.id === whId));
+    setSaving((prev) => ({ ...prev, [whId]: true }));
+    setSaveStatus((prev) => ({ ...prev, [whId]: null }));
+    try {
+      const body = {
+        repoUrl: edit.repoUrl,
+        events: edit.events || {},
+        enabled: !!edit.enabled,
+        authorAllowlist: parseAllowlist(edit.allowlistInput || ''),
+      };
+      const updated = await api.updateWebhook(whId, body);
+      setWebhooks((prev) => prev.map((w) => (w.id === whId ? updated : w)));
+      setEdits((prev) => {
+        const next = { ...prev };
+        delete next[whId];
+        return next;
+      });
+      setSaveStatus((prev) => ({ ...prev, [whId]: 'saved' }));
+      setTimeout(() => setSaveStatus((prev) => ({ ...prev, [whId]: null })), 2000);
+    } catch (e) {
+      console.error(e);
+      setSaveStatus((prev) => ({ ...prev, [whId]: 'error' }));
+      setTimeout(() => setSaveStatus((prev) => ({ ...prev, [whId]: null })), 3000);
+    } finally {
+      setSaving((prev) => ({ ...prev, [whId]: false }));
+    }
+  };
+
+  const handleDelete = (whId) => {
+    Alert.alert('Delete Webhook', 'Are you sure? This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await api.deleteWebhook(whId);
+            setWebhooks((prev) => prev.filter((w) => w.id !== whId));
+            if (expanded === whId) setExpanded(null);
+          } catch (e) {
+            console.error(e);
+          }
+        },
+      },
+    ]);
+  };
+
+  const toggleNewEvent = (eventId) => {
+    setNewForm((f) => ({
+      ...f,
+      events: { ...f.events, [eventId]: !f.events[eventId] },
+    }));
+  };
+
+  const handleCreate = async () => {
+    if (!newForm.projectId || !newForm.repoUrl.trim()) {
+      Alert.alert('Missing fields', 'Project and repository URL are required.');
+      return;
+    }
+    try {
+      const created = await api.createWebhook({
+        projectId: newForm.projectId,
+        repoUrl: newForm.repoUrl.trim(),
+        events: newForm.events,
+        enabled: newForm.enabled,
+        autoRegister: newForm.autoRegister,
+        authorAllowlist: parseAllowlist(newForm.allowlistInput || ''),
+      });
+      setWebhooks((prev) => [...prev, created]);
+      setShowForm(false);
+      setNewForm({
+        projectId: projects?.[0]?.id || '',
+        repoUrl: '',
+        events: { ...DEFAULT_WEBHOOK_EVENTS },
+        enabled: true,
+        autoRegister: false,
+        allowlistInput: '',
+      });
+    } catch (e) {
+      Alert.alert('Error', e?.message || 'Failed to create webhook');
+    }
+  };
+
+  const loadLogs = async (whId) => {
+    try {
+      const data = await api.getWebhookLogs(whId, 20);
+      setLogs((prev) => ({ ...prev, [whId]: data }));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleToggleLogs = (whId) => {
+    if (expandedLogs === whId) {
+      setExpandedLogs(null);
+      return;
+    }
+    setExpandedLogs(whId);
+    loadLogs(whId);
+  };
+
+  const loadRegistration = async (whId) => {
+    try {
+      const data = await api.getWebhookRegistration(whId);
+      setRegStatus((prev) => ({ ...prev, [whId]: data }));
+    } catch (e) {
+      setRegStatus((prev) => ({ ...prev, [whId]: { registered: false, error: e?.message } }));
+    }
+  };
+
+  const handleRegister = async (whId) => {
+    setRegBusy((prev) => ({ ...prev, [whId]: true }));
+    try {
+      await api.registerWebhook(whId);
+      await loadRegistration(whId);
+    } catch (e) {
+      Alert.alert('Register failed', e?.message || 'Unable to register webhook on GitHub');
+    } finally {
+      setRegBusy((prev) => ({ ...prev, [whId]: false }));
+    }
+  };
+
+  const handleUnregister = async (whId) => {
+    Alert.alert('Unregister Webhook', 'Remove this webhook from GitHub?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Unregister',
+        style: 'destructive',
+        onPress: async () => {
+          setRegBusy((prev) => ({ ...prev, [whId]: true }));
+          try {
+            await api.unregisterWebhook(whId);
+            await loadRegistration(whId);
+          } catch (e) {
+            Alert.alert('Unregister failed', e?.message || 'Unable to unregister webhook');
+          } finally {
+            setRegBusy((prev) => ({ ...prev, [whId]: false }));
+          }
+        },
+      },
+    ]);
+  };
+
+  if (loading) {
+    return <ActivityIndicator size="small" color={colors.gray500} style={{ marginVertical: 40 }} />;
+  }
+
+  const projectName = (projectId) => {
+    const p = projects?.find((x) => x.id === projectId);
+    return p?.name || projectId;
+  };
+
+  return (
+    <View>
+      <View style={styles.sectionHeaderRow}>
+        <Text style={styles.sectionTitle}>Webhooks</Text>
+        <TouchableOpacity style={styles.headerButton} onPress={() => setShowForm(!showForm)}>
+          <Text style={styles.headerButtonText}>{showForm ? 'Cancel' : '+ New Webhook'}</Text>
+        </TouchableOpacity>
+      </View>
+      <Text style={styles.sectionDesc}>
+        Configure GitHub webhooks per project. Deliveries hit the server's
+        /api/webhooks/github endpoint and dispatch to Reviewer agents.
+      </Text>
+
+      {showForm && (
+        <View style={styles.formCard}>
+          <Text style={styles.fieldLabel}>Project</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+            {(projects || []).map((p) => (
+              <TouchableOpacity
+                key={p.id}
+                style={[
+                  styles.smallButton,
+                  newForm.projectId === p.id ? styles.buttonOn : styles.buttonOff,
+                  { paddingHorizontal: 12 },
+                ]}
+                onPress={() => setNewForm((f) => ({ ...f, projectId: p.id }))}
+              >
+                <Text
+                  style={[
+                    styles.smallButtonText,
+                    newForm.projectId === p.id ? styles.buttonOnText : styles.buttonOffText,
+                  ]}
+                >
+                  {p.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            {(!projects || projects.length === 0) && (
+              <Text style={styles.emptyText}>No projects yet</Text>
+            )}
+          </View>
+
+          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Repository URL</Text>
+          <TextInput
+            value={newForm.repoUrl}
+            onChangeText={(v) => setNewForm((f) => ({ ...f, repoUrl: v }))}
+            placeholder="https://github.com/owner/repo"
+            placeholderTextColor={colors.gray600}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.formInput}
+          />
+
+          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Events</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+            {WEBHOOK_EVENTS.map((ev) => {
+              const on = !!newForm.events[ev.id];
+              return (
+                <TouchableOpacity
+                  key={ev.id}
+                  style={[styles.smallButton, on ? styles.buttonOn : styles.buttonOff]}
+                  onPress={() => toggleNewEvent(ev.id)}
+                >
+                  <Text style={[styles.smallButtonText, on ? styles.buttonOnText : styles.buttonOffText]}>
+                    {on ? '☑' : '☐'} {ev.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Author Allowlist (comma-separated)</Text>
+          <TextInput
+            value={newForm.allowlistInput}
+            onChangeText={(v) => setNewForm((f) => ({ ...f, allowlistInput: v }))}
+            placeholder="mcsteen, alice (empty = everyone)"
+            placeholderTextColor={colors.gray600}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.formInput}
+          />
+
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+            <TouchableOpacity
+              style={[styles.smallButton, newForm.enabled ? styles.buttonOn : styles.buttonOff]}
+              onPress={() => setNewForm((f) => ({ ...f, enabled: !f.enabled }))}
+            >
+              <Text
+                style={[
+                  styles.smallButtonText,
+                  newForm.enabled ? styles.buttonOnText : styles.buttonOffText,
+                ]}
+              >
+                {newForm.enabled ? '✓ Enabled' : 'Disabled'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.smallButton, newForm.autoRegister ? styles.buttonOn : styles.buttonOff]}
+              onPress={() => setNewForm((f) => ({ ...f, autoRegister: !f.autoRegister }))}
+            >
+              <Text
+                style={[
+                  styles.smallButtonText,
+                  newForm.autoRegister ? styles.buttonOnText : styles.buttonOffText,
+                ]}
+              >
+                {newForm.autoRegister ? '✓ Auto-register on GitHub' : 'Auto-register on GitHub'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity style={styles.createButton} onPress={handleCreate}>
+            <Text style={styles.createButtonText}>Create Webhook</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <View style={styles.cardList}>
+        {webhooks.map((wh) => {
+          const isExpanded = expanded === wh.id;
+          const edit = getEdit(wh);
+          const reg = regStatus[wh.id];
+          const logsOpen = expandedLogs === wh.id;
+          const whLogs = logs[wh.id] || [];
+          return (
+            <View key={wh.id} style={styles.card}>
+              <TouchableOpacity style={styles.cardRow} onPress={() => handleExpand(wh)}>
+                <View
+                  style={[
+                    styles.dot,
+                    { backgroundColor: wh.enabled ? colors.emerald400 : colors.gray600 },
+                  ]}
+                />
+                <View style={styles.cardInfo}>
+                  <View style={styles.row}>
+                    <Text style={styles.cardName} numberOfLines={1}>
+                      {projectName(wh.project_id)}
+                    </Text>
+                    {wh.enabled ? null : (
+                      <Text style={styles.cardMeta}>(disabled)</Text>
+                    )}
+                  </View>
+                  <Text style={styles.cardSubtext} numberOfLines={1}>
+                    {wh.repo_url}
+                  </Text>
+                </View>
+                <Text style={styles.expandIcon}>{isExpanded ? '▴' : '▾'}</Text>
+              </TouchableOpacity>
+
+              {isExpanded && (
+                <View style={styles.expandedSection}>
+                  <Text style={styles.fieldLabel}>Repository URL</Text>
+                  <TextInput
+                    value={edit.repoUrl}
+                    onChangeText={(v) => setEdit(wh.id, { repoUrl: v })}
+                    placeholder="https://github.com/owner/repo"
+                    placeholderTextColor={colors.gray600}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={styles.formInput}
+                  />
+
+                  <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Events</Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                    {WEBHOOK_EVENTS.map((ev) => {
+                      const on = !!edit.events?.[ev.id];
+                      return (
+                        <TouchableOpacity
+                          key={ev.id}
+                          style={[styles.smallButton, on ? styles.buttonOn : styles.buttonOff]}
+                          onPress={() => toggleEditEvent(wh.id, ev.id)}
+                        >
+                          <Text
+                            style={[
+                              styles.smallButtonText,
+                              on ? styles.buttonOnText : styles.buttonOffText,
+                            ]}
+                          >
+                            {on ? '☑' : '☐'} {ev.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  <Text style={[styles.fieldLabel, { marginTop: 10 }]}>
+                    Author Allowlist (comma-separated)
+                  </Text>
+                  <TextInput
+                    value={edit.allowlistInput}
+                    onChangeText={(v) => setEdit(wh.id, { allowlistInput: v })}
+                    placeholder="mcsteen, alice (empty = everyone)"
+                    placeholderTextColor={colors.gray600}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={styles.formInput}
+                  />
+
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+                    <TouchableOpacity
+                      style={[styles.smallButton, edit.enabled ? styles.buttonOn : styles.buttonOff]}
+                      onPress={() => setEdit(wh.id, { enabled: !edit.enabled })}
+                    >
+                      <Text
+                        style={[
+                          styles.smallButtonText,
+                          edit.enabled ? styles.buttonOnText : styles.buttonOffText,
+                        ]}
+                      >
+                        {edit.enabled ? '✓ Enabled' : 'Disabled'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.smallButton,
+                        reg?.registered ? styles.buttonOn : styles.buttonOff,
+                        regBusy[wh.id] && { opacity: 0.5 },
+                      ]}
+                      disabled={regBusy[wh.id]}
+                      onPress={() =>
+                        reg?.registered ? handleUnregister(wh.id) : handleRegister(wh.id)
+                      }
+                    >
+                      <Text
+                        style={[
+                          styles.smallButtonText,
+                          reg?.registered ? styles.buttonOnText : styles.buttonOffText,
+                        ]}
+                      >
+                        {regBusy[wh.id]
+                          ? '...'
+                          : reg?.registered
+                            ? '✓ Registered on GitHub'
+                            : 'Register on GitHub'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.smallButton, logsOpen ? styles.buttonOn : styles.buttonOff]}
+                      onPress={() => handleToggleLogs(wh.id)}
+                    >
+                      <Text
+                        style={[
+                          styles.smallButtonText,
+                          logsOpen ? styles.buttonOnText : styles.buttonOffText,
+                        ]}
+                      >
+                        {logsOpen ? '✓ Logs' : 'View Logs'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {reg?.error && <Text style={styles.errorText}>Registration: {reg.error}</Text>}
+                  {reg?.webhookUrl && (
+                    <Text style={[styles.cardMeta, { marginTop: 4 }]} numberOfLines={1}>
+                      Callback: {reg.webhookUrl}
+                    </Text>
+                  )}
+
+                  {saveStatus[wh.id] === 'saved' && (
+                    <Text style={styles.statusSuccess}>Saved</Text>
+                  )}
+                  {saveStatus[wh.id] === 'error' && (
+                    <Text style={styles.statusError}>Save failed</Text>
+                  )}
+
+                  <View style={styles.expandedActions}>
+                    <TouchableOpacity
+                      style={styles.deleteButton}
+                      onPress={() => handleDelete(wh.id)}
+                    >
+                      <Text style={styles.deleteButtonText}>Delete</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.saveAgentButton, saving[wh.id] && { opacity: 0.5 }]}
+                      disabled={saving[wh.id]}
+                      onPress={() => handleSave(wh.id)}
+                    >
+                      <Text style={styles.saveAgentButtonText}>
+                        {saving[wh.id] ? 'Saving...' : 'Save'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {logsOpen && (
+                    <View style={styles.logsContainer}>
+                      {whLogs.length === 0 ? (
+                        <Text style={styles.emptyLogsText}>No recent deliveries</Text>
+                      ) : (
+                        <ScrollView style={{ maxHeight: 240 }} nestedScrollEnabled>
+                          {whLogs.map((log) => {
+                            const ok =
+                              log.status === 'success' || log.status === 'ok' || log.status === 200;
+                            return (
+                              <View key={log.id} style={styles.logItem}>
+                                <View style={styles.logHeader}>
+                                  <View
+                                    style={[
+                                      styles.logStatusBadge,
+                                      ok ? styles.logStatusSuccess : styles.logStatusError,
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.logStatusText,
+                                        { color: ok ? colors.emerald400 : colors.red400 },
+                                      ]}
+                                    >
+                                      {log.event || 'event'}
+                                      {log.status ? ` · ${log.status}` : ''}
+                                    </Text>
+                                  </View>
+                                  <Text style={styles.logTime}>
+                                    {log.timestamp ? relativeTime(log.timestamp) : ''}
+                                  </Text>
+                                </View>
+                                {log.delivery_id && (
+                                  <Text style={styles.logResult} numberOfLines={1}>
+                                    {log.delivery_id}
+                                  </Text>
+                                )}
+                                {log.error && (
+                                  <Text style={[styles.logResult, { color: colors.red400 }]}>
+                                    {log.error}
+                                  </Text>
+                                )}
+                              </View>
+                            );
+                          })}
+                        </ScrollView>
+                      )}
+                    </View>
+                  )}
+                </View>
+              )}
+            </View>
+          );
+        })}
+        {webhooks.length === 0 && (
+          <Text style={styles.emptyText}>No webhooks configured</Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
 // ─── Main Settings Screen ───────────────────────────────────
 export default function SettingsScreen() {
   const [tab, setTab] = useState('orgs');
@@ -1747,6 +2365,7 @@ export default function SettingsScreen() {
     { id: 'usage', label: 'Usage' },
     { id: 'heartbeats', label: 'Heartbeats' },
     { id: 'crons', label: 'Crons' },
+    { id: 'webhooks', label: 'Webhooks' },
     { id: 'slack', label: 'Slack' },
     { id: 'agents', label: 'Agents' },
     { id: 'config', label: 'Backup' },
@@ -1790,6 +2409,7 @@ export default function SettingsScreen() {
           {tab === 'usage' && <UsageSection />}
           {tab === 'heartbeats' && <HeartbeatSection />}
           {tab === 'crons' && <CronSection />}
+          {tab === 'webhooks' && <WebhookSection />}
           {tab === 'slack' && <SlackSection />}
           {tab === 'agents' && <AgentConfigSection />}
           {tab === 'config' && <ConfigBackupSection />}

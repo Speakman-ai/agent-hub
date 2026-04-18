@@ -271,6 +271,19 @@ export const api = {
   deleteNote: (projectId, noteId) =>
     fetchJSON(buildNoteUrl(projectId, noteId), { method: 'DELETE' }),
 
+  // Webhooks
+  getWebhooks: () => fetchJSON('/webhooks'),
+  getProjectWebhooks: (projectId) => fetchJSON(`/webhooks/project/${projectId}`),
+  createWebhook: (data) =>
+    fetchJSON('/webhooks', { method: 'POST', body: JSON.stringify(data) }),
+  updateWebhook: (id, data) =>
+    fetchJSON(`/webhooks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteWebhook: (id) => fetchJSON(`/webhooks/${id}`, { method: 'DELETE' }),
+  getWebhookLogs: (id, limit = 20) => fetchJSON(`/webhooks/${id}/logs?limit=${limit}`),
+  registerWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'POST' }),
+  unregisterWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'DELETE' }),
+  getWebhookRegistration: (id) => fetchJSON(`/webhooks/${id}/register`),
+
   // Wiki
   getWikiPages: (projectId) => fetchJSON(`/projects/${projectId}/wiki`),
   getWikiPage: (projectId, slug) => fetchJSON(`/projects/${projectId}/wiki/${slug}`),
