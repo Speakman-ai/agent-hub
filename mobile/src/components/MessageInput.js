@@ -13,6 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { colors } from '../theme/colors';
+import { pasteFromClipboard } from '../utils/clipboard';
 
 export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength }) {
   const [value, setValue] = useState('');
@@ -105,6 +106,25 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     closeSlash();
   };
 
+  // Quick-paste: inserts clipboard content at the cursor (or appends when the
+  // cursor position is unknown). Surfaces an alert when the clipboard is empty
+  // so the user isn't left wondering why nothing happened.
+  const handlePaste = useCallback(async () => {
+    const clip = await pasteFromClipboard();
+    if (!clip) {
+      Alert.alert('Clipboard is empty');
+      return;
+    }
+    setValue((prev) => {
+      const cursor = Math.min(cursorRef.current ?? prev.length, prev.length);
+      const before = prev.slice(0, cursor);
+      const after = prev.slice(cursor);
+      return `${before}${clip}${after}`;
+    });
+    // Keep the slash-popup state consistent if the user pastes mid-slash.
+    closeSlash();
+  }, [closeSlash]);
+
   return (
     <View style={styles.container}>
       {/* Slash-command autocomplete popup */}
@@ -173,6 +193,26 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
             color={disabled && !isProcessing ? colors.gray600 : colors.gray400}
           />
         </TouchableOpacity>
+
+        {/* Paste button — only shown when the composer is empty so it does
+            not crowd the send-button area during normal typing. Native paste
+            via long-press menu still works at all times. */}
+        {value.length === 0 && images.length === 0 && (
+          <TouchableOpacity
+            style={styles.pasteButton}
+            onPress={handlePaste}
+            disabled={disabled && !isProcessing}
+            activeOpacity={0.7}
+            accessibilityLabel="Paste from clipboard"
+            accessibilityRole="button"
+          >
+            <Ionicons
+              name="clipboard-outline"
+              size={20}
+              color={disabled && !isProcessing ? colors.gray600 : colors.gray400}
+            />
+          </TouchableOpacity>
+        )}
 
         <TextInput
           ref={inputRef}
@@ -317,6 +357,12 @@ const styles = StyleSheet.create({
   },
   imageButton: {
     width: 36,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pasteButton: {
+    width: 32,
     height: 44,
     alignItems: 'center',
     justifyContent: 'center',

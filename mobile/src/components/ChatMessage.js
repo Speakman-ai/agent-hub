@@ -1,11 +1,35 @@
-import React, { memo, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Modal, Dimensions, TextInput } from 'react-native';
+import React, { memo, useCallback, useMemo, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Image,
+  TouchableOpacity,
+  Modal,
+  Dimensions,
+  TextInput,
+  Pressable,
+  ToastAndroid,
+  Platform,
+  Alert,
+} from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { getApiBaseUrl } from '../utils/config';
 import { extractCoordinationBlocks } from '../utils/coordinationBlocks';
+import { copyToClipboard, canCopy } from '../utils/clipboard';
 import HandoffCard from './HandoffCard';
+
+function notifyCopied(success) {
+  const msg = success ? 'Copied to clipboard' : 'Nothing to copy';
+  if (Platform.OS === 'android') {
+    ToastAndroid.show(msg, ToastAndroid.SHORT);
+  } else {
+    // iOS has no native toast; a lightweight alert avoids a hard dep.
+    Alert.alert(msg);
+  }
+}
 
 const ENGINE_BADGES = {
   'claude-code': { color: '#8B5CF6', label: 'Claude Code' },
@@ -224,12 +248,31 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued, fromAgent, 
     return extractCoordinationBlocks(message.content);
   }, [isUser, message.content]);
 
+  // Long-press on any bubble copies its text to the system clipboard.
+  // For assistant bubbles we copy the stripped (markdown) content so any
+  // <handoff>/<delegate> JSON blocks don't pollute the paste target.
+  const copyPayload = isUser ? displayContent : assistantBlocks.stripped;
+  const copyEnabled = canCopy(copyPayload);
+  const handleLongPress = useCallback(async () => {
+    if (!copyEnabled) {
+      notifyCopied(false);
+      return;
+    }
+    const ok = await copyToClipboard(copyPayload);
+    notifyCopied(ok);
+  }, [copyPayload, copyEnabled]);
+
   return (
     <View style={[styles.container, isUser ? styles.containerUser : styles.containerAssistant]}>
-      <View
-        style={[
+      <Pressable
+        onLongPress={handleLongPress}
+        delayLongPress={350}
+        accessibilityRole="button"
+        accessibilityLabel="Long press to copy message"
+        style={({ pressed }) => [
           styles.bubble,
           isUser ? (isQueued ? styles.bubbleQueued : styles.bubbleUser) : styles.bubbleAssistant,
+          pressed && styles.bubblePressed,
         ]}
       >
         {/* Assistant header */}
@@ -316,7 +359,7 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued, fromAgent, 
         <Text style={[styles.timestamp, isUser ? styles.timestampUser : styles.timestampAssistant]}>
           {message.created_at && relativeTime(message.created_at)}
         </Text>
-      </View>
+      </Pressable>
     </View>
   );
 }
@@ -336,6 +379,9 @@ const styles = StyleSheet.create({
   bubble: {
     maxWidth: '85%',
     borderRadius: 16,
+  },
+  bubblePressed: {
+    opacity: 0.7,
   },
   bubbleUser: {
     backgroundColor: colors.blue600,
