@@ -21,6 +21,7 @@ import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
 import NotesEditor from './components/NotesEditor.jsx';
 import CapturesPage from './components/CapturesPage.jsx';
+import PullRequestsPage from './components/PullRequestsPage.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { api } from './utils/api.js';
@@ -137,6 +138,8 @@ export default function App() {
   const [notesProjectId, setNotesProjectId] = useState(null);
   // Previews state
   const [capturesProjectId, setCapturesProjectId] = useState(null);
+  // Pull Requests state
+  const [pullsProjectId, setPullsProjectId] = useState(null);
   // Threads state
   const [threadsProjectId, setThreadsProjectId] = useState(null);
   const [activeThreadId, setActiveThreadId] = useState(null);
@@ -1855,6 +1858,7 @@ export default function App() {
               if (view === 'wiki' && extra) setWikiProjectId(extra);
               if (view === 'notes' && extra) setNotesProjectId(extra);
               if (view === 'captures' && extra) setCapturesProjectId(extra);
+              if (view === 'pulls' && extra) setPullsProjectId(extra);
               if (view === 'threads' && extra) {
                 setThreadsProjectId(extra);
                 setActiveThreadId(null);
@@ -1888,6 +1892,7 @@ export default function App() {
             notesProjectId={notesProjectId}
             threadsProjectId={threadsProjectId}
             capturesProjectId={capturesProjectId}
+            pullsProjectId={pullsProjectId}
             unreadThreadCounts={unreadThreadCounts}
             activeReviews={activeReviews}
           />
@@ -1988,6 +1993,11 @@ export default function App() {
             )
           ) : currentView === 'captures' && capturesProjectId ? (
             <CapturesPage projectId={capturesProjectId} />
+          ) : currentView === 'pulls' && pullsProjectId ? (
+            <PullRequestsPage
+              projectId={pullsProjectId}
+              project={projects.find((p) => p.id === pullsProjectId)}
+            />
           ) : currentView === 'skills' ? (
             <SkillsPage agents={agents} projects={projects} />
           ) : currentView === 'room' && activeRoom ? (

@@ -46,6 +46,7 @@ export default function Sidebar({
   notesProjectId,
   threadsProjectId,
   capturesProjectId,
+  pullsProjectId,
   unreadThreadCounts = {},
   activeReviews = {},
   subagentsBySession = {},
@@ -598,6 +599,19 @@ export default function Sidebar({
                             : unreadThreadCounts[project.id]}
                         </span>
                       )}
+                    </button>
+
+                    {/* Pull Requests */}
+                    <button
+                      onClick={() => onNavigate('pulls', project.id)}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                        currentView === 'pulls' && pullsProjectId === project.id
+                          ? 'bg-gray-800 text-white'
+                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                      }`}
+                    >
+                      <GitPullRequest size={14} className="flex-shrink-0" />
+                      <span className="truncate">Pulls</span>
                     </button>
 
                     {/* PR Captures */}

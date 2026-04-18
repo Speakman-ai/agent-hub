@@ -561,6 +561,16 @@ export const api = {
   getIosBuildArtifacts: (projectId, buildId) =>
     fetchJSON(`/projects/${projectId}/ios-builds/${buildId}/artifacts`),
 
+  // Pull Requests (read-only viewer) — project-scoped
+  getProjectPulls: (projectId, { state = 'open', limit = 30 } = {}) => {
+    const params = new URLSearchParams();
+    if (state) params.set('state', state);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/pulls${qs ? '?' + qs : ''}`);
+  },
+  getProjectPullDetail: (projectId, number) => fetchJSON(`/projects/${projectId}/pulls/${number}`),
+
   // PR Actions
   mergePr: (prUrl, mergeMethod = 'squash') =>
     fetchJSON('/pr/merge', {
