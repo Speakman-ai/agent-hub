@@ -25,6 +25,7 @@ import {
   reviewsBadge,
   mergeableBadge,
 } from '../utils/prFormatting';
+import PrCapturesSection from '../components/PrCapturesSection';
 
 const STATE_TABS = [
   { key: 'open', label: 'Open' },
@@ -76,7 +77,7 @@ function PrListItem({ pr, onPress }) {
   );
 }
 
-function PrDetail({ detail, onBack, onRefresh, refreshing }) {
+function PrDetail({ detail, projectId, onBack, onRefresh, refreshing }) {
   const pr = detail?.pr;
   if (!pr) return null;
   const state = prStateBadge(pr);
@@ -235,6 +236,11 @@ function PrDetail({ detail, onBack, onRefresh, refreshing }) {
           </View>
         ))}
 
+      {/* PR Captures (screenshots + videos attached to this PR) */}
+      {projectId && pr.number ? (
+        <PrCapturesSection projectId={projectId} prNumber={pr.number} />
+      ) : null}
+
       <View style={{ height: 40 }} />
     </ScrollView>
   );
@@ -360,6 +366,7 @@ export default function PullRequestsScreen({ route }) {
           {detail && (
             <PrDetail
               detail={detail}
+              projectId={projectId}
               onBack={handleBack}
               onRefresh={handleRefresh}
               refreshing={refreshing}

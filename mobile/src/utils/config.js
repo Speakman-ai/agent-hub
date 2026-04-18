@@ -50,6 +50,17 @@ export function getApiBaseUrl() {
   return ''; // No URL configured yet
 }
 
+/**
+ * Get the server root URL (without `/api`) — used for building URLs to
+ * server-static assets like `/uploads/captures/<id>/<filename>`.
+ */
+export function getServerBaseUrl() {
+  if (_cachedConfig?.remoteUrl) {
+    return _cachedConfig.remoteUrl.replace(/\/+$/, '');
+  }
+  return '';
+}
+
 /** Get WebSocket URL — always remote. */
 export function getWsUrl() {
   if (_cachedConfig?.remoteUrl) {
