@@ -6,7 +6,7 @@ import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
 import { markdownComponentsCompact } from './MarkdownRenderer.jsx';
 import { isFileModifyingTool, shortenPath, parseDiffLines } from '../utils/diff.js';
-import { extractCoordinationBlocks } from '../utils/coordinationBlocks.js';
+import { extractCoordinationBlocks, describeHandoffReason } from '../utils/coordinationBlocks.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
 import {
@@ -645,8 +645,11 @@ function TextBubble({ text, fromAgent, agents, sessionHandoffs, onOpenSession })
   // Strip any <handoff>/<delegate> blocks from the prose so the raw JSON
   // wall doesn't end up rendered inline. The blocks are surfaced separately
   // as a card below the prose.
-  const { stripped, handoff } = extractCoordinationBlocks(text);
+  const { stripped, handoff, handoffMalformed } = extractCoordinationBlocks(text);
   const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
+  const malformedProps = handoffMalformed
+    ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)
+    : null;
   return (
     <>
       {stripped && (
@@ -670,8 +673,50 @@ function TextBubble({ text, fromAgent, agents, sessionHandoffs, onOpenSession })
           onOpenSession={onOpenSession}
         />
       )}
+      {!handoff && malformedProps && (
+        <HandoffCard
+          toAgentId={malformedProps.toAgentId}
+          note={malformedProps.note}
+          fromAgent={fromAgent}
+          agents={agents}
+          handoff={malformedProps.handoff}
+          onOpenSession={onOpenSession}
+        />
+      )}
     </>
   );
+}
+
+/**
+ * Build HandoffCard props for a malformed `<handoff>` block. The server now
+ * persists a failed row + broadcasts `handoff_error` for malformed payloads
+ * (see `server/chat.ts`), so we prefer the server-side row when present
+ * (`sessionHandoffs` entry with status='failed'). When the row hasn't
+ * arrived yet (client parsed the block locally before the broadcast) we
+ * synthesize a minimal failed row so the widget still renders with the
+ * correct reason text.
+ */
+function buildMalformedHandoffProps(malformed, sessionHandoffs) {
+  const serverRow = Array.isArray(sessionHandoffs)
+    ? sessionHandoffs.find(
+        (h) => h?.status === 'failed' && (!h?.to_agent_id || h.to_agent_id === '(unknown)'),
+      )
+    : null;
+  const reasonText = describeHandoffReason(malformed.reason);
+  const note =
+    (malformed.rawBody || '').trim().length > 0 ? malformed.rawBody.trim() : `(${reasonText})`;
+  const handoffProp = serverRow || {
+    id: null,
+    to_agent_id: null,
+    to_session_id: null,
+    status: 'failed',
+    error: reasonText,
+  };
+  return {
+    toAgentId: '(unknown)',
+    note,
+    handoff: handoffProp,
+  };
 }
 
 /**
@@ -790,8 +835,11 @@ function LegacyAssistantBubble({
 }) {
   // Strip coordination blocks here too — legacy messages were saved with the
   // raw `<handoff>...</handoff>` JSON in their content.
-  const { stripped, handoff } = extractCoordinationBlocks(message.content);
+  const { stripped, handoff, handoffMalformed } = extractCoordinationBlocks(message.content);
   const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
+  const malformedProps = handoffMalformed
+    ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)
+    : null;
   return (
     <div className="flex justify-start mb-4">
       <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
@@ -820,6 +868,16 @@ function LegacyAssistantBubble({
             fromAgent={fromAgent}
             agents={agents}
             handoff={handoffRow}
+            onOpenSession={onOpenSession}
+          />
+        )}
+        {!handoff && malformedProps && (
+          <HandoffCard
+            toAgentId={malformedProps.toAgentId}
+            note={malformedProps.note}
+            fromAgent={fromAgent}
+            agents={agents}
+            handoff={malformedProps.handoff}
             onOpenSession={onOpenSession}
           />
         )}

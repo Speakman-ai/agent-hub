@@ -33,25 +33,80 @@ const HANDOFF_RE = /<handoff>\s*([\s\S]*?)\s*<\/handoff>/;
 const DELEGATE_RE = /<delegate>\s*([\s\S]*?)\s*<\/delegate>/;
 
 /**
+ * Detect a `<handoff>` block in `text` and return a tagged result:
+ *   { present, task, reason, rawBody }
+ * where `task` is non-null only when the block parsed cleanly, and `reason`
+ * explains *why* a present block failed. Mirrors
+ * `server/handoff.ts#detectHandoffBlock` so the web UI can distinguish
+ * "no block" from "malformed block" and still render a failed-state
+ * HandoffCard instead of silently dropping the handoff.
+ *
+ * Reason codes:
+ *   'invalid-json' — body is not valid JSON
+ *   'not-object'   — body parsed but is not a JSON object
+ *   'array-payload'— body is an array (handoff is single-target)
+ *   'missing-toagent' / 'missing-note' — field not present
+ *   'empty-toagent'  / 'empty-note'     — field present but blank
+ */
+export function detectHandoffBlock(text) {
+  if (typeof text !== 'string' || !text.includes('<handoff>')) {
+    return { present: false, task: null, reason: null, rawBody: null };
+  }
+  const match = text.match(HANDOFF_RE);
+  if (!match) {
+    return { present: false, task: null, reason: null, rawBody: null };
+  }
+  const rawBody = match[1] ?? '';
+  let parsed;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return { present: true, task: null, reason: 'invalid-json', rawBody };
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { present: true, task: null, reason: 'not-object', rawBody };
+  }
+  if (Array.isArray(parsed)) {
+    return { present: true, task: null, reason: 'array-payload', rawBody };
+  }
+  if (typeof parsed.toAgent !== 'string') {
+    return { present: true, task: null, reason: 'missing-toagent', rawBody };
+  }
+  if (typeof parsed.note !== 'string') {
+    return { present: true, task: null, reason: 'missing-note', rawBody };
+  }
+  const toAgent = parsed.toAgent.trim();
+  const note = parsed.note.trim();
+  if (!toAgent) return { present: true, task: null, reason: 'empty-toagent', rawBody };
+  if (!note) return { present: true, task: null, reason: 'empty-note', rawBody };
+  return { present: true, task: { toAgent, note }, reason: null, rawBody };
+}
+
+const HANDOFF_REASON_MESSAGES = {
+  'invalid-json': 'Handoff block contains invalid JSON',
+  'not-object': 'Handoff block payload is not a JSON object',
+  'array-payload': 'Handoff block payload is an array (handoff is single-target)',
+  'missing-toagent': 'Handoff block is missing the "toAgent" field',
+  'missing-note': 'Handoff block is missing the "note" field',
+  'empty-toagent': 'Handoff block has an empty "toAgent" field',
+  'empty-note': 'Handoff block has an empty "note" field',
+};
+
+/**
+ * Human-readable label for a detection reason — mirrors the server's
+ * `describeHandoffReason` so both paths surface the same error text.
+ */
+export function describeHandoffReason(reason) {
+  return HANDOFF_REASON_MESSAGES[reason] || 'Handoff block could not be parsed';
+}
+
+/**
  * Parse a `<handoff>` block out of `text`. Returns the parsed task or null
  * if the block is missing, malformed, or missing required fields. Matches
  * the validation in `server/handoff.ts#parseHandoffBlock`.
  */
 export function parseHandoffBlock(text) {
-  if (typeof text !== 'string' || !text.includes('<handoff>')) return null;
-  const match = text.match(HANDOFF_RE);
-  if (!match) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(match[1]);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const toAgent = typeof parsed.toAgent === 'string' ? parsed.toAgent.trim() : '';
-  const note = typeof parsed.note === 'string' ? parsed.note.trim() : '';
-  if (!toAgent || !note) return null;
-  return { toAgent, note };
+  return detectHandoffBlock(text).task;
 }
 
 /**
@@ -101,18 +156,32 @@ export function parseDelegateBlock(text) {
  */
 export function extractCoordinationBlocks(text) {
   if (typeof text !== 'string' || text.length === 0) {
-    return { stripped: text ?? '', handoff: null, delegate: null };
+    return {
+      stripped: text ?? '',
+      handoff: null,
+      delegate: null,
+      handoffMalformed: null,
+    };
   }
 
-  const handoff = parseHandoffBlock(text);
+  const detection = detectHandoffBlock(text);
+  const handoff = detection.task;
+  const handoffMalformed =
+    detection.present && !detection.task
+      ? { reason: detection.reason, rawBody: detection.rawBody ?? '' }
+      : null;
   const delegate = parseDelegateBlock(text);
 
   let stripped = text;
-  if (handoff) stripped = stripped.replace(HANDOFF_RE, '').trimEnd();
+  // Strip both successful *and* malformed handoff blocks so the raw JSON
+  // never leaks into the prose — the malformed signal is surfaced as a
+  // failed HandoffCard instead, giving the user real feedback instead of a
+  // wall of broken JSON.
+  if (handoff || handoffMalformed) stripped = stripped.replace(HANDOFF_RE, '').trimEnd();
   if (delegate) stripped = stripped.replace(DELEGATE_RE, '').trimEnd();
 
   // Collapse runs of 3+ blank lines that the strip can leave behind.
   stripped = stripped.replace(/\n{3,}/g, '\n\n').trim();
 
-  return { stripped, handoff, delegate };
+  return { stripped, handoff, delegate, handoffMalformed };
 }

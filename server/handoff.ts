@@ -194,6 +194,98 @@ export function resolveTargetAgentId(
 // ─── Parser ──────────────────────────────────────────────────────────────
 
 /**
+ * Reason codes describing *why* a `<handoff>` block could not be parsed into a
+ * usable task. Surfaced on `handoff_error` broadcasts + persisted on failed
+ * rows so the UI can explain to the user why the block was dropped.
+ */
+export type HandoffMalformedReason =
+  | 'invalid-json'
+  | 'not-object'
+  | 'array-payload'
+  | 'missing-toagent'
+  | 'missing-note'
+  | 'empty-toagent'
+  | 'empty-note';
+
+export interface HandoffDetectionResult {
+  /** True iff the raw text contains a `<handoff>...</handoff>` tag pair. */
+  present: boolean;
+  /** Parsed task, or null when the block is absent or malformed. */
+  task: HandoffTask | null;
+  /** When `present && !task`, explains the specific failure mode. */
+  reason: HandoffMalformedReason | null;
+  /** The untrimmed body between the tags (for error reporting / placeholder notes). */
+  rawBody: string | null;
+}
+
+/**
+ * Detect a `<handoff>` block and parse it. Unlike `parseHandoffBlock`, this
+ * returns a tagged result that distinguishes "no block present" from "block
+ * present but malformed", so callers can emit a `handoff_error` + render a
+ * failed-state widget instead of silently dropping the handoff.
+ *
+ * Exported for tests and for use by `chat.ts` to surface malformed handoffs.
+ */
+export function detectHandoffBlock(text: string): HandoffDetectionResult {
+  if (typeof text !== 'string') {
+    return { present: false, task: null, reason: null, rawBody: null };
+  }
+  const match = text.match(/<handoff>\s*([\s\S]*?)\s*<\/handoff>/);
+  if (!match) return { present: false, task: null, reason: null, rawBody: null };
+
+  const rawBody = match[1] ?? '';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return { present: true, task: null, reason: 'invalid-json', rawBody };
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { present: true, task: null, reason: 'not-object', rawBody };
+  }
+  if (Array.isArray(parsed)) {
+    return { present: true, task: null, reason: 'array-payload', rawBody };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.toAgent !== 'string') {
+    return { present: true, task: null, reason: 'missing-toagent', rawBody };
+  }
+  if (typeof obj.note !== 'string') {
+    return { present: true, task: null, reason: 'missing-note', rawBody };
+  }
+  const toAgent = obj.toAgent.trim();
+  const note = obj.note.trim();
+  if (!toAgent) return { present: true, task: null, reason: 'empty-toagent', rawBody };
+  if (!note) return { present: true, task: null, reason: 'empty-note', rawBody };
+  return { present: true, task: { toAgent, note }, reason: null, rawBody };
+}
+
+/**
+ * Human-readable label for a detection reason — surfaced in `handoff_error`
+ * broadcasts and persisted on the DB row's `error` column.
+ */
+export function describeHandoffReason(reason: HandoffMalformedReason): string {
+  switch (reason) {
+    case 'invalid-json':
+      return 'Handoff block contains invalid JSON';
+    case 'not-object':
+      return 'Handoff block payload is not a JSON object';
+    case 'array-payload':
+      return 'Handoff block payload is an array (handoff is single-target)';
+    case 'missing-toagent':
+      return 'Handoff block is missing the "toAgent" field';
+    case 'missing-note':
+      return 'Handoff block is missing the "note" field';
+    case 'empty-toagent':
+      return 'Handoff block has an empty "toAgent" field';
+    case 'empty-note':
+      return 'Handoff block has an empty "note" field';
+    default:
+      return 'Handoff block could not be parsed';
+  }
+}
+
+/**
  * Extract a `<handoff>...</handoff>` block from `text` and return the parsed
  * task. Returns `null` if no block is found, the JSON is malformed, or the
  * required fields (`toAgent`, `note`) are missing or empty.
@@ -201,23 +293,11 @@ export function resolveTargetAgentId(
  * Only the first block in `text` is considered — handoff is singular by
  * design (unlike `<delegate>` which can be an array).
  *
- * Exported for tests.
+ * Exported for tests. For code paths that need to distinguish "no block"
+ * from "malformed block", prefer `detectHandoffBlock`.
  */
 export function parseHandoffBlock(text: string): HandoffTask | null {
-  const match = text.match(/<handoff>\s*([\s\S]*?)\s*<\/handoff>/);
-  if (!match) return null;
-  try {
-    const parsed: unknown = JSON.parse(match[1]);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    const obj = parsed as Record<string, unknown>;
-    const toAgent = typeof obj.toAgent === 'string' ? obj.toAgent.trim() : '';
-    const note = typeof obj.note === 'string' ? obj.note.trim() : '';
-    if (!toAgent || !note) return null;
-    return { toAgent, note };
-  } catch {
-    console.error('[Handoff] Failed to parse handoff block JSON');
-    return null;
-  }
+  return detectHandoffBlock(text).task;
 }
 
 /**
@@ -357,6 +437,71 @@ export function buildHandoffPromptSection(
     note: row.note,
     messages: sourceMessages,
   });
+}
+
+// ─── Malformed handoff recorder ──────────────────────────────────────────
+
+export interface RecordMalformedHandoffArgs {
+  stmts: Stmts;
+  broadcast: BroadcastFn;
+  sessionId: string;
+  fromAgentId: string;
+  fromAgentName?: string;
+  projectId: string;
+  detection: HandoffDetectionResult;
+}
+
+/**
+ * Persist a failed `handoffs` row + broadcast a `handoff_error` event for a
+ * `<handoff>` block that was present but unparseable. Previously these
+ * blocks were silently dropped (no DB row, no broadcast), leaving the UI
+ * with no way to surface the failure — this is the root cause of the
+ * "handoffs intermittent — widget missing when they fail" bug.
+ *
+ * Returns the generated handoffId + the user-facing reason for the caller
+ * to log. All DB failures are caught and reported to the console so they
+ * never block the end-of-turn flow.
+ */
+export function recordMalformedHandoff(args: RecordMalformedHandoffArgs): {
+  handoffId: string;
+  reason: string;
+} {
+  const handoffId = uuidv4();
+  const detection = args.detection;
+  const rawBody = (detection.rawBody ?? '').trim();
+  const placeholderNote =
+    rawBody.length > 0
+      ? rawBody.slice(0, 500)
+      : `(malformed handoff block: ${detection.reason ?? 'unknown'})`;
+  const reason = detection.reason
+    ? describeHandoffReason(detection.reason)
+    : 'Handoff block could not be parsed';
+
+  try {
+    args.stmts.createHandoff.run(
+      handoffId,
+      args.sessionId,
+      args.fromAgentId,
+      '(unknown)',
+      args.projectId,
+      placeholderNote,
+    );
+    args.stmts.markHandoffFailed.run(reason, handoffId);
+  } catch (dbErr) {
+    console.error('[Handoff] Failed to record malformed handoff row:', (dbErr as Error).message);
+  }
+
+  args.broadcast({
+    type: 'handoff_error',
+    sessionId: args.sessionId,
+    handoffId,
+    error: reason,
+    reason: detection.reason ?? null,
+    fromAgentId: args.fromAgentId,
+    fromAgentName: args.fromAgentName ?? args.fromAgentId,
+  });
+
+  return { handoffId, reason };
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────

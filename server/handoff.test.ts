@@ -1,5 +1,7 @@
 import {
   parseHandoffBlock,
+  detectHandoffBlock,
+  describeHandoffReason,
   handoffHasTrailingContent,
   buildHandoffContextBlock,
   resolveTargetAgentId,
@@ -85,6 +87,82 @@ describe('parseHandoffBlock', () => {
 </handoff>`;
     const result = parseHandoffBlock(text);
     expect(result).toEqual({ toAgent: 'hub-backend', note: 'go' });
+  });
+});
+
+describe('detectHandoffBlock — distinguishes absent vs malformed', () => {
+  it('returns present=false with task=null when no block is in the text', () => {
+    const out = detectHandoffBlock('just some prose');
+    expect(out.present).toBe(false);
+    expect(out.task).toBeNull();
+    expect(out.reason).toBeNull();
+    expect(out.rawBody).toBeNull();
+  });
+
+  it('returns present=true + task for a well-formed block', () => {
+    const text = `<handoff>{"toAgent":"hub-backend","note":"go"}</handoff>`;
+    const out = detectHandoffBlock(text);
+    expect(out.present).toBe(true);
+    expect(out.task).toEqual({ toAgent: 'hub-backend', note: 'go' });
+    expect(out.reason).toBeNull();
+    expect(out.rawBody).toContain('toAgent');
+  });
+
+  it('flags invalid JSON with reason=invalid-json so the UI can render a failed card', () => {
+    const text = `<handoff>{"toAgent": "x", "note": "y" unexpected}</handoff>`;
+    const out = detectHandoffBlock(text);
+    expect(out.present).toBe(true);
+    expect(out.task).toBeNull();
+    expect(out.reason).toBe('invalid-json');
+  });
+
+  it('flags array payloads as array-payload (handoff is single-target)', () => {
+    const text = `<handoff>[{"toAgent":"x","note":"y"}]</handoff>`;
+    const out = detectHandoffBlock(text);
+    expect(out.present).toBe(true);
+    expect(out.reason).toBe('array-payload');
+    expect(out.task).toBeNull();
+  });
+
+  it('flags not-object when the payload is a primitive', () => {
+    const text = `<handoff>"just a string"</handoff>`;
+    const out = detectHandoffBlock(text);
+    expect(out.present).toBe(true);
+    expect(out.reason).toBe('not-object');
+  });
+
+  it('distinguishes missing-toagent from empty-toagent', () => {
+    const missing = detectHandoffBlock(`<handoff>{"note":"y"}</handoff>`);
+    expect(missing.reason).toBe('missing-toagent');
+    const empty = detectHandoffBlock(`<handoff>{"toAgent":"   ","note":"y"}</handoff>`);
+    expect(empty.reason).toBe('empty-toagent');
+  });
+
+  it('distinguishes missing-note from empty-note', () => {
+    const missing = detectHandoffBlock(`<handoff>{"toAgent":"x"}</handoff>`);
+    expect(missing.reason).toBe('missing-note');
+    const empty = detectHandoffBlock(`<handoff>{"toAgent":"x","note":"   "}</handoff>`);
+    expect(empty.reason).toBe('empty-note');
+  });
+
+  it('captures the raw body for error reporting so the UI can surface context', () => {
+    const raw = `{"toAgent":"x","note":"y" INVALID}`;
+    const out = detectHandoffBlock(`<handoff>${raw}</handoff>`);
+    expect(out.rawBody).toBe(raw);
+  });
+});
+
+describe('describeHandoffReason', () => {
+  it('produces a human-readable label for each known reason', () => {
+    expect(describeHandoffReason('invalid-json')).toMatch(/invalid json/i);
+    expect(describeHandoffReason('array-payload')).toMatch(/array/i);
+    expect(describeHandoffReason('empty-toagent')).toMatch(/empty.*toAgent/i);
+    expect(describeHandoffReason('missing-note')).toMatch(/missing.*note/i);
+  });
+
+  it('falls back to a generic label for unknown codes', () => {
+    // Cast is intentional — guarantee the fallback branch stays covered.
+    expect(describeHandoffReason('something-else' as never)).toMatch(/could not be parsed/i);
   });
 });
 

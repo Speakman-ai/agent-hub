@@ -3,6 +3,8 @@ import {
   parseHandoffBlock,
   parseDelegateBlock,
   extractCoordinationBlocks,
+  detectHandoffBlock,
+  describeHandoffReason,
 } from './coordinationBlocks.js';
 
 describe('parseHandoffBlock', () => {
@@ -124,16 +126,94 @@ describe('extractCoordinationBlocks', () => {
     expect(out.delegate).toEqual([{ agentId: 'c', task: 'd' }]);
   });
 
-  it('leaves a malformed block in place but returns null for the parsed value', () => {
+  it('strips a malformed block and surfaces handoffMalformed so the UI can render a failed card', () => {
+    // Regression: previously extractCoordinationBlocks preserved the raw
+    // `<handoff>...</handoff>` JSON as prose when parse failed, producing the
+    // "handoffs intermittent — widget missing when they fail" bug. The
+    // stripped prose must NOT contain the raw tag, and handoffMalformed must
+    // carry a reason so SessionTail can render a HandoffCard in failed state.
     const text = `Prose.\n<handoff>not json</handoff>`;
     const out = extractCoordinationBlocks(text);
     expect(out.handoff).toBeNull();
-    // Malformed block is preserved so the user still sees "something is here".
-    expect(out.stripped).toContain('<handoff>');
+    expect(out.stripped).toBe('Prose.');
+    expect(out.stripped).not.toContain('<handoff>');
+    expect(out.handoffMalformed).not.toBeNull();
+    expect(out.handoffMalformed.reason).toBe('invalid-json');
+    expect(out.handoffMalformed.rawBody).toBe('not json');
+  });
+
+  it('flags missing fields via handoffMalformed even when the JSON is syntactically valid', () => {
+    const text = `<handoff>{"toAgent":"hub-backend"}</handoff>`;
+    const out = extractCoordinationBlocks(text);
+    expect(out.handoff).toBeNull();
+    expect(out.handoffMalformed.reason).toBe('missing-note');
   });
 
   it('handles null/empty input safely', () => {
-    expect(extractCoordinationBlocks('')).toEqual({ stripped: '', handoff: null, delegate: null });
+    expect(extractCoordinationBlocks('')).toEqual({
+      stripped: '',
+      handoff: null,
+      delegate: null,
+      handoffMalformed: null,
+    });
     expect(extractCoordinationBlocks(null).stripped).toBe('');
+    expect(extractCoordinationBlocks(null).handoffMalformed).toBeNull();
+  });
+});
+
+describe('detectHandoffBlock', () => {
+  it('returns present=false when no block is in the text', () => {
+    const out = detectHandoffBlock('plain prose');
+    expect(out.present).toBe(false);
+    expect(out.task).toBeNull();
+    expect(out.reason).toBeNull();
+  });
+
+  it('returns task + reason=null for a valid block', () => {
+    const out = detectHandoffBlock(`<handoff>{"toAgent":"hub-backend","note":"go"}</handoff>`);
+    expect(out.present).toBe(true);
+    expect(out.task).toEqual({ toAgent: 'hub-backend', note: 'go' });
+    expect(out.reason).toBeNull();
+  });
+
+  it('reports invalid-json for broken JSON bodies', () => {
+    const out = detectHandoffBlock(`<handoff>{broken</handoff>`);
+    expect(out.present).toBe(true);
+    expect(out.task).toBeNull();
+    expect(out.reason).toBe('invalid-json');
+  });
+
+  it('reports array-payload for array-shaped bodies', () => {
+    const out = detectHandoffBlock(`<handoff>[{"toAgent":"x","note":"y"}]</handoff>`);
+    expect(out.reason).toBe('array-payload');
+  });
+
+  it('reports missing vs empty fields distinctly', () => {
+    expect(detectHandoffBlock(`<handoff>{"note":"y"}</handoff>`).reason).toBe('missing-toagent');
+    expect(detectHandoffBlock(`<handoff>{"toAgent":"  ","note":"y"}</handoff>`).reason).toBe(
+      'empty-toagent',
+    );
+    expect(detectHandoffBlock(`<handoff>{"toAgent":"x"}</handoff>`).reason).toBe('missing-note');
+    expect(detectHandoffBlock(`<handoff>{"toAgent":"x","note":"  "}</handoff>`).reason).toBe(
+      'empty-note',
+    );
+  });
+
+  it('safely handles non-string / null input', () => {
+    expect(detectHandoffBlock(null).present).toBe(false);
+    expect(detectHandoffBlock(undefined).present).toBe(false);
+    expect(detectHandoffBlock(42).present).toBe(false);
+  });
+});
+
+describe('describeHandoffReason', () => {
+  it('returns a human-readable message for each reason code', () => {
+    expect(describeHandoffReason('invalid-json')).toMatch(/invalid json/i);
+    expect(describeHandoffReason('missing-toagent')).toMatch(/toAgent/i);
+    expect(describeHandoffReason('empty-note')).toMatch(/empty.*note/i);
+  });
+
+  it('returns a generic fallback for unknown codes', () => {
+    expect(describeHandoffReason('nope')).toMatch(/could not be parsed/i);
   });
 });

@@ -22,6 +22,8 @@ import {
   initHandoff,
   handleHandoff,
   buildHandoffPromptSection,
+  recordMalformedHandoff,
+  detectHandoffBlock,
   _peekDepsForInternalUse,
 } from '../handoff.js';
 import type {
@@ -292,6 +294,57 @@ describe('handleHandoff — end-to-end', () => {
     // Persisted id is the *resolved* one, so UI correlation works.
     expect(row.to_agent_id).toBe('agent-backend');
     expect(row.status).toBe('delivered');
+  });
+
+  it('recordMalformedHandoff persists a failed row + broadcasts handoff_error for malformed blocks', () => {
+    // Regression for the "handoffs intermittent — widget missing when they
+    // fail" bug. A <handoff> block with malformed JSON used to silently
+    // drop: no DB row, no broadcast, no UI feedback. Now we expect:
+    //   1. A handoffs row exists with status='failed' + explanatory error.
+    //   2. A handoff_error broadcast carrying handoffId + reason so the
+    //      client can mark/synthesize the widget in failed state.
+    const stmts = getStmts();
+    const srcSessionId = `${testPrefix}-src-malformed`;
+    stmts.createSession.run(
+      srcSessionId,
+      'agent-lead',
+      'src',
+      'claude-code',
+      'claude-opus-4-7',
+      0,
+      0,
+    );
+
+    const raw = '{"toAgent":"hub-backend","note":"oops" INVALID}';
+    const detection = detectHandoffBlock(`<handoff>${raw}</handoff>`);
+    expect(detection.present).toBe(true);
+    expect(detection.reason).toBe('invalid-json');
+
+    const { handoffId, reason } = recordMalformedHandoff({
+      stmts,
+      broadcast: (data) => broadcasts.push(data),
+      sessionId: srcSessionId,
+      fromAgentId: 'agent-lead',
+      fromAgentName: 'Lead',
+      projectId: 'proj-test',
+      detection,
+    });
+
+    const row = stmts.getHandoffById.get(handoffId) as HandoffRow;
+    expect(row).toBeDefined();
+    expect(row.status).toBe('failed');
+    expect(row.to_agent_id).toBe('(unknown)');
+    expect(row.error).toBe(reason);
+    expect(row.note).toContain('INVALID'); // raw body was preserved for context
+
+    const errorEvent = broadcasts.find(
+      (b) => b.type === 'handoff_error' && b.handoffId === handoffId,
+    );
+    expect(errorEvent).toBeDefined();
+    expect(errorEvent!.error).toMatch(/invalid json/i);
+    expect(errorEvent!.reason).toBe('invalid-json');
+    expect(errorEvent!.fromAgentId).toBe('agent-lead');
+    expect(errorEvent!.fromAgentName).toBe('Lead');
   });
 
   it('buildHandoffPromptSection returns empty for a pending (not yet delivered) handoff', () => {

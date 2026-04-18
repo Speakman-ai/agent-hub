@@ -134,4 +134,30 @@ describe('HandoffCard', () => {
     expect(screen.getByTestId('handoff-failed')).toBeInTheDocument();
     expect(screen.queryByTestId('handoff-open-session')).not.toBeInTheDocument();
   });
+
+  it('renders for a malformed block — falls back to "(unknown)" target and shows the failure reason', () => {
+    // Regression for the "handoffs intermittent — widget missing when they
+    // fail" bug: SessionTail now synthesizes a failed handoff row when a
+    // <handoff> block fails to parse client-side. HandoffCard must still
+    // render correctly with '(unknown)' as the toAgentId so the user sees
+    // *something* explaining the failure.
+    render(
+      <HandoffCard
+        toAgentId="(unknown)"
+        note='{"toAgent":"x" INVALID}'
+        agents={AGENTS}
+        handoff={{
+          id: null,
+          to_agent_id: null,
+          to_session_id: null,
+          status: 'failed',
+          error: 'Handoff block contains invalid JSON',
+        }}
+      />,
+    );
+    expect(screen.getByTestId('handoff-card')).toBeInTheDocument();
+    const failed = screen.getByTestId('handoff-failed');
+    expect(failed).toBeInTheDocument();
+    expect(failed.textContent).toMatch(/invalid json/i);
+  });
 });

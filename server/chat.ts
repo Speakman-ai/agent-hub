@@ -14,7 +14,8 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import type { DelegationResult } from './delegation.js';
 import {
-  parseHandoffBlock,
+  detectHandoffBlock,
+  recordMalformedHandoff,
   handoffHasTrailingContent,
   handleHandoff,
   buildHandoffPromptSection,
@@ -1210,19 +1211,44 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // not run the delegate/synthesize flow for this turn. Per design,
       // <handoff> is terminal: any prose after the closing tag is dropped.
       if (enrichedAgent) {
-        const handoffTask = parseHandoffBlock(finalContent);
-        if (handoffTask) {
+        const detection = detectHandoffBlock(finalContent);
+        if (detection.task) {
           if (handoffHasTrailingContent(finalContent)) {
             console.warn(
               `[Handoff] Trailing content after </handoff> in session ${sessionId} — dropped (handoff is terminal).`,
             );
           }
-          handleHandoff(sessionId, assistantMsgId, handoffTask, enrichedAgent, project).catch(
+          handleHandoff(sessionId, assistantMsgId, detection.task, enrichedAgent, project).catch(
             (err: unknown) => {
               const message = err instanceof Error ? err.message : String(err);
               console.error('[Handoff] Failed:', message);
               broadcast({ type: 'handoff_error', sessionId, error: message });
             },
+          );
+          drainQueue(sessionId);
+          return;
+        }
+        if (detection.present && detection.reason) {
+          // The agent emitted a <handoff> tag but the payload was malformed
+          // (bad JSON, missing fields, etc.). Previously this path silently
+          // dropped the handoff with no UI feedback. Now: record a failed
+          // row + broadcast handoff_error so the widget renders the failure
+          // state instead of leaving the user staring at a dead-air turn.
+          const projectId =
+            (project as Project & { id?: string }).id ||
+            (enrichedAgent as EnrichedAgent & { projectId?: string }).projectId ||
+            '';
+          recordMalformedHandoff({
+            stmts,
+            broadcast,
+            sessionId,
+            fromAgentId: enrichedAgent.id,
+            fromAgentName: enrichedAgent.name,
+            projectId,
+            detection,
+          });
+          console.warn(
+            `[Handoff] Malformed <handoff> block in session ${sessionId}: ${detection.reason}`,
           );
           drainQueue(sessionId);
           return;
