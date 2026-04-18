@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { View, Animated, TouchableOpacity, StyleSheet, ActivityIndicator, Text } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -43,7 +43,7 @@ function AppContent() {
   const slideAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const overlayAnim = useRef(new Animated.Value(0)).current;
   const navigationRef = useRef(null);
-  const { setActiveSessionId, configReady, needsSetup, completeSetup } = useApp();
+  const { setActiveSessionId, configReady, needsSetup, completeSetup, registerNavigator } = useApp();
 
   const openSidebar = useCallback(() => {
     sidebarOpenRef.current = true;
@@ -105,6 +105,22 @@ function AppContent() {
       }
     }, 50);
   };
+
+  // Hand the AppContext a navigator function so notification-tap handlers
+  // (registered inside the context) can open Kanban / Threads. We build a
+  // small wrapper instead of exposing the raw navigationRef so taps also
+  // close the drawer if it's open (mirrors the DrawerContent `navigate`
+  // helper above).
+  useEffect(() => {
+    if (!registerNavigator) return undefined;
+    registerNavigator((screen, params) => {
+      closeSidebar();
+      if (navigationRef.current) {
+        navigationRef.current.navigate(screen, params);
+      }
+    });
+    return () => registerNavigator(null);
+  }, [registerNavigator, closeSidebar]);
 
   // Show loading screen while config loads from AsyncStorage
   if (!configReady) {

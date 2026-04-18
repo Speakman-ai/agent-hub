@@ -1101,6 +1101,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         type: 'done',
         messageId: assistantMsgId,
         sessionId,
+        agentId: agent.id,
         agentName: agent.name,
         sessionName: latestSess?.name,
         message: {

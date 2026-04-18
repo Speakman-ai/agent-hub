@@ -15,6 +15,7 @@ import { selectSessionToActivate } from '../utils/sessionSelection';
 import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
+import { routeNotificationTap } from '../utils/notificationRouting';
 import { uploadAttachments } from '../utils/uploadAttachments';
 
 const AppContext = createContext(null);
@@ -117,6 +118,21 @@ export function AppProvider({ children }) {
   // clobber it by defaulting to `data[0].id`. Mirror of the web client's
   // `pendingSessionIdRef` in `client/src/App.jsx:187`.
   const pendingSessionIdRef = useRef(null);
+
+  // Stack navigator bridge — populated by `App.js` via `registerNavigator`
+  // once the `NavigationContainer` ref is ready. Used by the notification
+  // response listener to open Kanban / Threads from a cold- or warm-start
+  // tap. `null` is a no-op (pre-mount or web/test).
+  const navigatorRef = useRef(null);
+  // A ref — not state — so registering the navigator never triggers a
+  // re-render. Wrapped in `useCallback` only for a stable identity.
+  const registerNavigator = useCallback((fn) => {
+    navigatorRef.current = typeof fn === 'function' ? fn : null;
+  }, []);
+
+  // Keep the latest sessions list reachable from the notification listener
+  // without re-running the subscription on every sessions change.
+  const sessionsRef = useRef([]);
 
   // Show an in-app (foreground) notification for the subset of broadcast
   // events that map to the desktop/Expo push taxonomy. Remote pushes are
@@ -583,6 +599,13 @@ export function AppProvider({ children }) {
 
   const { send, connected, reconnecting, reconnect } = useWebSocket(handleWsMessage);
 
+  // Mirror `sessions` into a ref so the notification-response listener —
+  // which registers once on mount — can read the latest list without being
+  // torn down and re-registered on every sessions refresh.
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
   // Register for Expo push notifications once the connection config is
   // ready. Native modules are required lazily so this file can be imported
   // under Vitest without those dependencies being resolvable.
@@ -621,6 +644,94 @@ export function AppProvider({ children }) {
       }
     })();
   }, [configReady]);
+
+  // Shared dispatch for a routed notification-tap payload. Extracted so the
+  // cold-start (`getLastNotificationResponseAsync`) path and the live
+  // (`addNotificationResponseReceivedListener`) path share identical logic.
+  //
+  // The routing decision is fully pure (`routeNotificationTap`); only the
+  // side-effects — state updates, `navigatorRef.current(screen, params)` —
+  // live here.
+  const applyNotificationRoute = useCallback((data) => {
+    const route = routeNotificationTap(data, { sessions: sessionsRef.current });
+    if (!route) return;
+
+    switch (route.kind) {
+      case 'chat': {
+        // Stash the target session on `pendingSessionIdRef` before swapping
+        // `activeAgentId` so the sessions-load effect honors it (mirror of
+        // `handleOpenHandoffSession`). When `agentId` is unknown (the
+        // session wasn't in the loaded list) we still stash the pending id
+        // — if the user ever lands on that agent the session will activate.
+        pendingSessionIdRef.current = route.sessionId;
+        if (route.agentId) {
+          setActiveAgentId(route.agentId);
+        }
+        setActiveSessionId(route.sessionId);
+        break;
+      }
+      case 'kanban': {
+        navigatorRef.current?.('Kanban', {
+          projectId: route.projectId || undefined,
+          cardId: route.cardId || undefined,
+        });
+        break;
+      }
+      case 'threads': {
+        navigatorRef.current?.('Threads', {
+          projectId: route.projectId,
+          threadId: route.threadId || undefined,
+        });
+        break;
+      }
+      default:
+        break;
+    }
+  }, []);
+
+  // Register a notification-response listener so tapping a banner (whether
+  // presented in foreground by `presentLocalNotification` or delivered as a
+  // remote Expo push) navigates to the right screen. Also consume any
+  // pending cold-start response so launching the app from a dismissed
+  // banner still routes correctly.
+  //
+  // Native modules are required lazily so Vitest (which only exercises
+  // pure utils in `src/utils/`) never tries to resolve them.
+  useEffect(() => {
+    if (!configReady) return undefined;
+    let subscription = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const Notifications = require('expo-notifications');
+        // Cold-start: the app was launched by tapping a notification while
+        // it was backgrounded/killed. Apply once on mount.
+        if (typeof Notifications.getLastNotificationResponseAsync === 'function') {
+          try {
+            const last = await Notifications.getLastNotificationResponseAsync();
+            const data = last?.notification?.request?.content?.data;
+            if (!cancelled && data) applyNotificationRoute(data);
+          } catch {
+            /* non-fatal — listener still covers the warm-start path */
+          }
+        }
+        if (typeof Notifications.addNotificationResponseReceivedListener === 'function') {
+          subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+            const data = response?.notification?.request?.content?.data;
+            if (data) applyNotificationRoute(data);
+          });
+        }
+      } catch {
+        /* expo-notifications unavailable — no-op */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (subscription && typeof subscription.remove === 'function') {
+        subscription.remove();
+      }
+    };
+  }, [configReady, applyNotificationRoute]);
 
   const refreshAgents = useCallback(() => {
     api.getAgents().then((data) => {
@@ -1252,6 +1363,9 @@ export function AppProvider({ children }) {
     // Push notification state (Settings screen surfaces these)
     pushToken,
     pushPermissionStatus,
+    // Navigation bridge — App.js calls this once the NavigationContainer
+    // ref is mounted so the notification-tap listener can open screens.
+    registerNavigator,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

@@ -272,6 +272,7 @@ describe('mapBroadcastToPush', () => {
     const r = mapBroadcastToPush({
       type: 'done',
       sessionId: 's1',
+      agentId: 'a1',
       agentName: 'Hub Backend',
       sessionName: 'My session',
       message: { content: 'All\n\ndone.' },
@@ -280,6 +281,9 @@ describe('mapBroadcastToPush', () => {
     expect(r?.payload.title).toBe('Hub Backend — Done');
     expect(r?.payload.body).toContain('All done.');
     expect(r?.payload.data?.sessionId).toBe('s1');
+    // agentId is forwarded so mobile notification taps can route to the
+    // right agent without a second round-trip.
+    expect(r?.payload.data?.agentId).toBe('a1');
   });
 
   it('maps changes_ready with branch + ids in data', () => {

@@ -358,6 +358,7 @@ export function mapBroadcastToPush(data: BroadcastData): {
           body,
           data: {
             sessionId: data.sessionId,
+            agentId: data.agentId,
             type: 'session_complete',
           },
         },
