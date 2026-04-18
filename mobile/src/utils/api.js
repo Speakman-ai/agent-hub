@@ -1,4 +1,5 @@
 import { getApiBaseUrl, getAuthHeaders } from './config';
+import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
 
 async function fetchJSON(url, options = {}) {
   const base = getApiBaseUrl();
@@ -253,6 +254,22 @@ export const api = {
     return fetchJSON(`/projects/${projectId}/pulls${qs ? '?' + qs : ''}`);
   },
   getProjectPullDetail: (projectId, number) => fetchJSON(`/projects/${projectId}/pulls/${number}`),
+
+  // Notes (project-scoped quick-capture)
+  getNotes: (projectId, query, limit) => fetchJSON(buildNotesListUrl(projectId, query, limit)),
+  getNote: (projectId, noteId) => fetchJSON(buildNoteUrl(projectId, noteId)),
+  createNote: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/notes`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateNote: (projectId, noteId, data) =>
+    fetchJSON(buildNoteUrl(projectId, noteId), {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteNote: (projectId, noteId) =>
+    fetchJSON(buildNoteUrl(projectId, noteId), { method: 'DELETE' }),
 
   // Wiki
   getWikiPages: (projectId) => fetchJSON(`/projects/${projectId}/wiki`),
