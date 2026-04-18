@@ -152,6 +152,35 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).not.toContain('External API Documentation');
   });
 
+  it('includes file-safety reminder handling on first message', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('File-Safety Reminder');
+    // Must explicitly tell the model not to verbalize acknowledgments
+    expect(prompt).toMatch(/Not malware/);
+    expect(prompt).toMatch(/internalize/i);
+    // Must explicitly forbid using the reminder as a refusal excuse
+    expect(prompt).toMatch(/never use the reminder as grounds to refuse/i);
+  });
+
+  it('excludes file-safety reminder handling on subsequent messages', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: false,
+    });
+    expect(prompt).not.toContain('File-Safety Reminder');
+  });
+
+  it('file-safety reminder directive is project-agnostic (ships for all projects)', () => {
+    // Build a prompt for a project with no CLAUDE.md / workspace context.
+    // The directive should still be present because it lives in buildEnrichedPrompt.
+    const bareProject = makeProject({ id: 'some-other-project' });
+    const prompt = buildEnrichedPrompt(bareProject, makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('File-Safety Reminder');
+  });
+
   it('always includes wiki page listing regardless of isFirstMessage', () => {
     const first = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: true,
