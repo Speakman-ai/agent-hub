@@ -23,6 +23,7 @@ import {
   checksBadge,
   summarizeReviews,
   reviewsBadge,
+  mergeableBadge,
 } from '../utils/prFormatting';
 
 const STATE_TABS = [
@@ -41,6 +42,7 @@ function Badge({ label, color, bg }) {
 
 function PrListItem({ pr, onPress }) {
   const state = prStateBadge(pr);
+  const diff = diffSummary(pr);
   return (
     <TouchableOpacity style={styles.listItem} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.listItemHeader}>
@@ -58,7 +60,7 @@ function PrListItem({ pr, onPress }) {
           {pr.head ? ` · ${pr.head} → ${pr.base || 'main'}` : ''}
         </Text>
       </View>
-      {diffSummary(pr) ? <Text style={styles.diffText}>{diffSummary(pr)}</Text> : null}
+      {diff ? <Text style={styles.diffText}>{diff}</Text> : null}
       {Array.isArray(pr.labels) && pr.labels.length > 0 && (
         <View style={styles.labelsRow}>
           {pr.labels.slice(0, 4).map((l) => (
@@ -82,6 +84,7 @@ function PrDetail({ detail, onBack, onRefresh, refreshing }) {
   const cBadge = checksBadge(checks);
   const reviewState = summarizeReviews(detail.reviews);
   const rBadge = reviewsBadge(reviewState);
+  const mBadge = mergeableBadge(pr.mergeable);
 
   return (
     <ScrollView
@@ -133,11 +136,11 @@ function PrDetail({ detail, onBack, onRefresh, refreshing }) {
       <View style={styles.summaryStrip}>
         <Badge label={cBadge.label} color={cBadge.color} bg={cBadge.bg} />
         <Badge label={rBadge.label} color={rBadge.color} bg={rBadge.bg} />
-        {typeof pr.mergeable === 'boolean' && (
+        {mBadge.show && (
           <Badge
-            label={pr.mergeable ? 'Mergeable' : 'Conflicts'}
-            color={pr.mergeable ? colors.emerald400 : colors.red400}
-            bg={pr.mergeable ? colors.emerald900_40 : colors.red900_50}
+            label={mBadge.label}
+            color={mBadge.good ? colors.emerald400 : colors.red400}
+            bg={mBadge.good ? colors.emerald900_40 : colors.red900_50}
           />
         )}
       </View>

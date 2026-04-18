@@ -8,6 +8,7 @@ import {
   normalizeReviews,
   normalizeIssueComments,
   normalizeCheckRuns,
+  mergeableFromCli,
 } from './pr-list.js';
 
 vi.mock('../github-app.js', () => ({
@@ -181,6 +182,35 @@ describe('pr-list — pure helpers', () => {
 
     it('returns empty for non-arrays', () => {
       expect(normalizeIssueComments(null)).toEqual([]);
+    });
+  });
+
+  describe('mergeableFromCli', () => {
+    // Guards against a regression where `=== 'MERGEABLE'` collapsed
+    // the three-state CLI `mergeable` field into a boolean, causing
+    // mobile to render a false "Conflicts" badge for UNKNOWN PRs.
+    it("maps 'MERGEABLE' to true", () => {
+      expect(mergeableFromCli('MERGEABLE')).toBe(true);
+    });
+
+    it("maps 'CONFLICTING' to false", () => {
+      expect(mergeableFromCli('CONFLICTING')).toBe(false);
+    });
+
+    it("maps 'UNKNOWN' to null", () => {
+      expect(mergeableFromCli('UNKNOWN')).toBeNull();
+    });
+
+    it('maps null/undefined/missing to null', () => {
+      expect(mergeableFromCli(null)).toBeNull();
+      expect(mergeableFromCli(undefined)).toBeNull();
+      expect(mergeableFromCli('')).toBeNull();
+    });
+
+    it('maps unexpected values to null (never guesses true)', () => {
+      expect(mergeableFromCli('pending')).toBeNull();
+      expect(mergeableFromCli(true)).toBeNull();
+      expect(mergeableFromCli(0)).toBeNull();
     });
   });
 

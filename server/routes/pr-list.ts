@@ -36,6 +36,24 @@ export function parseRepoFullName(value: string | null | undefined): ParsedRepo 
   return { owner: match[1], repo: match[2] };
 }
 
+/**
+ * Map `gh pr view --json mergeable` tri-state to the boolean-or-null shape
+ * that the REST API (and therefore the App tier + mobile UI) expects.
+ *
+ *   'MERGEABLE'   → true
+ *   'CONFLICTING' → false
+ *   anything else (UNKNOWN, null, missing) → null
+ *
+ * Preserving null for UNKNOWN is important: the mobile badge renders
+ * "Mergeable"/"Conflicts" only when mergeable is a boolean, so `null`
+ * correctly suppresses the badge while GitHub is still computing.
+ */
+export function mergeableFromCli(value: unknown): boolean | null {
+  if (value === 'MERGEABLE') return true;
+  if (value === 'CONFLICTING') return false;
+  return null;
+}
+
 export function normalizePrSummary(raw: Record<string, unknown>): Record<string, unknown> {
   const user = raw.user as Record<string, unknown> | null | undefined;
   const head = raw.head as Record<string, unknown> | null | undefined;
@@ -313,12 +331,10 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
             merged_at: null,
             closed_at: null,
             body: data.body,
-            mergeable:
-              data.mergeable === 'MERGEABLE'
-                ? true
-                : data.mergeable === 'CONFLICTING'
-                  ? false
-                  : null,
+            // Preserve null for UNKNOWN (see mergeableFromCli docs) so the mobile
+            // UI doesn't render a false "Conflicts" badge while GitHub is still
+            // computing mergeability — matches the App branch's boolean-or-null.
+            mergeable: mergeableFromCli(data.mergeable),
             mergeable_state: data.mergeable,
             review_decision: data.reviewDecision,
             labels: labels.map((l) => ({ name: l.name as string, color: l.color as string })),

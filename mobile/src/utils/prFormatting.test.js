@@ -8,6 +8,7 @@ import {
   checksBadge,
   summarizeReviews,
   reviewsBadge,
+  mergeableBadge,
 } from './prFormatting';
 
 describe('prNumberFromUrl', () => {
@@ -233,6 +234,32 @@ describe('summarizeReviews', () => {
   it('none when empty', () => {
     expect(summarizeReviews([])).toBe('none');
     expect(summarizeReviews(null)).toBe('none');
+  });
+});
+
+describe('mergeableBadge', () => {
+  // Guards the mobile side of the CLI `mergeable` tri-state fix:
+  // null (= UNKNOWN upstream) must NOT render a misleading "Conflicts" badge.
+  it('shows Mergeable for true', () => {
+    expect(mergeableBadge(true)).toEqual({ show: true, label: 'Mergeable', good: true });
+  });
+
+  it('shows Conflicts for false', () => {
+    expect(mergeableBadge(false)).toEqual({ show: true, label: 'Conflicts', good: false });
+  });
+
+  it('hides badge for null (UNKNOWN — GitHub still computing)', () => {
+    expect(mergeableBadge(null)).toEqual({ show: false });
+  });
+
+  it('hides badge for undefined/missing', () => {
+    expect(mergeableBadge(undefined)).toEqual({ show: false });
+  });
+
+  it('hides badge for non-boolean values', () => {
+    expect(mergeableBadge('MERGEABLE')).toEqual({ show: false });
+    expect(mergeableBadge(0)).toEqual({ show: false });
+    expect(mergeableBadge(1)).toEqual({ show: false });
   });
 });
 

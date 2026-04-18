@@ -70,6 +70,19 @@ export function prStateBadge(pr) {
 }
 
 /**
+ * Decide whether the "Mergeable" / "Conflicts" badge should render.
+ * Mirrors the mobile badge guard: only show when `mergeable` is a real
+ * boolean. `null` means GitHub is still computing — suppress the badge
+ * rather than showing a misleading "Conflicts".
+ * @param {boolean|null|undefined} mergeable
+ * @returns {{show:boolean,label?:string,good?:boolean}}
+ */
+export function mergeableBadge(mergeable) {
+  if (typeof mergeable !== 'boolean') return { show: false };
+  return { show: true, label: mergeable ? 'Mergeable' : 'Conflicts', good: mergeable };
+}
+
+/**
  * Aggregate check-runs into pass/fail/pending counts + an overall badge.
  * Matches the GitHub "Checks" strip logic:
  *   - any `failure` or `timed_out` or `cancelled` or `action_required` => failure
