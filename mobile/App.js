@@ -13,6 +13,7 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import RoomsScreen from './src/screens/RoomsScreen';
 import KanbanScreen from './src/screens/KanbanScreen';
 import WikiScreen from './src/screens/WikiScreen';
+import PullRequestsScreen from './src/screens/PullRequestsScreen';
 import DrawerContent from './src/components/DrawerContent';
 import { colors } from './src/theme/colors';
 
@@ -125,6 +126,7 @@ function AppContent() {
             <Stack.Screen name="Rooms" component={RoomsScreen} />
             <Stack.Screen name="Kanban" component={KanbanScreen} />
             <Stack.Screen name="Wiki" component={WikiScreen} />
+            <Stack.Screen name="PullRequests" component={PullRequestsScreen} />
           </Stack.Navigator>
         </NavigationContainer>
 

@@ -22,10 +22,8 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
-  deleteSession: (sessionId) =>
-    fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
-  clearAllSessions: (agentId) =>
-    fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
+  deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
+  clearAllSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
   clearInactiveSessions: (agentId) =>
     fetchJSON(`/agents/${agentId}/sessions/inactive`, { method: 'DELETE' }),
   renameSession: (sessionId, name) =>
@@ -77,7 +75,8 @@ export const api = {
   getModelConfig: () => fetchJSON('/config/models'),
   updateConfig: (data) => fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
   exportConfig: () => fetchJSON('/config/export'),
-  importConfig: (data) => fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
+  importConfig: (data) =>
+    fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
 
   // Heartbeats
   getHeartbeats: () => fetchJSON('/heartbeats'),
@@ -88,29 +87,22 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(config),
     }),
-  runHeartbeat: (agentId) =>
-    fetchJSON(`/heartbeats/${agentId}/run`, { method: 'POST' }),
+  runHeartbeat: (agentId) => fetchJSON(`/heartbeats/${agentId}/run`, { method: 'POST' }),
 
   // Crons
   getCrons: () => fetchJSON('/crons'),
-  getCronLogs: (id, limit = 3) =>
-    fetchJSON(`/crons/${id}/logs?limit=${limit}`),
-  createCron: (data) =>
-    fetchJSON('/crons', { method: 'POST', body: JSON.stringify(data) }),
+  getCronLogs: (id, limit = 3) => fetchJSON(`/crons/${id}/logs?limit=${limit}`),
+  createCron: (data) => fetchJSON('/crons', { method: 'POST', body: JSON.stringify(data) }),
   updateCron: (id, data) =>
     fetchJSON(`/crons/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteCron: (id) =>
-    fetchJSON(`/crons/${id}`, { method: 'DELETE' }),
-  runCron: (id) =>
-    fetchJSON(`/crons/${id}/run`, { method: 'POST' }),
+  deleteCron: (id) => fetchJSON(`/crons/${id}`, { method: 'DELETE' }),
+  runCron: (id) => fetchJSON(`/crons/${id}/run`, { method: 'POST' }),
 
   // Rooms
   getRooms: () => fetchJSON('/rooms'),
   getRoom: (id) => fetchJSON(`/rooms/${id}`),
-  createRoom: (name) =>
-    fetchJSON('/rooms', { method: 'POST', body: JSON.stringify({ name }) }),
-  deleteRoom: (id) =>
-    fetchJSON(`/rooms/${id}`, { method: 'DELETE' }),
+  createRoom: (name) => fetchJSON('/rooms', { method: 'POST', body: JSON.stringify({ name }) }),
+  deleteRoom: (id) => fetchJSON(`/rooms/${id}`, { method: 'DELETE' }),
   renameRoom: (id, name) =>
     fetchJSON(`/rooms/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
   updateRoom: (id, data) =>
@@ -169,8 +161,7 @@ export const api = {
 
   // Slack
   getSlackStatus: () => fetchJSON('/slack/status'),
-  restartSlack: () =>
-    fetchJSON('/slack/restart', { method: 'POST' }),
+  restartSlack: () => fetchJSON('/slack/restart', { method: 'POST' }),
   getSlackMessages: (agentId, limit = 50) =>
     fetchJSON(`/slack/messages?${agentId ? `agentId=${agentId}&` : ''}limit=${limit}`),
 
@@ -251,14 +242,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ epicId }),
     }),
-  getAutonomousEpic: (projectId) =>
-    fetchJSON(`/projects/${projectId}/board/autonomous`),
+  getAutonomousEpic: (projectId) => fetchJSON(`/projects/${projectId}/board/autonomous`),
+
+  // Pull Requests (read-only viewer)
+  getProjectPulls: (projectId, { state = 'open', limit = 30 } = {}) => {
+    const params = new URLSearchParams();
+    if (state) params.set('state', state);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/pulls${qs ? '?' + qs : ''}`);
+  },
+  getProjectPullDetail: (projectId, number) => fetchJSON(`/projects/${projectId}/pulls/${number}`),
 
   // Wiki
   getWikiPages: (projectId) => fetchJSON(`/projects/${projectId}/wiki`),
   getWikiPage: (projectId, slug) => fetchJSON(`/projects/${projectId}/wiki/${slug}`),
-  searchWiki: (projectId, query) => fetchJSON(`/projects/${projectId}/wiki?q=${encodeURIComponent(query)}`),
-  getWikiPagesByCategory: (projectId, category) => fetchJSON(`/projects/${projectId}/wiki?category=${encodeURIComponent(category)}`),
+  searchWiki: (projectId, query) =>
+    fetchJSON(`/projects/${projectId}/wiki?q=${encodeURIComponent(query)}`),
+  getWikiPagesByCategory: (projectId, category) =>
+    fetchJSON(`/projects/${projectId}/wiki?category=${encodeURIComponent(category)}`),
   createWikiPage: (projectId, data) =>
     fetchJSON(`/projects/${projectId}/wiki`, { method: 'POST', body: JSON.stringify(data) }),
   updateWikiPage: (projectId, slug, data) =>

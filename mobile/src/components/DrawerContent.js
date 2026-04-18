@@ -323,6 +323,17 @@ export default function DrawerContent({ navigation }) {
                     >
                       <Text style={styles.boardButtonText}>{'\u25A6'} Board</Text>
                     </TouchableOpacity>
+                    {project.githubRepo ? (
+                      <TouchableOpacity
+                        style={styles.boardButton}
+                        onPress={() => {
+                          navigation.navigate('PullRequests', { projectId: project.id, project });
+                          navigation.closeDrawer();
+                        }}
+                      >
+                        <Text style={styles.boardButtonText}>{'\u2387'} PRs</Text>
+                      </TouchableOpacity>
+                    ) : null}
                   </View>
 
                   {!isCollapsed && projectAgents.map((agent) => renderAgentRow(agent))}
