@@ -11,6 +11,7 @@ import type {
   HandoffRow,
   MessageRow,
 } from './types.js';
+import { buildPrTitle } from './auto-git.js';
 
 // ─── Session handoff — `<handoff>` block protocol ────────────────────────────
 //
@@ -233,6 +234,39 @@ export function handoffHasTrailingContent(text: string): boolean {
   return match[1].trim().length > 0;
 }
 
+// ─── Session title derivation ────────────────────────────────────────────
+
+/**
+ * Derive a human-readable session title (and therefore PR title, when the
+ * handoff-sourced session later opens a PR with no kanban card attached) from
+ * the handoff `note`.
+ *
+ * Rules:
+ *   - Use the first non-empty line of `note`. Multi-line notes are common
+ *     (our emitters often include rationale after the headline sentence),
+ *     but PR titles must be one line.
+ *   - Normalize through `buildPrTitle` to collapse whitespace, strip trailing
+ *     punctuation, sentence-case, and hard-cap at ~70 chars with ellipsis on
+ *     word boundaries.
+ *   - When `note` is empty or whitespace-only, fall back to
+ *     `Handoff from <fromAgentName>` (with no timestamp — timestamps were the
+ *     original bug and are not useful once `handoffs.from_agent_id` preserves
+ *     the provenance independently).
+ *
+ * Exported for tests.
+ */
+export function deriveHandoffSessionTitle(note: string, fromAgentName: string): string {
+  const firstLine =
+    typeof note === 'string'
+      ? (note.split(/\r?\n/).find((line) => line.trim().length > 0) ?? '').trim()
+      : '';
+  if (!firstLine) {
+    const name = (fromAgentName ?? '').trim() || 'agent';
+    return `Handoff from ${name}`;
+  }
+  return buildPrTitle(firstLine);
+}
+
 // ─── Prompt builder ──────────────────────────────────────────────────────
 
 /**
@@ -433,10 +467,15 @@ export async function handleHandoff(
     const engine = targetAgent.engine || 'claude-code';
     const model =
       (targetAgent as EnrichedAgent & { model?: string }).model || defaultModelForEngine(engine);
+    // Derive a readable session title from the handoff note so that — when
+    // this session later opens a PR without a linked kanban card — the PR
+    // title reflects the task instead of a timestamp. Source-agent provenance
+    // is preserved on the `handoffs.from_agent_id` row, so we don't need to
+    // bake it into the title.
     stmts.createSession.run(
       toSessionId,
       targetAgent.id,
-      `Handoff from ${sourceAgent.name} — ${new Date().toLocaleString()}`,
+      deriveHandoffSessionTitle(task.note, sourceAgent.name),
       engine,
       model,
       1, // use_worktree — default to isolated

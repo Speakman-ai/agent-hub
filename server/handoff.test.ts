@@ -3,6 +3,7 @@ import {
   handoffHasTrailingContent,
   buildHandoffContextBlock,
   resolveTargetAgentId,
+  deriveHandoffSessionTitle,
   HANDOFF_TRANSCRIPT_MAX_TURNS,
 } from './handoff.js';
 import type { Agent } from './types.js';
@@ -250,5 +251,65 @@ describe('resolveTargetAgentId', () => {
       { id: 'hub-backend', name: 'Hub Backend' } as Agent,
     ];
     expect(resolveTargetAgentId('backend', mix)).toBe('backend');
+  });
+});
+
+describe('deriveHandoffSessionTitle', () => {
+  it('uses only the first line of a multi-line note', () => {
+    const note =
+      'Implement SSM deploy file-exec fix\n\nBackground: the current wrapper drops PAM exit codes.\nSee wiki page for details.';
+    expect(deriveHandoffSessionTitle(note, 'Hub Frontend')).toBe(
+      'Implement SSM deploy file-exec fix',
+    );
+  });
+
+  it('skips leading blank lines and picks the first non-empty line', () => {
+    const note = '\n   \nFix PR titles for handoff-sourced sessions\nMore detail below.';
+    expect(deriveHandoffSessionTitle(note, 'Hub Frontend')).toBe(
+      'Fix PR titles for handoff-sourced sessions',
+    );
+  });
+
+  it('truncates a long single-line note with an ellipsis on a word boundary', () => {
+    const note =
+      'Fix the auto-git PR title generation so that handoff-sourced sessions without a linked kanban card produce a readable title derived from the note instead of a timestamp string';
+    const title = deriveHandoffSessionTitle(note, 'Hub Frontend');
+    // buildPrTitle caps at 70 chars including the ellipsis.
+    expect(title.length).toBeLessThanOrEqual(70);
+    expect(title.endsWith('…')).toBe(true);
+    expect(title.startsWith('Fix the auto-git PR title')).toBe(true);
+    // Must not contain a timestamp.
+    expect(title).not.toMatch(/\d{1,2}:\d{2}/);
+  });
+
+  it('strips trailing punctuation from the first line', () => {
+    expect(deriveHandoffSessionTitle('Fix login crash.', 'Hub Backend')).toBe('Fix login crash');
+    expect(deriveHandoffSessionTitle('Did it!\nNext up: cleanup.', 'Hub Backend')).toBe('Did it');
+  });
+
+  it('falls back to "Handoff from <agent>" when the note is empty', () => {
+    expect(deriveHandoffSessionTitle('', 'Hub Frontend')).toBe('Handoff from Hub Frontend');
+    expect(deriveHandoffSessionTitle('   \n\t  ', 'Hub Frontend')).toBe(
+      'Handoff from Hub Frontend',
+    );
+  });
+
+  it('fallback uses a generic label when the source agent name is also empty', () => {
+    expect(deriveHandoffSessionTitle('', '')).toBe('Handoff from agent');
+    expect(deriveHandoffSessionTitle('', '   ')).toBe('Handoff from agent');
+  });
+
+  it('never emits a locale timestamp (regression guard for PR #363)', () => {
+    // The original bug produced titles like
+    //   "Handoff from Hub Backend — 4/17/2026, 10:31:45 PM"
+    // Make sure neither the happy path nor the fallback ever reintroduces
+    // date/time formatting in the output.
+    const happy = deriveHandoffSessionTitle('Ship the SSM privilege-drop fix', 'Hub Backend');
+    const fallback = deriveHandoffSessionTitle('', 'Hub Backend');
+    for (const title of [happy, fallback]) {
+      expect(title).not.toMatch(/\d{1,2}\/\d{1,2}\/\d{2,4}/); // date
+      expect(title).not.toMatch(/\d{1,2}:\d{2}/); // time
+      expect(title).not.toMatch(/ — /); // the em-dash separator the old format used
+    }
   });
 });
