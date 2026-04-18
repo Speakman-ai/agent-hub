@@ -37,6 +37,8 @@ export function AppProvider({ children }) {
   const [roomStreaming, setRoomStreaming] = useState(null); // { agentId, agentName, agentColor, messageId, content }
   const [roomThinking, setRoomThinking] = useState(null);  // { agentId, agentName, agentColor }
   const [roomProcessing, setRoomProcessing] = useState(false);
+  // Ordered list of queued user messages for the active room: [{ id, content, position }]
+  const [roomQueue, setRoomQueue] = useState([]);
 
   // Delegation state: { [sessionId]: { parentMessageId, tasks: [...] } }
   const [delegations, setDelegations] = useState({});
@@ -234,6 +236,12 @@ export function AppProvider({ children }) {
           setRoomProcessing(false);
           setRoomThinking(null);
           setRoomStreaming(null);
+          setRoomQueue([]);
+        }
+        break;
+      case 'room_queue_updated':
+        if (data.roomId === activeRoomIdRef.current) {
+          setRoomQueue(Array.isArray(data.queue) ? data.queue : []);
         }
         break;
 
@@ -549,6 +557,7 @@ export function AppProvider({ children }) {
     setRoomThinking(null);
     setRoomStreaming(null);
     setRoomProcessing(false);
+    setRoomQueue([]);
     setDelegations({});
     setMessageQueues({});
     setEventsByMessage({});
@@ -670,9 +679,12 @@ export function AppProvider({ children }) {
       setRoomThinking(null);
       setRoomStreaming(null);
       setRoomProcessing(false);
+      setRoomQueue([]);
       return;
     }
     api.getRoomMessages(activeRoomId).then(setRoomMessages).catch(() => setRoomMessages([]));
+    // Reset queue until the server pushes a `room_queue_updated` snapshot.
+    setRoomQueue([]);
   }, [activeRoomId]);
 
   const handleRoomSend = useCallback((content) => {
@@ -683,6 +695,12 @@ export function AppProvider({ children }) {
   const handleRoomCancel = useCallback(() => {
     if (!activeRoomId) return;
     send({ type: 'room_cancel', roomId: activeRoomId });
+  }, [activeRoomId, send]);
+
+  const handleRoomDequeue = useCallback((messageId) => {
+    if (!activeRoomId) return;
+    send({ type: 'room_dequeue', roomId: activeRoomId, messageId });
+    setRoomQueue((prev) => prev.filter((item) => item.id !== messageId));
   }, [activeRoomId, send]);
 
   const refreshRooms = useCallback(() => {
@@ -756,8 +774,11 @@ export function AppProvider({ children }) {
     roomStreaming,
     roomThinking,
     roomProcessing,
+    roomQueue,
+    roomQueueLength: roomQueue.length,
     handleRoomSend,
     handleRoomCancel,
+    handleRoomDequeue,
     refreshRooms,
     delegations,
     messageQueues,

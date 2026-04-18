@@ -9,6 +9,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Markdown from 'react-native-markdown-display';
@@ -17,6 +18,7 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { SidebarContext } from '../context/SidebarContext';
+import { formatRoomExport, queueIndicatorText } from '../utils/roomExport';
 
 // Markdown styles matching the app theme
 const mdStyles = {
@@ -70,6 +72,7 @@ export default function RoomsScreen() {
     roomStreaming,
     roomThinking,
     roomProcessing,
+    roomQueueLength,
     handleRoomSend,
     handleRoomCancel,
     refreshRooms,
@@ -81,6 +84,8 @@ export default function RoomsScreen() {
   const [showManage, setShowManage] = useState(false);
   const [showMentions, setShowMentions] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
+  // Export UI state: null | 'summarizing' | 'copied'
+  const [exportState, setExportState] = useState(null);
   const flatListRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -106,10 +111,39 @@ export default function RoomsScreen() {
 
   const handleSend = () => {
     const text = input.trim();
-    if (!text || roomProcessing) return;
+    // While a round is in flight, the server enqueues messages instead of
+    // rejecting them — allow the user to keep typing and queueing.
+    if (!text) return;
     handleRoomSend(text);
     setInput('');
     setShowMentions(false);
+  };
+
+  const handleShareRaw = async () => {
+    try {
+      const text = formatRoomExport({ room, messages: roomMessages });
+      await Share.share({ message: text });
+    } catch (err) {
+      Alert.alert('Share failed', err?.message || 'Unable to share transcript');
+    }
+  };
+
+  const handleSummarize = async () => {
+    if (!activeRoomId || exportState === 'summarizing') return;
+    setExportState('summarizing');
+    try {
+      const { summary } = await api.summarizeRoom(activeRoomId);
+      try {
+        await Share.share({ message: summary });
+        setExportState('copied');
+      } catch {
+        setExportState(null);
+      }
+      setTimeout(() => setExportState(null), 2000);
+    } catch (err) {
+      setExportState(null);
+      Alert.alert('Summary failed', err?.message || 'Unable to summarize room');
+    }
   };
 
   const handleTextChange = (text) => {
@@ -239,6 +273,34 @@ export default function RoomsScreen() {
             )}
           </View>
         </View>
+        {roomMessages.length > 0 && (
+          <>
+            <TouchableOpacity
+              style={styles.exportButton}
+              onPress={handleShareRaw}
+              accessibilityLabel="Copy raw transcript"
+            >
+              <Text style={styles.exportButtonText}>Copy</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.exportButton,
+                exportState === 'summarizing' && styles.exportButtonActive,
+              ]}
+              onPress={handleSummarize}
+              disabled={exportState === 'summarizing'}
+              accessibilityLabel="Summarize room"
+            >
+              <Text style={styles.exportButtonText}>
+                {exportState === 'summarizing'
+                  ? '…'
+                  : exportState === 'copied'
+                  ? '\u2713'
+                  : 'Summary'}
+              </Text>
+            </TouchableOpacity>
+          </>
+        )}
         <TouchableOpacity
           style={[styles.manageButton, showManage && styles.manageButtonActive]}
           onPress={() => setShowManage(!showManage)}
@@ -340,6 +402,15 @@ export default function RoomsScreen() {
           </View>
         )}
 
+        {/* Queue indicator — mirrors web RoomChat amber warning */}
+        {queueIndicatorText({ roomProcessing, roomQueueLength }) && (
+          <View style={styles.queueIndicator}>
+            <Text style={styles.queueIndicatorText}>
+              {queueIndicatorText({ roomProcessing, roomQueueLength })}
+            </Text>
+          </View>
+        )}
+
         {/* Input */}
         <View style={styles.inputContainer}>
           <TextInput
@@ -348,33 +419,41 @@ export default function RoomsScreen() {
             value={input}
             onChangeText={handleTextChange}
             placeholder={
-              roomProcessing
-                ? 'Agents are responding...'
-                : roomAgents.length === 0
+              roomAgents.length === 0
                 ? 'Add agents first'
+                : roomProcessing
+                ? 'Type to queue a message while agents respond...'
                 : 'Message the room... (@ to mention)'
             }
             placeholderTextColor={colors.gray600}
             multiline
             maxLength={10000}
-            editable={!roomProcessing && roomAgents.length > 0 && connected}
+            editable={roomAgents.length > 0 && connected}
             returnKeyType="send"
             blurOnSubmit={false}
             onSubmitEditing={handleSend}
           />
-          {roomProcessing ? (
-            <TouchableOpacity style={styles.cancelButton} onPress={handleRoomCancel}>
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
-          ) : (
+          <View style={styles.inputButtons}>
+            {roomProcessing && (
+              <TouchableOpacity style={styles.cancelButton} onPress={handleRoomCancel}>
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
-              style={[styles.sendButton, (!input.trim() || roomAgents.length === 0 || !connected) && styles.sendButtonDisabled]}
+              style={[
+                styles.sendButton,
+                roomProcessing && styles.sendButtonQueueing,
+                (!input.trim() || roomAgents.length === 0 || !connected) &&
+                  styles.sendButtonDisabled,
+              ]}
               onPress={handleSend}
               disabled={!input.trim() || roomAgents.length === 0 || !connected}
             >
-              <Text style={styles.sendButtonText}>{'\u2191'}</Text>
+              <Text style={styles.sendButtonText}>
+                {roomProcessing ? 'Queue' : '\u2191'}
+              </Text>
             </TouchableOpacity>
-          )}
+          </View>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -397,6 +476,21 @@ const styles = StyleSheet.create({
   manageButton: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, backgroundColor: colors.gray800 },
   manageButtonActive: { backgroundColor: colors.blue600 },
   manageButtonText: { fontSize: 12, color: colors.gray300, fontWeight: '500' },
+  exportButton: {
+    paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6, backgroundColor: colors.gray800,
+    marginLeft: 4,
+  },
+  exportButtonActive: { backgroundColor: colors.blue600 },
+  exportButtonText: { fontSize: 11, color: colors.gray300, fontWeight: '500' },
+  queueIndicator: {
+    paddingHorizontal: 16, paddingTop: 6, paddingBottom: 2,
+  },
+  queueIndicatorText: { fontSize: 11, color: colors.amber400 },
+  inputButtons: { flexDirection: 'row', gap: 6, alignItems: 'flex-end' },
+  sendButtonQueueing: {
+    width: undefined, height: 36, borderRadius: 8, paddingHorizontal: 14,
+    backgroundColor: '#D97706',
+  },
   managePanel: {
     backgroundColor: colors.gray900, borderBottomWidth: 1, borderBottomColor: colors.gray800,
     paddingHorizontal: 16, paddingVertical: 12, maxHeight: 300,
