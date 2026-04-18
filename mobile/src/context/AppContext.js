@@ -4,6 +4,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { loadOrgs, migrateFromLegacy } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
 import { hydrateChangesReady } from '../utils/changesReady';
+import { selectSessionToActivate } from '../utils/sessionSelection';
 import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
@@ -84,9 +85,10 @@ export function AppProvider({ children }) {
   activeSessionIdRef.current = activeSessionId;
   const activeRoomIdRef = useRef(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
-
-  // Track when a session was explicitly navigated to (e.g. from a handoff card)
-  // so the agent-change useEffect doesn't overwrite it with a stale session ID.
+  // Track when a session was explicitly navigated to (e.g. from a handoff
+  // "Open session" tap) so the agent-change sessions-load effect doesn't
+  // clobber it by defaulting to `data[0].id`. Mirror of the web client's
+  // `pendingSessionIdRef` in `client/src/App.jsx:187`.
   const pendingSessionIdRef = useRef(null);
 
   // Show an in-app (foreground) notification for the subset of broadcast
@@ -627,6 +629,10 @@ export function AppProvider({ children }) {
   // Load sessions when agent changes (guarded on configReady)
   useEffect(() => {
     if (!configReady || !activeAgentId || !getApiBaseUrl()) return;
+    // Snapshot the pending target (if any) before the async fetch so a
+    // cross-agent navigation (e.g. `handleOpenHandoffSession`) can't be
+    // clobbered by the default `data[0].id` fallback when the list arrives.
+    // Mirror of the web client's logic in `client/src/App.jsx:1277-1304`.
     const targetSessionId = pendingSessionIdRef.current;
     pendingSessionIdRef.current = null;
     api.getSessions(activeAgentId).then((data) => {
@@ -635,14 +641,9 @@ export function AppProvider({ children }) {
       // the "Create PR" button survives page refreshes / reconnects. Merge
       // rather than replace to preserve banners for sessions of other agents.
       setChangesReady((prev) => ({ ...prev, ...hydrateChangesReady(data) }));
-
-      // If we were explicitly navigated to a specific session (e.g. from a
-      // handoff card), honour that session ID instead of defaulting to the
-      // first one.
-      const target = targetSessionId
-        ? data.find((s) => s.id === targetSessionId) || data[0]
-        : data[0];
-
+      // Honor an explicitly requested target session (kanban assign, handoff
+      // "Open session" tap, etc.) instead of defaulting to the newest row.
+      const target = selectSessionToActivate(data, targetSessionId);
       if (target) {
         setActiveSessionId(target.id);
         const agent = agents.find((a) => a.id === activeAgentId);
@@ -710,8 +711,11 @@ export function AppProvider({ children }) {
   }, [activeSessionId]);
 
   // Navigate into a handoff's target session (invoked from HandoffCard).
-  // The session-change effects above will pick up the new activeSessionId
-  // and load its messages / handoffs automatically.
+  // Stash the target on `pendingSessionIdRef` *before* flipping
+  // `activeAgentId` so the sessions-load effect (which fires on the agent
+  // change) honors it instead of clobbering it with `data[0].id`. We still
+  // set `activeSessionId` optimistically so the UI swaps immediately; the
+  // loader then confirms it once the session list arrives.
   const handleOpenHandoffSession = useCallback(
     (targetAgentId, targetSessionId) => {
       if (!targetAgentId || !targetSessionId) return;
