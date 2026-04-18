@@ -17,7 +17,7 @@ import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { getApiBaseUrl } from '../utils/config';
-import { extractCoordinationBlocks } from '../utils/coordinationBlocks';
+import { extractCoordinationBlocks, pickHandoffRow } from '../utils/coordinationBlocks';
 import { copyToClipboard, canCopy } from '../utils/clipboard';
 import HandoffCard from './HandoffCard';
 
@@ -226,7 +226,16 @@ const imageStyles = StyleSheet.create({
   },
 });
 
-function ChatMessage({ message, agentColor, onDequeue, onEditQueued, fromAgent, agents }) {
+function ChatMessage({
+  message,
+  agentColor,
+  onDequeue,
+  onEditQueued,
+  fromAgent,
+  agents,
+  sessionHandoffs,
+  onOpenSession,
+}) {
   const isQueued = message.queued;
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
@@ -247,6 +256,15 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued, fromAgent, 
     if (isUser) return { stripped: message.content, handoff: null };
     return extractCoordinationBlocks(message.content);
   }, [isUser, message.content]);
+
+  // Correlate the parsed block to the matching DB row so HandoffCard can
+  // surface status (pending/delivered/failed) and a tappable "Open session"
+  // link. Returns null when no rows are loaded yet — the card still renders
+  // in that case, just without the link / status pill.
+  const handoffRow = useMemo(
+    () => (assistantBlocks.handoff ? pickHandoffRow(assistantBlocks.handoff, sessionHandoffs) : null),
+    [assistantBlocks.handoff, sessionHandoffs],
+  );
 
   // Long-press on any bubble copies its text to the system clipboard.
   // For assistant bubbles we copy the stripped (markdown) content so any
@@ -350,6 +368,8 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued, fromAgent, 
                 note={assistantBlocks.handoff.note}
                 fromAgent={fromAgent}
                 agents={agents}
+                handoff={handoffRow}
+                onOpenSession={onOpenSession}
               />
             )}
           </>

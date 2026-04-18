@@ -72,3 +72,34 @@ export function extractCoordinationBlocks(text) {
   stripped = stripped.replace(/\n{3,}/g, '\n\n').trim();
   return { stripped, handoff, delegate };
 }
+
+/**
+ * Correlate a parsed `<handoff>` block back to a DB row from
+ * `api.getSessionHandoffs(sessionId)`. The server's fuzzy resolver may
+ * rewrite the raw `toAgent` (e.g. "agent-hub-backend" → "hub-backend"), so
+ * we accept either the raw block id or the resolved `to_agent_id`,
+ * preferring delivered rows and then the most recent match. When there is a
+ * single row for the whole source session (common — handoff is terminal) we
+ * return it unconditionally so pending/failed status still renders. Mirror
+ * of `pickHandoffRow` in `client/src/components/SessionTail.jsx`.
+ */
+export function pickHandoffRow(block, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const wanted = (block?.toAgent || '').trim().toLowerCase();
+  const match = (r) => {
+    const rowAgent = (r?.to_agent_id || '').toLowerCase();
+    if (!wanted || !rowAgent) return false;
+    return (
+      rowAgent === wanted ||
+      rowAgent.endsWith(`-${wanted}`) ||
+      wanted.endsWith(`-${rowAgent}`) ||
+      wanted.includes(rowAgent) ||
+      rowAgent.includes(wanted)
+    );
+  };
+  return (
+    rows.find((r) => r.status === 'delivered' && match(r)) ||
+    rows.find((r) => match(r)) ||
+    (rows.length === 1 ? rows[0] : null)
+  );
+}

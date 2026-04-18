@@ -47,6 +47,8 @@ export default function ChatScreen() {
     changesReady,
     dismissChangesReady,
     projects,
+    sessionHandoffs,
+    handleOpenHandoffSession,
   } = useApp();
 
   const flatListRef = useRef(null);
@@ -95,6 +97,10 @@ export default function ChatScreen() {
               agentColor={activeAgent?.color}
               onDequeue={isQueued ? handleDequeue : undefined}
               onEditQueued={isQueued ? handleEditQueuedMessage : undefined}
+              fromAgent={activeAgent}
+              agents={agents}
+              sessionHandoffs={sessionHandoffs}
+              onOpenSession={handleOpenHandoffSession}
             />
             {msg.role === 'assistant' && (
               <SessionTail

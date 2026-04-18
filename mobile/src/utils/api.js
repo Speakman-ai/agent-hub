@@ -190,6 +190,11 @@ export const api = {
   getDelegations: (messageId) => fetchJSON(`/delegations/${messageId}`),
   getSessionDelegations: (sessionId) => fetchJSON(`/sessions/${sessionId}/delegations`),
 
+  // Handoffs — DB rows for <handoff> blocks emitted from this session.
+  // Used by HandoffCard to resolve the target session id and render a
+  // tappable "Open session" link + status pill (pending / delivered / failed).
+  getSessionHandoffs: (sessionId) => fetchJSON(`/sessions/${sessionId}/handoffs`),
+
   // Queue
   getSessionQueue: (sessionId) => fetchJSON(`/sessions/${sessionId}/queue`),
 

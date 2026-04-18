@@ -68,6 +68,11 @@ export function AppProvider({ children }) {
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  // Handoff DB rows emitted from the active session — used by HandoffCard
+  // to resolve the target session id and render a tappable "Open session"
+  // link plus pending/failed status pills. Best-effort; missing endpoint or
+  // network failures never block the chat render.
+  const [sessionHandoffs, setSessionHandoffs] = useState([]);
   // Config readiness gate — prevents data fetching before AsyncStorage loads
   const [configReady, setConfigReady] = useState(false);
   // Mobile push state: Expo token + permission status (used by Settings).
@@ -79,6 +84,10 @@ export function AppProvider({ children }) {
   activeSessionIdRef.current = activeSessionId;
   const activeRoomIdRef = useRef(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
+
+  // Track when a session was explicitly navigated to (e.g. from a handoff card)
+  // so the agent-change useEffect doesn't overwrite it with a stale session ID.
+  const pendingSessionIdRef = useRef(null);
 
   // Show an in-app (foreground) notification for the subset of broadcast
   // events that map to the desktop/Expo push taxonomy. Remote pushes are
@@ -618,17 +627,27 @@ export function AppProvider({ children }) {
   // Load sessions when agent changes (guarded on configReady)
   useEffect(() => {
     if (!configReady || !activeAgentId || !getApiBaseUrl()) return;
+    const targetSessionId = pendingSessionIdRef.current;
+    pendingSessionIdRef.current = null;
     api.getSessions(activeAgentId).then((data) => {
       setSessions(data);
       // Hydrate the changes_ready banner state from persisted session rows so
       // the "Create PR" button survives page refreshes / reconnects. Merge
       // rather than replace to preserve banners for sessions of other agents.
       setChangesReady((prev) => ({ ...prev, ...hydrateChangesReady(data) }));
-      if (data.length > 0) {
-        setActiveSessionId(data[0].id);
+
+      // If we were explicitly navigated to a specific session (e.g. from a
+      // handoff card), honour that session ID instead of defaulting to the
+      // first one.
+      const target = targetSessionId
+        ? data.find((s) => s.id === targetSessionId) || data[0]
+        : data[0];
+
+      if (target) {
+        setActiveSessionId(target.id);
         const agent = agents.find((a) => a.id === activeAgentId);
-        setSessionEngine(data[0].engine || agent?.engine || 'claude-code');
-        setSessionModel(data[0].model || 'claude-opus-4-7');
+        setSessionEngine(target.engine || agent?.engine || 'claude-code');
+        setSessionModel(target.model || 'claude-opus-4-7');
       } else {
         setActiveSessionId(null);
         setMessages([]);
@@ -666,6 +685,42 @@ export function AppProvider({ children }) {
     }
     api.getMessages(activeSessionId).then(setMessages).catch(() => setMessages([]));
   }, [activeSessionId]);
+
+  // Load handoffs emitted from this session so HandoffCard can resolve
+  // `to_session_id` and render a tappable "Open session" link. Best-effort —
+  // a missing endpoint or offline state must never block the chat render.
+  useEffect(() => {
+    if (!activeSessionId) {
+      setSessionHandoffs([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getSessionHandoffs(activeSessionId)
+      .then((rows) => {
+        if (cancelled) return;
+        setSessionHandoffs(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionHandoffs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId]);
+
+  // Navigate into a handoff's target session (invoked from HandoffCard).
+  // The session-change effects above will pick up the new activeSessionId
+  // and load its messages / handoffs automatically.
+  const handleOpenHandoffSession = useCallback(
+    (targetAgentId, targetSessionId) => {
+      if (!targetAgentId || !targetSessionId) return;
+      pendingSessionIdRef.current = targetSessionId;
+      setActiveAgentId(targetAgentId);
+      setActiveSessionId(targetSessionId);
+    },
+    [],
+  );
 
   // Rehydrate streaming state from activeTasks when switching sessions.
   useEffect(() => {
@@ -715,6 +770,7 @@ export function AppProvider({ children }) {
     setEventsByMessage({});
     setCronSessions([]);
     setChangesReady({});
+    setSessionHandoffs([]);
     // Reconnect WebSocket to new org
     reconnect();
     // Reload data
@@ -970,6 +1026,8 @@ export function AppProvider({ children }) {
     handleRoomDequeue,
     refreshRooms,
     delegations,
+    sessionHandoffs,
+    handleOpenHandoffSession,
     messageQueues,
     eventsByMessage,
     handleDequeue,
