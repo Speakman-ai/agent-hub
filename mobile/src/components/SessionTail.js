@@ -4,6 +4,7 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { isFileModifyingTool } from '../utils/diff';
 import { eventsToBlocks, summarizeToolInput } from '../utils/sessionTailBlocks';
+import { shouldAutoLoadEvents } from '../utils/shouldAutoLoadEvents';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
 import AskUserQuestion from './AskUserQuestion';
@@ -20,12 +21,52 @@ const TOOL_COLORS = {
   Agent: '#8b5cf6',
 };
 
-function SessionTail({ message, events, agentColor, onEventsLoaded, onAskSubmit, askSubmittedIds }) {
+function SessionTail({
+  message,
+  events,
+  agentColor,
+  streaming,
+  onEventsLoaded,
+  onAskSubmit,
+  askSubmittedIds,
+}) {
   const [expanded, setExpanded] = useState(false);
   const [expandedBlocks, setExpandedBlocks] = useState({});
   const [loading, setLoading] = useState(false);
 
-  // Lazy-load events on expand (legacy messages aren't prefetched).
+  // Eagerly lazy-load events for historical (non-streaming) assistant messages
+  // so any persisted `ask_user_question` events surface their picker without
+  // the user having to expand the timeline. Mirrors the web SessionTail's
+  // on-mount fetch (see client/src/components/SessionTail.jsx).
+  useEffect(() => {
+    if (!shouldAutoLoadEvents({ messageId: message?.id, streaming, events })) return;
+    if (loading) return;
+    let cancelled = false;
+    setLoading(true);
+    api
+      .getMessageEvents(message.id)
+      .then((data) => {
+        if (cancelled) return;
+        const mapped = (data || []).map((e) => ({
+          seq: e.seq,
+          event: typeof e.event === 'string' ? JSON.parse(e.event) : e.event,
+        }));
+        onEventsLoaded?.(message.id, mapped);
+      })
+      .catch(() => {
+        if (!cancelled) onEventsLoaded?.(message.id, []);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message?.id, streaming, events]);
+
+  // Lazy-load events on expand (covers the edge case where a user manually
+  // expands before the auto-load effect has run, e.g. mid-fetch retries).
   useEffect(() => {
     if (expanded && !events && !loading) {
       setLoading(true);
@@ -66,22 +107,24 @@ function SessionTail({ message, events, agentColor, onEventsLoaded, onAskSubmit,
             submitted={askSubmittedIds?.has(b.askId)}
           />
         ))}
-        <TouchableOpacity style={styles.summaryBar} onPress={() => setExpanded(true)}>
-          <View style={[styles.barDot, { backgroundColor: agentColor || colors.gray500 }]} />
-          {toolCount > 0 && (
-            <Text style={styles.summaryText}>
-              {'\uD83D\uDD27'} {toolCount} tool{toolCount > 1 ? 's' : ''}
-            </Text>
-          )}
-          {thinkingCount > 0 && <Text style={styles.summaryText}>{'\uD83D\uDCAD'} thinking</Text>}
-          {resultBlock && (
-            <Text style={styles.summaryText}>
-              {'\u23F1'} {((resultBlock.durationMs || 0) / 1000).toFixed(1)}s
-              {resultBlock.costUsd ? ` \u00B7 $${resultBlock.costUsd.toFixed(4)}` : ''}
-            </Text>
-          )}
-          <Text style={styles.expandHint}>{'\u25B8'}</Text>
-        </TouchableOpacity>
+        {hasMeta && (
+          <TouchableOpacity style={styles.summaryBar} onPress={() => setExpanded(true)}>
+            <View style={[styles.barDot, { backgroundColor: agentColor || colors.gray500 }]} />
+            {toolCount > 0 && (
+              <Text style={styles.summaryText}>
+                {'\uD83D\uDD27'} {toolCount} tool{toolCount > 1 ? 's' : ''}
+              </Text>
+            )}
+            {thinkingCount > 0 && <Text style={styles.summaryText}>{'\uD83D\uDCAD'} thinking</Text>}
+            {resultBlock && (
+              <Text style={styles.summaryText}>
+                {'\u23F1'} {((resultBlock.durationMs || 0) / 1000).toFixed(1)}s
+                {resultBlock.costUsd ? ` \u00B7 $${resultBlock.costUsd.toFixed(4)}` : ''}
+              </Text>
+            )}
+            <Text style={styles.expandHint}>{'\u25B8'}</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }

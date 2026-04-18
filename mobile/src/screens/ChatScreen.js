@@ -31,6 +31,8 @@ export default function ChatScreen() {
     thinking,
     streamingContent,
     streamingEngine,
+    streamingMsgId,
+    sessionModel,
     connected,
     isProcessing,
     handleSend,
@@ -122,11 +124,34 @@ export default function ChatScreen() {
         return <ThinkingIndicator agentColor={activeAgent?.color} />;
       case 'streaming':
         return (
-          <StreamingMessage
-            content={item.data.content}
-            agentColor={activeAgent?.color}
-            engine={item.data.engine}
-          />
+          <View>
+            <StreamingMessage
+              content={item.data.content}
+              agentColor={activeAgent?.color}
+              engine={item.data.engine}
+            />
+            {/* Parity with web (client/src/App.jsx): render a SessionTail for
+                the live-streaming message so stream events like
+                `ask_user_question` surface their picker in real time, rather
+                than only appearing after `done` adds the assistant message to
+                `messages`. */}
+            {streamingMsgId && (
+              <SessionTail
+                message={{
+                  id: streamingMsgId,
+                  role: 'assistant',
+                  engine: streamingEngine,
+                  model: sessionModel,
+                }}
+                events={eventsByMessage[streamingMsgId]}
+                agentColor={activeAgent?.color}
+                streaming
+                onEventsLoaded={handleEventsLoaded}
+                onAskSubmit={handleAskSubmit}
+                askSubmittedIds={askSubmitted}
+              />
+            )}
+          </View>
         );
       case 'delegation':
         return (
