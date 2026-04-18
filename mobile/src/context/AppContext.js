@@ -1,6 +1,7 @@
-import React, { createContext, useState, useCallback, useEffect, useContext, useRef } from 'react';
+import React, { createContext, useState, useCallback, useEffect, useContext, useMemo, useRef } from 'react';
 import { api } from '../utils/api';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { extractSubmittedAskIds } from '../utils/askAnswers';
 import { loadOrgs, migrateFromLegacy, getOrgs } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
 import {
@@ -84,6 +85,12 @@ export function AppProvider({ children }) {
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  // Tracks which agenthub:ask prompts the user has already answered in this
+  // app instance, so the picker renders as "Submitted" immediately after
+  // tapping. This is the optimistic, in-memory half; the authoritative source
+  // is the derived set below which scans persisted message history.
+  // Mirrors the web client's `askSubmittedOptimistic` in client/src/App.jsx.
+  const [askSubmittedOptimistic, setAskSubmittedOptimistic] = useState(() => new Set());
   // Handoff DB rows emitted from the active session — used by HandoffCard
   // to resolve the target session id and render a tappable "Open session"
   // link plus pending/failed status pills. Best-effort; missing endpoint or
@@ -998,6 +1005,24 @@ export function AppProvider({ children }) {
     }
   }, [send]);
 
+  // Derived from persisted message history: any user message containing an
+  // `agenthub:ask:answer` block with a matching askId marks that picker as
+  // submitted. Surviving reloads requires this — in-memory state is lost on
+  // restart, but the user message is persisted in the DB and re-fetched.
+  const askSubmittedFromHistory = useMemo(
+    () => extractSubmittedAskIds(messages),
+    [messages],
+  );
+  // Union of optimistic (just-tapped) + history-derived (persisted). Passed
+  // to the picker's `submitted` prop and used to short-circuit duplicate
+  // sends from <AskUserQuestion>.
+  const askSubmitted = useMemo(() => {
+    if (askSubmittedOptimistic.size === 0) return askSubmittedFromHistory;
+    const union = new Set(askSubmittedFromHistory);
+    for (const id of askSubmittedOptimistic) union.add(id);
+    return union;
+  }, [askSubmittedOptimistic, askSubmittedFromHistory]);
+
   const handleSend = useCallback(async (content, images = []) => {
     let sessionId = activeSessionIdRef.current;
     if (!sessionId) {
@@ -1027,6 +1052,29 @@ export function AppProvider({ children }) {
       ...(uploadedImages.length > 0 ? { images: uploadedImages } : {}),
     });
   }, [activeAgentId, send]);
+
+  // Handle submission from an <AskUserQuestion> picker. We dispatch the
+  // pre-formatted chat message (which already contains the
+  // agenthub:ask:answer fenced block) and mark the askId as submitted so the
+  // picker flips to a disabled "Submitted" state immediately. Once the user
+  // message persists to history, `askSubmittedFromHistory` picks the id up
+  // from the fenced-block scan and the optimistic set becomes redundant —
+  // the union in `askSubmitted` keeps the brief overlap seamless. Mirrors
+  // `client/src/App.jsx:handleAskSubmit`.
+  const handleAskSubmit = useCallback(
+    (askId, messageText) => {
+      if (!askId || !messageText) return;
+      // Short-circuit duplicate submissions if the picker somehow re-fires.
+      setAskSubmittedOptimistic((prev) => {
+        if (prev.has(askId)) return prev;
+        const next = new Set(prev);
+        next.add(askId);
+        return next;
+      });
+      handleSend(messageText);
+    },
+    [handleSend],
+  );
 
   // Load room messages when active room changes
   useEffect(() => {
@@ -1192,6 +1240,9 @@ export function AppProvider({ children }) {
     kanbanRefreshKey,
     changesReady,
     dismissChangesReady,
+    // Ask-prompt (`agenthub:ask`) submission state and handler
+    askSubmitted,
+    handleAskSubmit,
     // Threads
     unreadThreadCounts,
     lastThreadEvent,

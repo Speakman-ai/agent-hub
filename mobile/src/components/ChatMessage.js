@@ -23,6 +23,7 @@ import { extractCoordinationBlocks, pickHandoffRow } from '../utils/coordination
 import { copyToClipboard, canCopy } from '../utils/clipboard';
 import { attachmentKind } from '../utils/attachmentKind';
 import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage';
+import { stripAskAnswerBlocks } from '../utils/askAnswers';
 import HandoffCard from './HandoffCard';
 
 function notifyCopied(success) {
@@ -455,7 +456,10 @@ function ChatMessage({
 
   const displayContent = useMemo(() => {
     if (message.content === '(image attached)' && message.attachments) return '';
-    return message.content;
+    // Strip any `agenthub:ask:answer` fenced blocks — the picker UI already
+    // shows "Answers submitted" so the raw JSON payload in the transcript
+    // would just be noise. Mirrors client/src/components/ChatMessage.jsx.
+    return stripAskAnswerBlocks(message.content);
   }, [message.content, message.attachments]);
 
   // For assistant messages, extract any `<handoff>` block so the JSON wall
@@ -487,6 +491,20 @@ function ChatMessage({
     const ok = await copyToClipboard(copyPayload);
     notifyCopied(ok);
   }, [copyPayload, copyEnabled]);
+
+  // If a user message had nothing but an ask-answer payload (no prose, no
+  // attachments, not queued), suppress the bubble entirely — the picker
+  // already reflects the submission. Mirrors web's ChatMessage.jsx.
+  if (
+    isUser &&
+    !displayContent &&
+    !message.attachments &&
+    !isQueued &&
+    typeof message.content === 'string' &&
+    message.content.includes('agenthub:ask:answer')
+  ) {
+    return null;
+  }
 
   return (
     <View style={[styles.container, isUser ? styles.containerUser : styles.containerAssistant]}>

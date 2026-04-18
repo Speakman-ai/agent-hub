@@ -50,6 +50,8 @@ export default function ChatScreen() {
     sessionHandoffs,
     handleOpenHandoffSession,
     sessionAskMode,
+    askSubmitted,
+    handleAskSubmit,
   } = useApp();
 
   const flatListRef = useRef(null);
@@ -109,6 +111,8 @@ export default function ChatScreen() {
                 events={eventsByMessage[msg.id]}
                 agentColor={activeAgent?.color}
                 onEventsLoaded={handleEventsLoaded}
+                onAskSubmit={handleAskSubmit}
+                askSubmittedIds={askSubmitted}
               />
             )}
           </View>

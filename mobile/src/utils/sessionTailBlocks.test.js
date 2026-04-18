@@ -78,6 +78,36 @@ describe('eventsToBlocks', () => {
     expect(blocks[3]).toMatchObject({ askId: 'q1' });
   });
 
+  it('flushes pending text before emitting the ask_question block', () => {
+    const blocks = eventsToBlocks(
+      seq([
+        { type: 'assistant_text', text: 'Choose wisely', partial: false },
+        { type: 'ask_user_question', askId: 'q1', questions: [{ question: 'pick one' }] },
+      ]),
+    );
+    expect(blocks.map((b) => b.kind)).toEqual(['text', 'ask_question']);
+    expect(blocks[0].content).toBe('Choose wisely');
+    expect(blocks[1].askId).toBe('q1');
+  });
+
+  it('defaults questions to an empty array when the server omits it', () => {
+    const blocks = eventsToBlocks(seq([{ type: 'ask_user_question', askId: 'q1' }]));
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: 'ask_question', askId: 'q1', questions: [] });
+  });
+
+  it('preserves every ask block when a stream contains multiple', () => {
+    const blocks = eventsToBlocks(
+      seq([
+        { type: 'ask_user_question', askId: 'a', questions: [{ question: 'A?' }] },
+        { type: 'ask_user_question', askId: 'b', questions: [{ question: 'B?' }] },
+      ]),
+    );
+    const askBlocks = blocks.filter((b) => b.kind === 'ask_question');
+    expect(askBlocks).toHaveLength(2);
+    expect(askBlocks.map((b) => b.askId)).toEqual(['a', 'b']);
+  });
+
   it('skips progress_step events (handled by out-of-tail progress UI)', () => {
     const blocks = eventsToBlocks(
       seq([

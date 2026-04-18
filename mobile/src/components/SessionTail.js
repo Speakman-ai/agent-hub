@@ -6,6 +6,7 @@ import { isFileModifyingTool } from '../utils/diff';
 import { eventsToBlocks, summarizeToolInput } from '../utils/sessionTailBlocks';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
+import AskUserQuestion from './AskUserQuestion';
 
 const TOOL_COLORS = {
   Bash: colors.emerald400,
@@ -19,7 +20,7 @@ const TOOL_COLORS = {
   Agent: '#8b5cf6',
 };
 
-function SessionTail({ message, events, agentColor, onEventsLoaded }) {
+function SessionTail({ message, events, agentColor, onEventsLoaded, onAskSubmit, askSubmittedIds }) {
   const [expanded, setExpanded] = useState(false);
   const [expandedBlocks, setExpandedBlocks] = useState({});
   const [loading, setLoading] = useState(false);
@@ -44,31 +45,44 @@ function SessionTail({ message, events, agentColor, onEventsLoaded }) {
 
   const blocks = useMemo(() => eventsToBlocks(events), [events]);
 
+  const askBlocks = useMemo(() => blocks.filter((b) => b.kind === 'ask_question'), [blocks]);
+
   const toolCount = blocks.filter((b) => b.kind === 'tool' || b.kind === 'subagent').length;
   const thinkingCount = blocks.filter((b) => b.kind === 'thinking').length;
   const resultBlock = blocks.find((b) => b.kind === 'result');
 
   if (!expanded) {
     const hasMeta = toolCount > 0 || thinkingCount > 0 || resultBlock;
-    if (!hasMeta && !events) return null;
+    if (!hasMeta && !events && askBlocks.length === 0) return null;
 
     return (
-      <TouchableOpacity style={styles.summaryBar} onPress={() => setExpanded(true)}>
-        <View style={[styles.barDot, { backgroundColor: agentColor || colors.gray500 }]} />
-        {toolCount > 0 && (
-          <Text style={styles.summaryText}>
-            {'\uD83D\uDD27'} {toolCount} tool{toolCount > 1 ? 's' : ''}
-          </Text>
-        )}
-        {thinkingCount > 0 && <Text style={styles.summaryText}>{'\uD83D\uDCAD'} thinking</Text>}
-        {resultBlock && (
-          <Text style={styles.summaryText}>
-            {'\u23F1'} {((resultBlock.durationMs || 0) / 1000).toFixed(1)}s
-            {resultBlock.costUsd ? ` \u00B7 $${resultBlock.costUsd.toFixed(4)}` : ''}
-          </Text>
-        )}
-        <Text style={styles.expandHint}>{'\u25B8'}</Text>
-      </TouchableOpacity>
+      <View>
+        {askBlocks.map((b) => (
+          <AskUserQuestion
+            key={b.askId}
+            askId={b.askId}
+            questions={b.questions || []}
+            onSubmit={(text) => onAskSubmit?.(b.askId, text)}
+            submitted={askSubmittedIds?.has(b.askId)}
+          />
+        ))}
+        <TouchableOpacity style={styles.summaryBar} onPress={() => setExpanded(true)}>
+          <View style={[styles.barDot, { backgroundColor: agentColor || colors.gray500 }]} />
+          {toolCount > 0 && (
+            <Text style={styles.summaryText}>
+              {'\uD83D\uDD27'} {toolCount} tool{toolCount > 1 ? 's' : ''}
+            </Text>
+          )}
+          {thinkingCount > 0 && <Text style={styles.summaryText}>{'\uD83D\uDCAD'} thinking</Text>}
+          {resultBlock && (
+            <Text style={styles.summaryText}>
+              {'\u23F1'} {((resultBlock.durationMs || 0) / 1000).toFixed(1)}s
+              {resultBlock.costUsd ? ` \u00B7 $${resultBlock.costUsd.toFixed(4)}` : ''}
+            </Text>
+          )}
+          <Text style={styles.expandHint}>{'\u25B8'}</Text>
+        </TouchableOpacity>
+      </View>
     );
   }
 
@@ -79,6 +93,16 @@ function SessionTail({ message, events, agentColor, onEventsLoaded }) {
         <Text style={styles.collapseText}>Event Timeline</Text>
         <Text style={styles.expandHint}>{'\u25BE'}</Text>
       </TouchableOpacity>
+
+      {askBlocks.map((b) => (
+        <AskUserQuestion
+          key={b.askId}
+          askId={b.askId}
+          questions={b.questions || []}
+          onSubmit={(text) => onAskSubmit?.(b.askId, text)}
+          submitted={askSubmittedIds?.has(b.askId)}
+        />
+      ))}
 
       {loading && <Text style={styles.loadingText}>Loading events...</Text>}
 
@@ -185,24 +209,9 @@ function SessionTail({ message, events, agentColor, onEventsLoaded }) {
           }
 
           case 'ask_question':
-            return (
-              <View key={idx} style={styles.askRow}>
-                <Text style={styles.askLabel}>
-                  {'\u2754'} Question
-                  {Array.isArray(block.questions) && block.questions.length > 1
-                    ? `s (${block.questions.length})`
-                    : ''}
-                </Text>
-                {(block.questions || []).map((q, qi) => (
-                  <Text key={qi} style={styles.askQuestion}>
-                    · {q.question || q.prompt || q.text || JSON.stringify(q)}
-                  </Text>
-                ))}
-                <Text style={styles.askHint}>
-                  Open on web to answer — mobile picker coming soon.
-                </Text>
-              </View>
-            );
+            // Rendered above the timeline via <AskUserQuestion> so the
+            // picker is always reachable regardless of expand/collapse.
+            return null;
 
           case 'checkpoint':
             return (
@@ -358,17 +367,6 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   diffHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  askRow: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: 'rgba(59, 130, 246, 0.12)',
-    borderBottomWidth: 1,
-    borderBottomColor: colors.gray800,
-    gap: 4,
-  },
-  askLabel: { fontSize: 12, color: colors.blue400, fontWeight: '700' },
-  askQuestion: { fontSize: 12, color: colors.gray300 },
-  askHint: { fontSize: 10, color: colors.gray500, fontStyle: 'italic', marginTop: 4 },
   checkpointRow: {
     paddingHorizontal: 12,
     paddingVertical: 4,

@@ -82,7 +82,7 @@ export function eventsToBlocks(events) {
         blocks.push({ kind: 'rate_limit', retryAfterMs: evt.retryAfterMs, message: evt.message });
         break;
       case 'ask_user_question':
-        blocks.push({ kind: 'ask_question', askId: evt.askId, questions: evt.questions });
+        blocks.push({ kind: 'ask_question', askId: evt.askId, questions: evt.questions || [] });
         break;
       case 'error':
         blocks.push({ kind: 'error', message: evt.message || 'Unknown error' });
