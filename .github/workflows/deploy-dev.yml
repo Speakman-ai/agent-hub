@@ -73,31 +73,45 @@ jobs:
           # session teardown leaks exit 1 under SSM even when the inner shell
           # exited 0 — see runs 24587084751 / 24588494694).
           #
-          # Three prior rewrites (sudo/runuser/setpriv, all via nested
-          # heredoc) still surfaced `failed to run commands: exit status 1`
-          # with stdout ending on "health ok on attempt 2" (run 24589322286).
-          # The one thing all three had in common was the nested heredoc
-          # pipeline: dash writes the inner script into a pipe, setpriv/bash
-          # reads it, bash hits `exit 0` before consuming the tail of the
-          # heredoc, and the wrapper somehow still surfaces 1.
+          # Four prior rewrites (sudo/runuser/setpriv nested heredoc, then
+          # setpriv+exec+tempfile) still surfaced `failed to run commands:
+          # exit status 1` with stdout ending on "health ok on attempt 2"
+          # (runs 24589322286, 24597464570). The tempfile path eliminated
+          # the heredoc-as-stdin pipe hypothesis but the ghost exit 1
+          # persisted — so the leak is elsewhere.
           #
-          # Fix in this revision: materialize the inner script to a tempfile
-          # on EC2, chown it to agenthub, then `exec setpriv ... -- bash -l
-          # <file>`. This:
-          #   - Eliminates the heredoc-as-stdin path entirely — bash reads
-          #     its script from disk, no pipe writer hanging around after
-          #     `exit 0`.
-          #   - `exec` replaces dash with setpriv, so amazon-ssm-agent waits
-          #     on bash's PID directly; the exit code propagates with zero
-          #     wrapper layers that could re-map it.
-          # --init-groups reads /etc/group for supplementary groups;
-          # --reset-env reinitialises HOME/USER/LOGNAME/PATH/SHELL from the
-          # target user's passwd entry so bash -l can find ~/.bash_profile.
+          # Hypothesis 5 (this revision): the exit 1 comes from one of two
+          # shell-teardown paths after our explicit `exit 0`:
+          #   (a) `trap 'rm -f "$0"' EXIT` running under `set -euo pipefail`
+          #       — if the trap or any cleanup step returns non-zero, bash's
+          #       exit code becomes that value instead of the 0 we asked for.
+          #   (b) `bash -l` making bash a login shell, which reads
+          #       ~/.bash_profile on entry and may source ~/.bash_logout on
+          #       exit; either returning non-zero under errexit overwrites
+          #       exit 0.
+          #
+          # Defensive changes in this revision:
+          #   - Drop the EXIT trap entirely. Leaving a ~4KB tempfile in /tmp
+          #     per deploy is trivial — tmpfiles.d / reboot will reclaim it.
+          #   - Use `bash --noprofile --norc` instead of `bash -l`. We lose
+          #     automatic sourcing of nvm, so the inner script sources
+          #     ~/.nvm/nvm.sh explicitly before running any npm/pm2 command.
+          #   - Disable errexit with `set +e` immediately before the final
+          #     `exit 0` so any deferred bash bookkeeping can't retroactively
+          #     flip the exit code.
+          #   - `set -x` around the tail so if this STILL fails, the SSM log
+          #     shows the exact last command and we can stop guessing.
+          # `exec` still replaces dash with setpriv (which execs bash),
+          # so amazon-ssm-agent waits on bash's PID directly with zero
+          # wrapper layers. --init-groups / --reset-env unchanged.
           INNER_SCRIPT=$(cat <<INNER
           #!/usr/bin/env bash
           set -euo pipefail
-          # Self-cleanup so we don't leave /tmp cruft behind.
-          trap 'rm -f "\$0"' EXIT
+          # Source nvm manually since we dropped bash -l to avoid profile
+          # teardown exit-code leaks (see hypothesis 5 above).
+          export NVM_DIR="\$HOME/.nvm"
+          # shellcheck disable=SC1091
+          [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
           cd ${DEPLOY_PATH}
           git fetch --all --prune
           git reset --hard origin/main
@@ -108,9 +122,13 @@ jobs:
           pm2 restart agent-hub
           # Health check: 12 attempts × 5s = 60s ceiling. Matches prod so a
           # slow cold-restart (sqlite open, route mounting) doesn't false-fail.
+          set -x
           for i in \$(seq 1 12); do
             if curl -fsS http://localhost:3051/api/health >/dev/null; then
               echo "health ok on attempt \$i"
+              # Disable errexit before explicit exit so no shell bookkeeping
+              # (trap, pipefail on last pipeline, etc.) can flip 0 to 1.
+              set +e
               exit 0
             fi
             sleep 5
@@ -133,7 +151,7 @@ jobs:
           printf '%s' '${INNER_B64}' | base64 -d > "\$TMP"
           chmod 0750 "\$TMP"
           chown agenthub:agenthub "\$TMP"
-          exec setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash -l "\$TMP"
+          exec setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash --noprofile --norc "\$TMP"
           OUTER
           )
 

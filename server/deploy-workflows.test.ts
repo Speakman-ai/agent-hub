@@ -86,16 +86,21 @@ describe('SSM deploy workflows', () => {
       // raw uid/gid switch and exec's the target command, so the child's
       // exit code propagates faithfully. These guards keep us on setpriv.
       // See actions runs 24587084751 and 24588494694.
+      //
+      // Accept either `bash -l` (legacy) or `bash --noprofile --norc`
+      // (hypothesis-5 in deploy-dev.yml — avoids ~/.bash_profile and
+      // ~/.bash_logout teardown leaking exit 1 under errexit).
       // ---------------------------------------------------------------------
       if (/aws ssm send-command/.test(content)) {
         it('uses setpriv (PAM-free) to drop privileges to agenthub', () => {
           // Matches `setpriv --reuid agenthub --regid agenthub` with any
-          // intervening flags/whitespace, followed by `-- bash -l`.
+          // intervening flags/whitespace, followed by `-- bash` in either
+          // login-shell (`-l`) or no-profile (`--noprofile --norc`) form.
           const setprivPattern =
-            /setpriv\s+(?:--[a-z-]+(?:\s+\S+)?\s+)*--reuid\s+agenthub\s+(?:--[a-z-]+(?:\s+\S+)?\s+)*--regid\s+agenthub\b[^\n]*--\s+bash\s+-l/;
+            /setpriv\s+(?:--[a-z-]+(?:\s+\S+)?\s+)*--reuid\s+agenthub\s+(?:--[a-z-]+(?:\s+\S+)?\s+)*--regid\s+agenthub\b[^\n]*--\s+bash\s+(?:-l|--noprofile\s+--norc)/;
           expect(
             setprivPattern.test(content),
-            `${wf} must drop privileges with \`setpriv --reuid agenthub --regid agenthub ... -- bash -l\`. ` +
+            `${wf} must drop privileges with \`setpriv --reuid agenthub --regid agenthub ... -- bash [-l|--noprofile --norc]\`. ` +
               `sudo and runuser both leak a non-zero exit under SSM via PAM session teardown.`,
           ).toBe(true);
         });
@@ -132,12 +137,13 @@ describe('SSM deploy workflows', () => {
         // wrapper layers.
         // -------------------------------------------------------------------
         it('materializes the inner script to a tempfile (no nested bash heredoc)', () => {
-          // The old broken form was `bash -l <<'BASH'`. The new form must
-          // pass a positional file arg to bash -l — a variable, absolute
-          // path, or $TMP. We assert the heredoc form is gone.
+          // The old broken form was `bash -l <<'BASH'` (or the same with
+          // --noprofile --norc). The new form must pass a positional file
+          // arg to bash — a variable, absolute path, or $TMP. We assert
+          // no heredoc-stdin form is present for either flag group.
           expect(
-            /bash\s+-l\s*<<\s*'?BASH'?\b/.test(content),
-            `${wf} still pipes the inner deploy via \`bash -l <<'BASH' ... BASH\`. ` +
+            /bash\s+(?:-l|--noprofile\s+--norc)\s*<<\s*'?BASH'?\b/.test(content),
+            `${wf} still pipes the inner deploy via \`bash ... <<'BASH' ... BASH\`. ` +
               `Materialize the script to a tempfile and pass the path as an arg instead ` +
               `(see deploy-dev.yml for the rationale — nested heredocs leak exit 1 under SSM).`,
           ).toBe(false);
@@ -155,16 +161,16 @@ describe('SSM deploy workflows', () => {
           ).toBe(true);
         });
 
-        it("passes a file path (not a heredoc) as bash -l's script argument", () => {
-          // After `-- bash -l` we must have a *non-heredoc* argument —
-          // typically "$TMP"/"\$TMP" or an absolute path. The regex
-          // requires the next non-space char after `-l` to not be `<`
-          // (the heredoc operator).
-          const fileArgPattern = /--\s+bash\s+-l\s+[^\s<]/;
+        it("passes a file path (not a heredoc) as bash's script argument", () => {
+          // After `-- bash -l` or `-- bash --noprofile --norc` we must have
+          // a *non-heredoc* argument — typically "$TMP"/"\$TMP" or an
+          // absolute path. The regex requires the next non-space char
+          // after the flag group to not be `<` (the heredoc operator).
+          const fileArgPattern = /--\s+bash\s+(?:-l|--noprofile\s+--norc)\s+[^\s<]/;
           expect(
             fileArgPattern.test(content),
-            `${wf} must pass an actual script file to \`bash -l\` (e.g. \`bash -l "$TMP"\`). ` +
-              `Piping via heredoc is the broken form.`,
+            `${wf} must pass an actual script file to \`bash\` (e.g. \`bash -l "$TMP"\` or ` +
+              `\`bash --noprofile --norc "$TMP"\`). Piping via heredoc is the broken form.`,
           ).toBe(true);
         });
       }
