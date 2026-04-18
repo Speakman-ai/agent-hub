@@ -67,6 +67,7 @@ export default function KanbanBoard({
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  const [showReassign, setShowReassign] = useState(false);
 
   // Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -308,6 +309,7 @@ export default function KanbanBoard({
     });
     setConfirmDelete(false);
     setNewComment('');
+    setShowReassign(false);
   };
 
   // --- Epic CRUD ---
@@ -1044,7 +1046,7 @@ export default function KanbanBoard({
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
                       Assignee
                     </label>
-                    {selectedCard?.session_id ? (
+                    {selectedCard?.session_id && !showReassign ? (
                       <div>
                         <div className="flex items-center gap-2 mb-2 flex-wrap">
                           <span className="text-sm text-white">
@@ -1064,6 +1066,12 @@ export default function KanbanBoard({
                           className="w-full text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors"
                         >
                           Open Session
+                        </button>
+                        <button
+                          onClick={() => setShowReassign(true)}
+                          className="mt-2 w-full text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          Reassign
                         </button>
                       </div>
                     ) : (
@@ -1095,6 +1103,7 @@ export default function KanbanBoard({
                                   agent.id,
                                 );
                                 setSelectedCard(null);
+                                setShowReassign(false);
                                 fetchBoard();
                                 if (onNavigateToSession) {
                                   onNavigateToSession(agent.id, result.sessionId);
@@ -1108,7 +1117,19 @@ export default function KanbanBoard({
                             disabled={assigning}
                             className="w-full text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
                           >
-                            {assigning ? 'Starting...' : 'Assign & Start'}
+                            {assigning
+                              ? 'Starting...'
+                              : selectedCard?.session_id
+                                ? 'Reassign & Start'
+                                : 'Assign & Start'}
+                          </button>
+                        )}
+                        {selectedCard?.session_id && (
+                          <button
+                            onClick={() => setShowReassign(false)}
+                            className="w-full text-xs bg-transparent hover:bg-gray-800 border border-gray-700 text-gray-400 px-3 py-1.5 rounded-lg transition-colors"
+                          >
+                            Cancel
                           </button>
                         )}
                       </div>
