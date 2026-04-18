@@ -29,6 +29,11 @@ import {
   findEpic,
   epicDropdownLabel,
 } from '../utils/epics';
+import {
+  findAgentByName,
+  hasActiveSession,
+  buildAssigneeOptions,
+} from '../utils/kanbanAssign';
 
 const DEFAULT_COLUMNS = [
   { id: 'backlog', name: 'Backlog', color: '#6B7280' },
@@ -55,9 +60,9 @@ function getPriorityLabel(priority) {
   return opt ? opt.label : priority || 'None';
 }
 
-export default function KanbanScreen({ route }) {
+export default function KanbanScreen({ route, navigation }) {
   const { projectId, project } = route.params || {};
-  const { agents, kanbanRefreshKey } = useApp();
+  const { agents, kanbanRefreshKey, setActiveAgentId, setActiveSessionId } = useApp();
   const { openSidebar } = useContext(SidebarContext);
 
   const [board, setBoard] = useState(null);
@@ -81,6 +86,11 @@ export default function KanbanScreen({ route }) {
   const [editGithubUrl, setEditGithubUrl] = useState('');
   const [editEpicId, setEditEpicId] = useState('');
   const [showEpicPickerForCard, setShowEpicPickerForCard] = useState(false);
+
+  // Agent assignment state
+  const [showAssigneePicker, setShowAssigneePicker] = useState(false);
+  const [showReassign, setShowReassign] = useState(false);
+  const [assigning, setAssigning] = useState(false);
 
   // Epic state
   const [selectedEpicId, setSelectedEpicId] = useState(null);
@@ -161,6 +171,7 @@ export default function KanbanScreen({ route }) {
     setEditLabels(typeof card.labels === 'string' ? card.labels : (card.labels || []).join(', '));
     setEditGithubUrl(card.github_issue_url || '');
     setEditEpicId(card.epic_id || '');
+    setShowReassign(false);
     // Load comments
     try {
       const data = await api.getCardComments(projectId, card.id);
@@ -249,6 +260,52 @@ export default function KanbanScreen({ route }) {
     } catch {
       Alert.alert('Error', 'Failed to link epic');
     }
+  };
+
+  // Select an agent from the picker modal — stored as the agent's *name* in
+  // `editAssignee` to match the server schema (card.assignee = agent.name).
+  const handleSelectAssignee = (agentName) => {
+    setEditAssignee(agentName || '');
+    setShowAssigneePicker(false);
+  };
+
+  // Spawn a session on the selected agent and attach it to this card. Server
+  // moves the card to "In Progress" and returns `{ sessionId, ... }`; we
+  // navigate straight into the new chat session (matches web behaviour).
+  const handleAssignAndStart = async () => {
+    if (!selectedCard || !editAssignee) return;
+    const agent = findAgentByName(agents, editAssignee);
+    if (!agent) {
+      Alert.alert('Error', `Agent "${editAssignee}" not found`);
+      return;
+    }
+    setAssigning(true);
+    try {
+      const result = await api.assignCard(projectId, selectedCard.id, agent.id);
+      setSelectedCard(null);
+      setShowReassign(false);
+      await loadBoard();
+      if (result?.sessionId && navigation) {
+        setActiveAgentId(agent.id);
+        setActiveSessionId(result.sessionId);
+        navigation.navigate('Chat');
+      }
+    } catch (err) {
+      Alert.alert('Error', 'Failed to assign card');
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  // Jump to the existing session attached to the card (if any).
+  const handleOpenSession = () => {
+    if (!selectedCard?.session_id) return;
+    const agent = findAgentByName(agents, selectedCard.assignee);
+    if (!agent || !navigation) return;
+    setActiveAgentId(agent.id);
+    setActiveSessionId(selectedCard.session_id);
+    setSelectedCard(null);
+    navigation.navigate('Chat');
   };
 
   const handleSaveCard = async () => {
@@ -382,13 +439,73 @@ export default function KanbanScreen({ route }) {
 
             {/* Assignee */}
             <Text style={styles.fieldLabel}>Assignee</Text>
-            <TextInput
-              style={styles.fieldInput}
-              value={editAssignee}
-              onChangeText={setEditAssignee}
-              placeholder="Assignee name"
-              placeholderTextColor={colors.gray600}
-            />
+            {hasActiveSession(selectedCard) && !showReassign ? (
+              <View>
+                <View style={styles.assigneeActiveRow}>
+                  <Text style={styles.assigneeActiveName}>
+                    {editAssignee || 'Assigned'}
+                  </Text>
+                  <View style={styles.sessionActiveBadge}>
+                    <Text style={styles.sessionActiveBadgeText}>Session active</Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.openSessionBtn}
+                  onPress={handleOpenSession}
+                >
+                  <Text style={styles.openSessionBtnText}>Open Session</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.reassignBtn}
+                  onPress={() => setShowReassign(true)}
+                >
+                  <Text style={styles.reassignBtnText}>Reassign</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View>
+                <TouchableOpacity
+                  style={styles.epicPickerBtn}
+                  onPress={() => setShowAssigneePicker(true)}
+                >
+                  {editAssignee ? (
+                    <Text style={styles.epicPickerText}>{editAssignee}</Text>
+                  ) : (
+                    <Text style={styles.epicPickerPlaceholder}>Unassigned</Text>
+                  )}
+                  <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
+                </TouchableOpacity>
+                {!!editAssignee && (
+                  <TouchableOpacity
+                    style={[
+                      styles.assignStartBtn,
+                      assigning && styles.assignStartBtnDisabled,
+                    ]}
+                    onPress={handleAssignAndStart}
+                    disabled={assigning}
+                  >
+                    <Text style={styles.assignStartBtnText}>
+                      {assigning
+                        ? 'Starting...'
+                        : hasActiveSession(selectedCard)
+                          ? 'Reassign & Start'
+                          : 'Assign & Start'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                {hasActiveSession(selectedCard) && showReassign && (
+                  <TouchableOpacity
+                    style={styles.reassignBtn}
+                    onPress={() => {
+                      setShowReassign(false);
+                      setEditAssignee(selectedCard.assignee || '');
+                    }}
+                  >
+                    <Text style={styles.reassignBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
 
             {/* Epic */}
             <Text style={styles.fieldLabel}>Epic</Text>
@@ -487,6 +604,47 @@ export default function KanbanScreen({ route }) {
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
+
+        {/* Assignee picker for linking card to an agent */}
+        <Modal
+          visible={showAssigneePicker}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowAssigneePicker(false)}
+        >
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowAssigneePicker(false)}
+          >
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Assign agent</Text>
+              <ScrollView style={{ maxHeight: 320 }}>
+                {buildAssigneeOptions(agents).map((opt) => (
+                  <TouchableOpacity
+                    key={opt.id || '__unassigned__'}
+                    style={styles.modalOption}
+                    onPress={() => handleSelectAssignee(opt.id ? opt.name : '')}
+                  >
+                    <View
+                      style={[
+                        styles.modalOptionDot,
+                        { backgroundColor: opt.id ? colors.blue500 : colors.gray600 },
+                      ]}
+                    />
+                    <Text style={styles.modalOptionText}>{opt.name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity
+                style={styles.modalCancel}
+                onPress={() => setShowAssigneePicker(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
 
         {/* Epic picker for linking card to epic */}
         <Modal
@@ -1144,6 +1302,35 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: 'transparent',
   },
   colorSwatchActive: { borderColor: colors.white, transform: [{ scale: 1.1 }] },
+
+  // Assignee / agent assignment
+  assigneeActiveRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+    marginBottom: 8,
+  },
+  assigneeActiveName: { fontSize: 14, color: colors.white, fontWeight: '500' },
+  sessionActiveBadge: {
+    paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6,
+    backgroundColor: 'rgba(16,185,129,0.2)',
+  },
+  sessionActiveBadgeText: { fontSize: 11, color: '#6ee7b7', fontWeight: '500' },
+  openSessionBtn: {
+    backgroundColor: colors.blue600, borderRadius: 8,
+    paddingVertical: 10, alignItems: 'center',
+  },
+  openSessionBtnText: { fontSize: 13, color: colors.white, fontWeight: '600' },
+  reassignBtn: {
+    marginTop: 8, paddingVertical: 10, alignItems: 'center',
+    borderRadius: 8, borderWidth: 1, borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+  },
+  reassignBtnText: { fontSize: 13, color: colors.gray200 },
+  assignStartBtn: {
+    marginTop: 8, backgroundColor: colors.blue600, borderRadius: 8,
+    paddingVertical: 10, alignItems: 'center',
+  },
+  assignStartBtnDisabled: { backgroundColor: colors.gray700 },
+  assignStartBtnText: { fontSize: 13, color: colors.white, fontWeight: '600' },
 
   // Autonomous toggle
   autonomousToggle: {

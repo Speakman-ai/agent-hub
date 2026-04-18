@@ -262,6 +262,14 @@ export const api = {
     }),
   deleteKanbanCard: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'DELETE' }),
+  // Assign a kanban card to an agent. Server spawns a new session tied to the
+  // card, moves the card into "In Progress", and returns `{ sessionId, ... }`.
+  // Mirrors the web client's `api.assignCard`.
+  assignCard: (projectId, cardId, agentId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    }),
   getCardComments: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`),
   addCardComment: (projectId, cardId, data) =>
