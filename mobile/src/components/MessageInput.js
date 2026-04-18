@@ -9,15 +9,41 @@ import {
   Image,
   ScrollView,
   Alert,
+  ActionSheetIOS,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { colors } from '../theme/colors';
 import { pasteFromClipboard } from '../utils/clipboard';
 
+// Map a picked asset / document → attachment shape used by handleSend
+// and ChatMessage. Keeps the kind ('image' | 'video' | 'file') explicit
+// so the upload branch can route to base64 vs. binary endpoints without
+// re-sniffing MIME types.
+function makeAttachmentId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function guessMimeFromName(name, fallback) {
+  if (!name) return fallback;
+  const ext = name.toLowerCase().split('.').pop();
+  const map = {
+    mp4: 'video/mp4',
+    mov: 'video/quicktime',
+    m4v: 'video/x-m4v',
+    webm: 'video/webm',
+    avi: 'video/x-msvideo',
+    mkv: 'video/x-matroska',
+  };
+  return map[ext] || fallback;
+}
+
 export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength }) {
   const [value, setValue] = useState('');
-  const [images, setImages] = useState([]); // [{id, uri, name, base64}]
+  // Attachments: [{id, uri, name, kind, dataUrl?, mimeType?, sizeBytes?}]
+  // kind ∈ 'image' | 'video' | 'file'
+  const [images, setImages] = useState([]);
   const inputRef = useRef(null);
 
   // Slash-command autocomplete state
@@ -81,9 +107,10 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
 
       if (!result.canceled && result.assets) {
         const newImages = result.assets.map((asset) => ({
-          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          id: makeAttachmentId(),
           uri: asset.uri,
           name: asset.fileName || `image-${Date.now()}.jpg`,
+          kind: 'image',
           dataUrl: `data:image/jpeg;base64,${asset.base64}`,
         }));
         setImages((prev) => [...prev, ...newImages]);
@@ -93,6 +120,92 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     }
   };
 
+  const pickVideo = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['videos'],
+        allowsMultipleSelection: true,
+        // No base64 for videos — they're too large; we upload the raw URI
+        // via FileSystem.uploadAsync in api.uploadFile.
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets) {
+        const newVideos = result.assets.map((asset) => {
+          const name = asset.fileName || `video-${Date.now()}.mp4`;
+          return {
+            id: makeAttachmentId(),
+            uri: asset.uri,
+            name,
+            kind: 'video',
+            mimeType: asset.mimeType || guessMimeFromName(name, 'video/mp4'),
+            sizeBytes: asset.fileSize || null,
+          };
+        });
+        setImages((prev) => [...prev, ...newVideos]);
+      }
+    } catch (err) {
+      Alert.alert('Error', 'Failed to pick video');
+    }
+  };
+
+  const pickFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled) return;
+      const assets = result.assets || [];
+      const newFiles = assets.map((asset) => ({
+        id: makeAttachmentId(),
+        uri: asset.uri,
+        name: asset.name || `file-${Date.now()}`,
+        kind: 'file',
+        mimeType: asset.mimeType || 'application/octet-stream',
+        sizeBytes: asset.size || null,
+      }));
+      if (newFiles.length > 0) {
+        setImages((prev) => [...prev, ...newFiles]);
+      }
+    } catch (err) {
+      Alert.alert('Error', 'Failed to pick file');
+    }
+  };
+
+  // Show native chooser (iOS action sheet / Android Alert) for which kind
+  // of attachment to add. Keeps the single paperclip affordance instead of
+  // cluttering the composer with three separate buttons.
+  const openAttachMenu = useCallback(() => {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Cancel', 'Photo', 'Video', 'File'],
+          cancelButtonIndex: 0,
+        },
+        (i) => {
+          if (i === 1) pickImage();
+          else if (i === 2) pickVideo();
+          else if (i === 3) pickFile();
+        }
+      );
+    } else {
+      Alert.alert(
+        'Attach',
+        undefined,
+        [
+          { text: 'Photo', onPress: pickImage },
+          { text: 'Video', onPress: pickVideo },
+          { text: 'File', onPress: pickFile },
+          { text: 'Cancel', style: 'cancel' },
+        ],
+        { cancelable: true }
+      );
+    }
+  }, []);
+
   const removeImage = (id) => {
     setImages((prev) => prev.filter((img) => img.id !== id));
   };
@@ -100,7 +213,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
   const handleSubmit = () => {
     const trimmed = value.trim();
     if ((!trimmed && images.length === 0) || disabled) return;
-    onSend(trimmed || '(image attached)', images);
+    onSend(trimmed || '(attachment)', images);
     setValue('');
     setImages([]);
     closeSlash();
@@ -157,7 +270,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
         </View>
       )}
 
-      {/* Image previews */}
+      {/* Attachment previews */}
       {images.length > 0 && (
         <ScrollView
           horizontal
@@ -165,12 +278,28 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
           style={styles.imagePreviewRow}
           contentContainerStyle={styles.imagePreviewContent}
         >
-          {images.map((img) => (
-            <View key={img.id} style={styles.imagePreviewItem}>
-              <Image source={{ uri: img.uri }} style={styles.imagePreview} />
+          {images.map((item) => (
+            <View key={item.id} style={styles.imagePreviewItem}>
+              {item.kind === 'image' ? (
+                <Image source={{ uri: item.uri }} style={styles.imagePreview} />
+              ) : item.kind === 'video' ? (
+                <View style={[styles.imagePreview, styles.videoPreview]}>
+                  <Ionicons name="videocam" size={22} color={colors.gray300} />
+                  <Text style={styles.mediaBadge}>VIDEO</Text>
+                </View>
+              ) : (
+                <View style={[styles.imagePreview, styles.filePreview]}>
+                  <Ionicons name="document-outline" size={20} color={colors.gray300} />
+                  <Text style={styles.fileName} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                </View>
+              )}
               <TouchableOpacity
                 style={styles.removeImageBtn}
-                onPress={() => removeImage(img.id)}
+                onPress={() => removeImage(item.id)}
+                accessibilityLabel="Remove attachment"
+                accessibilityRole="button"
               >
                 <Ionicons name="close-circle" size={18} color={colors.red600} />
               </TouchableOpacity>
@@ -180,15 +309,17 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
       )}
 
       <View style={styles.inner}>
-        {/* Image picker button */}
+        {/* Attachment menu (image / video / file) */}
         <TouchableOpacity
           style={styles.imageButton}
-          onPress={pickImage}
+          onPress={openAttachMenu}
           disabled={disabled && !isProcessing}
           activeOpacity={0.7}
+          accessibilityLabel="Add attachment"
+          accessibilityRole="button"
         >
           <Ionicons
-            name="image-outline"
+            name="attach"
             size={22}
             color={disabled && !isProcessing ? colors.gray600 : colors.gray400}
           />
@@ -326,7 +457,7 @@ const styles = StyleSheet.create({
     color: colors.gray500,
     marginTop: 2,
   },
-  // Image styles
+  // Image / attachment preview styles
   imagePreviewRow: {
     marginBottom: 8,
   },
@@ -337,11 +468,34 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   imagePreview: {
-    width: 56,
-    height: 56,
+    width: 64,
+    height: 64,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.gray700,
+  },
+  videoPreview: {
+    backgroundColor: colors.gray800,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filePreview: {
+    backgroundColor: colors.gray800,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 4,
+  },
+  mediaBadge: {
+    color: colors.gray400,
+    fontSize: 9,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  fileName: {
+    color: colors.gray300,
+    fontSize: 9,
+    marginTop: 2,
+    maxWidth: 56,
   },
   removeImageBtn: {
     position: 'absolute',

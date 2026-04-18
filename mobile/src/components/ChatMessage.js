@@ -12,13 +12,16 @@ import {
   ToastAndroid,
   Platform,
   Alert,
+  Linking,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { getApiBaseUrl } from '../utils/config';
 import { extractCoordinationBlocks, pickHandoffRow } from '../utils/coordinationBlocks';
 import { copyToClipboard, canCopy } from '../utils/clipboard';
+import { attachmentKind } from '../utils/attachmentKind';
 import HandoffCard from './HandoffCard';
 
 function notifyCopied(success) {
@@ -166,21 +169,64 @@ function MessageAttachments({ attachments }) {
 
   if (parsed.length === 0) return null;
 
-  const getDisplayUrl = (img) => {
-    if (img.url) return `${getApiBaseUrl().replace('/api', '')}${img.url}`;
-    if (img.dataUrl) return img.dataUrl;
+  const getDisplayUrl = (att) => {
+    if (att.url) return `${getApiBaseUrl().replace('/api', '')}${att.url}`;
+    if (att.dataUrl) return att.dataUrl;
     return null;
+  };
+
+  const openFile = (src) => {
+    if (!src) return;
+    Linking.openURL(src).catch(() => {
+      Alert.alert('Unable to open file', 'The attachment could not be opened.');
+    });
   };
 
   return (
     <>
       <View style={imageStyles.row}>
-        {parsed.map((img, i) => {
-          const src = getDisplayUrl(img);
+        {parsed.map((att, i) => {
+          const src = getDisplayUrl(att);
           if (!src) return null;
+          const kind = attachmentKind(att);
+          const key = att.id || i;
+
+          if (kind === 'image') {
+            return (
+              <TouchableOpacity key={key} onPress={() => setLightboxUrl(src)} activeOpacity={0.8}>
+                <Image source={{ uri: src }} style={imageStyles.thumb} />
+              </TouchableOpacity>
+            );
+          }
+
+          if (kind === 'video') {
+            return (
+              <TouchableOpacity
+                key={key}
+                onPress={() => openFile(src)}
+                activeOpacity={0.8}
+                accessibilityLabel={`Open video ${att.originalName || att.filename || ''}`}
+                style={[imageStyles.thumb, imageStyles.videoChip]}
+              >
+                <Ionicons name="play-circle" size={36} color={colors.gray200} />
+                <Text style={imageStyles.mediaBadge}>VIDEO</Text>
+              </TouchableOpacity>
+            );
+          }
+
+          // Generic file — open via default handler (browser / native viewer).
           return (
-            <TouchableOpacity key={img.id || i} onPress={() => setLightboxUrl(src)} activeOpacity={0.8}>
-              <Image source={{ uri: src }} style={imageStyles.thumb} />
+            <TouchableOpacity
+              key={key}
+              onPress={() => openFile(src)}
+              activeOpacity={0.8}
+              accessibilityLabel={`Open file ${att.originalName || att.filename || ''}`}
+              style={[imageStyles.thumb, imageStyles.fileChip]}
+            >
+              <Ionicons name="document-outline" size={26} color={colors.gray200} />
+              <Text style={imageStyles.fileName} numberOfLines={2}>
+                {att.originalName || att.filename || 'file'}
+              </Text>
             </TouchableOpacity>
           );
         })}
@@ -217,6 +263,29 @@ const imageStyles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.gray700,
+  },
+  videoChip: {
+    backgroundColor: colors.gray800,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fileChip: {
+    backgroundColor: colors.gray800,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  mediaBadge: {
+    color: colors.gray400,
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  fileName: {
+    color: colors.gray200,
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: 6,
   },
   lightbox: {
     flex: 1,

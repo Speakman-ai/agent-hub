@@ -1,5 +1,6 @@
 import { getApiBaseUrl, getAuthHeaders } from './config';
 import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
+import { uploadFile as uploadFileImpl } from './uploadFile';
 
 async function fetchJSON(url, options = {}) {
   const base = getApiBaseUrl();
@@ -159,6 +160,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ dataUrl, filename }),
     }),
+  // Binary upload for videos and arbitrary files (web parity). `fileRef` is
+  // `{ uri, name, type }` from expo-image-picker / expo-document-picker.
+  uploadFile: (fileRef) => uploadFileImpl(fileRef),
 
   // Slack
   getSlackStatus: () => fetchJSON('/slack/status'),

@@ -8,8 +8,16 @@ vi.mock('./config', () => ({
   getAuthHeaders: () => ({ 'X-API-Key': 'test-key' }),
 }));
 
+// Stub ./uploadFile — the binary uploader depends on expo-file-system
+// which doesn't resolve in a plain node test environment. We only need to
+// verify api.uploadFile forwards its argument through.
+vi.mock('./uploadFile', () => ({
+  uploadFile: vi.fn(async (ref) => ({ __mockedWith: ref })),
+}));
+
 // Import after mocks are registered.
 const { api } = await import('./api.js');
+const uploadFileMock = (await import('./uploadFile')).uploadFile;
 
 // Mock global fetch. Each test can override `mockFetch` to shape the response.
 let mockFetch;
@@ -159,5 +167,30 @@ describe('api webhook helpers — request headers + error handling', () => {
       json: async () => ({ error: 'boom' }),
     });
     await expect(api.getWebhooks()).rejects.toThrow(/API error: 500/);
+  });
+});
+
+describe('api upload helpers', () => {
+  it('uploadImage → POST /upload with JSON body', async () => {
+    await api.uploadImage('data:image/png;base64,AAA', 'shot.png');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/upload');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      dataUrl: 'data:image/png;base64,AAA',
+      filename: 'shot.png',
+    });
+  });
+
+  it('uploadFile delegates to the binary uploader (fileRef pass-through)', async () => {
+    uploadFileMock.mockClear();
+    const fileRef = { uri: 'file:///tmp/a.mp4', name: 'a.mp4', type: 'video/mp4' };
+    const result = await api.uploadFile(fileRef);
+    expect(uploadFileMock).toHaveBeenCalledTimes(1);
+    expect(uploadFileMock).toHaveBeenCalledWith(fileRef);
+    expect(result).toEqual({ __mockedWith: fileRef });
+    // Crucially, uploadFile must NOT round-trip through fetchJSON — the
+    // binary uploader handles its own request against /api/upload/file.
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

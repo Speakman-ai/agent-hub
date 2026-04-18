@@ -8,6 +8,7 @@ import { selectSessionToActivate } from '../utils/sessionSelection';
 import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
+import { uploadAttachments } from '../utils/uploadAttachments';
 
 const AppContext = createContext(null);
 
@@ -864,15 +865,15 @@ export function AppProvider({ children }) {
       sessionId = session.id;
     }
 
-    // Upload images first, then send chat with references
+    // Upload attachments first, then send chat with references. Images go
+    // through the base64 /api/upload route; videos and generic files stream
+    // via /api/upload/file using api.uploadFile (FileSystem.uploadAsync).
     let uploadedImages = [];
     if (images.length > 0) {
       try {
-        uploadedImages = await Promise.all(
-          images.map((img) => api.uploadImage(img.dataUrl, img.name))
-        );
+        uploadedImages = await uploadAttachments(images, api);
       } catch (err) {
-        console.error('Image upload failed:', err);
+        console.error('Attachment upload failed:', err);
       }
     }
 
