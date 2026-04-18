@@ -17,6 +17,7 @@ import {
 import { getServerBase } from '../utils/connection.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
+import AgentAvatar from './AgentAvatar.jsx';
 
 export default function Sidebar({
   projects = [],
@@ -267,10 +268,11 @@ export default function Sidebar({
                                   <span className="absolute -left-3 top-1/2 w-2 border-t border-gray-700" />
                                 )}
                                 {agent.avatar ? (
-                                  <img
-                                    src={agent.avatar}
-                                    alt=""
-                                    className="w-5 h-5 rounded-full object-cover"
+                                  <AgentAvatar
+                                    avatar={agent.avatar}
+                                    color={agent.color}
+                                    size={20}
+                                    apiBase={getServerBase()}
                                   />
                                 ) : (
                                   <span

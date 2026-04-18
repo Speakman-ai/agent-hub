@@ -8,6 +8,9 @@ import {
 } from '../utils/authorAllowlist.js';
 import humanCron from '../../../shared/utils/humanCron.js';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
+import AgentAvatar from './AgentAvatar.jsx';
+import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
+import * as LucideIcons from 'lucide-react';
 
 /** Error boundary to catch render crashes in individual settings tabs */
 class SettingsErrorBoundary extends Component {
@@ -71,7 +74,6 @@ import {
   Play,
   Pencil,
   RefreshCw,
-  User,
   Plus,
   Trash2,
   ArrowRightLeft,
@@ -96,6 +98,39 @@ import {
   Link,
   FileText,
 } from 'lucide-react';
+
+/** Grid of Lucide icon chips used as quick-pick agent avatars. */
+function IconPickerGrid({ selected, color = '#6b7280', onSelect }) {
+  return (
+    <div className="mt-3">
+      <p className="text-[11px] text-gray-500 mb-1.5">Or pick an icon:</p>
+      <div className="grid grid-cols-10 gap-1.5">
+        {AVATAR_ICON_NAMES.map((name) => {
+          const IconComponent = LucideIcons[name];
+          if (!IconComponent) return null;
+          const isSelected = selected === buildIconAvatar(name);
+          return (
+            <button
+              key={name}
+              type="button"
+              onClick={() => onSelect(name)}
+              title={name}
+              aria-label={`Use ${name} icon as avatar`}
+              className={`w-8 h-8 rounded-md flex items-center justify-center border transition-colors ${
+                isSelected
+                  ? 'border-indigo-400 bg-indigo-500/10'
+                  : 'border-gray-700 hover:border-gray-500 bg-gray-900/50'
+              }`}
+              style={isSelected ? { color } : undefined}
+            >
+              <IconComponent size={16} className={isSelected ? '' : 'text-gray-400'} />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function OrganizationsSection() {
   const [orgsState, setOrgsState] = useState(() => getOrgs());
@@ -3693,17 +3728,12 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
           <div>
             <label className={labelClass}>Avatar</label>
             <div className="flex items-center gap-3">
-              {newForm.avatar ? (
-                <img
-                  src={`${getApiBase()}${newForm.avatar}`}
-                  alt="Avatar"
-                  className="w-12 h-12 rounded-full object-cover border border-gray-700"
-                />
-              ) : (
-                <div className="w-12 h-12 rounded-full border border-gray-700 bg-gray-900 flex items-center justify-center">
-                  <User size={20} className="text-gray-600" />
-                </div>
-              )}
+              <AgentAvatar
+                avatar={newForm.avatar}
+                color={newForm.color}
+                size={48}
+                apiBase={getServerBase()}
+              />
               <label className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors cursor-pointer">
                 Upload
                 <input
@@ -3716,7 +3746,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     const formData = new FormData();
                     formData.append('image', file);
                     try {
-                      const res = await fetch(`${getApiBase()}/api/upload`, {
+                      const res = await fetch(`${getApiBase()}/upload`, {
                         method: 'POST',
                         headers: getAuthHeaders(),
                         body: formData,
@@ -3731,6 +3761,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
               </label>
               {newForm.avatar && (
                 <button
+                  type="button"
                   onClick={() => setNewForm({ ...newForm, avatar: '' })}
                   className="text-xs text-gray-500 hover:text-red-400"
                 >
@@ -3738,6 +3769,11 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                 </button>
               )}
             </div>
+            <IconPickerGrid
+              selected={isIconAvatar(newForm.avatar) ? newForm.avatar : null}
+              color={newForm.color}
+              onSelect={(iconName) => setNewForm({ ...newForm, avatar: buildIconAvatar(iconName) })}
+            />
           </div>
           <div>
             <label className={labelClass}>Project</label>
@@ -3951,17 +3987,12 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     <div>
                       <label className={labelClass}>Avatar</label>
                       <div className="flex items-center gap-3">
-                        {edit.avatar || agent.avatar ? (
-                          <img
-                            src={`${getApiBase()}${edit.avatar || agent.avatar}`}
-                            alt="Avatar"
-                            className="w-12 h-12 rounded-full object-cover border border-gray-700"
-                          />
-                        ) : (
-                          <div className="w-12 h-12 rounded-full border border-gray-700 bg-gray-900 flex items-center justify-center">
-                            <User size={20} className="text-gray-600" />
-                          </div>
-                        )}
+                        <AgentAvatar
+                          avatar={edit.avatar ?? agent.avatar}
+                          color={edit.color || agent.color}
+                          size={48}
+                          apiBase={getServerBase()}
+                        />
                         <label className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors cursor-pointer">
                           Upload
                           <input
@@ -3974,7 +4005,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                               const formData = new FormData();
                               formData.append('image', file);
                               try {
-                                const res = await fetch(`${getApiBase()}/api/upload`, {
+                                const res = await fetch(`${getApiBase()}/upload`, {
                                   method: 'POST',
                                   headers: getAuthHeaders(),
                                   body: formData,
@@ -3989,6 +4020,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                         </label>
                         {(edit.avatar || agent.avatar) && (
                           <button
+                            type="button"
                             onClick={() => setEdit(agent.id, 'avatar', '')}
                             className="text-xs text-gray-500 hover:text-red-400"
                           >
@@ -3996,6 +4028,17 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                           </button>
                         )}
                       </div>
+                      <IconPickerGrid
+                        selected={
+                          isIconAvatar(edit.avatar ?? agent.avatar)
+                            ? (edit.avatar ?? agent.avatar)
+                            : null
+                        }
+                        color={edit.color || agent.color}
+                        onSelect={(iconName) =>
+                          setEdit(agent.id, 'avatar', buildIconAvatar(iconName))
+                        }
+                      />
                     </div>
                   </div>
 
