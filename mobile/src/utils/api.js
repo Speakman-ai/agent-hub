@@ -225,6 +225,28 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // Epics
+  getEpics: (projectId) => fetchJSON(`/projects/${projectId}/board/epics`),
+  createEpic: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/board/epics`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateEpic: (projectId, epicId, data) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteEpic: (projectId, epicId) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'DELETE' }),
+  linkCardToEpic: (projectId, cardId, epicId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/epic`, {
+      method: 'POST',
+      body: JSON.stringify({ epicId }),
+    }),
+  getAutonomousEpic: (projectId) =>
+    fetchJSON(`/projects/${projectId}/board/autonomous`),
+
   // Wiki
   getWikiPages: (projectId) => fetchJSON(`/projects/${projectId}/wiki`),
   getWikiPage: (projectId, slug) => fetchJSON(`/projects/${projectId}/wiki/${slug}`),

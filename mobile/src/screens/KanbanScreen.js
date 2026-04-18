@@ -17,6 +17,18 @@ import { useApp } from '../context/AppContext';
 import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
+import {
+  EPIC_COLORS,
+  DEFAULT_EPIC_COLOR,
+  DEFAULT_EPIC_FORM,
+  epicFormFromRow,
+  epicFormToUpdateBody,
+  epicFormToCreateBody,
+  filterCardsByEpic,
+  countOpenCardsForEpic,
+  findEpic,
+  epicDropdownLabel,
+} from '../utils/epics';
 
 const DEFAULT_COLUMNS = [
   { id: 'backlog', name: 'Backlog', color: '#6B7280' },
@@ -67,8 +79,22 @@ export default function KanbanScreen({ route }) {
   const [editAssignee, setEditAssignee] = useState('');
   const [editLabels, setEditLabels] = useState('');
   const [editGithubUrl, setEditGithubUrl] = useState('');
+  const [editEpicId, setEditEpicId] = useState('');
+  const [showEpicPickerForCard, setShowEpicPickerForCard] = useState(false);
+
+  // Epic state
+  const [selectedEpicId, setSelectedEpicId] = useState(null);
+  const [showEpicFilterModal, setShowEpicFilterModal] = useState(false);
+  const [showEpicManager, setShowEpicManager] = useState(false);
+  const [editingEpic, setEditingEpic] = useState(null); // null = creating new
+  const [epicForm, setEpicForm] = useState(DEFAULT_EPIC_FORM);
+  const [epicSaving, setEpicSaving] = useState(false);
 
   const columns = board?.columns || DEFAULT_COLUMNS;
+  const epics = board?.epics || [];
+  const doneColumnIds = new Set(
+    columns.filter((c) => /done|complete|closed/i.test(c.name || c.id || '')).map((c) => c.id)
+  );
   const columnInitialized = useRef(false);
 
   const loadBoard = useCallback(async () => {
@@ -93,10 +119,13 @@ export default function KanbanScreen({ route }) {
 
   const cardsForColumn = (columnId) => {
     if (!board?.cards) return [];
-    return board.cards
+    const scoped = filterCardsByEpic(board.cards, selectedEpicId);
+    return scoped
       .filter((c) => c.column_id === columnId)
       .sort((a, b) => (a.position || 0) - (b.position || 0));
   };
+
+  const selectedEpic = findEpic(epics, selectedEpicId);
 
   const activeColumnObj = columns.find((c) => c.id === activeColumn) || columns[0];
 
@@ -104,11 +133,15 @@ export default function KanbanScreen({ route }) {
     if (!newCardTitle.trim()) return;
     setSaving(true);
     try {
-      await api.createKanbanCard(projectId, {
+      const payload = {
         title: newCardTitle.trim(),
         priority: newCardPriority,
         columnId: activeColumn,
-      });
+      };
+      // If the board is filtered to an epic, tag the new card with that epic
+      // (matches the web behaviour in KanbanBoard.jsx).
+      if (selectedEpicId) payload.epicId = selectedEpicId;
+      await api.createKanbanCard(projectId, payload);
       setNewCardTitle('');
       setNewCardPriority('medium');
       setShowAddCard(false);
@@ -127,12 +160,94 @@ export default function KanbanScreen({ route }) {
     setEditAssignee(card.assignee || '');
     setEditLabels(typeof card.labels === 'string' ? card.labels : (card.labels || []).join(', '));
     setEditGithubUrl(card.github_issue_url || '');
+    setEditEpicId(card.epic_id || '');
     // Load comments
     try {
       const data = await api.getCardComments(projectId, card.id);
       setComments(data || []);
     } catch {
       setComments([]);
+    }
+  };
+
+  // --- Epic CRUD / linking ---
+
+  const openEpicCreate = () => {
+    setEditingEpic(null);
+    setEpicForm(DEFAULT_EPIC_FORM);
+    setShowEpicManager(true);
+  };
+
+  const openEpicEdit = (epic) => {
+    setEditingEpic(epic);
+    setEpicForm(epicFormFromRow(epic));
+    setShowEpicManager(true);
+  };
+
+  const handleSaveEpic = async () => {
+    if (!epicForm.name.trim()) {
+      Alert.alert('Error', 'Epic name is required');
+      return;
+    }
+    setEpicSaving(true);
+    try {
+      if (editingEpic) {
+        await api.updateEpic(projectId, editingEpic.id, epicFormToUpdateBody(epicForm));
+      } else {
+        const created = await api.createEpic(projectId, epicFormToCreateBody(epicForm));
+        // If the user toggled autonomous while creating, apply it via a
+        // follow-up PUT so the autonomous-exclusive rule runs server-side.
+        if (created?.id && epicForm.autonomous) {
+          await api.updateEpic(projectId, created.id, epicFormToUpdateBody(epicForm));
+        }
+      }
+      setShowEpicManager(false);
+      setEditingEpic(null);
+      setEpicForm(DEFAULT_EPIC_FORM);
+      await loadBoard();
+    } catch (err) {
+      Alert.alert('Error', 'Failed to save epic');
+    } finally {
+      setEpicSaving(false);
+    }
+  };
+
+  const handleDeleteEpic = () => {
+    if (!editingEpic) return;
+    Alert.alert(
+      'Delete Epic',
+      `Delete "${editingEpic.name}"? Cards linked to this epic will be unlinked but not deleted.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.deleteEpic(projectId, editingEpic.id);
+              if (selectedEpicId === editingEpic.id) setSelectedEpicId(null);
+              setShowEpicManager(false);
+              setEditingEpic(null);
+              setEpicForm(DEFAULT_EPIC_FORM);
+              await loadBoard();
+            } catch {
+              Alert.alert('Error', 'Failed to delete epic');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleLinkCardEpic = async (epicId) => {
+    if (!selectedCard) return;
+    try {
+      await api.linkCardToEpic(projectId, selectedCard.id, epicId || null);
+      setEditEpicId(epicId || '');
+      setShowEpicPickerForCard(false);
+      await loadBoard();
+    } catch {
+      Alert.alert('Error', 'Failed to link epic');
     }
   };
 
@@ -275,6 +390,27 @@ export default function KanbanScreen({ route }) {
               placeholderTextColor={colors.gray600}
             />
 
+            {/* Epic */}
+            <Text style={styles.fieldLabel}>Epic</Text>
+            <TouchableOpacity
+              style={styles.epicPickerBtn}
+              onPress={() => setShowEpicPickerForCard(true)}
+            >
+              {(() => {
+                const linked = findEpic(epics, editEpicId);
+                if (!linked) {
+                  return <Text style={styles.epicPickerPlaceholder}>None</Text>;
+                }
+                return (
+                  <View style={styles.epicPickerRow}>
+                    <View style={[styles.epicDot, { backgroundColor: linked.color || DEFAULT_EPIC_COLOR }]} />
+                    <Text style={styles.epicPickerText}>{epicDropdownLabel(linked)}</Text>
+                  </View>
+                );
+              })()}
+              <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
+            </TouchableOpacity>
+
             {/* Labels */}
             <Text style={styles.fieldLabel}>Labels (comma separated)</Text>
             <TextInput
@@ -351,6 +487,49 @@ export default function KanbanScreen({ route }) {
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
+
+        {/* Epic picker for linking card to epic */}
+        <Modal
+          visible={showEpicPickerForCard}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowEpicPickerForCard(false)}
+        >
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowEpicPickerForCard(false)}
+          >
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Link to epic</Text>
+              <ScrollView style={{ maxHeight: 320 }}>
+                <TouchableOpacity
+                  style={styles.modalOption}
+                  onPress={() => handleLinkCardEpic(null)}
+                >
+                  <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]} />
+                  <Text style={styles.modalOptionText}>None</Text>
+                </TouchableOpacity>
+                {epics.map((epic) => (
+                  <TouchableOpacity
+                    key={epic.id}
+                    style={styles.modalOption}
+                    onPress={() => handleLinkCardEpic(epic.id)}
+                  >
+                    <View style={[styles.modalOptionDot, { backgroundColor: epic.color || DEFAULT_EPIC_COLOR }]} />
+                    <Text style={styles.modalOptionText}>{epicDropdownLabel(epic)}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity
+                style={styles.modalCancel}
+                onPress={() => setShowEpicPickerForCard(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -367,6 +546,39 @@ export default function KanbanScreen({ route }) {
         <Text style={styles.topBarTitle} numberOfLines={1}>
           {project?.name || 'Project'} Board
         </Text>
+      </View>
+
+      {/* Epic Filter Bar */}
+      <View style={styles.epicBar}>
+        <TouchableOpacity
+          style={styles.epicFilterBtn}
+          onPress={() => setShowEpicFilterModal(true)}
+        >
+          {selectedEpic ? (
+            <>
+              <View style={[styles.epicDot, { backgroundColor: selectedEpic.color || DEFAULT_EPIC_COLOR }]} />
+              <Text style={styles.epicFilterText} numberOfLines={1}>
+                {epicDropdownLabel(selectedEpic)}
+              </Text>
+            </>
+          ) : (
+            <Text style={styles.epicFilterText}>All Epics ({epics.length})</Text>
+          )}
+          <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
+        </TouchableOpacity>
+
+        {selectedEpic && (
+          <TouchableOpacity
+            style={styles.epicEditBtn}
+            onPress={() => openEpicEdit(selectedEpic)}
+          >
+            <Text style={styles.epicEditText}>Edit</Text>
+          </TouchableOpacity>
+        )}
+
+        <TouchableOpacity style={styles.epicNewBtn} onPress={openEpicCreate}>
+          <Text style={styles.epicNewBtnText}>+ Epic</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Column Tabs */}
@@ -418,6 +630,21 @@ export default function KanbanScreen({ route }) {
                 <Text style={styles.cardAssignee} numberOfLines={1}>{card.assignee}</Text>
               ) : null}
             </View>
+            {card.epic_id && (() => {
+              const cardEpic = findEpic(epics, card.epic_id);
+              if (!cardEpic) return null;
+              return (
+                <View style={styles.cardEpicRow}>
+                  <View style={[styles.epicDot, { backgroundColor: cardEpic.color || DEFAULT_EPIC_COLOR }]} />
+                  <Text
+                    style={[styles.cardEpicText, { color: cardEpic.color || DEFAULT_EPIC_COLOR }]}
+                    numberOfLines={1}
+                  >
+                    {epicDropdownLabel(cardEpic)}
+                  </Text>
+                </View>
+              );
+            })()}
             {card.labels && (typeof card.labels === 'string' ? card.labels : '').length > 0 && (
               <View style={styles.labelsRow}>
                 {(typeof card.labels === 'string' ? card.labels.split(',').map(l => l.trim()).filter(Boolean) : card.labels).map((label, i) => (
@@ -507,6 +734,216 @@ export default function KanbanScreen({ route }) {
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
+      </Modal>
+
+      {/* Epic Filter Modal */}
+      <Modal
+        visible={showEpicFilterModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowEpicFilterModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowEpicFilterModal(false)}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Filter by epic</Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => {
+                  setSelectedEpicId(null);
+                  setShowEpicFilterModal(false);
+                }}
+              >
+                <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]} />
+                <Text style={styles.modalOptionText}>All Epics ({epics.length})</Text>
+              </TouchableOpacity>
+              {epics.map((epic) => {
+                const count = countOpenCardsForEpic(board?.cards, epic.id, doneColumnIds);
+                return (
+                  <TouchableOpacity
+                    key={epic.id}
+                    style={styles.modalOption}
+                    onPress={() => {
+                      setSelectedEpicId(epic.id);
+                      setShowEpicFilterModal(false);
+                    }}
+                  >
+                    <View style={[styles.modalOptionDot, { backgroundColor: epic.color || DEFAULT_EPIC_COLOR }]} />
+                    <Text style={[styles.modalOptionText, { flex: 1 }]} numberOfLines={1}>
+                      {epicDropdownLabel(epic)}
+                    </Text>
+                    {count > 0 && (
+                      <View style={styles.epicCountBadge}>
+                        <Text style={styles.epicCountBadgeText}>{count}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <TouchableOpacity
+              style={styles.modalCancel}
+              onPress={() => setShowEpicFilterModal(false)}
+            >
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Epic Create/Edit Modal */}
+      <Modal
+        visible={showEpicManager}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowEpicManager(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={[styles.modalContent, { width: 320 }]}>
+            <ScrollView>
+              <Text style={styles.modalTitle}>
+                {editingEpic ? 'Edit Epic' : 'New Epic'}
+              </Text>
+
+              <Text style={styles.fieldLabel}>Name</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={epicForm.name}
+                onChangeText={(v) => setEpicForm((f) => ({ ...f, name: v }))}
+                placeholder="Epic name..."
+                placeholderTextColor={colors.gray600}
+                autoFocus
+              />
+
+              <Text style={styles.fieldLabel}>Description</Text>
+              <TextInput
+                style={[styles.fieldInput, { minHeight: 60, textAlignVertical: 'top' }]}
+                value={epicForm.description}
+                onChangeText={(v) => setEpicForm((f) => ({ ...f, description: v }))}
+                placeholder="Short description (optional)"
+                placeholderTextColor={colors.gray600}
+                multiline
+              />
+
+              <Text style={styles.fieldLabel}>Color</Text>
+              <View style={styles.colorRow}>
+                {EPIC_COLORS.map((c) => (
+                  <TouchableOpacity
+                    key={c}
+                    onPress={() => setEpicForm((f) => ({ ...f, color: c }))}
+                    style={[
+                      styles.colorSwatch,
+                      { backgroundColor: c },
+                      epicForm.color === c && styles.colorSwatchActive,
+                    ]}
+                  />
+                ))}
+              </View>
+
+              {/* Autonomous toggle — only shown when editing (mirrors web) */}
+              {editingEpic && (
+                <>
+                  <Text style={styles.fieldLabel}>Autonomous Mode</Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.autonomousToggle,
+                      epicForm.autonomous
+                        ? { backgroundColor: '#059669', borderColor: '#10b981' }
+                        : { backgroundColor: colors.gray800, borderColor: colors.gray700 },
+                    ]}
+                    onPress={() =>
+                      setEpicForm((f) => ({ ...f, autonomous: f.autonomous ? 0 : 1 }))
+                    }
+                  >
+                    <Text style={styles.autonomousToggleIcon}>{'\u26A1'}</Text>
+                    <Text
+                      style={[
+                        styles.autonomousToggleText,
+                        { color: epicForm.autonomous ? colors.white : colors.gray400 },
+                      ]}
+                    >
+                      {epicForm.autonomous ? 'Autonomous: ON' : 'Autonomous: OFF'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {epicForm.autonomous === 1 && (
+                    <View style={styles.autonomousSettings}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.autonomousSettingLabel}>Max concurrent</Text>
+                        <TextInput
+                          style={styles.fieldInput}
+                          value={String(epicForm.autonomous_max_concurrent)}
+                          onChangeText={(v) =>
+                            setEpicForm((f) => ({
+                              ...f,
+                              autonomous_max_concurrent: parseInt(v, 10) || 2,
+                            }))
+                          }
+                          keyboardType="number-pad"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.autonomousSettingLabel}>Max iterations</Text>
+                        <TextInput
+                          style={styles.fieldInput}
+                          value={String(epicForm.autonomous_max_iterations)}
+                          onChangeText={(v) =>
+                            setEpicForm((f) => ({
+                              ...f,
+                              autonomous_max_iterations: parseInt(v, 10) || 3,
+                            }))
+                          }
+                          keyboardType="number-pad"
+                        />
+                      </View>
+                    </View>
+                  )}
+                </>
+              )}
+
+              <View style={styles.epicModalActions}>
+                <TouchableOpacity
+                  style={styles.addCardCancel}
+                  onPress={() => {
+                    setShowEpicManager(false);
+                    setEditingEpic(null);
+                    setEpicForm(DEFAULT_EPIC_FORM);
+                  }}
+                >
+                  <Text style={styles.addCardCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.addCardCreate,
+                    (epicSaving || !epicForm.name.trim()) && styles.addCardCreateDisabled,
+                  ]}
+                  onPress={handleSaveEpic}
+                  disabled={epicSaving || !epicForm.name.trim()}
+                >
+                  <Text style={styles.addCardCreateText}>
+                    {epicSaving ? 'Saving...' : editingEpic ? 'Save' : 'Create'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {editingEpic && (
+                <TouchableOpacity
+                  style={styles.deleteEpicBtn}
+                  onPress={handleDeleteEpic}
+                >
+                  <Text style={styles.deleteEpicBtnText}>Delete Epic</Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -653,4 +1090,79 @@ const styles = StyleSheet.create({
   modalOptionText: { fontSize: 14, color: colors.gray200 },
   modalCancel: { paddingVertical: 12, alignItems: 'center', marginTop: 4 },
   modalCancelText: { fontSize: 14, color: colors.gray500 },
+
+  // Epic filter bar
+  epicBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderBottomWidth: 1, borderBottomColor: colors.gray800,
+  },
+  epicFilterBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.gray800, borderWidth: 1, borderColor: colors.gray700,
+    paddingHorizontal: 10, paddingVertical: 7, borderRadius: 6,
+  },
+  epicFilterText: { flex: 1, fontSize: 13, color: colors.gray200 },
+  epicDot: { width: 10, height: 10, borderRadius: 5 },
+  epicEditBtn: {
+    paddingHorizontal: 10, paddingVertical: 7, borderRadius: 6,
+    borderWidth: 1, borderColor: colors.gray700, backgroundColor: colors.gray800,
+  },
+  epicEditText: { fontSize: 12, color: colors.gray300 },
+  epicNewBtn: {
+    paddingHorizontal: 10, paddingVertical: 7, borderRadius: 6,
+    backgroundColor: colors.blue600,
+  },
+  epicNewBtnText: { fontSize: 12, color: colors.white, fontWeight: '500' },
+
+  // Card epic chip
+  cardEpicRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
+  cardEpicText: { fontSize: 11, fontWeight: '500' },
+
+  // Epic picker (card detail)
+  epicPickerBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.gray800, borderWidth: 1, borderColor: colors.gray700,
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8,
+  },
+  epicPickerRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  epicPickerText: { flex: 1, fontSize: 14, color: colors.white },
+  epicPickerPlaceholder: { flex: 1, fontSize: 14, color: colors.gray500 },
+  epicPickerChevron: { fontSize: 12, color: colors.gray500, marginLeft: 6 },
+
+  // Count badge on filter modal rows
+  epicCountBadge: {
+    minWidth: 22, height: 18, borderRadius: 9, paddingHorizontal: 6,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: colors.gray700,
+  },
+  epicCountBadgeText: { fontSize: 11, color: colors.gray200, fontWeight: '600' },
+
+  // Epic modal color picker
+  colorRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
+  colorSwatch: {
+    width: 28, height: 28, borderRadius: 14,
+    borderWidth: 2, borderColor: 'transparent',
+  },
+  colorSwatchActive: { borderColor: colors.white, transform: [{ scale: 1.1 }] },
+
+  // Autonomous toggle
+  autonomousToggle: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8,
+    borderWidth: 1,
+  },
+  autonomousToggleIcon: { fontSize: 14 },
+  autonomousToggleText: { fontSize: 13, fontWeight: '500' },
+  autonomousSettings: { flexDirection: 'row', gap: 10, marginTop: 8 },
+  autonomousSettingLabel: { fontSize: 11, color: colors.gray500, marginBottom: 4 },
+
+  // Epic modal actions
+  epicModalActions: {
+    flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 16,
+  },
+  deleteEpicBtn: {
+    marginTop: 12, paddingVertical: 10, alignItems: 'center',
+    borderRadius: 6, backgroundColor: colors.red600,
+  },
+  deleteEpicBtnText: { fontSize: 13, color: colors.white, fontWeight: '500' },
 });
