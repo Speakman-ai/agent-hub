@@ -803,6 +803,14 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  // Per-device push notification preferences. JSON array of enabled event
+  // type strings; NULL = all events enabled (legacy default).
+  try {
+    db.prepare('SELECT enabled_events FROM device_tokens LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE device_tokens ADD COLUMN enabled_events TEXT DEFAULT NULL');
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS review_logs (
       id TEXT PRIMARY KEY,
@@ -1394,6 +1402,10 @@ function initDb(dataDir: string): void {
     getAllDeviceTokens: db.prepare('SELECT * FROM device_tokens'),
     updateDeviceTokenLastUsed: db.prepare(
       "UPDATE device_tokens SET last_used = datetime('now') WHERE token = ?",
+    ),
+    getDeviceToken: db.prepare('SELECT * FROM device_tokens WHERE token = ?'),
+    setDeviceTokenPreferences: db.prepare(
+      'UPDATE device_tokens SET enabled_events = ? WHERE token = ?',
     ),
 
     // Kanban boards

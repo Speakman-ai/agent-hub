@@ -1079,10 +1079,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         });
       }
 
+      // Enrich the broadcast with agent + session names so push-notification
+      // consumers (mobile) don't need a second round-trip to look them up.
+      // `sess` was re-read above after any rename; fall back to the older
+      // reference if the row is missing.
+      const latestSess = (S.getSession.get(sessionId) as SessionRow | undefined) || sess;
       broadcast({
         type: 'done',
         messageId: assistantMsgId,
         sessionId,
+        agentName: agent.name,
+        sessionName: latestSess?.name,
         message: {
           id: assistantMsgId,
           session_id: sessionId,

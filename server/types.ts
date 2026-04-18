@@ -188,6 +188,7 @@ export interface DeviceTokenRow {
   platform: string;
   created_at: string;
   last_used: string | null;
+  enabled_events: string | null;
 }
 
 export interface SessionEventRow {
@@ -755,6 +756,8 @@ export interface Stmts {
   removeDeviceToken: Stmt;
   getAllDeviceTokens: Stmt;
   updateDeviceTokenLastUsed: Stmt;
+  getDeviceToken: Stmt;
+  setDeviceTokenPreferences: Stmt;
 
   // Kanban boards
   getKanbanBoard: Stmt;

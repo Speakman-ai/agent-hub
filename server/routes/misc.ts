@@ -7,6 +7,7 @@ import { db } from '../db.js';
 import { getSlackStatus, restartSlack, getSlackMessages, getAllSlackMessages } from '../slack.js';
 import type { RouteDeps, EnrichedAgent, AppConfig, Stmts, Project } from '../types.js';
 import { getLogBuffer } from '../server-log.js';
+import { PUSH_EVENT_TYPES } from '../push.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Resolve the server version from server/package.json (one level up from
@@ -145,6 +146,56 @@ export default function createMiscRoutes(deps: RouteDeps): Router {
   router.delete('/api/devices/:token', (req: Request, res: Response) => {
     stmts.removeDeviceToken.run(req.params.token);
     res.json({ ok: true });
+  });
+
+  // Return the current preferences for a registered push token.
+  // `enabled_events` is either null (all events) or a JSON array of strings.
+  router.get('/api/devices/:token', (req: Request, res: Response) => {
+    const row = stmts.getDeviceToken.get(req.params.token) as
+      | { token: string; platform: string; enabled_events: string | null }
+      | undefined;
+    if (!row) return res.status(404).json({ error: 'Token not registered' });
+    let enabledEvents: string[] | null = null;
+    if (row.enabled_events) {
+      try {
+        const parsed = JSON.parse(row.enabled_events);
+        enabledEvents = Array.isArray(parsed)
+          ? parsed.filter((x): x is string => typeof x === 'string')
+          : null;
+      } catch {
+        enabledEvents = null;
+      }
+    }
+    res.json({
+      token: row.token,
+      platform: row.platform,
+      enabledEvents,
+      supportedEvents: [...PUSH_EVENT_TYPES],
+    });
+  });
+
+  // Update per-event push preferences for a token. Body: `{ enabledEvents:
+  // string[] | null }`. `null` / omitted → clear preferences (all events
+  // enabled, the legacy default). Unknown event names are stripped so a
+  // malformed client can't permanently disable anything.
+  router.put('/api/devices/:token/preferences', (req: Request, res: Response) => {
+    const body = req.body as { enabledEvents?: string[] | null };
+    const row = stmts.getDeviceToken.get(req.params.token) as { token: string } | undefined;
+    if (!row) return res.status(404).json({ error: 'Token not registered' });
+
+    if (body.enabledEvents == null) {
+      stmts.setDeviceTokenPreferences.run(null, req.params.token);
+      return res.json({ ok: true, enabledEvents: null });
+    }
+    if (!Array.isArray(body.enabledEvents)) {
+      return res.status(400).json({ error: 'enabledEvents must be an array or null' });
+    }
+    const allowed = new Set<string>(PUSH_EVENT_TYPES);
+    const cleaned = body.enabledEvents.filter(
+      (x): x is string => typeof x === 'string' && allowed.has(x),
+    );
+    stmts.setDeviceTokenPreferences.run(JSON.stringify(cleaned), req.params.token);
+    res.json({ ok: true, enabledEvents: cleaned });
   });
 
   router.get('/api/usage', (_req: Request, res: Response) => {

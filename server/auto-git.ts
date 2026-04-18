@@ -826,9 +826,21 @@ export async function autoCommitAndPR(
         hasUnpushed: changes.hasUnpushed,
       };
       d.stmts.updateSessionChangesReady.run(JSON.stringify(changesReadyData), sessionId);
+      // Enrich with display names so mobile push recipients get a meaningful
+      // title/body without a follow-up API call. `getSession` may be absent
+      // under test mocks — tolerate its absence.
+      let sessionName: string | undefined;
+      try {
+        const sessionRow = d.stmts.getSession?.get?.(sessionId) as { name?: string } | undefined;
+        sessionName = sessionRow?.name;
+      } catch {
+        /* best-effort enrichment */
+      }
       d.broadcast({
         type: 'changes_ready',
         sessionId,
+        agentName: agent.name,
+        sessionName,
         ...changesReadyData,
       });
       return;

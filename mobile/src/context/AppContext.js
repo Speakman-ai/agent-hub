@@ -5,6 +5,8 @@ import { loadOrgs, migrateFromLegacy } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
 import { hydrateChangesReady } from '../utils/changesReady';
 import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
+import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
+import { mapBroadcastToNotification } from '../utils/ticketNotifications';
 
 const AppContext = createContext(null);
 
@@ -68,6 +70,9 @@ export function AppProvider({ children }) {
   const [changesReady, setChangesReady] = useState({});
   // Config readiness gate — prevents data fetching before AsyncStorage loads
   const [configReady, setConfigReady] = useState(false);
+  // Mobile push state: Expo token + permission status (used by Settings).
+  const [pushToken, setPushToken] = useState(null);
+  const [pushPermissionStatus, setPushPermissionStatus] = useState('unknown');
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSessionIdRef = useRef(activeSessionId);
@@ -75,8 +80,35 @@ export function AppProvider({ children }) {
   const activeRoomIdRef = useRef(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
 
+  // Show an in-app (foreground) notification for the subset of broadcast
+  // events that map to the desktop/Expo push taxonomy. Remote pushes are
+  // typically suppressed while the app is foregrounded, so we mirror them
+  // with a locally-scheduled notification so the user still sees a banner.
+  // Dynamic require so Vitest doesn't need native mocks.
+  const presentForegroundFor = useCallback((data) => {
+    const mapped = mapBroadcastToNotification(data);
+    if (!mapped) return;
+    try {
+      const Notifications = require('expo-notifications');
+      presentLocalNotification(
+        { Notifications },
+        {
+          title: mapped.title,
+          body: mapped.body,
+          data: { event: mapped.event, ...data },
+        },
+      );
+    } catch {
+      /* expo-notifications unavailable (e.g. web / test) — no banner */
+    }
+  }, []);
+
   // WebSocket handler
   const handleWsMessage = useCallback((data) => {
+    // Fan out to the in-app banner first so every mapped type gets a
+    // notification regardless of which switch-case it takes below.
+    presentForegroundFor(data);
+
     const forActiveSession =
       data.sessionId && data.sessionId === activeSessionIdRef.current;
     const msgForActiveSession =
@@ -485,9 +517,48 @@ export function AppProvider({ children }) {
         });
         break;
     }
-  }, []);
+  }, [presentForegroundFor]);
 
   const { send, connected, reconnecting, reconnect } = useWebSocket(handleWsMessage);
+
+  // Register for Expo push notifications once the connection config is
+  // ready. Native modules are required lazily so this file can be imported
+  // under Vitest without those dependencies being resolvable.
+  useEffect(() => {
+    if (!configReady || !getApiBaseUrl()) return;
+    (async () => {
+      try {
+        const Notifications = require('expo-notifications');
+        // Foreground notifications: show banner + play sound. Without this
+        // Expo suppresses banners while the app is in the foreground.
+        if (Notifications.setNotificationHandler) {
+          Notifications.setNotificationHandler({
+            handleNotification: async () => ({
+              shouldShowBanner: true,
+              shouldShowList: true,
+              shouldPlaySound: true,
+              shouldSetBadge: false,
+            }),
+          });
+        }
+        const Device = require('expo-device');
+        const Constants = require('expo-constants').default;
+        const { Platform } = require('react-native');
+        const result = await registerForPushNotifications({
+          api,
+          Notifications,
+          Device,
+          Constants,
+          Platform,
+        });
+        setPushToken(result.token);
+        setPushPermissionStatus(result.permissionStatus);
+      } catch (err) {
+        // Native modules missing (dev web, Vitest) — stay silent.
+        setPushPermissionStatus('unavailable');
+      }
+    })();
+  }, [configReady]);
 
   const refreshAgents = useCallback(() => {
     api.getAgents().then((data) => {
@@ -915,6 +986,9 @@ export function AppProvider({ children }) {
     markProjectThreadsRead,
     setActiveThreadsProject,
     setActiveThread,
+    // Push notification state (Settings screen surfaces these)
+    pushToken,
+    pushPermissionStatus,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

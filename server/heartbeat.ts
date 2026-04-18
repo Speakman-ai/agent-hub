@@ -15,7 +15,6 @@ import type {
   ThreadRow,
   ThreadEntryRow,
   SessionRow,
-  DeviceTokenRow,
   Project,
   BroadcastFn,
   Stmts,
@@ -268,58 +267,24 @@ async function notifySlack(agentName: string, result: string): Promise<void> {
   }
 }
 
-interface PushMessage {
-  to: string;
-  sound: string;
-  title: string;
-  body: string;
-  data: { sessionId: string; cronId: string };
-}
-
-interface PushReceipt {
-  status: string;
-  details?: { error?: string };
-}
-
+/**
+ * Notify mobile subscribers when a cron completes. Delegates to the shared
+ * `push.ts` module so cron pushes honour per-device preferences and share
+ * the Expo delivery/cleanup path with broadcast-driven pushes.
+ */
 async function sendPushNotifications(
   cronName: string,
   result: string,
   sessionId: string,
   cronId: number,
 ): Promise<void> {
-  const tokens = stmts.getAllDeviceTokens.all() as DeviceTokenRow[];
-  if (!tokens.length) return;
-
-  const body = result.length > 200 ? result.slice(0, 200) + '...' : result;
-
-  const messages: PushMessage[] = tokens.map((t) => ({
-    to: t.token,
-    sound: 'default',
-    title: `Cron: ${cronName}`,
+  const { dispatchPushEvent, cronCompletePush } = await import('./push.js');
+  const { title, body } = cronCompletePush({ cronName, result });
+  await dispatchPushEvent('cron', {
+    title,
     body,
-    data: { sessionId, cronId: String(cronId) },
-  }));
-
-  for (let i = 0; i < messages.length; i += 100) {
-    const chunk = messages.slice(i, i + 100);
-    try {
-      const resp = await fetch('https://exp.host/--/api/v2/push/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(chunk),
-      });
-      const data = (await resp.json()) as { data?: PushReceipt[] };
-      if (data.data) {
-        data.data.forEach((receipt, idx) => {
-          if (receipt.status === 'error' && receipt.details?.error === 'DeviceNotRegistered') {
-            stmts.removeDeviceToken.run(chunk[idx].to);
-          }
-        });
-      }
-    } catch (err) {
-      console.error('[push] Failed to send:', (err as Error).message);
-    }
-  }
+    data: { sessionId, cronId: String(cronId), type: 'cron' },
+  });
 }
 
 interface HeartbeatResult {

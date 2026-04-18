@@ -292,6 +292,22 @@ export const api = {
   getThread: (threadId) => fetchJSON(`/threads/${threadId}`),
   getThreadEntries: (threadId) => fetchJSON(`/threads/${threadId}/entries`),
 
+  // Push notification device tokens (Expo)
+  registerDeviceToken: (token, platform) =>
+    fetchJSON('/devices', {
+      method: 'POST',
+      body: JSON.stringify({ token, platform }),
+    }),
+  unregisterDeviceToken: (token) =>
+    fetchJSON(`/devices/${encodeURIComponent(token)}`, { method: 'DELETE' }),
+  getDeviceTokenPreferences: (token) =>
+    fetchJSON(`/devices/${encodeURIComponent(token)}`),
+  setDeviceTokenPreferences: (token, enabledEvents) =>
+    fetchJSON(`/devices/${encodeURIComponent(token)}/preferences`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabledEvents }),
+    }),
+
   // Wiki
   getWikiPages: (projectId) => fetchJSON(`/projects/${projectId}/wiki`),
   getWikiPage: (projectId, slug) => fetchJSON(`/projects/${projectId}/wiki/${slug}`),

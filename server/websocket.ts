@@ -3,6 +3,7 @@ import type { Server } from 'http';
 import type { IncomingMessage } from 'http';
 import { authenticateWs } from './auth.js';
 import { stmts } from './db.js';
+import { handleBroadcastForPush } from './push.js';
 import type {
   WebSocketDeps,
   BroadcastFn,
@@ -47,6 +48,11 @@ export default function createWebSocket(
       if (client.readyState === WsClient.OPEN) {
         client.send(msg);
       }
+    });
+    // Fan out relevant broadcasts to mobile clients via Expo push. Fire-and-
+    // forget: push dispatch must never block the WebSocket hot path.
+    void handleBroadcastForPush(data).catch((err: unknown) => {
+      console.error('[push] broadcast handler failed:', (err as Error).message);
     });
   }
 
