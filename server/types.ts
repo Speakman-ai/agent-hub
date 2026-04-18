@@ -988,6 +988,7 @@ export interface Agent {
   engine: string;
   role?: string;
   color?: string;
+  avatar?: string;
   systemPrompt?: string;
   heartbeat?: HeartbeatConfig;
   parentAgentId?: string;

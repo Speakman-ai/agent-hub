@@ -223,6 +223,31 @@ describe('Agents', () => {
     it('returns 404 for nonexistent agent', async () => {
       await request.patch('/api/agents/nope').send({ name: 'X' }).expect(404);
     });
+
+    it('persists an icon-style avatar', async () => {
+      const agent = await createAgent();
+      const res = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ avatar: 'icon:Crown' })
+        .expect(200);
+
+      expect(res.body.avatar).toBe('icon:Crown');
+
+      // Round-trip: the value must still be there on a fresh GET.
+      const list = await request.get('/api/agents').expect(200);
+      const fetched = list.body.find((a: { id: string }) => a.id === agent.id);
+      expect(fetched?.avatar).toBe('icon:Crown');
+    });
+
+    it('persists an uploaded-image avatar path', async () => {
+      const agent = await createAgent();
+      const res = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ avatar: '/uploads/abc123.png' })
+        .expect(200);
+
+      expect(res.body.avatar).toBe('/uploads/abc123.png');
+    });
   });
 
   describe('DELETE /api/agents/:agentId', () => {

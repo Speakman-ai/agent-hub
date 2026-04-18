@@ -65,6 +65,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       'model',
       'systemPrompt',
       'color',
+      'avatar',
       'heartbeat',
       'active',
       'reviewer',
