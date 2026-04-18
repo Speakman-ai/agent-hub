@@ -18,6 +18,8 @@ import MessageInput from '../components/MessageInput';
 import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
+import ChangesReadyBox from '../components/ChangesReadyBox';
+import { resolveAutoMergeDefault } from '../utils/changesReady';
 
 export default function ChatScreen() {
   const {
@@ -42,6 +44,9 @@ export default function ChatScreen() {
     handleDelegationCancel,
     handleEventsLoaded,
     activeSessionId,
+    changesReady,
+    dismissChangesReady,
+    projects,
   } = useApp();
 
   const flatListRef = useRef(null);
@@ -58,6 +63,8 @@ export default function ChatScreen() {
 
   const queuedIds = new Set((messageQueues[activeSessionId] || []).map((q) => q.id));
   const activeDelegation = delegations[activeSessionId];
+  const pendingChanges = changesReady?.[activeSessionId];
+  const activeProject = projects?.find((p) => p.id === activeAgent?.projectId);
 
   // Build list data: messages + thinking + streaming indicators
   const listData = [
@@ -70,6 +77,9 @@ export default function ChatScreen() {
       : []),
     ...(activeDelegation?.tasks?.length > 0
       ? [{ type: 'delegation', key: 'delegation', data: activeDelegation }]
+      : []),
+    ...(pendingChanges && !thinking && !streamingContent
+      ? [{ type: 'changes-ready', key: 'changes-ready', data: pendingChanges }]
       : []),
   ];
 
@@ -116,6 +126,19 @@ export default function ChatScreen() {
               onCancel={handleDelegationCancel}
             />
           </View>
+        );
+      case 'changes-ready':
+        return (
+          <ChangesReadyBox
+            sessionId={activeSessionId}
+            changes={item.data}
+            defaultAutoMerge={resolveAutoMergeDefault(activeProject)}
+            onCreated={() => {
+              // The server will emit `auto_pr_created` which clears the
+              // banner in AppContext. Nothing to do here.
+            }}
+            onDismiss={dismissChangesReady}
+          />
         );
       default:
         return null;

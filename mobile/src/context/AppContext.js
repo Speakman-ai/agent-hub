@@ -3,6 +3,7 @@ import { api } from '../utils/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { loadOrgs, migrateFromLegacy } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
+import { hydrateChangesReady } from '../utils/changesReady';
 
 const AppContext = createContext(null);
 
@@ -50,6 +51,8 @@ export function AppProvider({ children }) {
   const [cronSessions, setCronSessions] = useState([]);
   // Kanban board refresh trigger
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
+  // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
+  const [changesReady, setChangesReady] = useState({});
   // Config readiness gate — prevents data fetching before AsyncStorage loads
   const [configReady, setConfigReady] = useState(false);
 
@@ -407,6 +410,30 @@ export function AppProvider({ children }) {
       case 'session_deleted':
         setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
         break;
+
+      // Ad-hoc PR creation — agent finished a worktree session with uncommitted
+      // changes and no existing kanban card. Surface the "Create PR" banner.
+      case 'changes_ready':
+        setChangesReady((prev) => ({
+          ...prev,
+          [data.sessionId]: {
+            agentId: data.agentId,
+            branch: data.branch,
+            hasUncommitted: data.hasUncommitted,
+            hasUnpushed: data.hasUnpushed,
+          },
+        }));
+        break;
+
+      // A PR was opened (manually or automatically) — clear the banner.
+      case 'auto_pr_created':
+        setChangesReady((prev) => {
+          if (!prev[data.sessionId]) return prev;
+          const next = { ...prev };
+          delete next[data.sessionId];
+          return next;
+        });
+        break;
     }
   }, []);
 
@@ -472,6 +499,10 @@ export function AppProvider({ children }) {
     if (!configReady || !activeAgentId || !getApiBaseUrl()) return;
     api.getSessions(activeAgentId).then((data) => {
       setSessions(data);
+      // Hydrate the changes_ready banner state from persisted session rows so
+      // the "Create PR" button survives page refreshes / reconnects. Merge
+      // rather than replace to preserve banners for sessions of other agents.
+      setChangesReady((prev) => ({ ...prev, ...hydrateChangesReady(data) }));
       if (data.length > 0) {
         setActiveSessionId(data[0].id);
         const agent = agents.find((a) => a.id === activeAgentId);
@@ -562,6 +593,7 @@ export function AppProvider({ children }) {
     setMessageQueues({});
     setEventsByMessage({});
     setCronSessions([]);
+    setChangesReady({});
     // Reconnect WebSocket to new org
     reconnect();
     // Reload data
@@ -734,6 +766,15 @@ export function AppProvider({ children }) {
     setEventsByMessage((prev) => ({ ...prev, [messageId]: events }));
   }, []);
 
+  const dismissChangesReady = useCallback((sessionId) => {
+    setChangesReady((prev) => {
+      if (!prev[sessionId]) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
+
   const isProcessing = thinking || !!streamingContent;
 
   const value = {
@@ -789,6 +830,8 @@ export function AppProvider({ children }) {
     handleEventsLoaded,
     cronSessions,
     kanbanRefreshKey,
+    changesReady,
+    dismissChangesReady,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
