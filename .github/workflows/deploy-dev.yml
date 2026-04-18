@@ -75,32 +75,39 @@ jobs:
           INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
         run: |
           set -euo pipefail
-          # Build the deploy script. Quoting is defensive: we embed $DEPLOY_PATH
-          # into the JSON parameter value so it's expanded on the target, not here.
-          # AWS-RunShellScript runs under /bin/sh (dash on Ubuntu) as root, which
-          # has two consequences:
-          #   1. dash rejects `set -o pipefail`
-          #   2. root touching a repo owned by `agenthub` trips git's
-          #      "dubious ownership" guard (git >= 2.35.2), and pm2's daemon
-          #      lives in the agenthub user's $HOME, not root's.
-          # Fix by handing the payload to `setpriv ... -- bash -l`: setpriv
-          # flips uid/gid without touching PAM, sources the user's login PATH
-          # via bash -l (pm2 reachable), and bash accepts pipefail.
-          # NOTE: we specifically use `setpriv`, not `sudo -u` OR `runuser`.
-          # Under SSM (non-interactive, no TTY) both sudo and runuser open PAM
-          # sessions — Ubuntu's /etc/pam.d/{sudo,runuser} include pam_keyinit
-          # + pam_unix session modules whose close sometimes fails to tear
-          # down cleanly, so the wrapper returns exit 1 even though the inner
-          # `bash -l` exited 0 (health check green). setpriv has no PAM
-          # integration at all, so the child's exit code propagates
-          # faithfully. See: actions runs 24587084751 (#358) and 24588494694
-          # (#359 follow-up — runuser also PAM-bound, same leak).
-          # --init-groups reads /etc/group for supplementary groups; --reset-env
-          # reinitialises HOME/USER/LOGNAME/PATH/SHELL from the target user's
-          # passwd entry so bash -l can find ~/.bash_profile etc.
-          DEPLOY_SCRIPT=$(cat <<EOF
-          setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash -l <<'BASH'
+          # Background: AWS-RunShellScript runs under /bin/sh (dash on Ubuntu)
+          # as root. We need to execute the deploy as the `agenthub` user so
+          # that git's "dubious ownership" guard (>= 2.35.2) stays happy and
+          # pm2's per-user daemon is reachable. We drop privs with `setpriv`,
+          # which has zero PAM integration (unlike sudo/runuser, whose PAM
+          # session teardown leaks exit 1 under SSM even when the inner shell
+          # exited 0 — see runs 24587084751 / 24588494694).
+          #
+          # Three prior rewrites (sudo/runuser/setpriv, all via nested
+          # heredoc) still surfaced `failed to run commands: exit status 1`
+          # with stdout ending on "health ok on attempt 2" (run 24589322286).
+          # The one thing all three had in common was the nested heredoc
+          # pipeline: dash writes the inner script into a pipe, setpriv/bash
+          # reads it, bash hits `exit 0` before consuming the tail of the
+          # heredoc, and the wrapper somehow still surfaces 1.
+          #
+          # Fix in this revision: materialize the inner script to a tempfile
+          # on EC2, chown it to agenthub, then `exec setpriv ... -- bash -l
+          # <file>`. This:
+          #   - Eliminates the heredoc-as-stdin path entirely — bash reads
+          #     its script from disk, no pipe writer hanging around after
+          #     `exit 0`.
+          #   - `exec` replaces dash with setpriv, so amazon-ssm-agent waits
+          #     on bash's PID directly; the exit code propagates with zero
+          #     wrapper layers that could re-map it.
+          # --init-groups reads /etc/group for supplementary groups;
+          # --reset-env reinitialises HOME/USER/LOGNAME/PATH/SHELL from the
+          # target user's passwd entry so bash -l can find ~/.bash_profile.
+          INNER_SCRIPT=$(cat <<INNER
+          #!/usr/bin/env bash
           set -euo pipefail
+          # Self-cleanup so we don't leave /tmp cruft behind.
+          trap 'rm -f "\$0"' EXIT
           cd ${DEPLOY_PATH}
           git fetch --all --prune
           git reset --hard origin/main
@@ -120,16 +127,31 @@ jobs:
           done
           echo "health check FAILED after 12 attempts" >&2
           exit 1
-          BASH
-          EOF
+          INNER
+          )
+          # base64 -w0 keeps the blob on one line so the outer heredoc
+          # embedding doesn't have to worry about line-break escaping.
+          INNER_B64=$(printf '%s\n' "$INNER_SCRIPT" | base64 -w0)
+
+          # Outer script (runs as root under dash on EC2): decode the inner
+          # script to a tempfile, chown to agenthub, then `exec` into setpriv.
+          # Using `exec` means dash is *replaced* by setpriv — there is no
+          # dash process still wrapping setpriv's exit code when bash returns.
+          DEPLOY_SCRIPT=$(cat <<OUTER
+          set -eu
+          TMP=\$(mktemp /tmp/agent-hub-deploy.XXXXXX.sh)
+          printf '%s' '${INNER_B64}' | base64 -d > "\$TMP"
+          chmod 0750 "\$TMP"
+          chown agenthub:agenthub "\$TMP"
+          exec setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash -l "\$TMP"
+          OUTER
           )
 
           # IMPORTANT: build the parameters as a JSON file and pass via
           # file://. The AWS CLI --parameters *shorthand* form (commands=[...])
           # does NOT decode JSON \n escapes, so `jq -Rs .` would collapse the
           # multi-line script onto one line with literal \n characters and the
-          # remote shell chokes on the first `(` it sees. See PR that
-          # introduced this fix for the failing run.
+          # remote shell chokes on the first `(` it sees.
           jq -Rs '{commands: [.]}' <<< "$DEPLOY_SCRIPT" > "$RUNNER_TEMP/ssm-params.json"
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \

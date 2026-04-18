@@ -113,6 +113,60 @@ describe('SSM deploy workflows', () => {
             `${wf} re-introduced \`runuser -u agenthub\`, which also leaks exit 1 via PAM session teardown under SSM (Ubuntu's /etc/pam.d/runuser includes session modules). Use setpriv instead.`,
           ).toBe(false);
         });
+
+        // -------------------------------------------------------------------
+        // File-based exec (NOT a nested heredoc fed via stdin).
+        //
+        // Even with setpriv (PAM-free), run 24589322286 surfaced the same
+        // `failed to run commands: exit status 1` despite the inner bash
+        // reaching `exit 0` on "health ok on attempt 2". The common factor
+        // across all three prior attempts (sudo / runuser / setpriv) was
+        // the nested heredoc pipeline: dash writes the inner script into a
+        // pipe, bash reads commands as they stream, and `exit 0` lands
+        // before the tail of the heredoc has been consumed.
+        //
+        // Current invariant: materialize the inner script to a tempfile on
+        // EC2, `chown agenthub:agenthub`, then `exec setpriv ... -- bash -l
+        // <file>`. The `exec` replaces dash, so amazon-ssm-agent waits on
+        // bash's PID directly and the exit code propagates with zero
+        // wrapper layers.
+        // -------------------------------------------------------------------
+        it('materializes the inner script to a tempfile (no nested bash heredoc)', () => {
+          // The old broken form was `bash -l <<'BASH'`. The new form must
+          // pass a positional file arg to bash -l — a variable, absolute
+          // path, or $TMP. We assert the heredoc form is gone.
+          expect(
+            /bash\s+-l\s*<<\s*'?BASH'?\b/.test(content),
+            `${wf} still pipes the inner deploy via \`bash -l <<'BASH' ... BASH\`. ` +
+              `Materialize the script to a tempfile and pass the path as an arg instead ` +
+              `(see deploy-dev.yml for the rationale — nested heredocs leak exit 1 under SSM).`,
+          ).toBe(false);
+        });
+
+        it('uses `exec setpriv` so amazon-ssm-agent waits on bash directly', () => {
+          // `exec setpriv ...` replaces the outer dash shell, so the
+          // process amazon-ssm-agent waits on is bash itself — no wrapper
+          // layer can re-map the exit code on the way out.
+          expect(
+            /\bexec\s+setpriv\s+/.test(content),
+            `${wf} must invoke the privilege drop with \`exec setpriv ...\` (not bare setpriv). ` +
+              `Replacing dash via exec ensures the inner bash's exit code reaches amazon-ssm-agent ` +
+              `with zero intermediaries.`,
+          ).toBe(true);
+        });
+
+        it("passes a file path (not a heredoc) as bash -l's script argument", () => {
+          // After `-- bash -l` we must have a *non-heredoc* argument —
+          // typically "$TMP"/"\$TMP" or an absolute path. The regex
+          // requires the next non-space char after `-l` to not be `<`
+          // (the heredoc operator).
+          const fileArgPattern = /--\s+bash\s+-l\s+[^\s<]/;
+          expect(
+            fileArgPattern.test(content),
+            `${wf} must pass an actual script file to \`bash -l\` (e.g. \`bash -l "$TMP"\`). ` +
+              `Piping via heredoc is the broken form.`,
+          ).toBe(true);
+        });
       }
     });
   }
