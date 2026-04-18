@@ -44,6 +44,32 @@ export function getAuthRecord() {
   return safeGet();
 }
 
+/**
+ * Role hierarchy — kept in sync with server/roles.ts. Higher number =
+ * more privileged. `hasRole('Admin')` returns true for Owner and Admin,
+ * false for User / anonymous.
+ */
+const ROLE_RANK = { Owner: 3, Admin: 2, User: 1 };
+
+/** Return the role embedded in the cached user record, or null. */
+export function getUserRole() {
+  const rec = safeGet();
+  return rec?.user?.role || null;
+}
+
+/**
+ * True iff the cached user's role is at least `minRole`. Useful for
+ * hiding admin-only UI affordances. The server still enforces the
+ * real gate — this is purely a UX hint.
+ */
+export function hasRole(minRole) {
+  const role = getUserRole();
+  if (!role) return false;
+  const actual = ROLE_RANK[role] ?? 0;
+  const needed = ROLE_RANK[minRole] ?? 0;
+  return actual >= needed;
+}
+
 /** Persist a new token record. */
 export function setToken({ token, expiresAt, user }) {
   const record = { token, expiresAt: expiresAt || null, user: user || null };

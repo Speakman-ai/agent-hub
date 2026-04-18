@@ -24,11 +24,18 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from '
 import path from 'path';
 import { randomBytes } from 'crypto';
 import config from './config.js';
+import { coerceRoleOrOwner, parseRole, type Role } from './roles.js';
 
 export interface AuthRecord {
   username: string;
   passwordHash: string;
   jwtSecret: string;
+  /**
+   * Role-based permission tier (Phase 2). Missing / invalid values on disk
+   * are coerced to 'Owner' so upgrades from a pre-Phase-2 auth.json don't
+   * silently demote the only account that can reach the server.
+   */
+  role: Role;
   createdAt: string;
 }
 
@@ -63,6 +70,7 @@ export function getAuthRecord(): AuthRecord | null {
       username: parsed.username,
       passwordHash: parsed.passwordHash,
       jwtSecret: parsed.jwtSecret,
+      role: coerceRoleOrOwner(parsed.role),
       createdAt: parsed.createdAt || new Date().toISOString(),
     };
     return cachedRecord;
@@ -79,7 +87,11 @@ export function getAuthRecord(): AuthRecord | null {
  * would lock the owner out.
  */
 export function saveAuthRecord(
-  record: Omit<AuthRecord, 'createdAt'> & { createdAt?: string },
+  record: Omit<AuthRecord, 'createdAt' | 'role'> & {
+    createdAt?: string;
+    /** Defaults to 'Owner' when omitted — first-run setup creates the owner. */
+    role?: Role;
+  },
 ): AuthRecord {
   const filePath = authFilePath();
   mkdirSync(path.dirname(filePath), { recursive: true });
@@ -87,6 +99,7 @@ export function saveAuthRecord(
     username: record.username,
     passwordHash: record.passwordHash,
     jwtSecret: record.jwtSecret,
+    role: parseRole(record.role) ?? 'Owner',
     createdAt: record.createdAt || new Date().toISOString(),
   };
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
@@ -99,6 +112,27 @@ export function saveAuthRecord(
 /** Drop the in-memory cache so the next `getAuthRecord` re-reads from disk. */
 export function reloadAuthRecord(): void {
   cachedRecord = undefined;
+}
+
+/**
+ * Overwrite the stored user's role. Rejects attempts to demote the only
+ * Owner — Phase 2 is still single-user so losing the Owner would brick
+ * the install. Returns the updated record, or null when no record exists
+ * yet.
+ */
+export function setAuthRole(nextRole: Role): AuthRecord | null {
+  const current = getAuthRecord();
+  if (!current) return null;
+  if (current.role === 'Owner' && nextRole !== 'Owner') {
+    throw new Error('Cannot demote the only Owner. Promote another user first.');
+  }
+  return saveAuthRecord({
+    username: current.username,
+    passwordHash: current.passwordHash,
+    jwtSecret: current.jwtSecret,
+    role: nextRole,
+    createdAt: current.createdAt,
+  });
 }
 
 /**

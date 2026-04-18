@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from 'express';
 import config from './config.js';
 import { verifyJwt } from './jwt.js';
 import { getAuthRecord } from './auth-store.js';
+import type { Role } from './roles.js';
 
 /**
  * Endpoints the auth middleware always lets through. Anything that is
@@ -29,6 +30,13 @@ export interface AuthenticatedRequest extends Request {
   authUser?: string;
   /** True when the caller used the apiKey fallback. */
   authViaApiKey?: boolean;
+  /**
+   * Resolved role for the authenticated caller (Phase 2). Populated from
+   * the user record on successful JWT verification, or forced to 'Owner'
+   * when the apiKey path is taken — the apiKey is the break-glass shared
+   * secret and is treated as full privilege for backward compatibility.
+   */
+  authRole?: Role;
 }
 
 function extractBearerToken(req: Request): string | null {
@@ -96,6 +104,11 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       const verified = verifyJwt(token, authRecord.jwtSecret);
       if (verified.ok) {
         authedReq.authUser = verified.payload!.sub;
+        // Phase 1 is single-user, so the token's sub always maps to the
+        // stored record. When Phase 3 introduces multi-user we'll swap
+        // this lookup for a real users table; the middleware contract
+        // (req.authRole is a Role or undefined) stays the same.
+        authedReq.authRole = authRecord.role;
         next();
         return;
       }
@@ -110,6 +123,9 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     const provided = extractApiKey(req);
     if (provided && provided === apiKey) {
       authedReq.authViaApiKey = true;
+      // The apiKey is the break-glass shared secret; treat it as full
+      // privilege so existing CLI scripts keep working after Phase 2.
+      authedReq.authRole = 'Owner';
       next();
       return;
     }

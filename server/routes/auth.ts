@@ -28,6 +28,8 @@ import {
   saveAuthRecord,
   generateJwtSecret,
 } from '../auth-store.js';
+import { requireRole, type Role } from '../roles.js';
+import type { AuthenticatedRequest } from '../auth.js';
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
 
@@ -60,6 +62,11 @@ export default function createAuthRoutes(): Router {
     res.json({
       authConfigured: !!record,
       username: record?.username ?? null,
+      // Role is safe to leak publicly — it's the owner's role, not a
+      // per-caller claim, and the login form already reveals the owner
+      // username. The UI uses it to decide whether to show the "first
+      // Owner" vs "sign in" copy.
+      role: record?.role ?? null,
     });
   });
 
@@ -89,14 +96,19 @@ export default function createAuthRoutes(): Router {
     }
 
     const passwordHash = await hashPassword(password);
+    // First-run setup always creates the Owner — there's nobody else to
+    // promote them, and the install would otherwise have no way to
+    // reach admin endpoints.
     const record = saveAuthRecord({
       username,
       passwordHash,
       jwtSecret: generateJwtSecret(),
+      role: 'Owner',
     });
 
     const token = signJwt(record.username, record.jwtSecret, {
       expiresInSec: DEFAULT_TOKEN_TTL_SEC,
+      claims: { role: record.role },
     });
     const expiresAt = new Date(Date.now() + DEFAULT_TOKEN_TTL_SEC * 1000).toISOString();
 
@@ -104,7 +116,7 @@ export default function createAuthRoutes(): Router {
       ok: true,
       token,
       expiresAt,
-      user: { username: record.username },
+      user: { username: record.username, role: record.role },
     });
   });
 
@@ -133,12 +145,13 @@ export default function createAuthRoutes(): Router {
 
     const token = signJwt(record.username, record.jwtSecret, {
       expiresInSec: DEFAULT_TOKEN_TTL_SEC,
+      claims: { role: record.role },
     });
     const expiresAt = new Date(Date.now() + DEFAULT_TOKEN_TTL_SEC * 1000).toISOString();
     res.json({
       token,
       expiresAt,
-      user: { username: record.username },
+      user: { username: record.username, role: record.role },
     });
   });
 
@@ -148,11 +161,36 @@ export default function createAuthRoutes(): Router {
     // JWT auth was used, it stashes the decoded payload on req (see
     // `authMiddleware` in server/auth.ts).
     const record = getAuthRecord();
-    const subject = (req as Request & { authUser?: string }).authUser || record?.username || null;
+    const authedReq = req as AuthenticatedRequest;
+    const subject = authedReq.authUser || record?.username || null;
+    // Role comes from the middleware (JWT path = record's role; apiKey
+    // path = 'Owner'). Fall back to the record's role if the middleware
+    // hasn't populated it (e.g., dev install with no auth configured).
+    const role: Role | null = authedReq.authRole ?? record?.role ?? null;
     res.json({
-      user: subject ? { username: subject } : null,
+      user: subject ? { username: subject, role } : null,
       authConfigured: !!record,
+      role,
     });
+  });
+
+  // ── Users list (Admin+) ────────────────────────────────────────
+  // Returns the roster of configured users — today that's the single
+  // Owner, but the shape is stable so the future multi-user UI can
+  // bind to it without another API migration. Gated by requireRole so
+  // the User tier can't enumerate administrators.
+  router.get('/api/auth/users', requireRole('Admin'), (_req: Request, res: Response) => {
+    const record = getAuthRecord();
+    const users = record
+      ? [
+          {
+            username: record.username,
+            role: record.role,
+            createdAt: record.createdAt,
+          },
+        ]
+      : [];
+    res.json({ users });
   });
 
   // ── Logout (protected) ─────────────────────────────────────────

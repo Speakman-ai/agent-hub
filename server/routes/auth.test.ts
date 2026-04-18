@@ -58,7 +58,7 @@ describe('POST /api/auth/setup', () => {
     expect(res.status).toBe(200);
     expect(res.body.token).toBeTypeOf('string');
     expect(res.body.token.split('.')).toHaveLength(3);
-    expect(res.body.user).toEqual({ username: 'owner' });
+    expect(res.body.user).toEqual({ username: 'owner', role: 'Owner' });
     expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
     expect(existsSync(path.join(TMP_DIR, 'auth.json'))).toBe(true);
     expect(getAuthRecord()?.username).toBe('owner');
@@ -203,7 +203,7 @@ describe('GET /api/auth/status', () => {
   it('reports unconfigured before setup', async () => {
     const res = await supertest(buildApp()).get('/api/auth/status');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ authConfigured: false, username: null });
+    expect(res.body).toEqual({ authConfigured: false, username: null, role: null });
   });
 
   it('reports configured + username after setup', async () => {
@@ -212,7 +212,7 @@ describe('GET /api/auth/status', () => {
       .send({ username: 'owner', password: 'a-strong-password' });
     reloadAuthRecord();
     const res = await supertest(buildApp()).get('/api/auth/status');
-    expect(res.body).toEqual({ authConfigured: true, username: 'owner' });
+    expect(res.body).toEqual({ authConfigured: true, username: 'owner', role: 'Owner' });
   });
 });
 
@@ -227,5 +227,87 @@ describe('POST /api/auth/logout', () => {
     const res = await supertest(buildApp()).post('/api/auth/logout');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
+  });
+});
+
+// ── Role-based permissions (Phase 2) ────────────────────────────
+describe('Phase 2 — role assignment', () => {
+  beforeEach(() => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    reloadAuthRecord();
+    mockConfig.apiKey = null;
+  });
+
+  it('setup assigns Owner and returns it in the user payload', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    expect(res.status).toBe(200);
+    expect(res.body.user).toEqual({ username: 'owner', role: 'Owner' });
+    reloadAuthRecord();
+    expect(getAuthRecord()?.role).toBe('Owner');
+  });
+
+  it('login returns the stored role', async () => {
+    await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    reloadAuthRecord();
+    const res = await supertest(buildApp())
+      .post('/api/auth/login')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    expect(res.status).toBe(200);
+    expect(res.body.user).toEqual({ username: 'owner', role: 'Owner' });
+  });
+
+  it('status exposes the owner role publicly', async () => {
+    await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    reloadAuthRecord();
+    const res = await supertest(buildApp()).get('/api/auth/status');
+    expect(res.body.role).toBe('Owner');
+  });
+});
+
+describe('GET /api/auth/users (requireRole Admin)', () => {
+  beforeEach(async () => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    reloadAuthRecord();
+    mockConfig.apiKey = null;
+    await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    reloadAuthRecord();
+  });
+
+  it('returns the user roster to a JWT-authenticated Owner', async () => {
+    const login = await supertest(buildApp())
+      .post('/api/auth/login')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    const token: string = login.body.token;
+
+    const res = await supertest(buildGatedApp())
+      .get('/api/auth/users')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.users).toHaveLength(1);
+    expect(res.body.users[0]).toMatchObject({ username: 'owner', role: 'Owner' });
+  });
+
+  it('rejects unauthenticated requests', async () => {
+    const res = await supertest(buildGatedApp()).get('/api/auth/users');
+    expect(res.status).toBe(401);
+  });
+
+  it('treats the apiKey fallback as Owner (full privilege)', async () => {
+    mockConfig.apiKey = 'shared-secret';
+    const res = await supertest(buildGatedApp())
+      .get('/api/auth/users')
+      .set('X-API-Key', 'shared-secret');
+    expect(res.status).toBe(200);
+    expect(res.body.users[0]?.role).toBe('Owner');
   });
 });

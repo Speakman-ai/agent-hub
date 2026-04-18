@@ -84,6 +84,7 @@ describe('authMiddleware (API key)', () => {
       username: 'owner',
       passwordHash: 'scrypt$x$x$x$x$x',
       jwtSecret: 'secret',
+      role: 'Owner',
       createdAt: '2026-04-18',
     };
     const next = vi.fn();
@@ -207,6 +208,7 @@ describe('authMiddleware (JWT)', () => {
       username: 'owner',
       passwordHash: 'scrypt$ignored',
       jwtSecret: JWT_SECRET,
+      role: 'Owner',
       createdAt: '2026-04-18',
     };
   });
@@ -218,6 +220,17 @@ describe('authMiddleware (JWT)', () => {
     authMiddleware(req, mockRes() as unknown as Response, next);
     expect(next).toHaveBeenCalledOnce();
     expect((req as Request & { authUser?: string }).authUser).toBe('owner');
+    // Phase 2: the middleware now also resolves and attaches the role.
+    expect((req as Request & { authRole?: string }).authRole).toBe('Owner');
+  });
+
+  it('attaches authRole=Owner when the apiKey fallback is used', () => {
+    config.apiKey = 'legacy-key';
+    const next = vi.fn();
+    const req = mockReq({ headers: { 'x-api-key': 'legacy-key' } });
+    authMiddleware(req, mockRes() as unknown as Response, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect((req as Request & { authRole?: string }).authRole).toBe('Owner');
   });
 
   it('rejects a token passed as ?token= query param on REST paths', () => {
@@ -325,6 +338,7 @@ describe('authMiddleware — /api/auth/setup additional gating', () => {
       username: 'owner',
       passwordHash: 'scrypt$ignored',
       jwtSecret: 'configured-secret',
+      role: 'Owner',
       createdAt: '2026-04-18',
     };
     const next = vi.fn();
@@ -385,6 +399,7 @@ describe('authenticateWs', () => {
       username: 'owner',
       passwordHash: 'x',
       jwtSecret: 'ws-jwt-secret',
+      role: 'Owner',
       createdAt: '2026-04-18',
     };
     const token = signJwt('owner', 'ws-jwt-secret');
@@ -401,6 +416,7 @@ describe('authenticateWs', () => {
       username: 'owner',
       passwordHash: 'x',
       jwtSecret: 'ws-jwt-secret',
+      role: 'Owner',
       createdAt: '2026-04-18',
     };
     const bad = signJwt('owner', 'wrong-secret');

@@ -9,6 +9,7 @@ import {
 import humanCron from '../../../shared/utils/humanCron.js';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
 import AgentAvatar from './AgentAvatar.jsx';
+import AccountSection from './AccountSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import * as LucideIcons from 'lucide-react';
 
@@ -97,6 +98,7 @@ import {
   ScrollText,
   Link,
   FileText,
+  UserCircle,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -4725,6 +4727,7 @@ export default function SettingsPage({
 
   const tabs = [
     { id: 'general', icon: <SettingsIcon size={16} />, text: 'General' },
+    { id: 'account', icon: <UserCircle size={16} />, text: 'Account' },
     { id: 'claude-auth', icon: <Key size={16} />, text: 'Auth' },
     { id: 'github', icon: <GitBranch size={16} />, text: 'GitHub' },
     { id: 'orgs', icon: <Building2 size={16} />, text: 'Organizations' },
@@ -4764,6 +4767,7 @@ export default function SettingsPage({
 
         <SettingsErrorBoundary key={tab}>
           {tab === 'general' && <GeneralSection />}
+          {tab === 'account' && <AccountSection />}
           {tab === 'claude-auth' && <ClaudeAuthSection />}
           {tab === 'github' && (
             <GitHubSection projects={projects} onProjectsChange={onAgentsChange} />

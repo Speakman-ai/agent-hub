@@ -9,6 +9,8 @@ import {
   setup,
   getAuthStatus,
   logout,
+  getUserRole,
+  hasRole,
 } from './auth.js';
 
 function mockLocalStorage() {
@@ -137,5 +139,54 @@ describe('auth network helpers', () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     await logout({ baseUrl: '/api' });
     expect(getToken()).toBeNull();
+  });
+});
+
+describe('role helpers (Phase 2)', () => {
+  beforeEach(() => {
+    globalThis.localStorage = mockLocalStorage();
+    globalThis.window = { electronAPI: undefined };
+  });
+
+  it('getUserRole returns null when no token stored', () => {
+    expect(getUserRole()).toBeNull();
+  });
+
+  it('getUserRole reads the role from the stored user record', () => {
+    setToken({
+      token: 'abc.def.ghi',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      user: { username: 'owner', role: 'Owner' },
+    });
+    expect(getUserRole()).toBe('Owner');
+  });
+
+  it('hasRole respects the Owner > Admin > User hierarchy', () => {
+    const future = new Date(Date.now() + 60_000).toISOString();
+
+    setToken({ token: 't', expiresAt: future, user: { username: 'a', role: 'Owner' } });
+    expect(hasRole('Owner')).toBe(true);
+    expect(hasRole('Admin')).toBe(true);
+    expect(hasRole('User')).toBe(true);
+
+    setToken({ token: 't', expiresAt: future, user: { username: 'b', role: 'Admin' } });
+    expect(hasRole('Owner')).toBe(false);
+    expect(hasRole('Admin')).toBe(true);
+    expect(hasRole('User')).toBe(true);
+
+    setToken({ token: 't', expiresAt: future, user: { username: 'c', role: 'User' } });
+    expect(hasRole('Owner')).toBe(false);
+    expect(hasRole('Admin')).toBe(false);
+    expect(hasRole('User')).toBe(true);
+  });
+
+  it('hasRole returns false when no role is stored', () => {
+    expect(hasRole('User')).toBe(false);
+    setToken({
+      token: 't',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      user: { username: 'owner' }, // no role field (legacy token)
+    });
+    expect(hasRole('User')).toBe(false);
   });
 });
