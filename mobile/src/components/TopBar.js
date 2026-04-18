@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Pressable,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
@@ -15,6 +16,8 @@ import { SidebarContext } from '../context/SidebarContext';
 import { getApiBaseUrl, getWsUrl } from '../utils/config';
 import { getActiveOrg } from '../utils/orgs';
 import { describeDetectionBadge } from '../utils/worktreeState';
+import { api } from '../utils/api';
+import { copyToClipboard } from '../utils/clipboard';
 import BugReportButton from './BugReportButton';
 
 const ENGINE_OPTIONS = [
@@ -58,6 +61,7 @@ export default function TopBar({ projectId, agentId } = {}) {
     handleEngineChange,
     handleModelChange,
     handleNewSession,
+    activeSessionId,
   } = useApp();
   const { openSidebar } = useContext(SidebarContext);
 
@@ -66,6 +70,26 @@ export default function TopBar({ projectId, agentId } = {}) {
   const effectiveProjectId = projectId || activeAgent?.projectId || '';
 
   const [showPicker, setShowPicker] = useState(false);
+  const [summarizing, setSummarizing] = useState(false);
+
+  const handleSummarize = async () => {
+    if (!activeSessionId || summarizing) return;
+    setSummarizing(true);
+    try {
+      const { summary } = await api.summarizeSession(activeSessionId);
+      if (!summary) throw new Error('Empty summary returned');
+      const copied = await copyToClipboard(summary);
+      Alert.alert(
+        copied ? 'Summary copied' : 'Summary ready',
+        summary,
+        [{ text: 'OK' }],
+      );
+    } catch (err) {
+      Alert.alert('Summary failed', err?.message || 'Unknown error');
+    } finally {
+      setSummarizing(false);
+    }
+  };
 
   const currentEngine = ENGINE_OPTIONS.find((e) => e.id === sessionEngine) || ENGINE_OPTIONS[0];
   const engineModels = ENGINE_MODELS[sessionEngine] || ENGINE_MODELS['claude-code'];
@@ -192,6 +216,27 @@ export default function TopBar({ projectId, agentId } = {}) {
             ●
           </Text>
         </Pressable>
+
+        {/* Summarize current session — disabled when no session or mid-request */}
+        {activeAgent && (
+          <TouchableOpacity
+            style={styles.newButton}
+            onPress={handleSummarize}
+            disabled={!activeSessionId || summarizing}
+            accessibilityRole="button"
+            accessibilityLabel="Summarize session and copy to clipboard"
+          >
+            {summarizing ? (
+              <ActivityIndicator size="small" color={colors.white} />
+            ) : (
+              <Ionicons
+                name="document-text-outline"
+                size={18}
+                color={activeSessionId ? colors.white : colors.gray500}
+              />
+            )}
+          </TouchableOpacity>
+        )}
 
         {/* New session */}
         <TouchableOpacity

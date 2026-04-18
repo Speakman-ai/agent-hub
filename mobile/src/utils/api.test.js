@@ -278,6 +278,43 @@ describe('api webhook helpers — request headers + error handling', () => {
   });
 });
 
+describe('api session summarization — URL + method parity with web client', () => {
+  it('summarizeSession(id) → POST /sessions/:id/summarize with no body', async () => {
+    await api.summarizeSession('sess-99');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/sess-99/summarize');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('summarizeSession attaches the API key header', async () => {
+    await api.summarizeSession('sess-99');
+    const [, init] = lastCall();
+    expect(init.headers).toMatchObject({
+      'Content-Type': 'application/json',
+      'X-API-Key': 'test-key',
+    });
+  });
+
+  it('summarizeSession returns the parsed JSON body from the server', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ summary: 'Key decisions: …' }),
+    });
+    const result = await api.summarizeSession('sess-99');
+    expect(result).toEqual({ summary: 'Key decisions: …' });
+  });
+
+  it('summarizeSession surfaces server errors', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'boom' }),
+    });
+    await expect(api.summarizeSession('sess-99')).rejects.toThrow(/API error: 500/);
+  });
+});
+
 describe('api upload helpers', () => {
   it('uploadImage → POST /upload with JSON body', async () => {
     await api.uploadImage('data:image/png;base64,AAA', 'shot.png');

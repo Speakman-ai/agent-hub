@@ -28,6 +28,11 @@ export const api = {
       }),
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
+  // Kick off an AI summary of the session transcript. The server spawns a
+  // short-lived CLI invocation so this can take a while — callers should
+  // surface a loading state. Returns `{ summary: string }`.
+  summarizeSession: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST' }),
   deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
   clearAllSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
   clearInactiveSessions: (agentId) =>
