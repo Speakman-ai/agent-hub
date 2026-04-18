@@ -9,6 +9,7 @@ import {
   s3Uri,
   resolveAwsProfile,
   awsCpArgs,
+  electronBuilderArgs,
   BUCKET,
   REGION,
   AWS_PROFILE,
@@ -154,6 +155,29 @@ describe('release-mac helpers', () => {
         'a.dmg',
         's3://b/c.dmg',
       ]);
+    });
+  });
+
+  describe('electronBuilderArgs', () => {
+    it('targets macOS DMGs for both arm64 and x64', () => {
+      const args = electronBuilderArgs();
+      expect(args[0]).toBe('electron-builder');
+      expect(args).toContain('--mac');
+      expect(args).toContain('dmg');
+      expect(args).toContain('--arm64');
+      expect(args).toContain('--x64');
+    });
+
+    it('passes --publish never to suppress implicit GitHub publish under CI', () => {
+      // Regression: electron-builder v26 auto-detects CI (e.g. GitHub Actions
+      // runs on macos-latest) and triggers an implicit publish that fails when
+      // GH_TOKEN is unset — which it intentionally is in the build-mac job.
+      // This flag must always be passed so DMG builds don't depend on a token
+      // they were never given.
+      const args = electronBuilderArgs();
+      const publishIdx = args.indexOf('--publish');
+      expect(publishIdx).toBeGreaterThanOrEqual(0);
+      expect(args[publishIdx + 1]).toBe('never');
     });
   });
 

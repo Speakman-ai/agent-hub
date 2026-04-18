@@ -101,6 +101,33 @@ export function awsCpArgs(src, dst, profile) {
   return args;
 }
 
+/**
+ * Build the electron-builder arg list for our macOS DMG release.
+ *
+ * `--publish never` is required: when running under CI (e.g. GitHub Actions),
+ * electron-builder auto-detects the environment and triggers an *implicit*
+ * publish to GitHub Releases, which fails because the `build-mac` job
+ * intentionally does not expose `GH_TOKEN` (releases are created upstream by
+ * the `release` job using `RELEASE_PAT`, and DMG distribution is handled by
+ * the subsequent `aws s3 cp` step in this script — not by electron-builder).
+ *
+ * Passing `--publish never` is also forward-compatible with electron-builder
+ * v27, which removes the implicit-publish-on-CI behavior entirely.
+ *
+ * @returns {string[]}
+ */
+export function electronBuilderArgs() {
+  return [
+    'electron-builder',
+    '--mac',
+    'dmg',
+    '--arm64',
+    '--x64',
+    '--publish',
+    'never',
+  ];
+}
+
 function requireMac() {
   if (process.platform !== 'darwin') {
     console.error(
@@ -134,7 +161,7 @@ export async function main() {
   run('npm', ['run', 'build']);
 
   // 2. Build both DMGs in one electron-builder invocation
-  run('npx', ['electron-builder', '--mac', 'dmg', '--arm64', '--x64']);
+  run('npx', electronBuilderArgs());
 
   // 3. Upload each DMG to S3
   const profile = resolveAwsProfile();
