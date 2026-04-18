@@ -15,6 +15,7 @@ import {
   Eye,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
+import { epicFormToUpdateBody } from '../utils/epics.js';
 
 const PRIORITY_STYLES = {
   urgent: 'bg-red-500/20 text-red-400',
@@ -329,7 +330,12 @@ export default function KanbanBoard({
   const handleUpdateEpic = async () => {
     if (!editingEpic) return;
     try {
-      await api.updateEpic(projectId, editingEpic.id, epicForm);
+      // The server's PUT /board/epics/:id destructures camelCase keys. Our
+      // form state uses snake_case (mirroring DB columns), so translate
+      // before sending — otherwise autonomous_max_concurrent /
+      // autonomous_max_iterations silently fall through to undefined on the
+      // server and the old DB values are preserved.
+      await api.updateEpic(projectId, editingEpic.id, epicFormToUpdateBody(epicForm));
       setEditingEpic(null);
       setEpicForm({ name: '', description: '', color: '#6366F1' });
       fetchBoard();

@@ -1,0 +1,86 @@
+import { describe, it, expect } from 'vitest';
+import { epicFormToUpdateBody, epicFormToCreateBody, DEFAULT_EPIC_COLOR } from './epics.js';
+
+describe('epicFormToUpdateBody', () => {
+  it('emits the camelCase keys the server PUT endpoint expects', () => {
+    // Regression: the form uses snake_case keys (mirroring DB columns) but
+    // PUT /board/epics/:id destructures camelCase. Without this translation,
+    // the autonomous_max_concurrent / autonomous_max_iterations values
+    // silently fell through to the old DB values — the "max agents / max
+    // iterations settings have no effect" bug.
+    const form = {
+      name: '  Trim me  ',
+      description: 'desc',
+      color: '#EC4899',
+      autonomous: 1,
+      autonomous_interval: 7,
+      autonomous_max_concurrent: 3,
+      autonomous_max_iterations: 5,
+    };
+    expect(epicFormToUpdateBody(form)).toEqual({
+      name: 'Trim me',
+      description: 'desc',
+      color: '#EC4899',
+      autonomous: 1,
+      autonomousInterval: 7,
+      autonomousMaxConcurrent: 3,
+      autonomousMaxIterations: 5,
+    });
+  });
+
+  it('preserves user-supplied max_concurrent and max_iterations (not defaults)', () => {
+    // If we accidentally re-applied defaults here, the bug would remain — so
+    // assert that the exact user values round-trip into the request body.
+    const body = epicFormToUpdateBody({
+      name: 'x',
+      autonomous: 1,
+      autonomous_max_concurrent: 4,
+      autonomous_max_iterations: 9,
+    });
+    expect(body.autonomousMaxConcurrent).toBe(4);
+    expect(body.autonomousMaxIterations).toBe(9);
+  });
+
+  it('coerces autonomous falsy values to 0', () => {
+    expect(epicFormToUpdateBody({ name: 'a', autonomous: false }).autonomous).toBe(0);
+    expect(epicFormToUpdateBody({ name: 'a', autonomous: undefined }).autonomous).toBe(0);
+    expect(epicFormToUpdateBody({ name: 'a', autonomous: 0 }).autonomous).toBe(0);
+  });
+
+  it('applies sensible fallbacks when autonomous fields are missing', () => {
+    const body = epicFormToUpdateBody({ name: 'x', autonomous: 1 });
+    expect(body.autonomousInterval).toBe(5);
+    expect(body.autonomousMaxConcurrent).toBe(2);
+    expect(body.autonomousMaxIterations).toBe(3);
+  });
+
+  it('falls back to DEFAULT_EPIC_COLOR when color is missing', () => {
+    expect(epicFormToUpdateBody({ name: 'x' }).color).toBe(DEFAULT_EPIC_COLOR);
+  });
+});
+
+describe('epicFormToCreateBody', () => {
+  it('only sends the subset supported by POST /board/epics', () => {
+    const form = {
+      name: 'New epic',
+      description: 'desc',
+      color: '#EAB308',
+      autonomous: 1, // should be ignored — create endpoint doesn't accept it
+      autonomous_interval: 10,
+      autonomous_max_concurrent: 4,
+    };
+    expect(epicFormToCreateBody(form)).toEqual({
+      name: 'New epic',
+      description: 'desc',
+      color: '#EAB308',
+    });
+  });
+
+  it('trims the name and falls back to the default color', () => {
+    expect(epicFormToCreateBody({ name: '  hi  ' })).toEqual({
+      name: 'hi',
+      description: '',
+      color: DEFAULT_EPIC_COLOR,
+    });
+  });
+});
