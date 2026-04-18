@@ -163,28 +163,50 @@ jobs:
           INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
         run: |
           set -euo pipefail
-          # See deploy-dev.yml for the full rationale. Summary: dash (SSM's
-          # /bin/sh) drops privs to agenthub via setpriv (no PAM). To avoid
-          # the exit-code leak that sudo/runuser/setpriv-via-heredoc all
-          # exhibited, we materialize the inner script to a tempfile and
-          # `exec setpriv ... -- bash -l <file>` so amazon-ssm-agent waits
-          # on bash's PID directly with no wrapper layers.
+          # See deploy-dev.yml for the full rationale on the dash→setpriv→bash
+          # chain and why we materialize the inner script to a tempfile. Prod
+          # mirrors dev's hardening:
+          #   - No EXIT trap (cleanup leaks can flip exit 0 → 1 under errexit).
+          #   - `bash --noprofile --norc` instead of `bash -l` (avoids
+          #     ~/.bash_profile / ~/.bash_logout teardown exit-code leaks);
+          #     nvm is sourced explicitly inside the script.
+          #   - `set +e` immediately before the final `exit 0` so deferred
+          #     shell bookkeeping can't flip it.
+          #   - `set -x` around the health tail for debuggability.
+          # Prod-specific change: `git reset --hard "${TAG}"` + `git clean -fd`
+          # instead of `git checkout "${TAG}"`. Checkout aborts when the
+          # server's working tree has local modifications (run 24610966898
+          # failed exactly this way on agent-hub-prod). Reset + clean moves
+          # HEAD to the tag commit and wipes any drift, making the deploy
+          # idempotent regardless of what state the instance was left in.
           INNER_SCRIPT=$(cat <<INNER
           #!/usr/bin/env bash
           set -euo pipefail
-          trap 'rm -f "\$0"' EXIT
+          # Source nvm manually since we dropped bash -l to avoid profile
+          # teardown exit-code leaks.
+          export NVM_DIR="\$HOME/.nvm"
+          # shellcheck disable=SC1091
+          [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
           cd ${DEPLOY_PATH}
           git fetch --all --tags --prune
-          git checkout "${TAG}"
+          # Force-align the working tree with the release tag. Any staged or
+          # unstaged modifications on the instance are discarded — prod is a
+          # deploy target, not a development checkout.
+          git reset --hard "${TAG}"
+          git clean -fd
           npm ci
           (cd server && npm ci)
           (cd client && npm ci)
           npm run build
           pm2 restart agent-hub
           # Health check: 12 attempts × 5s = 60s ceiling.
+          set -x
           for i in \$(seq 1 12); do
             if curl -fsS http://localhost:3051/api/health >/dev/null; then
               echo "health ok on attempt \$i"
+              # Disable errexit before explicit exit so no shell bookkeeping
+              # (trap, pipefail on last pipeline, etc.) can flip 0 to 1.
+              set +e
               exit 0
             fi
             sleep 5
@@ -201,7 +223,7 @@ jobs:
           printf '%s' '${INNER_B64}' | base64 -d > "\$TMP"
           chmod 0750 "\$TMP"
           chown agenthub:agenthub "\$TMP"
-          exec setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash -l "\$TMP"
+          exec setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash --noprofile --norc "\$TMP"
           OUTER
           )
 
@@ -225,6 +247,10 @@ jobs:
           COMMAND_ID: ${{ steps.deploy.outputs.command_id }}
         run: |
           set -euo pipefail
+          # If the GHA job is cancelled, tell SSM to stop the in-flight
+          # command on EC2 too — otherwise the deploy keeps running on the
+          # instance and can race with a subsequent rollout.
+          trap 'echo "Received signal; cancelling SSM command $COMMAND_ID..."; aws ssm cancel-command --command-id "$COMMAND_ID" --instance-ids "$INSTANCE_ID" || true; exit 130' INT TERM
           for i in $(seq 1 120); do
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
@@ -273,7 +299,10 @@ jobs:
 
   deploy-prod-2:
     name: Deploy agent-hub-prod-2
-    needs: deploy-prod-1
+    # Must list `release` explicitly: the `needs` context only exposes jobs in
+    # the direct `needs:` list, so without `release` here `${{ needs.release.outputs.tag }}`
+    # below would resolve to the empty string and `git reset --hard ""` would fail.
+    needs: [release, deploy-prod-1]
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
@@ -312,23 +341,31 @@ jobs:
         run: |
           set -euo pipefail
           # Same pattern as prod-1/dev: write inner script to tempfile,
-          # `exec setpriv ... -- bash -l <file>`. See deploy-dev.yml for the
-          # full explanation of why file-based + exec beats nested heredocs.
+          # `exec setpriv ... -- bash --noprofile --norc <file>`. See
+          # deploy-dev.yml for the full explanation of why file-based + exec
+          # beats nested heredocs and why we dropped bash -l / the EXIT trap.
           INNER_SCRIPT=$(cat <<INNER
           #!/usr/bin/env bash
           set -euo pipefail
-          trap 'rm -f "\$0"' EXIT
+          export NVM_DIR="\$HOME/.nvm"
+          # shellcheck disable=SC1091
+          [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
           cd ${DEPLOY_PATH}
           git fetch --all --tags --prune
-          git checkout "${TAG}"
+          # Force-align the working tree with the release tag (prod is a
+          # deploy target, not a dev checkout — discard any drift).
+          git reset --hard "${TAG}"
+          git clean -fd
           npm ci
           (cd server && npm ci)
           (cd client && npm ci)
           npm run build
           pm2 restart agent-hub
+          set -x
           for i in \$(seq 1 12); do
             if curl -fsS http://localhost:3051/api/health >/dev/null; then
               echo "health ok on attempt \$i"
+              set +e
               exit 0
             fi
             sleep 5
@@ -345,7 +382,7 @@ jobs:
           printf '%s' '${INNER_B64}' | base64 -d > "\$TMP"
           chmod 0750 "\$TMP"
           chown agenthub:agenthub "\$TMP"
-          exec setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash -l "\$TMP"
+          exec setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash --noprofile --norc "\$TMP"
           OUTER
           )
 
@@ -369,6 +406,8 @@ jobs:
           COMMAND_ID: ${{ steps.deploy.outputs.command_id }}
         run: |
           set -euo pipefail
+          # Cancel the in-flight SSM command if the GHA job is cancelled.
+          trap 'echo "Received signal; cancelling SSM command $COMMAND_ID..."; aws ssm cancel-command --command-id "$COMMAND_ID" --instance-ids "$INSTANCE_ID" || true; exit 130' INT TERM
           for i in $(seq 1 120); do
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
