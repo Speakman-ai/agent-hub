@@ -123,6 +123,64 @@ jobs:
             --title "$TAG" \
             --notes-file notes.md
 
+  build-mac:
+    name: Build & upload macOS DMGs
+    # Runs in parallel with deploy-prod-1/2. A DMG build failure does NOT
+    # gate the server rollout — the desktop app and the server are independent
+    # artifacts. If this job fails, the server deploy still proceeds and the
+    # DMG can be cut manually afterward with `npm run release:mac`.
+    needs: release
+    runs-on: macos-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            client/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          npm ci
+          (cd client && npm ci)
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-build-mac-${{ github.run_id }}
+
+      - name: Build DMGs and upload to S3
+        # `configure-aws-credentials` sets AWS_ACCESS_KEY_ID /
+        # AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN in the job env.
+        # `resolveAwsProfile` in release-mac.mjs detects these ambient creds
+        # and skips the `--profile default` flag so the AWS CLI uses them.
+        run: node electron/release-mac.mjs
+
+      - name: Summarize
+        if: success()
+        run: |
+          {
+            echo "## 🍎 macOS DMGs uploaded"
+            echo ""
+            echo "- Bucket: \`s3://agent-hub-prod-releases/${TAG}/\`"
+            echo "- Artifacts: \`Agent Hub-*-arm64.dmg\`, \`Agent Hub-*.dmg\`"
+            echo ""
+            echo "> First-pass builds are **unsigned**. Code-signing and notarization will be added in a follow-up PR."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy-prod-1:
     name: Deploy agent-hub-prod
     needs: release

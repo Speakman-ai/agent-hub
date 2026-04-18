@@ -1,11 +1,14 @@
 /**
  * release-mac — Build macOS DMGs for both arm64 and x64, upload to S3.
  *
- * Invoked via `npm run release:mac` from the repo root.
+ * Invoked via `npm run release:mac` from the repo root or from the
+ * `build-mac` job in `.github/workflows/release-prod.yml`.
  *
  * Requires:
  *   - macOS host (electron-builder needs hdiutil + Apple toolchain for DMGs)
- *   - AWS CLI authenticated on the `default` profile with write access to the bucket
+ *   - AWS credentials with write access to the bucket, via either:
+ *       • the `default` CLI profile (local dev), OR
+ *       • ambient env-var credentials populated by aws-actions/configure-aws-credentials (CI)
  *
  * Uploads to: s3://agent-hub-prod-releases/v<version>/
  *   - Agent Hub-<version>-arm64.dmg
@@ -59,6 +62,45 @@ export function s3Uri(bucket, key) {
   return `s3://${bucket}/${key}`;
 }
 
+/**
+ * Decide which AWS CLI profile (if any) to pass to `aws s3 cp`.
+ *
+ * Priority:
+ *   1. If `AWS_PROFILE` is set in env, use that value (including if empty —
+ *      an explicit empty string means "no profile flag").
+ *   2. Else if ambient static creds are present (`AWS_ACCESS_KEY_ID`), CI is
+ *      using OIDC-assumed credentials. Return `null` so no `--profile` flag
+ *      is passed, letting the CLI pick up env credentials.
+ *   3. Else fall back to the local-dev default (`'default'`).
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string | null} profile name, or null to omit --profile
+ */
+export function resolveAwsProfile(env = process.env) {
+  if (typeof env.AWS_PROFILE === 'string') {
+    return env.AWS_PROFILE === '' ? null : env.AWS_PROFILE;
+  }
+  if (env.AWS_ACCESS_KEY_ID) {
+    return null;
+  }
+  return AWS_PROFILE;
+}
+
+/**
+ * Build the `aws s3 cp` arg list, optionally appending `--profile <profile>`.
+ * @param {string} src
+ * @param {string} dst
+ * @param {string | null} profile
+ * @returns {string[]}
+ */
+export function awsCpArgs(src, dst, profile) {
+  const args = ['s3', 'cp', src, dst];
+  if (profile) {
+    args.push('--profile', profile);
+  }
+  return args;
+}
+
 function requireMac() {
   if (process.platform !== 'darwin') {
     console.error(
@@ -95,10 +137,16 @@ export async function main() {
   run('npx', ['electron-builder', '--mac', 'dmg', '--arm64', '--x64']);
 
   // 3. Upload each DMG to S3
+  const profile = resolveAwsProfile();
+  if (profile) {
+    console.log(`  (using AWS profile: ${profile})`);
+  } else {
+    console.log('  (using ambient AWS env credentials — no --profile flag)');
+  }
   for (const filename of [arm64, x64]) {
     const src = resolve(ROOT, 'release', filename);
     const dst = s3Uri(BUCKET, s3Key(version, filename));
-    run('aws', ['s3', 'cp', src, dst, '--profile', AWS_PROFILE]);
+    run('aws', awsCpArgs(src, dst, profile));
   }
 
   console.log(

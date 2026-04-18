@@ -7,6 +7,8 @@ import {
   dmgFilenames,
   s3Key,
   s3Uri,
+  resolveAwsProfile,
+  awsCpArgs,
   BUCKET,
   REGION,
   AWS_PROFILE,
@@ -74,6 +76,84 @@ describe('release-mac helpers', () => {
       const pkgPath = join(dir, 'package.json');
       writeFileSync(pkgPath, JSON.stringify({ name: 'x' }));
       expect(() => readVersion(pkgPath)).toThrow(/version/);
+    });
+  });
+
+  describe('resolveAwsProfile', () => {
+    it('returns the value of AWS_PROFILE when set', () => {
+      expect(resolveAwsProfile({ AWS_PROFILE: 'release-bot' })).toBe(
+        'release-bot'
+      );
+    });
+
+    it('returns null when AWS_PROFILE is explicitly empty', () => {
+      expect(resolveAwsProfile({ AWS_PROFILE: '' })).toBeNull();
+    });
+
+    it('returns null when ambient creds are present (CI path)', () => {
+      expect(
+        resolveAwsProfile({
+          AWS_ACCESS_KEY_ID: 'ASIA...',
+          AWS_SECRET_ACCESS_KEY: 'xxx',
+          AWS_SESSION_TOKEN: 'yyy',
+        })
+      ).toBeNull();
+    });
+
+    it('falls back to "default" for local dev with no AWS env', () => {
+      expect(resolveAwsProfile({})).toBe(AWS_PROFILE);
+    });
+
+    it('returns null when AWS_PROFILE is empty and ambient creds are present', () => {
+      expect(
+        resolveAwsProfile({
+          AWS_PROFILE: '',
+          AWS_ACCESS_KEY_ID: 'ASIA...',
+          AWS_SECRET_ACCESS_KEY: 'xxx',
+        })
+      ).toBeNull();
+    });
+
+    it('prefers explicit AWS_PROFILE over ambient creds', () => {
+      // If a human set AWS_PROFILE locally while ambient creds also leaked in,
+      // honor the explicit intent.
+      expect(
+        resolveAwsProfile({
+          AWS_PROFILE: 'staging',
+          AWS_ACCESS_KEY_ID: 'ASIA...',
+        })
+      ).toBe('staging');
+    });
+  });
+
+  describe('awsCpArgs', () => {
+    it('appends --profile when a profile is provided', () => {
+      expect(awsCpArgs('a.dmg', 's3://b/c.dmg', 'default')).toEqual([
+        's3',
+        'cp',
+        'a.dmg',
+        's3://b/c.dmg',
+        '--profile',
+        'default',
+      ]);
+    });
+
+    it('omits --profile when profile is null (CI ambient creds)', () => {
+      expect(awsCpArgs('a.dmg', 's3://b/c.dmg', null)).toEqual([
+        's3',
+        'cp',
+        'a.dmg',
+        's3://b/c.dmg',
+      ]);
+    });
+
+    it('omits --profile when profile is an empty string', () => {
+      expect(awsCpArgs('a.dmg', 's3://b/c.dmg', '')).toEqual([
+        's3',
+        'cp',
+        'a.dmg',
+        's3://b/c.dmg',
+      ]);
     });
   });
 

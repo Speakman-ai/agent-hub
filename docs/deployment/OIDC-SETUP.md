@@ -9,13 +9,16 @@ paste-ready).
 
 Both workflows authenticate to AWS **without long-lived access keys** by using
 GitHub's OIDC identity provider to assume an IAM role scoped to this repo.
-The role can do exactly three things:
+The role can do exactly four things:
 
 1. `ec2:DescribeInstances` (to resolve instance IDs by Name tag)
 2. `ssm:SendCommand` against the three Agent Hub EC2 instances, using only the
    `AWS-RunShellScript` document
 3. `ssm:GetCommandInvocation` + `ssm:ListCommandInvocations` to poll command
    status
+4. `s3:PutObject` / `s3:PutObjectAcl` / `s3:AbortMultipartUpload` against
+   `arn:aws:s3:::agent-hub-prod-releases/*` (used by the `build-mac` job in
+   `release-prod.yml` to upload DMGs)
 
 No other AWS permissions are granted. No IAM user credentials are ever issued.
 
@@ -115,6 +118,15 @@ instances exist.
         "ssm:ListCommandInvocations"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "UploadReleaseArtifacts",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::agent-hub-prod-releases/*"
     }
   ]
 }
@@ -123,6 +135,12 @@ instances exist.
 Note: `ssm:GetCommandInvocation` does not support resource-level scoping and
 requires `Resource: "*"`. Combined with the instance-scoped `ssm:SendCommand`,
 this is safe — the role can only read invocations it was allowed to start.
+
+The `UploadReleaseArtifacts` statement is scoped to objects under the
+`agent-hub-prod-releases` bucket only; the role cannot list buckets, create
+buckets, or write to any other location. This is consumed by the `build-mac`
+job in `release-prod.yml` which runs `electron/release-mac.mjs` to build and
+upload DMGs.
 
 ## Step 3 — Ensure instances are SSM-managed
 
