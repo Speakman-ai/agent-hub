@@ -21,6 +21,7 @@
     "electron:build": "npm run build && npx electron-builder --mac",
     "electron:start": "npx electron .",
     "electron:pack": "npm run build && npx electron-builder --dir",
+    "release:mac": "node electron/release-mac.mjs",
     "rebuild:native": "npm rebuild better-sqlite3",
     "postinstall": "npm rebuild better-sqlite3",
     "test:watch": "cd server && npx vitest",
