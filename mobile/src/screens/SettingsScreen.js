@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-import { relativeTime } from '../utils/time';
+import { relativeTime, relativeFuture } from '../utils/time';
 import humanCron from '../utils/humanCron';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, testConnection, loadOrgs } from '../utils/orgs';
 import * as FileSystem from 'expo-file-system';
@@ -494,9 +494,21 @@ function HeartbeatSection() {
   const [expandedAgent, setExpandedAgent] = useState(null);
   const [logs, setLogs] = useState({});
   const [running, setRunning] = useState({});
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ interval: '', prompt: '' });
+  // Tick every 30s so the "next run in Xm" badges decrement live without
+  // hitting the network. Server is re-polled every 60s for fresh state.
+  const [, setTick] = useState(0);
 
   useEffect(() => {
-    api.getHeartbeats().then(setHeartbeats).catch(console.error);
+    const refresh = () => api.getHeartbeats().then(setHeartbeats).catch(console.error);
+    refresh();
+    const pollId = setInterval(refresh, 60_000);
+    const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => {
+      clearInterval(pollId);
+      clearInterval(tickId);
+    };
   }, []);
 
   const loadLogs = async (agentId) => {
@@ -530,18 +542,113 @@ function HeartbeatSection() {
     setTimeout(() => setRunning((prev) => ({ ...prev, [agentId]: false })), 3000);
   };
 
+  const startEdit = (hb) => {
+    setEditingId(hb.agentId);
+    setEditForm({
+      interval: hb.heartbeat.interval || '',
+      prompt: hb.heartbeat.prompt || '',
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editForm.interval || !editForm.prompt) {
+      Alert.alert('Missing fields', 'Schedule and prompt are required.');
+      return;
+    }
+    try {
+      await api.updateHeartbeat(editingId, {
+        interval: editForm.interval,
+        prompt: editForm.prompt,
+      });
+      setHeartbeats((prev) =>
+        prev.map((h) =>
+          h.agentId === editingId
+            ? {
+                ...h,
+                heartbeat: {
+                  ...h.heartbeat,
+                  interval: editForm.interval,
+                  prompt: editForm.prompt,
+                },
+              }
+            : h
+        )
+      );
+      setEditingId(null);
+    } catch (e) {
+      Alert.alert('Save failed', e?.message || 'Could not save heartbeat.');
+    }
+  };
+
+  const renderNextRunBadge = (hb) => {
+    if (!hb.heartbeat.enabled || !hb.state?.next_run_at) return null;
+    const { label, overdue } = relativeFuture(hb.state.next_run_at);
+    if (!label) return null;
+    return (
+      <View style={[styles.nextRunBadge, overdue && styles.nextRunBadgeOverdue]}>
+        <Text style={[styles.nextRunBadgeText, overdue && styles.nextRunBadgeTextOverdue]}>
+          {label}
+        </Text>
+      </View>
+    );
+  };
+
   return (
     <View>
       <Text style={styles.sectionTitle}>Agent Heartbeats</Text>
       <View style={styles.cardList}>
         {heartbeats.map((hb) => (
           <View key={hb.agentId} style={styles.card}>
+            {editingId === hb.agentId ? (
+              <View style={styles.editForm}>
+                <View style={styles.row}>
+                  <View style={[styles.dot, { backgroundColor: hb.color }]} />
+                  <Text style={styles.cardName}>{hb.agentName}</Text>
+                </View>
+                <Text style={styles.fieldLabel}>Cron schedule</Text>
+                <TextInput
+                  value={editForm.interval}
+                  onChangeText={(v) => setEditForm({ ...editForm, interval: v })}
+                  placeholder="e.g. 0 */12 * * *"
+                  placeholderTextColor={colors.gray500}
+                  style={styles.formInput}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                {editForm.interval &&
+                  humanCron(editForm.interval) !== editForm.interval && (
+                    <Text style={styles.cronPreview}>↳ {humanCron(editForm.interval)}</Text>
+                  )}
+                <Text style={styles.fieldLabel}>Heartbeat prompt</Text>
+                <TextInput
+                  value={editForm.prompt}
+                  onChangeText={(v) => setEditForm({ ...editForm, prompt: v })}
+                  placeholder="Heartbeat prompt"
+                  placeholderTextColor={colors.gray500}
+                  style={[styles.formInput, { minHeight: 80 }]}
+                  multiline
+                  textAlignVertical="top"
+                />
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TouchableOpacity style={styles.primaryBtn} onPress={saveEdit}>
+                    <Text style={styles.primaryBtnText}>Save</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.secondaryBtn}
+                    onPress={() => setEditingId(null)}
+                  >
+                    <Text style={styles.secondaryBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
             <View style={styles.cardRow}>
               <View style={[styles.dot, { backgroundColor: hb.color }]} />
               <View style={styles.cardInfo}>
                 <View style={styles.row}>
                   <Text style={styles.cardName}>{hb.agentName}</Text>
                   <Text style={styles.mono}>{hb.heartbeat.interval ? humanCron(hb.heartbeat.interval) : 'not set'}</Text>
+                  {renderNextRunBadge(hb)}
                 </View>
                 <Text style={styles.cardSubtext} numberOfLines={1}>
                   {hb.heartbeat.prompt || 'No prompt configured'}
@@ -564,6 +671,13 @@ function HeartbeatSection() {
                 )}
               </View>
               <View style={styles.actionButtons}>
+                <TouchableOpacity
+                  style={styles.smallButton}
+                  onPress={() => startEdit(hb)}
+                  accessibilityLabel="Edit heartbeat"
+                >
+                  <Text style={styles.smallButtonText}>✎</Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.smallButton}
                   onPress={() => triggerRun(hb.agentId)}
@@ -599,6 +713,7 @@ function HeartbeatSection() {
                 </TouchableOpacity>
               </View>
             </View>
+            )}
             {expandedAgent === hb.agentId && (
               <View style={styles.logsContainer}>
                 {(logs[hb.agentId] || []).length === 0 ? (
@@ -648,18 +763,144 @@ function HeartbeatSection() {
 }
 
 // ─── Cron Jobs Tab ──────────────────────────────────────────
+// Convert the form's minutes field into the API's `timeout_ms` contract:
+//   - blank → null (use server default)
+//   - positive integer → minutes * 60_000
+// Returns `undefined` when the field is invalid so callers can surface an
+// error instead of silently wiping the existing override.
+function minutesToTimeoutMs(minutes) {
+  if (minutes === '' || minutes === null || minutes === undefined) return null;
+  const n = Number(minutes);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.round(n * 60_000);
+}
+
+function CronFormFields({ form, setForm, projects }) {
+  return (
+    <>
+      <TextInput
+        value={form.name}
+        onChangeText={(v) => setForm({ ...form, name: v })}
+        placeholder="Name"
+        placeholderTextColor={colors.gray500}
+        style={styles.formInput}
+      />
+      <TextInput
+        value={form.schedule}
+        onChangeText={(v) => setForm({ ...form, schedule: v })}
+        placeholder="Cron schedule (e.g. */30 * * * *)"
+        placeholderTextColor={colors.gray500}
+        style={styles.formInput}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+      {form.schedule && humanCron(form.schedule) !== form.schedule && (
+        <Text style={styles.cronPreview}>↳ {humanCron(form.schedule)}</Text>
+      )}
+      <TextInput
+        value={form.prompt}
+        onChangeText={(v) => setForm({ ...form, prompt: v })}
+        placeholder="Prompt"
+        placeholderTextColor={colors.gray500}
+        style={[styles.formInput, { minHeight: 80 }]}
+        multiline
+        textAlignVertical="top"
+      />
+      {projects.length > 0 && (
+        <>
+          <Text style={styles.fieldLabel}>Project</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 6 }}
+          >
+            <TouchableOpacity
+              onPress={() => setForm({ ...form, project_id: '' })}
+              style={[
+                styles.projectChip,
+                !form.project_id && styles.projectChipActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.projectChipText,
+                  !form.project_id && styles.projectChipTextActive,
+                ]}
+              >
+                No project
+              </Text>
+            </TouchableOpacity>
+            {projects.map((p) => {
+              const active = form.project_id === p.id;
+              return (
+                <TouchableOpacity
+                  key={p.id}
+                  onPress={() =>
+                    setForm({
+                      ...form,
+                      project_id: p.id,
+                      cwd: p.cwd || form.cwd,
+                    })
+                  }
+                  style={[styles.projectChip, active && styles.projectChipActive]}
+                >
+                  <Text
+                    style={[
+                      styles.projectChipText,
+                      active && styles.projectChipTextActive,
+                    ]}
+                  >
+                    {p.name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </>
+      )}
+      <TextInput
+        value={form.cwd}
+        onChangeText={(v) => setForm({ ...form, cwd: v })}
+        placeholder="Working directory"
+        placeholderTextColor={colors.gray500}
+        style={styles.formInput}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+      <Text style={styles.fieldLabel}>
+        Timeout (minutes) <Text style={{ color: colors.gray600 }}>— blank uses server default</Text>
+      </Text>
+      <TextInput
+        value={form.timeoutMinutes}
+        onChangeText={(v) => setForm({ ...form, timeoutMinutes: v })}
+        placeholder="e.g. 30"
+        placeholderTextColor={colors.gray500}
+        style={styles.formInput}
+        keyboardType="number-pad"
+      />
+    </>
+  );
+}
+
 function CronSection() {
+  const [projects, setProjects] = useState([]);
+  const defaultCwd = projects[0]?.cwd || '';
   const [crons, setCrons] = useState([]);
   const [running, setRunning] = useState({});
   const [showForm, setShowForm] = useState(false);
   const [cronLogs, setCronLogs] = useState({});
   const [expandedLog, setExpandedLog] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [, setTick] = useState(0);
   const [form, setForm] = useState({
     name: '',
-    schedule: '',
+    schedule: '*/30 * * * *',
     prompt: '',
-    cwd: '/home/ryan',
+    cwd: '',
+    project_id: '',
     enabled: true,
+    timeoutMinutes: '',
   });
 
   const refreshLogs = async (cronList) => {
@@ -677,7 +918,7 @@ function CronSection() {
   };
 
   useEffect(() => {
-    const load = async () => {
+    const refresh = async () => {
       try {
         const data = await api.getCrons();
         setCrons(data);
@@ -686,8 +927,30 @@ function CronSection() {
         console.error(e);
       }
     };
-    load();
+    refresh();
+    const pollId = setInterval(refresh, 60_000);
+    const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => {
+      clearInterval(pollId);
+      clearInterval(tickId);
+    };
   }, []);
+
+  useEffect(() => {
+    api.getProjects().then(setProjects).catch(() => setProjects([]));
+  }, []);
+
+  // Seed the create-form's cwd/project with the first project once they load.
+  useEffect(() => {
+    if (projects.length > 0 && !form.project_id && !form.cwd) {
+      setForm((f) => ({
+        ...f,
+        project_id: projects[0].id,
+        cwd: projects[0].cwd || '',
+      }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects]);
 
   const toggleCron = async (cronJob) => {
     const updated = await api.updateCron(cronJob.id, { enabled: !cronJob.enabled });
@@ -723,10 +986,78 @@ function CronSection() {
       Alert.alert('Missing fields', 'Name, schedule, and prompt are required.');
       return;
     }
-    const created = await api.createCron(form);
-    setCrons((prev) => [...prev, created]);
-    setShowForm(false);
-    setForm({ name: '', schedule: '', prompt: '', cwd: '/home/ryan', enabled: true });
+    const timeout_ms = minutesToTimeoutMs(form.timeoutMinutes);
+    if (timeout_ms === undefined) {
+      Alert.alert('Invalid timeout', 'Timeout must be a positive number of minutes.');
+      return;
+    }
+    const payload = { ...form, timeout_ms };
+    delete payload.timeoutMinutes;
+    try {
+      const created = await api.createCron(payload);
+      setCrons((prev) => [...prev, created]);
+      setShowForm(false);
+      setForm({
+        name: '',
+        schedule: '*/30 * * * *',
+        prompt: '',
+        cwd: defaultCwd,
+        project_id: projects[0]?.id || '',
+        enabled: true,
+        timeoutMinutes: '',
+      });
+    } catch (e) {
+      Alert.alert('Create failed', e?.message || 'Could not create cron.');
+    }
+  };
+
+  const startEditing = (cronJob) => {
+    setEditingId(cronJob.id);
+    setEditForm({
+      name: cronJob.name,
+      schedule: cronJob.schedule,
+      prompt: cronJob.prompt,
+      cwd: cronJob.cwd || '',
+      project_id: cronJob.project_id || '',
+      timeoutMinutes: cronJob.timeout_ms
+        ? String(Math.round(cronJob.timeout_ms / 60_000))
+        : '',
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editForm.name || !editForm.schedule || !editForm.prompt) {
+      Alert.alert('Missing fields', 'Name, schedule, and prompt are required.');
+      return;
+    }
+    const timeout_ms = minutesToTimeoutMs(editForm.timeoutMinutes);
+    if (timeout_ms === undefined) {
+      Alert.alert('Invalid timeout', 'Timeout must be a positive number of minutes.');
+      return;
+    }
+    const payload = { ...editForm, timeout_ms };
+    delete payload.timeoutMinutes;
+    try {
+      const updated = await api.updateCron(editingId, payload);
+      setCrons((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      setEditingId(null);
+      setEditForm({});
+    } catch (e) {
+      Alert.alert('Save failed', e?.message || 'Could not save cron.');
+    }
+  };
+
+  const renderNextRunBadge = (cronJob) => {
+    if (!cronJob.enabled || !cronJob.next_run_at) return null;
+    const { label, overdue } = relativeFuture(cronJob.next_run_at);
+    if (!label) return null;
+    return (
+      <View style={[styles.nextRunBadge, overdue && styles.nextRunBadgeOverdue]}>
+        <Text style={[styles.nextRunBadgeText, overdue && styles.nextRunBadgeTextOverdue]}>
+          {label}
+        </Text>
+      </View>
+    );
   };
 
   return (
@@ -740,36 +1071,7 @@ function CronSection() {
 
       {showForm && (
         <View style={styles.formCard}>
-          <TextInput
-            value={form.name}
-            onChangeText={(v) => setForm({ ...form, name: v })}
-            placeholder="Name"
-            placeholderTextColor={colors.gray500}
-            style={styles.formInput}
-          />
-          <TextInput
-            value={form.schedule}
-            onChangeText={(v) => setForm({ ...form, schedule: v })}
-            placeholder="Cron schedule (e.g. */30 * * * *)"
-            placeholderTextColor={colors.gray500}
-            style={styles.formInput}
-          />
-          <TextInput
-            value={form.prompt}
-            onChangeText={(v) => setForm({ ...form, prompt: v })}
-            placeholder="Prompt"
-            placeholderTextColor={colors.gray500}
-            style={[styles.formInput, { minHeight: 80 }]}
-            multiline
-            textAlignVertical="top"
-          />
-          <TextInput
-            value={form.cwd}
-            onChangeText={(v) => setForm({ ...form, cwd: v })}
-            placeholder="Working directory"
-            placeholderTextColor={colors.gray500}
-            style={styles.formInput}
-          />
+          <CronFormFields form={form} setForm={setForm} projects={projects} />
           <TouchableOpacity style={styles.createButton} onPress={createCron}>
             <Text style={styles.createButtonText}>Create</Text>
           </TouchableOpacity>
@@ -779,17 +1081,44 @@ function CronSection() {
       <View style={styles.cardList}>
         {crons.map((cronJob) => (
           <View key={cronJob.id} style={styles.card}>
+            {editingId === cronJob.id ? (
+              <View style={styles.editForm}>
+                <CronFormFields
+                  form={editForm}
+                  setForm={setEditForm}
+                  projects={projects}
+                />
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TouchableOpacity style={styles.primaryBtn} onPress={saveEdit}>
+                    <Text style={styles.primaryBtnText}>Save</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.secondaryBtn}
+                    onPress={() => {
+                      setEditingId(null);
+                      setEditForm({});
+                    }}
+                  >
+                    <Text style={styles.secondaryBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
             <View style={styles.cardRow}>
               <View style={styles.cardInfo}>
                 <View style={styles.row}>
                   <Text style={styles.cardName}>{cronJob.name}</Text>
                   <Text style={styles.mono}>{humanCron(cronJob.schedule)}</Text>
+                  {renderNextRunBadge(cronJob)}
                 </View>
                 <Text style={styles.cardSubtext} numberOfLines={1}>
                   {cronJob.prompt}
                 </Text>
                 <Text style={styles.cardMeta}>
                   cwd: {cronJob.cwd}
+                  {cronJob.timeout_ms
+                    ? ` · Timeout: ${Math.round(cronJob.timeout_ms / 60_000)}m`
+                    : ''}
                   {cronJob.last_run && ` · Last: ${relativeTime(cronJob.last_run)}`}
                 </Text>
                 {/* Recent runs — clickable status dots */}
@@ -886,6 +1215,13 @@ function CronSection() {
               <View style={styles.actionButtons}>
                 <TouchableOpacity
                   style={styles.smallButton}
+                  onPress={() => startEditing(cronJob)}
+                  accessibilityLabel="Edit cron"
+                >
+                  <Text style={styles.smallButtonText}>✎</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.smallButton}
                   onPress={() => triggerRun(cronJob.id)}
                   disabled={running[cronJob.id]}
                 >
@@ -917,6 +1253,7 @@ function CronSection() {
                 </TouchableOpacity>
               </View>
             </View>
+            )}
           </View>
         ))}
         {crons.length === 0 && (
@@ -1704,6 +2041,74 @@ const styles = StyleSheet.create({
     color: colors.white,
     fontSize: 14,
     fontWeight: '500',
+  },
+  editForm: {
+    padding: 14,
+    gap: 10,
+  },
+  cronPreview: {
+    fontSize: 12,
+    color: colors.blue400,
+    marginLeft: 4,
+    marginTop: -4,
+  },
+  nextRunBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: 'rgba(75, 85, 99, 0.4)',
+  },
+  nextRunBadgeOverdue: {
+    backgroundColor: 'rgba(120, 53, 15, 0.4)',
+  },
+  nextRunBadgeText: {
+    fontSize: 10,
+    color: colors.gray400,
+    fontFamily: 'monospace',
+  },
+  nextRunBadgeTextOverdue: {
+    color: '#fbbf24',
+  },
+  projectChip: {
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  projectChipActive: {
+    backgroundColor: 'rgba(37, 99, 235, 0.15)',
+    borderColor: colors.blue600,
+  },
+  projectChipText: {
+    fontSize: 12,
+    color: colors.gray400,
+  },
+  projectChipTextActive: {
+    color: colors.blue400,
+    fontWeight: '500',
+  },
+  primaryBtn: {
+    backgroundColor: colors.blue600,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  primaryBtnText: {
+    color: colors.white,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  secondaryBtn: {
+    backgroundColor: colors.gray700,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  secondaryBtnText: {
+    color: colors.gray300,
+    fontSize: 13,
   },
   // Agent config
   fieldLabel: {
