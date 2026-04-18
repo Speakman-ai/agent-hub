@@ -17,6 +17,7 @@ import NotesScreen from './src/screens/NotesScreen';
 import PullRequestsScreen from './src/screens/PullRequestsScreen';
 import ThreadsScreen from './src/screens/ThreadsScreen';
 import DrawerContent from './src/components/DrawerContent';
+import SetupWizard from './src/components/SetupWizard';
 import { colors } from './src/theme/colors';
 
 const Stack = createNativeStackNavigator();
@@ -42,7 +43,7 @@ function AppContent() {
   const slideAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const overlayAnim = useRef(new Animated.Value(0)).current;
   const navigationRef = useRef(null);
-  const { setActiveSessionId, configReady } = useApp();
+  const { setActiveSessionId, configReady, needsSetup, completeSetup } = useApp();
 
   const openSidebar = useCallback(() => {
     sidebarOpenRef.current = true;
@@ -114,6 +115,12 @@ function AppContent() {
         <Text style={styles.loadingText}>Connecting...</Text>
       </View>
     );
+  }
+
+  // First-run: no server URL configured. Show the setup wizard before the
+  // main drawer/stack so the user can't end up staring at an empty chat.
+  if (needsSetup) {
+    return <SetupWizard onComplete={completeSetup} />;
   }
 
   return (

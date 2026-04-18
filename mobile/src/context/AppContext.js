@@ -1,8 +1,13 @@
 import React, { createContext, useState, useCallback, useEffect, useContext, useRef } from 'react';
 import { api } from '../utils/api';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { loadOrgs, migrateFromLegacy } from '../utils/orgs';
+import { loadOrgs, migrateFromLegacy, getOrgs } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
+import {
+  loadSetupDismissed,
+  saveSetupDismissed,
+  shouldShowWizard,
+} from '../utils/setupState';
 import { hydrateChangesReady } from '../utils/changesReady';
 import { resolveSessionWorktree, applyDetectedFlag } from '../utils/worktreeState';
 import { selectSessionToActivate } from '../utils/sessionSelection';
@@ -86,6 +91,9 @@ export function AppProvider({ children }) {
   const [sessionHandoffs, setSessionHandoffs] = useState([]);
   // Config readiness gate — prevents data fetching before AsyncStorage loads
   const [configReady, setConfigReady] = useState(false);
+  // First-run setup wizard gate. `needsSetup` is true when the active org
+  // has no remoteUrl configured and the user hasn't dismissed the wizard.
+  const [needsSetup, setNeedsSetup] = useState(false);
   // Mobile push state: Expo token + permission status (used by Settings).
   const [pushToken, setPushToken] = useState(null);
   const [pushPermissionStatus, setPushPermissionStatus] = useState('unknown');
@@ -615,12 +623,30 @@ export function AppProvider({ children }) {
           apiKey: activeOrg.apiKey || '',
         });
       }
+      // Decide whether to show the first-run wizard before we signal ready.
+      // `shouldShowWizard` returns true only when no org has a remoteUrl AND
+      // the user hasn't previously dismissed the wizard.
+      const dismissed = await loadSetupDismissed();
+      setNeedsSetup(shouldShowWizard(getOrgs(), dismissed));
       // Signal that config is loaded — this unblocks data fetching & WebSocket
       setConfigReady(true);
       // Always reconnect WebSocket now that config is loaded from AsyncStorage
       reconnect();
     })();
   }, []);
+
+  /**
+   * Called from `SetupWizard` once the user finishes (or skips) the first-run
+   * flow. Persists the "dismissed" flag so the wizard never reappears, then
+   * hides it. If the user actually entered a server URL, the connection
+   * config was already written by the wizard's `updateOrg`/`createOrg` call.
+   */
+  const completeSetup = useCallback(async () => {
+    await saveSetupDismissed(true);
+    setNeedsSetup(false);
+    // Reconnect so the newly-configured WebSocket picks up the server URL.
+    reconnect();
+  }, [reconnect]);
 
   // Load agents and projects once config is ready
   useEffect(() => {
@@ -1087,6 +1113,8 @@ export function AppProvider({ children }) {
 
   const value = {
     configReady,
+    needsSetup,
+    completeSetup,
     agents,
     projects,
     activeAgentId,
