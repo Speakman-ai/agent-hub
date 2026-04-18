@@ -103,6 +103,13 @@ export default function Sidebar({
   // Find which project the active agent belongs to
   const activeProject = projects.find((p) => p.agents.some((a) => a.id === activeAgentId));
 
+  // A session is "actionable" when it must remain visible regardless of collapse state:
+  // - it's currently running (tracked via activeTaskSessionIds)
+  // - it has a pending PR/changes ready (tracked via changesReadyBySession)
+  // - (future) it's awaiting user input (requires backend `awaiting_input` flag; not yet wired)
+  const isSessionActionable = (session) =>
+    !!activeTaskSessionIds[session.id] || !!changesReadyBySession[session.id];
+
   return (
     <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full electron-no-drag">
       {/* Header — Org Switcher */}
@@ -297,195 +304,215 @@ export default function Sidebar({
                               )}
                             </button>
 
-                            {/* Sessions for active agent */}
-                            {isActive && !collapsedAgents[agent.id] && (
-                              <div className="ml-5 mb-2">
-                                {sessions.map((session) => {
-                                  const isRunning = !!activeTaskSessionIds[session.id];
-                                  const isEditing = editingSessionId === session.id;
-                                  const prReady = changesReadyBySession[session.id];
-                                  return (
-                                    <div
-                                      key={session.id}
-                                      onMouseEnter={() => setHoveredSession(session.id)}
-                                      onMouseLeave={() => setHoveredSession(null)}
-                                      className={`group flex items-center rounded-md mb-0.5 transition-colors ${
-                                        activeSessionId === session.id
-                                          ? 'bg-gray-800 text-white'
-                                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                                      }`}
-                                    >
-                                      {isEditing ? (
-                                        <input
-                                          autoFocus
-                                          value={editingSessionName}
-                                          onChange={(e) => setEditingSessionName(e.target.value)}
-                                          onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && editingSessionName.trim()) {
-                                              renameSavedRef.current = true;
-                                              onRenameSession(
-                                                session.id,
-                                                editingSessionName.trim(),
-                                              );
-                                              setEditingSessionId(null);
-                                            } else if (e.key === 'Escape') {
-                                              renameSavedRef.current = true;
-                                              setEditingSessionId(null);
-                                            }
-                                          }}
-                                          onBlur={() => {
-                                            if (renameSavedRef.current) {
-                                              renameSavedRef.current = false;
-                                              return;
-                                            }
-                                            if (
-                                              editingSessionName.trim() &&
-                                              editingSessionName.trim() !== session.name
-                                            ) {
-                                              onRenameSession(
-                                                session.id,
-                                                editingSessionName.trim(),
-                                              );
-                                            }
-                                            setEditingSessionId(null);
-                                          }}
-                                          className="flex-1 text-xs bg-gray-700 text-gray-200 px-2 py-1.5 md:py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500 mx-1"
-                                        />
-                                      ) : (
-                                        <button
-                                          onClick={() => {
-                                            onSelectSession(session.id);
-                                            onNavigate('chat');
-                                          }}
-                                          onDoubleClick={(e) => {
-                                            e.stopPropagation();
-                                            setEditingSessionId(session.id);
-                                            setEditingSessionName(session.name);
-                                          }}
-                                          className="flex-1 text-left px-2 py-2 md:py-1.5 truncate text-xs flex items-center gap-1.5"
+                            {/* Sessions for active agent.
+                                When the agent row is collapsed we still render
+                                "actionable" sessions (running / PR-ready) so users
+                                don't miss them behind the ▸ toggle. */}
+                            {isActive &&
+                              (() => {
+                                const agentCollapsed = !!collapsedAgents[agent.id];
+                                const visibleSessions = agentCollapsed
+                                  ? sessions.filter(isSessionActionable)
+                                  : sessions;
+                                if (agentCollapsed && visibleSessions.length === 0) return null;
+                                return (
+                                  <div className="ml-5 mb-2" data-testid="agent-sessions-list">
+                                    {visibleSessions.map((session) => {
+                                      const isRunning = !!activeTaskSessionIds[session.id];
+                                      const isEditing = editingSessionId === session.id;
+                                      const prReady = changesReadyBySession[session.id];
+                                      return (
+                                        <div
+                                          key={session.id}
+                                          onMouseEnter={() => setHoveredSession(session.id)}
+                                          onMouseLeave={() => setHoveredSession(null)}
+                                          className={`group flex items-center rounded-md mb-0.5 transition-colors ${
+                                            activeSessionId === session.id
+                                              ? 'bg-gray-800 text-white'
+                                              : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                                          }`}
                                         >
-                                          {isRunning && (
-                                            <span
-                                              className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
-                                              title="Task running"
+                                          {isEditing ? (
+                                            <input
+                                              autoFocus
+                                              value={editingSessionName}
+                                              onChange={(e) =>
+                                                setEditingSessionName(e.target.value)
+                                              }
+                                              onKeyDown={(e) => {
+                                                if (
+                                                  e.key === 'Enter' &&
+                                                  editingSessionName.trim()
+                                                ) {
+                                                  renameSavedRef.current = true;
+                                                  onRenameSession(
+                                                    session.id,
+                                                    editingSessionName.trim(),
+                                                  );
+                                                  setEditingSessionId(null);
+                                                } else if (e.key === 'Escape') {
+                                                  renameSavedRef.current = true;
+                                                  setEditingSessionId(null);
+                                                }
+                                              }}
+                                              onBlur={() => {
+                                                if (renameSavedRef.current) {
+                                                  renameSavedRef.current = false;
+                                                  return;
+                                                }
+                                                if (
+                                                  editingSessionName.trim() &&
+                                                  editingSessionName.trim() !== session.name
+                                                ) {
+                                                  onRenameSession(
+                                                    session.id,
+                                                    editingSessionName.trim(),
+                                                  );
+                                                }
+                                                setEditingSessionId(null);
+                                              }}
+                                              className="flex-1 text-xs bg-gray-700 text-gray-200 px-2 py-1.5 md:py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500 mx-1"
                                             />
-                                          )}
-                                          {subagentsBySession[session.id]?.running > 0 && (
-                                            <span
-                                              className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
-                                              title={`${subagentsBySession[session.id].running} subagent${subagentsBySession[session.id].running === 1 ? '' : 's'} running`}
+                                          ) : (
+                                            <button
+                                              onClick={() => {
+                                                onSelectSession(session.id);
+                                                onNavigate('chat');
+                                              }}
+                                              onDoubleClick={(e) => {
+                                                e.stopPropagation();
+                                                setEditingSessionId(session.id);
+                                                setEditingSessionName(session.name);
+                                              }}
+                                              className="flex-1 text-left px-2 py-2 md:py-1.5 truncate text-xs flex items-center gap-1.5"
                                             >
-                                              <GitFork size={10} />
-                                              {subagentsBySession[session.id].running}
-                                            </span>
+                                              {isRunning && (
+                                                <span
+                                                  className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
+                                                  title="Task running"
+                                                />
+                                              )}
+                                              {subagentsBySession[session.id]?.running > 0 && (
+                                                <span
+                                                  className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
+                                                  title={`${subagentsBySession[session.id].running} subagent${subagentsBySession[session.id].running === 1 ? '' : 's'} running`}
+                                                >
+                                                  <GitFork size={10} />
+                                                  {subagentsBySession[session.id].running}
+                                                </span>
+                                              )}
+                                              {prReady && (
+                                                <span
+                                                  data-testid="pr-ready-indicator"
+                                                  className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
+                                                  title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
+                                                >
+                                                  <GitPullRequest size={11} />
+                                                </span>
+                                              )}
+                                              <span className="truncate">{session.name}</span>
+                                            </button>
                                           )}
-                                          {prReady && (
-                                            <span
-                                              data-testid="pr-ready-indicator"
-                                              className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
-                                              title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
+                                          {deletingSessionIds.has(session.id) ? (
+                                            <span className="pr-2 text-gray-500 text-xs animate-spin">
+                                              ⟳
+                                            </span>
+                                          ) : hoveredSession === session.id && !isEditing ? (
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onDeleteSession(session.id);
+                                              }}
+                                              className="pr-2 text-gray-600 hover:text-red-400 text-xs"
+                                              title="Delete session"
                                             >
-                                              <GitPullRequest size={11} />
-                                            </span>
+                                              ✕
+                                            </button>
+                                          ) : null}
+                                        </div>
+                                      );
+                                    })}
+                                    {!agentCollapsed && (
+                                      <>
+                                        <div className="flex items-center gap-1 mt-1">
+                                          <button
+                                            onClick={onNewSession}
+                                            className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
+                                          >
+                                            + New Session
+                                          </button>
+                                          {sessions.length > 0 && (
+                                            <div className="ml-auto flex items-center gap-0.5 pr-1">
+                                              <button
+                                                onClick={() => setConfirmAction('clear-inactive')}
+                                                disabled={!!deletingBulk}
+                                                className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                title="Clear inactive sessions"
+                                              >
+                                                {deletingBulk === 'inactive' ? '...' : 'Clear idle'}
+                                              </button>
+                                              <button
+                                                onClick={() => setConfirmAction('clear-all')}
+                                                disabled={!!deletingBulk}
+                                                className="text-gray-600 hover:text-red-400 p-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                title="Clear all sessions"
+                                              >
+                                                {deletingBulk === 'all' ? (
+                                                  <span className="text-xs animate-spin inline-block">
+                                                    ⟳
+                                                  </span>
+                                                ) : (
+                                                  <Trash2 size={12} />
+                                                )}
+                                              </button>
+                                            </div>
                                           )}
-                                          <span className="truncate">{session.name}</span>
-                                        </button>
-                                      )}
-                                      {deletingSessionIds.has(session.id) ? (
-                                        <span className="pr-2 text-gray-500 text-xs animate-spin">
-                                          ⟳
-                                        </span>
-                                      ) : hoveredSession === session.id && !isEditing ? (
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            onDeleteSession(session.id);
-                                          }}
-                                          className="pr-2 text-gray-600 hover:text-red-400 text-xs"
-                                          title="Delete session"
-                                        >
-                                          ✕
-                                        </button>
-                                      ) : null}
-                                    </div>
-                                  );
-                                })}
-                                <div className="flex items-center gap-1 mt-1">
-                                  <button
-                                    onClick={onNewSession}
-                                    className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
-                                  >
-                                    + New Session
-                                  </button>
-                                  {sessions.length > 0 && (
-                                    <div className="ml-auto flex items-center gap-0.5 pr-1">
-                                      <button
-                                        onClick={() => setConfirmAction('clear-inactive')}
-                                        disabled={!!deletingBulk}
-                                        className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                        title="Clear inactive sessions"
-                                      >
-                                        {deletingBulk === 'inactive' ? '...' : 'Clear idle'}
-                                      </button>
-                                      <button
-                                        onClick={() => setConfirmAction('clear-all')}
-                                        disabled={!!deletingBulk}
-                                        className="text-gray-600 hover:text-red-400 p-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                        title="Clear all sessions"
-                                      >
-                                        {deletingBulk === 'all' ? (
-                                          <span className="text-xs animate-spin inline-block">
-                                            ⟳
-                                          </span>
-                                        ) : (
-                                          <Trash2 size={12} />
+                                        </div>
+                                        {/* Confirmation dialog */}
+                                        {confirmAction && (
+                                          <div className="mx-1 mt-1 p-2 bg-gray-800 border border-gray-700 rounded-lg">
+                                            <p className="text-xs text-gray-300 mb-2">
+                                              {confirmAction === 'clear-all'
+                                                ? `Delete all ${sessions.length} session${sessions.length !== 1 ? 's' : ''}? This cannot be undone.`
+                                                : `Delete all idle sessions? Active sessions will be kept.`}
+                                            </p>
+                                            <div className="flex gap-2 justify-end">
+                                              <button
+                                                onClick={() => setConfirmAction(null)}
+                                                className="text-xs px-2 py-1 text-gray-400 hover:text-gray-200 transition-colors"
+                                              >
+                                                Cancel
+                                              </button>
+                                              <button
+                                                onClick={async () => {
+                                                  if (confirmAction === 'clear-all') {
+                                                    await onClearAllSessions();
+                                                  } else {
+                                                    await onClearInactiveSessions();
+                                                  }
+                                                  setConfirmAction(null);
+                                                }}
+                                                disabled={!!deletingBulk}
+                                                className={`text-xs px-2 py-1 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                                                  confirmAction === 'clear-all'
+                                                    ? 'bg-red-600 hover:bg-red-500 text-white'
+                                                    : 'bg-amber-600 hover:bg-amber-500 text-white'
+                                                }`}
+                                              >
+                                                {deletingBulk
+                                                  ? 'Deleting...'
+                                                  : confirmAction === 'clear-all'
+                                                    ? 'Delete All'
+                                                    : 'Delete Idle'}
+                                              </button>
+                                            </div>
+                                          </div>
                                         )}
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                                {/* Confirmation dialog */}
-                                {confirmAction && (
-                                  <div className="mx-1 mt-1 p-2 bg-gray-800 border border-gray-700 rounded-lg">
-                                    <p className="text-xs text-gray-300 mb-2">
-                                      {confirmAction === 'clear-all'
-                                        ? `Delete all ${sessions.length} session${sessions.length !== 1 ? 's' : ''}? This cannot be undone.`
-                                        : `Delete all idle sessions? Active sessions will be kept.`}
-                                    </p>
-                                    <div className="flex gap-2 justify-end">
-                                      <button
-                                        onClick={() => setConfirmAction(null)}
-                                        className="text-xs px-2 py-1 text-gray-400 hover:text-gray-200 transition-colors"
-                                      >
-                                        Cancel
-                                      </button>
-                                      <button
-                                        onClick={async () => {
-                                          if (confirmAction === 'clear-all') {
-                                            await onClearAllSessions();
-                                          } else {
-                                            await onClearInactiveSessions();
-                                          }
-                                          setConfirmAction(null);
-                                        }}
-                                        disabled={!!deletingBulk}
-                                        className={`text-xs px-2 py-1 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
-                                          confirmAction === 'clear-all'
-                                            ? 'bg-red-600 hover:bg-red-500 text-white'
-                                            : 'bg-amber-600 hover:bg-amber-500 text-white'
-                                        }`}
-                                      >
-                                        {deletingBulk
-                                          ? 'Deleting...'
-                                          : confirmAction === 'clear-all'
-                                            ? 'Delete All'
-                                            : 'Delete Idle'}
-                                      </button>
-                                    </div>
+                                      </>
+                                    )}
                                   </div>
-                                )}
-                              </div>
-                            )}
+                                );
+                              })()}
 
                             {/* Render sub-agents nested under lead */}
                             {subs.length > 0 && (!collapsedAgents[agent.id] || isActive) && (
@@ -585,6 +612,61 @@ export default function Sidebar({
                     </button>
                   </div>
                 )}
+
+                {/* When the project is collapsed we still surface any actionable
+                    sessions (running / PR-ready) belonging to the active agent in
+                    this project, so users never miss a running task or a PR that's
+                    ready for review behind the project chevron. */}
+                {isCollapsed &&
+                  activeAgents.length > 1 &&
+                  isActiveProject &&
+                  (() => {
+                    const actionableSessions = (sessions || []).filter(isSessionActionable);
+                    if (actionableSessions.length === 0) return null;
+                    return (
+                      <div
+                        className="ml-3 mt-0.5 mb-1 pl-2 border-l border-gray-800/60"
+                        data-testid="project-collapsed-actionable"
+                      >
+                        {actionableSessions.map((session) => {
+                          const isRunning = !!activeTaskSessionIds[session.id];
+                          const prReady = changesReadyBySession[session.id];
+                          return (
+                            <button
+                              key={session.id}
+                              onClick={() => {
+                                onSelectSession(session.id);
+                                onNavigate('chat');
+                              }}
+                              className={`w-full text-left px-2 py-1 rounded-md mb-0.5 flex items-center gap-1.5 text-xs transition-colors ${
+                                activeSessionId === session.id
+                                  ? 'bg-gray-800 text-white'
+                                  : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                              }`}
+                              title={session.name}
+                            >
+                              {isRunning && (
+                                <span
+                                  className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
+                                  title="Task running"
+                                />
+                              )}
+                              {prReady && (
+                                <span
+                                  data-testid="pr-ready-indicator"
+                                  className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
+                                  title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
+                                >
+                                  <GitPullRequest size={11} />
+                                </span>
+                              )}
+                              <span className="truncate">{session.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
               </div>
             );
           })}
