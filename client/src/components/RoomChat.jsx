@@ -1,7 +1,12 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
-import { formatRoomExport, copyToClipboard } from '../utils/export.js';
+import {
+  formatRoomExport,
+  copyToClipboard,
+  buildNoteTitle,
+  saveConversationAsNote,
+} from '../utils/export.js';
 import { Building2 } from 'lucide-react';
 
 /**
@@ -22,7 +27,8 @@ export default function RoomChat({
   const [input, setInput] = useState('');
   const [showAgentPanel, setShowAgentPanel] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
-  const [exportState, setExportState] = useState(null); // null | 'summarizing' | 'copied'
+  const [exportState, setExportState] = useState(null); // null | 'summarizing' | 'copied' | 'saving' | 'saved'
+  const [saveNoteError, setSaveNoteError] = useState(null);
   const exportRef = useRef(null);
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -279,7 +285,7 @@ export default function RoomChat({
                 className="text-gray-400 hover:text-white p-2 transition-colors"
                 title="Export conversation"
               >
-                {exportState === 'copied' ? (
+                {exportState === 'copied' || exportState === 'saved' ? (
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
                     className="h-4 w-4 text-emerald-400"
@@ -292,7 +298,7 @@ export default function RoomChat({
                       clipRule="evenodd"
                     />
                   </svg>
-                ) : exportState === 'summarizing' ? (
+                ) : exportState === 'summarizing' || exportState === 'saving' ? (
                   <svg
                     className="h-4 w-4 animate-spin text-blue-400"
                     xmlns="http://www.w3.org/2000/svg"
@@ -382,6 +388,99 @@ export default function RoomChat({
                     </svg>
                     Copy Summary
                   </button>
+                  {room?.project_id && (
+                    <>
+                      <div className="my-1 border-t border-gray-700" />
+                      <button
+                        onClick={async () => {
+                          setExportOpen(false);
+                          setSaveNoteError(null);
+                          setExportState('saving');
+                          const content = formatRoomExport({ room, messages: roomMessages });
+                          const title = buildNoteTitle({ kind: 'raw', room });
+                          const { ok, error } = await saveConversationAsNote({
+                            api,
+                            projectId: room.project_id,
+                            title,
+                            content,
+                          });
+                          if (ok) {
+                            setExportState('saved');
+                            setTimeout(() => setExportState(null), 2000);
+                          } else {
+                            setExportState(null);
+                            setSaveNoteError(error?.message || 'Unknown error');
+                          }
+                        }}
+                        disabled={exportState === 'saving' || exportState === 'summarizing'}
+                        className="w-full text-left px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-4 w-4 text-gray-500"
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M3 4a2 2 0 012-2h6.586A2 2 0 0113 2.586L16.414 6A2 2 0 0117 7.414V16a2 2 0 01-2 2H5a2 2 0 01-2-2V4zm7 10a1 1 0 11-2 0v-2H6a1 1 0 110-2h2V8a1 1 0 112 0v2h2a1 1 0 110 2h-2v2z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                        Save Raw as Note
+                      </button>
+                      <button
+                        onClick={async () => {
+                          setExportOpen(false);
+                          setSaveNoteError(null);
+                          setExportState('summarizing');
+                          try {
+                            const { summary } = await api.summarizeRoom(room.id);
+                            setExportState('saving');
+                            const title = buildNoteTitle({ kind: 'summary', room });
+                            const { ok, error } = await saveConversationAsNote({
+                              api,
+                              projectId: room.project_id,
+                              title,
+                              content: summary,
+                            });
+                            if (ok) {
+                              setExportState('saved');
+                              setTimeout(() => setExportState(null), 2000);
+                            } else {
+                              setExportState(null);
+                              setSaveNoteError(error?.message || 'Unknown error');
+                            }
+                          } catch (err) {
+                            console.error('Save summary as note failed:', err);
+                            setExportState(null);
+                            setSaveNoteError(err.message);
+                          }
+                        }}
+                        disabled={exportState === 'summarizing' || exportState === 'saving'}
+                        className="w-full text-left px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-4 w-4 text-gray-500"
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M3 4a2 2 0 012-2h6.586A2 2 0 0113 2.586L16.414 6A2 2 0 0117 7.414V16a2 2 0 01-2 2H5a2 2 0 01-2-2V4zm3 5a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h4a1 1 0 100-2H7z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                        Save Summary as Note
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+              {saveNoteError && (
+                <div className="absolute right-0 top-full mt-1 bg-red-900/80 border border-red-700 rounded-lg text-xs text-red-200 px-3 py-2 shadow-xl z-50">
+                  Save failed: {saveNoteError}
                 </div>
               )}
             </div>

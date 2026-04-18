@@ -60,6 +60,58 @@ export function formatRoomExport({ room, messages }) {
 }
 
 /**
+ * Build a concise, descriptive note title for a saved conversation.
+ * Examples:
+ *   "Chat with TestBot — 2025-06-15"
+ *   "TestBot — summary — 2025-06-15"
+ *   "Room \"Design Review\" — raw — 2025-06-15"
+ *
+ * @param {Object} opts
+ * @param {'raw'|'summary'} opts.kind
+ * @param {Object} [opts.agent] - For session saves
+ * @param {Object} [opts.room] - For room saves
+ * @param {Date}   [opts.now] - Injectable for testing
+ * @returns {string}
+ */
+export function buildNoteTitle({ kind, agent, room, now }) {
+  const d = now instanceof Date ? now : new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const date = `${yyyy}-${mm}-${dd}`;
+  const label = kind === 'summary' ? 'summary' : 'raw';
+  if (room) {
+    const name = room.name || 'Conference Room';
+    return `Room "${name}" — ${label} — ${date}`;
+  }
+  const name = agent?.name || 'Chat';
+  return `${name} — ${label} — ${date}`;
+}
+
+/**
+ * Save a conversation (raw or summary) as an Agent Hub project note.
+ *
+ * Returns `{ ok: true, note }` on success, `{ ok: false, error }` on failure.
+ * Does not throw — callers render feedback based on the returned shape.
+ *
+ * @param {Object} opts
+ * @param {Object} opts.api - api client exposing `createNote(projectId, {title, content})`
+ * @param {string} opts.projectId
+ * @param {string} opts.title
+ * @param {string} opts.content
+ */
+export async function saveConversationAsNote({ api, projectId, title, content }) {
+  if (!projectId) return { ok: false, error: new Error('Missing projectId') };
+  if (!title) return { ok: false, error: new Error('Missing title') };
+  try {
+    const note = await api.createNote(projectId, { title, content: content || '' });
+    return { ok: true, note };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err : new Error(String(err)) };
+  }
+}
+
+/**
  * Copy text to clipboard with fallback. Returns true on success.
  */
 export async function copyToClipboard(text) {

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { formatSessionExport, formatRoomExport } from './export.js';
+import {
+  formatSessionExport,
+  formatRoomExport,
+  buildNoteTitle,
+  saveConversationAsNote,
+} from './export.js';
 
 describe('formatSessionExport', () => {
   beforeEach(() => {
@@ -131,5 +136,120 @@ describe('formatRoomExport', () => {
     });
 
     expect(result).not.toContain('Agents:');
+  });
+});
+
+describe('buildNoteTitle', () => {
+  const now = new Date('2026-04-18T10:00:00Z');
+
+  it('uses agent name and date for a raw session save', () => {
+    const title = buildNoteTitle({ kind: 'raw', agent: { name: 'TestBot' }, now });
+    expect(title).toBe('TestBot — raw — 2026-04-18');
+  });
+
+  it('uses agent name and date for a summary session save', () => {
+    const title = buildNoteTitle({ kind: 'summary', agent: { name: 'TestBot' }, now });
+    expect(title).toBe('TestBot — summary — 2026-04-18');
+  });
+
+  it('falls back to "Chat" when no agent', () => {
+    const title = buildNoteTitle({ kind: 'raw', now });
+    expect(title).toBe('Chat — raw — 2026-04-18');
+  });
+
+  it('uses quoted room name when saving a room conversation', () => {
+    const title = buildNoteTitle({ kind: 'summary', room: { name: 'Design Review' }, now });
+    expect(title).toBe('Room "Design Review" — summary — 2026-04-18');
+  });
+
+  it('prefers room over agent when both provided', () => {
+    const title = buildNoteTitle({
+      kind: 'raw',
+      agent: { name: 'Alice' },
+      room: { name: 'Standup' },
+      now,
+    });
+    expect(title).toBe('Room "Standup" — raw — 2026-04-18');
+  });
+
+  it('falls back to "Conference Room" when room name is missing', () => {
+    const title = buildNoteTitle({ kind: 'raw', room: {}, now });
+    expect(title).toBe('Room "Conference Room" — raw — 2026-04-18');
+  });
+
+  it('treats non-summary kinds as raw label', () => {
+    const title = buildNoteTitle({ kind: 'anything-else', agent: { name: 'Bot' }, now });
+    expect(title).toBe('Bot — raw — 2026-04-18');
+  });
+
+  it('zero-pads single-digit months and days', () => {
+    const title = buildNoteTitle({
+      kind: 'raw',
+      agent: { name: 'Bot' },
+      now: new Date('2026-01-05T10:00:00Z'),
+    });
+    expect(title).toContain('2026-01-05');
+  });
+});
+
+describe('saveConversationAsNote', () => {
+  it('returns ok + the created note on success', async () => {
+    const note = { id: 'n1', title: 'T', content: 'C' };
+    const api = { createNote: vi.fn().mockResolvedValue(note) };
+    const result = await saveConversationAsNote({
+      api,
+      projectId: 'proj-a',
+      title: 'T',
+      content: 'C',
+    });
+    expect(result).toEqual({ ok: true, note });
+    expect(api.createNote).toHaveBeenCalledWith('proj-a', { title: 'T', content: 'C' });
+  });
+
+  it('defaults content to empty string when omitted', async () => {
+    const api = { createNote: vi.fn().mockResolvedValue({ id: 'n' }) };
+    await saveConversationAsNote({ api, projectId: 'p', title: 'hi' });
+    expect(api.createNote).toHaveBeenCalledWith('p', { title: 'hi', content: '' });
+  });
+
+  it('returns { ok: false, error } when the API rejects', async () => {
+    const api = { createNote: vi.fn().mockRejectedValue(new Error('409 duplicate')) };
+    const result = await saveConversationAsNote({
+      api,
+      projectId: 'p',
+      title: 't',
+      content: 'c',
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBeInstanceOf(Error);
+    expect(result.error.message).toBe('409 duplicate');
+  });
+
+  it('returns error without calling API when projectId missing', async () => {
+    const api = { createNote: vi.fn() };
+    const result = await saveConversationAsNote({ api, projectId: '', title: 't' });
+    expect(result.ok).toBe(false);
+    expect(result.error.message).toBe('Missing projectId');
+    expect(api.createNote).not.toHaveBeenCalled();
+  });
+
+  it('returns error without calling API when title missing', async () => {
+    const api = { createNote: vi.fn() };
+    const result = await saveConversationAsNote({ api, projectId: 'p', title: '' });
+    expect(result.ok).toBe(false);
+    expect(result.error.message).toBe('Missing title');
+    expect(api.createNote).not.toHaveBeenCalled();
+  });
+
+  it('coerces non-Error rejections into Error instances', async () => {
+    const api = { createNote: vi.fn().mockRejectedValue('plain string') };
+    const result = await saveConversationAsNote({
+      api,
+      projectId: 'p',
+      title: 't',
+      content: 'c',
+    });
+    expect(result.error).toBeInstanceOf(Error);
+    expect(result.error.message).toBe('plain string');
   });
 });

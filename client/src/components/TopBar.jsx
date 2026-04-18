@@ -1,5 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { formatSessionExport, copyToClipboard } from '../utils/export.js';
+import {
+  formatSessionExport,
+  copyToClipboard,
+  buildNoteTitle,
+  saveConversationAsNote,
+} from '../utils/export.js';
 import { api } from '../utils/api.js';
 import BugReportButton from './BugReportButton.jsx';
 
@@ -41,7 +46,7 @@ export default function TopBar({
   const [modelOpen, setModelOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
-  const [exportState, setExportState] = useState(null); // null | 'summarizing' | 'copied'
+  const [exportState, setExportState] = useState(null); // null | 'summarizing' | 'copied' | 'saving' | 'saved'
   const modelRef = useRef(null);
   const exportRef = useRef(null);
   const currentEngine = ENGINE_OPTIONS.find((e) => e.id === sessionEngine) || ENGINE_OPTIONS[0];
@@ -435,7 +440,7 @@ export default function TopBar({
               className="text-gray-400 hover:text-white p-2 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
               title="Export conversation"
             >
-              {exportState === 'copied' ? (
+              {exportState === 'copied' || exportState === 'saved' ? (
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   className="h-5 w-5 text-emerald-400"
@@ -448,7 +453,7 @@ export default function TopBar({
                     clipRule="evenodd"
                   />
                 </svg>
-              ) : exportState === 'summarizing' ? (
+              ) : exportState === 'summarizing' || exportState === 'saving' ? (
                 <svg
                   className="h-5 w-5 animate-spin text-blue-400"
                   xmlns="http://www.w3.org/2000/svg"
@@ -538,6 +543,104 @@ export default function TopBar({
                   </svg>
                   Copy Summary
                 </button>
+                {projectId && (
+                  <>
+                    <div className="my-1 border-t border-gray-700" />
+                    <button
+                      onClick={async () => {
+                        setExportOpen(false);
+                        setExportState('saving');
+                        const content = formatSessionExport({
+                          agent,
+                          messages,
+                          sessionEngine,
+                        });
+                        const title = buildNoteTitle({ kind: 'raw', agent });
+                        const { ok, note, error } = await saveConversationAsNote({
+                          api,
+                          projectId,
+                          title,
+                          content,
+                        });
+                        if (ok) {
+                          setExportState('saved');
+                          setTimeout(() => setExportState(null), 2000);
+                          showToast?.(`Saved note "${note.title}"`, 'success');
+                        } else {
+                          setExportState(null);
+                          showToast?.(
+                            `Save note failed: ${error?.message || 'Unknown error'}`,
+                            'error',
+                          );
+                        }
+                      }}
+                      disabled={exportState === 'saving' || exportState === 'summarizing'}
+                      className="w-full text-left px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-4 w-4 text-gray-500"
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M3 4a2 2 0 012-2h6.586A2 2 0 0113 2.586L16.414 6A2 2 0 0117 7.414V16a2 2 0 01-2 2H5a2 2 0 01-2-2V4zm7 10a1 1 0 11-2 0v-2H6a1 1 0 110-2h2V8a1 1 0 112 0v2h2a1 1 0 110 2h-2v2z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                      Save Raw as Note
+                    </button>
+                    <button
+                      onClick={async () => {
+                        setExportOpen(false);
+                        setExportState('summarizing');
+                        try {
+                          const { summary } = await api.summarizeSession(activeSessionId);
+                          setExportState('saving');
+                          const title = buildNoteTitle({ kind: 'summary', agent });
+                          const { ok, note, error } = await saveConversationAsNote({
+                            api,
+                            projectId,
+                            title,
+                            content: summary,
+                          });
+                          if (ok) {
+                            setExportState('saved');
+                            setTimeout(() => setExportState(null), 2000);
+                            showToast?.(`Saved note "${note.title}"`, 'success');
+                          } else {
+                            setExportState(null);
+                            showToast?.(
+                              `Save note failed: ${error?.message || 'Unknown error'}`,
+                              'error',
+                            );
+                          }
+                        } catch (err) {
+                          console.error('Save summary as note failed:', err);
+                          setExportState(null);
+                          showToast?.(`Summary failed: ${err.message}`, 'error');
+                        }
+                      }}
+                      disabled={exportState === 'summarizing' || exportState === 'saving'}
+                      className="w-full text-left px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-4 w-4 text-gray-500"
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M3 4a2 2 0 012-2h6.586A2 2 0 0113 2.586L16.414 6A2 2 0 0117 7.414V16a2 2 0 01-2 2H5a2 2 0 01-2-2V4zm3 5a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h4a1 1 0 100-2H7z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                      Save Summary as Note
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
