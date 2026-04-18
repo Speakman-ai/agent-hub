@@ -22,9 +22,15 @@ import { getApiBaseUrl } from '../utils/config';
 import { extractCoordinationBlocks, pickHandoffRow } from '../utils/coordinationBlocks';
 import { copyToClipboard, canCopy } from '../utils/clipboard';
 import { attachmentKind } from '../utils/attachmentKind';
+import { createSelectableMarkdownRules } from '../utils/selectableMarkdownRules';
 import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage';
 import { stripAskAnswerBlocks } from '../utils/askAnswers';
 import HandoffCard from './HandoffCard';
+
+// Built once — overrides the Markdown library's default text/code rules so
+// every leaf <Text> is `selectable`, enabling browser-like drag-select copy
+// inside assistant bubbles.
+const selectableMarkdownRules = createSelectableMarkdownRules(Text);
 
 function notifyCopied(success) {
   const msg = success ? 'Copied to clipboard' : 'Nothing to copy';
@@ -570,7 +576,11 @@ function ChatMessage({
                 </View>
               </View>
             ) : (
-              displayContent ? <Text style={styles.userText}>{displayContent}</Text> : null
+              displayContent ? (
+                <Text style={styles.userText} selectable>
+                  {displayContent}
+                </Text>
+              ) : null
             )}
             {isQueued && !editing && (
               <View style={styles.queuedActions}>
@@ -586,7 +596,9 @@ function ChatMessage({
         ) : (
           <>
             {assistantBlocks.stripped ? (
-              <Markdown style={markdownStyles}>{assistantBlocks.stripped}</Markdown>
+              <Markdown style={markdownStyles} rules={selectableMarkdownRules}>
+                {assistantBlocks.stripped}
+              </Markdown>
             ) : null}
             {assistantBlocks.handoff && (
               <HandoffCard
