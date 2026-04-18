@@ -4,6 +4,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { loadOrgs, migrateFromLegacy } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
 import { hydrateChangesReady } from '../utils/changesReady';
+import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
 
 const AppContext = createContext(null);
 
@@ -49,6 +50,18 @@ export function AppProvider({ children }) {
   const [eventsByMessage, setEventsByMessage] = useState({});
   // Cron-linked sessions
   const [cronSessions, setCronSessions] = useState([]);
+  // Threads (persistent output logs for crons & heartbeats)
+  // Unread entry counts keyed by projectId
+  const [unreadThreadCounts, setUnreadThreadCounts] = useState({});
+  // The last raw thread event received from the server. Screens listening for
+  // live updates react to this ref bump via a counter. Shape:
+  //   { type, projectId, thread?, threadId?, entry?, bump }
+  const [lastThreadEvent, setLastThreadEvent] = useState(null);
+  // Tracks the project currently being viewed in ThreadsScreen so we can
+  // suppress unread-badge increments (counts are only incremented when the
+  // user isn't already looking at that project's threads list).
+  const activeThreadsProjectIdRef = useRef(null);
+  const activeThreadIdRef = useRef(null);
   // Kanban board refresh trigger
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
@@ -434,6 +447,43 @@ export function AppProvider({ children }) {
           return next;
         });
         break;
+
+      // ── Thread events (persistent output logs) ───────────────
+      case 'thread_created':
+        setLastThreadEvent({
+          type: 'thread_created',
+          projectId: data.projectId,
+          thread: data.thread,
+          bump: Date.now(),
+        });
+        break;
+      case 'thread_entry_created': {
+        setUnreadThreadCounts((prev) =>
+          applyEntryUnread(
+            prev,
+            { projectId: data.projectId, threadId: data.threadId },
+            activeThreadIdRef.current,
+          ),
+        );
+        setLastThreadEvent({
+          type: 'thread_entry_created',
+          projectId: data.projectId,
+          threadId: data.threadId,
+          threadName: data.threadName,
+          threadType: data.threadType,
+          entry: data.entry,
+          bump: Date.now(),
+        });
+        break;
+      }
+      case 'thread_deleted':
+        setLastThreadEvent({
+          type: 'thread_deleted',
+          projectId: data.projectId,
+          threadId: data.threadId,
+          bump: Date.now(),
+        });
+        break;
     }
   }, []);
 
@@ -766,6 +816,33 @@ export function AppProvider({ children }) {
     setEventsByMessage((prev) => ({ ...prev, [messageId]: events }));
   }, []);
 
+  /**
+   * Clear the unread-threads badge for a project. Call when the user opens
+   * the threads list or a specific thread so the sidebar chip resets.
+   */
+  const markProjectThreadsRead = useCallback((projectId) => {
+    if (!projectId) return;
+    setUnreadThreadCounts((prev) => clearProjectUnread(prev, projectId));
+  }, []);
+
+  /**
+   * ThreadsScreen calls this when the user enters the list view for a project,
+   * so the WS handler knows which project is currently focused (used later if
+   * we want to keep the list live without also pinging the badge).
+   */
+  const setActiveThreadsProject = useCallback((projectId) => {
+    activeThreadsProjectIdRef.current = projectId;
+  }, []);
+
+  /**
+   * ThreadsScreen calls this when the user opens a specific thread detail.
+   * Passing `null` clears (e.g. on back / unmount). While set, incoming entry
+   * events for that thread skip unread-count bumps.
+   */
+  const setActiveThread = useCallback((threadId) => {
+    activeThreadIdRef.current = threadId;
+  }, []);
+
   const dismissChangesReady = useCallback((sessionId) => {
     setChangesReady((prev) => {
       if (!prev[sessionId]) return prev;
@@ -832,6 +909,12 @@ export function AppProvider({ children }) {
     kanbanRefreshKey,
     changesReady,
     dismissChangesReady,
+    // Threads
+    unreadThreadCounts,
+    lastThreadEvent,
+    markProjectThreadsRead,
+    setActiveThreadsProject,
+    setActiveThread,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

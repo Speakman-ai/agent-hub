@@ -105,6 +105,43 @@ describe('api webhook helpers — URL + method + body parity with web client', (
   });
 });
 
+describe('api threads helpers — URL + method parity with web client', () => {
+  it('getThreads(projectId) without filter → GET /projects/:id/threads', async () => {
+    await api.getThreads('agent-hub');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/threads');
+    expect(init?.method).toBeUndefined();
+  });
+
+  it('getThreads(projectId, type) appends the type query', async () => {
+    await api.getThreads('agent-hub', 'cron');
+    const [url] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/threads?type=cron');
+  });
+
+  it('getThreads URL-encodes the type parameter', async () => {
+    await api.getThreads('agent-hub', 'heart beat');
+    const [url] = lastCall();
+    expect(url).toBe(
+      'https://example.test/api/projects/agent-hub/threads?type=heart%20beat',
+    );
+  });
+
+  it('getThread(threadId) → GET /threads/:id', async () => {
+    await api.getThread('thread-xyz');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/threads/thread-xyz');
+    expect(init?.method).toBeUndefined();
+  });
+
+  it('getThreadEntries(threadId) → GET /threads/:id/entries', async () => {
+    await api.getThreadEntries('thread-xyz');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/threads/thread-xyz/entries');
+    expect(init?.method).toBeUndefined();
+  });
+});
+
 describe('api webhook helpers — request headers + error handling', () => {
   it('attaches the API key and JSON content-type to every call', async () => {
     await api.getWebhooks();

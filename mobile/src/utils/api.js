@@ -284,6 +284,14 @@ export const api = {
   unregisterWebhook: (id) => fetchJSON(`/webhooks/${id}/register`, { method: 'DELETE' }),
   getWebhookRegistration: (id) => fetchJSON(`/webhooks/${id}/register`),
 
+  // Threads (persistent output logs for crons & heartbeats)
+  getThreads: (projectId, type) => {
+    const qs = type ? `?type=${encodeURIComponent(type)}` : '';
+    return fetchJSON(`/projects/${projectId}/threads${qs}`);
+  },
+  getThread: (threadId) => fetchJSON(`/threads/${threadId}`),
+  getThreadEntries: (threadId) => fetchJSON(`/threads/${threadId}/entries`),
+
   // Wiki
   getWikiPages: (projectId) => fetchJSON(`/projects/${projectId}/wiki`),
   getWikiPage: (projectId, slug) => fetchJSON(`/projects/${projectId}/wiki/${slug}`),

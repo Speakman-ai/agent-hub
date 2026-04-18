@@ -34,6 +34,7 @@ export default function DrawerContent({ navigation }) {
     refreshProjects,
     refreshAgents,
     cronSessions,
+    unreadThreadCounts,
   } = useApp();
 
   const [collapsedAgents, setCollapsedAgents] = useState({});
@@ -323,6 +324,26 @@ export default function DrawerContent({ navigation }) {
                     >
                       <Text style={styles.boardButtonText}>{'\u25A6'} Board</Text>
                     </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.boardButton}
+                      onPress={() => {
+                        navigation.navigate('Threads', { projectId: project.id, project });
+                        navigation.closeDrawer();
+                      }}
+                    >
+                      <View style={styles.threadsButtonContent}>
+                        <Text style={styles.boardButtonText}>{'\u2630'} Threads</Text>
+                        {unreadThreadCounts?.[project.id] > 0 && (
+                          <View style={styles.unreadBadge}>
+                            <Text style={styles.unreadBadgeText}>
+                              {unreadThreadCounts[project.id] > 99
+                                ? '99+'
+                                : unreadThreadCounts[project.id]}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                    </TouchableOpacity>
                     {project.githubRepo ? (
                       <TouchableOpacity
                         style={styles.boardButton}
@@ -588,6 +609,25 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.gray500,
     fontWeight: '500',
+  },
+  threadsButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  unreadBadge: {
+    backgroundColor: colors.rose400,
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  unreadBadgeText: {
+    color: colors.white,
+    fontSize: 9,
+    fontWeight: '700',
   },
   projectDivider: {
     borderTopWidth: 1,
