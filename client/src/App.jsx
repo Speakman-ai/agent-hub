@@ -6,6 +6,7 @@ import ThinkingIndicator from './components/ThinkingIndicator.jsx';
 import SessionTail from './components/SessionTail.jsx';
 import MessageInput from './components/MessageInput.jsx';
 import AgentSwitcher from './components/AgentSwitcher.jsx';
+import ForwardSessionModal, { filterForwardTargets } from './components/ForwardSessionModal.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import SkillsPage from './components/SkillsPage.jsx';
 import RoomChat from './components/RoomChat.jsx';
@@ -78,6 +79,7 @@ export default function App() {
   }, []);
   const [currentView, setCurrentView] = useState('chat');
   const [showSwitcher, setShowSwitcher] = useState(false);
+  const [showForward, setShowForward] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deletingSessionIds, setDeletingSessionIds] = useState(new Set());
   const [deletingBulk, setDeletingBulk] = useState(null); // 'all' | 'inactive' | null
@@ -173,6 +175,8 @@ export default function App() {
   const scrollContainerRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const activeAgentIdRef = useRef(activeAgentId);
+  activeAgentIdRef.current = activeAgentId;
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const agentsRef = useRef(agents);
@@ -1140,6 +1144,21 @@ export default function App() {
         break;
       }
 
+      case 'session_forwarded': {
+        // A session was forwarded somewhere — if the new session belongs to
+        // the currently-active agent, splice it into the sidebar list so the
+        // user sees it without a refresh. The initiating client also calls
+        // onForwarded directly for optimistic navigation.
+        const newSession = data.session;
+        if (newSession && newSession.agent_id === activeAgentIdRef.current) {
+          setSessions((prev) => {
+            if (prev.some((s) => s.id === newSession.id)) return prev;
+            return [newSession, ...prev];
+          });
+        }
+        break;
+      }
+
       case 'handoff_error': {
         // Surface the failure on the source session's handoff list so the
         // UI can render a "Failed — <reason>" chip on the card instead of
@@ -1902,6 +1921,8 @@ export default function App() {
                 : projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
             }
             showToast={showToast}
+            onOpenForward={() => setShowForward(true)}
+            canForward={!!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0}
           />
 
           {currentView.startsWith('kanban:') ? (
@@ -2183,6 +2204,31 @@ export default function App() {
               setCurrentView('chat');
             }}
             onClose={() => setShowSwitcher(false)}
+          />
+        )}
+
+        {/* Forward Session Modal */}
+        {showForward && activeSessionId && activeAgent && (
+          <ForwardSessionModal
+            sourceAgent={activeAgent}
+            agents={agents}
+            sessionId={activeSessionId}
+            onClose={() => setShowForward(false)}
+            onForward={({ targetAgentId, prompt, autoStart }) =>
+              api.forwardSession(activeSessionId, { targetAgentId, prompt, autoStart })
+            }
+            onForwarded={(result) => {
+              const session = result?.session;
+              if (!session) return;
+              // Optimistically navigate into the new session (mirrors the
+              // handoff open-target pattern in `handleOpenHandoffSession`).
+              pendingSessionIdRef.current = session.id;
+              setActiveAgentId(session.agent_id);
+              setActiveSessionId(session.id);
+              setCurrentView('chat');
+              showToast(`Forwarded to ${session.name || 'new session'}`, 'success', 4000);
+            }}
+            onError={(msg) => showToast(`Forward failed: ${msg}`, 'error', 6000)}
           />
         )}
 

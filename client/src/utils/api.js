@@ -92,6 +92,17 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+  forwardSession: (sessionId, { targetAgentId, messageIds, prompt, autoStart } = {}) =>
+    fetchJSON(`/sessions/${sessionId}/forward`, {
+      method: 'POST',
+      body: JSON.stringify({
+        targetAgentId,
+        ...(messageIds ? { messageIds } : {}),
+        ...(prompt ? { prompt } : {}),
+        ...(autoStart != null ? { autoStart: !!autoStart } : {}),
+      }),
+      timeout: 30000,
+    }),
 
   updateAgent: (agentId, data) =>
     fetchJSON(`/agents/${agentId}`, {

@@ -68,6 +68,19 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+  // Forward the entire session transcript to a new session on another agent.
+  // Mirrors the web client. Body: { targetAgentId, messageIds?, prompt?, autoStart? }
+  // Returns { session, forwardedMessageId }.
+  forwardSession: (sessionId, { targetAgentId, messageIds, prompt, autoStart } = {}) =>
+    fetchJSON(`/sessions/${sessionId}/forward`, {
+      method: 'POST',
+      body: JSON.stringify({
+        targetAgentId,
+        ...(messageIds ? { messageIds } : {}),
+        ...(prompt ? { prompt } : {}),
+        ...(autoStart != null ? { autoStart: !!autoStart } : {}),
+      }),
+    }),
   updateAgent: (agentId, data) =>
     fetchJSON(`/agents/${agentId}`, {
       method: 'PATCH',

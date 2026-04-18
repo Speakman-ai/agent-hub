@@ -19,6 +19,7 @@ import { describeDetectionBadge } from '../utils/worktreeState';
 import { api } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
 import BugReportButton from './BugReportButton';
+import ForwardSessionModal, { filterForwardTargets } from './ForwardSessionModal';
 
 const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
@@ -62,6 +63,8 @@ export default function TopBar({ projectId, agentId } = {}) {
     handleModelChange,
     handleNewSession,
     activeSessionId,
+    agents,
+    handleOpenHandoffSession,
   } = useApp();
   const { openSidebar } = useContext(SidebarContext);
 
@@ -70,7 +73,11 @@ export default function TopBar({ projectId, agentId } = {}) {
   const effectiveProjectId = projectId || activeAgent?.projectId || '';
 
   const [showPicker, setShowPicker] = useState(false);
+  const [showForward, setShowForward] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
+
+  const canForward =
+    !!activeSessionId && filterForwardTargets(agents || [], activeAgent).length > 0;
 
   const handleSummarize = async () => {
     if (!activeSessionId || summarizing) return;
@@ -217,6 +224,23 @@ export default function TopBar({ projectId, agentId } = {}) {
           </Text>
         </Pressable>
 
+        {/* Forward session to another agent in the same project */}
+        {activeAgent && activeSessionId && (
+          <TouchableOpacity
+            style={styles.newButton}
+            onPress={() => setShowForward(true)}
+            disabled={!canForward}
+            accessibilityRole="button"
+            accessibilityLabel="Forward session to another agent"
+          >
+            <Ionicons
+              name="arrow-redo-outline"
+              size={18}
+              color={canForward ? colors.white : colors.gray500}
+            />
+          </TouchableOpacity>
+        )}
+
         {/* Summarize current session — disabled when no session or mid-request */}
         {activeAgent && (
           <TouchableOpacity
@@ -247,6 +271,31 @@ export default function TopBar({ projectId, agentId } = {}) {
           <Ionicons name="add" size={20} color={colors.white} />
         </TouchableOpacity>
       </View>
+
+      {/* Forward Session Modal */}
+      <ForwardSessionModal
+        visible={showForward}
+        sourceAgent={activeAgent}
+        agents={agents || []}
+        sessionId={activeSessionId}
+        onClose={() => setShowForward(false)}
+        onForward={({ targetAgentId, prompt, autoStart }) =>
+          api.forwardSession(activeSessionId, { targetAgentId, prompt, autoStart })
+        }
+        onForwarded={(result) => {
+          const session = result?.session;
+          if (!session) return;
+          // Reuse the handoff-open path: flips activeAgent + activeSession,
+          // stashing targetSessionId in pendingSessionIdRef so the sessions
+          // loader honors it instead of clobbering with data[0].id.
+          if (typeof handleOpenHandoffSession === 'function') {
+            handleOpenHandoffSession(session.agent_id, session.id);
+          }
+        }}
+        onError={(msg) =>
+          Alert.alert('Forward failed', msg)
+        }
+      />
 
       {/* Engine/Model Picker Modal */}
       <Modal

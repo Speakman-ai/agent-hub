@@ -101,6 +101,8 @@ export function AppProvider({ children }) {
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const activeAgentIdRef = useRef(activeAgentId);
+  activeAgentIdRef.current = activeAgentId;
   const activeRoomIdRef = useRef(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
   // Track when a session was explicitly navigated to (e.g. from a handoff
@@ -493,6 +495,21 @@ export function AppProvider({ children }) {
       case 'session_deleted':
         setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
         break;
+
+      // A session was forwarded from another agent — if the new session
+      // belongs to the currently-active agent, splice it into the sidebar
+      // list so the user sees it without a manual refresh. Navigation of
+      // the originating client is handled by ForwardSessionModal directly.
+      case 'session_forwarded': {
+        const newSession = data.session;
+        if (newSession && newSession.agent_id === activeAgentIdRef.current) {
+          setSessions((prev) => {
+            if (prev.some((s) => s.id === newSession.id)) return prev;
+            return [newSession, ...prev];
+          });
+        }
+        break;
+      }
 
       // Ad-hoc PR creation — agent finished a worktree session with uncommitted
       // changes and no existing kanban card. Surface the "Create PR" banner.
