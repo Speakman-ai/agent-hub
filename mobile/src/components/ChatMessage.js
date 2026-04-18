@@ -22,6 +22,7 @@ import { getApiBaseUrl } from '../utils/config';
 import { extractCoordinationBlocks, pickHandoffRow } from '../utils/coordinationBlocks';
 import { copyToClipboard, canCopy } from '../utils/clipboard';
 import { attachmentKind } from '../utils/attachmentKind';
+import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage';
 import HandoffCard from './HandoffCard';
 
 function notifyCopied(success) {
@@ -295,6 +296,141 @@ const imageStyles = StyleSheet.create({
   },
 });
 
+function SystemPrCreatedMessage({ message }) {
+  const meta = parsePrCreatedMetadata(message.metadata);
+  const handleOpenPr = useCallback(() => {
+    if (!meta?.prUrl) return;
+    Linking.openURL(meta.prUrl).catch(() => {
+      Alert.alert('Unable to open PR', 'The pull request link could not be opened.');
+    });
+  }, [meta]);
+
+  if (!meta) {
+    // Malformed metadata — render a minimal generic system callout so we
+    // never crash the timeline on unexpected payloads. Mirrors the web
+    // client's fallback in client/src/components/ChatMessage.jsx.
+    return (
+      <View style={prStyles.fallbackContainer}>
+        <Text style={prStyles.fallbackText}>{message.content || 'System event'}</Text>
+      </View>
+    );
+  }
+
+  const prLabel = meta.prNumber ? `#${meta.prNumber}` : 'View PR';
+  return (
+    <View style={prStyles.container}>
+      <View style={prStyles.card}>
+        <View style={prStyles.headerRow}>
+          <Ionicons name="git-pull-request" size={16} color={colors.emerald400} />
+          <Text style={prStyles.headerText}>Pull request created from these changes</Text>
+        </View>
+        <View style={prStyles.metaRow}>
+          <TouchableOpacity onPress={handleOpenPr} accessibilityRole="link">
+            <Text style={prStyles.prLink}>{prLabel}</Text>
+          </TouchableOpacity>
+          {meta.commitSha ? (
+            <View style={prStyles.shaPill}>
+              <Text style={prStyles.shaText}>{shortSha(meta.commitSha)}</Text>
+            </View>
+          ) : null}
+          {meta.commitTitle ? (
+            <Text style={prStyles.commitTitle} numberOfLines={1}>
+              {meta.commitTitle}
+            </Text>
+          ) : null}
+        </View>
+        {meta.cardTitle ? (
+          <Text style={prStyles.cardLine}>
+            Linked card: <Text style={prStyles.cardTitle}>{meta.cardTitle}</Text>
+          </Text>
+        ) : null}
+        {message.created_at ? (
+          <Text style={prStyles.timestamp}>{relativeTime(message.created_at)}</Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+const prStyles = StyleSheet.create({
+  container: {
+    alignItems: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 12,
+  },
+  card: {
+    width: '95%',
+    backgroundColor: colors.emerald900_40,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  headerText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.emerald400,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  prLink: {
+    color: colors.emerald400,
+    textDecorationLine: 'underline',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  shaPill: {
+    backgroundColor: 'rgba(17, 24, 39, 0.6)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  shaText: {
+    color: colors.gray400,
+    fontSize: 11,
+    fontFamily: 'monospace',
+  },
+  commitTitle: {
+    color: colors.gray300,
+    fontSize: 13,
+    flexShrink: 1,
+  },
+  cardLine: {
+    color: colors.gray500,
+    fontSize: 11,
+    marginTop: 6,
+  },
+  cardTitle: {
+    color: colors.gray400,
+  },
+  timestamp: {
+    color: colors.gray600,
+    fontSize: 10,
+    marginTop: 6,
+  },
+  fallbackContainer: {
+    alignItems: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 12,
+  },
+  fallbackText: {
+    fontSize: 11,
+    fontStyle: 'italic',
+    color: colors.gray500,
+  },
+});
+
 function ChatMessage({
   message,
   agentColor,
@@ -305,6 +441,9 @@ function ChatMessage({
   sessionHandoffs,
   onOpenSession,
 }) {
+  if (message.role === 'system') {
+    return <SystemPrCreatedMessage message={message} />;
+  }
   const isQueued = message.queued;
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
