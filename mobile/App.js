@@ -18,6 +18,7 @@ import PullRequestsScreen from './src/screens/PullRequestsScreen';
 import ThreadsScreen from './src/screens/ThreadsScreen';
 import DrawerContent from './src/components/DrawerContent';
 import SetupWizard from './src/components/SetupWizard';
+import LoginScreen from './src/components/LoginScreen';
 import { colors } from './src/theme/colors';
 
 const Stack = createNativeStackNavigator();
@@ -43,7 +44,15 @@ function AppContent() {
   const slideAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const overlayAnim = useRef(new Animated.Value(0)).current;
   const navigationRef = useRef(null);
-  const { setActiveSessionId, configReady, needsSetup, completeSetup, registerNavigator } = useApp();
+  const {
+    setActiveSessionId,
+    configReady,
+    needsSetup,
+    completeSetup,
+    needsAuth,
+    completeAuth,
+    registerNavigator,
+  } = useApp();
 
   const openSidebar = useCallback(() => {
     sidebarOpenRef.current = true;
@@ -137,6 +146,11 @@ function AppContent() {
   // main drawer/stack so the user can't end up staring at an empty chat.
   if (needsSetup) {
     return <SetupWizard onComplete={completeSetup} />;
+  }
+
+  // Server has auth configured and we don't have a valid JWT — gate on login.
+  if (needsAuth) {
+    return <LoginScreen onAuthenticated={completeAuth} />;
   }
 
   return (

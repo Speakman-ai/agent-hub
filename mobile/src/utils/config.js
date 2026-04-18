@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getToken as getJwtToken } from './auth.js';
 
 const STORAGE_KEY = 'agent-hub-connection';
 
@@ -65,7 +66,10 @@ export function getServerBaseUrl() {
 export function getWsUrl() {
   if (_cachedConfig?.remoteUrl) {
     let wsUrl = _cachedConfig.remoteUrl.replace(/\/+$/, '').replace(/^http/, 'ws');
-    if (_cachedConfig.apiKey) {
+    const jwt = getJwtToken();
+    if (jwt) {
+      wsUrl += `?token=${encodeURIComponent(jwt)}`;
+    } else if (_cachedConfig.apiKey) {
       wsUrl += `?apiKey=${encodeURIComponent(_cachedConfig.apiKey)}`;
     }
     return wsUrl;
@@ -73,8 +77,12 @@ export function getWsUrl() {
   return ''; // No URL configured yet
 }
 
-/** Get auth headers for API requests. */
+/** Get auth headers for API requests. JWT takes precedence over legacy apiKey. */
 export function getAuthHeaders() {
+  const jwt = getJwtToken();
+  if (jwt) {
+    return { Authorization: `Bearer ${jwt}` };
+  }
   if (_cachedConfig?.apiKey) {
     return { 'X-API-Key': _cachedConfig.apiKey };
   }

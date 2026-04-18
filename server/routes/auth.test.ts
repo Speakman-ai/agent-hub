@@ -1,0 +1,231 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import express from 'express';
+import supertest from 'supertest';
+import { tmpdir } from 'os';
+import { mkdtempSync, rmSync, existsSync } from 'fs';
+import path from 'path';
+
+// Point the auth store at a throwaway tmp dir per test. We rewire the
+// config module used by auth-store via vi.mock so the file lives
+// somewhere we own and can clean up.
+let TMP_DIR = '';
+const mockConfig: { apiKey: string | null; dataDir: string } = {
+  apiKey: null,
+  get dataDir() {
+    return TMP_DIR;
+  },
+} as { apiKey: string | null; dataDir: string };
+
+vi.mock('../config.js', () => ({
+  default: mockConfig,
+}));
+
+const { default: createAuthRoutes } = await import('./auth.js');
+const { authMiddleware } = await import('../auth.js');
+const { reloadAuthRecord, setAuthFilePathForTests, getAuthRecord } =
+  await import('../auth-store.js');
+
+function buildApp(): ReturnType<typeof express> {
+  const app = express();
+  app.use(express.json());
+  app.use(createAuthRoutes());
+  return app;
+}
+
+/**
+ * Build an app that runs the real `authMiddleware` before the routes —
+ * used by the regression tests that verify the middleware-level apiKey
+ * gate on /api/auth/setup.
+ */
+function buildGatedApp(): ReturnType<typeof express> {
+  const app = express();
+  app.use(express.json());
+  app.use(authMiddleware);
+  app.use(createAuthRoutes());
+  return app;
+}
+
+describe('POST /api/auth/setup', () => {
+  beforeEach(() => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+  });
+
+  it('creates the single-user record and returns a token', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    expect(res.status).toBe(200);
+    expect(res.body.token).toBeTypeOf('string');
+    expect(res.body.token.split('.')).toHaveLength(3);
+    expect(res.body.user).toEqual({ username: 'owner' });
+    expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    expect(existsSync(path.join(TMP_DIR, 'auth.json'))).toBe(true);
+    expect(getAuthRecord()?.username).toBe('owner');
+  });
+
+  it('rejects a short password', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'short' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/password/i);
+  });
+
+  it('rejects an invalid username', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'has spaces!', password: 'a-strong-password' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/username/i);
+  });
+
+  it('refuses to re-run setup once auth is configured', async () => {
+    await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    const res = await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('POST /api/auth/setup — apiKey-gated deployments (PR #407 regression)', () => {
+  // These tests go through the real `authMiddleware` to verify the
+  // first-run setup window cannot be hijacked by unauthenticated clients
+  // on deployments that are already protected only by `config.apiKey`.
+  beforeEach(() => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    reloadAuthRecord();
+    mockConfig.apiKey = null;
+  });
+
+  it('rejects setup without X-API-Key when apiKey is configured', async () => {
+    mockConfig.apiKey = 'legacy-key';
+    const res = await supertest(buildGatedApp())
+      .post('/api/auth/setup')
+      .send({ username: 'impostor', password: 'picked-by-attacker' });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/API key required/i);
+    expect(existsSync(path.join(TMP_DIR, 'auth.json'))).toBe(false);
+    expect(getAuthRecord()).toBeNull();
+  });
+
+  it('rejects setup with wrong X-API-Key when apiKey is configured', async () => {
+    mockConfig.apiKey = 'legacy-key';
+    const res = await supertest(buildGatedApp())
+      .post('/api/auth/setup')
+      .set('X-API-Key', 'wrong-key')
+      .send({ username: 'impostor', password: 'picked-by-attacker' });
+    // 403 when a key was provided but didn't match (existing apiKey path);
+    // 401 when no key was provided. Either way the handler must not run
+    // and auth.json must not be written.
+    expect([401, 403]).toContain(res.status);
+    expect(existsSync(path.join(TMP_DIR, 'auth.json'))).toBe(false);
+  });
+
+  it('accepts setup with the matching X-API-Key', async () => {
+    mockConfig.apiKey = 'legacy-key';
+    const res = await supertest(buildGatedApp())
+      .post('/api/auth/setup')
+      .set('X-API-Key', 'legacy-key')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    expect(res.status).toBe(200);
+    expect(res.body.token.split('.')).toHaveLength(3);
+    expect(existsSync(path.join(TMP_DIR, 'auth.json'))).toBe(true);
+  });
+
+  it('still allows setup on deployments with no apiKey configured', async () => {
+    mockConfig.apiKey = null;
+    const res = await supertest(buildGatedApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('POST /api/auth/login', () => {
+  beforeEach(async () => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    // Seed a user.
+    await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'correct-password' });
+    reloadAuthRecord();
+  });
+
+  it('returns a JWT for correct credentials', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/auth/login')
+      .send({ username: 'owner', password: 'correct-password' });
+    expect(res.status).toBe(200);
+    expect(res.body.token.split('.')).toHaveLength(3);
+    expect(res.body.user.username).toBe('owner');
+  });
+
+  it('rejects wrong password with 401', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/auth/login')
+      .send({ username: 'owner', password: 'wrong-password' });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects unknown username with 401', async () => {
+    const res = await supertest(buildApp())
+      .post('/api/auth/login')
+      .send({ username: 'impostor', password: 'correct-password' });
+    expect(res.status).toBe(401);
+  });
+
+  it('409s when auth has not been set up yet', async () => {
+    // Fresh dir — no user.
+    rmSync(TMP_DIR, { recursive: true });
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    reloadAuthRecord();
+    const res = await supertest(buildApp())
+      .post('/api/auth/login')
+      .send({ username: 'owner', password: 'correct-password' });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('GET /api/auth/status', () => {
+  beforeEach(() => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    reloadAuthRecord();
+  });
+
+  it('reports unconfigured before setup', async () => {
+    const res = await supertest(buildApp()).get('/api/auth/status');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ authConfigured: false, username: null });
+  });
+
+  it('reports configured + username after setup', async () => {
+    await supertest(buildApp())
+      .post('/api/auth/setup')
+      .send({ username: 'owner', password: 'a-strong-password' });
+    reloadAuthRecord();
+    const res = await supertest(buildApp()).get('/api/auth/status');
+    expect(res.body).toEqual({ authConfigured: true, username: 'owner' });
+  });
+});
+
+describe('POST /api/auth/logout', () => {
+  beforeEach(() => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    reloadAuthRecord();
+  });
+
+  it('returns ok (stateless — client drops the token)', async () => {
+    const res = await supertest(buildApp()).post('/api/auth/logout');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+  });
+});

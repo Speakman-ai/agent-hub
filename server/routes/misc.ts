@@ -8,6 +8,7 @@ import { getSlackStatus, restartSlack, getSlackMessages, getAllSlackMessages } f
 import type { RouteDeps, EnrichedAgent, AppConfig, Stmts, Project } from '../types.js';
 import { getLogBuffer } from '../server-log.js';
 import { PUSH_EVENT_TYPES } from '../push.js';
+import { isAuthConfigured } from '../auth-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Resolve the server version from server/package.json (one level up from
@@ -65,7 +66,9 @@ export function createHealthRoute(deps: HealthRouteDeps): Router {
       uptime: process.uptime(),
       projects: getProjects().length,
       agents: allAgents().length,
-      authRequired: !!config.apiKey,
+      authRequired: !!config.apiKey || isAuthConfigured(),
+      apiKeyAuthEnabled: !!config.apiKey,
+      jwtAuthEnabled: isAuthConfigured(),
     });
   });
 

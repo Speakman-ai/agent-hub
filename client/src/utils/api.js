@@ -1,4 +1,5 @@
 import { getApiBase, getAuthHeaders } from './connection.js';
+import { getToken as getJwt, clearToken } from './auth.js';
 
 async function fetchJSON(url, options = {}) {
   const base = getApiBase();
@@ -15,6 +16,13 @@ async function fetchJSON(url, options = {}) {
     signal: fetchOpts.signal || AbortSignal.timeout(timeout),
   });
   if (!res.ok) {
+    // If a JWT-authenticated request is rejected, the token is stale — drop
+    // it and reload so <AuthGate /> can send the user back to the login
+    // screen. We deliberately don't do this for apiKey-only setups.
+    if (res.status === 401 && getJwt()) {
+      clearToken();
+      if (typeof window !== 'undefined') window.location.reload();
+    }
     let detail = '';
     try {
       const body = await res.json();

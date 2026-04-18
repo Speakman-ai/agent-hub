@@ -15,6 +15,14 @@ vi.mock('./uploadFile', () => ({
   uploadFile: vi.fn(async (ref) => ({ __mockedWith: ref })),
 }));
 
+// Stub ./auth — it pulls in @react-native-async-storage/async-storage which
+// can't resolve in a plain node test environment. The tests below don't
+// exercise the 401 JWT-clear path, so no-op helpers are sufficient.
+vi.mock('./auth', () => ({
+  getToken: () => null,
+  clearToken: vi.fn(async () => {}),
+}));
+
 // Import after mocks are registered.
 const { api } = await import('./api.js');
 const uploadFileMock = (await import('./uploadFile')).uploadFile;

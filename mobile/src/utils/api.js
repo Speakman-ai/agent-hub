@@ -1,6 +1,7 @@
 import { getApiBaseUrl, getAuthHeaders } from './config';
 import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
 import { uploadFile as uploadFileImpl } from './uploadFile';
+import { getToken as getJwt, clearToken } from './auth';
 
 async function fetchJSON(url, options = {}) {
   const base = getApiBaseUrl();
@@ -10,6 +11,13 @@ async function fetchJSON(url, options = {}) {
     ...options,
     headers: { 'Content-Type': 'application/json', ...authHeaders, ...(options.headers || {}) },
   });
+  // JWT expired / revoked — drop the cached token so the next bootstrap
+  // surfaces the login screen. We don't force-reload here (no
+  // `window.location.reload` on RN) — the app-level gate re-renders
+  // when `needsAuth` flips on next `getAuthStatus` probe.
+  if (res.status === 401 && getJwt()) {
+    await clearToken().catch(() => {});
+  }
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }

@@ -7,6 +7,8 @@
  * Remote mode: point at a remote Agent Hub server with optional API key.
  */
 
+import { getToken as getJwtToken } from './auth.js';
+
 const STORAGE_KEY = 'agent-hub-connection';
 
 const DEFAULT_CONFIG = {
@@ -76,10 +78,14 @@ export function getLocalApiBase() {
 /** Get the WebSocket URL (e.g. 'ws://localhost:3051' or 'wss://remote:3051?apiKey=xxx'). */
 export function getWsUrl() {
   const config = getConnectionConfig();
+  const jwt = getJwtToken();
   if (config.mode === 'remote' && config.remoteUrl) {
     // Convert http(s) to ws(s)
     let wsUrl = config.remoteUrl.trim().replace(/\/+$/, '').replace(/^http/, 'ws');
-    if (config.apiKey) {
+    // Prefer JWT over apiKey — matches REST header behavior.
+    if (jwt) {
+      wsUrl += `?token=${encodeURIComponent(jwt)}`;
+    } else if (config.apiKey) {
       wsUrl += `?apiKey=${encodeURIComponent(config.apiKey)}`;
     }
     return wsUrl;
@@ -89,10 +95,12 @@ export function getWsUrl() {
   // Otherwise, use same-origin WebSocket via /ws path
   // (production / Docker — nginx proxies the upgrade).
   if (import.meta.env.VITE_API_PORT) {
-    return `ws://${window.location.hostname}:${import.meta.env.VITE_API_PORT}`;
+    const base = `ws://${window.location.hostname}:${import.meta.env.VITE_API_PORT}`;
+    return jwt ? `${base}?token=${encodeURIComponent(jwt)}` : base;
   }
   const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${wsProto}//${window.location.host}/ws`;
+  const base = `${wsProto}//${window.location.host}/ws`;
+  return jwt ? `${base}?token=${encodeURIComponent(jwt)}` : base;
 }
 
 /** Reload the app after an org switch. In Electron, navigates the window
@@ -105,8 +113,15 @@ export function reloadForOrgSwitch() {
   }
 }
 
-/** Get auth headers for API requests. Empty object if no key configured. */
+/** Get auth headers for API requests. Empty object if no credentials stored.
+ *  JWT (Authorization: Bearer) is preferred over the legacy X-API-Key when
+ *  both are available. The server accepts either, but the middleware tries
+ *  JWT first so it records the subject on the request. */
 export function getAuthHeaders() {
+  const jwt = getJwtToken();
+  if (jwt) {
+    return { Authorization: `Bearer ${jwt}` };
+  }
   const config = getConnectionConfig();
   if (config.mode === 'remote' && config.apiKey) {
     return { 'X-API-Key': config.apiKey };

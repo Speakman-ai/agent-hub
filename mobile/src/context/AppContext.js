@@ -4,6 +4,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { extractSubmittedAskIds } from '../utils/askAnswers';
 import { loadOrgs, migrateFromLegacy, getOrgs } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
+import { loadAuthToken, isAuthenticated, getAuthStatus } from '../utils/auth';
 import {
   loadSetupDismissed,
   saveSetupDismissed,
@@ -102,6 +103,11 @@ export function AppProvider({ children }) {
   // First-run setup wizard gate. `needsSetup` is true when the active org
   // has no remoteUrl configured and the user hasn't dismissed the wizard.
   const [needsSetup, setNeedsSetup] = useState(false);
+  // Authentication gate. `needsAuth` is true when the server has a user
+  // configured (or no auth configured and we need setup) AND the local JWT
+  // is missing/expired. Flipped to false by `completeAuth()` after a
+  // successful login/setup via the LoginScreen.
+  const [needsAuth, setNeedsAuth] = useState(false);
   // Mobile push state: Expo token + permission status (used by Settings).
   const [pushToken, setPushToken] = useState(null);
   const [pushPermissionStatus, setPushPermissionStatus] = useState('unknown');
@@ -758,11 +764,31 @@ export function AppProvider({ children }) {
           apiKey: activeOrg.apiKey || '',
         });
       }
+      // Warm the in-memory JWT mirror from AsyncStorage so sync callers
+      // (getAuthHeaders / getWsUrl) can read it immediately. Must happen
+      // before we reconnect the WebSocket below.
+      await loadAuthToken();
       // Decide whether to show the first-run wizard before we signal ready.
       // `shouldShowWizard` returns true only when no org has a remoteUrl AND
       // the user hasn't previously dismissed the wizard.
       const dismissed = await loadSetupDismissed();
       setNeedsSetup(shouldShowWizard(getOrgs(), dismissed));
+      // Probe the server for auth configuration. If auth is enabled and we
+      // don't have a valid cached token, gate the app with the LoginScreen.
+      // Failures (server unreachable, no URL configured, etc.) are
+      // non-blocking — we fall through and let the normal WS reconnect
+      // loop surface the error.
+      const baseUrl = getApiBaseUrl();
+      if (baseUrl) {
+        try {
+          const status = await getAuthStatus(baseUrl);
+          if (status?.authConfigured && !isAuthenticated()) {
+            setNeedsAuth(true);
+          }
+        } catch {
+          /* server unreachable — skip auth gate, let WS reconnect surface it */
+        }
+      }
       // Signal that config is loaded — this unblocks data fetching & WebSocket
       setConfigReady(true);
       // Always reconnect WebSocket now that config is loaded from AsyncStorage
@@ -780,6 +806,17 @@ export function AppProvider({ children }) {
     await saveSetupDismissed(true);
     setNeedsSetup(false);
     // Reconnect so the newly-configured WebSocket picks up the server URL.
+    reconnect();
+  }, [reconnect]);
+
+  /**
+   * Called by `LoginScreen` after a successful login or setup call. The JWT
+   * is already persisted to AsyncStorage at this point; we just need to
+   * flip `needsAuth` and reconnect the WebSocket so it picks up the new
+   * `?token=` credential.
+   */
+  const completeAuth = useCallback(() => {
+    setNeedsAuth(false);
     reconnect();
   }, [reconnect]);
 
@@ -1291,6 +1328,8 @@ export function AppProvider({ children }) {
     configReady,
     needsSetup,
     completeSetup,
+    needsAuth,
+    completeAuth,
     agents,
     projects,
     activeAgentId,

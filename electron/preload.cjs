@@ -21,6 +21,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Save connection config to the main process (file-backed). */
   saveConnectionConfig: (config) => ipcRenderer.sendSync('save-connection-config', config),
 
+  /**
+   * Persist the JWT record `{ token, expiresAt, user }` to the main
+   * process so its webRequest interceptor can inject the Authorization
+   * header on every request (including the initial HTML load, before
+   * the React app boots). Pass `null` to clear.
+   */
+  saveAuthToken: (record) => ipcRenderer.sendSync('save-auth-token', record || null),
+
+  /** Read the persisted JWT record, or null if none stored. */
+  getAuthToken: () => ipcRenderer.sendSync('get-auth-token'),
+
   /** Navigate the Electron window to the correct URL after an org switch. */
   navigateToOrg: () => ipcRenderer.send('navigate-to-org'),
 

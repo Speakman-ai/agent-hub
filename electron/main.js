@@ -10,7 +10,15 @@ import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu } from 'elect
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { fork, spawn } from 'child_process';
-import { mkdirSync, createWriteStream, readFileSync, writeFileSync, existsSync } from 'fs';
+import {
+  mkdirSync,
+  createWriteStream,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  unlinkSync,
+  renameSync,
+} from 'fs';
 import { createNotificationHandlers } from './notifications.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,8 +38,13 @@ let serverProcess = null;
 
 const CONNECTION_CONFIG_PATH = path.join(USER_DATA, 'connection.json');
 const REMOTE_ORGS_PATH = path.join(USER_DATA, 'remote-orgs.json');
+// JWT bearer tokens are persisted alongside the legacy apiKey so the
+// webRequest interceptor can inject Authorization headers on the very
+// first request (before the React app boots).
+const AUTH_TOKEN_PATH = path.join(USER_DATA, 'auth-token.json');
 
 let cachedConnConfig = null;
+let cachedAuthToken = null;
 
 function readConnectionConfig() {
   if (cachedConnConfig) return cachedConnConfig;
@@ -51,6 +64,54 @@ function writeConnectionConfig(config) {
   cachedConnConfig = config;
 }
 
+function readAuthToken() {
+  if (cachedAuthToken !== null) return cachedAuthToken;
+  try {
+    if (existsSync(AUTH_TOKEN_PATH)) {
+      const parsed = JSON.parse(readFileSync(AUTH_TOKEN_PATH, 'utf-8'));
+      if (parsed && typeof parsed.token === 'string') {
+        cachedAuthToken = parsed;
+        return cachedAuthToken;
+      }
+    }
+  } catch {}
+  cachedAuthToken = null;
+  return cachedAuthToken;
+}
+
+function writeAuthToken(record) {
+  mkdirSync(path.dirname(AUTH_TOKEN_PATH), { recursive: true });
+  if (record === null || record === undefined) {
+    // Prefer unlinking so "missing file = unauthenticated" is unambiguous.
+    // Fall back to overwriting with an empty file if unlink fails (e.g.
+    // locked on Windows) — readAuthToken recovers either way.
+    try {
+      if (existsSync(AUTH_TOKEN_PATH)) unlinkSync(AUTH_TOKEN_PATH);
+    } catch {
+      try {
+        writeFileSync(AUTH_TOKEN_PATH, '');
+      } catch {}
+    }
+    cachedAuthToken = null;
+    return;
+  }
+  // Atomic write: tmpfile + rename. An interrupted write can otherwise
+  // leave a corrupt JSON that blocks login until the user deletes it.
+  const tmpPath = `${AUTH_TOKEN_PATH}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
+  renameSync(tmpPath, AUTH_TOKEN_PATH);
+  cachedAuthToken = record;
+}
+
+function isAuthTokenValid(record) {
+  if (!record || typeof record.token !== 'string') return false;
+  if (record.expiresAt) {
+    const exp = new Date(record.expiresAt).getTime();
+    if (Number.isFinite(exp) && exp <= Date.now()) return false;
+  }
+  return true;
+}
+
 // ─── Remote orgs (file-backed for Electron, survives origin changes) ──
 
 function readRemoteOrgs() {
@@ -67,19 +128,28 @@ function writeRemoteOrgs(orgs) {
   writeFileSync(REMOTE_ORGS_PATH, JSON.stringify(orgs, null, 2) + '\n');
 }
 
-// Inject the configured X-API-Key on every request to the remote host so the
-// initial page load (and all subsequent assets/fetches) is authenticated. The
-// React client also reads the key from localStorage/IPC, but it can't run
+// Inject auth headers on every request to the remote host so the initial
+// page load (and all subsequent assets/fetches) is authenticated. The React
+// client also reads credentials from localStorage/IPC, but it can't run
 // until the HTML loads — and the HTML load itself needs the header.
+//
+// Precedence:
+//   1. Authorization: Bearer <jwt>   (JWT auth, Phase 1)
+//   2. X-API-Key: <apiKey>           (legacy)
 function installRemoteApiKeyInjector() {
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
     const config = readConnectionConfig();
-    if (config.mode === 'remote' && config.remoteUrl && config.apiKey) {
+    if (config.mode === 'remote' && config.remoteUrl) {
       try {
         const reqHost = new URL(details.url).host;
         const remoteHost = new URL(config.remoteUrl).host;
         if (reqHost === remoteHost) {
-          details.requestHeaders['X-API-Key'] = config.apiKey;
+          const authRecord = readAuthToken();
+          if (isAuthTokenValid(authRecord)) {
+            details.requestHeaders['Authorization'] = `Bearer ${authRecord.token}`;
+          } else if (config.apiKey) {
+            details.requestHeaders['X-API-Key'] = config.apiKey;
+          }
         }
       } catch {}
     }
@@ -301,6 +371,18 @@ ipcMain.on('get-connection-config', (event) => {
 ipcMain.on('save-connection-config', (event, config) => {
   writeConnectionConfig(config);
   event.returnValue = true;
+});
+
+// JWT auth token — mirrored from the React app so the webRequest
+// interceptor can inject `Authorization: Bearer` on the very first HTML
+// load. Passing `null` clears the token (logout).
+ipcMain.on('save-auth-token', (event, record) => {
+  writeAuthToken(record || null);
+  event.returnValue = true;
+});
+
+ipcMain.on('get-auth-token', (event) => {
+  event.returnValue = readAuthToken();
 });
 
 // Navigate the window to the correct URL based on current connection config.
