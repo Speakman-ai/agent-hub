@@ -1,15 +1,11 @@
 name: Deploy Dev
 
-# Triggered by the CI workflow completing successfully on main.
-# Using workflow_run (instead of push + job needs) guarantees we never deploy
-# a commit whose CI failed: GitHub only fires this event when the upstream
-# workflow's top-level conclusion is available, and we gate the job on success.
+# Manual-only trigger. Deploys whatever is currently on main when invoked
+# from the Actions tab (or via `gh workflow run deploy-dev.yml`). We
+# intentionally do NOT auto-deploy on CI success — operators trigger
+# explicitly so deploys are an opt-in step rather than a side effect of
+# merging to main.
 on:
-  workflow_run:
-    workflows: [CI]
-    branches: [main]
-    types: [completed]
-  # Manual escape hatch for on-demand redeploys of whatever is currently on main.
   workflow_dispatch:
 
 # Collapse stacked pushes: only the latest commit on main gets deployed.
@@ -28,12 +24,6 @@ jobs:
   deploy:
     name: Deploy to agent-hub-server
     runs-on: ubuntu-latest
-    # Guard: on workflow_run, only proceed when upstream CI succeeded.
-    # On workflow_dispatch, there's no triggering workflow, so fall through.
-    # Also skip release-bump commits from release-prod.yml — those push via
-    # RELEASE_PAT which does re-trigger workflows, and we don't want every
-    # prod release to also force-deploy dev.
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):')) }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/agenthub/agent-hub' }}
