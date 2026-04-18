@@ -4,6 +4,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { loadOrgs, migrateFromLegacy } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
 import { hydrateChangesReady } from '../utils/changesReady';
+import { resolveSessionWorktree, applyDetectedFlag } from '../utils/worktreeState';
 import { selectSessionToActivate } from '../utils/sessionSelection';
 import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
@@ -30,6 +31,10 @@ export function AppProvider({ children }) {
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
+  // Git-worktree isolation toggle + CLI-confirmed detection flag. Mirrors the
+  // web client's `sessionWorktree` / `gitWorktreeDetected` state (App.jsx).
+  const [sessionWorktree, setSessionWorktree] = useState(true);
+  const [gitWorktreeDetected, setGitWorktreeDetected] = useState(null); // null = unknown
   // Map of sessionId -> running task state. Populated from server snapshot on
   // connect and kept in sync via stream events so it survives session switches.
   const [activeTasks, setActiveTasks] = useState({});
@@ -206,6 +211,15 @@ export function AppProvider({ children }) {
             s.id === data.session.id ? { ...s, name: data.session.name } : s
           )
         );
+        break;
+      case 'session-worktree-detected':
+        // CLI status line confirmed whether the session's cwd is a git
+        // worktree. Persist the flag onto the session row so session switches
+        // pick it up, and update the active-session badge immediately.
+        setSessions((prev) => applyDetectedFlag(prev, data.sessionId, data.gitWorktree));
+        if (forActiveSession) {
+          setGitWorktreeDetected(!!data.gitWorktree);
+        }
         break;
       case 'error':
         if (data.sessionId) {
@@ -650,12 +664,17 @@ export function AppProvider({ children }) {
         const agent = agents.find((a) => a.id === activeAgentId);
         setSessionEngine(target.engine || agent?.engine || 'claude-code');
         setSessionModel(target.model || 'claude-opus-4-7');
+        const wt = resolveSessionWorktree(target);
+        setSessionWorktree(wt.enabled);
+        setGitWorktreeDetected(wt.detected);
       } else {
         setActiveSessionId(null);
         setMessages([]);
         const agent = agents.find((a) => a.id === activeAgentId);
         setSessionEngine(agent?.engine || 'claude-code');
         setSessionModel('claude-opus-4-7');
+        setSessionWorktree(true);
+        setGitWorktreeDetected(null);
       }
     }).catch((err) => console.error('Failed to load sessions:', err));
   }, [configReady, activeAgentId]);
@@ -671,12 +690,17 @@ export function AppProvider({ children }) {
       .catch(() => setSkills([]));
   }, [configReady, activeAgentId]);
 
-  // Update session engine/model when session changes
+  // Update session engine/model/worktree state when session changes
   useEffect(() => {
     if (!activeSessionId) return;
     const session = sessions.find((s) => s.id === activeSessionId);
     if (session?.engine) setSessionEngine(session.engine);
     if (session?.model) setSessionModel(session.model);
+    if (session) {
+      const wt = resolveSessionWorktree(session);
+      setSessionWorktree(wt.enabled);
+      setGitWorktreeDetected(wt.detected);
+    }
   }, [activeSessionId, sessions]);
 
   // Load messages when session changes
@@ -776,6 +800,8 @@ export function AppProvider({ children }) {
     setCronSessions([]);
     setChangesReady({});
     setSessionHandoffs([]);
+    setSessionWorktree(true);
+    setGitWorktreeDetected(null);
     // Reconnect WebSocket to new org
     reconnect();
     // Reload data
@@ -804,8 +830,43 @@ export function AppProvider({ children }) {
     const agent = agents.find((a) => a.id === activeAgentId);
     setSessionEngine(session.engine || agent?.engine || 'claude-code');
     setSessionModel(session.model || 'claude-opus-4-7');
+    const wt = resolveSessionWorktree(session);
+    setSessionWorktree(wt.enabled);
+    setGitWorktreeDetected(null); // Fresh session — CLI hasn't reported yet
     setMessages([]);
   }, [activeAgentId, agents]);
+
+  // Toggle git-worktree isolation for the active session. Optimistically
+  // updates local state; reverts on server error. Mirrors the web client's
+  // `handleWorktreeChange` in App.jsx.
+  const handleWorktreeChange = useCallback(
+    async (enabled) => {
+      const sid = activeSessionIdRef.current;
+      const prevEnabled = sessionWorktree;
+      setSessionWorktree(enabled);
+      if (!sid) return;
+      try {
+        const updated = await api.setSessionWorktree(sid, enabled);
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === updated.id
+              ? {
+                  ...s,
+                  use_worktree: updated.use_worktree,
+                  worktree_path: updated.worktree_path,
+                  worktree_branch: updated.worktree_branch,
+                  git_worktree_detected: updated.git_worktree_detected,
+                }
+              : s,
+          ),
+        );
+      } catch (err) {
+        console.warn('setSessionWorktree failed; reverting toggle:', err);
+        setSessionWorktree(prevEnabled);
+      }
+    },
+    [sessionWorktree],
+  );
 
   const handleEngineChange = useCallback(async (engine) => {
     setSessionEngine(engine);
@@ -1003,6 +1064,9 @@ export function AppProvider({ children }) {
     streamingEngine,
     sessionEngine,
     sessionModel,
+    sessionWorktree,
+    gitWorktreeDetected,
+    handleWorktreeChange,
     connected,
     reconnecting,
     isProcessing,

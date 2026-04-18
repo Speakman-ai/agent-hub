@@ -150,6 +150,52 @@ describe('api threads helpers — URL + method parity with web client', () => {
   });
 });
 
+describe('api worktree helpers — URL + method + body parity with web client', () => {
+  it('setSessionWorktree(id, true) → PUT /sessions/:id/worktree with {enabled}', async () => {
+    await api.setSessionWorktree('sess-1', true);
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/sess-1/worktree');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ enabled: true });
+  });
+
+  it('setSessionWorktree(id, false) passes enabled:false', async () => {
+    await api.setSessionWorktree('sess-2', false);
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({ enabled: false });
+  });
+
+  it('createSession(agentId, name) omits use_worktree by default', async () => {
+    await api.createSession('agent-1', 'My session');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/agents/agent-1/sessions');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ name: 'My session' });
+  });
+
+  it('createSession with options.use_worktree forwards the flag', async () => {
+    await api.createSession('agent-1', 'My session', { use_worktree: false });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({ name: 'My session', use_worktree: false });
+  });
+
+  it('createPrFromSession(id) defaults autoMerge=false and omits title', async () => {
+    await api.createPrFromSession('sess-3');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/sess-3/create-pr');
+    expect(init.method).toBe('POST');
+    const body = JSON.parse(init.body);
+    expect(body.autoMerge).toBe(false);
+    expect(body.title).toBeUndefined();
+  });
+
+  it('createPrFromSession(id, { autoMerge, title }) forwards both fields', async () => {
+    await api.createPrFromSession('sess-3', { autoMerge: true, title: 'Fix bug' });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({ autoMerge: true, title: 'Fix bug' });
+  });
+});
+
 describe('api webhook helpers — request headers + error handling', () => {
   it('attaches the API key and JSON content-type to every call', async () => {
     await api.getWebhooks();

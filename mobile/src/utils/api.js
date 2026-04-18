@@ -18,10 +18,13 @@ export const api = {
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`),
-  createSession: (agentId, name) =>
+  createSession: (agentId, name, options = {}) =>
     fetchJSON(`/agents/${agentId}/sessions`, {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({
+        name,
+        ...(options.use_worktree != null ? { use_worktree: options.use_worktree } : {}),
+      }),
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
   deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
@@ -42,6 +45,14 @@ export const api = {
     fetchJSON(`/sessions/${sessionId}/model`, {
       method: 'PUT',
       body: JSON.stringify({ model }),
+    }),
+  // Toggle git-worktree isolation for a session. Returns the updated session
+  // row with `use_worktree`, `worktree_path`, `worktree_branch`, and
+  // `git_worktree_detected` fields so callers can hydrate UI state.
+  setSessionWorktree: (sessionId, enabled) =>
+    fetchJSON(`/sessions/${sessionId}/worktree`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
     }),
   updateAgent: (agentId, data) =>
     fetchJSON(`/agents/${agentId}`, {

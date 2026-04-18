@@ -14,6 +14,7 @@ import { colors } from '../theme/colors';
 import { SidebarContext } from '../context/SidebarContext';
 import { getApiBaseUrl, getWsUrl } from '../utils/config';
 import { getActiveOrg } from '../utils/orgs';
+import { describeDetectionBadge } from '../utils/worktreeState';
 import BugReportButton from './BugReportButton';
 
 const ENGINE_OPTIONS = [
@@ -49,6 +50,9 @@ export default function TopBar({ projectId, agentId } = {}) {
     reconnecting,
     sessionEngine,
     sessionModel,
+    sessionWorktree,
+    gitWorktreeDetected,
+    handleWorktreeChange,
     handleEngineChange,
     handleModelChange,
     handleNewSession,
@@ -64,6 +68,10 @@ export default function TopBar({ projectId, agentId } = {}) {
   const currentEngine = ENGINE_OPTIONS.find((e) => e.id === sessionEngine) || ENGINE_OPTIONS[0];
   const engineModels = ENGINE_MODELS[sessionEngine] || ENGINE_MODELS['claude-code'];
   const currentModel = engineModels.find((m) => m.id === sessionModel) || engineModels[0];
+  const worktreeBadge = describeDetectionBadge({
+    enabled: sessionWorktree,
+    detected: gitWorktreeDetected,
+  });
 
   return (
     <View style={styles.container}>
@@ -90,6 +98,36 @@ export default function TopBar({ projectId, agentId } = {}) {
       </View>
 
       <View style={styles.right}>
+        {/* Worktree detection badge (only shown once CLI has reported) */}
+        {activeAgent && worktreeBadge && (
+          <TouchableOpacity
+            onPress={() => setShowPicker(true)}
+            accessibilityRole="button"
+            accessibilityLabel={worktreeBadge.hint}
+            style={[
+              styles.worktreeBadge,
+              worktreeBadge.tone === 'ok'
+                ? styles.worktreeBadgeOk
+                : worktreeBadge.tone === 'warn'
+                ? styles.worktreeBadgeWarn
+                : styles.worktreeBadgeOff,
+            ]}
+          >
+            <Text
+              style={[
+                styles.worktreeBadgeText,
+                worktreeBadge.tone === 'ok'
+                  ? styles.worktreeBadgeTextOk
+                  : worktreeBadge.tone === 'warn'
+                  ? styles.worktreeBadgeTextWarn
+                  : styles.worktreeBadgeTextOff,
+              ]}
+            >
+              {worktreeBadge.label}
+            </Text>
+          </TouchableOpacity>
+        )}
+
         {/* Engine + Model button */}
         {activeAgent && (
           <TouchableOpacity
@@ -180,6 +218,53 @@ export default function TopBar({ projectId, agentId } = {}) {
                 )}
               </TouchableOpacity>
             ))}
+
+            <View style={styles.pickerDivider} />
+
+            {/* Worktree section */}
+            <Text style={styles.pickerSectionLabel}>WORKTREE</Text>
+            <TouchableOpacity
+              style={styles.pickerItem}
+              onPress={() => {
+                handleWorktreeChange(!sessionWorktree);
+                setShowPicker(false);
+              }}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: sessionWorktree }}
+              accessibilityLabel={
+                sessionWorktree
+                  ? 'Worktree isolation on — toggle to shared'
+                  : 'Worktree isolation off — toggle to isolated'
+              }
+            >
+              <Text
+                style={[
+                  styles.pickerItemLabel,
+                  sessionWorktree && styles.pickerItemLabelActive,
+                ]}
+              >
+                {sessionWorktree ? 'Isolated (own branch)' : 'Shared (project dir)'}
+              </Text>
+              {sessionWorktree && <Text style={styles.pickerCheck}>✓</Text>}
+            </TouchableOpacity>
+            {worktreeBadge && (
+              <Text
+                style={[
+                  styles.worktreeHint,
+                  worktreeBadge.tone === 'ok'
+                    ? styles.worktreeHintOk
+                    : worktreeBadge.tone === 'warn'
+                    ? styles.worktreeHintWarn
+                    : styles.worktreeHintOff,
+                ]}
+              >
+                {worktreeBadge.tone === 'ok'
+                  ? '✓ CLI confirmed worktree'
+                  : worktreeBadge.tone === 'warn'
+                  ? '⚠ CLI not in worktree'
+                  : '— CLI not in worktree'}
+              </Text>
+            )}
 
             <View style={styles.pickerDivider} />
 
@@ -367,5 +452,55 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: colors.gray700,
     marginVertical: 4,
+  },
+  // Worktree detection badge (header)
+  worktreeBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+    borderWidth: 1,
+    minWidth: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  worktreeBadgeOk: {
+    backgroundColor: colors.emerald900_40,
+    borderColor: colors.emerald900_50,
+  },
+  worktreeBadgeWarn: {
+    backgroundColor: colors.amber900_40,
+    borderColor: colors.amber400,
+  },
+  worktreeBadgeOff: {
+    backgroundColor: colors.gray800,
+    borderColor: colors.gray700,
+  },
+  worktreeBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  worktreeBadgeTextOk: { color: colors.emerald400 },
+  worktreeBadgeTextWarn: { color: colors.amber400 },
+  worktreeBadgeTextOff: { color: colors.gray500 },
+  // Worktree hint (inside modal)
+  worktreeHint: {
+    fontSize: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    marginHorizontal: 8,
+    marginBottom: 4,
+    borderRadius: 4,
+  },
+  worktreeHintOk: {
+    color: colors.emerald400,
+    backgroundColor: colors.emerald900_40,
+  },
+  worktreeHintWarn: {
+    color: colors.amber400,
+    backgroundColor: colors.amber900_40,
+  },
+  worktreeHintOff: {
+    color: colors.gray500,
+    backgroundColor: colors.gray800,
   },
 });
