@@ -17,6 +17,7 @@ import {
   checkWorktreeChanges,
   initAutoGit,
   autoCommitAndPR,
+  manualCommitAndPR,
   buildCardDescription,
   buildPrTitle,
   buildPrBody,
@@ -1314,5 +1315,157 @@ describe('isGarbageTitle', () => {
   it('rejects real cron output like the screenshot bug', () => {
     const cronTitle = '✓ Success\n4/15/2026, 9:00:00 AM\n88.5s\nX\n---\n\n## Update Report';
     expect(isGarbageTitle(cronTitle)).toBe(true);
+  });
+});
+
+describe('manualCommitAndPR — duplicate card prevention', () => {
+  // Regression for: "Duplicate kanban cards appear when PR moves to Review".
+  // When a session is already linked to an existing kanban card (via
+  // `session_id` — set by autonomous dispatch, bug-report intake, or manual
+  // linking in the UI), clicking "Create PR" must NOT create a second card.
+  // Previously `manualCommitAndPR` unconditionally called `createKanbanCard`,
+  // producing a duplicate in Review while the original stayed behind in
+  // Backlog/In Progress.
+  const mockBroadcast = vi.fn();
+
+  function makeStmts(opts: {
+    existingCard?: Record<string, unknown>;
+    createKanbanCardRun: ReturnType<typeof vi.fn>;
+  }) {
+    const existing = opts.existingCard;
+    const newCardRow = {
+      id: 'generated-card-id',
+      title: 'Fresh card',
+      description: '',
+      priority: 'medium',
+      column_id: 'col-inprog',
+      board_id: 'board-1',
+      session_id: 'sess-dup',
+      autonomous_iterations: 0,
+      epic_id: null,
+      pr_url: null,
+    };
+    return {
+      getKanbanCardBySession: { get: vi.fn(() => existing) },
+      getSession: { get: vi.fn(() => ({ name: 'Some session title' })) },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-inprog', name: 'In Progress' },
+          { id: 'col-review', name: 'Review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      getMessages: { all: vi.fn(() => [] as MessageRow[]) },
+      createKanbanCard: { run: opts.createKanbanCardRun },
+      getKanbanCard: { get: vi.fn(() => newCardRow) },
+      setCardPrUrl: { run: vi.fn() },
+      moveKanbanCard: { run: vi.fn() },
+      updateKanbanCard: { run: vi.fn() },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      getMessageById: {
+        get: vi.fn(() => ({
+          id: 'm-1',
+          session_id: 'sess-dup',
+          role: 'system',
+          content: 'PR created from these changes',
+          engine: null,
+          model: null,
+          attachments: null,
+          metadata: null,
+          created_at: '2026-04-18T00:00:00.000Z',
+        })),
+      },
+    } as Record<string, unknown>;
+  }
+
+  function installPrCreationMock(prUrl: string) {
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('abc123 fix: thing\n');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/dup-check\n');
+        if (cmd.startsWith('git rev-parse HEAD')) return ok('abc123def\n');
+        if (cmd.includes('git diff --stat')) return ok('');
+        if (cmd.includes('git log main..HEAD')) return ok('');
+        if (cmd.startsWith('gh pr view')) return ok('');
+        if (cmd.startsWith('gh pr create')) return ok(`${prUrl}\n`);
+        return ok('');
+      },
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('REUSES an existing card already linked to the session (no new card created)', async () => {
+    const createKanbanCardRun = vi.fn();
+    const existingCard = {
+      id: 'existing-card-abc',
+      title: 'Reassign a card even when a session is running',
+      description: 'Original ticket description',
+      priority: 'medium',
+      column_id: 'col-inprog',
+      board_id: 'board-1',
+      session_id: 'sess-dup',
+      autonomous_iterations: 0,
+      epic_id: null,
+      pr_url: null,
+    };
+    const stmts = makeStmts({ existingCard, createKanbanCardRun });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    installPrCreationMock('https://github.com/test/repo/pull/777');
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    const result = await manualCommitAndPR('sess-dup', 'agent-1', project, agent, '/worktree', {});
+
+    // Core regression assertion: no new card was created.
+    expect(createKanbanCardRun).not.toHaveBeenCalled();
+
+    // The returned cardId MUST be the existing card's id — not a freshly
+    // minted UUID. Otherwise the UI would show (and move to Review) a card
+    // that doesn't exist in the DB.
+    expect(result?.cardId).toBe('existing-card-abc');
+    expect(result?.prUrl).toBe('https://github.com/test/repo/pull/777');
+  });
+
+  it('CREATES a new card when the session has no linked card yet (ad-hoc flow)', async () => {
+    const createKanbanCardRun = vi.fn();
+    const stmts = makeStmts({ existingCard: undefined, createKanbanCardRun });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    installPrCreationMock('https://github.com/test/repo/pull/888');
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    const result = await manualCommitAndPR('sess-noadhoc', 'agent-1', project, agent, '/worktree', {
+      title: 'Fix the thing',
+    });
+
+    // Ad-hoc flow: exactly one new card was created, and the flow returned
+    // its generated id (not null).
+    expect(createKanbanCardRun).toHaveBeenCalledTimes(1);
+    expect(result?.prUrl).toBe('https://github.com/test/repo/pull/888');
+    expect(result?.cardId).toBeTruthy();
   });
 });

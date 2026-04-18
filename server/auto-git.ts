@@ -920,65 +920,80 @@ export async function manualCommitAndPR(
 ): Promise<{ prUrl: string; cardId: string } | null> {
   const d = getDeps();
 
-  // Create a kanban card for tracking
-  const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
-  const rawName = options.title || session?.name || '';
-  const cardTitle =
-    rawName && !isGarbageTitle(rawName)
-      ? rawName
-      : await deriveCleanTitle(effectiveCwd, agent.name || 'Agent');
-  const cardId = crypto.randomUUID();
-
   const board = d.stmts.getKanbanBoard?.get(project.id) as { id: string } | undefined;
   if (!board) {
     console.error(`[manual-pr] No kanban board found for project ${project.id}`);
     return null;
   }
 
-  const cols = d.stmts.getKanbanColumns.all(board.id) as Array<{ id: string; name: string }>;
-  const inProgressCol = cols.find((c) => c.name === 'In Progress');
-  const targetCol = inProgressCol || cols[0];
-  if (!targetCol) {
-    console.error(`[manual-pr] No columns found on board`);
-    return null;
-  }
+  // Reuse an existing card already linked to this session, if any. Without
+  // this check we would unconditionally `createKanbanCard.run()` below —
+  // producing a duplicate card in the Review column while the original
+  // (autonomous-dispatched ticket, bug report, or user-linked card) stays
+  // behind in its current column. That's the "two cards per unit of work"
+  // bug users report when their PR enters review.
+  let card = d.stmts.getKanbanCardBySession?.get(sessionId) as KanbanCardRow | undefined;
+  let cardId: string;
 
-  // Build a rich description from session messages + git diff stat
-  const messages = d.stmts.getMessages.all(sessionId) as MessageRow[];
-  let diffStat = '';
-  try {
-    const { stdout } = await execAsync(
-      'git diff --stat HEAD~1 HEAD 2>/dev/null || git diff --stat main...HEAD',
-      {
-        cwd: effectiveCwd,
-        timeout: 10000,
-      },
+  if (card) {
+    cardId = card.id;
+    console.log(
+      `[manual-pr] Reusing existing card "${card.title}" already linked to session ${sessionId} (skipping duplicate create)`,
     );
-    diffStat = stdout;
-  } catch {
-    // diff stat is optional — proceed without it
+  } else {
+    // Create a kanban card for tracking
+    const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
+    const rawName = options.title || session?.name || '';
+    const cardTitle =
+      rawName && !isGarbageTitle(rawName)
+        ? rawName
+        : await deriveCleanTitle(effectiveCwd, agent.name || 'Agent');
+    cardId = crypto.randomUUID();
+
+    const cols = d.stmts.getKanbanColumns.all(board.id) as Array<{ id: string; name: string }>;
+    const inProgressCol = cols.find((c) => c.name === 'In Progress');
+    const targetCol = inProgressCol || cols[0];
+    if (!targetCol) {
+      console.error(`[manual-pr] No columns found on board`);
+      return null;
+    }
+
+    // Build a rich description from session messages + git diff stat
+    const messages = d.stmts.getMessages.all(sessionId) as MessageRow[];
+    let diffStat = '';
+    try {
+      const { stdout } = await execAsync(
+        'git diff --stat HEAD~1 HEAD 2>/dev/null || git diff --stat main...HEAD',
+        {
+          cwd: effectiveCwd,
+          timeout: 10000,
+        },
+      );
+      diffStat = stdout;
+    } catch {
+      // diff stat is optional — proceed without it
+    }
+    const cardDescription = buildCardDescription(messages, diffStat);
+
+    // createKanbanCard params: (id, column_id, board_id, title, description, priority,
+    //   assignee, labels, session_id, github_issue_url, created_by, position)
+    d.stmts.createKanbanCard.run(
+      cardId,
+      targetCol.id,
+      board.id,
+      cardTitle,
+      cardDescription,
+      'medium',
+      agent.name || '',
+      '',
+      sessionId,
+      '',
+      agent.name || '',
+      0,
+    );
+    console.log(`[manual-pr] Created card "${cardTitle}" and linked to session ${sessionId}`);
+    card = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
   }
-  const cardDescription = buildCardDescription(messages, diffStat);
-
-  // createKanbanCard params: (id, column_id, board_id, title, description, priority,
-  //   assignee, labels, session_id, github_issue_url, created_by, position)
-  d.stmts.createKanbanCard.run(
-    cardId,
-    targetCol.id,
-    board.id,
-    cardTitle,
-    cardDescription,
-    'medium',
-    agent.name || '',
-    '',
-    sessionId,
-    '',
-    agent.name || '',
-    0,
-  );
-  console.log(`[manual-pr] Created card "${cardTitle}" and linked to session ${sessionId}`);
-
-  const card = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
 
   const result = await commitPushAndCreatePR(
     sessionId,
