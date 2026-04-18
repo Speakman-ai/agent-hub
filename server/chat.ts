@@ -19,6 +19,7 @@ import {
   handleHandoff,
   buildHandoffPromptSection,
 } from './handoff.js';
+import { parseCloseCardBlock, handleCardAutoClose } from './card-auto-close.js';
 import type {
   Project,
   Agent,
@@ -252,7 +253,19 @@ After significant work, update the wiki to preserve knowledge. Search first (\`G
 
         prompt += `\n\n## Kanban Board — Task Self-Reporting
 Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/projects/${projectId}/board/cards\` and \`POST /api/projects/${projectId}/board/cards/:cardId/move\`. Use \`GET /api/projects/${projectId}/board\` for column IDs. Skip cards for trivial tasks.
-When creating cards: use a **concise title** (under 60 chars) summarizing the problem/task, and include **acceptance criteria** as a bulleted checklist in the description. Pass \`session_id: "$AGENT_HUB_SESSION_ID"\` to link the card to your session (this auto-renames the sidebar to the card title).`;
+When creating cards: use a **concise title** (under 60 chars) summarizing the problem/task, and include **acceptance criteria** as a bulleted checklist in the description. Pass \`session_id: "$AGENT_HUB_SESSION_ID"\` to link the card to your session (this auto-renames the sidebar to the card title).
+
+### Auto-closing a card as duplicate / already-done
+If you pick up a card and discover the work is redundant — either covered by an earlier ticket or already shipped — don't just leave the card parked. End your turn with a fenced block like:
+\`\`\`
+<agenthub:close-card>
+{"reason": "duplicate", "note": "Covered by card 5c8f2a — see PR #313.", "duplicateOfCardId": "5c8f2a..."}
+</agenthub:close-card>
+\`\`\`
+- \`reason\`: \`"duplicate"\` or \`"already-done"\` (required)
+- \`note\`: one-line explanation shown in the auto-close comment (required)
+- \`duplicateOfCardId\`: optional, the canonical card id the work duplicates
+The server moves the session's linked card to Done and appends an explanatory comment referencing this session.`;
       }
     }
   }
@@ -1165,6 +1178,30 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               console.error('[Auto-summarize] Failed:', message);
             });
         }
+      }
+
+      // Auto-close the linked kanban card when the agent reports the work
+      // is a duplicate or already done via an `<agenthub:close-card>` block.
+      // Best-effort — failures here must not affect chat, handoff, or
+      // delegation. Runs before handoff/delegate because it's a pure
+      // side-effect on the kanban board (the two flows are not mutually
+      // exclusive, though in practice an agent emits one or the other).
+      try {
+        const closeTask = parseCloseCardBlock(finalContent);
+        if (closeTask) {
+          const projectId =
+            (project as Project & { id?: string }).id ||
+            (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
+            '';
+          handleCardAutoClose(sessionId, closeTask, {
+            stmts: stmts as Stmts,
+            broadcast,
+            projectId,
+            author: agent.id,
+          });
+        }
+      } catch (err) {
+        console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
       }
 
       // Handoff takes precedence over delegate — if the agent emitted a
