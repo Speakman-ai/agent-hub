@@ -91,3 +91,56 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
       .expect(404);
   });
 });
+
+describe('POST /api/projects/:projectId/board/cards/:cardId/unassign', () => {
+  it('clears assignee and session_id after a prior /assign', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const agentId = agent.id as string;
+    const card = await createCard(projectId, {
+      title: 'Round-trip assign then unassign',
+    });
+    const cardId = card.id as string;
+
+    // Assign → card should now have an assignee and a session_id.
+    const assignRes = await request
+      .post(`/api/projects/${projectId}/board/cards/${cardId}/assign`)
+      .send({ agentId })
+      .expect(200);
+    expect(assignRes.body.card.assignee).toBe(agent.name);
+    expect(assignRes.body.card.session_id).toBe(assignRes.body.sessionId);
+
+    // Unassign → both assignee and session_id are null, other fields preserved.
+    const unassignRes = await request
+      .post(`/api/projects/${projectId}/board/cards/${cardId}/unassign`)
+      .send({})
+      .expect(200);
+    expect(unassignRes.body.assignee).toBeNull();
+    expect(unassignRes.body.session_id).toBeNull();
+    expect(unassignRes.body.title).toBe('Round-trip assign then unassign');
+  });
+
+  it('is a no-op-safe when called on an already-unassigned card', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const card = await createCard(projectId);
+
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/unassign`)
+      .send({})
+      .expect(200);
+    expect(res.body.assignee).toBeNull();
+    expect(res.body.session_id).toBeNull();
+  });
+
+  it('returns 404 for missing card', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+
+    await request
+      .post(`/api/projects/${projectId}/board/cards/nonexistent/unassign`)
+      .send({})
+      .expect(404);
+  });
+});

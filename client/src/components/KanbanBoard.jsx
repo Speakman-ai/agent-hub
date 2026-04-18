@@ -68,6 +68,7 @@ export default function KanbanBoard({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [showReassign, setShowReassign] = useState(false);
+  const [unassigning, setUnassigning] = useState(false);
 
   // Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -1072,6 +1073,27 @@ export default function KanbanBoard({
                           className="mt-2 w-full text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 px-3 py-1.5 rounded-lg transition-colors"
                         >
                           Reassign
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (!selectedCard) return;
+                            setUnassigning(true);
+                            try {
+                              const updated = await api.unassignCard(projectId, selectedCard.id);
+                              setSelectedCard(updated);
+                              setDetailForm((f) => ({ ...f, assignee: '' }));
+                              setShowReassign(false);
+                              fetchBoard();
+                            } catch (err) {
+                              console.error('Failed to unassign card:', err);
+                            } finally {
+                              setUnassigning(false);
+                            }
+                          }}
+                          disabled={unassigning}
+                          className="mt-2 w-full text-xs bg-transparent hover:bg-red-900/30 border border-red-900/60 text-red-400 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                        >
+                          {unassigning ? 'Unassigning...' : 'Unassign'}
                         </button>
                       </div>
                     ) : (

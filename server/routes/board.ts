@@ -368,6 +368,32 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     },
   );
 
+  // Clear assignee and any linked session from a card. Mirrors the POST
+  // /assign endpoint so the UI has a symmetric action for unassigning.
+  router.post(
+    '/api/projects/:projectId/board/cards/:cardId/unassign',
+    (req: Request, res: Response) => {
+      const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
+      if (!card) return res.status(404).json({ error: 'Card not found' });
+
+      stmts.updateKanbanCard.run(
+        card.title,
+        card.description,
+        card.priority,
+        null,
+        card.labels,
+        null,
+        card.github_issue_url,
+        card.pr_url,
+        card.epic_id,
+        req.params.cardId,
+      );
+
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      res.json(stmts.getKanbanCard.get(req.params.cardId));
+    },
+  );
+
   router.delete('/api/projects/:projectId/board/cards/:cardId', (req: Request, res: Response) => {
     const cardId = req.params.cardId as string;
 

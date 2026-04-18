@@ -389,6 +389,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ agentId }),
     }),
+  unassignCard: (projectId, cardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/unassign`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   deleteCard: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'DELETE' }),
   getCardComments: (projectId, cardId) =>
