@@ -10,7 +10,16 @@
 import { Router, Request, Response } from 'express';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import type { RouteDeps, AppConfig, GitHubAppConfig, PrStateRow } from '../types.js';
+import { randomUUID } from 'crypto';
+import type {
+  RouteDeps,
+  AppConfig,
+  GitHubAppConfig,
+  PrStateRow,
+  KanbanCardRow,
+  KanbanBoardRow,
+  ReviewLogRow,
+} from '../types.js';
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
 import {
   DEFAULT_REVIEWER_PHASES,
@@ -128,6 +137,65 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       console.warn(
         `[CheckRun] Failed to complete Check Run for PR #${pr.number}: ${msg.split('\n')[0]}`,
       );
+    }
+  }
+
+  /**
+   * Map a GitHub review event to the `outcome` enum stored in review_logs.
+   * APPROVE          → approved
+   * REQUEST_CHANGES  → changes_requested
+   * COMMENT          → ambiguous   (non-blocking notes; not a clear verdict)
+   */
+  function reviewEventToOutcome(event: PrReviewBody['event']): ReviewLogRow['outcome'] {
+    if (event === 'APPROVE') return 'approved';
+    if (event === 'REQUEST_CHANGES') return 'changes_requested';
+    return 'ambiguous';
+  }
+
+  /**
+   * Persist a row in `review_logs` after a successful review submission.
+   * Best-effort: any failure is swallowed (the formal GitHub review has
+   * already landed). Requires the PR to be linked to a kanban card so we can
+   * attribute it to a project; if no card is found, we skip silently.
+   *
+   * This write path is what feeds the "Reviews" activity panel on the kanban
+   * board. It was orphaned in a prior refactor — the prepared statement
+   * existed but no caller invoked it, so the panel froze in time. Restoring
+   * the call here revives live review-activity display.
+   */
+  function persistReviewLog(args: {
+    prUrl: string;
+    event: PrReviewBody['event'];
+    body: string | undefined;
+    reviewerLogin: string | null | undefined;
+  }): void {
+    try {
+      if (!stmts?.createReviewLog || !stmts?.getKanbanCardByPrUrl || !stmts?.getKanbanBoardById) {
+        return;
+      }
+      const card = stmts.getKanbanCardByPrUrl.get(args.prUrl) as KanbanCardRow | undefined;
+      if (!card) return; // PR not tracked on any board — nothing to attribute
+      const board = stmts.getKanbanBoardById.get(card.board_id) as KanbanBoardRow | undefined;
+      if (!board) return;
+
+      const nowIso = new Date().toISOString();
+      const reviewer = args.reviewerLogin?.trim() || 'agent-hub-reviewer';
+      stmts.createReviewLog.run(
+        randomUUID(),
+        board.project_id,
+        card.id,
+        args.prUrl,
+        reviewer,
+        card.assignee ?? null,
+        card.session_id ?? null,
+        reviewEventToOutcome(args.event),
+        args.body ?? null,
+        nowIso,
+        nowIso,
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[ReviewLog] Failed to persist review log: ${msg.split('\n')[0]}`);
     }
   }
 
@@ -314,6 +382,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
           completeReviewerCheckRun(pr, event, body).catch(() => {
             /* best-effort */
           });
+          persistReviewLog({ prUrl, event, body, reviewerLogin: data.user?.login });
           return res.json({
             ok: true,
             method: 'github-app',
@@ -361,6 +430,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
         completeReviewerCheckRun(pr, event, body).catch(() => {
           /* best-effort */
         });
+        persistReviewLog({ prUrl, event, body, reviewerLogin: data.user?.login });
         return res.json({
           ok: true,
           method: 'bot-token',

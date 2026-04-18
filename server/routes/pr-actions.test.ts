@@ -404,4 +404,219 @@ describe('PR Actions route', () => {
       expect(res.body.error).toMatch(/No GitHub App installation|bot token/);
     });
   });
+
+  // Regression test for the "Reviews panel stopped updating" bug.
+  // The prepared statement `createReviewLog` existed in db.ts but had no
+  // caller, so `review_logs` never grew and the kanban Reviews activity
+  // panel stayed frozen. This test verifies that a successful PR review
+  // submission persists a row with the expected fields.
+  describe('/api/pr/review — review_logs persistence', () => {
+    let app: express.Express;
+    let githubApiRequest: ReturnType<typeof vi.fn>;
+    let resolveInstallationId: ReturnType<typeof vi.fn>;
+    let createReviewLogRun: ReturnType<typeof vi.fn>;
+
+    beforeEach(async () => {
+      vi.resetModules();
+      const mod = await import('../github-app.js');
+      githubApiRequest = mod.githubApiRequest as unknown as ReturnType<typeof vi.fn>;
+      resolveInstallationId = mod.resolveInstallationId as unknown as ReturnType<typeof vi.fn>;
+      githubApiRequest.mockReset();
+      resolveInstallationId.mockReset();
+
+      const { default: createPrActionRoutes } = await import('./pr-actions.js');
+
+      createReviewLogRun = vi.fn();
+      const getKanbanCardByPrUrl = vi.fn().mockReturnValue({
+        id: 'card-1',
+        board_id: 'board-1',
+        assignee: 'agent-hub-backend',
+        session_id: 'session-abc',
+      });
+      const getKanbanBoardById = vi.fn().mockReturnValue({
+        id: 'board-1',
+        project_id: 'project-xyz',
+        name: 'Agent Hub Board',
+        created_at: '2026-04-15T00:00:00Z',
+      });
+
+      const mockDeps = {
+        config: {
+          port: 3051,
+          dataDir: '/tmp',
+          botGithubToken: null,
+          githubApp: {
+            appId: '1',
+            privateKey: 'key',
+            installationId: 42,
+            installations: [{ id: 42, account: 'owner', accountType: 'Organization' }],
+          },
+        },
+        stmts: {
+          createReviewLog: { run: createReviewLogRun },
+          getKanbanCardByPrUrl: { get: getKanbanCardByPrUrl },
+          getKanbanBoardById: { get: getKanbanBoardById },
+        },
+        broadcast: vi.fn() as unknown,
+        findProject: vi.fn(),
+        findAgent: vi.fn(),
+        getEnrichedAgent: vi.fn(),
+        allAgents: vi.fn(),
+        saveProjects: vi.fn(),
+        ensureProjectRoom: vi.fn(),
+        handleChat: vi.fn(),
+        pendingReviewComments: new Map(),
+        lastDispatchedReviewId: new Map(),
+        scheduleAutonomousEpic: vi.fn(),
+        autonomousCrons: new Map(),
+        runAutonomousLoop: vi.fn(),
+        getProjects: vi.fn().mockReturnValue([]),
+        setProjects: vi.fn(),
+        getGhBotUser: vi.fn().mockReturnValue(null),
+        setGhBotUser: vi.fn(),
+        getGhAppSlug: vi.fn().mockReturnValue(null),
+        setGhAppSlug: vi.fn(),
+        serverDir: '/tmp',
+        buildTranscript: vi.fn(),
+        summarizeTranscript: vi.fn(),
+      } as unknown as RouteDeps;
+
+      app = express();
+      app.use(express.json());
+      app.use(createPrActionRoutes(mockDeps));
+    });
+
+    it('persists a review_logs row when APPROVE succeeds via GitHub App', async () => {
+      resolveInstallationId.mockReturnValue(42);
+      githubApiRequest.mockResolvedValue({
+        id: 99,
+        user: { login: 'ryan-s-agent-hub-reviewer[bot]' },
+        state: 'APPROVED',
+      });
+
+      const res = await request(app)
+        .post('/api/pr/review')
+        .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'APPROVE' });
+
+      expect(res.status).toBe(200);
+      expect(createReviewLogRun).toHaveBeenCalledTimes(1);
+
+      const args = createReviewLogRun.mock.calls[0];
+      // Positional arg order matches the createReviewLog prepared statement:
+      // (id, project_id, card_id, pr_url, reviewer_agent, author_agent,
+      //  session_id, outcome, review_body, started_at, completed_at)
+      expect(args[1]).toBe('project-xyz'); // project_id resolved via board join
+      expect(args[2]).toBe('card-1'); // card_id
+      expect(args[3]).toBe('https://github.com/owner/repo/pull/42');
+      expect(args[4]).toBe('ryan-s-agent-hub-reviewer[bot]');
+      expect(args[5]).toBe('agent-hub-backend'); // author_agent = card.assignee
+      expect(args[6]).toBe('session-abc');
+      expect(args[7]).toBe('approved'); // APPROVE → approved
+    });
+
+    it('maps REQUEST_CHANGES → changes_requested and records the body', async () => {
+      resolveInstallationId.mockReturnValue(42);
+      githubApiRequest.mockResolvedValue({
+        id: 100,
+        user: { login: 'reviewer-bot' },
+        state: 'CHANGES_REQUESTED',
+      });
+
+      await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'REQUEST_CHANGES',
+        body: 'Please fix the null check.',
+      });
+
+      expect(createReviewLogRun).toHaveBeenCalledTimes(1);
+      const args = createReviewLogRun.mock.calls[0];
+      expect(args[7]).toBe('changes_requested');
+      expect(args[8]).toBe('Please fix the null check.');
+    });
+
+    it('maps COMMENT → ambiguous', async () => {
+      resolveInstallationId.mockReturnValue(42);
+      githubApiRequest.mockResolvedValue({ id: 101, user: { login: 'reviewer-bot' } });
+
+      await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'COMMENT',
+        body: 'nit: naming',
+      });
+
+      expect(createReviewLogRun).toHaveBeenCalledTimes(1);
+      expect(createReviewLogRun.mock.calls[0][7]).toBe('ambiguous');
+    });
+
+    it('skips persistence when the PR is not linked to any kanban card', async () => {
+      vi.resetModules();
+      const mod = await import('../github-app.js');
+      const ghReq = mod.githubApiRequest as unknown as ReturnType<typeof vi.fn>;
+      const resolveInst = mod.resolveInstallationId as unknown as ReturnType<typeof vi.fn>;
+      ghReq.mockReset();
+      resolveInst.mockReset();
+      resolveInst.mockReturnValue(42);
+      ghReq.mockResolvedValue({ id: 99, user: { login: 'reviewer-bot' }, state: 'APPROVED' });
+
+      const { default: createPrActionRoutes } = await import('./pr-actions.js');
+
+      const createRun = vi.fn();
+      const getCard = vi.fn().mockReturnValue(undefined); // no card linked
+      const getBoard = vi.fn();
+
+      const deps = {
+        config: {
+          port: 3051,
+          dataDir: '/tmp',
+          botGithubToken: null,
+          githubApp: {
+            appId: '1',
+            privateKey: 'key',
+            installationId: 42,
+            installations: [{ id: 42, account: 'owner', accountType: 'Organization' }],
+          },
+        },
+        stmts: {
+          createReviewLog: { run: createRun },
+          getKanbanCardByPrUrl: { get: getCard },
+          getKanbanBoardById: { get: getBoard },
+        },
+        broadcast: vi.fn(),
+        findProject: vi.fn(),
+        findAgent: vi.fn(),
+        getEnrichedAgent: vi.fn(),
+        allAgents: vi.fn(),
+        saveProjects: vi.fn(),
+        ensureProjectRoom: vi.fn(),
+        handleChat: vi.fn(),
+        pendingReviewComments: new Map(),
+        lastDispatchedReviewId: new Map(),
+        scheduleAutonomousEpic: vi.fn(),
+        autonomousCrons: new Map(),
+        runAutonomousLoop: vi.fn(),
+        getProjects: vi.fn().mockReturnValue([]),
+        setProjects: vi.fn(),
+        getGhBotUser: vi.fn().mockReturnValue(null),
+        setGhBotUser: vi.fn(),
+        getGhAppSlug: vi.fn().mockReturnValue(null),
+        setGhAppSlug: vi.fn(),
+        serverDir: '/tmp',
+        buildTranscript: vi.fn(),
+        summarizeTranscript: vi.fn(),
+      } as unknown as RouteDeps;
+
+      const isolatedApp = express();
+      isolatedApp.use(express.json());
+      isolatedApp.use(createPrActionRoutes(deps));
+
+      const res = await request(isolatedApp)
+        .post('/api/pr/review')
+        .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'APPROVE' });
+
+      expect(res.status).toBe(200); // review still succeeds
+      expect(getCard).toHaveBeenCalledWith('https://github.com/owner/repo/pull/42');
+      expect(getBoard).not.toHaveBeenCalled();
+      expect(createRun).not.toHaveBeenCalled();
+    });
+  });
 });
