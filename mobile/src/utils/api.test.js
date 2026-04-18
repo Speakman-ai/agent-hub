@@ -179,6 +179,68 @@ describe('api worktree helpers — URL + method + body parity with web client', 
     expect(JSON.parse(init.body)).toEqual({ name: 'My session', use_worktree: false });
   });
 
+  it('setSessionAskMode(id, true) → PUT /sessions/:id/ask-mode with {enabled}', async () => {
+    await api.setSessionAskMode('sess-4', true);
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/sess-4/ask-mode');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ enabled: true });
+  });
+
+  it('setSessionAskMode(id, false) passes enabled:false', async () => {
+    await api.setSessionAskMode('sess-5', false);
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({ enabled: false });
+  });
+
+  it('createSession omits ask_mode when not provided', async () => {
+    await api.createSession('agent-1', 'My session');
+    const [, init] = lastCall();
+    const body = JSON.parse(init.body);
+    expect(body).toEqual({ name: 'My session' });
+    expect(body).not.toHaveProperty('ask_mode');
+  });
+
+  it('createSession({ askMode: true }) forwards ask_mode:true', async () => {
+    await api.createSession('agent-1', 'My session', { askMode: true });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'My session',
+      ask_mode: true,
+    });
+  });
+
+  it('createSession({ askMode: false }) forwards ask_mode:false (explicit opt-out)', async () => {
+    await api.createSession('agent-1', 'My session', { askMode: false });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'My session',
+      ask_mode: false,
+    });
+  });
+
+  it('createSession coerces truthy askMode values to boolean true', async () => {
+    await api.createSession('agent-1', 'My session', { askMode: 1 });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'My session',
+      ask_mode: true,
+    });
+  });
+
+  it('createSession can combine askMode with use_worktree', async () => {
+    await api.createSession('agent-1', 'My session', {
+      use_worktree: false,
+      askMode: true,
+    });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'My session',
+      use_worktree: false,
+      ask_mode: true,
+    });
+  });
+
   it('createPrFromSession(id) defaults autoMerge=false and omits title', async () => {
     await api.createPrFromSession('sess-3');
     const [url, init] = lastCall();

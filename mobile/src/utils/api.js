@@ -24,6 +24,7 @@ export const api = {
       body: JSON.stringify({
         name,
         ...(options.use_worktree != null ? { use_worktree: options.use_worktree } : {}),
+        ...(options.askMode != null ? { ask_mode: !!options.askMode } : {}),
       }),
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
@@ -51,6 +52,14 @@ export const api = {
   // `git_worktree_detected` fields so callers can hydrate UI state.
   setSessionWorktree: (sessionId, enabled) =>
     fetchJSON(`/sessions/${sessionId}/worktree`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+  // Toggle Ask Mode (read-only session). Server enforces this by spawning the
+  // CLI with `--permission-mode plan` instead of `bypassPermissions`. Returns
+  // the updated session row so callers can hydrate `ask_mode` in local state.
+  setSessionAskMode: (sessionId, enabled) =>
+    fetchJSON(`/sessions/${sessionId}/ask-mode`, {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),

@@ -35,6 +35,10 @@ export function AppProvider({ children }) {
   // web client's `sessionWorktree` / `gitWorktreeDetected` state (App.jsx).
   const [sessionWorktree, setSessionWorktree] = useState(true);
   const [gitWorktreeDetected, setGitWorktreeDetected] = useState(null); // null = unknown
+  // Ask Mode (read-only session) — when true, the server spawns the CLI with
+  // `--permission-mode plan` so the agent can read files but can't make edits
+  // or run destructive commands. Mirrors the web client's `sessionAskMode`.
+  const [sessionAskMode, setSessionAskMode] = useState(false);
   // Map of sessionId -> running task state. Populated from server snapshot on
   // connect and kept in sync via stream events so it survives session switches.
   const [activeTasks, setActiveTasks] = useState({});
@@ -667,6 +671,7 @@ export function AppProvider({ children }) {
         const wt = resolveSessionWorktree(target);
         setSessionWorktree(wt.enabled);
         setGitWorktreeDetected(wt.detected);
+        setSessionAskMode(target.ask_mode !== 0 && !!target.ask_mode);
       } else {
         setActiveSessionId(null);
         setMessages([]);
@@ -675,6 +680,7 @@ export function AppProvider({ children }) {
         setSessionModel('claude-opus-4-7');
         setSessionWorktree(true);
         setGitWorktreeDetected(null);
+        setSessionAskMode(false);
       }
     }).catch((err) => console.error('Failed to load sessions:', err));
   }, [configReady, activeAgentId]);
@@ -700,6 +706,7 @@ export function AppProvider({ children }) {
       const wt = resolveSessionWorktree(session);
       setSessionWorktree(wt.enabled);
       setGitWorktreeDetected(wt.detected);
+      setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
     }
   }, [activeSessionId, sessions]);
 
@@ -802,6 +809,7 @@ export function AppProvider({ children }) {
     setSessionHandoffs([]);
     setSessionWorktree(true);
     setGitWorktreeDetected(null);
+    setSessionAskMode(false);
     // Reconnect WebSocket to new org
     reconnect();
     // Reload data
@@ -824,7 +832,12 @@ export function AppProvider({ children }) {
 
   const handleNewSession = useCallback(async () => {
     if (!activeAgentId) return;
-    const session = await api.createSession(activeAgentId);
+    // Propagate the current Ask Mode preference to the new session so a user
+    // who toggled "Ask (read-only)" before tapping `+` gets a read-only
+    // session. Matches the web client's behavior in App.jsx.
+    const session = await api.createSession(activeAgentId, undefined, {
+      askMode: sessionAskMode,
+    });
     setSessions((prev) => [session, ...prev]);
     setActiveSessionId(session.id);
     const agent = agents.find((a) => a.id === activeAgentId);
@@ -833,8 +846,9 @@ export function AppProvider({ children }) {
     const wt = resolveSessionWorktree(session);
     setSessionWorktree(wt.enabled);
     setGitWorktreeDetected(null); // Fresh session — CLI hasn't reported yet
+    setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
     setMessages([]);
-  }, [activeAgentId, agents]);
+  }, [activeAgentId, agents, sessionAskMode]);
 
   // Toggle git-worktree isolation for the active session. Optimistically
   // updates local state; reverts on server error. Mirrors the web client's
@@ -866,6 +880,30 @@ export function AppProvider({ children }) {
       }
     },
     [sessionWorktree],
+  );
+
+  // Toggle Ask Mode for the active session. Optimistically updates local
+  // state; reverts on server error. Mirrors the web client's
+  // `handleAskModeChange` in App.jsx.
+  const handleAskModeChange = useCallback(
+    async (enabled) => {
+      const sid = activeSessionIdRef.current;
+      const prevEnabled = sessionAskMode;
+      setSessionAskMode(enabled);
+      if (!sid) return;
+      try {
+        const updated = await api.setSessionAskMode(sid, enabled);
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === updated.id ? { ...s, ask_mode: updated.ask_mode } : s,
+          ),
+        );
+      } catch (err) {
+        console.warn('setSessionAskMode failed; reverting toggle:', err);
+        setSessionAskMode(prevEnabled);
+      }
+    },
+    [sessionAskMode],
   );
 
   const handleEngineChange = useCallback(async (engine) => {
@@ -1067,6 +1105,8 @@ export function AppProvider({ children }) {
     sessionWorktree,
     gitWorktreeDetected,
     handleWorktreeChange,
+    sessionAskMode,
+    handleAskModeChange,
     connected,
     reconnecting,
     isProcessing,

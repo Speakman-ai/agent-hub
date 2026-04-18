@@ -39,7 +39,7 @@ function guessMimeFromName(name, fallback) {
   return map[ext] || fallback;
 }
 
-export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength }) {
+export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength, askMode }) {
   const [value, setValue] = useState('');
   // Attachments: [{id, uri, name, kind, dataUrl?, mimeType?, sizeBytes?}]
   // kind ∈ 'image' | 'video' | 'file'
@@ -240,6 +240,22 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
 
   return (
     <View style={styles.container}>
+      {/* Ask mode indicator — mirrors the web client's banner so the user
+          has an unmissable cue that the session is read-only. */}
+      {askMode && (
+        <View style={styles.askModeBanner}>
+          <Ionicons
+            name="information-circle"
+            size={14}
+            color={colors.blue400}
+            style={{ marginRight: 4 }}
+          />
+          <Text style={styles.askModeBannerText}>
+            Ask mode — read-only, no file changes or commands
+          </Text>
+        </View>
+      )}
+
       {/* Slash-command autocomplete popup */}
       {slashQuery !== null && filteredSkills.length > 0 && (
         <View style={styles.slashPopup}>
@@ -350,7 +366,13 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
           value={value}
           onChangeText={handleChangeText}
           onSelectionChange={handleSelectionChange}
-          placeholder={disabled ? 'Waiting...' : 'Message...'}
+          placeholder={
+            disabled
+              ? 'Waiting...'
+              : askMode
+                ? 'Ask a question...'
+                : 'Message...'
+          }
           placeholderTextColor={colors.gray500}
           editable={!disabled || isProcessing}
           multiline
@@ -404,6 +426,23 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingBottom: Platform.OS === 'ios' ? 8 : 8,
     backgroundColor: colors.gray950,
+  },
+  // Ask mode banner — shown above the composer when the session is read-only
+  askModeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginBottom: 6,
+    backgroundColor: colors.blue900_40,
+    borderWidth: 1,
+    borderColor: colors.blue400,
+    borderRadius: 8,
+  },
+  askModeBannerText: {
+    fontSize: 12,
+    color: colors.blue400,
+    flex: 1,
   },
   // Slash-command autocomplete styles
   slashPopup: {

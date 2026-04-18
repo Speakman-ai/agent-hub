@@ -49,6 +49,7 @@ export default function ChatScreen() {
     projects,
     sessionHandoffs,
     handleOpenHandoffSession,
+    sessionAskMode,
   } = useApp();
 
   const flatListRef = useRef(null);
@@ -197,6 +198,7 @@ export default function ChatScreen() {
           agentColor={activeAgent?.color}
           skills={skills}
           queueLength={(messageQueues[activeSessionId] || []).length}
+          askMode={sessionAskMode}
         />
       </KeyboardAvoidingView>
 

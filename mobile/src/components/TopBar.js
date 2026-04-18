@@ -53,6 +53,8 @@ export default function TopBar({ projectId, agentId } = {}) {
     sessionWorktree,
     gitWorktreeDetected,
     handleWorktreeChange,
+    sessionAskMode,
+    handleAskModeChange,
     handleEngineChange,
     handleModelChange,
     handleNewSession,
@@ -125,6 +127,18 @@ export default function TopBar({ projectId, agentId } = {}) {
             >
               {worktreeBadge.label}
             </Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Ask-mode badge — only when read-only mode is active */}
+        {activeAgent && sessionAskMode && (
+          <TouchableOpacity
+            onPress={() => setShowPicker(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Ask mode on — read-only, no file changes or commands"
+            style={styles.askBadge}
+          >
+            <Text style={styles.askBadgeText}>Ask</Text>
           </TouchableOpacity>
         )}
 
@@ -265,6 +279,35 @@ export default function TopBar({ projectId, agentId } = {}) {
                   : '— CLI not in worktree'}
               </Text>
             )}
+
+            <View style={styles.pickerDivider} />
+
+            {/* Mode section — Ask (read-only) vs Agent (full access) */}
+            <Text style={styles.pickerSectionLabel}>MODE</Text>
+            <TouchableOpacity
+              style={styles.pickerItem}
+              onPress={() => {
+                handleAskModeChange(!sessionAskMode);
+                setShowPicker(false);
+              }}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: sessionAskMode }}
+              accessibilityLabel={
+                sessionAskMode
+                  ? 'Ask mode on — toggle to agent (full access)'
+                  : 'Ask mode off — toggle to read-only'
+              }
+            >
+              <Text
+                style={[
+                  styles.pickerItemLabel,
+                  sessionAskMode && styles.pickerItemLabelAsk,
+                ]}
+              >
+                {sessionAskMode ? 'Ask (read-only)' : 'Agent (full access)'}
+              </Text>
+              {sessionAskMode && <Text style={styles.pickerCheckAsk}>✓</Text>}
+            </TouchableOpacity>
 
             <View style={styles.pickerDivider} />
 
@@ -444,9 +487,16 @@ const styles = StyleSheet.create({
   pickerItemLabelActive: {
     color: colors.white,
   },
+  pickerItemLabelAsk: {
+    color: colors.blue400,
+  },
   pickerCheck: {
     fontSize: 12,
     color: colors.emerald400,
+  },
+  pickerCheckAsk: {
+    fontSize: 12,
+    color: colors.blue400,
   },
   pickerDivider: {
     height: 1,
@@ -502,5 +552,19 @@ const styles = StyleSheet.create({
   worktreeHintOff: {
     color: colors.gray500,
     backgroundColor: colors.gray800,
+  },
+  // Ask-mode badge (header — only shown when read-only mode is on)
+  askBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    backgroundColor: colors.blue900_40,
+    borderColor: colors.blue400,
+  },
+  askBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.blue400,
   },
 });
