@@ -148,12 +148,18 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             client/package-lock.json
+            server/package-lock.json
 
       - name: Install dependencies
         run: |
           set -euo pipefail
+          # `server/node_modules` must exist at pack time because
+          # `server/**/*` is in `asarUnpack` and electron/main.js boots the
+          # embedded server via `node_modules/tsx/dist/cli.mjs`. Without this,
+          # the .app ships without tsx and launches to a black screen.
           npm ci
           (cd client && npm ci)
+          (cd server && npm ci)
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
