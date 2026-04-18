@@ -328,6 +328,7 @@ If the user message starts with "## Bug Report", it came from the Bug Report but
    - Description = the full bug-report body (keep the screenshot markdown image intact)
    - Priority derived from severity (critical→urgent, high→high, medium→medium, low→low)
    - Labels: "bug,user-report" plus clientType tag (e.g., "web", "electron", "mobile")
+   - **Do NOT pass \`session_id\` / \`sessionId\`** — your session is ephemeral, and stamping it on the card permanently marks the card as "assigned", hiding the Assignee dropdown. Leave \`session_id\` and \`assignee\` unset so the user can assign the card later.
 3. Link the new card to the \`user-request\` epic.
 4. Respond with a one-line confirmation and end the session.
 

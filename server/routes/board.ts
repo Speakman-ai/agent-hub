@@ -171,28 +171,48 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
     if (!card) return res.status(404).json({ error: 'Card not found' });
     const body = req.body as Record<string, unknown>;
+
+    // Non-nullable fields: only overwrite when a new value is supplied.
     const title = body.title as string | undefined;
-    const description = body.description as string | null | undefined;
     const priority = body.priority as string | undefined;
+
+    // Nullable fields: an explicit `null` (or `null` via snake_case alias) must
+    // clear the column. `??` treats `null` as absent, so we check key
+    // presence instead — that's the only way the client can drop a value.
+    const hasDescription = 'description' in body;
+    const description = body.description as string | null | undefined;
+
+    const hasAssignee = 'assignee' in body;
     const assignee = body.assignee as string | null | undefined;
+
+    const hasLabels = 'labels' in body;
     const labels = body.labels as string | null | undefined;
+
+    const hasSessionId = 'sessionId' in body || 'session_id' in body;
     const sessionId = (body.sessionId ?? body.session_id) as string | null | undefined;
+
+    const hasGithubIssueUrl = 'githubIssueUrl' in body || 'github_issue_url' in body;
     const githubIssueUrl = (body.githubIssueUrl ?? body.github_issue_url) as
       | string
       | null
       | undefined;
+
+    const hasPrUrl = 'prUrl' in body || 'pr_url' in body;
     const prUrl = (body.prUrl ?? body.pr_url) as string | null | undefined;
+
+    const hasEpicId = 'epicId' in body || 'epic_id' in body;
     const epicId = (body.epicId ?? body.epic_id) as string | null | undefined;
+
     stmts.updateKanbanCard.run(
       title ?? card.title,
-      description ?? card.description,
+      hasDescription ? (description ?? null) : card.description,
       priority ?? card.priority,
-      assignee ?? card.assignee,
-      labels ?? card.labels,
-      sessionId ?? card.session_id,
-      githubIssueUrl ?? card.github_issue_url,
-      prUrl ?? card.pr_url,
-      epicId ?? card.epic_id,
+      hasAssignee ? (assignee ?? null) : card.assignee,
+      hasLabels ? (labels ?? null) : card.labels,
+      hasSessionId ? (sessionId ?? null) : card.session_id,
+      hasGithubIssueUrl ? (githubIssueUrl ?? null) : card.github_issue_url,
+      hasPrUrl ? (prUrl ?? null) : card.pr_url,
+      hasEpicId ? (epicId ?? null) : card.epic_id,
       req.params.cardId,
     );
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });

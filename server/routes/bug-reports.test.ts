@@ -114,6 +114,23 @@ describe('buildBugReportPrompt', () => {
     expect(out).toContain('user-request');
     expect(out).toContain('End the session after the card is created');
   });
+
+  it('instructs the intake agent NOT to pass session_id on the created card', () => {
+    // Regression guard for the "Session active / Open Session" stuck state:
+    // if the ephemeral intake session stamps its id on the bug-report card,
+    // the UI permanently shows the card as assigned with no way to clear it
+    // (see board PUT endpoint — session_id is nullable but must be explicitly
+    // cleared, which requires an accessible Assignee dropdown the UI hides
+    // when session_id is set).
+    const out = buildBugReportPrompt({
+      title: 'x',
+      description: 'y',
+      severity: 'medium',
+    });
+    expect(out).toMatch(/do not pass .*session_?id/i);
+    // And the snake_case form the JSON API accepts
+    expect(out).toContain('session_id');
+  });
 });
 
 describe('POST /api/bug-reports', () => {
@@ -169,6 +186,10 @@ describe('POST /api/bug-reports', () => {
     const uploads = readdirSync(path.join(ctx.uploadsDir, 'uploads'));
     expect(uploads.length).toBe(1);
     expect(uploads[0]).toMatch(/\.png$/);
+
+    // Prompt that is actually sent must tell the intake agent not to stamp
+    // its ephemeral session id on the resulting card.
+    expect(chatMsg.content).toMatch(/do not pass .*session_?id/i);
   });
 
   it('returns 400 when title is missing', async () => {

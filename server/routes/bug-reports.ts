@@ -181,6 +181,10 @@ export function buildBugReportPrompt(input: BugReportInput): string {
   lines.push(
     'Create a kanban card in the Backlog column of the agent-hub project under the `user-request` epic (create the epic if missing, color `#EF4444`). Link the card to that epic. Map severity→priority (critical→urgent, high→high, medium→medium, low→low). End the session after the card is created.',
   );
+  lines.push('');
+  lines.push(
+    '**IMPORTANT:** Do NOT pass `session_id` (or `sessionId`) when creating this card. Your session is ephemeral and will exit immediately after creation — a stamped `session_id` will permanently mark the card as "assigned" and hide the Assignee dropdown from the user. Leave `session_id` and `assignee` unset so the user can assign the card to a real agent.',
+  );
   return lines.join('\n');
 }
 
