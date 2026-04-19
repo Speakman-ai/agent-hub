@@ -48,6 +48,7 @@ const DETERMINISTIC_SCRIPTS = [
   'wiki-search.sh',
   'wiki-upsert.sh',
   'get-board-state.sh',
+  'log-tool-error.sh',
 ];
 
 function runHelp(file: string): { code: number; stdout: string } {
@@ -152,6 +153,23 @@ describe('agent-hub deterministic script wrappers — shape', () => {
 
     it('ah-api.sh with no args exits 2', () => {
       expect(runExit(path.join(DEFAULT_SCRIPTS, 'ah-api.sh'), [])).toBe(2);
+    });
+
+    it('log-tool-error.sh with no args exits 2', () => {
+      expect(runExit(path.join(DEFAULT_SCRIPTS, 'log-tool-error.sh'), [])).toBe(2);
+    });
+
+    it('log-tool-error.sh missing --summary exits 2', () => {
+      expect(
+        runExit(path.join(DEFAULT_SCRIPTS, 'log-tool-error.sh'), [
+          '--tool',
+          'Bash',
+          '--action',
+          'npm test',
+          '--exit',
+          'exit 1',
+        ]),
+      ).toBe(2);
     });
   });
 
@@ -404,6 +422,153 @@ describe('agent-hub deterministic script wrappers — shape', () => {
           // its presence would be a lie about who controls slug identity.
           expect(post!.body).not.toMatch(/"slug"\s*:/);
           expect(post!.body).toContain('"title": "My Page"');
+        } finally {
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+      },
+      15_000,
+    );
+  });
+
+  // ─── log-tool-error.sh daily-note append (mock server) ───────────────
+  // The script resolves the workspace via GET /api/projects/:id (.ahw) and
+  // appends a TOOL_ERROR line to <workspace>/memory/<YYYY-MM-DD>.md. We spin
+  // up a mock server that hands back a temp dir as `ahw`, invoke the script,
+  // then assert both its stdout (logged line) and the on-disk note contents.
+  describe('log-tool-error.sh daily-note append (mock server)', () => {
+    const hasPython = spawnSync('python3', ['--version']).status === 0;
+    const fn = hasPython ? it : it.skip;
+
+    let tmpDir: string;
+    beforeAll(() => {
+      tmpDir = mkdtempSync(path.join(os.tmpdir(), 'log-tool-error-test-'));
+    });
+    afterAll(() => {
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup.
+      }
+    });
+
+    fn(
+      "appends a TOOL_ERROR line with canonical format to today's note",
+      async () => {
+        const calls: Array<{ method: string; url: string }> = [];
+        const server = http.createServer((req, res) => {
+          req.on('data', () => {});
+          req.on('end', () => {
+            calls.push({ method: req.method ?? '', url: req.url ?? '' });
+            res.setHeader('content-type', 'application/json');
+            if (req.url === '/api/projects/proj-x') {
+              res.end(JSON.stringify({ id: 'proj-x', name: 'x', ahw: tmpDir }));
+            } else {
+              res.statusCode = 404;
+              res.end('{}');
+            }
+          });
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        try {
+          const { port } = server.address() as AddressInfo;
+          const result = await spawnAsync(
+            path.join(DEFAULT_SCRIPTS, 'log-tool-error.sh'),
+            [
+              '--tool',
+              'Bash',
+              '--action',
+              'npm test',
+              '--exit',
+              'exit 1',
+              '--summary',
+              'ENOENT: tsx not found in PATH',
+            ],
+            {
+              ...process.env,
+              AGENT_HUB_URL: `http://127.0.0.1:${port}`,
+              AGENT_HUB_API_KEY: '',
+              PROJECT_ID: 'proj-x',
+            },
+          );
+          expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+
+          // Script echoed the logged line to stdout in canonical form.
+          const line = result.stdout.trim();
+          expect(line).toMatch(
+            /^TOOL_ERROR \| \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \| Bash \| npm test \| exit 1 \| ENOENT: tsx not found in PATH$/,
+          );
+          // Exactly six pipe-delimited columns — the Session Health parser
+          // will rely on this invariant, so we pin it here.
+          expect(line.split(' | ')).toHaveLength(6);
+
+          // The project lookup call happened.
+          expect(calls.some((c) => c.url === '/api/projects/proj-x')).toBe(true);
+
+          // The note was written under <ahw>/memory/<date>.md and contains
+          // the exact line echoed on stdout.
+          const today = new Date().toISOString().slice(0, 10);
+          const notePath = path.join(tmpDir, 'memory', `${today}.md`);
+          expect(existsSync(notePath)).toBe(true);
+          const noteBody = readFileSync(notePath, 'utf8');
+          expect(noteBody).toContain(line);
+          // And the `## HH:MM` block header used by appendDailyNote.
+          expect(noteBody).toMatch(/^## \d{2}:\d{2}$/m);
+        } finally {
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+      },
+      15_000,
+    );
+
+    fn(
+      'sanitises embedded pipes and newlines so the line stays 6-column',
+      async () => {
+        const server = http.createServer((req, res) => {
+          req.on('data', () => {});
+          req.on('end', () => {
+            res.setHeader('content-type', 'application/json');
+            if (req.url === '/api/projects/proj-x') {
+              res.end(JSON.stringify({ id: 'proj-x', ahw: tmpDir }));
+            } else {
+              res.statusCode = 404;
+              res.end('{}');
+            }
+          });
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        try {
+          const { port } = server.address() as AddressInfo;
+          const result = await spawnAsync(
+            path.join(DEFAULT_SCRIPTS, 'log-tool-error.sh'),
+            [
+              '--tool',
+              'Bash',
+              '--action',
+              'grep foo | wc',
+              '--exit',
+              'exit 2',
+              '--summary',
+              'broken\npipe | collision',
+            ],
+            {
+              ...process.env,
+              AGENT_HUB_URL: `http://127.0.0.1:${port}`,
+              AGENT_HUB_API_KEY: '',
+              PROJECT_ID: 'proj-x',
+            },
+          );
+          expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+
+          const line = result.stdout.trim();
+          // Single line (no embedded newline leaked into the output).
+          expect(line.split('\n')).toHaveLength(1);
+          // Still exactly 6 fields after sanitisation.
+          expect(line.split(' | ')).toHaveLength(6);
+          // Pipes inside user-supplied fields are rewritten to `/`.
+          expect(line).toContain('grep foo / wc');
+          expect(line).toContain('broken pipe / collision');
+          // User gets a warning on stderr so silent mangling is noticed.
+          expect(result.stderr).toContain('sanitised');
         } finally {
           await new Promise<void>((resolve) => server.close(() => resolve()));
         }

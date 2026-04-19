@@ -44,6 +44,29 @@ Example:
 TOOL_ERROR | 2026-04-19T02:45:00Z | Bash | npm test | exit 1 | ENOENT: tsx not found in PATH
 ```
 
+### How to log — `scripts/log-tool-error.sh`
+
+**Don't hand-roll the line.** Call `scripts/log-tool-error.sh` — it
+generates the UTC ISO timestamp, sanitises stray pipes/newlines inside
+caller-supplied fields (so the line always has exactly 6 pipe-delimited
+columns), and appends the entry under a fresh `## HH:MM` header to
+`<workspace>/memory/<YYYY-MM-DD>.md`. The workspace is resolved via
+`GET /api/projects/$PROJECT_ID` so the script works no matter your CWD.
+
+```bash
+PROJECT_ID=agent-hub scripts/log-tool-error.sh \
+  --tool Bash \
+  --action 'npm test' \
+  --exit 'exit 1' \
+  --summary 'ENOENT: tsx not found in PATH'
+```
+
+The script echoes the exact line it wrote to stdout (handy for piping
+into a card comment or another script). It exits `2` on bad invocation
+(missing required flag, no `PROJECT_ID`) and non-zero on API or
+filesystem failure — if the log itself fails, fall back to emitting the
+line into chat so a human can transcribe it.
+
 ### When to log
 
 - A tool call exits non-zero and you cannot route around it.
