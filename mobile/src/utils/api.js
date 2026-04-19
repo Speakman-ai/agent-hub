@@ -336,6 +336,15 @@ export const api = {
     return fetchJSON(`/projects/${projectId}/pulls${qs ? '?' + qs : ''}`);
   },
   getProjectPullDetail: (projectId, number) => fetchJSON(`/projects/${projectId}/pulls/${number}`),
+  // NOTE: `fetchJSON` on mobile doesn't implement a timeout (unlike the web
+  // client). The server-side resolve spawn is fast to initiate (it returns
+  // once the session is spawned, not once the agent finishes), so the default
+  // React Native fetch timeout is adequate.
+  resolvePR: (projectId, prNumber, { agentId } = {}) =>
+    fetchJSON(`/projects/${projectId}/pulls/${prNumber}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    }),
 
   // PR Captures (read-only on mobile) — list project captures and fetch one
   // with its screenshot/video artifacts. Mirrors the web CapturesPage endpoints.

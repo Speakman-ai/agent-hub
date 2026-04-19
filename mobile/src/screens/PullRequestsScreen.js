@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Linking,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -26,6 +27,7 @@ import {
   mergeableBadge,
 } from '../utils/prFormatting';
 import PrCapturesSection from '../components/PrCapturesSection';
+import { resolveAgentIdFromProject } from '../utils/projectAgents';
 
 const STATE_TABS = [
   { key: 'open', label: 'Open' },
@@ -77,7 +79,16 @@ function PrListItem({ pr, onPress }) {
   );
 }
 
-function PrDetail({ detail, projectId, onBack, onRefresh, refreshing }) {
+function PrDetail({
+  detail,
+  projectId,
+  onBack,
+  onRefresh,
+  refreshing,
+  onResolve,
+  resolving,
+  canResolve,
+}) {
   const pr = detail?.pr;
   if (!pr) return null;
   const state = prStateBadge(pr);
@@ -87,6 +98,8 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing }) {
   const rBadge = reviewsBadge(reviewState);
   const mBadge = mergeableBadge(pr.mergeable);
 
+  const resolveDisabled = resolving || !canResolve;
+
   return (
     <ScrollView
       style={styles.detailScroll}
@@ -95,9 +108,32 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing }) {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.gray400} />
       }
     >
-      <TouchableOpacity style={styles.backButton} onPress={onBack}>
-        <Text style={styles.backButtonText}>{'\u2190'} Back to list</Text>
-      </TouchableOpacity>
+      <View style={styles.detailTopActions}>
+        <TouchableOpacity style={styles.backButton} onPress={onBack}>
+          <Text style={styles.backButtonText}>{'\u2190'} Back to list</Text>
+        </TouchableOpacity>
+        <View style={{ flex: 1 }} />
+        <TouchableOpacity
+          style={[styles.resolveButton, resolveDisabled && styles.resolveButtonDisabled]}
+          onPress={onResolve}
+          disabled={resolveDisabled}
+          accessibilityLabel="Resolve PR"
+          accessibilityState={{ disabled: resolveDisabled, busy: resolving }}
+        >
+          {resolving ? (
+            <ActivityIndicator size="small" color={colors.gray300} />
+          ) : (
+            <Text
+              style={[
+                styles.resolveButtonText,
+                resolveDisabled && styles.resolveButtonTextDisabled,
+              ]}
+            >
+              {'\u{1F527}'} Resolve PR
+            </Text>
+          )}
+        </TouchableOpacity>
+      </View>
 
       <View style={styles.detailHeader}>
         <Badge label={state.label} color={state.color} bg={state.bg} />
@@ -246,12 +282,13 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing }) {
   );
 }
 
-export default function PullRequestsScreen({ route }) {
-  const { projects } = useApp();
+export default function PullRequestsScreen({ route, navigation }) {
+  const { projects, setActiveAgentId, setActiveSessionId } = useApp();
   const { openSidebar } = useContext(SidebarContext);
 
   const projectId = route?.params?.projectId || projects?.[0]?.id;
   const project = projects?.find((p) => p.id === projectId);
+  const resolveAgentId = resolveAgentIdFromProject(project);
 
   const [state, setState] = useState('open');
   const [pulls, setPulls] = useState([]);
@@ -263,6 +300,7 @@ export default function PullRequestsScreen({ route }) {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState(null);
+  const [resolving, setResolving] = useState(false);
 
   const loadList = useCallback(async () => {
     if (!projectId) {
@@ -329,6 +367,45 @@ export default function PullRequestsScreen({ route }) {
     }
   };
 
+  // Spawn an agent session to resolve the selected PR (CI failures, review
+  // feedback, or merge conflicts). Mirrors the web's `handleResolve` in
+  // `client/src/components/PullRequestsPage.jsx`.
+  const handleResolve = useCallback(async () => {
+    if (!projectId || !selectedNumber || !resolveAgentId || resolving) return;
+    setResolving(true);
+    try {
+      const res = await api.resolvePR(projectId, selectedNumber, { agentId: resolveAgentId });
+      if (res?.sessionId) {
+        // Jump into the resolver session in the Chat screen.
+        setActiveAgentId(resolveAgentId);
+        setActiveSessionId(res.sessionId);
+        const kinds = Array.isArray(res.triggered) ? res.triggered.join(', ') : '';
+        if (navigation?.navigate) {
+          navigation.navigate('Chat');
+        }
+        Alert.alert(
+          'Resolve PR',
+          kinds ? `Resolving PR — ${kinds}` : 'Resolving PR — agent session started',
+        );
+      } else {
+        Alert.alert('Resolve PR', 'Nothing to resolve — PR looks clean.');
+      }
+    } catch (err) {
+      const msg = err?.message || 'Failed to resolve PR';
+      Alert.alert('Resolve PR failed', msg);
+    } finally {
+      setResolving(false);
+    }
+  }, [
+    projectId,
+    selectedNumber,
+    resolveAgentId,
+    resolving,
+    navigation,
+    setActiveAgentId,
+    setActiveSessionId,
+  ]);
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* Header */}
@@ -370,6 +447,9 @@ export default function PullRequestsScreen({ route }) {
               onBack={handleBack}
               onRefresh={handleRefresh}
               refreshing={refreshing}
+              onResolve={handleResolve}
+              resolving={resolving}
+              canResolve={Boolean(resolveAgentId)}
             />
           )}
         </>
@@ -529,6 +609,29 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   backButtonText: { color: colors.blue400, fontSize: 13 },
+  detailTopActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  resolveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minHeight: 32,
+    minWidth: 110,
+    justifyContent: 'center',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+  },
+  resolveButtonDisabled: { opacity: 0.5 },
+  resolveButtonText: { color: colors.gray200, fontSize: 13, fontWeight: '500' },
+  resolveButtonTextDisabled: { color: colors.gray500 },
 
   detailScroll: { flex: 1 },
   detailContent: { padding: 16 },
