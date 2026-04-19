@@ -914,8 +914,8 @@ export function AppProvider({ children }) {
   // re-taps the already-active session) can force a refresh without waiting
   // for `activeSessionId` to change. The race-guard logic lives in the pure
   // `createReloadMessages` factory so it can be unit-tested in isolation.
-  const reloadMessages = useCallback(
-    createReloadMessages({
+  const reloadMessages = useMemo(
+    () => createReloadMessages({
       fetchMessages: (sid) => api.getMessages(sid),
       getActiveSessionId: () => activeSessionIdRef.current,
       setMessages,
@@ -923,7 +923,11 @@ export function AppProvider({ children }) {
     [],
   );
 
-  // Load messages when session changes
+  // Load messages when session changes.
+  // NOTE: when switching sessions via the drawer, reloadMessages may fire
+  // twice — once here (activeSessionId changed) and once via ChatScreen's
+  // useFocusEffect (screen regained focus). The race guard inside
+  // createReloadMessages makes this safe; the duplicate fetch is harmless.
   useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);

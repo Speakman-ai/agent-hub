@@ -87,6 +87,9 @@ export default function DrawerContent({ navigation }) {
     ]);
   };
 
+  // Same reload-on-re-tap logic as handleSessionSelect — if the user taps the
+  // already-active cron session, explicitly reload since neither setState nor
+  // navigation focus will trigger a refresh.
   const handleCronSessionSelect = (sessionId) => {
     if (sessionId === activeSessionId) {
       reloadMessages();
