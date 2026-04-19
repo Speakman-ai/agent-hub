@@ -26,6 +26,19 @@ interface DelegationDeps {
   getConfig: () => AppConfig;
 }
 
+/**
+ * Config knobs for the per-task retry loop. Both are optional on {@link AppConfig}
+ * — sensible defaults are applied when unset. See {@link DEFAULT_MAX_ATTEMPTS}
+ * and {@link DEFAULT_RETRY_BACKOFF_MS}.
+ */
+type DelegationRetryConfig = AppConfig & {
+  delegationMaxAttempts?: number;
+  delegationRetryBackoffMs?: number;
+};
+
+const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_RETRY_BACKOFF_MS = 1000;
+
 interface DelegateTask {
   agentId: string;
   task: string;
@@ -101,6 +114,7 @@ export async function handleDelegation(
     broadcast,
     getEnrichedAgent,
     buildEnrichedPrompt,
+    appendDailyNote,
     getClaudeBin,
     getDefaultModel,
     getConfig,
@@ -108,7 +122,10 @@ export async function handleDelegation(
 
   const CLAUDE_BIN = getClaudeBin();
   const DEFAULT_MODEL = getDefaultModel();
-  const cfg = getConfig();
+  const cfg = getConfig() as DelegationRetryConfig;
+
+  const maxAttempts = Math.max(1, cfg.delegationMaxAttempts ?? DEFAULT_MAX_ATTEMPTS);
+  const retryBackoffMs = Math.max(0, cfg.delegationRetryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS);
 
   const validTasks = delegateTasks.filter((t) => {
     if (!leadAgent.subAgents || !leadAgent.subAgents.includes(t.agentId)) {
@@ -168,8 +185,13 @@ export async function handleDelegation(
       const delegationState: DelegationState = { proc: null, cancelled: false };
       activeDelegations.set(`${sessionId}:${delegationId}`, delegationState);
 
-      try {
-        const output = await new Promise<string>((resolve, reject) => {
+      /**
+       * Run one dispatch attempt. Resolves with stdout on success; rejects
+       * with a descriptive Error on timeout, spawn error, or non-zero exit.
+       * Rejects with `Cancelled` when the delegation was cancelled.
+       */
+      const dispatchOnce = (): Promise<string> =>
+        new Promise<string>((resolve, reject) => {
           const subPrompt = buildEnrichedPrompt(subAgent, null, { useWorktree: true });
           const args: string[] = [
             '--print',
@@ -201,7 +223,7 @@ export async function handleDelegation(
             reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
           }, timeout);
 
-          proc.stdout.on('data', (chunk: Buffer) => {
+          proc.stdout?.on('data', (chunk: Buffer) => {
             stdout += chunk.toString();
             broadcast({
               type: 'delegation_stream',
@@ -214,7 +236,7 @@ export async function handleDelegation(
             });
           });
 
-          proc.stderr.on('data', (chunk: Buffer) => {
+          proc.stderr?.on('data', (chunk: Buffer) => {
             stderr += chunk.toString();
           });
 
@@ -239,10 +261,55 @@ export async function handleDelegation(
           });
         });
 
+      let output: string | null = null;
+      let lastError: string | null = null;
+      let attemptsMade = 0;
+      const attemptErrors: string[] = [];
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        attemptsMade = attempt;
+        if (delegationState.cancelled) {
+          lastError = 'Cancelled';
+          break;
+        }
+        try {
+          output = await dispatchOnce();
+          lastError = null;
+          break;
+        } catch (err) {
+          const msg = (err as Error).message;
+          lastError = msg;
+          attemptErrors.push(`attempt ${attempt}: ${msg}`);
+
+          // Cancellation is terminal — never retry.
+          if (msg === 'Cancelled' || delegationState.cancelled) break;
+
+          if (attempt < maxAttempts) {
+            console.warn(
+              `[Delegation] ${subAgent.name} attempt ${attempt}/${maxAttempts} failed: ${msg} — retrying`,
+            );
+            broadcast({
+              type: 'delegation_agent_retry',
+              sessionId,
+              delegationId,
+              agentId: subAgent.id,
+              agentName: subAgent.name,
+              attempt,
+              maxAttempts,
+              error: msg,
+            });
+            // Linear backoff — 1s, 2s, 3s, … — keeps total wait bounded.
+            await new Promise((r) => setTimeout(r, retryBackoffMs * attempt));
+          }
+        }
+      }
+
+      activeDelegations.delete(`${sessionId}:${delegationId}`);
+
+      if (output !== null && lastError === null) {
         try {
           stmts.updateDelegation.run('done', output, null, delegationId);
         } catch {}
-        activeDelegations.delete(`${sessionId}:${delegationId}`);
 
         broadcast({
           type: 'delegation_agent_done',
@@ -254,28 +321,50 @@ export async function handleDelegation(
         });
 
         return { agentId: subAgent.id, agentName: subAgent.name, output, error: null };
-      } catch (err) {
-        try {
-          stmts.updateDelegation.run('error', null, (err as Error).message, delegationId);
-        } catch {}
-        activeDelegations.delete(`${sessionId}:${delegationId}`);
-
-        broadcast({
-          type: 'delegation_agent_error',
-          sessionId,
-          delegationId,
-          agentId: subAgent.id,
-          agentName: subAgent.name,
-          error: (err as Error).message,
-        });
-
-        return {
-          agentId: subAgent.id,
-          agentName: subAgent.name,
-          output: null,
-          error: (err as Error).message,
-        };
       }
+
+      // All attempts exhausted (or cancelled). Build a descriptive error so
+      // the synthesis turn can surface it to the lead rather than silently
+      // dropping the result.
+      const wasCancelled = lastError === 'Cancelled';
+      const finalError = wasCancelled
+        ? 'Cancelled'
+        : `Delegation to ${subAgent.name} failed after ${attemptsMade} attempt${
+            attemptsMade === 1 ? '' : 's'
+          }: ${lastError ?? 'unknown error'}`;
+
+      try {
+        stmts.updateDelegation.run('error', null, finalError, delegationId);
+      } catch {}
+
+      broadcast({
+        type: 'delegation_agent_error',
+        sessionId,
+        delegationId,
+        agentId: subAgent.id,
+        agentName: subAgent.name,
+        error: finalError,
+        attempts: attemptsMade,
+      });
+
+      // TOOL_ERROR self-report — structured line per AGENTS.md convention.
+      if (!wasCancelled && project.ahw) {
+        try {
+          const actionExcerpt = task.task.replace(/\s+/g, ' ').slice(0, 80);
+          const summary = (lastError ?? 'unknown').replace(/\s+/g, ' ').slice(0, 160);
+          const line = `TOOL_ERROR | ${new Date().toISOString()} | delegation | ${subAgent.id}:${actionExcerpt} | dispatch_failed | ${summary} (attempts=${attemptsMade})`;
+          appendDailyNote(project.ahw, `\`\`\`\n${line}\n\`\`\``);
+        } catch (logErr) {
+          console.error('[Delegation] Failed to log TOOL_ERROR:', (logErr as Error).message);
+        }
+      }
+
+      return {
+        agentId: subAgent.id,
+        agentName: subAgent.name,
+        output: null,
+        error: finalError,
+      };
     }),
   );
 

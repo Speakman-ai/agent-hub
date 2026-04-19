@@ -261,6 +261,29 @@ work, log a `TOOL_ERROR` and escalate.
   `<handoff>`, check the `handoffs` table — a row with `status = 'failed'`
   carries the validation error.
 
+### `<delegate>` dispatch failed after retries
+
+- **Symptom**: the synthesis that follows your `<delegate>` block contains
+  a section like `⚠️ Error: Delegation to <agent> failed after 3
+  attempts: …` and no useful output from the sub-agent.
+- **Cause**: the CLI subprocess for the sub-agent failed on every
+  attempt — non-zero exit with no stdout, spawn error (e.g. missing
+  `claudeBin`), or timeout. The dispatcher retries up to
+  `delegationMaxAttempts` (default 3, linear backoff via
+  `delegationRetryBackoffMs`) before giving up; cancellation is terminal
+  and is never retried. On exhaustion the server:
+  - tags the `delegations` row `status = 'error'` with the descriptive
+    message,
+  - emits `delegation_agent_error` with `attempts: N`,
+  - appends a structured `TOOL_ERROR | … | delegation | <agentId>:<task>
+    | dispatch_failed | … (attempts=N)` line to the project's daily note.
+- **Recovery**: check `claudeBin` in `~/.agent-hub/data/config.json`, then
+  look at the daily-note `TOOL_ERROR` entry for the exact failure
+  (ENOENT, timeout, non-zero exit). If the CLI itself is broken, fix
+  that first; otherwise re-emit the `<delegate>` block in a follow-up
+  turn. The lead already sees the error via synthesis, so acknowledge
+  and decide — don't silently re-dispatch the same failing task.
+
 ### Plan mode blocks a write
 
 - **Symptom**: file writes, shell mutations, or PR creation fail with a
