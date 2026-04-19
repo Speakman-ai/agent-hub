@@ -44,6 +44,42 @@ function buildHookCommand(sessionId: string): string {
   return ['curl -sf', ...headers, '-d', `'${body}'`, `${baseUrl}/api/hooks/stop`].join(' ');
 }
 
+/**
+ * Marker embedded in the PreToolUse format-guard command so cleanup code can
+ * identify and remove just this hook, without stepping on agent-provided hooks
+ * or the Stop hook.
+ */
+const FORMAT_GUARD_MARKER = '[agent-hub-format-guard]';
+
+/**
+ * Build the PreToolUse Bash-matcher command that blocks `git commit`
+ * invocations when the repo fails `npm run format:check`.
+ *
+ * Claude Code passes the about-to-run tool call as a JSON payload on **stdin**
+ * (there is no `CLAUDE_TOOL_INPUT` env var — see
+ * https://code.claude.com/docs/en/hooks). We pull `.tool_input.command` out of
+ * that payload with `jq`, and only run the format check when the command
+ * string contains `git commit`, so every other Bash call (ls, npm test, etc.)
+ * is unaffected. Claude Code treats **exit code 2** as a block, so we map
+ * `format:check` failure onto `exit 2`. Covers the worktrees-without-husky
+ * gap, and also the case where an agent bypasses husky with `--no-verify`.
+ *
+ * If `jq` isn't on PATH we fail open (the guard is a no-op) — we don't want
+ * to block every Bash call on a tooling gap; Layer 1 (husky in worktrees) is
+ * still doing its job.
+ */
+function buildFormatGuardCommand(): string {
+  return [
+    'input=$(cat)',
+    'if command -v jq >/dev/null 2>&1; then ' +
+      "cmd=$(printf '%s' \"$input\" | jq -r '.tool_input.command // empty'); " +
+      'else cmd=""; fi',
+    `case "$cmd" in *'git commit'*) ` +
+      'cd "$CLAUDE_PROJECT_DIR" && npm run format:check || exit 2 ;; esac',
+    `# ${FORMAT_GUARD_MARKER}`,
+  ].join('; ');
+}
+
 export const HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
@@ -93,6 +129,23 @@ export function writeHooksConfig(
     );
     filtered.push(hookEntry);
     settings.hooks[event] = filtered;
+
+    // PreToolUse Bash guard — blocks `git commit` if `npm run format:check`
+    // fails. Defense-in-depth for the case where `.husky/` isn't wired up
+    // (worktrees skipping `npm install`) or an agent passes `--no-verify`.
+    const formatGuard: SettingsHookItem = {
+      type: 'command',
+      command: buildFormatGuardCommand(),
+    };
+    const formatGuardEntry: SettingsHookEntry = { matcher: 'Bash', hooks: [formatGuard] };
+
+    const preEvent = 'PreToolUse';
+    const preExisting = settings.hooks[preEvent] || [];
+    const preFiltered = preExisting.filter(
+      (entry) => !entry.hooks?.some((h) => h.command?.includes(FORMAT_GUARD_MARKER)),
+    );
+    preFiltered.push(formatGuardEntry);
+    settings.hooks[preEvent] = preFiltered;
   }
 
   if (agentHooks && typeof agentHooks === 'object') {
@@ -169,7 +222,9 @@ export function removeHooksConfig(cwd: string): void {
         (entry) =>
           !entry.hooks?.some(
             (h) =>
-              h.command?.includes('/api/hooks/stop') || h.command?.includes('[agent-hub-agent]'),
+              h.command?.includes('/api/hooks/stop') ||
+              h.command?.includes('[agent-hub-agent]') ||
+              h.command?.includes(FORMAT_GUARD_MARKER),
           ),
       );
       if (settings.hooks[event].length === 0) {

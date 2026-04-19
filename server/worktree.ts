@@ -29,6 +29,32 @@ function projectSlug(projectCwd: string): string {
 }
 
 /**
+ * If the cloned repo ships a `.husky/` directory, point `core.hooksPath` at it.
+ *
+ * Husky's `prepare` script only wires `core.hooksPath` during `npm install`,
+ * and worktree creation in this module does not run install — so without this
+ * step every worktree ends up using `.git/hooks/` (the inert stub) and the
+ * repo's pre-commit checks (lint, format) never fire. That's how PRs like
+ * #451 slipped through with Prettier violations.
+ *
+ * **Assumes husky v9+** — the shipped hook scripts are self-contained and do
+ * not source `.husky/_/husky.sh`. Husky v8 and earlier sourced that helper
+ * from the `husky` npm package, so pre-commit would error in a worktree
+ * whose `node_modules` don't have husky installed. The hub repo uses v9+.
+ *
+ * Idempotent: safe to call on reuse. Non-fatal — logs and continues on error.
+ */
+function enableHuskyHooks(cloneDir: string): void {
+  try {
+    if (!existsSync(path.join(cloneDir, '.husky'))) return;
+    execSync('git config core.hooksPath .husky', { cwd: cloneDir, stdio: 'pipe' });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[Workspace] Failed to enable husky hooks in ${cloneDir}:`, message);
+  }
+}
+
+/**
  * Copy git user.name and user.email from a source repo (or global config)
  * into a newly-cloned directory so that `git commit` works without a global identity.
  */
@@ -229,6 +255,7 @@ export function getOrCreateProcessWorktree(
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[Workspace] Sync failed for "${safeName}", reusing as-is:`, message);
     }
+    enableHuskyHooks(cloneDir);
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     return cloneDir;
   }
@@ -253,6 +280,7 @@ export function getOrCreateProcessWorktree(
       });
     }
     copyGitUserConfig(projectCwd, cloneDir);
+    enableHuskyHooks(cloneDir);
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     console.log(`[Workspace] Created clone: ${cloneDir}`);
     return cloneDir;
@@ -302,6 +330,7 @@ export function ensureSessionWorkspace(
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[Workspace] Fetch failed for session "${safeName}", reusing as-is:`, message);
     }
+    enableHuskyHooks(cloneDir);
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     persistFn(cloneDir, branchName, session.id);
     return cloneDir;
@@ -330,6 +359,7 @@ export function ensureSessionWorkspace(
 
     execSync(`git checkout -b "${branchName}"`, { cwd: cloneDir, stdio: 'pipe' });
     copyGitUserConfig(projectCwd, cloneDir);
+    enableHuskyHooks(cloneDir);
 
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     persistFn(cloneDir, branchName, session.id);

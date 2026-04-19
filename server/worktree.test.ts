@@ -212,6 +212,41 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(onFailure).not.toHaveBeenCalled();
   });
 
+  it('wires core.hooksPath to .husky in the session clone when the source has a .husky/ dir', () => {
+    const persist = vi.fn();
+
+    // Source repo ships a husky dir (commit it so the shallow clone picks it up)
+    const huskyDir = path.join(sourceRepo, '.husky');
+    mkdirSync(huskyDir, { recursive: true });
+    writeFileSync(path.join(huskyDir, 'pre-commit'), '#!/bin/sh\nexit 0\n');
+    git(sourceRepo, 'add .husky');
+    git(sourceRepo, 'commit -m "add husky"');
+    git(sourceRepo, 'push origin main');
+
+    const clonePath = ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    createdWorkspace = clonePath;
+
+    expect(existsSync(path.join(clonePath, '.husky'))).toBe(true);
+    const hooksPath = git(clonePath, 'config --get core.hooksPath');
+    expect(hooksPath).toBe('.husky');
+  });
+
+  it('skips core.hooksPath config when the source has no .husky/ dir', () => {
+    const persist = vi.fn();
+
+    const clonePath = ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    createdWorkspace = clonePath;
+
+    // No .husky/ in source, so core.hooksPath should be unset (or not '.husky')
+    let hooksPath = '';
+    try {
+      hooksPath = git(clonePath, 'config --get core.hooksPath');
+    } catch {
+      // `git config --get` exits 1 when the key is unset — that's the expected path
+    }
+    expect(hooksPath).not.toBe('.husky');
+  });
+
   it('does not reset the checked-out feature branch on reuse', () => {
     const persist = vi.fn();
 
