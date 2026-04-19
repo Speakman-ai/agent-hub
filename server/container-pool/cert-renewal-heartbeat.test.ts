@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { runCertRenewalHeartbeat } from './cert-renewal-heartbeat.js';
+import { runCertRenewalHeartbeat, certRenewalLock } from './cert-renewal-heartbeat.js';
 import type { CertRunner } from './cert-renewal.js';
 import type { PrEnvRuntimeConfig } from './pr-env-runtime.js';
 
@@ -121,5 +121,61 @@ describe('runCertRenewalHeartbeat', () => {
     });
     expect(result?.ok).toBe(false);
     expect(result?.stderr).toMatch(/not a real host/);
+  });
+
+  // ─── reentrancy guard (pairs with the 10m runner timeout) ──────────
+
+  describe('reentrancy guard', () => {
+    it('returns null + logs a skip when a previous tick is still running', async () => {
+      const logger = makeLogger();
+      // Prime the lock to simulate a previous tick that's still in flight.
+      certRenewalLock.running = true;
+      try {
+        const result = await runCertRenewalHeartbeat({
+          getConfig: () => makeConfig({ certRenewalLive: false }),
+          logger,
+        });
+        expect(result).toBeNull();
+        expect(logger.logs.some((l) => l.includes('previous tick still running'))).toBe(true);
+      } finally {
+        certRenewalLock.running = false;
+      }
+    });
+
+    it('releases the lock even when the runner throws', async () => {
+      const runner: CertRunner = {
+        async run() {
+          throw new Error('simulated spawn failure');
+        },
+      };
+      await runCertRenewalHeartbeat({
+        getConfig: () => makeConfig({ certRenewalLive: true }),
+        runner,
+        logger: makeLogger(),
+      });
+      expect(certRenewalLock.running).toBe(false);
+    });
+
+    it('allows a subsequent tick to run after the previous one completes', async () => {
+      const runner: CertRunner = {
+        async run() {
+          return { code: 0, stdout: '', stderr: '' };
+        },
+      };
+      const config = makeConfig({ certRenewalLive: false });
+      const first = await runCertRenewalHeartbeat({
+        getConfig: () => config,
+        runner,
+        logger: makeLogger(),
+      });
+      expect(first?.ok).toBe(true);
+      expect(certRenewalLock.running).toBe(false);
+      const second = await runCertRenewalHeartbeat({
+        getConfig: () => config,
+        runner,
+        logger: makeLogger(),
+      });
+      expect(second?.ok).toBe(true);
+    });
   });
 });

@@ -99,24 +99,52 @@ export interface CertRenewalHeartbeatDeps {
 }
 
 /**
+ * Process-wide reentrancy guard. Paired with the runner timeout: without
+ * this lock, node-cron would happily fire a second tick while a previous
+ * one is still in flight (e.g. near the 10-minute ACME timeout window),
+ * and both invocations would race on the same cert-home directory and
+ * Route53 credentials. The runner timeout bounds how long the lock can
+ * be held, so a stuck ACME call can't permanently block the schedule.
+ * Exported for tests; production code should never touch it directly.
+ */
+export const certRenewalLock = { running: false };
+
+/**
  * Run one cert-renewal tick. Returns the client result on success, or
- * null when the feature is disabled (config not present). Never throws —
- * scheduler callers want a best-effort tick with a logged failure, not
- * an unhandled rejection killing the node-cron callback.
+ * null when the feature is disabled (config not present) or a previous
+ * tick is still running (reentrancy skip). Never throws — scheduler
+ * callers want a best-effort tick with a logged failure, not an
+ * unhandled rejection killing the node-cron callback.
  */
 export async function runCertRenewalHeartbeat(
   deps: CertRenewalHeartbeatDeps,
 ): Promise<CertRenewalResult | null> {
-  const config = deps.getConfig();
   const logger = deps.logger ?? {
     log: (m) => console.log(m),
     error: (m) => console.error(m),
   };
+  if (certRenewalLock.running) {
+    logger.log('[cert-renewal] skipped — previous tick still running');
+    return null;
+  }
+  const config = deps.getConfig();
   if (!config) {
     logger.log('[cert-renewal] skipped — prEnv feature is disabled');
     return null;
   }
+  certRenewalLock.running = true;
+  try {
+    return await runLocked(deps, config, logger);
+  } finally {
+    certRenewalLock.running = false;
+  }
+}
 
+async function runLocked(
+  deps: CertRenewalHeartbeatDeps,
+  config: PrEnvRuntimeConfig,
+  logger: { log: (m: string) => void; error: (m: string) => void },
+): Promise<CertRenewalResult | null> {
   let wildcardDomain: string;
   try {
     wildcardDomain = wildcardDomainFromConfig(config);

@@ -39,13 +39,24 @@ describe('renderPreviewServerBlock', () => {
   it('threads the WebSocket upgrade headers so preview containers can serve WS', () => {
     const out = renderPreviewServerBlock(base);
     expect(out).toContain('proxy_set_header Upgrade           $http_upgrade;');
-    expect(out).toContain('proxy_set_header Connection        $connection_upgrade;');
+    // File-local PR-scoped map — self-contained so nginx -t passes without
+    // the parent agent-hub.conf $connection_upgrade map.
+    expect(out).toContain('proxy_set_header Connection        $pr_42_connection_upgrade;');
   });
 
-  it('documents the $connection_upgrade map prerequisite in the header comment', () => {
+  it('emits a self-contained $pr_<n>_connection_upgrade map (addresses reviewer "emit a local map" ask)', () => {
     const out = renderPreviewServerBlock(base);
-    expect(out).toContain('PREREQUISITE');
-    expect(out).toContain('$connection_upgrade');
+    expect(out).toMatch(/map \$http_upgrade \$pr_42_connection_upgrade \{[\s\S]*default upgrade/);
+    expect(out).toMatch(/''\s+close;/);
+  });
+
+  it('per-PR map variable names do not collide between preview blocks', () => {
+    const out1 = renderPreviewServerBlock({ ...base, prNumber: 42 });
+    const out2 = renderPreviewServerBlock({ ...base, prNumber: 100 });
+    expect(out1).toContain('$pr_42_connection_upgrade');
+    expect(out1).not.toContain('$pr_100_connection_upgrade');
+    expect(out2).toContain('$pr_100_connection_upgrade');
+    expect(out2).not.toContain('$pr_42_connection_upgrade');
   });
 
   it('does NOT emit HSTS (parent config handles it at the apex)', () => {
