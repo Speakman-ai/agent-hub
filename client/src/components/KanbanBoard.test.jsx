@@ -141,6 +141,258 @@ describe('KanbanBoard card detail modal', () => {
   });
 });
 
+describe('KanbanBoard drag reorder', () => {
+  // jsdom 29 has no DragEvent — fireEvent.dragOver falls back to plain
+  // Event, which drops clientY. Build MouseEvents manually so the per-card
+  // dragover handler can compute the insertion midpoint.
+  const makeDataTransfer = () => {
+    const store = new Map();
+    return {
+      effectAllowed: 'move',
+      dropEffect: 'move',
+      setData: (k, v) => store.set(k, String(v)),
+      getData: (k) => store.get(k) || '',
+    };
+  };
+
+  const dragMouseEvent = (type, { clientY, dataTransfer }) => {
+    const ev = new MouseEvent(type, { bubbles: true, cancelable: true, clientY });
+    if (dataTransfer) {
+      Object.defineProperty(ev, 'dataTransfer', { value: dataTransfer, writable: false });
+    }
+    return ev;
+  };
+
+  beforeEach(() => {
+    api.getBoard.mockReset();
+    api.get.mockReset();
+    api.getCardComments.mockReset();
+    api.moveCard.mockReset();
+    api.get.mockResolvedValue([]);
+    api.getCardComments.mockResolvedValue([]);
+    api.moveCard.mockResolvedValue({});
+  });
+
+  it('reorders a card within the same column and renumbers affected siblings', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        { id: 'c1', title: 'Card One', column_id: 'col-todo', position: 0 },
+        { id: 'c2', title: 'Card Two', column_id: 'col-todo', position: 1 },
+        { id: 'c3', title: 'Card Three', column_id: 'col-todo', position: 2 },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Card One')).toBeInTheDocument());
+
+    const dt = makeDataTransfer();
+    const sourceCardEl = screen.getByTestId('card-row-c1').querySelector('[draggable="true"]');
+    const targetCardEl = screen.getByTestId('card-row-c3').querySelector('[draggable="true"]');
+
+    // Drag c1 to the bottom half of c3 → insert after c3 → end of column.
+    fireEvent.dragStart(sourceCardEl, { dataTransfer: dt });
+    // Mock getBoundingClientRect so the midpoint check picks "after".
+    targetCardEl.getBoundingClientRect = () => ({
+      top: 0,
+      bottom: 100,
+      height: 100,
+      left: 0,
+      right: 0,
+      width: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent(targetCardEl, dragMouseEvent('dragover', { clientY: 90, dataTransfer: dt }));
+    fireEvent(targetCardEl, dragMouseEvent('drop', { clientY: 90, dataTransfer: dt }));
+
+    // Expected new dense order: [c2=0, c3=1, c1=2]. The dropped card's old
+    // position (0) was the start of the renumbered range, so c2 and c3 also
+    // shift down by one. All three changes must persist so reload preserves
+    // the new ordinal — no duplicate/stale position values left behind.
+    await waitFor(() => expect(api.moveCard).toHaveBeenCalled());
+    const calls = api.moveCard.mock.calls.map(([projId, id, body]) => ({ projId, id, ...body }));
+    expect(calls.find((c) => c.id === 'c1')).toEqual({
+      projId: 'p1',
+      id: 'c1',
+      columnId: 'col-todo',
+      position: 2,
+    });
+    expect(calls.find((c) => c.id === 'c2')).toEqual({
+      projId: 'p1',
+      id: 'c2',
+      columnId: 'col-todo',
+      position: 0,
+    });
+    expect(calls.find((c) => c.id === 'c3')).toEqual({
+      projId: 'p1',
+      id: 'c3',
+      columnId: 'col-todo',
+      position: 1,
+    });
+    // Renumbered positions must be unique within the column.
+    const todoPositions = calls
+      .filter((c) => c.columnId === 'col-todo')
+      .map((c) => c.position)
+      .sort();
+    expect(new Set(todoPositions).size).toBe(todoPositions.length);
+  });
+
+  it('reorders a middle card down by one slot (regression: no-op short-circuit must not swallow real moves)', async () => {
+    // Reproducer for the review finding on PR #432: the original no-op
+    // check used `currentIdx === targetIndex - 1`, which mixed two
+    // coordinate spaces and silently dropped any "move down by one"
+    // reorder. Concretely: in [c1, c2, c3], dragging c1 onto the top half
+    // of c3 should yield [c2, c1, c3].
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        { id: 'c1', title: 'Card One', column_id: 'col-todo', position: 0 },
+        { id: 'c2', title: 'Card Two', column_id: 'col-todo', position: 1 },
+        { id: 'c3', title: 'Card Three', column_id: 'col-todo', position: 2 },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Card One')).toBeInTheDocument());
+
+    const dt = makeDataTransfer();
+    const sourceCardEl = screen.getByTestId('card-row-c1').querySelector('[draggable="true"]');
+    const targetCardEl = screen.getByTestId('card-row-c3').querySelector('[draggable="true"]');
+
+    fireEvent.dragStart(sourceCardEl, { dataTransfer: dt });
+    targetCardEl.getBoundingClientRect = () => ({
+      top: 0,
+      bottom: 100,
+      height: 100,
+      left: 0,
+      right: 0,
+      width: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    // clientY=10 → top half of c3 → insert before c3 → targetIndex=1.
+    fireEvent(targetCardEl, dragMouseEvent('dragover', { clientY: 10, dataTransfer: dt }));
+    fireEvent(targetCardEl, dragMouseEvent('drop', { clientY: 10, dataTransfer: dt }));
+
+    // Expected new dense order: [c2=0, c1=1, c3=2].
+    await waitFor(() => expect(api.moveCard).toHaveBeenCalled());
+    const calls = api.moveCard.mock.calls.map(([, id, body]) => ({ id, ...body }));
+    expect(calls.find((c) => c.id === 'c1')).toEqual({
+      id: 'c1',
+      columnId: 'col-todo',
+      position: 1,
+    });
+    expect(calls.find((c) => c.id === 'c2')).toEqual({
+      id: 'c2',
+      columnId: 'col-todo',
+      position: 0,
+    });
+    // c3 stays at position 2 → no API write.
+    expect(calls.find((c) => c.id === 'c3')).toBeUndefined();
+  });
+
+  it('drops a card at a precise index when crossing columns (not always appended)', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        { id: 'a1', title: 'Alpha', column_id: 'col-todo', position: 0 },
+        { id: 'b1', title: 'Bravo', column_id: 'col-done', position: 0 },
+        { id: 'b2', title: 'Bravo Two', column_id: 'col-done', position: 1 },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+
+    const dt = makeDataTransfer();
+    const sourceCardEl = screen.getByTestId('card-row-a1').querySelector('[draggable="true"]');
+    const targetCardEl = screen.getByTestId('card-row-b2').querySelector('[draggable="true"]');
+
+    fireEvent.dragStart(sourceCardEl, { dataTransfer: dt });
+    // Top half of b2 → insert before b2 → index 1 in col-done.
+    targetCardEl.getBoundingClientRect = () => ({
+      top: 0,
+      bottom: 100,
+      height: 100,
+      left: 0,
+      right: 0,
+      width: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent(targetCardEl, dragMouseEvent('dragover', { clientY: 10, dataTransfer: dt }));
+    // Drop indicator should appear before b2.
+    expect(screen.getByTestId('drop-indicator-before-b2')).toBeInTheDocument();
+    fireEvent(targetCardEl, dragMouseEvent('drop', { clientY: 10, dataTransfer: dt }));
+
+    // Expected new order in col-done: [b1, a1, b2] → positions 0,1,2.
+    // a1 moves to col-done position 1; b2 moves from 1→2; b1 stays.
+    await waitFor(() => expect(api.moveCard).toHaveBeenCalled());
+    const calls = api.moveCard.mock.calls.map(([, id, body]) => ({ id, ...body }));
+    expect(calls.find((c) => c.id === 'a1')).toEqual({
+      id: 'a1',
+      columnId: 'col-done',
+      position: 1,
+    });
+    expect(calls.find((c) => c.id === 'b2')).toEqual({
+      id: 'b2',
+      columnId: 'col-done',
+      position: 2,
+    });
+    expect(calls.find((c) => c.id === 'b1')).toBeUndefined();
+  });
+
+  it('moves a card down by one slot within the same column (not a no-op)', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        { id: 'c1', title: 'Card One', column_id: 'col-todo', position: 0 },
+        { id: 'c2', title: 'Card Two', column_id: 'col-todo', position: 1 },
+        { id: 'c3', title: 'Card Three', column_id: 'col-todo', position: 2 },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Card One')).toBeInTheDocument());
+
+    const dt = makeDataTransfer();
+    const sourceCardEl = screen.getByTestId('card-row-c1').querySelector('[draggable="true"]');
+    const targetCardEl = screen.getByTestId('card-row-c2').querySelector('[draggable="true"]');
+
+    // Drag c1 to the bottom half of c2 → insert after c2 → before c3.
+    fireEvent.dragStart(sourceCardEl, { dataTransfer: dt });
+    targetCardEl.getBoundingClientRect = () => ({
+      top: 0,
+      bottom: 100,
+      height: 100,
+      left: 0,
+      right: 0,
+      width: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent(targetCardEl, dragMouseEvent('dragover', { clientY: 90, dataTransfer: dt }));
+    fireEvent(targetCardEl, dragMouseEvent('drop', { clientY: 90, dataTransfer: dt }));
+
+    // Expected new order: [c2=0, c1=1, c3=2]. This must NOT be treated as a
+    // no-op — the old code's `currentIdx === targetIndex - 1` clause would
+    // have incorrectly short-circuited here (currentIdx=0, targetIndex=1).
+    await waitFor(() => expect(api.moveCard).toHaveBeenCalled());
+    const calls = api.moveCard.mock.calls.map(([, id, body]) => ({ id, ...body }));
+    expect(calls.find((c) => c.id === 'c1')).toEqual({
+      id: 'c1',
+      columnId: 'col-todo',
+      position: 1,
+    });
+    expect(calls.find((c) => c.id === 'c2')).toEqual({
+      id: 'c2',
+      columnId: 'col-todo',
+      position: 0,
+    });
+  });
+});
+
 describe('KanbanBoard reassign active session', () => {
   beforeEach(() => {
     api.getBoard.mockReset();

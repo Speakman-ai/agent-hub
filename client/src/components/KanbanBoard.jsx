@@ -62,6 +62,10 @@ export default function KanbanBoard({
   // Drag state
   const [dragCardId, setDragCardId] = useState(null);
   const [dragOverColumn, setDragOverColumn] = useState(null);
+  // dragOverTarget: { columnId, beforeCardId } — beforeCardId === null means
+  // "insert at the end of the column". Drives the drop-position indicator
+  // and the precise insertion index used by commitReorder.
+  const [dragOverTarget, setDragOverTarget] = useState(null);
 
   // Detail panel
   const [selectedCard, setSelectedCard] = useState(null);
@@ -192,26 +196,115 @@ export default function KanbanBoard({
     e.dataTransfer.setData('text/plain', cardId);
   };
 
+  // Column-level dragover: only sets the column highlight + a fallback drop
+  // target of "end of column". Per-card dragover handlers stop propagation
+  // and override `dragOverTarget` with a precise insertion point.
   const handleDragOver = (e, columnId) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
     setDragOverColumn(columnId);
+    setDragOverTarget((prev) =>
+      prev && prev.columnId === columnId ? prev : { columnId, beforeCardId: null },
+    );
   };
 
   const handleDragLeave = (e, _columnId) => {
     if (e.currentTarget && !e.currentTarget.contains(e.relatedTarget)) {
       setDragOverColumn(null);
+      setDragOverTarget(null);
     }
   };
 
-  const commitMove = async (card, targetColumnId, newPosition) => {
+  // Per-card dragover — picks "before this card" vs "after this card" based
+  // on the cursor's vertical position relative to the card midpoint.
+  const handleCardDragOver = (e, card) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    setDragOverColumn(card.column_id);
+    if (card.id === dragCardId) {
+      // Hovering the dragged card itself — keep the indicator anchored to it
+      // so the user has visual feedback. Net effect on drop: no-op.
+      setDragOverTarget({ columnId: card.column_id, beforeCardId: card.id });
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clientY = typeof e.clientY === 'number' ? e.clientY : rect.top + rect.height / 2;
+    const offsetY = clientY - rect.top;
+    const insertBefore = offsetY < rect.height / 2;
+    if (insertBefore) {
+      setDragOverTarget({ columnId: card.column_id, beforeCardId: card.id });
+    } else {
+      // Insert *after* this card → before the next sibling, or at column end.
+      const colCards = cardsForColumn(card.column_id);
+      const idx = colCards.findIndex((c) => c.id === card.id);
+      const next = colCards[idx + 1];
+      setDragOverTarget({ columnId: card.column_id, beforeCardId: next ? next.id : null });
+    }
+  };
+
+  // Apply a reorder: renumber all affected cards in the target (and source,
+  // when crossing columns) so positions stay dense and unambiguous, then
+  // persist each changed card via the existing single-card move endpoint.
+  // Optimistic; on failure we re-fetch to recover the canonical order.
+  const commitReorder = async (card, targetColumnId, targetIndex) => {
+    const sameColumn = card.column_id === targetColumnId;
+
+    const targetCardsExcluding = cards
+      .filter((c) => c.column_id === targetColumnId && c.id !== card.id)
+      .sort((a, b) => a.position - b.position);
+
+    const clampedIndex = Math.max(0, Math.min(targetIndex, targetCardsExcluding.length));
+    const newTargetOrder = [...targetCardsExcluding];
+    newTargetOrder.splice(clampedIndex, 0, card);
+
+    const targetUpdates = newTargetOrder.map((c, idx) => ({
+      id: c.id,
+      column_id: targetColumnId,
+      position: idx,
+    }));
+
+    let sourceUpdates = [];
+    if (!sameColumn) {
+      const sourceCards = cards
+        .filter((c) => c.column_id === card.column_id && c.id !== card.id)
+        .sort((a, b) => a.position - b.position);
+      sourceUpdates = sourceCards.map((c, idx) => ({
+        id: c.id,
+        column_id: card.column_id,
+        position: idx,
+      }));
+    }
+
+    const allUpdates = [...targetUpdates, ...sourceUpdates];
+
+    // Snapshot of original positions to figure out which cards actually need
+    // a server write (and to roll back the diff into).
+    const originalById = new Map(cards.map((c) => [c.id, c]));
+
+    // Optimistic UI
     setCards((prev) =>
-      prev.map((c) =>
-        c.id === card.id ? { ...c, column_id: targetColumnId, position: newPosition } : c,
-      ),
+      prev.map((c) => {
+        const u = allUpdates.find((upd) => upd.id === c.id);
+        return u ? { ...c, column_id: u.column_id, position: u.position } : c;
+      }),
     );
+
+    // The server's moveKanbanCard just writes (column_id, position) on a
+    // single row with no cross-card invariants, so we can fan out in
+    // parallel — collapses an N-card reorder to one round-trip. On any
+    // failure we re-fetch the canonical server state (this is "re-sync,"
+    // not "undo" — earlier writes in the batch may have already
+    // persisted, but fetchBoard reconciles the UI to whatever stuck).
+    const writes = allUpdates
+      .filter((u) => {
+        const original = originalById.get(u.id);
+        return original && (original.position !== u.position || original.column_id !== u.column_id);
+      })
+      .map((u) => api.moveCard(projectId, u.id, { columnId: u.column_id, position: u.position }));
+
     try {
-      await api.moveCard(projectId, card.id, { columnId: targetColumnId, position: newPosition });
+      await Promise.all(writes);
     } catch {
       fetchBoard();
     }
@@ -219,31 +312,71 @@ export default function KanbanBoard({
 
   const handleDrop = async (e, columnId) => {
     e.preventDefault();
+    e.stopPropagation();
+    const cardId = (e.dataTransfer && e.dataTransfer.getData('text/plain')) || dragCardId;
+    const target = dragOverTarget;
     setDragOverColumn(null);
-    const cardId = e.dataTransfer.getData('text/plain') || dragCardId;
-    if (!cardId) return;
+    setDragOverTarget(null);
     setDragCardId(null);
+    if (!cardId) return;
 
     const card = cards.find((c) => c.id === cardId || c.id === Number(cardId));
-    if (!card || card.column_id === columnId) return;
+    if (!card) return;
 
-    const colCards = cardsForColumn(columnId);
-    const newPosition = colCards.length;
-    const targetColumn = columns.find((c) => c.id === columnId);
+    const targetColumnId = target?.columnId || columnId;
+
+    // Drop-on-self short-circuit: handleCardDragOver pins beforeCardId to
+    // the dragged card's own id when the cursor is over the dragged card,
+    // which has no meaningful insertion index in the excluding list. Treat
+    // it as a no-op rather than letting it fall through to the renumber.
+    if (target?.beforeCardId === card.id) return;
+
+    const targetCardsExcluding = cards
+      .filter((c) => c.column_id === targetColumnId && c.id !== card.id)
+      .sort((a, b) => a.position - b.position);
+
+    let targetIndex;
+    if (target?.beforeCardId != null) {
+      const idx = targetCardsExcluding.findIndex((c) => c.id === target.beforeCardId);
+      targetIndex = idx < 0 ? targetCardsExcluding.length : idx;
+    } else {
+      targetIndex = targetCardsExcluding.length;
+    }
+
+    // No-op short-circuit: same column, dropped at its existing slot.
+    //
+    // `targetIndex` is an index into `targetCardsExcluding` (column
+    // *without* the dragged card). For a card already in this column, its
+    // natural slot in the excluding list lines up with its index in the
+    // full list — so equality is a true no-op. We do NOT also check
+    // `currentIdx === targetIndex - 1`: that condition describes a real
+    // move-down-by-one (e.g. [c1,c2,c3] dropping c1 onto top-half of c3
+    // should yield [c2,c1,c3]) and silently dropping it was the original
+    // bug this PR set out to fix.
+    if (card.column_id === targetColumnId) {
+      const currentOrder = cards
+        .filter((c) => c.column_id === targetColumnId)
+        .sort((a, b) => a.position - b.position);
+      const currentIdx = currentOrder.findIndex((c) => c.id === card.id);
+      if (currentIdx === targetIndex) return;
+    }
+
+    const targetColumn = columns.find((c) => c.id === targetColumnId);
 
     // Soft-warn before moving a blocked card into a blocker-sensitive column.
-    // API still allows it; the user just has to confirm.
+    // Same-column reorders skip this (shouldConfirmMove handles that gate).
     if (shouldConfirmMove(card, card.column_id, targetColumn)) {
-      setPendingMove({ card, targetColumn, position: newPosition });
+      setPendingMove({ card, targetColumn, targetIndex });
       return;
     }
 
-    await commitMove(card, columnId, newPosition);
+    await commitReorder(card, targetColumnId, targetIndex);
   };
 
   const handleDragEnd = () => {
     setDragCardId(null);
     setDragOverColumn(null);
+    setDragOverTarget(null);
   };
 
   // --- Card CRUD ---
@@ -843,121 +976,138 @@ export default function KanbanBoard({
                 <div className="flex-1 overflow-y-auto px-2 py-1 space-y-2">
                   {colCards.map((card) => {
                     const cardEpic = card.epic_id ? epics.find((e) => e.id === card.epic_id) : null;
+                    const showInsertIndicator =
+                      dragOverTarget &&
+                      dragOverTarget.columnId === col.id &&
+                      dragOverTarget.beforeCardId === card.id &&
+                      dragCardId !== card.id;
                     return (
-                      <div
-                        key={card.id}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, card.id)}
-                        onDragEnd={handleDragEnd}
-                        onClick={() => openDetail(card)}
-                        className={`rounded-lg p-3 bg-gray-800 border border-gray-700 hover:border-gray-600 cursor-grab active:cursor-grabbing transition-colors ${
-                          dragCardId === card.id ? 'opacity-50' : ''
-                        }`}
-                      >
-                        <div className="flex items-start gap-2">
-                          <GripVertical size={14} className="text-gray-600 mt-0.5 flex-shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-sm font-medium text-white truncate">
-                                {card.title}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1.5 flex-wrap mb-1">
-                              {card.priority && (
-                                <span
-                                  className={`inline-block text-xs px-1.5 py-0.5 rounded-full ${
-                                    PRIORITY_STYLES[card.priority] || PRIORITY_STYLES.medium
-                                  }`}
-                                >
-                                  {card.priority}
+                      <div key={card.id} data-testid={`card-row-${card.id}`}>
+                        {showInsertIndicator && (
+                          <div
+                            className="h-0.5 bg-indigo-400 rounded-full mb-2"
+                            data-testid={`drop-indicator-before-${card.id}`}
+                          />
+                        )}
+                        <div
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, card.id)}
+                          onDragEnd={handleDragEnd}
+                          onDragOver={(e) => handleCardDragOver(e, card)}
+                          onDrop={(e) => handleDrop(e, col.id)}
+                          onClick={() => openDetail(card)}
+                          className={`rounded-lg p-3 bg-gray-800 border border-gray-700 hover:border-gray-600 cursor-grab active:cursor-grabbing transition-colors ${
+                            dragCardId === card.id ? 'opacity-50' : ''
+                          }`}
+                        >
+                          <div className="flex items-start gap-2">
+                            <GripVertical
+                              size={14}
+                              className="text-gray-600 mt-0.5 flex-shrink-0"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-sm font-medium text-white truncate">
+                                  {card.title}
                                 </span>
-                              )}
-                              {hasUnresolvedBlockers(card) && (
-                                <span
-                                  className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-red-900/40 text-red-300"
-                                  title={`Blocked by ${card.blockers.filter((b) => !b.done).length} unresolved card(s)`}
-                                  data-testid="card-blocker-badge"
-                                >
-                                  <Lock size={10} />
-                                  {card.blockers.filter((b) => !b.done).length}
-                                </span>
-                              )}
-                              {cardEpic && (
-                                <span
-                                  className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full"
-                                  style={{
-                                    backgroundColor: cardEpic.color + '20',
-                                    color: cardEpic.color,
-                                  }}
-                                >
+                              </div>
+                              <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                                {card.priority && (
                                   <span
-                                    className="w-1.5 h-1.5 rounded-full"
-                                    style={{ backgroundColor: cardEpic.color }}
-                                  />
-                                  {cardEpic.name}
-                                </span>
-                              )}
-                            </div>
-                            {card.description && (
-                              <p className="text-xs text-gray-500 line-clamp-2 mt-1">
-                                {card.description}
-                              </p>
-                            )}
-                            <div className="flex items-center gap-2 mt-2 flex-wrap">
-                              {card.pr_url && (
-                                <a
-                                  href={card.pr_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="text-xs text-gray-500 hover:text-indigo-400 flex items-center gap-1"
-                                  title={card.pr_url}
-                                >
-                                  <GitPullRequest size={12} />#
-                                  {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
-                                </a>
-                              )}
-                              {card.review_status && (
-                                <span
-                                  className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                                    card.review_status === 'approved'
-                                      ? 'bg-emerald-500/20 text-emerald-400'
-                                      : card.review_status === 'reviewing'
-                                        ? 'bg-amber-500/20 text-amber-400 animate-pulse'
-                                        : card.review_status === 'changes_requested'
-                                          ? 'bg-red-500/20 text-red-400'
-                                          : 'bg-blue-500/20 text-blue-400'
-                                  }`}
-                                >
-                                  {card.review_status === 'approved'
-                                    ? 'Approved'
-                                    : card.review_status === 'reviewing'
-                                      ? 'Reviewing...'
-                                      : card.review_status === 'changes_requested'
-                                        ? 'Changes Requested'
-                                        : 'Awaiting Review'}
-                                </span>
-                              )}
-                              {card.assignee && (
-                                <span
-                                  className={`text-xs ${card.session_id ? 'text-indigo-400' : 'text-gray-400'}`}
-                                >
-                                  {card.session_id ? '● ' : ''}
-                                  {card.assignee}
-                                </span>
-                              )}
-                              {card.labels &&
-                                card.labels
-                                  .split(',')
-                                  .filter(Boolean)
-                                  .map((label) => (
+                                    className={`inline-block text-xs px-1.5 py-0.5 rounded-full ${
+                                      PRIORITY_STYLES[card.priority] || PRIORITY_STYLES.medium
+                                    }`}
+                                  >
+                                    {card.priority}
+                                  </span>
+                                )}
+                                {hasUnresolvedBlockers(card) && (
+                                  <span
+                                    className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-red-900/40 text-red-300"
+                                    title={`Blocked by ${card.blockers.filter((b) => !b.done).length} unresolved card(s)`}
+                                    data-testid="card-blocker-badge"
+                                  >
+                                    <Lock size={10} />
+                                    {card.blockers.filter((b) => !b.done).length}
+                                  </span>
+                                )}
+                                {cardEpic && (
+                                  <span
+                                    className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full"
+                                    style={{
+                                      backgroundColor: cardEpic.color + '20',
+                                      color: cardEpic.color,
+                                    }}
+                                  >
                                     <span
-                                      key={label}
-                                      className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded"
-                                    >
-                                      {label.trim()}
-                                    </span>
-                                  ))}
+                                      className="w-1.5 h-1.5 rounded-full"
+                                      style={{ backgroundColor: cardEpic.color }}
+                                    />
+                                    {cardEpic.name}
+                                  </span>
+                                )}
+                              </div>
+                              {card.description && (
+                                <p className="text-xs text-gray-500 line-clamp-2 mt-1">
+                                  {card.description}
+                                </p>
+                              )}
+                              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                {card.pr_url && (
+                                  <a
+                                    href={card.pr_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-xs text-gray-500 hover:text-indigo-400 flex items-center gap-1"
+                                    title={card.pr_url}
+                                  >
+                                    <GitPullRequest size={12} />#
+                                    {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
+                                  </a>
+                                )}
+                                {card.review_status && (
+                                  <span
+                                    className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                                      card.review_status === 'approved'
+                                        ? 'bg-emerald-500/20 text-emerald-400'
+                                        : card.review_status === 'reviewing'
+                                          ? 'bg-amber-500/20 text-amber-400 animate-pulse'
+                                          : card.review_status === 'changes_requested'
+                                            ? 'bg-red-500/20 text-red-400'
+                                            : 'bg-blue-500/20 text-blue-400'
+                                    }`}
+                                  >
+                                    {card.review_status === 'approved'
+                                      ? 'Approved'
+                                      : card.review_status === 'reviewing'
+                                        ? 'Reviewing...'
+                                        : card.review_status === 'changes_requested'
+                                          ? 'Changes Requested'
+                                          : 'Awaiting Review'}
+                                  </span>
+                                )}
+                                {card.assignee && (
+                                  <span
+                                    className={`text-xs ${card.session_id ? 'text-indigo-400' : 'text-gray-400'}`}
+                                  >
+                                    {card.session_id ? '● ' : ''}
+                                    {card.assignee}
+                                  </span>
+                                )}
+                                {card.labels &&
+                                  card.labels
+                                    .split(',')
+                                    .filter(Boolean)
+                                    .map((label) => (
+                                      <span
+                                        key={label}
+                                        className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded"
+                                      >
+                                        {label.trim()}
+                                      </span>
+                                    ))}
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -1606,9 +1756,9 @@ export default function KanbanBoard({
               <button
                 type="button"
                 onClick={async () => {
-                  const { card, targetColumn, position } = pendingMove;
+                  const { card, targetColumn, targetIndex } = pendingMove;
                   setPendingMove(null);
-                  await commitMove(card, targetColumn.id, position);
+                  await commitReorder(card, targetColumn.id, targetIndex);
                 }}
                 className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-medium transition-colors"
               >
