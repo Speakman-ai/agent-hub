@@ -6,6 +6,7 @@ import type { Request, Response } from 'express';
 import { createServer } from 'http';
 import createWebSocket from './websocket.js';
 import cors from 'cors';
+import { corsOptions } from './cors-config.js';
 import { exec } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { promisify } from 'util';
@@ -283,7 +284,11 @@ function ensureWorktree(
 }
 
 const app = express();
-app.use(cors());
+// CORS is locked to an explicit allowlist driven by ALLOWED_ORIGINS (see
+// ./cors-config.ts). The intentionally-public /api/bug-reports endpoint
+// installs its own `Access-Control-Allow-Origin: *` middleware in
+// ./routes/bug-reports.ts, which overrides this one for that route.
+app.use(cors(corsOptions));
 app.use(
   express.json({
     limit: '20mb',

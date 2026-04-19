@@ -214,3 +214,12 @@ The Claude Code CLI binary appends a hidden `<system-reminder>` after every Read
 - **PM2** manages the Node.js process
 - **Port 3051** is localhost-only — all external traffic goes through Nginx
 - Deploy: `ssh → git pull → npm install && npm run build && (cd server && npm install) → pm2 start ecosystem.config.cjs` (or `pm2 restart agent-hub`). The API is TS (`tsx index.ts`); do not point PM2 at `index.js`.
+
+### CORS — `ALLOWED_ORIGINS`
+- Browser requests to the API are gated by an explicit origin allowlist in `server/cors-config.ts`.
+- Set the `ALLOWED_ORIGINS` env var to a **comma-separated** list of origins (no trailing slash):
+  - **Production** (`ecosystem.config.cjs`): `https://hub.example.com` — update to your real web-app URL before opening to users. Override per-deploy with `ALLOWED_ORIGINS=https://hub.your-domain pm2 restart agent-hub`.
+  - **Dev** (`npm run dev`): defaults to `http://localhost:3050` (the Vite client) when the env var is unset. Override with `ALLOWED_ORIGINS=http://localhost:3050,http://localhost:4173 npm run dev:server` if needed.
+- Requests with no `Origin` header (Electron desktop shell, React Native mobile, curl, server-to-server) are always allowed — only browsers enforce CORS.
+- Unknown browser origins receive a normal HTTP response with **no** `Access-Control-Allow-Origin` header; the browser's SOP then blocks the response from reaching the caller.
+- The public bug-report intake endpoint at `POST /api/bug-reports` keeps its own `Access-Control-Allow-Origin: *` via `server/routes/bug-reports.ts` (intentionally cross-origin, rate-limited).

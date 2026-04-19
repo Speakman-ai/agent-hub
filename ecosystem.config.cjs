@@ -27,6 +27,15 @@ module.exports = {
       max_memory_restart: '800M',
       env: {
         NODE_ENV: 'production',
+        // Comma-separated list of origins allowed to call the API from a
+        // browser. Browsers whose Origin is NOT on this list will not
+        // receive CORS headers and will be blocked by the same-origin
+        // policy. Update to the public web-app URL before opening the
+        // server to users. Override per-deployment with:
+        //   ALLOWED_ORIGINS=https://hub.example.com pm2 restart agent-hub
+        // (Electron, native mobile, curl, and server-to-server requests
+        // send no Origin header and are unaffected.)
+        ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS || 'https://hub.example.com',
       },
     },
   ],
