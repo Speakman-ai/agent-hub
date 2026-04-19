@@ -5,6 +5,7 @@ import cron from 'node-cron';
 import { v4 as uuidv4 } from 'uuid';
 import { getOrCreateBoard } from './routes/board.js';
 import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
+import { createEscalation } from './routes/escalations.js';
 import { defaultModelForEngine } from './config.js';
 import { loadBoardBlockers, hasUnresolvedBlockers } from './kanban-blockers.js';
 import type {
@@ -417,6 +418,34 @@ export function startReviewPollingFallback(): void {
   console.log('[ReviewPoll] Fallback polling started (every 3 minutes)');
 }
 
+/**
+ * Lowercased merge states GitHub returns when a PR cannot cleanly merge into
+ * its base. `dirty` means textual conflicts; `behind` means the head is behind
+ * a protected base that requires strict status checks. Both are "blocked until
+ * human (or agent) reconciles the branch" from our perspective.
+ *
+ * Note: `mergeable_state` is a docs-level REST field — GitHub does not
+ * formally commit to its set of values, but the ones we care about have been
+ * stable for years. We treat anything else (clean, blocked, unstable, …) as
+ * not-our-problem-for-this-check.
+ */
+const DIRTY_MERGE_STATES = new Set(['dirty', 'behind']);
+
+/**
+ * Does this PR need a merge-conflict escalation? True when GitHub has already
+ * computed a merge state AND that state is known-dirty. We intentionally
+ * return false when `mergeable` is `null` (GitHub hasn't finished the async
+ * computation yet) so the next poll cycle catches it once the state lands.
+ */
+export function isPrMergeDirty(pr: {
+  mergeable?: boolean | null;
+  mergeable_state?: string | null;
+}): boolean {
+  if (pr.mergeable === false) return true;
+  const state = typeof pr.mergeable_state === 'string' ? pr.mergeable_state.toLowerCase() : null;
+  return state !== null && DIRTY_MERGE_STATES.has(state);
+}
+
 async function reconcileKanbanWithGitHub(): Promise<void> {
   const d = getDeps();
   const projects = d.getProjects();
@@ -503,12 +532,18 @@ async function reconcileKanbanWithGitHub(): Promise<void> {
               'api',
               `repos/${cardRepo}/pulls/${prNumber}`,
               '--jq',
-              '{state: .state, merged: .merged}',
+              '{state: .state, merged: .merged, mergeable: .mergeable, mergeable_state: .mergeable_state, html_url: .html_url}',
             ],
             { timeout: 15000 },
           );
 
-          const pr = JSON.parse(stdout.trim()) as { state: string; merged: boolean };
+          const pr = JSON.parse(stdout.trim()) as {
+            state: string;
+            merged: boolean;
+            mergeable: boolean | null;
+            mergeable_state: string | null;
+            html_url: string | null;
+          };
 
           if (pr.state === 'closed' && pr.merged) {
             d.stmts.moveKanbanCard.run(doneCol.id, 0, card.id);
@@ -522,6 +557,37 @@ async function reconcileKanbanWithGitHub(): Promise<void> {
             console.log(
               `[Reconcile] PR #${prNumber} closed without merge — card "${card.title}" left for triage`,
             );
+          } else if (pr.state === 'open' && isPrMergeDirty(pr)) {
+            // GitHub does NOT emit a webhook when PR A merges and dirties PR B
+            // (the base changed, not the head). The only way to detect this
+            // failure mode is to poll GET /pulls/:n and inspect mergeable /
+            // mergeable_state. See `handleWebhookPrSynchronize` in
+            // server/routes/webhooks.ts — this branch mirrors its escalation
+            // behavior so the polling path surfaces the conflict in the UI.
+            const prNum = Number.parseInt(prNumber, 10);
+            const existing = d.stmts.getRecentEscalationByTypeAndPr?.get(
+              project.id,
+              'merge_conflict',
+              prNum,
+            );
+            if (!existing) {
+              createEscalation(
+                { stmts: d.stmts, broadcast: d.broadcast },
+                {
+                  projectId: project.id,
+                  type: 'merge_conflict',
+                  title: `Merge conflicts on PR #${prNum}`,
+                  description: `PR "${card.title}" has merge conflicts detected by the reconciliation poller (mergeable=${pr.mergeable}, mergeable_state=${pr.mergeable_state}). Rebase or merge the base branch to resolve.`,
+                  prNumber: prNum,
+                  prUrl: pr.html_url || card.pr_url,
+                  cardId: card.id,
+                  source: 'poller',
+                },
+              );
+              console.log(
+                `[Reconcile] PR #${prNumber} is DIRTY (${pr.mergeable_state}) — escalation created for card "${card.title}"`,
+              );
+            }
           }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);

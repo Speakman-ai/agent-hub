@@ -31,6 +31,7 @@ const {
   autonomousProjects,
   autonomousCrons,
   lastDispatchedReviewId,
+  isPrMergeDirty,
 } = await import('./autonomous.js');
 
 const { getOrCreateBoard } = await import('./routes/board.js');
@@ -530,5 +531,57 @@ describe('runAutonomousLoop — blocker filter', () => {
     // Only the ready card gets its iteration counter bumped.
     expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(1);
     expect(stmts.incrementCardIterations.run).toHaveBeenCalledWith('r-card');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  isPrMergeDirty — poll-side conflict detection
+//  Exercises the pure helper used by `reconcileKanbanWithGitHub` when the
+//  3-minute poller examines an open PR. GitHub does NOT fire a webhook when
+//  PR A merges and dirties PR B (base changed, not head), so the poller is
+//  the only path that surfaces this failure mode.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('isPrMergeDirty', () => {
+  it('flags mergeable === false as dirty (GitHub computed, conflict present)', () => {
+    expect(isPrMergeDirty({ mergeable: false, mergeable_state: 'dirty' })).toBe(true);
+  });
+
+  it('flags mergeable_state "dirty" as dirty regardless of mergeable shape', () => {
+    expect(isPrMergeDirty({ mergeable: null, mergeable_state: 'dirty' })).toBe(true);
+    expect(isPrMergeDirty({ mergeable: true, mergeable_state: 'dirty' })).toBe(true);
+  });
+
+  it('flags mergeable_state "behind" as dirty (base required strict checks)', () => {
+    expect(isPrMergeDirty({ mergeable: true, mergeable_state: 'behind' })).toBe(true);
+  });
+
+  it('is case-insensitive on mergeable_state (REST returns lowercase; be defensive)', () => {
+    expect(isPrMergeDirty({ mergeable: null, mergeable_state: 'DIRTY' })).toBe(true);
+    expect(isPrMergeDirty({ mergeable: null, mergeable_state: 'Behind' })).toBe(true);
+  });
+
+  it('does NOT flag a clean PR', () => {
+    expect(isPrMergeDirty({ mergeable: true, mergeable_state: 'clean' })).toBe(false);
+  });
+
+  it('does NOT flag while GitHub is still computing (mergeable=null, no known state)', () => {
+    // Initial webhook payloads and freshly-opened PRs often have null here.
+    // We deliberately defer to the next poll cycle rather than false-positive.
+    expect(isPrMergeDirty({ mergeable: null, mergeable_state: null })).toBe(false);
+    expect(isPrMergeDirty({ mergeable: null, mergeable_state: 'unknown' })).toBe(false);
+  });
+
+  it('does NOT flag other non-dirty states (blocked, unstable, has_hooks)', () => {
+    // `blocked` means required reviews/checks missing — that's a review/CI
+    // concern, not a merge-conflict escalation. Same for unstable.
+    expect(isPrMergeDirty({ mergeable: true, mergeable_state: 'blocked' })).toBe(false);
+    expect(isPrMergeDirty({ mergeable: true, mergeable_state: 'unstable' })).toBe(false);
+    expect(isPrMergeDirty({ mergeable: true, mergeable_state: 'has_hooks' })).toBe(false);
+  });
+
+  it('tolerates missing fields without throwing', () => {
+    expect(isPrMergeDirty({})).toBe(false);
+    expect(isPrMergeDirty({ mergeable: undefined, mergeable_state: undefined })).toBe(false);
   });
 });
