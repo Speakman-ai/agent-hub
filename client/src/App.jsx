@@ -16,6 +16,7 @@ import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.js
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import KanbanBoard from './components/KanbanBoard.jsx';
+import DashboardView from './components/DashboardView.jsx';
 import WikiBrowser from './components/WikiBrowser.jsx';
 import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
@@ -2080,6 +2081,8 @@ export default function App() {
               projectId={pullsProjectId}
               project={projects.find((p) => p.id === pullsProjectId)}
             />
+          ) : currentView === 'dashboard' ? (
+            <DashboardView orgId={getActiveOrg()?.id} />
           ) : currentView === 'skills' ? (
             <SkillsPage agents={agents} projects={projects} />
           ) : currentView === 'room' && activeRoom ? (

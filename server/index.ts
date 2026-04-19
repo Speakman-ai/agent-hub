@@ -74,6 +74,7 @@ import createSessionRoutes, { summarizeTranscript, buildTranscript } from './rou
 import createProjectRoutes from './routes/projects.js';
 import createAgentRoutes from './routes/agents.js';
 import createOrgRoutes from './routes/orgs.js';
+import createDashboardRoutes from './routes/dashboard.js';
 import createUploadRoutes from './routes/uploads.js';
 import createTranscribeRoutes from './routes/transcribe.js';
 import createMiscRoutes, { createHealthRoute } from './routes/misc.js';
@@ -486,6 +487,7 @@ app.use(createSessionRoutes(routeDeps));
 app.use(createProjectRoutes(routeDeps));
 app.use(createAgentRoutes(routeDeps));
 app.use(createOrgRoutes(routeDeps));
+app.use(createDashboardRoutes(routeDeps));
 app.use(createUploadRoutes(routeDeps));
 app.use(createTranscribeRoutes(routeDeps));
 app.use(createMiscRoutes(routeDeps));

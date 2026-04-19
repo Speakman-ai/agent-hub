@@ -239,6 +239,18 @@ export default function DrawerContent({ navigation }) {
 
       {/* Agents grouped by Project */}
       <ScrollView style={styles.agentList}>
+        {/* Org-scoped Dashboard — sits above the project list. */}
+        <TouchableOpacity
+          style={styles.dashboardItem}
+          onPress={() => {
+            navigation.navigate('Dashboard');
+            navigation.closeDrawer();
+          }}
+        >
+          <Text style={styles.dashboardIcon}>{'\u25B0'}</Text>
+          <Text style={styles.dashboardText}>Dashboard</Text>
+        </TouchableOpacity>
+
         {cronSessions.length > 0 && (
           <View style={{ marginBottom: 16 }}>
             <Text style={styles.sectionLabel}>SCHEDULED TASKS</Text>
@@ -591,6 +603,25 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: 8,
     paddingHorizontal: 8,
+  },
+  dashboardItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginBottom: 16,
+    backgroundColor: colors.gray800,
+  },
+  dashboardIcon: {
+    color: colors.blue400,
+    fontSize: 14,
+  },
+  dashboardText: {
+    color: colors.gray200,
+    fontSize: 14,
+    fontWeight: '500',
   },
   projectHeader: {
     flexDirection: 'row',
