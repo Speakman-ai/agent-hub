@@ -169,6 +169,24 @@ mid-stream drops) with the recovery step that usually unsticks them.
    than duplicating.
 5. **Log** `TOOL_ERROR` lines when tool failures block you.
 
+## Workflows — worked examples
+
+Concrete input → output recipes live under **[examples/](examples/)**. Each
+file is copy-pasteable against a live Agent Hub instance and shows the exact
+script invocations + expected JSON responses for a common task.
+
+| Recipe                                                                                       | When to use                                                          |
+| -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **[create-ticket-from-bug-report](examples/create-ticket-from-bug-report.md)** | User drops a bug report and wants a kanban card created              |
+| **[delegate-to-subagent](examples/delegate-to-subagent.md)**                   | Fan out parallel audits to specialist sub-agents via `<delegate>`    |
+| **[post-heartbeat-summary](examples/post-heartbeat-summary.md)**               | End a scheduled heartbeat run with a structured thread summary       |
+| **[search-and-link-wiki-page](examples/search-and-link-wiki-page.md)**         | FTS-search the wiki and link the canonical page into a card comment  |
+| **[move-card-through-workflow](examples/move-card-through-workflow.md)**       | Walk a card Backlog → To Do → In Progress → Review → Done            |
+
+Start from the example nearest to the task you're picking up, adapt the
+invocations, and fall back to the matching `references/` doc only if your
+situation doesn't fit the happy path.
+
 ## Architecture quick reference
 
 | Component  | Stack                                     | Location     |
