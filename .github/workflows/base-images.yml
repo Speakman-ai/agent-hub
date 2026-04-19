@@ -1,0 +1,379 @@
+name: Base Images (Container Pool)
+
+# Build and publish the two container-pool base images (W3):
+#
+#   - ghcr.io/<owner>/agent-hub/pr-env-base     (lean, ~200 MiB)
+#   - ghcr.io/<owner>/agent-hub/scaffold-base   (fat, ~700 MiB; extends pr-env-base)
+#
+# Triggers (card requirement: "weekly + on starter-CLI major version bumps"):
+#
+#   - schedule: every Monday 06:00 UTC. Weekly cadence is chosen to catch
+#     upstream minor/patch bumps without thrashing GHCR (images are ~900 MiB
+#     combined; nightly would burn a noticeable amount of storage/bandwidth
+#     for rarely-changing upstreams). Monday 06:00 UTC lands just before
+#     US-East office hours so the week starts on a fresh image.
+#
+#   - workflow_dispatch: manual trigger. Used when a version bump hits
+#     between scheduled runs, or when debugging a specific pin.
+#
+#   - repository_dispatch (event_type=starter-cli-major-bump): another
+#     workflow (or external poller) can fire this event when a CLI major
+#     rev ships outside our Monday cadence. The workflow body is identical
+#     to the scheduled path — same build, same tags.
+#
+#   - push on paths: ['docker/**', 'scripts/check-starter-versions.mjs',
+#     'scripts/lib/starter-versions-core.mjs',
+#     '.github/workflows/base-images.yml']. This validates the Dockerfiles
+#     still build on every PR touching them, but DOES NOT push to GHCR —
+#     `publish` jobs check event_name and skip push on `push` / `pull_request`.
+#
+# Tag strategy (spec §5.3 "Base image refresh" + "Cache invalidation"):
+#
+#   - :YYYYMMDD — always pushed on publish runs (immutable, auditable).
+#     Rollback = pin host to a previous dated tag via SSM.
+#   - :latest   — pushed on publish runs ONLY IF the starter-CLI version
+#     detector reports NO major bump. A major bump blocks the retag and
+#     opens a GitHub issue tagged `template-major-bump` so a human can
+#     update docker/starter-versions.json + Dockerfile ARGs before the
+#     pool starts handing out a potentially-breaking scaffold image.
+
+on:
+  schedule:
+    # Mondays at 06:00 UTC — weekly cadence, pre-US-office hours.
+    - cron: '0 6 * * 1'
+
+  workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push images to GHCR (set false for dry-run builds)'
+        required: false
+        default: 'true'
+
+  repository_dispatch:
+    types: [starter-cli-major-bump]
+
+  push:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - 'scripts/check-starter-versions.mjs'
+      - 'scripts/lib/starter-versions-core.mjs'
+      - '.github/workflows/base-images.yml'
+
+  pull_request:
+    paths:
+      - 'docker/**'
+      - 'scripts/check-starter-versions.mjs'
+      - 'scripts/lib/starter-versions-core.mjs'
+      - '.github/workflows/base-images.yml'
+
+# One build at a time per ref. Stacked commits/schedules cancel older
+# runs so we don't burn GHCR storage on throwaway builds.
+concurrency:
+  group: base-images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write  # push to ghcr.io
+  issues: write    # open a "template-major-bump" issue when needed
+
+env:
+  REGISTRY: ghcr.io
+  PR_ENV_IMAGE: ghcr.io/${{ github.repository }}/pr-env-base
+  SCAFFOLD_IMAGE: ghcr.io/${{ github.repository }}/scaffold-base
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Stage 1: detect upstream major bumps BEFORE we spend 10 min building.
+  # Cheap step (~5s), always runs so we get an audit trail even on push/PR.
+  # ─────────────────────────────────────────────────────────────────────
+  detect-bumps:
+    name: Detect starter-CLI version bumps
+    runs-on: ubuntu-latest
+    outputs:
+      has_major_bump: ${{ steps.check.outputs.has_major_bump }}
+      bumps_json:    ${{ steps.check.outputs.bumps_json }}
+      date_tag:      ${{ steps.tag.outputs.date_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Compute YYYYMMDD tag
+        id: tag
+        run: |
+          echo "date_tag=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      # `continue-on-error: true` lets us distinguish the two non-zero
+      # exit cases: `1` = major bump detected (expected, feeds downstream
+      # conditional), `2/3` = bad invocation or transport failure (we
+      # want the workflow to actually fail the run). We re-check exit
+      # code via `${{ steps.check.outcome }}` below.
+      - name: Check starter CLI versions
+        id: check
+        continue-on-error: true
+        run: |
+          node scripts/check-starter-versions.mjs
+        # scripts/check-starter-versions.mjs auto-writes to $GITHUB_OUTPUT.
+
+      - name: Fail on transport / invocation errors (exit 2 or 3)
+        if: steps.check.outcome == 'failure' && steps.check.outputs.has_major_bump == ''
+        run: |
+          echo "::error::version detector failed before producing output — treat as transport/invocation error"
+          exit 1
+
+      - name: Summarize
+        run: |
+          echo "## Starter CLI version check" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- has_major_bump: ${{ steps.check.outputs.has_major_bump }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- date_tag: ${{ steps.tag.outputs.date_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          echo '${{ steps.check.outputs.bumps_json }}' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Stage 2: build + push the lean PR env base. The scaffold base FROMs
+  # this image, so it must finish first.
+  # ─────────────────────────────────────────────────────────────────────
+  build-pr-env-base:
+    name: Build pr-env-base
+    needs: detect-bumps
+    runs-on: ubuntu-latest
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # Skip login on pure PR-validation builds — we can still build
+        # from layers, we just never push. Keeps forks working without
+        # secrets.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve tags
+        id: tags
+        run: |
+          set -eu
+          DATE_TAG="${{ needs.detect-bumps.outputs.date_tag }}"
+          TAGS="${PR_ENV_IMAGE}:${DATE_TAG}"
+          # :latest only if (a) this is a publish run and (b) no major
+          # bumps were detected. pr-env-base doesn't contain the starter
+          # CLIs, but we still gate :latest on the scaffold's health so
+          # the pair stays consistent (dispatcher pulls both).
+          if [ "${{ github.event_name }}" != "pull_request" ] \
+             && [ "${{ github.event_name }}" != "push" ] \
+             && [ "${{ needs.detect-bumps.outputs.has_major_bump }}" != "true" ]; then
+            TAGS="${TAGS},${PR_ENV_IMAGE}:latest"
+          fi
+          # Newline-escape for docker/build-push-action's `tags:` input.
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$TAGS" | tr ',' '\n' >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push pr-env-base
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/pr-env-base
+          file: docker/pr-env-base/Dockerfile
+          # Push on schedule / workflow_dispatch / repository_dispatch.
+          # Never push on pull_request. On `push` to main we still
+          # validate the build but don't push (the scheduled run
+          # handles publication).
+          push: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=registry,ref=${{ env.PR_ENV_IMAGE }}:cache
+          cache-to: type=registry,ref=${{ env.PR_ENV_IMAGE }}:cache,mode=max
+          # linux/amd64 only — the EC2 host is x86_64 and arm64 multi-arch
+          # doubles build time. If we ever add a Graviton host we revisit.
+          platforms: linux/amd64
+          provenance: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Stage 3: build + push the fat scaffold base. Depends on pr-env-base
+  # because the scaffold Dockerfile FROMs it (see the `--build-arg
+  # BASE_IMAGE=...` below).
+  # ─────────────────────────────────────────────────────────────────────
+  build-scaffold-base:
+    name: Build scaffold-base
+    needs: [detect-bumps, build-pr-env-base]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve tags
+        id: tags
+        run: |
+          set -eu
+          DATE_TAG="${{ needs.detect-bumps.outputs.date_tag }}"
+          TAGS="${SCAFFOLD_IMAGE}:${DATE_TAG}"
+          if [ "${{ github.event_name }}" != "pull_request" ] \
+             && [ "${{ github.event_name }}" != "push" ] \
+             && [ "${{ needs.detect-bumps.outputs.has_major_bump }}" != "true" ]; then
+            TAGS="${TAGS},${SCAFFOLD_IMAGE}:latest"
+          fi
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$TAGS" | tr ',' '\n' >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve BASE_IMAGE for scaffold Dockerfile
+        id: base
+        run: |
+          set -eu
+          DATE_TAG="${{ needs.detect-bumps.outputs.date_tag }}"
+          # On publish runs (schedule/dispatch) we just pushed
+          # pr-env-base:${DATE_TAG}; chain the scaffold build on it so
+          # a same-run rebuild is guaranteed to layer on top of the
+          # image that was just published, not an older :latest that
+          # still sits in the registry from the previous week.
+          if [ "${{ github.event_name }}" = "schedule" ] \
+             || [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             || [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "image=${PR_ENV_IMAGE}:${DATE_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            # Validation builds (push/PR): use :latest if it exists, or
+            # fall back to a local build. We only need this to exercise
+            # the Dockerfile — the resulting image is discarded.
+            echo "image=${PR_ENV_IMAGE}:latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push scaffold-base
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/scaffold-base
+          file: docker/scaffold-base/Dockerfile
+          push: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.image }}
+          cache-from: type=registry,ref=${{ env.SCAFFOLD_IMAGE }}:cache
+          cache-to: type=registry,ref=${{ env.SCAFFOLD_IMAGE }}:cache,mode=max
+          platforms: linux/amd64
+          provenance: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Stage 4: if a major bump was detected, open (or reuse) a GitHub
+  # issue so a human can eyeball the upstream changelog before we let
+  # the pool start handing out the new major. The :YYYYMMDD tag is
+  # already pushed by stages 2/3 — this is the "block :latest" signal.
+  # ─────────────────────────────────────────────────────────────────────
+  announce-major-bump:
+    name: Open template-major-bump issue
+    needs: [detect-bumps, build-pr-env-base, build-scaffold-base]
+    if: |
+      needs.detect-bumps.outputs.has_major_bump == 'true' &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'repository_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open or comment on major-bump issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUMPS_JSON: ${{ needs.detect-bumps.outputs.bumps_json }}
+          DATE_TAG: ${{ needs.detect-bumps.outputs.date_tag }}
+        run: |
+          set -eu
+
+          # Build the issue body — pretty-print the bumps via jq so an
+          # on-call engineer can see what moved without cross-referencing
+          # the workflow output.
+          BODY=$(cat <<'EOF_BODY'
+          ## Upstream major bump detected — `:latest` retag BLOCKED
+
+          The weekly base-image build ran and detected a major-version
+          bump in one or more pinned starter CLIs. To prevent a silent
+          behavioral change in the container pool, the `:latest` tag was
+          NOT retagged for this run. The dated tag (`:DATE_TAG_REPLACE`)
+          was still pushed — existing hosts continue to use whatever tag
+          they're pinned to.
+
+          ### What changed
+
+          ```json
+          BUMPS_JSON_REPLACE
+          ```
+
+          ### Required human steps
+
+          1. Read the upstream release notes for each major-bumped package.
+          2. Decide whether to adopt the new major or stay on the current pin.
+          3. Either:
+             - **Adopt**: bump the version + major in `docker/starter-versions.json`
+               AND the matching `ARG` default in `docker/scaffold-base/Dockerfile`
+               (or `docker/pr-env-base/Dockerfile` for pnpm/yarn). Re-run the
+               workflow manually; on a clean pass, `:latest` retags automatically.
+             - **Stay**: nothing to do here; the next weekly run will still detect
+               the bump and re-open this issue. File a backlog card to adopt later
+               if the gap grows uncomfortable.
+
+          ### Related
+
+          - Container Pool spec: `docker/starter-versions.json`, `docker/scaffold-base/Dockerfile`
+          - Detector source: `scripts/check-starter-versions.mjs`
+          - Rollback: pin hosts to `<image>:<prev-date-tag>` via SSM
+          EOF_BODY
+          )
+          # Substitute (avoid embedding ${{ }} inside the heredoc which
+          # would be expanded by GHA before the shell sees it).
+          BODY=${BODY//DATE_TAG_REPLACE/$DATE_TAG}
+          BODY=${BODY//BUMPS_JSON_REPLACE/$(echo "$BUMPS_JSON" | jq --indent 2 '.')}
+
+          TITLE="Upstream major bump in starter CLI ($DATE_TAG)"
+
+          # Look for an existing open issue with the label — if found,
+          # append a comment rather than opening a duplicate. Keeps the
+          # tracker tidy when the bump persists for multiple weeks.
+          EXISTING=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label template-major-bump \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Existing issue #$EXISTING — appending comment"
+            gh issue comment "$EXISTING" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body "$BODY"
+          else
+            echo "No existing issue — opening new one"
+            # `template-major-bump` label must exist in the repo. We
+            # create it on first use so the workflow doesn't bomb on
+            # fresh setups.
+            gh label create template-major-bump \
+              --repo "$GITHUB_REPOSITORY" \
+              --color "F97316" \
+              --description "An upstream starter CLI shipped a major version bump; scaffold-base:latest retag blocked until resolved." \
+              --force || true
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" \
+              --label template-major-bump \
+              --body "$BODY"
+          fi
