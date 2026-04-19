@@ -57,18 +57,21 @@ RUN apt-get update \
 #
 # Versions chosen 2026-04-19; bump via the starter-versions manifest and
 # a weekly CI detector run (see scripts/check-starter-versions.mjs).
+#
+# The `node:20-slim` base ships yarn 1.x PRE-INSTALLED at
+# /usr/local/bin/yarn (as a plain symlink into a corepack shim layout in
+# newer images, or a real binary in older ones). `npm install -g
+# yarn@1.22.22` refuses to overwrite that with `EEXIST: File exists`, so
+# we delete the shipped copy first rather than using `npm install
+# --force` (which would also mask real conflicts if we ever add another
+# global). Same thing for `yarnpkg` — a sibling symlink that npm's bin-
+# linking also tries to place.
 ARG PNPM_VERSION=9.15.0
 ARG YARN_VERSION=1.22.22
-# `--force` is required because `node:20-slim` started shipping a yarn
-# 1.22 shim at `/usr/local/bin/yarn` in its upstream images (circa
-# 2026-04). Without --force the second install errors `EEXIST:
-# /usr/local/bin/yarn`, which broke the base-images workflow on both main
-# and PR branches. The `--force` flag overwrites the shim with our pinned
-# global install so the resulting image still has exactly the yarn version
-# recorded in starter-versions.json.
-RUN npm install -g --force --no-audit --no-fund \
-      pnpm@${PNPM_VERSION} \
-      yarn@${YARN_VERSION} \
+RUN rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+  && npm install -g --no-audit --no-fund \
+       pnpm@${PNPM_VERSION} \
+       yarn@${YARN_VERSION} \
   && npm cache clean --force
 
 # Drop to an unprivileged user. `node:20-slim` ships a `node` UID 1000
