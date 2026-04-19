@@ -1,0 +1,40 @@
+# Skill-freeze coupling rule.
+#
+# During (and after) the skill freeze, any PR that touches a "platform module"
+# listed under `coupled_paths` MUST also touch a skill-doc file listed under
+# `skill_doc_paths`, or carry the `override_label` as an escape hatch.
+#
+# Enforcement: `.github/workflows/skill-coupling.yml` runs on every PR and
+# invokes `.github/scripts/check-skill-coupling.mjs` with this config.
+#
+# The rule exists because agents on Agent Hub rely on the shipped `agent-hub`
+# SKILL.md to understand what the platform does today. When coordination
+# protocols, auth, or auto-behavior modules change without a matching doc
+# update, agents operate with a stale mental model (freeze without
+# enforcement is just a vibe).
+#
+# Adding a new coupled module: append its path (or a glob) to `coupled_paths`
+# below. Keep entries one-per-line — this file is deliberately greppable.
+
+coupled_paths:
+  # Coordination protocol parsers / spawners
+  - server/delegation.ts
+  - server/handoff.ts
+  - server/card-auto-close.ts
+  # Auth Phase 3 multi-user/org surface
+  - server/routes/auth.ts
+  - server/memberships-store.ts
+  - server/users-store.ts
+  - server/invites-store.ts
+
+# Any change that touches at least one of these "satisfies" the coupling.
+# Accepts the top-level SKILL.md or a one-level-deep file under references/.
+skill_doc_paths:
+  - plugin/skills/agent-hub/SKILL.md
+  - plugin/skills/agent-hub/references/*
+  - server/default-skills/agent-hub/SKILL.md
+  - server/default-skills/agent-hub/references/*
+
+# PRs carrying this label bypass the check (emergency escape hatch).
+# Use sparingly — prefer updating the skill doc.
+override_label: skill-freeze-override
