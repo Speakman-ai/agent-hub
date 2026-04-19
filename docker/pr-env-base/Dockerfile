@@ -59,7 +59,14 @@ RUN apt-get update \
 # a weekly CI detector run (see scripts/check-starter-versions.mjs).
 ARG PNPM_VERSION=9.15.0
 ARG YARN_VERSION=1.22.22
-RUN npm install -g --no-audit --no-fund \
+# `--force` is required because `node:20-slim` started shipping a yarn
+# 1.22 shim at `/usr/local/bin/yarn` in its upstream images (circa
+# 2026-04). Without --force the second install errors `EEXIST:
+# /usr/local/bin/yarn`, which broke the base-images workflow on both main
+# and PR branches. The `--force` flag overwrites the shim with our pinned
+# global install so the resulting image still has exactly the yarn version
+# recorded in starter-versions.json.
+RUN npm install -g --force --no-audit --no-fund \
       pnpm@${PNPM_VERSION} \
       yarn@${YARN_VERSION} \
   && npm cache clean --force

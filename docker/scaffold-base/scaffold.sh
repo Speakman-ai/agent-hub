@@ -91,6 +91,34 @@ else
   log "no package.json in template (unusual but not fatal)"
 fi
 
+# --- 3b. Post-scaffold hook: drop CLAUDE.md/AGENTS.md/workflow files ---------
+#
+# The dispatcher (server/container-pool/scaffold-builder) packages extra
+# files to land in the tree before the initial commit. Typical payload:
+# CLAUDE.md, AGENTS.md, .github/workflows/ci.yml. Paths are validated
+# here (no absolute, no ..) in addition to dispatcher-side validation —
+# defense in depth, since SCAFFOLD_SPEC is the wire contract across a
+# process boundary.
+POST_FILE_COUNT=$(printf '%s' "$SCAFFOLD_SPEC" | jq -r '.postScaffoldFiles | length // 0')
+if [[ "$POST_FILE_COUNT" =~ ^[0-9]+$ ]] && (( POST_FILE_COUNT > 0 )); then
+  for i in $(seq 0 $((POST_FILE_COUNT - 1))); do
+    rel=$(printf '%s' "$SCAFFOLD_SPEC" | jq -er ".postScaffoldFiles[$i].path") \
+      || fail "postScaffoldFiles[$i].path missing" 2
+    case "$rel" in
+      /*) fail "postScaffoldFiles[$i]: absolute path '$rel' rejected" 2 ;;
+      *..*) fail "postScaffoldFiles[$i]: '..' traversal in '$rel' rejected" 2 ;;
+    esac
+    target="$DEST/$rel"
+    mkdir -p "$(dirname "$target")"
+    # jq -j prints raw contents without a trailing newline, preserving
+    # byte-for-byte fidelity. Piping via stdin avoids arg-length limits
+    # for long files and keeps embedded nulls/quotes intact.
+    printf '%s' "$SCAFFOLD_SPEC" | jq -ej ".postScaffoldFiles[$i].contents" > "$target" \
+      || fail "postScaffoldFiles[$i]: failed to write '$rel'" 3
+    log "wrote post-scaffold file: $rel"
+  done
+fi
+
 # --- 4. git init / commit ----------------------------------------------------
 cd "$DEST"
 git init --initial-branch=main >/dev/null || fail "git init failed" 4

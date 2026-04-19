@@ -143,6 +143,13 @@ export function buildAppManifest(serverUrl: string): GitHubAppManifest {
       // as a `pulls/{pr}/reviews` comment buried in the Conversation tab.
       checks: 'write',
       statuses: 'write',
+      // `administration: write` is required by the W3 scaffolding workflow
+      // (container-pool/scaffold-builder) so the installation can call
+      // `POST /user/repos` or `POST /orgs/{org}/repos` on the user's
+      // account — i.e. `gh repo create --push` inside the scaffold
+      // container. Existing installations must be re-authorized to pick
+      // this scope up; the manifest bump surfaces the prompt.
+      administration: 'write',
     },
     default_events: [
       'pull_request',

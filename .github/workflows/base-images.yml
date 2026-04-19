@@ -208,8 +208,14 @@ jobs:
           # handles publication).
           push: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch' }}
           tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=registry,ref=${{ env.PR_ENV_IMAGE }}:cache
-          cache-to: type=registry,ref=${{ env.PR_ENV_IMAGE }}:cache,mode=max
+          # Registry cache requires a ghcr.io token; on pull_request
+          # events the login step above is skipped (so forks work
+          # without secrets), which means any cache-from/cache-to against
+          # ghcr.io returns 403 and fails the whole build. Skip the
+          # cache on pull_request; the build is already a validation-only
+          # run and a cold build costs ~30s here.
+          cache-from: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:cache', env.PR_ENV_IMAGE) || '' }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:cache,mode=max', env.PR_ENV_IMAGE) || '' }}
           # linux/amd64 only — the EC2 host is x86_64 and arm64 multi-arch
           # doubles build time. If we ever add a Graviton host we revisit.
           platforms: linux/amd64
@@ -223,6 +229,16 @@ jobs:
   build-scaffold-base:
     name: Build scaffold-base
     needs: [detect-bumps, build-pr-env-base]
+    # Skip on pull_request. scaffold-base's Dockerfile FROMs
+    # `ghcr.io/<owner>/agent-hub/pr-env-base:<tag>`, which requires a
+    # GHCR token to pull. Fork-PR builds don't get secrets (by design)
+    # and the preceding `build-pr-env-base` job doesn't push on PRs, so
+    # there's no accessible base-image ref for this job to use.
+    # scaffold-base-specific correctness (scaffold.sh, template bake) is
+    # still covered by the scheduled weekly run and by push-to-main
+    # validation. PR validation still runs `build-pr-env-base`, which
+    # transitively proves the lean base image builds.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -290,8 +306,11 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.image }}
-          cache-from: type=registry,ref=${{ env.SCAFFOLD_IMAGE }}:cache
-          cache-to: type=registry,ref=${{ env.SCAFFOLD_IMAGE }}:cache,mode=max
+          # Same reasoning as the pr-env-base job: skip registry cache on
+          # pull_request because the GHCR login step is gated off for fork
+          # safety and cache-from/cache-to would otherwise 403.
+          cache-from: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:cache', env.SCAFFOLD_IMAGE) || '' }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:cache,mode=max', env.SCAFFOLD_IMAGE) || '' }}
           platforms: linux/amd64
           provenance: false
 

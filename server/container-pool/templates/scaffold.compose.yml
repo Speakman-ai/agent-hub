@@ -40,6 +40,12 @@ services:
     restart: "no"
     environment:
       - SCAFFOLD_SPEC=${SCAFFOLD_SPEC}
+      # Installation token minted by server/container-pool/scaffold-builder
+      # for the duration of this job. scaffold.sh pipes it into
+      # `gh auth login --with-token` then immediately unsets it. Short-lived
+      # (~1h GitHub App token lifetime) and the container exits in <90 s,
+      # so the exposure window is bounded.
+      - SCAFFOLD_GH_TOKEN=${SCAFFOLD_GH_TOKEN}
     labels:
       agent-hub.pool.class: scaffold
       agent-hub.pool.slot_id: ${SCAFFOLD_SLOT_ID}
