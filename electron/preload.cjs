@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Platform string (darwin, win32, linux). */
   platform: process.platform,
 
+  /** CPU architecture (arm64, x64, ia32). Used by the renderer to pick the right DMG when prompting the user to download a newer build. */
+  arch: process.arch,
+
   /** Read the connection config from the main process (file-backed). */
   getConnectionConfig: () => ipcRenderer.sendSync('get-connection-config'),
 

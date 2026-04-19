@@ -24,9 +24,11 @@ import NotesEditor from './components/NotesEditor.jsx';
 import CapturesPage from './components/CapturesPage.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal.jsx';
+import UpdateAvailableModal from './components/UpdateAvailableModal.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
+import { useVersionCheck } from './hooks/useVersionCheck.js';
 import { api } from './utils/api.js';
 import {
   cardStartedNotification,
@@ -46,7 +48,7 @@ import {
   ArrowLeftRight,
 } from 'lucide-react';
 import { migrateFromLegacy, fetchOrgs, getActiveOrg, getOrgs } from './utils/orgs.js';
-import { getApiBase, getAuthHeaders } from './utils/connection.js';
+import { getApiBase, getAuthHeaders, getServerBase } from './utils/connection.js';
 import { extractSubmittedAskIds } from './utils/askAnswers.js';
 
 export default function App() {
@@ -1839,6 +1841,25 @@ export default function App() {
   const isElectron = !!window.electronAPI?.isElectron;
   const isMac = window.electronAPI?.platform === 'darwin';
 
+  // Version-check for the "update available" modal. We fetch /api/health once
+  // on mount to learn the server's version, then compare against the client
+  // bundle's VITE_APP_VERSION inside useVersionCheck. Electron-only; a no-op
+  // in the web client (the hook gates itself on window.electronAPI.isElectron).
+  const [healthServerVersion, setHealthServerVersion] = useState(null);
+  useEffect(() => {
+    if (!isElectron) return; // skip the fetch entirely in the browser
+    const base = getServerBase();
+    fetch(`${base}/api/health`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.version) setHealthServerVersion(data.version);
+      })
+      .catch(() => {
+        /* offline / unreachable — no prompt, no error */
+      });
+  }, [isElectron]);
+  const versionCheck = useVersionCheck({ serverVersion: healthServerVersion });
+
   // Show loading spinner while connecting to the server and loading org data.
   // Includes an org switcher so users can escape a dead remote org.
   if (initializing) {
@@ -1884,6 +1905,18 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
+      {/* "Update available" modal — rendered at the top level so it floats
+          above the sidebar and main content. Only shows when the Electron
+          client is older than the server it's connected to. */}
+      {versionCheck.updateAvailable && (
+        <UpdateAvailableModal
+          serverVersion={versionCheck.serverVersion}
+          clientVersion={versionCheck.clientVersion}
+          downloadUrl={versionCheck.downloadUrl}
+          onDismiss={versionCheck.dismiss}
+        />
+      )}
+
       {/* Electron title bar — draggable region for window movement */}
       {isElectron && (
         <div
