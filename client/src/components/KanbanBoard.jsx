@@ -62,10 +62,11 @@ export default function KanbanBoard({
   // Drag state
   const [dragCardId, setDragCardId] = useState(null);
   const [dragOverColumn, setDragOverColumn] = useState(null);
-  // dragOverTarget: { columnId, beforeCardId } — beforeCardId === null means
-  // "insert at the end of the column". Drives the drop-position indicator
-  // and the precise insertion index used by commitReorder.
-  const [dragOverTarget, setDragOverTarget] = useState(null);
+  // Where the drop will land, relative to a specific card. Either null
+  // (dropping into empty space at the end of a column) or { cardId, half }
+  // where half is 'top' or 'bottom'. Used to render the insertion indicator
+  // line and to compute the target index on drop.
+  const [dropIndicator, setDropIndicator] = useState(null);
 
   // Detail panel
   const [selectedCard, setSelectedCard] = useState(null);
@@ -190,193 +191,219 @@ export default function KanbanBoard({
   };
 
   // --- Drag and Drop ---
+  //
+  // Goals:
+  //   * Support both cross-column moves AND within-column reordering.
+  //   * Allow dropping BETWEEN cards (not just appending).
+  //
+  // Design:
+  //   * Per-card `onDragOver` computes whether the cursor is in the top or
+  //     bottom half of the hovered card and sets `dropIndicator`.
+  //   * On drop, the target index is derived from `dropIndicator` (indicator
+  //     on top half → insert *before* that card; on bottom half → *after*).
+  //     If no indicator is set (e.g., dropped into empty column space), we
+  //     append to the end.
+  //   * The server's `/cards/:id/move` endpoint only updates one card at a
+  //     time and does NOT renumber siblings — so we compute the new ordering
+  //     on the client and issue `api.moveCard` for every card whose position
+  //     (or column) actually changed. Tiny N (visible human-paced drags);
+  //     Promise.all is fine.
+  //   * Optimistic: the `cards` state is updated locally before the network
+  //     round-trip; on any failure we call `fetchBoard()` to roll back.
+  const columnCardsSorted = useCallback(
+    (columnId) =>
+      cards.filter((c) => c.column_id === columnId).sort((a, b) => a.position - b.position),
+    [cards],
+  );
+
   const handleDragStart = (e, cardId) => {
     setDragCardId(cardId);
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', cardId);
+    e.dataTransfer.setData('text/plain', String(cardId));
   };
 
-  // Column-level dragover: only sets the column highlight + a fallback drop
-  // target of "end of column". Per-card dragover handlers stop propagation
-  // and override `dragOverTarget` with a precise insertion point.
-  const handleDragOver = (e, columnId) => {
+  const handleColumnDragOver = (e, columnId) => {
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    e.dataTransfer.dropEffect = 'move';
     setDragOverColumn(columnId);
-    setDragOverTarget((prev) =>
-      prev && prev.columnId === columnId ? prev : { columnId, beforeCardId: null },
-    );
   };
 
-  const handleDragLeave = (e, _columnId) => {
+  const handleColumnDragLeave = (e) => {
     if (e.currentTarget && !e.currentTarget.contains(e.relatedTarget)) {
       setDragOverColumn(null);
-      setDragOverTarget(null);
+      setDropIndicator(null);
     }
   };
 
-  // Per-card dragover — picks "before this card" vs "after this card" based
-  // on the cursor's vertical position relative to the card midpoint.
-  const handleCardDragOver = (e, card) => {
+  const handleCardDragOver = (e, cardId) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    setDragOverColumn(card.column_id);
-    if (card.id === dragCardId) {
-      // Hovering the dragged card itself — keep the indicator anchored to it
-      // so the user has visual feedback. Net effect on drop: no-op.
-      setDragOverTarget({ columnId: card.column_id, beforeCardId: card.id });
-      return;
-    }
+    e.dataTransfer.dropEffect = 'move';
     const rect = e.currentTarget.getBoundingClientRect();
-    const clientY = typeof e.clientY === 'number' ? e.clientY : rect.top + rect.height / 2;
-    const offsetY = clientY - rect.top;
-    const insertBefore = offsetY < rect.height / 2;
-    if (insertBefore) {
-      setDragOverTarget({ columnId: card.column_id, beforeCardId: card.id });
-    } else {
-      // Insert *after* this card → before the next sibling, or at column end.
-      const colCards = cardsForColumn(card.column_id);
-      const idx = colCards.findIndex((c) => c.id === card.id);
-      const next = colCards[idx + 1];
-      setDragOverTarget({ columnId: card.column_id, beforeCardId: next ? next.id : null });
-    }
+    const midpoint = rect.top + rect.height / 2;
+    const half = e.clientY < midpoint ? 'top' : 'bottom';
+    setDropIndicator((prev) => {
+      if (prev && prev.cardId === cardId && prev.half === half) return prev;
+      return { cardId, half };
+    });
   };
 
-  // Apply a reorder: renumber all affected cards in the target (and source,
-  // when crossing columns) so positions stay dense and unambiguous, then
-  // persist each changed card via the existing single-card move endpoint.
-  // Optimistic; on failure we re-fetch to recover the canonical order.
-  const commitReorder = async (card, targetColumnId, targetIndex) => {
-    const sameColumn = card.column_id === targetColumnId;
+  // Resolve the drop target to `{ columnId, index }` in the target column's
+  // full sorted list. When an indicator is present, `index` comes from the
+  // hovered card; otherwise it's the end of the column.
+  const resolveDropTarget = (fallbackColumnId, indicator) => {
+    if (indicator && indicator.cardId) {
+      const hovered = cards.find((c) => c.id === indicator.cardId);
+      if (hovered) {
+        const targetColumnId = hovered.column_id;
+        const sorted = columnCardsSorted(targetColumnId);
+        const hoveredIdx = sorted.findIndex((c) => c.id === indicator.cardId);
+        const index =
+          hoveredIdx === -1
+            ? sorted.length
+            : indicator.half === 'top'
+              ? hoveredIdx
+              : hoveredIdx + 1;
+        return { columnId: targetColumnId, index };
+      }
+    }
+    const sorted = columnCardsSorted(fallbackColumnId);
+    return { columnId: fallbackColumnId, index: sorted.length };
+  };
 
-    const targetCardsExcluding = cards
-      .filter((c) => c.column_id === targetColumnId && c.id !== card.id)
-      .sort((a, b) => a.position - b.position);
+  // Build the list of {cardId, columnId, position} updates needed to reflect
+  // the requested move. Returns [] if the drop is a no-op.
+  const computePositionUpdates = (card, targetColumnId, targetIndex) => {
+    const sourceColumnId = card.column_id;
+    const targetSorted = columnCardsSorted(targetColumnId);
 
-    const clampedIndex = Math.max(0, Math.min(targetIndex, targetCardsExcluding.length));
-    const newTargetOrder = [...targetCardsExcluding];
-    newTargetOrder.splice(clampedIndex, 0, card);
-
-    const targetUpdates = newTargetOrder.map((c, idx) => ({
-      id: c.id,
-      column_id: targetColumnId,
-      position: idx,
-    }));
-
-    let sourceUpdates = [];
-    if (!sameColumn) {
-      const sourceCards = cards
-        .filter((c) => c.column_id === card.column_id && c.id !== card.id)
-        .sort((a, b) => a.position - b.position);
-      sourceUpdates = sourceCards.map((c, idx) => ({
-        id: c.id,
-        column_id: card.column_id,
-        position: idx,
-      }));
+    let newTargetOrder;
+    if (sourceColumnId === targetColumnId) {
+      const without = targetSorted.filter((c) => c.id !== card.id);
+      const currentIdx = targetSorted.findIndex((c) => c.id === card.id);
+      // If targetIndex is past the card's current slot, account for the
+      // splice so adjacent bottom-half drops become no-ops.
+      let adjusted = targetIndex;
+      if (currentIdx !== -1 && targetIndex > currentIdx) adjusted -= 1;
+      if (adjusted === currentIdx) return [];
+      adjusted = Math.max(0, Math.min(adjusted, without.length));
+      newTargetOrder = [...without.slice(0, adjusted), card, ...without.slice(adjusted)];
+    } else {
+      const clamped = Math.max(0, Math.min(targetIndex, targetSorted.length));
+      newTargetOrder = [
+        ...targetSorted.slice(0, clamped),
+        { ...card, column_id: targetColumnId },
+        ...targetSorted.slice(clamped),
+      ];
     }
 
-    const allUpdates = [...targetUpdates, ...sourceUpdates];
+    const updates = [];
+    newTargetOrder.forEach((c, idx) => {
+      if (c.id === card.id) {
+        // Compare the server's current view (original `card`) against the
+        // requested slot — not against the spread copy `c`, whose
+        // `column_id` has already been rewritten to the target.
+        if (card.column_id !== targetColumnId || card.position !== idx) {
+          updates.push({ id: c.id, columnId: targetColumnId, position: idx });
+        }
+        return;
+      }
+      if (c.position !== idx) {
+        updates.push({ id: c.id, columnId: targetColumnId, position: idx });
+      }
+    });
 
-    // Snapshot of original positions to figure out which cards actually need
-    // a server write (and to roll back the diff into).
-    const originalById = new Map(cards.map((c) => [c.id, c]));
+    // Cross-column: cards left behind in the source column shift up.
+    if (sourceColumnId !== targetColumnId) {
+      const sourceSorted = columnCardsSorted(sourceColumnId).filter((c) => c.id !== card.id);
+      sourceSorted.forEach((c, idx) => {
+        if (c.position !== idx) {
+          updates.push({ id: c.id, columnId: sourceColumnId, position: idx });
+        }
+      });
+    }
 
-    // Optimistic UI
+    return updates;
+  };
+
+  const applyUpdatesOptimistic = (updates) => {
+    if (updates.length === 0) return;
     setCards((prev) =>
       prev.map((c) => {
-        const u = allUpdates.find((upd) => upd.id === c.id);
-        return u ? { ...c, column_id: u.column_id, position: u.position } : c;
+        const u = updates.find((x) => x.id === c.id);
+        return u ? { ...c, column_id: u.columnId, position: u.position } : c;
       }),
     );
+  };
 
-    // The server's moveKanbanCard just writes (column_id, position) on a
-    // single row with no cross-card invariants, so we can fan out in
-    // parallel — collapses an N-card reorder to one round-trip. On any
-    // failure we re-fetch the canonical server state (this is "re-sync,"
-    // not "undo" — earlier writes in the batch may have already
-    // persisted, but fetchBoard reconciles the UI to whatever stuck).
-    const writes = allUpdates
-      .filter((u) => {
-        const original = originalById.get(u.id);
-        return original && (original.position !== u.position || original.column_id !== u.column_id);
-      })
-      .map((u) => api.moveCard(projectId, u.id, { columnId: u.column_id, position: u.position }));
-
+  const commitUpdates = async (updates) => {
+    if (updates.length === 0) return;
     try {
-      await Promise.all(writes);
+      await Promise.all(
+        updates.map((u) =>
+          api.moveCard(projectId, u.id, { columnId: u.columnId, position: u.position }),
+        ),
+      );
     } catch {
       fetchBoard();
     }
   };
 
-  const handleDrop = async (e, columnId) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const cardId = (e.dataTransfer && e.dataTransfer.getData('text/plain')) || dragCardId;
-    const target = dragOverTarget;
-    setDragOverColumn(null);
-    setDragOverTarget(null);
+  // Back-compat: simple single-card commit. Used by the pendingMove confirm
+  // dialog to actually apply the move after the user clicks "Move anyway".
+  const commitMove = async (card, targetColumnId, targetIndex) => {
+    const updates = computePositionUpdates(card, targetColumnId, targetIndex);
+    applyUpdatesOptimistic(updates);
+    await commitUpdates(updates);
+  };
+
+  const performDrop = async (fallbackColumnId, indicator) => {
+    const cardId = dragCardId;
     setDragCardId(null);
+    setDragOverColumn(null);
+    setDropIndicator(null);
     if (!cardId) return;
 
     const card = cards.find((c) => c.id === cardId || c.id === Number(cardId));
     if (!card) return;
 
-    const targetColumnId = target?.columnId || columnId;
-
-    // Drop-on-self short-circuit: handleCardDragOver pins beforeCardId to
-    // the dragged card's own id when the cursor is over the dragged card,
-    // which has no meaningful insertion index in the excluding list. Treat
-    // it as a no-op rather than letting it fall through to the renumber.
-    if (target?.beforeCardId === card.id) return;
-
-    const targetCardsExcluding = cards
-      .filter((c) => c.column_id === targetColumnId && c.id !== card.id)
-      .sort((a, b) => a.position - b.position);
-
-    let targetIndex;
-    if (target?.beforeCardId != null) {
-      const idx = targetCardsExcluding.findIndex((c) => c.id === target.beforeCardId);
-      targetIndex = idx < 0 ? targetCardsExcluding.length : idx;
-    } else {
-      targetIndex = targetCardsExcluding.length;
-    }
-
-    // No-op short-circuit: same column, dropped at its existing slot.
-    //
-    // `targetIndex` is an index into `targetCardsExcluding` (column
-    // *without* the dragged card). For a card already in this column, its
-    // natural slot in the excluding list lines up with its index in the
-    // full list — so equality is a true no-op. We do NOT also check
-    // `currentIdx === targetIndex - 1`: that condition describes a real
-    // move-down-by-one (e.g. [c1,c2,c3] dropping c1 onto top-half of c3
-    // should yield [c2,c1,c3]) and silently dropping it was the original
-    // bug this PR set out to fix.
-    if (card.column_id === targetColumnId) {
-      const currentOrder = cards
-        .filter((c) => c.column_id === targetColumnId)
-        .sort((a, b) => a.position - b.position);
-      const currentIdx = currentOrder.findIndex((c) => c.id === card.id);
-      if (currentIdx === targetIndex) return;
-    }
-
+    const { columnId: targetColumnId, index: targetIndex } = resolveDropTarget(
+      fallbackColumnId,
+      indicator,
+    );
     const targetColumn = columns.find((c) => c.id === targetColumnId);
+    if (!targetColumn) return;
 
     // Soft-warn before moving a blocked card into a blocker-sensitive column.
-    // Same-column reorders skip this (shouldConfirmMove handles that gate).
+    // API still allows it; the user just has to confirm.
     if (shouldConfirmMove(card, card.column_id, targetColumn)) {
-      setPendingMove({ card, targetColumn, targetIndex });
+      setPendingMove({ card, targetColumn, position: targetIndex });
       return;
     }
 
-    await commitReorder(card, targetColumnId, targetIndex);
+    const updates = computePositionUpdates(card, targetColumnId, targetIndex);
+    applyUpdatesOptimistic(updates);
+    await commitUpdates(updates);
+  };
+
+  const handleColumnDrop = async (e, columnId) => {
+    e.preventDefault();
+    const indicator = dropIndicator;
+    await performDrop(columnId, indicator);
+  };
+
+  const handleCardDrop = async (e, targetCardId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const indicator = dropIndicator || { cardId: targetCardId, half: 'bottom' };
+    const hovered = cards.find((c) => c.id === targetCardId);
+    await performDrop(hovered ? hovered.column_id : null, indicator);
   };
 
   const handleDragEnd = () => {
     setDragCardId(null);
     setDragOverColumn(null);
-    setDragOverTarget(null);
+    setDropIndicator(null);
   };
 
   // --- Card CRUD ---
@@ -957,9 +984,9 @@ export default function KanbanBoard({
                   isDragOver ? 'ring-2 ring-gray-600 bg-gray-700/30' : ''
                 }`}
                 style={{ minHeight: '200px' }}
-                onDragOver={(e) => handleDragOver(e, col.id)}
-                onDragLeave={(e) => handleDragLeave(e, col.id)}
-                onDrop={(e) => handleDrop(e, col.id)}
+                onDragOver={(e) => handleColumnDragOver(e, col.id)}
+                onDragLeave={handleColumnDragLeave}
+                onDrop={(e) => handleColumnDrop(e, col.id)}
               >
                 {/* Column header */}
                 <div
@@ -976,25 +1003,30 @@ export default function KanbanBoard({
                 <div className="flex-1 overflow-y-auto px-2 py-1 space-y-2">
                   {colCards.map((card) => {
                     const cardEpic = card.epic_id ? epics.find((e) => e.id === card.epic_id) : null;
-                    const showInsertIndicator =
-                      dragOverTarget &&
-                      dragOverTarget.columnId === col.id &&
-                      dragOverTarget.beforeCardId === card.id &&
+                    const showTopIndicator =
+                      dropIndicator &&
+                      dropIndicator.cardId === card.id &&
+                      dropIndicator.half === 'top' &&
+                      dragCardId !== card.id;
+                    const showBottomIndicator =
+                      dropIndicator &&
+                      dropIndicator.cardId === card.id &&
+                      dropIndicator.half === 'bottom' &&
                       dragCardId !== card.id;
                     return (
-                      <div key={card.id} data-testid={`card-row-${card.id}`}>
-                        {showInsertIndicator && (
+                      <div key={card.id} data-testid={`card-wrapper-${card.id}`}>
+                        {showTopIndicator && (
                           <div
-                            className="h-0.5 bg-indigo-400 rounded-full mb-2"
-                            data-testid={`drop-indicator-before-${card.id}`}
+                            className="h-0.5 bg-blue-500 rounded-full mb-1"
+                            data-testid={`drop-indicator-top-${card.id}`}
                           />
                         )}
                         <div
                           draggable
                           onDragStart={(e) => handleDragStart(e, card.id)}
                           onDragEnd={handleDragEnd}
-                          onDragOver={(e) => handleCardDragOver(e, card)}
-                          onDrop={(e) => handleDrop(e, col.id)}
+                          onDragOver={(e) => handleCardDragOver(e, card.id)}
+                          onDrop={(e) => handleCardDrop(e, card.id)}
                           onClick={() => openDetail(card)}
                           className={`rounded-lg p-3 bg-gray-800 border border-gray-700 hover:border-gray-600 cursor-grab active:cursor-grabbing transition-colors ${
                             dragCardId === card.id ? 'opacity-50' : ''
@@ -1111,6 +1143,12 @@ export default function KanbanBoard({
                             </div>
                           </div>
                         </div>
+                        {showBottomIndicator && (
+                          <div
+                            className="h-0.5 bg-blue-500 rounded-full mt-1"
+                            data-testid={`drop-indicator-bottom-${card.id}`}
+                          />
+                        )}
                       </div>
                     );
                   })}
@@ -1756,9 +1794,9 @@ export default function KanbanBoard({
               <button
                 type="button"
                 onClick={async () => {
-                  const { card, targetColumn, targetIndex } = pendingMove;
+                  const { card, targetColumn, position } = pendingMove;
                   setPendingMove(null);
-                  await commitReorder(card, targetColumn.id, targetIndex);
+                  await commitMove(card, targetColumn.id, position);
                 }}
                 className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-medium transition-colors"
               >
