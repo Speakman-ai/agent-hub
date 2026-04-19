@@ -60,10 +60,15 @@ Cards carry `priority`, `assignee`, `labels`, `session_id`, and optional
 task, move it as you progress, comment when you open a PR.
 
 ```bash
-scripts/board.sh get                            # columns + cards + epics
-scripts/board.sh list                           # cards only
-scripts/board.sh create '{"title":"…","columnId":"…","session_id":"'"$AGENT_HUB_SESSION_ID"'"}'
-scripts/board.sh move   <cardId> <columnId>
+# Deterministic flag-based wrappers (preferred for agent use):
+scripts/get-board-state.sh                               # full board JSON
+scripts/kanban-list.sh --column "In Progress"            # filtered card list
+scripts/resolve-column-id.sh "In Progress"               # name → UUID
+scripts/kanban-create-card.sh --title "…" --column "To Do" \
+  --priority high --session-id "$AGENT_HUB_SESSION_ID"
+scripts/kanban-move-card.sh <cardId> "Review"            # move by column name
+
+# Subcommand-style wrappers (raw JSON, thinner layer):
 scripts/board.sh update <cardId> '{"priority":"medium"}'
 scripts/board.sh comment <cardId> '{"author":"me","content":"PR #42 open"}'
 scripts/epics.sh list | create | link | unlink
@@ -78,11 +83,13 @@ existing pages rather than duplicating. Categories: `general`, `api-docs`,
 `architecture`, `conventions`, `test-patterns`, `troubleshooting`, `onboarding`.
 
 ```bash
-scripts/wiki.sh search "deployment"         # FTS query
-scripts/wiki.sh read <slug>                 # single page
-scripts/wiki.sh list [category]             # all pages (optionally filtered)
-scripts/wiki.sh create '{"title":"…","content":"# …","category":"architecture","updatedBy":"me"}'
-scripts/wiki.sh update <slug> '{"content":"…","updatedBy":"me"}'
+# Deterministic wrappers:
+scripts/wiki-search.sh "deployment"                     # FTS query
+scripts/wiki-upsert.sh <slug> ./page.md --category architecture
+
+# Subcommand-style wrapper:
+scripts/wiki.sh read <slug>                             # single page
+scripts/wiki.sh list [category]                         # all pages (optionally filtered)
 ```
 
 ## Sessions & Messages
