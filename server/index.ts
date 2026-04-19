@@ -87,6 +87,7 @@ import { initCaptureEngine } from './capture-engine.js';
 import { initWebhookWorker } from './webhook-worker.js';
 import createPrActionRoutes from './routes/pr-actions.js';
 import createPrListRoutes from './routes/pr-list.js';
+import createPrResolveRoutes from './routes/pr-resolve.js';
 import createBugReportRoutes from './routes/bug-reports.js';
 import createAuthRoutes from './routes/auth.js';
 
@@ -500,6 +501,7 @@ app.use('/api/projects/:projectId/captures', createCaptureRoutes(routeDeps));
 app.use(createIosBuildRoutes(routeDeps));
 app.use(createPrActionRoutes(routeDeps));
 app.use(createPrListRoutes(routeDeps));
+app.use(createPrResolveRoutes(routeDeps));
 app.use(createBugReportRoutes(routeDeps));
 app.use(createAuthRoutes());
 

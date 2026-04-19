@@ -17,6 +17,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { RouteDeps, AppConfig, GitHubAppConfig } from '../types.js';
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
+import { fetchPrDetail } from '../pr-detail-fetch.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -241,141 +242,11 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
         return res.status(400).json({ error: 'Invalid PR number' });
       }
 
-      // Tier 1: GitHub App (make all requests in parallel)
-      if (hasGitHubApp(config)) {
-        const app = config.githubApp as GitHubAppConfig;
-        const instId = resolveInstallationId(app, repo.owner);
-        if (instId) {
-          try {
-            const req2 = (path: string) =>
-              githubApiRequest(path, {
-                appId: app.appId,
-                privateKey: app.privateKey,
-                installationId: instId,
-              });
-
-            const prData = (await req2(`/repos/${repo.owner}/${repo.repo}/pulls/${num}`)) as Record<
-              string,
-              unknown
-            >;
-            const head = prData.head as Record<string, unknown> | undefined;
-            const sha = head?.sha as string | undefined;
-
-            const [reviewsRaw, commentsRaw, checksRaw] = await Promise.all([
-              req2(`/repos/${repo.owner}/${repo.repo}/pulls/${num}/reviews?per_page=50`).catch(
-                () => [],
-              ),
-              req2(`/repos/${repo.owner}/${repo.repo}/issues/${num}/comments?per_page=50`).catch(
-                () => [],
-              ),
-              sha
-                ? req2(`/repos/${repo.owner}/${repo.repo}/commits/${sha}/check-runs`).catch(
-                    () => ({}),
-                  )
-                : Promise.resolve({}),
-            ]);
-
-            return res.json({
-              repo: `${repo.owner}/${repo.repo}`,
-              source: 'github-app',
-              pr: normalizePrSummary(prData),
-              reviews: normalizeReviews(reviewsRaw),
-              comments: normalizeIssueComments(commentsRaw),
-              checks: normalizeCheckRuns(checksRaw),
-            });
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.warn(
-              `[PR Detail] GitHub App fetch failed, trying gh CLI: ${msg.split('\n')[0]}`,
-            );
-          }
-        }
-      }
-
-      // Tier 2: gh CLI — uses `gh pr view` + `gh api` for reviews/checks
       try {
-        const viewJsonFields =
-          'number,title,state,isDraft,url,author,headRefName,baseRefName,createdAt,updatedAt,additions,deletions,changedFiles,body,mergeable,reviewDecision,reviewRequests,labels,reviews,comments,statusCheckRollup';
-        const stdout = await callCli(config, [
-          'pr',
-          'view',
-          String(num),
-          '--repo',
-          `${repo.owner}/${repo.repo}`,
-          '--json',
-          viewJsonFields,
-        ]);
-        const data = JSON.parse(stdout) as Record<string, unknown>;
-        const author = data.author as Record<string, unknown> | null | undefined;
-        const reviews = (data.reviews as Array<Record<string, unknown>> | undefined) || [];
-        const comments = (data.comments as Array<Record<string, unknown>> | undefined) || [];
-        const statusChecks =
-          (data.statusCheckRollup as Array<Record<string, unknown>> | undefined) || [];
-        const labels = (data.labels as Array<Record<string, unknown>> | undefined) || [];
-
+        const detail = await fetchPrDetail(config, repo, num);
         return res.json({
           repo: `${repo.owner}/${repo.repo}`,
-          source: 'gh-cli',
-          pr: {
-            number: data.number,
-            title: data.title,
-            state: typeof data.state === 'string' ? data.state.toLowerCase() : data.state,
-            draft: data.isDraft ?? false,
-            html_url: data.url,
-            user: author?.login ?? null,
-            user_avatar: null,
-            head: data.headRefName,
-            base: data.baseRefName,
-            created_at: data.createdAt,
-            updated_at: data.updatedAt,
-            merged_at: null,
-            closed_at: null,
-            body: data.body,
-            // Preserve null for UNKNOWN (see mergeableFromCli docs) so the mobile
-            // UI doesn't render a false "Conflicts" badge while GitHub is still
-            // computing mergeability — matches the App branch's boolean-or-null.
-            mergeable: mergeableFromCli(data.mergeable),
-            mergeable_state: data.mergeable,
-            review_decision: data.reviewDecision,
-            labels: labels.map((l) => ({ name: l.name as string, color: l.color as string })),
-            comments: comments.length,
-            additions: data.additions,
-            deletions: data.deletions,
-            changed_files: data.changedFiles,
-          },
-          reviews: reviews.map((r) => {
-            const rAuthor = r.author as Record<string, unknown> | null | undefined;
-            return {
-              id: r.id,
-              user: rAuthor?.login ?? null,
-              state: r.state,
-              body: r.body ?? '',
-              submitted_at: r.submittedAt ?? null,
-              html_url: null,
-            };
-          }),
-          comments: comments.map((c) => {
-            const cAuthor = c.author as Record<string, unknown> | null | undefined;
-            return {
-              id: c.id,
-              user: cAuthor?.login ?? null,
-              body: c.body ?? '',
-              created_at: c.createdAt ?? null,
-              html_url: null,
-            };
-          }),
-          checks: statusChecks.map((chk) => ({
-            id: chk.id ?? null,
-            name: chk.name ?? chk.context ?? null,
-            status: (chk.status as string | undefined)?.toLowerCase?.() ?? null,
-            conclusion:
-              (chk.conclusion as string | undefined)?.toLowerCase?.() ??
-              (chk.state as string | undefined)?.toLowerCase?.() ??
-              null,
-            html_url: chk.detailsUrl ?? chk.targetUrl ?? null,
-            started_at: chk.startedAt ?? null,
-            completed_at: chk.completedAt ?? null,
-          })),
+          ...detail,
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
