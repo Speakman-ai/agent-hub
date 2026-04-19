@@ -5,6 +5,8 @@ import {
   extractCoordinationBlocks,
   detectHandoffBlock,
   describeHandoffReason,
+  detectDelegateBlock,
+  describeDelegateReason,
 } from './coordinationBlocks.js';
 
 describe('parseHandoffBlock', () => {
@@ -155,9 +157,95 @@ describe('extractCoordinationBlocks', () => {
       handoff: null,
       delegate: null,
       handoffMalformed: null,
+      delegateMalformed: null,
     });
     expect(extractCoordinationBlocks(null).stripped).toBe('');
     expect(extractCoordinationBlocks(null).handoffMalformed).toBeNull();
+    expect(extractCoordinationBlocks(null).delegateMalformed).toBeNull();
+  });
+
+  it('strips a malformed delegate block and surfaces delegateMalformed', () => {
+    // Regression: before this fix the raw `<delegate>` JSON leaked into the
+    // rendered prose when parsing failed, and the DelegationPanel never
+    // populated (driven by WebSocket events, not message content), so the
+    // user saw nothing actionable. The stripped prose must NOT contain the
+    // raw tag, and delegateMalformed must carry a reason so the renderer
+    // can surface a DelegateCard in failed state.
+    const text = `Planning.\n<delegate>not json at all</delegate>`;
+    const out = extractCoordinationBlocks(text);
+    expect(out.delegate).toBeNull();
+    expect(out.stripped).toBe('Planning.');
+    expect(out.stripped).not.toContain('<delegate>');
+    expect(out.delegateMalformed).not.toBeNull();
+    expect(out.delegateMalformed.reason).toBe('invalid-json');
+    expect(out.delegateMalformed.rawBody).toBe('not json at all');
+  });
+
+  it('flags empty delegate arrays as malformed', () => {
+    const text = `<delegate>[]</delegate>`;
+    const out = extractCoordinationBlocks(text);
+    expect(out.delegate).toBeNull();
+    expect(out.delegateMalformed.reason).toBe('empty-array');
+  });
+
+  it('flags delegate arrays with no valid entries as malformed', () => {
+    const text = `<delegate>[{"agentId":""}, {"task":""}]</delegate>`;
+    const out = extractCoordinationBlocks(text);
+    expect(out.delegate).toBeNull();
+    expect(out.delegateMalformed.reason).toBe('no-valid-entries');
+  });
+});
+
+describe('detectDelegateBlock', () => {
+  it('returns present=false when no block is in the text', () => {
+    const out = detectDelegateBlock('plain prose');
+    expect(out.present).toBe(false);
+    expect(out.tasks).toBeNull();
+    expect(out.reason).toBeNull();
+  });
+
+  it('returns tasks + reason=null for a valid block', () => {
+    const out = detectDelegateBlock(`<delegate>[{"agentId":"a","task":"x"}]</delegate>`);
+    expect(out.present).toBe(true);
+    expect(out.tasks).toEqual([{ agentId: 'a', task: 'x' }]);
+    expect(out.reason).toBeNull();
+  });
+
+  it('reports invalid-json for broken JSON bodies', () => {
+    const out = detectDelegateBlock(`<delegate>{broken</delegate>`);
+    expect(out.present).toBe(true);
+    expect(out.tasks).toBeNull();
+    expect(out.reason).toBe('invalid-json');
+  });
+
+  it('reports empty-array for an empty JSON array', () => {
+    const out = detectDelegateBlock(`<delegate>[]</delegate>`);
+    expect(out.reason).toBe('empty-array');
+  });
+
+  it('reports no-valid-entries when every task is missing required fields', () => {
+    const out = detectDelegateBlock(
+      `<delegate>[{"agentId":"","task":"y"},{"task":"z"}]</delegate>`,
+    );
+    expect(out.reason).toBe('no-valid-entries');
+  });
+
+  it('safely handles non-string / null input', () => {
+    expect(detectDelegateBlock(null).present).toBe(false);
+    expect(detectDelegateBlock(undefined).present).toBe(false);
+    expect(detectDelegateBlock(42).present).toBe(false);
+  });
+});
+
+describe('describeDelegateReason', () => {
+  it('returns a human-readable message for each reason code', () => {
+    expect(describeDelegateReason('invalid-json')).toMatch(/invalid json/i);
+    expect(describeDelegateReason('empty-array')).toMatch(/empty array/i);
+    expect(describeDelegateReason('no-valid-entries')).toMatch(/agentid/i);
+  });
+
+  it('returns a generic fallback for unknown codes', () => {
+    expect(describeDelegateReason('nope')).toMatch(/could not be parsed/i);
   });
 });
 

@@ -2065,6 +2065,7 @@ export default function App() {
                               fromAgent={activeAgent}
                               agents={agents}
                               sessionHandoffs={sessionHandoffs}
+                              sessionDelegations={delegations[activeSessionId]}
                               onOpenSession={handleOpenHandoffSession}
                             />
                           ) : (
@@ -2097,6 +2098,7 @@ export default function App() {
                             fromAgent={activeAgent}
                             agents={agents}
                             sessionHandoffs={sessionHandoffs}
+                            sessionDelegations={delegations[activeSessionId]}
                             onOpenSession={handleOpenHandoffSession}
                           />
                         )}

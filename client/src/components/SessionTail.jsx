@@ -6,9 +6,14 @@ import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
 import { markdownComponentsCompact } from './MarkdownRenderer.jsx';
 import { isFileModifyingTool, shortenPath, parseDiffLines } from '../utils/diff.js';
-import { extractCoordinationBlocks, describeHandoffReason } from '../utils/coordinationBlocks.js';
+import {
+  extractCoordinationBlocks,
+  describeHandoffReason,
+  describeDelegateReason,
+} from '../utils/coordinationBlocks.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
+import DelegateCard from './DelegateCard.jsx';
 import {
   Bot,
   Zap,
@@ -59,6 +64,7 @@ function SessionTail({
   fromAgent,
   agents,
   sessionHandoffs,
+  sessionDelegations,
   onOpenSession,
 }) {
   const messageId = message?.id;
@@ -103,6 +109,7 @@ function SessionTail({
         fromAgent={fromAgent}
         agents={agents}
         sessionHandoffs={sessionHandoffs}
+        sessionDelegations={sessionDelegations}
         onOpenSession={onOpenSession}
       />
     );
@@ -130,6 +137,7 @@ function SessionTail({
                 fromAgent={fromAgent}
                 agents={agents}
                 sessionHandoffs={sessionHandoffs}
+                sessionDelegations={sessionDelegations}
                 onOpenSession={onOpenSession}
               />
             ) : (
@@ -173,6 +181,7 @@ function SessionTail({
                     fromAgent={fromAgent}
                     agents={agents}
                     sessionHandoffs={sessionHandoffs}
+                    sessionDelegations={sessionDelegations}
                     onOpenSession={onOpenSession}
                   />
                 );
@@ -641,14 +650,29 @@ function formatToolInput(input) {
   }
 }
 
-function TextBubble({ text, fromAgent, agents, sessionHandoffs, onOpenSession }) {
+function TextBubble({
+  text,
+  fromAgent,
+  agents,
+  sessionHandoffs,
+  sessionDelegations,
+  onOpenSession,
+}) {
   // Strip any <handoff>/<delegate> blocks from the prose so the raw JSON
   // wall doesn't end up rendered inline. The blocks are surfaced separately
-  // as a card below the prose.
-  const { stripped, handoff, handoffMalformed } = extractCoordinationBlocks(text);
+  // as dedicated cards below the prose. Rendering delegate blocks here as a
+  // persistent `DelegateCard` is the fix for the "delegate sometimes
+  // doesn't show up" bug — the side `DelegationPanel` is driven by live
+  // WebSocket events that can be dropped or missed when the user switches
+  // sessions, so the message-anchored card is the reliable visual signal.
+  const { stripped, handoff, handoffMalformed, delegate, delegateMalformed } =
+    extractCoordinationBlocks(text);
   const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
   const malformedProps = handoffMalformed
     ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)
+    : null;
+  const delegateReasonText = delegateMalformed
+    ? describeDelegateReason(delegateMalformed.reason)
     : null;
   return (
     <>
@@ -681,6 +705,15 @@ function TextBubble({ text, fromAgent, agents, sessionHandoffs, onOpenSession })
           agents={agents}
           handoff={malformedProps.handoff}
           onOpenSession={onOpenSession}
+        />
+      )}
+      {(delegate || delegateMalformed) && (
+        <DelegateCard
+          tasks={delegate}
+          malformed={delegateMalformed}
+          malformedReasonText={delegateReasonText}
+          agents={agents}
+          sessionDelegations={sessionDelegations}
         />
       )}
     </>
@@ -831,14 +864,21 @@ function LegacyAssistantBubble({
   fromAgent,
   agents,
   sessionHandoffs,
+  sessionDelegations,
   onOpenSession,
 }) {
   // Strip coordination blocks here too — legacy messages were saved with the
-  // raw `<handoff>...</handoff>` JSON in their content.
-  const { stripped, handoff, handoffMalformed } = extractCoordinationBlocks(message.content);
+  // raw `<handoff>...</handoff>` JSON in their content. Delegate blocks get
+  // the same treatment: the message-anchored DelegateCard is the persistent
+  // visual record even when live WebSocket events never arrived.
+  const { stripped, handoff, handoffMalformed, delegate, delegateMalformed } =
+    extractCoordinationBlocks(message.content);
   const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
   const malformedProps = handoffMalformed
     ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)
+    : null;
+  const delegateReasonText = delegateMalformed
+    ? describeDelegateReason(delegateMalformed.reason)
     : null;
   return (
     <div className="flex justify-start mb-4">
@@ -879,6 +919,15 @@ function LegacyAssistantBubble({
             agents={agents}
             handoff={malformedProps.handoff}
             onOpenSession={onOpenSession}
+          />
+        )}
+        {(delegate || delegateMalformed) && (
+          <DelegateCard
+            tasks={delegate}
+            malformed={delegateMalformed}
+            malformedReasonText={delegateReasonText}
+            agents={agents}
+            sessionDelegations={sessionDelegations}
           />
         )}
       </div>

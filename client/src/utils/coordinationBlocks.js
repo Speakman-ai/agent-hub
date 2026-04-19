@@ -17,12 +17,16 @@
  * truth.
  *
  * This module gives the renderer:
- *   - parseHandoffBlock(text)   → { toAgent, note } | null
- *   - parseDelegateBlock(text)  → Array<{ agentId, task }> | null
+ *   - parseHandoffBlock(text)      → { toAgent, note } | null
+ *   - parseDelegateBlock(text)     → Array<{ agentId, task }> | null
+ *   - detectHandoffBlock(text)     → { present, task, reason, rawBody }
+ *   - detectDelegateBlock(text)    → { present, tasks, reason, rawBody }
  *   - extractCoordinationBlocks(text)
- *       → { stripped, handoff, delegate }
+ *       → { stripped, handoff, delegate, handoffMalformed, delegateMalformed }
  *     so the rendered text can be the conversational prose alone, with the
- *     coordination intent shown as a dedicated card.
+ *     coordination intent shown as a dedicated card. Malformed blocks are
+ *     also stripped from the prose and surfaced as failed-state cards so
+ *     raw JSON never leaks into the chat.
  *
  * The parsers are intentionally tolerant of whitespace and of occasional
  * stream-fragment edge cases. They return `null` (not throw) on malformed
@@ -110,25 +114,44 @@ export function parseHandoffBlock(text) {
 }
 
 /**
- * Parse a `<delegate>` block. Returns an array of `{agentId, task}` entries
- * (single-object blocks are coerced to a 1-element array) or null on missing
- * / malformed input. Mirrors `server/delegation.ts#parseDelegateBlock`.
+ * Detect a `<delegate>` block in `text` and return a tagged result:
+ *   { present, tasks, reason, rawBody }
+ * where `tasks` is a non-empty array only when the block parsed cleanly,
+ * and `reason` explains *why* a present block failed. Mirrors
+ * `detectHandoffBlock` so the UI can distinguish "no block" from
+ * "malformed block" and render a failed-state `DelegateCard` instead of
+ * silently dropping the delegation — the previous behaviour was the root
+ * cause of the "delegate sometimes doesn't show up" bug when WebSocket
+ * events for successful dispatches were delayed or dropped.
  *
- * Field names: the canonical target field is `agentId`; we also accept
- * `toAgent` as a tolerant alias so messages authored before the schemas
- * were aligned still strip cleanly in the chat UI.
+ * Reason codes:
+ *   'invalid-json'       — body is not valid JSON
+ *   'not-object'         — body parsed but is neither object nor array
+ *   'empty-array'        — body is `[]`
+ *   'no-valid-entries'   — every entry is missing `agentId` or `task`
  */
-export function parseDelegateBlock(text) {
-  if (typeof text !== 'string' || !text.includes('<delegate>')) return null;
+export function detectDelegateBlock(text) {
+  if (typeof text !== 'string' || !text.includes('<delegate>')) {
+    return { present: false, tasks: null, reason: null, rawBody: null };
+  }
   const match = text.match(DELEGATE_RE);
-  if (!match) return null;
+  if (!match) {
+    return { present: false, tasks: null, reason: null, rawBody: null };
+  }
+  const rawBody = match[1] ?? '';
   let parsed;
   try {
-    parsed = JSON.parse(match[1]);
+    parsed = JSON.parse(rawBody);
   } catch {
-    return null;
+    return { present: true, tasks: null, reason: 'invalid-json', rawBody };
+  }
+  if (parsed == null || (typeof parsed !== 'object' && !Array.isArray(parsed))) {
+    return { present: true, tasks: null, reason: 'not-object', rawBody };
   }
   const list = Array.isArray(parsed) ? parsed : [parsed];
+  if (list.length === 0) {
+    return { present: true, tasks: null, reason: 'empty-array', rawBody };
+  }
   const tasks = [];
   for (const entry of list) {
     if (!entry || typeof entry !== 'object') continue;
@@ -143,7 +166,37 @@ export function parseDelegateBlock(text) {
     if (!agentId || !task) continue;
     tasks.push({ agentId, task });
   }
-  return tasks.length > 0 ? tasks : null;
+  if (tasks.length === 0) {
+    return { present: true, tasks: null, reason: 'no-valid-entries', rawBody };
+  }
+  return { present: true, tasks, reason: null, rawBody };
+}
+
+const DELEGATE_REASON_MESSAGES = {
+  'invalid-json': 'Delegate block contains invalid JSON',
+  'not-object': 'Delegate block payload is not a JSON object or array',
+  'empty-array': 'Delegate block payload is an empty array',
+  'no-valid-entries': 'Delegate block has no entries with both "agentId" and "task"',
+};
+
+/**
+ * Human-readable label for a delegate detection reason code.
+ */
+export function describeDelegateReason(reason) {
+  return DELEGATE_REASON_MESSAGES[reason] || 'Delegate block could not be parsed';
+}
+
+/**
+ * Parse a `<delegate>` block. Returns an array of `{agentId, task}` entries
+ * (single-object blocks are coerced to a 1-element array) or null on missing
+ * / malformed input. Mirrors `server/delegation.ts#parseDelegateBlock`.
+ *
+ * Field names: the canonical target field is `agentId`; we also accept
+ * `toAgent` as a tolerant alias so messages authored before the schemas
+ * were aligned still strip cleanly in the chat UI.
+ */
+export function parseDelegateBlock(text) {
+  return detectDelegateBlock(text).tasks;
 }
 
 /**
@@ -161,27 +214,37 @@ export function extractCoordinationBlocks(text) {
       handoff: null,
       delegate: null,
       handoffMalformed: null,
+      delegateMalformed: null,
     };
   }
 
-  const detection = detectHandoffBlock(text);
-  const handoff = detection.task;
+  const handoffDetection = detectHandoffBlock(text);
+  const handoff = handoffDetection.task;
   const handoffMalformed =
-    detection.present && !detection.task
-      ? { reason: detection.reason, rawBody: detection.rawBody ?? '' }
+    handoffDetection.present && !handoffDetection.task
+      ? { reason: handoffDetection.reason, rawBody: handoffDetection.rawBody ?? '' }
       : null;
-  const delegate = parseDelegateBlock(text);
+
+  const delegateDetection = detectDelegateBlock(text);
+  const delegate = delegateDetection.tasks;
+  const delegateMalformed =
+    delegateDetection.present && !delegateDetection.tasks
+      ? { reason: delegateDetection.reason, rawBody: delegateDetection.rawBody ?? '' }
+      : null;
 
   let stripped = text;
-  // Strip both successful *and* malformed handoff blocks so the raw JSON
-  // never leaks into the prose — the malformed signal is surfaced as a
-  // failed HandoffCard instead, giving the user real feedback instead of a
-  // wall of broken JSON.
+  // Strip both successful *and* malformed coordination blocks so the raw
+  // JSON never leaks into the prose — the malformed signal is surfaced as
+  // a failed HandoffCard / DelegateCard instead, giving the user real
+  // feedback instead of a wall of broken JSON. Stripping malformed
+  // delegate blocks is the fix for the "delegate doesn't show up" bug
+  // where a bad block silently leaked into the message and the side panel
+  // never populated.
   if (handoff || handoffMalformed) stripped = stripped.replace(HANDOFF_RE, '').trimEnd();
-  if (delegate) stripped = stripped.replace(DELEGATE_RE, '').trimEnd();
+  if (delegate || delegateMalformed) stripped = stripped.replace(DELEGATE_RE, '').trimEnd();
 
   // Collapse runs of 3+ blank lines that the strip can leave behind.
   stripped = stripped.replace(/\n{3,}/g, '\n\n').trim();
 
-  return { stripped, handoff, delegate, handoffMalformed };
+  return { stripped, handoff, delegate, handoffMalformed, delegateMalformed };
 }
