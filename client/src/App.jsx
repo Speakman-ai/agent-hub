@@ -22,8 +22,10 @@ import ThreadView from './components/ThreadView.jsx';
 import NotesEditor from './components/NotesEditor.jsx';
 import CapturesPage from './components/CapturesPage.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
+import ShortcutsHelpModal from './components/ShortcutsHelpModal.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
 import { api } from './utils/api.js';
 import {
   cardStartedNotification,
@@ -81,6 +83,7 @@ export default function App() {
   const [currentView, setCurrentView] = useState('chat');
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showForward, setShowForward] = useState(false);
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deletingSessionIds, setDeletingSessionIds] = useState(new Set());
   const [deletingBulk, setDeletingBulk] = useState(null); // 'all' | 'inactive' | null
@@ -1753,6 +1756,85 @@ export default function App() {
 
   const isProcessing = thinking || !!streamingContent;
 
+  // ─── Global keyboard shortcut actions ───────────────────────
+  // Resolve the "current project" for navigation shortcuts: prefer the
+  // project currently displayed (kanban/wiki/etc.) and fall back to the
+  // project owning the active agent, then the first project.
+  const currentProjectId = useMemo(() => {
+    if (currentView.startsWith('kanban:')) return currentView.split(':')[1];
+    if (currentView === 'wiki' && wikiProjectId) return wikiProjectId;
+    if (currentView === 'notes' && notesProjectId) return notesProjectId;
+    if (currentView === 'captures' && capturesProjectId) return capturesProjectId;
+    if (currentView === 'pulls' && pullsProjectId) return pullsProjectId;
+    if (currentView === 'threads' && threadsProjectId) return threadsProjectId;
+    const byAgent = projects.find((p) => p.agents?.some((a) => a.id === activeAgentId));
+    return byAgent?.id || projects[0]?.id || null;
+  }, [
+    currentView,
+    wikiProjectId,
+    notesProjectId,
+    capturesProjectId,
+    pullsProjectId,
+    threadsProjectId,
+    projects,
+    activeAgentId,
+  ]);
+
+  // Build the handler map inline — useKeyboardShortcuts reads the latest map
+  // via a ref, so rebuilding on every render is cheap and avoids stale closures.
+  const goToNextProject = () => {
+    if (!projects.length) return;
+    const idx = Math.max(
+      projects.findIndex((p) => p.id === currentProjectId),
+      0,
+    );
+    const next = projects[(idx + 1) % projects.length];
+    if (!next) return;
+    const firstAgent = next.agents?.[0];
+    if (firstAgent) setActiveAgentId(firstAgent.id);
+    setCurrentView(`kanban:${next.id}`);
+  };
+  const goToBoard = () => {
+    if (currentProjectId) setCurrentView(`kanban:${currentProjectId}`);
+  };
+  const goToWiki = () => {
+    if (!currentProjectId) return;
+    setWikiProjectId(currentProjectId);
+    setCurrentView('wiki');
+  };
+  const newConferenceRoom = () => {
+    // MVP: prompt for name. A richer inline picker is tracked separately.
+    const name =
+      typeof window !== 'undefined' && typeof window.prompt === 'function'
+        ? window.prompt('Conference room name')
+        : null;
+    if (name && name.trim()) handleNewRoom(name.trim());
+  };
+
+  useKeyboardShortcuts({
+    handlers: {
+      'new-session': () => handleNewSession(),
+      'new-ticket-chat': () => {
+        // MVP: open the board for the current project + start a fresh session.
+        // Future: prefill the session with a link to the selected ticket.
+        handleNewSession();
+        if (currentProjectId) setCurrentView(`kanban:${currentProjectId}`);
+      },
+      'new-doc-chat': () => {
+        handleNewSession();
+        goToWiki();
+      },
+      'new-conference-room': newConferenceRoom,
+      'go-to-board': goToBoard,
+      'go-to-wiki': goToWiki,
+      'go-to-skills': () => setCurrentView('skills'),
+      'go-to-settings': () => setCurrentView('settings'),
+      'go-to-next-project': goToNextProject,
+      'show-help': () => setShowShortcutsHelp(true),
+    },
+    enabled: !showShortcutsHelp,
+  });
+
   const isElectron = !!window.electronAPI?.isElectron;
   const isMac = window.electronAPI?.platform === 'darwin';
 
@@ -2206,6 +2288,12 @@ export default function App() {
             </>
           )}
         </div>
+
+        {/* Keyboard shortcuts help */}
+        <ShortcutsHelpModal
+          isOpen={showShortcutsHelp}
+          onClose={() => setShowShortcutsHelp(false)}
+        />
 
         {/* Agent Switcher Modal */}
         {showSwitcher && (
