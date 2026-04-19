@@ -49,6 +49,7 @@ interface CronImportData {
   enabled?: boolean | number;
   project_id?: string;
   timeout_ms?: number | null;
+  notify_on_run?: boolean | number;
 }
 
 interface RoomImportData {
@@ -935,6 +936,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
             targetProject.id || null,
             typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
+            c.notify_on_run ? 1 : 0,
           );
           imported++;
         }
@@ -1285,6 +1287,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
             c.project_id || null,
             typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
+            c.notify_on_run ? 1 : 0,
           );
           imported++;
         }

@@ -60,6 +60,14 @@ export interface CronRow {
    * the shared default without dragging every cron along with them.
    */
   timeout_ms: number | null;
+  /**
+   * Per-cron opt-in for "ran successfully" push notifications. Defaults to
+   * 0 (off) so a noisy cron doesn't spam every device on every tick — users
+   * explicitly enable on the crons they actually want pinged about.
+   * 1 = send a push to every device that has the `cron` event enabled,
+   * 0 = silent (thread/heartbeat logs are still written either way).
+   */
+  notify_on_run: number;
   created_at: string;
 }
 

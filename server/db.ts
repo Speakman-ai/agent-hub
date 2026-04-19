@@ -87,6 +87,7 @@ function initDb(dataDir: string): void {
       last_run TEXT,
       last_result TEXT,
       timeout_ms INTEGER,
+      notify_on_run INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -646,6 +647,17 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT timeout_ms FROM crons LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE crons ADD COLUMN timeout_ms INTEGER');
+  }
+
+  // Per-cron opt-in for "ran successfully" push notifications. Existing
+  // installs default to 0 (off) — historically every cron sent a push every
+  // time it ran, which mobile users complained about. New installs and
+  // existing rows both start opted-out; users explicitly enable on the
+  // crons that should still notify.
+  try {
+    db.prepare('SELECT notify_on_run FROM crons LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE crons ADD COLUMN notify_on_run INTEGER NOT NULL DEFAULT 0');
   }
 
   try {
@@ -1209,10 +1221,10 @@ function initDb(dataDir: string): void {
     getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
     getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
     createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     updateCron: db.prepare(
-      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ? WHERE id = ?',
+      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ? WHERE id = ?',
     ),
     deleteCron: db.prepare('DELETE FROM crons WHERE id = ?'),
     updateCronResult: db.prepare(

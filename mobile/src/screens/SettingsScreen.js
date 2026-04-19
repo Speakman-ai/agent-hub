@@ -879,6 +879,27 @@ function CronFormFields({ form, setForm, projects }) {
         style={styles.formInput}
         keyboardType="number-pad"
       />
+      <TouchableOpacity
+        onPress={() => setForm({ ...form, notify_on_run: !form.notify_on_run })}
+        style={styles.notifyToggleRow}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: !!form.notify_on_run }}
+      >
+        <View
+          style={[
+            styles.notifyCheckbox,
+            !!form.notify_on_run && styles.notifyCheckboxChecked,
+          ]}
+        >
+          {!!form.notify_on_run && <Text style={styles.notifyCheckboxMark}>✓</Text>}
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.notifyToggleLabel}>Send a push notification on every run</Text>
+          <Text style={styles.notifyToggleHint}>
+            Off by default — thread/heartbeat logs are written either way.
+          </Text>
+        </View>
+      </TouchableOpacity>
     </>
   );
 }
@@ -902,6 +923,10 @@ function CronSection() {
     project_id: '',
     enabled: true,
     timeoutMinutes: '',
+    // Per-cron opt-in for "ran successfully" push notifications. Default
+    // off — historically every cron pinged every device on every tick,
+    // which mobile users complained about. Toggled per-cron from the form.
+    notify_on_run: false,
   });
 
   const refreshLogs = async (cronList) => {
@@ -1006,6 +1031,7 @@ function CronSection() {
         project_id: projects[0]?.id || '',
         enabled: true,
         timeoutMinutes: '',
+        notify_on_run: false,
       });
     } catch (e) {
       Alert.alert('Create failed', e?.message || 'Could not create cron.');
@@ -1023,6 +1049,7 @@ function CronSection() {
       timeoutMinutes: cronJob.timeout_ms
         ? String(Math.round(cronJob.timeout_ms / 60_000))
         : '',
+      notify_on_run: !!cronJob.notify_on_run,
     });
   };
 
@@ -1120,6 +1147,7 @@ function CronSection() {
                   {cronJob.timeout_ms
                     ? ` · Timeout: ${Math.round(cronJob.timeout_ms / 60_000)}m`
                     : ''}
+                  {cronJob.notify_on_run ? ' · 🔔 Notifies on run' : ''}
                   {cronJob.last_run && ` · Last: ${relativeTime(cronJob.last_run)}`}
                 </Text>
                 {/* Recent runs — clickable status dots */}
@@ -2736,6 +2764,42 @@ const styles = StyleSheet.create({
     color: colors.gray400,
     marginBottom: 4,
     marginTop: 10,
+  },
+  notifyToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: 12,
+  },
+  notifyCheckbox: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: colors.gray600,
+    backgroundColor: colors.gray900,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  notifyCheckboxChecked: {
+    backgroundColor: colors.blue500,
+    borderColor: colors.blue500,
+  },
+  notifyCheckboxMark: {
+    color: colors.white,
+    fontSize: 12,
+    lineHeight: 14,
+    fontWeight: '700',
+  },
+  notifyToggleLabel: {
+    fontSize: 13,
+    color: colors.gray200,
+  },
+  notifyToggleHint: {
+    fontSize: 11,
+    color: colors.gray500,
+    marginTop: 2,
   },
   engineToggle: {
     flexDirection: 'row',

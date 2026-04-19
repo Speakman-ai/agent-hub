@@ -2282,6 +2282,11 @@ function CronSection({ projects = [], onNavigate, showToast }) {
     enabled: true,
     // Timeout expressed in minutes in the form; '' means "use server default".
     timeoutMinutes: '',
+    // Per-cron opt-in for "ran successfully" push notifications. Off by
+    // default — historically every cron pinged every device on every tick,
+    // which mobile users complained about. Users explicitly enable on the
+    // crons they actually want notifications for.
+    notify_on_run: false,
   });
 
   /** Fetch last-3 logs for every cron */
@@ -2390,6 +2395,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
       project_id: projects[0]?.id || '',
       enabled: true,
       timeoutMinutes: '',
+      notify_on_run: false,
     });
   };
 
@@ -2402,6 +2408,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
       cwd: cronJob.cwd || '',
       project_id: cronJob.project_id || '',
       timeoutMinutes: cronJob.timeout_ms ? String(Math.round(cronJob.timeout_ms / 60_000)) : '',
+      notify_on_run: !!cronJob.notify_on_run,
     });
   };
 
@@ -2490,6 +2497,20 @@ function CronSection({ projects = [], onNavigate, showToast }) {
               className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
             />
           </div>
+          <label className="flex items-start gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={!!form.notify_on_run}
+              onChange={(e) => setForm({ ...form, notify_on_run: e.target.checked })}
+              className="mt-0.5 accent-blue-500"
+            />
+            <span className="text-xs text-gray-300">
+              Send a push notification on every run
+              <span className="block text-gray-500">
+                Off by default — thread/heartbeat logs are written either way.
+              </span>
+            </span>
+          </label>
           <button
             type="submit"
             className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
@@ -2565,6 +2586,20 @@ function CronSection({ projects = [], onNavigate, showToast }) {
                     className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                   />
                 </div>
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={!!editForm.notify_on_run}
+                    onChange={(e) => setEditForm({ ...editForm, notify_on_run: e.target.checked })}
+                    className="mt-0.5 accent-blue-500"
+                  />
+                  <span className="text-xs text-gray-300">
+                    Send a push notification on every run
+                    <span className="block text-gray-500">
+                      Off by default — thread/heartbeat logs are written either way.
+                    </span>
+                  </span>
+                </label>
                 <div className="flex gap-2">
                   <button
                     type="submit"
@@ -2613,6 +2648,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
                     {cronJob.timeout_ms ? (
                       <> · Timeout: {Math.round(cronJob.timeout_ms / 60_000)}m</>
                     ) : null}
+                    {cronJob.notify_on_run ? <> · 🔔 Notifies on run</> : null}
                     {cronJob.last_run && <> · Last: {relativeTime(cronJob.last_run)}</>}
                   </p>
                   {/* Recent runs — clickable status dots */}

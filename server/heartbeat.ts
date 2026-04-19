@@ -500,7 +500,12 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       );
       stmts.touchSession.run(session!.id);
 
-      await sendPushNotifications(cronJob.name, result, session!.id, cronJob.id);
+      // Only push when this cron has explicitly opted in. The thread/session
+      // entry above is unaffected — silent crons still log everywhere they
+      // always have, they just don't ping mobile devices on every tick.
+      if (cronJob.notify_on_run) {
+        await sendPushNotifications(cronJob.name, result, session!.id, cronJob.id);
+      }
 
       if (onCronSessionUpdate) {
         onCronSessionUpdate({
