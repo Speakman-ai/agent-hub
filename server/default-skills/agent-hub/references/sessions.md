@@ -1,7 +1,7 @@
 # Sessions — Messages, Ask Mode & Delegation
 
-You're running inside a chat session. The `sessions` table tracks the
-session; `messages` stores the per-turn chat log. You can query other
+You're running inside a session. The `sessions` table tracks the
+session; `messages` stores the per-turn message log. You can query other
 sessions too — useful for handoffs, triage, and cross-session analysis.
 Coordination with sub-agents also happens through the session layer, via
 three fenced JSON blocks the server parses after your turn closes.

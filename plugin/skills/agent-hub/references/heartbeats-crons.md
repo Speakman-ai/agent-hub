@@ -59,7 +59,7 @@ bad expression returns `400`.
 
 ## Why they emit to threads
 
-Rather than dumping output into a chat session, scheduled runs pipe their
+Rather than dumping output into an interactive session, scheduled runs pipe their
 streamed tokens into a **thread** row so the UI can show a persistent log
 per heartbeat / cron without cluttering the session list. The thread is
 what `scripts/heartbeats.sh thread` / `scripts/crons.sh thread` attach to.

@@ -97,7 +97,7 @@ scripts/wiki.sh list [category]                         # all pages (optionally 
 
 Full reference: **[references/sessions.md](references/sessions.md)**
 
-Sessions hold chat history and the `ask_mode` flag (read-only / plan
+Sessions hold message history and the `ask_mode` flag (read-only / plan
 mode). Coordination with sub-agents also lives here: `<delegate>` spawns
 parallel sub-agents, `<handoff>` transfers ownership, and
 `<agenthub:close-card>` auto-closes a duplicate card linked to your

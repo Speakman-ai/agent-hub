@@ -10,6 +10,7 @@ Back to [SKILL.md](../SKILL.md).
 
 - [TOOL_ERROR self-reporting](#tool_error-self-reporting)
   - [Format](#format)
+  - [How to log — `scripts/log-tool-error.sh`](#how-to-log--scriptslog-tool-errorsh)
   - [When to log](#when-to-log)
   - [When to skip](#when-to-skip)
   - [Escalation](#escalation)
