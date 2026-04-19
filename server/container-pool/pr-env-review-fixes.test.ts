@@ -133,10 +133,18 @@ describe('readPrEnvConfig — required field validation', () => {
         PR_ENV_GITHUB_APP_ID: '1',
         PR_ENV_GITHUB_INSTALLATION_ID: '2',
         PR_ENV_GITHUB_PRIVATE_KEY: 'pk',
+        PR_ENV_ROUTE53_ACCESS_KEY_ID: 'AKIA',
+        PR_ENV_ROUTE53_SECRET_ACCESS_KEY: 'sekret',
+        PR_ENV_ROUTE53_HOSTED_ZONE_ID: 'Z123',
+        PR_ENV_NGINX_CERT_PATH: '/etc/letsencrypt/live/preview/fullchain.pem',
+        PR_ENV_NGINX_KEY_PATH: '/etc/letsencrypt/live/preview/privkey.pem',
+        PR_ENV_PREVIEW_HOST: 'preview.example.com',
       },
     );
     expect(result).not.toBeNull();
     expect(result!.prodDbPath).toBe('/db/prod.db');
+    expect(result!.route53.accessKeyId).toBe('AKIA');
+    expect(result!.nginx.previewHost).toBe('preview.example.com');
   });
 
   it('succeeds when all required fields come from fileConfig.prEnv', () => {
@@ -148,12 +156,19 @@ describe('readPrEnvConfig — required field validation', () => {
           prEnvDataDir: '/data',
           envFilesDir: '/envs',
           github: { appId: '1', installationId: '2', privateKey: 'pk' },
+          route53: { accessKeyId: 'AKIA', secretAccessKey: 'sekret', hostedZoneId: 'Z1' },
+          nginx: {
+            certPath: '/etc/letsencrypt/live/preview/fullchain.pem',
+            keyPath: '/etc/letsencrypt/live/preview/privkey.pem',
+            previewHost: 'preview.example.com',
+          },
         },
       },
       {},
     );
     expect(result).not.toBeNull();
     expect(result!.prodDbPath).toBe('/db/prod.db');
+    expect(result!.route53.hostedZoneId).toBe('Z1');
   });
 });
 

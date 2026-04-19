@@ -3,11 +3,16 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
-import config, { buildSpawnEnv } from './config.js';
+import config, { buildSpawnEnv, fileConfig } from './config.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
+import {
+  runCertRenewalHeartbeat,
+  CERT_RENEWAL_CRON,
+} from './container-pool/cert-renewal-heartbeat.js';
+import { readPrEnvConfig } from './container-pool/pr-env-runtime.js';
 import type {
   EnrichedAgent,
   CronRow,
@@ -681,6 +686,27 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   });
   scheduledTasks.set('system:wiki-memory-sync', wikiSyncTask);
   console.log(`[Scheduler] Wiki→Memory sync scheduled: ${WIKI_SYNC_SCHEDULE}`);
+
+  // Cert-renewal heartbeat — daily dry-run (or live, if enabled) of the
+  // wildcard preview cert. No-op when the PR-env feature flag is off.
+  // Wrapped in try/catch because readPrEnvConfig throws on partial
+  // config — we don't want one bad key to block the whole scheduler.
+  const certRenewalTask = cron.schedule(CERT_RENEWAL_CRON, () => {
+    runCertRenewalHeartbeat({
+      getConfig: () => {
+        try {
+          return readPrEnvConfig(fileConfig);
+        } catch (err) {
+          console.error('[cert-renewal] config read failed:', (err as Error).message);
+          return null;
+        }
+      },
+    }).catch((err: unknown) => {
+      console.error('[cert-renewal] heartbeat threw:', (err as Error).message);
+    });
+  });
+  scheduledTasks.set('system:cert-renewal', certRenewalTask);
+  console.log(`[Scheduler] Cert-renewal heartbeat scheduled: ${CERT_RENEWAL_CRON}`);
 
   console.log(`[Scheduler] ${scheduledTasks.size} tasks scheduled`);
 

@@ -25,6 +25,17 @@
 
 import path from 'path';
 import type { PortPool } from './port-pool.js';
+import {
+  renderPreviewServerBlock,
+  previewConfFilename,
+  type PreviewServerBlockInput,
+} from './nginx-template.js';
+import {
+  writePreviewConf,
+  removePreviewConf,
+  reloadNginx,
+  type NginxWriterDeps,
+} from './nginx-writer.js';
 
 /** Minimal docker-compose surface the builder needs. */
 export interface ComposeRunner {
@@ -119,6 +130,22 @@ export interface PrEnvBuilderDeps {
     githubPrivateKey: string;
     previewUrl: string;
   }) => string;
+  /**
+   * Nginx wiring. Optional — when omitted (existing tests, or the feature
+   * is gated off at the caller level) the builder skips server-block
+   * emission entirely. When present, the builder writes + reloads the
+   * per-PR server block after compose-up succeeds, and includes a
+   * rollback step so a failed write undoes the partial config.
+   */
+  nginx?: {
+    writer: NginxWriterDeps;
+    /**
+     * Subset of the template inputs that are fixed per-deploy: host,
+     * cert paths. The PR-specific fields (prNumber, port) are filled in
+     * by the builder.
+     */
+    templateDefaults: Pick<PreviewServerBlockInput, 'previewHost' | 'certPath' | 'keyPath'>;
+  };
 }
 
 /** What was created at each step — drives precise rollback on failure. */
@@ -127,6 +154,7 @@ interface BuildAudit {
   dbCopied: boolean;
   envWritten: boolean;
   composeUp: boolean;
+  nginxWritten: boolean;
 }
 
 /**
@@ -164,6 +192,7 @@ export async function buildPrEnv(
     dbCopied: false,
     envWritten: false,
     composeUp: false,
+    nginxWritten: false,
   };
 
   try {
@@ -201,6 +230,24 @@ export async function buildPrEnv(
       projectName: composeProjectName,
     });
     audit.composeUp = true;
+
+    // 5. Nginx server-block emission. Optional — only runs if the deps
+    //    object opted into nginx wiring. If the write or reload fails,
+    //    the rollback unwinds everything above (port/db/env/compose).
+    if (deps.nginx) {
+      const nginxBody = renderPreviewServerBlock({
+        prNumber,
+        port,
+        previewHost: deps.nginx.templateDefaults.previewHost,
+        certPath: deps.nginx.templateDefaults.certPath,
+        keyPath: deps.nginx.templateDefaults.keyPath,
+      });
+      await writePreviewConf(deps.nginx.writer, {
+        filename: previewConfFilename(prNumber),
+        body: nginxBody,
+      });
+      audit.nginxWritten = true;
+    }
 
     return {
       port,
@@ -244,7 +291,13 @@ export async function teardownPrEnv(
     dbPath,
     composeProjectName,
     templatePath: deps.paths.composeTemplatePath,
-    audit: { portAllocated: true, dbCopied: true, envWritten: true, composeUp: true },
+    audit: {
+      portAllocated: true,
+      dbCopied: true,
+      envWritten: true,
+      composeUp: true,
+      nginxWritten: true,
+    },
   });
 }
 
@@ -261,6 +314,25 @@ async function rollback(
   },
 ): Promise<void> {
   const { portPool, compose, fs } = deps;
+
+  // Nginx cleanup first — if we installed a conf for a compose project
+  // we're about to tear down, routing traffic to a stopped container is
+  // the worst-of-both-worlds state. Attempt regardless of audit flag
+  // because a partial write + symlink can leak even when the final
+  // reload threw. removePreviewConf is idempotent.
+  if (deps.nginx) {
+    try {
+      await removePreviewConf(deps.nginx.writer, {
+        filename: previewConfFilename(ctx.prNumber),
+      });
+      // removePreviewConf intentionally doesn't reload (batching concern),
+      // but teardown/rollback is a single-PR path — reload now so nginx
+      // stops routing to the about-to-be-stopped container.
+      await reloadNginx(deps.nginx.writer);
+    } catch (e) {
+      console.warn('[pr-env-builder] nginx conf rm during rollback failed', e);
+    }
+  }
 
   if (ctx.audit.composeUp) {
     try {

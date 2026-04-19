@@ -252,4 +252,137 @@ describe('teardownPrEnv', () => {
     expect(deps.fs.state.removed).toContain(built.dbPath);
     expect(deps.fs.state.removed).toContain(built.envFilePath);
   });
+
+  it('reloads nginx after removing the conf during teardown', async () => {
+    const deps = freshDeps();
+    const nginx = makeNginxDeps();
+    deps.nginx = nginx.writer;
+
+    await buildPrEnv(deps, { repoFullName: 'r', prNumber: 50, branch: 'b' });
+    // Clear runner call history so we only see teardown calls.
+    nginx.state.runnerCalls.length = 0;
+
+    await teardownPrEnv(deps, { repoFullName: 'r', prNumber: 50 });
+
+    // Should have called nginx -t + systemctl reload during teardown.
+    expect(nginx.state.runnerCalls.some((c) => c.command === 'nginx' && c.args[0] === '-t')).toBe(
+      true,
+    );
+    expect(
+      nginx.state.runnerCalls.some((c) => c.command === 'systemctl' && c.args[0] === 'reload'),
+    ).toBe(true);
+  });
+});
+
+// ─── nginx wiring ─────────────────────────────────────────────────────────
+
+interface FakeNginxState {
+  written: Map<string, string>;
+  symlinks: Map<string, string>;
+  removed: string[];
+  runnerCalls: Array<{ command: string; args: readonly string[] }>;
+  failWriteWith: Error | null;
+}
+
+function makeNginxDeps(): {
+  state: FakeNginxState;
+  writer: PrEnvBuilderDeps['nginx'];
+} {
+  const state: FakeNginxState = {
+    written: new Map(),
+    symlinks: new Map(),
+    removed: [],
+    runnerCalls: [],
+    failWriteWith: null,
+  };
+  const writer = {
+    writer: {
+      fs: {
+        async readFile(p: string) {
+          return state.written.get(p) ?? null;
+        },
+        async writeFile(p: string, contents: string) {
+          if (state.failWriteWith) throw state.failWriteWith;
+          state.written.set(p, contents);
+        },
+        async mkdir() {
+          /* no-op */
+        },
+        async symlinkIfAbsent(target: string, link: string) {
+          if (!state.symlinks.has(link)) state.symlinks.set(link, target);
+        },
+        async rm(p: string) {
+          state.removed.push(p);
+          state.written.delete(p);
+          state.symlinks.delete(p);
+        },
+        async readlink(p: string) {
+          return state.symlinks.get(p) ?? null;
+        },
+      },
+      runner: {
+        async run(command: string, args: readonly string[]) {
+          state.runnerCalls.push({ command, args });
+          return { code: 0, stderr: '' };
+        },
+      },
+      sitesAvailableDir: '/etc/nginx/sites-available',
+      sitesEnabledDir: '/etc/nginx/sites-enabled',
+    },
+    templateDefaults: {
+      previewHost: 'preview.example.com',
+      certPath: '/etc/letsencrypt/live/preview.example.com/fullchain.pem',
+      keyPath: '/etc/letsencrypt/live/preview.example.com/privkey.pem',
+    },
+  };
+  return { state, writer };
+}
+
+describe('buildPrEnv — nginx wiring', () => {
+  it('emits the preview server block + reloads nginx after compose-up', async () => {
+    const deps = freshDeps();
+    const nginx = makeNginxDeps();
+    deps.nginx = nginx.writer;
+
+    const res = await buildPrEnv(deps, { repoFullName: 'r', prNumber: 99, branch: 'b' });
+
+    const confPath = '/etc/nginx/sites-available/pr-99.preview.conf';
+    const body = nginx.state.written.get(confPath);
+    expect(body).toBeDefined();
+    expect(body).toContain('server_name pr-99.preview.example.com;');
+    expect(body).toContain(`proxy_pass http://127.0.0.1:${res.port};`);
+    expect(nginx.state.symlinks.get('/etc/nginx/sites-enabled/pr-99.preview.conf')).toBe(confPath);
+    // nginx -t + systemctl reload were called.
+    expect(nginx.state.runnerCalls.some((c) => c.command === 'nginx')).toBe(true);
+    expect(
+      nginx.state.runnerCalls.some((c) => c.command === 'systemctl' && c.args[0] === 'reload'),
+    ).toBe(true);
+  });
+
+  it('a failing nginx write rolls back port + DB + env file + compose', async () => {
+    const deps = freshDeps();
+    const nginx = makeNginxDeps();
+    nginx.state.failWriteWith = new Error('EACCES writing nginx conf');
+    deps.nginx = nginx.writer;
+
+    await expect(
+      buildPrEnv(deps, { repoFullName: 'r', prNumber: 100, branch: 'b' }),
+    ).rejects.toThrow(/EACCES/);
+
+    expect(deps.portPool.getPort('r', 100)).toBeNull();
+    const paths = prEnvPaths(deps.paths, 100);
+    expect(deps.fs.state.removed).toContain(paths.dbPath);
+    expect(deps.fs.state.removed).toContain(paths.envFilePath);
+    // compose.up had succeeded → compose.down must run during rollback.
+    expect(deps.compose.state.downCalls).toBe(1);
+  });
+
+  it('does nothing nginx-related when deps.nginx is absent (back-compat)', async () => {
+    const deps = freshDeps();
+    // No deps.nginx wired — default path.
+    await buildPrEnv(deps, { repoFullName: 'r', prNumber: 101, branch: 'b' });
+    // Build succeeded via the existing code path; this test exists to pin
+    // the back-compat guarantee that the optional nginx block is opt-in.
+    expect(deps.compose.state.upCalls).toBe(1);
+  });
 });

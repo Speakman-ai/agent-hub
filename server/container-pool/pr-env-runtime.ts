@@ -22,6 +22,7 @@ import Database from 'better-sqlite3';
 import { buildPrEnvFile } from './env-template.js';
 import { PortPool, PORT_POOL_SCHEMA } from './port-pool.js';
 import type { ComposeRunner, FsOps, PrEnvBuilderDeps } from './pr-env-builder.js';
+import type { NginxFsOps, NginxRunner } from './nginx-writer.js';
 
 // ─── Shared runtime config ────────────────────────────────────────────────
 
@@ -38,6 +39,41 @@ export interface PrEnvRuntimeConfig {
     privateKey: string;
   };
   portRange?: { min: number; max: number };
+  /**
+   * Route53 creds for DNS-01 wildcard-cert renewal. Required when the
+   * PR-env feature is on — without it, the cert can't be renewed and
+   * preview envs will eventually fail TLS handshake.
+   */
+  route53: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    hostedZoneId: string;
+  };
+  /**
+   * Nginx config paths. Optional with sensible Linux defaults — override
+   * per deploy if the platform uses a different layout (e.g. Alpine).
+   */
+  nginx: {
+    sitesAvailableDir: string;
+    sitesEnabledDir: string;
+    /** Absolute path to the fullchain wildcard cert. */
+    certPath: string;
+    /** Absolute path to the matching private key. */
+    keyPath: string;
+    /** Base hostname the wildcard covers, e.g. `preview.agenthub.dev`. */
+    previewHost: string;
+    /**
+     * Directory acme.sh / certbot keeps its state (certs, renewal
+     * configs) under. Must be writable by the server process for
+     * renewal to work.
+     */
+    certHome: string;
+  };
+  /**
+   * When true, the cert-renewal heartbeat will do real renewals instead
+   * of dry-run. Ships dark — default dry-run-only until ops flips it.
+   */
+  certRenewalLive?: boolean;
 }
 
 function resolvePreviewBaseUrl(
@@ -79,6 +115,26 @@ export function readPrEnvConfig(
   const prEnvDataDir = fileBlock.prEnvDataDir ?? env.PR_ENV_DATA_DIR ?? '';
   const envFilesDir = fileBlock.envFilesDir ?? env.PR_ENV_FILES_DIR ?? '';
 
+  const route53 = fileBlock.route53 ?? {
+    accessKeyId: env.PR_ENV_ROUTE53_ACCESS_KEY_ID ?? '',
+    secretAccessKey: env.PR_ENV_ROUTE53_SECRET_ACCESS_KEY ?? '',
+    hostedZoneId: env.PR_ENV_ROUTE53_HOSTED_ZONE_ID ?? '',
+  };
+
+  const nginxBlock: Partial<PrEnvRuntimeConfig['nginx']> = fileBlock.nginx ?? {};
+  const nginx = {
+    sitesAvailableDir:
+      nginxBlock.sitesAvailableDir ??
+      env.PR_ENV_NGINX_SITES_AVAILABLE ??
+      '/etc/nginx/sites-available',
+    sitesEnabledDir:
+      nginxBlock.sitesEnabledDir ?? env.PR_ENV_NGINX_SITES_ENABLED ?? '/etc/nginx/sites-enabled',
+    certPath: nginxBlock.certPath ?? env.PR_ENV_NGINX_CERT_PATH ?? '',
+    keyPath: nginxBlock.keyPath ?? env.PR_ENV_NGINX_KEY_PATH ?? '',
+    previewHost: nginxBlock.previewHost ?? env.PR_ENV_PREVIEW_HOST ?? '',
+    certHome: nginxBlock.certHome ?? env.PR_ENV_CERT_HOME ?? '/var/lib/agent-hub/acme',
+  };
+
   // Fail fast: if the feature is on but required paths are missing, the
   // first webhook event would fail deep inside fs.copyFile('', …) with a
   // cryptic error. Surface the misconfiguration at config-read time.
@@ -90,6 +146,15 @@ export function readPrEnvConfig(
   if (!github.installationId)
     missing.push('PR_ENV_GITHUB_INSTALLATION_ID / prEnv.github.installationId');
   if (!github.privateKey) missing.push('PR_ENV_GITHUB_PRIVATE_KEY / prEnv.github.privateKey');
+  if (!route53.accessKeyId)
+    missing.push('PR_ENV_ROUTE53_ACCESS_KEY_ID / prEnv.route53.accessKeyId');
+  if (!route53.secretAccessKey)
+    missing.push('PR_ENV_ROUTE53_SECRET_ACCESS_KEY / prEnv.route53.secretAccessKey');
+  if (!route53.hostedZoneId)
+    missing.push('PR_ENV_ROUTE53_HOSTED_ZONE_ID / prEnv.route53.hostedZoneId');
+  if (!nginx.certPath) missing.push('PR_ENV_NGINX_CERT_PATH / prEnv.nginx.certPath');
+  if (!nginx.keyPath) missing.push('PR_ENV_NGINX_KEY_PATH / prEnv.nginx.keyPath');
+  if (!nginx.previewHost) missing.push('PR_ENV_PREVIEW_HOST / prEnv.nginx.previewHost');
   if (missing.length > 0) {
     throw new Error(
       `AGENT_HUB_PR_ENV_ENABLED=true but required config is unset: ${missing.join(', ')}`,
@@ -117,6 +182,9 @@ export function readPrEnvConfig(
       privateKey: github.privateKey ?? '',
     },
     portRange: fileBlock.portRange,
+    route53,
+    nginx,
+    certRenewalLive: fileBlock.certRenewalLive === true || env.PR_ENV_CERT_RENEWAL_LIVE === 'true',
   };
 }
 
@@ -196,6 +264,76 @@ function runDockerCompose(args: string[]): Promise<void> {
   });
 }
 
+/**
+ * Real filesystem adapter for the nginx writer. Uses a `tempfile + rename`
+ * pattern so nginx never sees a partially-written conf file. Reads return
+ * null on ENOENT so the writer can distinguish "no existing file" from
+ * "permission denied".
+ */
+export const realNginxFsOps: NginxFsOps = {
+  async readFile(p) {
+    try {
+      return await fsp.readFile(p, 'utf-8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+  },
+  async writeFile(p, contents) {
+    // 0o644 — nginx worker must be able to read. Directory mode stays
+    // platform-default (usually 0o755) because sites-available is shared
+    // across the nginx install.
+    await fsp.mkdir(path.dirname(p), { recursive: true });
+    const tmp = `${p}.tmp-${process.pid}`;
+    await fsp.writeFile(tmp, contents, { encoding: 'utf-8', mode: 0o644 });
+    await fsp.rename(tmp, p);
+  },
+  async mkdir(p) {
+    await fsp.mkdir(p, { recursive: true });
+  },
+  async symlinkIfAbsent(target, linkPath) {
+    try {
+      await fsp.symlink(target, linkPath);
+    } catch (err) {
+      // A pre-existing symlink to the same target is fine.
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+  },
+  async rm(p) {
+    await fsp.rm(p, { force: true });
+  },
+  async readlink(p) {
+    try {
+      return await fsp.readlink(p);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'EINVAL') return null;
+      throw err;
+    }
+  },
+};
+
+/**
+ * Real `child_process.spawn` adapter for nginx / systemctl invocations.
+ * Captures stdout + stderr so the writer can include them in error
+ * messages. Never logs creds — neither `nginx -t` nor `systemctl reload
+ * nginx` take sensitive args.
+ */
+export const realNginxRunner: NginxRunner = {
+  run(command, args) {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(command, Array.from(args), { stdio: ['ignore', 'pipe', 'pipe'] });
+      let stderr = '';
+      proc.stdout?.on('data', () => {
+        /* discarded — nginx/systemctl are quiet on stdout. */
+      });
+      proc.stderr?.on('data', (b) => (stderr += String(b)));
+      proc.on('error', reject);
+      proc.on('close', (code) => resolve({ code: code ?? -1, stderr }));
+    });
+  },
+};
+
 // ─── Memoised PrEnvBuilderDeps factory ─────────────────────────────────────
 
 // Singleton — intentionally never re-reads config after first construction.
@@ -232,6 +370,19 @@ export function getPrEnvBuilderDeps(
     },
     previewBaseUrl: runtimeConfig.previewBaseUrl,
     renderEnvFile: buildPrEnvFile,
+    nginx: {
+      writer: {
+        fs: realNginxFsOps,
+        runner: realNginxRunner,
+        sitesAvailableDir: runtimeConfig.nginx.sitesAvailableDir,
+        sitesEnabledDir: runtimeConfig.nginx.sitesEnabledDir,
+      },
+      templateDefaults: {
+        previewHost: runtimeConfig.nginx.previewHost,
+        certPath: runtimeConfig.nginx.certPath,
+        keyPath: runtimeConfig.nginx.keyPath,
+      },
+    },
   };
   return cached;
 }
