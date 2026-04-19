@@ -803,6 +803,7 @@ export interface Stmts {
   updateKanbanCard: Stmt;
   moveKanbanCard: Stmt;
   setCardPrUrl: Stmt;
+  reassignCardToSession: Stmt;
   getKanbanCardBySession: Stmt;
   getKanbanCardByPrUrl: Stmt;
   getNextUndocumentedCard: Stmt;

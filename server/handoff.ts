@@ -9,6 +9,8 @@ import type {
   AppConfig,
   ChatMessage,
   HandoffRow,
+  KanbanCardRow,
+  KanbanEpicRow,
   MessageRow,
 } from './types.js';
 import { buildPrTitle } from './auto-git.js';
@@ -54,6 +56,18 @@ export interface HandoffResult {
   toSessionId: string;
   toAgentId: string;
   toAgentName: string;
+  /**
+   * When the source session owned a kanban card, its id after the card's
+   * `session_id` pointer was re-pointed at the target session. `null` when
+   * the source session had no linked card (ad-hoc chat) or forwarding failed.
+   */
+  forwardedCardId: string | null;
+  /**
+   * True when the forwarded card belongs to an epic whose `autonomous` flag
+   * is set. Surfaced so the UI + downstream dispatch know the target session
+   * is continuing autonomous work rather than starting fresh interactive work.
+   */
+  autonomousForwarded: boolean;
 }
 
 interface HandoffTranscriptMessage {
@@ -643,6 +657,50 @@ export async function handleHandoff(
 
   activeHandoffSessions.add(toSessionId);
 
+  // Forward board/epic/autonomous context: if the source session owns a kanban
+  // card, re-point the card to the new target session and update the assignee
+  // to the specialist taking over. Without this the card is orphaned — the
+  // sidebar loses its title binding, `<agenthub:close-card>` fails (it looks
+  // up the card by the target's session_id), auto-PR creation can't find the
+  // card, and the autonomous dispatcher's `activeProcesses.has(card.session_id)`
+  // guard sees the dead source session and may re-dispatch the same card to
+  // another agent while the handoff target is still working on it.
+  //
+  // Failures here are logged and swallowed: handoff delivery has already
+  // succeeded at this point and the target session is viable even if the
+  // card pointer can't be forwarded (e.g. the card stmt is missing in a
+  // partially-mocked test environment).
+  let forwardedCard: KanbanCardRow | null = null;
+  let forwardedEpic: KanbanEpicRow | null = null;
+  try {
+    const card = stmts.getKanbanCardBySession?.get(srcSessionId) as KanbanCardRow | undefined;
+    if (card) {
+      stmts.reassignCardToSession.run(toSessionId, targetAgent.name, card.id);
+      forwardedCard = { ...card, session_id: toSessionId, assignee: targetAgent.name };
+      if (card.epic_id) {
+        try {
+          forwardedEpic =
+            (stmts.getKanbanEpic?.get(card.epic_id) as KanbanEpicRow | undefined) ?? null;
+        } catch {
+          forwardedEpic = null;
+        }
+      }
+      broadcast({
+        type: 'kanban_update',
+        projectId,
+        reason: 'handoff_forward',
+        cardId: card.id,
+        fromSessionId: srcSessionId,
+        toSessionId,
+      });
+    }
+  } catch (err) {
+    console.error(
+      '[Handoff] Failed to forward kanban card to target session:',
+      (err as Error).message,
+    );
+  }
+
   broadcast({
     type: 'handoff_start',
     sessionId: srcSessionId,
@@ -653,18 +711,28 @@ export async function handleHandoff(
     toAgentId: targetAgent.id,
     toAgentName: targetAgent.name,
     toSessionId,
+    cardId: forwardedCard?.id ?? null,
+    cardTitle: forwardedCard?.title ?? null,
+    epicId: forwardedEpic?.id ?? null,
+    epicAutonomous: forwardedEpic?.autonomous === 1,
   });
 
   // Step 5: trigger first turn. Fire-and-forget — we don't await the chat
   // completion here because the source session is winding down and the
   // target lives as its own independent session from this point forward.
+  //
+  // When a card was forwarded, prepend a short context block so the target
+  // knows which kanban card it now owns (the card's `session_id` now points
+  // at this session, so `<agenthub:close-card>` / auto-PR creation will work)
+  // and whether this is autonomous-mode work.
+  const seedingContent = buildHandoffSeedingContent(task.note, forwardedCard, forwardedEpic);
   if (handleChat) {
     Promise.resolve()
       .then(() =>
         handleChat(null, {
           agentId: targetAgent.id,
           sessionId: toSessionId,
-          content: task.note,
+          content: seedingContent,
         } as ChatMessage),
       )
       .catch((err: unknown) => {
@@ -685,7 +753,51 @@ export async function handleHandoff(
     toSessionId,
     toAgentId: targetAgent.id,
     toAgentName: targetAgent.name,
+    forwardedCardId: forwardedCard?.id ?? null,
+    autonomousForwarded: forwardedEpic?.autonomous === 1,
   };
+}
+
+// ─── Seeding content for target's first turn ────────────────────────────
+
+/**
+ * Build the seeding user message injected into the target session's first
+ * turn. When the handoff forwarded a kanban card (and optionally its epic),
+ * prepend a `## Forwarded Context` block so the specialist knows:
+ *   - which card they now own (card.session_id was re-pointed to them);
+ *   - that `<agenthub:close-card>` will resolve against that card;
+ *   - whether the card is part of an autonomous-mode epic (which affects
+ *     their PR workflow — autonomous cards push + open a PR, they don't
+ *     pause for review).
+ *
+ * When no card was forwarded this is just `task.note` — identical to the
+ * pre-forwarding behavior so ad-hoc handoffs see no change.
+ *
+ * Exported for tests.
+ */
+export function buildHandoffSeedingContent(
+  note: string,
+  card: KanbanCardRow | null,
+  epic: KanbanEpicRow | null,
+): string {
+  if (!card) return note;
+  const lines: string[] = ['## Forwarded Context'];
+  lines.push(
+    `- **Kanban card:** \`${card.id}\` — "${card.title}" (session link was transferred to you; the sidebar stays named after this card)`,
+  );
+  if (epic) {
+    const mode = epic.autonomous === 1 ? 'autonomous' : 'manual';
+    lines.push(`- **Epic:** "${epic.name}" (${mode} mode)`);
+    if (epic.autonomous === 1) {
+      lines.push(
+        `- **Autonomous mode is active for this card.** When you finish, commit + push — a PR will be opened automatically. Do NOT pause for human review.`,
+      );
+    }
+  }
+  lines.push(
+    `- \`<agenthub:close-card>\` and auto-PR linkage now resolve against **this** session.`,
+  );
+  return `${lines.join('\n')}\n\n---\n\n${note}`;
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────

@@ -22,6 +22,7 @@ import {
   initHandoff,
   handleHandoff,
   buildHandoffPromptSection,
+  buildHandoffSeedingContent,
   recordMalformedHandoff,
   detectHandoffBlock,
   _peekDepsForInternalUse,
@@ -29,6 +30,7 @@ import {
 import type {
   HandoffRow,
   EnrichedAgent,
+  KanbanCardRow,
   Project,
   SessionRow,
   AppConfig,
@@ -109,6 +111,10 @@ describe('handleHandoff — end-to-end', () => {
 
   afterAll(() => {
     const db = getDb();
+    db.prepare('DELETE FROM kanban_cards WHERE id LIKE ?').run(`${testPrefix}%`);
+    db.prepare('DELETE FROM kanban_columns WHERE id LIKE ?').run(`${testPrefix}%`);
+    db.prepare('DELETE FROM kanban_epics WHERE id LIKE ?').run(`${testPrefix}%`);
+    db.prepare('DELETE FROM kanban_boards WHERE id LIKE ?').run(`${testPrefix}%`);
     db.prepare('DELETE FROM handoffs WHERE from_session_id LIKE ?').run(`${testPrefix}%`);
     db.prepare('DELETE FROM messages WHERE session_id LIKE ?').run(`${testPrefix}%`);
     db.prepare('DELETE FROM sessions WHERE id LIKE ?').run(`${testPrefix}%`);
@@ -386,5 +392,279 @@ describe('handleHandoff — end-to-end', () => {
       getEnrichedAgent: (id: string) => agents[id] ?? null,
     });
     expect(section).toBe('');
+  });
+
+  // ─── Board/epic/autonomous forwarding ──────────────────────────────────
+  //
+  // Regression for the bug report "When handoffs happen we need to forward
+  // board info". Previously:
+  //   - A kanban card owned by the source session kept its `session_id`
+  //     pointing at the (now-dead) source, so:
+  //       - `<agenthub:close-card>` failed (no card found for target session)
+  //       - auto-PR creation couldn't find the card → PR was unlinked
+  //       - sidebar rename on target broke (no linked card)
+  //   - The autonomous dispatcher saw a dead `session_id` on the card and
+  //     could re-dispatch the same card to another agent while the handoff
+  //     target was mid-work.
+  //
+  // `handleHandoff` now re-points card.session_id → toSessionId, updates
+  // the assignee, and returns `forwardedCardId` + `autonomousForwarded` so
+  // callers/UI/tests can assert the chain.
+
+  function seedBoardWithCard(opts: {
+    prefix: string;
+    srcSessionId: string;
+    autonomous?: boolean;
+    cardTitle?: string;
+  }): { boardId: string; cardId: string; columnId: string; epicId: string | null } {
+    const stmts = getStmts();
+    const boardId = `${opts.prefix}-board`;
+    const columnId = `${opts.prefix}-col`;
+    const cardId = `${opts.prefix}-card`;
+    const epicId = opts.autonomous ? `${opts.prefix}-epic` : null;
+
+    stmts.createKanbanBoard.run(boardId, 'proj-test', 'Test Board');
+    stmts.createKanbanColumn.run(columnId, boardId, 'In Progress', 2, null);
+    if (epicId) {
+      stmts.createKanbanEpic.run(epicId, boardId, 'Auto Epic', null, '#fff', 0);
+      // Flip autonomous on
+      stmts.updateKanbanEpic.run('Auto Epic', null, '#fff', 1, 60, 5, 3, epicId);
+    }
+    stmts.createKanbanCard.run(
+      cardId,
+      columnId,
+      boardId,
+      opts.cardTitle ?? 'Forward me',
+      'desc',
+      'medium',
+      'Lead',
+      null,
+      opts.srcSessionId,
+      null,
+      'system',
+      0,
+    );
+    if (epicId) {
+      stmts.updateKanbanCardEpic.run(epicId, cardId);
+    }
+    return { boardId, cardId, columnId, epicId };
+  }
+
+  it('forwards kanban card link: re-points session_id + assignee to target, broadcasts kanban_update', async () => {
+    const stmts = getStmts();
+    const srcSessionId = `${testPrefix}-src-card`;
+    stmts.createSession.run(
+      srcSessionId,
+      'agent-lead',
+      'src',
+      'claude-code',
+      'claude-opus-4-7',
+      0,
+      0,
+    );
+    const { cardId } = seedBoardWithCard({
+      prefix: `${testPrefix}-fwd`,
+      srcSessionId,
+      cardTitle: 'Ship the handoff fix',
+    });
+
+    const result = await handleHandoff(
+      srcSessionId,
+      'parent-msg-card',
+      { toAgent: 'agent-backend', note: 'Please implement.' },
+      sourceAgent,
+      project,
+    );
+    expect(result).not.toBeNull();
+    expect(result!.forwardedCardId).toBe(cardId);
+    expect(result!.autonomousForwarded).toBe(false);
+
+    // Card row was re-pointed.
+    const updated = stmts.getKanbanCard.get(cardId) as KanbanCardRow;
+    expect(updated.session_id).toBe(result!.toSessionId);
+    expect(updated.assignee).toBe('Backend');
+    // Unchanged fields stayed intact.
+    expect(updated.title).toBe('Ship the handoff fix');
+    expect(updated.priority).toBe('medium');
+
+    // getKanbanCardBySession now resolves the card via the TARGET session id
+    // (this is what <agenthub:close-card> and auto-git use).
+    const bySession = stmts.getKanbanCardBySession.get(result!.toSessionId) as
+      | KanbanCardRow
+      | undefined;
+    expect(bySession?.id).toBe(cardId);
+    // And no longer resolves via the source id.
+    expect(stmts.getKanbanCardBySession.get(srcSessionId)).toBeUndefined();
+
+    // Broadcasts: kanban_update + handoff_start both carry forwarding info.
+    const kanban = broadcasts.find(
+      (b) => b.type === 'kanban_update' && b.reason === 'handoff_forward',
+    );
+    expect(kanban).toBeDefined();
+    expect(kanban!.cardId).toBe(cardId);
+    expect(kanban!.fromSessionId).toBe(srcSessionId);
+    expect(kanban!.toSessionId).toBe(result!.toSessionId);
+
+    const start = broadcasts.find((b) => b.type === 'handoff_start');
+    expect(start!.cardId).toBe(cardId);
+    expect(start!.cardTitle).toBe('Ship the handoff fix');
+    expect(start!.epicAutonomous).toBe(false);
+  });
+
+  it('forwards autonomous-epic flag when the card belongs to an autonomous epic', async () => {
+    const stmts = getStmts();
+    const srcSessionId = `${testPrefix}-src-auto`;
+    stmts.createSession.run(
+      srcSessionId,
+      'agent-lead',
+      'src',
+      'claude-code',
+      'claude-opus-4-7',
+      0,
+      0,
+    );
+    const { cardId, epicId } = seedBoardWithCard({
+      prefix: `${testPrefix}-auto`,
+      srcSessionId,
+      autonomous: true,
+    });
+
+    const result = await handleHandoff(
+      srcSessionId,
+      'parent-msg-auto',
+      { toAgent: 'agent-backend', note: 'take over, please' },
+      sourceAgent,
+      project,
+    );
+    expect(result).not.toBeNull();
+    expect(result!.forwardedCardId).toBe(cardId);
+    expect(result!.autonomousForwarded).toBe(true);
+
+    const start = broadcasts.find((b) => b.type === 'handoff_start');
+    expect(start!.epicId).toBe(epicId);
+    expect(start!.epicAutonomous).toBe(true);
+
+    // The seeding content passed to handleChat includes the forwarded
+    // context block so the target agent knows which card it owns and that
+    // autonomous-mode is active (commit+push, no PR-review pause).
+    await new Promise((resolve) => setImmediate(resolve));
+    const call = handleChatCalls[handleChatCalls.length - 1];
+    expect(call.content).toContain('## Forwarded Context');
+    expect(call.content).toContain('Kanban card:');
+    expect(call.content).toContain(cardId);
+    expect(call.content).toContain('autonomous');
+    expect(call.content).toContain('take over, please');
+  });
+
+  it('leaves the seeding note untouched when the source session has no linked card', async () => {
+    const stmts = getStmts();
+    const srcSessionId = `${testPrefix}-src-noCard`;
+    stmts.createSession.run(
+      srcSessionId,
+      'agent-lead',
+      'src',
+      'claude-code',
+      'claude-opus-4-7',
+      0,
+      0,
+    );
+
+    const result = await handleHandoff(
+      srcSessionId,
+      'parent-msg-noCard',
+      { toAgent: 'agent-backend', note: 'plain handoff note' },
+      sourceAgent,
+      project,
+    );
+    expect(result).not.toBeNull();
+    expect(result!.forwardedCardId).toBeNull();
+    expect(result!.autonomousForwarded).toBe(false);
+
+    await new Promise((resolve) => setImmediate(resolve));
+    const call = handleChatCalls[handleChatCalls.length - 1];
+    // No forwarded-context header — the target sees just the note.
+    expect(call.content).toBe('plain handoff note');
+  });
+});
+
+// ─── Pure function tests ────────────────────────────────────────────────
+
+describe('buildHandoffSeedingContent', () => {
+  const baseCard = {
+    id: 'card-1',
+    column_id: 'col-1',
+    board_id: 'board-1',
+    title: 'Fix the bug',
+    description: null,
+    priority: 'medium',
+    assignee: 'Lead',
+    labels: null,
+    session_id: 'target-session',
+    github_issue_url: null,
+    pr_url: null,
+    review_status: null,
+    created_by: null,
+    position: 0,
+    epic_id: null,
+    documented: 0,
+    autonomous_iterations: 0,
+    created_at: '',
+    updated_at: '',
+  } as unknown as import('../types.js').KanbanCardRow;
+
+  it('returns the note unchanged when no card is forwarded', () => {
+    const out = buildHandoffSeedingContent('do the thing', null, null);
+    expect(out).toBe('do the thing');
+  });
+
+  it('prepends a Forwarded Context block naming the card', () => {
+    const out = buildHandoffSeedingContent('do the thing', baseCard, null);
+    expect(out).toContain('## Forwarded Context');
+    expect(out).toContain('card-1');
+    expect(out).toContain('Fix the bug');
+    expect(out.endsWith('do the thing')).toBe(true);
+  });
+
+  it('mentions manual mode when the epic is not autonomous', () => {
+    const epic = {
+      id: 'e',
+      board_id: 'b',
+      name: 'Manual Epic',
+      description: null,
+      color: '#fff',
+      autonomous: 0,
+      autonomous_interval: 0,
+      autonomous_max_concurrent: 0,
+      autonomous_max_iterations: 0,
+      position: 0,
+      created_at: '',
+      updated_at: '',
+    } as import('../types.js').KanbanEpicRow;
+    const out = buildHandoffSeedingContent('n', baseCard, epic);
+    expect(out).toContain('Manual Epic');
+    expect(out).toContain('manual mode');
+    expect(out).not.toContain('Autonomous mode is active');
+  });
+
+  it('flags autonomous mode + PR-workflow guidance when the epic is autonomous', () => {
+    const epic = {
+      id: 'e',
+      board_id: 'b',
+      name: 'Auto Epic',
+      description: null,
+      color: '#fff',
+      autonomous: 1,
+      autonomous_interval: 60,
+      autonomous_max_concurrent: 5,
+      autonomous_max_iterations: 3,
+      position: 0,
+      created_at: '',
+      updated_at: '',
+    } as import('../types.js').KanbanEpicRow;
+    const out = buildHandoffSeedingContent('n', baseCard, epic);
+    expect(out).toContain('Auto Epic');
+    expect(out).toContain('autonomous mode');
+    expect(out).toContain('Autonomous mode is active');
+    expect(out).toMatch(/commit \+ push/);
   });
 });

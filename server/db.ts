@@ -1502,6 +1502,13 @@ function initDb(dataDir: string): void {
     setCardPrUrl: db.prepare(
       "UPDATE kanban_cards SET pr_url = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    // Used by <handoff> delivery to re-point a card from the source session
+    // to the newly-created target session and update the assignee to the
+    // specialist taking over. Scoped to just these two fields so a handoff
+    // can't accidentally clobber title/description/labels/etc.
+    reassignCardToSession: db.prepare(
+      "UPDATE kanban_cards SET session_id = ?, assignee = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
     getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
     getKanbanCardByPrUrl: db.prepare('SELECT * FROM kanban_cards WHERE pr_url = ? LIMIT 1'),
     getNextUndocumentedCard: db.prepare(

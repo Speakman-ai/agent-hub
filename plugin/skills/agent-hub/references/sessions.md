@@ -144,6 +144,15 @@ continues the conversation with the target; you do not see their reply.
 - **When to use**: the specialist needs multiple turns, will likely
   commit / open a PR, or needs the full transcript as background. Prefer
   `<handoff>` over `<delegate>` for anything beyond a short side-quest.
+- **Kanban card forwarding**: if your session owns a kanban card (i.e.
+  the card's `session_id` points at you), `<handoff>` re-points the
+  card to the **target** session and updates the assignee to the target
+  agent. That keeps `<agenthub:close-card>`, auto-PR linkage, and the
+  sidebar title working after the transfer. The target's first-turn
+  prompt gets a `## Forwarded Context` block naming the card + (if the
+  epic is autonomous) a reminder to commit + push rather than pause for
+  human review. `handoff_start` broadcasts carry `cardId`, `cardTitle`,
+  `epicId`, and `epicAutonomous` for UI / dispatch observers.
 
 ### `<agenthub:close-card>` — auto-close duplicate / already-done cards
 
