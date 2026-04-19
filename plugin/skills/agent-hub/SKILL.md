@@ -149,9 +149,10 @@ Full reference: **[references/errors.md](references/errors.md)**
 
 When a tool call blocks progress, log a pipe-delimited, one-line record
 into today's daily note so future Session Health tooling can mine
-patterns. **When a script fails, run `scripts/log-tool-error.sh`** — it
-mints the ISO timestamp, sanitises stray pipes/newlines, and appends the
-line under a `## HH:MM` header, so you never have to remember the format:
+patterns. **Run `scripts/log-tool-error.sh`** — it mints the timestamp,
+sanitises pipes/newlines, and appends under `## HH:MM`. Default is the
+v1 six-field line; pass `--sev`, `--resolution`, `--session-id`, `--tag`
+to emit a v2 JSON-tail line (see [references/errors.md](references/errors.md)):
 
 ```bash
 PROJECT_ID=agent-hub scripts/log-tool-error.sh \

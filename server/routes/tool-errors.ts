@@ -42,6 +42,11 @@ export default function createToolErrorRoutes({ findProject }: RouteDeps): Route
       countsByTool: agg.countsByTool,
       countsByErrorType: agg.countsByErrorType,
       countsByDate: agg.countsByDate,
+      // v2 additions — distributions over the new structured metadata fields.
+      // Clients that ignore them keep working; Session Health can pick them up.
+      countsBySeverity: agg.countsBySeverity,
+      countsByResolution: agg.countsByResolution,
+      countsByVersion: agg.countsByVersion,
     });
   });
 

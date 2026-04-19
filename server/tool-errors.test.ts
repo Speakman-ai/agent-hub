@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { parseToolErrorsFromNote, aggregateToolErrors } from './tool-errors.js';
+import {
+  parseToolErrorsFromNote,
+  aggregateToolErrors,
+  parseMetaFromJsonTail,
+} from './tool-errors.js';
 
 describe('parseToolErrorsFromNote', () => {
   it('parses a well-formed line', () => {
@@ -55,6 +59,118 @@ describe('parseToolErrorsFromNote', () => {
     expect(got).toHaveLength(1);
     expect(got[0].summary).toBe('part one | part two');
   });
+
+  it('v1 lines get default meta (v=1, sev=blocked, resolution=unresolved)', () => {
+    const note = 'TOOL_ERROR | 2026-04-16T02:45:00Z | Bash | npm test | exit 1 | tsx missing';
+    const [got] = parseToolErrorsFromNote(note, '2026-04-16');
+    expect(got.meta).toEqual({ v: 1, sev: 'blocked', resolution: 'unresolved' });
+  });
+
+  it('v2 JSON tail is peeled off and parsed into meta', () => {
+    const tail =
+      '{"v":2,"sev":"soft","resolution":"recovered","session":"s1","agent":"hub-backend","attempt":2,"tags":["ci","deploy"]}';
+    const note = `TOOL_ERROR | 2026-04-16T02:45:00Z | Bash | npm test | exit 1 | tsx missing | ${tail}`;
+    const [got] = parseToolErrorsFromNote(note, '2026-04-16');
+    expect(got.summary).toBe('tsx missing');
+    expect(got.meta).toMatchObject({
+      v: 2,
+      sev: 'soft',
+      resolution: 'recovered',
+      session: 's1',
+      agent: 'hub-backend',
+      attempt: 2,
+      tags: ['ci', 'deploy'],
+    });
+  });
+
+  it('v2 tail containing pipes inside JSON strings does not shred the line', () => {
+    // The writer sanitises `|` in positional fields, so raw pipes only ever
+    // appear inside the JSON tail's string values. This covers that path —
+    // we must peel the JSON atomically before splitting the positional
+    // fields on `|` or the tags would get shredded.
+    const tail = '{"v":2,"sev":"blocked","tags":["foo|bar","baz|qux"]}';
+    const note = `TOOL_ERROR | 2026-04-16T02:45:00Z | Bash | cmd | exit 1 | summary text | ${tail}`;
+    const [got] = parseToolErrorsFromNote(note, '2026-04-16');
+    expect(got.summary).toBe('summary text');
+    expect(got.action).toBe('cmd');
+    expect(got.meta.tags).toEqual(['foo|bar', 'baz|qux']);
+  });
+
+  it('malformed JSON tail falls back to treating the line as v1', () => {
+    const note =
+      'TOOL_ERROR | 2026-04-16T02:45:00Z | Bash | cmd | exit 1 | summary with {not: real json}';
+    const [got] = parseToolErrorsFromNote(note, '2026-04-16');
+    expect(got.meta.v).toBe(1);
+    // The `{not: real json}` lives inside the summary; nothing was peeled.
+    expect(got.summary).toContain('{not: real json}');
+  });
+
+  it('unknown enum values in v2 meta collapse to "unknown"', () => {
+    const tail = '{"v":2,"sev":"catastrophic","resolution":"fancy"}';
+    const note = `TOOL_ERROR | 2026-04-16T02:45:00Z | Bash | cmd | exit 1 | summary | ${tail}`;
+    const [got] = parseToolErrorsFromNote(note, '2026-04-16');
+    expect(got.meta.sev).toBe('unknown');
+    expect(got.meta.resolution).toBe('unknown');
+  });
+
+  it('v2 meta preserves unknown keys under extras', () => {
+    const tail = '{"v":2,"sev":"blocked","custom_key":"future-use","other":42}';
+    const note = `TOOL_ERROR | 2026-04-16T02:45:00Z | Bash | cmd | exit 1 | summary | ${tail}`;
+    const [got] = parseToolErrorsFromNote(note, '2026-04-16');
+    expect(got.meta.extras).toEqual({ custom_key: 'future-use', other: 42 });
+  });
+
+  it('v2 tail with nested JSON objects round-trips correctly', () => {
+    const tail = '{"v":2,"sev":"blocked","extras":{"nested":{"a":1},"list":[1,2]}}';
+    const note = `TOOL_ERROR | 2026-04-16T02:45:00Z | Bash | cmd | exit 1 | summary | ${tail}`;
+    const [got] = parseToolErrorsFromNote(note, '2026-04-16');
+    expect(got.summary).toBe('summary');
+    expect(got.meta.v).toBe(2);
+    expect(got.meta.sev).toBe('blocked');
+    expect(got.meta.extras).toEqual({ extras: { nested: { a: 1 }, list: [1, 2] } });
+  });
+
+  it('mixed v1 + v2 lines in a single note parse side-by-side', () => {
+    const note = [
+      'TOOL_ERROR | 2026-04-16T02:00:00Z | Bash | npm test | exit 1 | v1 line',
+      'TOOL_ERROR | 2026-04-16T03:00:00Z | Bash | npm test | exit 1 | v2 line | {"v":2,"sev":"retry","attempt":3}',
+    ].join('\n');
+    const got = parseToolErrorsFromNote(note, '2026-04-16');
+    expect(got).toHaveLength(2);
+    expect(got[0].meta.v).toBe(1);
+    expect(got[1].meta.v).toBe(2);
+    expect(got[1].meta.sev).toBe('retry');
+    expect(got[1].meta.attempt).toBe(3);
+  });
+});
+
+describe('parseMetaFromJsonTail', () => {
+  it('returns defaults when JSON is invalid', () => {
+    expect(parseMetaFromJsonTail('{not json}')).toEqual({
+      v: 1,
+      sev: 'blocked',
+      resolution: 'unresolved',
+    });
+  });
+
+  it('returns defaults when JSON is an array (not an object)', () => {
+    expect(parseMetaFromJsonTail('[1,2,3]')).toEqual({
+      v: 1,
+      sev: 'blocked',
+      resolution: 'unresolved',
+    });
+  });
+
+  it('coerces v=1 when explicitly present', () => {
+    const meta = parseMetaFromJsonTail('{"v":1,"sev":"soft"}');
+    expect(meta.v).toBe(1);
+    expect(meta.sev).toBe('soft');
+  });
+
+  it('filters non-string entries out of tags', () => {
+    const meta = parseMetaFromJsonTail('{"v":2,"tags":["a",1,"b",null,"c"]}');
+    expect(meta.tags).toEqual(['a', 'b', 'c']);
+  });
 });
 
 describe('aggregateToolErrors', () => {
@@ -106,8 +222,33 @@ describe('aggregateToolErrors', () => {
     expect(agg.countsByTool).toEqual({ Bash: 2, Read: 1 });
     expect(agg.countsByErrorType).toEqual({ 'exit 1': 2, ENOENT: 1 });
     expect(agg.countsByDate).toEqual({ '2026-04-15': 1, '2026-04-16': 2 });
+    // All-v1 corpus: severity + resolution + version buckets match defaults.
+    expect(agg.countsBySeverity).toEqual({ blocked: 3 });
+    expect(agg.countsByResolution).toEqual({ unresolved: 3 });
+    expect(agg.countsByVersion).toEqual({ v1: 3 });
     // Newest-first.
     expect(agg.errors[0].timestamp).toBe('2026-04-16T03:00:00Z');
+  });
+
+  it('aggregates v2 structured buckets when the corpus contains JSON tails', () => {
+    writeFileSync(
+      path.join(memoryDir, '2026-04-16.md'),
+      [
+        // v1 — defaults to blocked/unresolved/v1
+        'TOOL_ERROR | 2026-04-16T01:00:00Z | Bash | a | exit 1 | v1',
+        // v2 soft/recovered
+        'TOOL_ERROR | 2026-04-16T02:00:00Z | Bash | b | exit 1 | v2a | {"v":2,"sev":"soft","resolution":"recovered"}',
+        // v2 retry/escalated with attempt counter
+        'TOOL_ERROR | 2026-04-16T03:00:00Z | Bash | c | exit 1 | v2b | {"v":2,"sev":"retry","resolution":"escalated","attempt":4}',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const agg = aggregateToolErrors(tmpDir);
+    expect(agg.total).toBe(3);
+    expect(agg.countsBySeverity).toEqual({ blocked: 1, soft: 1, retry: 1 });
+    expect(agg.countsByResolution).toEqual({ unresolved: 1, recovered: 1, escalated: 1 });
+    expect(agg.countsByVersion).toEqual({ v1: 1, v2: 2 });
   });
 
   it('filters files by `since` (inclusive)', () => {
