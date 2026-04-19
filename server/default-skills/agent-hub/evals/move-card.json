@@ -1,0 +1,44 @@
+{
+  "id": "move-card",
+  "description": "Agent advances an existing card through the pipeline (In Progress → Review) after opening a PR. Verifies it uses the move-by-column-name wrapper and adds a comment with the PR URL rather than stuffing everything into a description update.",
+  "skills": ["agent-hub", "kanban"],
+  "query": "I just opened PR #512 for card 8a4f21de. Move that card to Review and leave a comment on it with the PR URL so the reviewer can find it.",
+  "files": [
+    "server/default-skills/agent-hub/SKILL.md",
+    "server/default-skills/agent-hub/references/kanban.md",
+    "server/default-skills/agent-hub/scripts/kanban-move-card.sh",
+    "server/default-skills/agent-hub/scripts/board.sh"
+  ],
+  "expected_behavior": [
+    {
+      "type": "mentions_script",
+      "value": "scripts/kanban-move-card.sh",
+      "rationale": "Deterministic wrapper for column moves — preferred over raw curl."
+    },
+    {
+      "type": "contains",
+      "value": "8a4f21de",
+      "rationale": "Agent must carry the card id through to the command."
+    },
+    {
+      "type": "contains_any",
+      "value": ["Review", "\"Review\""],
+      "rationale": "Target column name must be in the command string."
+    },
+    {
+      "type": "mentions_any_script",
+      "value": ["scripts/board.sh comment", "scripts/board.sh"],
+      "rationale": "Comment is a separate subcommand — not squeezed into the move call."
+    },
+    {
+      "type": "regex",
+      "value": "(PR\\s*#?512|pulls?/512|/pull/512)",
+      "rationale": "The PR reference must survive into the comment body."
+    },
+    {
+      "type": "not_contains",
+      "value": "curl -X POST",
+      "rationale": "Raw curl violates the skill's top rule."
+    }
+  ]
+}
