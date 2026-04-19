@@ -496,6 +496,17 @@ export const api = {
   getNoteProcessingsByDate: (projectId, date) =>
     fetchJSON(`/projects/${projectId}/notes/${date}/processings`),
 
+  // TOOL_ERROR aggregation (stub — Session Health epic will replace with a
+  // richer dashboard). Greps daily notes for TOOL_ERROR lines and returns
+  // structured JSON + count buckets.
+  getToolErrors: (projectId, { since, limit } = {}) => {
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/tool-errors${qs ? '?' + qs : ''}`);
+  },
+
   // Generic helpers (for endpoints without dedicated methods)
   get: (url) => fetchJSON(url),
   post: (url, data) =>

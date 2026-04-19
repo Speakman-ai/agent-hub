@@ -99,6 +99,7 @@ import {
   Link,
   FileText,
   UserCircle,
+  AlertTriangle,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -4709,6 +4710,215 @@ function ServerLogsSection({ wsRef }) {
   );
 }
 
+/**
+ * Minimal counts-by-error-type view for TOOL_ERROR self-reports. Stub for the
+ * future Session Health dashboard — just enough UI to see whether the new
+ * agent-hub skill actually reduces tool-error rates.
+ */
+export function ToolErrorsSection({ projects }) {
+  const defaultProjectId = projects?.[0]?.id || '';
+  const [projectId, setProjectId] = useState(defaultProjectId);
+  const [sinceDays, setSinceDays] = useState(30);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const since = sinceDays
+      ? new Date(Date.now() - sinceDays * 86400000).toISOString().slice(0, 10)
+      : undefined;
+    api
+      .getToolErrors(projectId, { since, limit: 200 })
+      .then((res) => {
+        if (!cancelled) setData(res);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message || 'Failed to load tool errors');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, sinceDays]);
+
+  if (!projects?.length) {
+    return (
+      <p className="text-sm text-gray-500">No projects yet — create one to see tool errors.</p>
+    );
+  }
+
+  const entries = (obj) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]);
+
+  const byType = data ? entries(data.countsByErrorType) : [];
+  const byTool = data ? entries(data.countsByTool) : [];
+  const maxTypeCount = Math.max(...byType.map(([, n]) => n), 1);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
+          <AlertTriangle size={18} className="text-amber-400" />
+          Tool Errors
+        </h3>
+        <p className="text-xs text-gray-500 mb-4">
+          TOOL_ERROR self-reports parsed from daily notes. This is a stub for the future Session
+          Health dashboard — counts only, no resolution tracking.
+        </p>
+
+        <div className="flex flex-wrap gap-3 mb-4">
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-gray-400">Project:</span>
+            <select
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-gray-400">Window:</span>
+            <select
+              value={sinceDays}
+              onChange={(e) => setSinceDays(Number(e.target.value))}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
+            >
+              <option value={7}>Last 7 days</option>
+              <option value={30}>Last 30 days</option>
+              <option value={90}>Last 90 days</option>
+              <option value={0}>All time</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      {loading && <p className="text-sm text-gray-500">Loading…</p>}
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
+      {data && !loading && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-gray-800 rounded-xl p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wider">Total</p>
+              <p className="text-2xl font-bold text-amber-400 mt-1">{data.total}</p>
+            </div>
+            <div className="bg-gray-800 rounded-xl p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wider">Distinct Types</p>
+              <p className="text-2xl font-bold text-gray-200 mt-1">{byType.length}</p>
+            </div>
+            <div className="bg-gray-800 rounded-xl p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wider">Distinct Tools</p>
+              <p className="text-2xl font-bold text-gray-200 mt-1">{byTool.length}</p>
+            </div>
+            <div className="bg-gray-800 rounded-xl p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wider">Since</p>
+              <p className="text-sm font-mono text-gray-200 mt-2">{data.since || 'all time'}</p>
+            </div>
+          </div>
+
+          {data.total === 0 ? (
+            <p className="text-sm text-gray-500">
+              No TOOL_ERROR entries found in this window. Either nothing is failing, or agents
+              aren&apos;t self-reporting yet.
+            </p>
+          ) : (
+            <>
+              <div>
+                <h4 className="text-sm font-semibold text-gray-300 mb-2">By error type</h4>
+                <div className="bg-gray-800 rounded-xl p-4 space-y-1.5">
+                  {byType.map(([type, count]) => {
+                    const pct = (count / maxTypeCount) * 100;
+                    return (
+                      <div key={type} className="flex items-center gap-3">
+                        <span
+                          className="text-xs font-mono text-gray-400 w-40 truncate"
+                          title={type}
+                        >
+                          {type}
+                        </span>
+                        <div className="flex-1 h-4 bg-gray-900 rounded overflow-hidden">
+                          <div
+                            className="h-full bg-amber-600/60 rounded"
+                            style={{ width: `${Math.max(pct, 2)}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-gray-400 font-mono w-10 text-right">
+                          {count}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-semibold text-gray-300 mb-2">By tool</h4>
+                <div className="bg-gray-800 rounded-xl p-3 flex flex-wrap gap-2">
+                  {byTool.map(([tool, count]) => (
+                    <span
+                      key={tool}
+                      className="text-xs bg-gray-900 border border-gray-700 rounded px-2 py-1"
+                    >
+                      <span className="text-gray-300 font-mono">{tool}</span>
+                      <span className="text-gray-500 ml-2">{count}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-semibold text-gray-300 mb-2">
+                  Recent entries
+                  {data.truncated && (
+                    <span className="text-xs text-gray-500 font-normal ml-2">
+                      (showing first {data.returned} of {data.total})
+                    </span>
+                  )}
+                </h4>
+                <div className="bg-gray-800 rounded-xl overflow-hidden">
+                  <div className="divide-y divide-gray-700/50 max-h-96 overflow-y-auto">
+                    {data.errors.slice(0, 50).map((e, i) => (
+                      <div key={i} className="px-3 py-2 text-xs">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="font-mono text-gray-500">{e.timestamp}</span>
+                          <span className="font-mono text-indigo-300">{e.tool}</span>
+                          <span className="font-mono text-amber-300">{e.errorType}</span>
+                        </div>
+                        <p className="text-gray-300 truncate" title={e.summary}>
+                          {e.summary}
+                        </p>
+                        {e.action && (
+                          <p className="text-gray-500 font-mono truncate" title={e.action}>
+                            {e.action}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage({
   projects = [],
   agents,
@@ -4737,6 +4947,7 @@ export default function SettingsPage({
 
     { id: 'slack', icon: <MessageSquare size={16} />, text: 'Slack' },
     { id: 'usage', icon: <BarChart3 size={16} />, text: 'Usage' },
+    { id: 'tool-errors', icon: <AlertTriangle size={16} />, text: 'Tool Errors' },
     { id: 'backup', icon: <HardDrive size={16} />, text: 'Backup' },
     { id: 'logs', icon: <FileText size={16} />, text: 'Logs' },
   ];
@@ -4789,6 +5000,7 @@ export default function SettingsPage({
             />
           )}
           {tab === 'usage' && <UsageSection />}
+          {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
           {tab === 'backup' && (
             <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />
           )}
