@@ -18,7 +18,16 @@ async function fetchJSON(url, options = {}) {
   if (res.status === 401 && getJwt()) {
     await clearToken().catch(() => {});
   }
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = await res.json();
+      detail = body.error || body.message || JSON.stringify(body);
+    } catch {
+      /* response wasn't JSON */
+    }
+    throw new Error(detail ? `${res.status}: ${detail}` : `API error: ${res.status}`);
+  }
   return res.json();
 }
 
@@ -270,6 +279,16 @@ export const api = {
     }),
   deleteKanbanCard: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'DELETE' }),
+  addCardBlocker: (projectId, cardId, blockedByCardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/blockers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blockedByCardId }),
+    }),
+  removeCardBlocker: (projectId, cardId, blockedByCardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/blockers/${blockedByCardId}`, {
+      method: 'DELETE',
+    }),
   // Assign a kanban card to an agent. Server spawns a new session tied to the
   // card, moves the card into "In Progress", and returns `{ sessionId, ... }`.
   // Mirrors the web client's `api.assignCard`.

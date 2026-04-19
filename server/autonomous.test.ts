@@ -49,6 +49,10 @@ interface MockStmts {
   moveKanbanCard: { run: Mock };
   incrementCardIterations: { run: Mock };
   createKanbanCardComment: { run: Mock };
+  // Blocker enrichment (loadBoardBlockers → getBlockersForBoard; default
+  // empty so existing tests don't have to know about this edge).
+  getBlockersForBoard: { all: Mock };
+  getBlockersForCard: { all: Mock };
 }
 
 function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
@@ -63,6 +67,8 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
     moveKanbanCard: { run: vi.fn() },
     incrementCardIterations: { run: vi.fn() },
     createKanbanCardComment: { run: vi.fn() },
+    getBlockersForBoard: { all: vi.fn(() => []) },
+    getBlockersForCard: { all: vi.fn(() => []) },
     ...overrides,
   };
 }
@@ -404,5 +410,125 @@ describe('tryAutonomousDispatch', () => {
     tryAutonomousDispatch();
 
     expect(deps.findProject).not.toHaveBeenCalled();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Blocker-aware dispatch — cards with unresolved blockers are skipped
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('runAutonomousLoop — blocker filter', () => {
+  // `loadBoardBlockers` hits `getBlockersForBoard` directly, so the mock just
+  // needs to return rows in the same shape the prepared statement does.
+  function blockerRow(opts: {
+    card: string;
+    blockedBy: string;
+    blockerColumn: string;
+    blockedColumn: string;
+  }): Record<string, string> {
+    return {
+      card_id: opts.card,
+      blocked_by_card_id: opts.blockedBy,
+      blocker_id: opts.blockedBy,
+      blocker_title: `title-${opts.blockedBy}`,
+      blocker_column_id: `col-${opts.blockerColumn}`,
+      blocker_column_name: opts.blockerColumn,
+      blocked_id: opts.card,
+      blocked_title: `title-${opts.card}`,
+      blocked_column_id: `col-${opts.blockedColumn}`,
+      blocked_column_name: opts.blockedColumn,
+    };
+  }
+
+  it('skips a card whose blocker is still in a non-Done column', async () => {
+    const blocked = makeCard({ id: 'blocked-card', title: 'Needs upstream' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [blocked]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [blocked]) },
+      getBlockersForBoard: {
+        all: vi.fn(() => [
+          blockerRow({
+            card: 'blocked-card',
+            blockedBy: 'upstream-card',
+            blockerColumn: 'In Progress',
+            blockedColumn: 'To Do',
+          }),
+        ]),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // No session created, no chat dispatched, no iteration increment.
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+    expect(deps.handleChat).not.toHaveBeenCalled();
+    expect(stmts.incrementCardIterations.run).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a card whose blocker is in a Done column', async () => {
+    const ready = makeCard({ id: 'ready-card', title: 'Unblocked now' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [ready]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [ready]) },
+      getBlockersForBoard: {
+        all: vi.fn(() => [
+          blockerRow({
+            card: 'ready-card',
+            blockedBy: 'finished-card',
+            blockerColumn: 'Done',
+            blockedColumn: 'To Do',
+          }),
+        ]),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.incrementCardIterations.run).toHaveBeenCalledWith('ready-card');
+    expect(deps.handleChat).toHaveBeenCalled();
+  });
+
+  it('prefers unblocked cards when eligible list contains both', async () => {
+    const blocked = makeCard({ id: 'b-card', title: 'Blocked' });
+    const ready = makeCard({ id: 'r-card', title: 'Ready', position: 1 });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      // Blocked listed first — the filter must remove it before assignment.
+      getEligibleAutonomousCards: { all: vi.fn(() => [blocked, ready]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [blocked, ready]) },
+      getBlockersForBoard: {
+        all: vi.fn(() => [
+          blockerRow({
+            card: 'b-card',
+            blockedBy: 'upstream',
+            blockerColumn: 'In Progress',
+            blockedColumn: 'To Do',
+          }),
+        ]),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // Only the ready card gets its iteration counter bumped.
+    expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(1);
+    expect(stmts.incrementCardIterations.run).toHaveBeenCalledWith('r-card');
   });
 });

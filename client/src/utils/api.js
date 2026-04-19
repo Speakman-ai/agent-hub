@@ -404,6 +404,15 @@ export const api = {
     }),
   deleteCard: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}`, { method: 'DELETE' }),
+  addCardBlocker: (projectId, cardId, blockedByCardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/blockers`, {
+      method: 'POST',
+      body: JSON.stringify({ blockedByCardId }),
+    }),
+  removeCardBlocker: (projectId, cardId, blockedByCardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/blockers/${blockedByCardId}`, {
+      method: 'DELETE',
+    }),
   getCardComments: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`),
   addCardComment: (projectId, cardId, data) =>

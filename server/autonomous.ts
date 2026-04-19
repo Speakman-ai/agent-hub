@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getOrCreateBoard } from './routes/board.js';
 import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
 import { defaultModelForEngine } from './config.js';
+import { loadBoardBlockers, hasUnresolvedBlockers } from './kanban-blockers.js';
 import type {
   Stmts,
   Project,
@@ -84,13 +85,32 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   const epic = d.stmts.getAutonomousEpic.get(boardData.board.id) as KanbanEpicRow | undefined;
   if (!epic) return;
 
-  const eligible = d.stmts.getEligibleAutonomousCards.all(
+  const rawEligible = d.stmts.getEligibleAutonomousCards.all(
     epic.id,
     epic.autonomous_max_iterations,
   ) as KanbanCardRow[];
+
+  // Filter out cards whose blockers aren't all Done. We log each skip so
+  // operators can see WHY autonomous mode isn't picking up a card that
+  // otherwise matches the SQL eligibility criteria.
+  const blockerIndex = loadBoardBlockers(d.stmts, boardData.board.id);
+  const eligible: KanbanCardRow[] = [];
+  for (const card of rawEligible) {
+    if (hasUnresolvedBlockers(card.id, blockerIndex)) {
+      const unresolved = (blockerIndex.blockersByCard.get(card.id) ?? [])
+        .filter((b) => !b.done)
+        .map((b) => b.title);
+      console.log(
+        `[Autonomous] Skipping "${card.title}" — blocked by ${unresolved.length} unresolved card(s): ${unresolved.join(', ')}`,
+      );
+      continue;
+    }
+    eligible.push(card);
+  }
+
   if (eligible.length === 0) {
     console.log(
-      `[Autonomous] No eligible cards for epic "${epic.name}" (all assigned, done, or at max iterations)`,
+      `[Autonomous] No eligible cards for epic "${epic.name}" (all assigned, done, blocked, or at max iterations)`,
     );
     return;
   }

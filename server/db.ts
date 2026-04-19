@@ -371,6 +371,26 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS idx_kanban_epics_board ON kanban_epics(board_id);
 
+    -- Card-to-card blocker relationships (many-to-many).
+    -- A row means card_id is blocked by blocked_by_card_id. Cycle prevention
+    -- is enforced at the application layer (see server/kanban-blockers.ts);
+    -- SQLite has no native recursive constraint. UNIQUE prevents duplicate
+    -- links; CHECK prevents trivial self-blocks. Cascade on card delete.
+    CREATE TABLE IF NOT EXISTS kanban_card_blockers (
+      id TEXT PRIMARY KEY,
+      card_id TEXT NOT NULL,
+      blocked_by_card_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(card_id, blocked_by_card_id),
+      CHECK (card_id != blocked_by_card_id),
+      FOREIGN KEY (card_id) REFERENCES kanban_cards(id) ON DELETE CASCADE,
+      FOREIGN KEY (blocked_by_card_id) REFERENCES kanban_cards(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_kanban_card_blockers_card
+      ON kanban_card_blockers(card_id);
+    CREATE INDEX IF NOT EXISTS idx_kanban_card_blockers_blocked_by
+      ON kanban_card_blockers(blocked_by_card_id);
+
     CREATE TABLE IF NOT EXISTS webhook_configs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id TEXT NOT NULL,
@@ -1471,6 +1491,42 @@ function initDb(dataDir: string): void {
       'INSERT INTO kanban_card_comments (id, card_id, author, content) VALUES (?, ?, ?, ?)',
     ),
     deleteKanbanCardComment: db.prepare('DELETE FROM kanban_card_comments WHERE id = ?'),
+
+    // Card blockers (see server/kanban-blockers.ts for helpers).
+    // getBlockersForBoard is the single-query enrichment used by GET /board —
+    // joining blocker rows with both the blocker card and its column lets the
+    // route annotate every card without N+1 lookups. Returned columns are
+    // explicit rather than `SELECT *` because we need both sides of the edge.
+    getBlockersForBoard: db.prepare(
+      `SELECT b.card_id AS card_id,
+              b.blocked_by_card_id AS blocked_by_card_id,
+              blocker.id AS blocker_id,
+              blocker.title AS blocker_title,
+              blocker.column_id AS blocker_column_id,
+              blocker_col.name AS blocker_column_name,
+              blocked.id AS blocked_id,
+              blocked.title AS blocked_title,
+              blocked.column_id AS blocked_column_id,
+              blocked_col.name AS blocked_column_name
+       FROM kanban_card_blockers b
+       JOIN kanban_cards blocker ON b.blocked_by_card_id = blocker.id
+       JOIN kanban_columns blocker_col ON blocker.column_id = blocker_col.id
+       JOIN kanban_cards blocked ON b.card_id = blocked.id
+       JOIN kanban_columns blocked_col ON blocked.column_id = blocked_col.id
+       WHERE blocker.board_id = ?`,
+    ),
+    getBlockersForCard: db.prepare(
+      'SELECT blocked_by_card_id FROM kanban_card_blockers WHERE card_id = ?',
+    ),
+    getBlocker: db.prepare(
+      'SELECT * FROM kanban_card_blockers WHERE card_id = ? AND blocked_by_card_id = ?',
+    ),
+    createBlocker: db.prepare(
+      'INSERT INTO kanban_card_blockers (id, card_id, blocked_by_card_id) VALUES (?, ?, ?)',
+    ),
+    deleteBlocker: db.prepare(
+      'DELETE FROM kanban_card_blockers WHERE card_id = ? AND blocked_by_card_id = ?',
+    ),
 
     // Review logs
     createReviewLog: db.prepare(

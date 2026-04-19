@@ -9,13 +9,22 @@ import type {
   KanbanColumnRow,
   KanbanCardRow,
   KanbanEpicRow,
+  KanbanBlockerLink,
+  KanbanCardBlockerRow,
 } from '../types.js';
+import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
 
 interface BoardData {
   board: KanbanBoardRow;
   columns: KanbanColumnRow[];
   cards: KanbanCardRow[];
   epics: KanbanEpicRow[];
+}
+
+/** A card row enriched with its blocker relationships. */
+interface EnrichedCard extends KanbanCardRow {
+  blockers: KanbanBlockerLink[];
+  blocks: KanbanBlockerLink[];
 }
 
 export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
@@ -74,7 +83,17 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.get('/api/projects/:projectId/board', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    res.json(getOrCreateBoard(stmts, req.params.projectId as string));
+    const data = getOrCreateBoard(stmts, req.params.projectId as string);
+    // Annotate each card with its blocker relationships. A single indexed
+    // query fetches every edge on the board; we then attach empty arrays
+    // for cards with no blockers so clients can rely on the shape.
+    const index = loadBoardBlockers(stmts, data.board.id);
+    const enrichedCards: EnrichedCard[] = data.cards.map((c) => ({
+      ...c,
+      blockers: index.blockersByCard.get(c.id) ?? [],
+      blocks: index.blocksByCard.get(c.id) ?? [],
+    }));
+    res.json({ ...data, cards: enrichedCards });
   });
 
   router.post('/api/projects/:projectId/board/columns', (req: Request, res: Response) => {
@@ -452,6 +471,75 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     (req: Request, res: Response) => {
       stmts.deleteKanbanCardComment.run(req.params.commentId);
       res.json({ ok: true });
+    },
+  );
+
+  // ─── Card blockers ────────────────────────────────────────────────────
+  //
+  // Soft enforcement: the move endpoint does NOT gate on blocker state.
+  // Clients show a confirm dialog; the autonomous dispatcher silently
+  // skips blocked cards. See wiki (Kanban Blockers) for the product call.
+  router.post(
+    '/api/projects/:projectId/board/cards/:cardId/blockers',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const { blockedByCardId } = req.body as { blockedByCardId?: string };
+      const cardId = req.params.cardId as string;
+      if (!blockedByCardId || typeof blockedByCardId !== 'string') {
+        return res.status(400).json({ error: 'blockedByCardId is required' });
+      }
+      if (blockedByCardId === cardId) {
+        return res.status(400).json({ error: 'A card cannot block itself' });
+      }
+
+      // Both cards must exist and belong to this project's board. That second
+      // check keeps blocker edges scoped to one board — cross-project links
+      // would silently break the GET /board enrichment.
+      const card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+      const other = stmts.getKanbanCard.get(blockedByCardId) as KanbanCardRow | undefined;
+      if (!card || !other) return res.status(404).json({ error: 'Card not found' });
+      const board = stmts.getKanbanBoard.get(req.params.projectId) as KanbanBoardRow | undefined;
+      if (!board || card.board_id !== board.id || other.board_id !== board.id) {
+        return res.status(404).json({ error: 'Card not found on this project board' });
+      }
+
+      // Duplicate check first — cheap and avoids walking the graph for a
+      // link that's already there.
+      const existing = stmts.getBlocker.get(cardId, blockedByCardId) as
+        | KanbanCardBlockerRow
+        | undefined;
+      if (existing) return res.status(409).json({ error: 'duplicate' });
+
+      // Cycle check: would adding (cardId → blockedByCardId) create a loop?
+      // findCycle returns the path so the client can name the conflict.
+      const cyclePath = findCycle(stmts, cardId, blockedByCardId);
+      if (cyclePath) return res.status(409).json({ error: 'cycle', path: cyclePath });
+
+      const id = uuidv4();
+      stmts.createBlocker.run(id, cardId, blockedByCardId);
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      res.status(201).json({
+        id,
+        card_id: cardId,
+        blocked_by_card_id: blockedByCardId,
+      });
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/board/cards/:cardId/blockers/:blockedByCardId',
+    (req: Request, res: Response) => {
+      const cardId = req.params.cardId as string;
+      const blockedByCardId = req.params.blockedByCardId as string;
+      const existing = stmts.getBlocker.get(cardId, blockedByCardId) as
+        | KanbanCardBlockerRow
+        | undefined;
+      if (!existing) return res.status(404).json({ error: 'Blocker link not found' });
+      stmts.deleteBlocker.run(cardId, blockedByCardId);
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      res.status(204).end();
     },
   );
 

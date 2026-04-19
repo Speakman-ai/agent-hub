@@ -311,6 +311,26 @@ export interface KanbanCardCommentRow {
   created_at: string;
 }
 
+export interface KanbanCardBlockerRow {
+  id: string;
+  card_id: string;
+  blocked_by_card_id: string;
+  created_at: string;
+}
+
+/**
+ * A derived view of a blocker relationship used in API responses and the
+ * autonomous dispatcher. `done` is computed from the referenced card's
+ * column name (see `isColumnDone` in server/kanban-blockers.ts) so the
+ * client can tell at a glance whether a blocker is still unresolved.
+ */
+export interface KanbanBlockerLink {
+  id: string;
+  title: string;
+  column_id: string;
+  done: boolean;
+}
+
 export interface KanbanEpicRow {
   id: string;
   board_id: string;
@@ -790,6 +810,13 @@ export interface Stmts {
   getKanbanCardComments: Stmt;
   createKanbanCardComment: Stmt;
   deleteKanbanCardComment: Stmt;
+
+  // Card blockers (card-to-card dependencies)
+  getBlockersForBoard: Stmt;
+  getBlockersForCard: Stmt;
+  getBlocker: Stmt;
+  createBlocker: Stmt;
+  deleteBlocker: Stmt;
 
   // Kanban epics
   getKanbanEpics: Stmt;

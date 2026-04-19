@@ -13,9 +13,12 @@ import {
   Search,
   GitPullRequest,
   Eye,
+  Lock,
+  AlertTriangle,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { epicFormToUpdateBody } from '../utils/epics.js';
+import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
 
 const PRIORITY_STYLES = {
   urgent: 'bg-red-500/20 text-red-400',
@@ -84,6 +87,12 @@ export default function KanbanBoard({
   const [showEpicForm, setShowEpicForm] = useState(false);
   const [epicForm, setEpicForm] = useState({ name: '', description: '', color: '#6366F1' });
   const [editingEpic, setEditingEpic] = useState(null);
+
+  // Blockers
+  const [showBlockerPicker, setShowBlockerPicker] = useState(false);
+  const [blockerPickerQuery, setBlockerPickerQuery] = useState('');
+  const [blockerError, setBlockerError] = useState(null);
+  const [pendingMove, setPendingMove] = useState(null); // { card, targetColumn, position }
 
   const addTitleRef = useRef(null);
 
@@ -195,6 +204,19 @@ export default function KanbanBoard({
     }
   };
 
+  const commitMove = async (card, targetColumnId, newPosition) => {
+    setCards((prev) =>
+      prev.map((c) =>
+        c.id === card.id ? { ...c, column_id: targetColumnId, position: newPosition } : c,
+      ),
+    );
+    try {
+      await api.moveCard(projectId, card.id, { columnId: targetColumnId, position: newPosition });
+    } catch {
+      fetchBoard();
+    }
+  };
+
   const handleDrop = async (e, columnId) => {
     e.preventDefault();
     setDragOverColumn(null);
@@ -207,17 +229,16 @@ export default function KanbanBoard({
 
     const colCards = cardsForColumn(columnId);
     const newPosition = colCards.length;
-    setCards((prev) =>
-      prev.map((c) =>
-        c.id === card.id ? { ...c, column_id: columnId, position: newPosition } : c,
-      ),
-    );
+    const targetColumn = columns.find((c) => c.id === columnId);
 
-    try {
-      await api.moveCard(projectId, card.id, { columnId, position: newPosition });
-    } catch {
-      fetchBoard();
+    // Soft-warn before moving a blocked card into a blocker-sensitive column.
+    // API still allows it; the user just has to confirm.
+    if (shouldConfirmMove(card, card.column_id, targetColumn)) {
+      setPendingMove({ card, targetColumn, position: newPosition });
+      return;
     }
+
+    await commitMove(card, columnId, newPosition);
   };
 
   const handleDragEnd = () => {
@@ -312,6 +333,49 @@ export default function KanbanBoard({
     setConfirmDelete(false);
     setNewComment('');
     setShowReassign(false);
+    setShowBlockerPicker(false);
+    setBlockerPickerQuery('');
+    setBlockerError(null);
+  };
+
+  // --- Blocker CRUD ---
+  const handleAddBlocker = async (blockedByCardId) => {
+    if (!selectedCard || !blockedByCardId) return;
+    setBlockerError(null);
+    try {
+      await api.addCardBlocker(projectId, selectedCard.id, blockedByCardId);
+      setShowBlockerPicker(false);
+      setBlockerPickerQuery('');
+      // Refresh board so both the card's `blockers` and the inverse `blocks`
+      // are updated. Then re-pick selectedCard from the fresh list.
+      const data = await api.getBoard(projectId);
+      setCards(data.cards);
+      const refreshed = data.cards.find((c) => c.id === selectedCard.id);
+      if (refreshed) setSelectedCard(refreshed);
+    } catch (err) {
+      const msg = err?.message || '';
+      if (msg.includes('cycle')) {
+        setBlockerError('Cannot add — this would create a blocker cycle.');
+      } else if (msg.includes('duplicate')) {
+        setBlockerError('That card is already a blocker.');
+      } else {
+        setBlockerError('Failed to add blocker.');
+      }
+    }
+  };
+
+  const handleRemoveBlocker = async (blockedByCardId) => {
+    if (!selectedCard || !blockedByCardId) return;
+    setBlockerError(null);
+    try {
+      await api.removeCardBlocker(projectId, selectedCard.id, blockedByCardId);
+      const data = await api.getBoard(projectId);
+      setCards(data.cards);
+      const refreshed = data.cards.find((c) => c.id === selectedCard.id);
+      if (refreshed) setSelectedCard(refreshed);
+    } catch {
+      setBlockerError('Failed to remove blocker.');
+    }
   };
 
   // --- Epic CRUD ---
@@ -808,6 +872,16 @@ export default function KanbanBoard({
                                   {card.priority}
                                 </span>
                               )}
+                              {hasUnresolvedBlockers(card) && (
+                                <span
+                                  className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full bg-red-900/40 text-red-300"
+                                  title={`Blocked by ${card.blockers.filter((b) => !b.done).length} unresolved card(s)`}
+                                  data-testid="card-blocker-badge"
+                                >
+                                  <Lock size={10} />
+                                  {card.blockers.filter((b) => !b.done).length}
+                                </span>
+                              )}
                               {cardEpic && (
                                 <span
                                   className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full"
@@ -1001,6 +1075,18 @@ export default function KanbanBoard({
 
             {/* Body — two-column on lg+, stacked on smaller screens */}
             <div className="flex-1 overflow-y-auto">
+              {hasUnresolvedBlockers(selectedCard) && (
+                <div
+                  className="mx-6 mt-4 flex items-start gap-2 rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300"
+                  data-testid="blocker-banner"
+                >
+                  <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                  <span>
+                    This card is blocked by {selectedCard.blockers.filter((b) => !b.done).length}{' '}
+                    unresolved card(s). Starting work may cause issues.
+                  </span>
+                </div>
+              )}
               <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6 p-6">
                 {/* Main column: title + description */}
                 <div className="min-w-0 flex flex-col gap-4">
@@ -1197,6 +1283,137 @@ export default function KanbanBoard({
                     />
                   </div>
 
+                  {/* Blockers */}
+                  <div data-testid="blockers-section">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Blocked by
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowBlockerPicker((v) => !v);
+                          setBlockerPickerQuery('');
+                          setBlockerError(null);
+                        }}
+                        className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1"
+                      >
+                        <Plus size={12} />
+                        Add
+                      </button>
+                    </div>
+
+                    {selectedCard?.blockers && selectedCard.blockers.length > 0 ? (
+                      <ul className="space-y-1">
+                        {selectedCard.blockers.map((b) => (
+                          <li
+                            key={b.id}
+                            className={`group flex items-center gap-2 rounded px-2 py-1.5 text-xs border-l-2 ${
+                              b.done
+                                ? 'bg-gray-800/50 text-gray-500 border-emerald-800'
+                                : 'bg-gray-800 text-gray-300 border-red-700'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const target = cards.find((c) => c.id === b.id);
+                                if (target) openDetail(target);
+                              }}
+                              className="flex-1 min-w-0 text-left truncate hover:underline"
+                              title={b.title}
+                            >
+                              {b.done ? '✓ ' : ''}
+                              {b.title}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveBlocker(b.id)}
+                              className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-opacity"
+                              aria-label="Remove blocker"
+                            >
+                              <X size={12} />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-gray-600">No blockers</p>
+                    )}
+
+                    {showBlockerPicker && (
+                      <div className="mt-2 rounded-lg border border-gray-700 bg-gray-900 p-2">
+                        <input
+                          type="text"
+                          value={blockerPickerQuery}
+                          onChange={(e) => setBlockerPickerQuery(e.target.value)}
+                          placeholder="Search cards..."
+                          autoFocus
+                          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-gray-500 mb-2"
+                        />
+                        <div className="max-h-40 overflow-y-auto space-y-1">
+                          {(() => {
+                            const q = blockerPickerQuery.toLowerCase().trim();
+                            const excluded = new Set([
+                              selectedCard.id,
+                              ...(selectedCard.blockers || []).map((b) => b.id),
+                            ]);
+                            const options = cards
+                              .filter((c) => !excluded.has(c.id))
+                              .filter((c) => !q || c.title.toLowerCase().includes(q))
+                              .slice(0, 20);
+                            if (options.length === 0) {
+                              return (
+                                <p className="text-xs text-gray-600 px-1 py-1">No matching cards</p>
+                              );
+                            }
+                            return options.map((c) => (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={() => handleAddBlocker(c.id)}
+                                className="w-full text-left text-xs text-gray-300 hover:bg-gray-800 rounded px-2 py-1 truncate"
+                              >
+                                {c.title}
+                              </button>
+                            ));
+                          })()}
+                        </div>
+                      </div>
+                    )}
+
+                    {blockerError && <p className="mt-1 text-xs text-red-400">{blockerError}</p>}
+                  </div>
+
+                  {/* Blocks (inverse) */}
+                  {selectedCard?.blocks && selectedCard.blocks.length > 0 && (
+                    <div data-testid="blocks-section">
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                        Blocks
+                      </label>
+                      <ul className="space-y-1">
+                        {selectedCard.blocks.map((b) => (
+                          <li
+                            key={b.id}
+                            className="bg-gray-800/60 text-gray-400 text-xs rounded px-2 py-1.5"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const target = cards.find((c) => c.id === b.id);
+                                if (target) openDetail(target);
+                              }}
+                              className="w-full text-left truncate hover:underline"
+                              title={b.title}
+                            >
+                              {b.title}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
                   {/* GitHub Issue URL */}
                   <div>
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
@@ -1344,6 +1561,59 @@ export default function KanbanBoard({
                   Send
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm move — blocked-card → blocker-sensitive column */}
+      {pendingMove && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          data-testid="confirm-move-dialog"
+        >
+          <div className="absolute inset-0 bg-black/60" onClick={() => setPendingMove(null)} />
+          <div className="relative w-full max-w-md bg-gray-900 border border-red-900/60 rounded-xl shadow-2xl p-5">
+            <div className="flex items-start gap-3 mb-3">
+              <AlertTriangle size={20} className="text-red-400 mt-0.5 flex-shrink-0" />
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-1">Card is still blocked</h3>
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  &ldquo;{pendingMove.card.title}&rdquo; is blocked by{' '}
+                  {pendingMove.card.blockers.filter((b) => !b.done).length} unresolved card(s). Move
+                  it into <span className="text-gray-200">{pendingMove.targetColumn.name}</span>{' '}
+                  anyway?
+                </p>
+              </div>
+            </div>
+            <ul className="mb-4 pl-8 space-y-1">
+              {pendingMove.card.blockers
+                .filter((b) => !b.done)
+                .map((b) => (
+                  <li key={b.id} className="text-xs text-red-300 truncate" title={b.title}>
+                    • {b.title}
+                  </li>
+                ))}
+            </ul>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingMove(null)}
+                className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const { card, targetColumn, position } = pendingMove;
+                  setPendingMove(null);
+                  await commitMove(card, targetColumn.id, position);
+                }}
+                className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-medium transition-colors"
+              >
+                Move anyway
+              </button>
             </div>
           </div>
         </div>

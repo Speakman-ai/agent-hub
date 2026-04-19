@@ -282,7 +282,7 @@ describe('api webhook helpers — request headers + error handling', () => {
       status: 500,
       json: async () => ({ error: 'boom' }),
     });
-    await expect(api.getWebhooks()).rejects.toThrow(/API error: 500/);
+    await expect(api.getWebhooks()).rejects.toThrow(/500: boom/);
   });
 });
 
@@ -319,7 +319,7 @@ describe('api session summarization — URL + method parity with web client', ()
       status: 500,
       json: async () => ({ error: 'boom' }),
     });
-    await expect(api.summarizeSession('sess-99')).rejects.toThrow(/API error: 500/);
+    await expect(api.summarizeSession('sess-99')).rejects.toThrow(/500: boom/);
   });
 });
 
@@ -345,5 +345,40 @@ describe('api upload helpers', () => {
     // Crucially, uploadFile must NOT round-trip through fetchJSON — the
     // binary uploader handles its own request against /api/upload/file.
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('fetchJSON error body parsing — cycle/duplicate 409s surface in message', () => {
+  it('includes body.error in thrown message for non-ok responses', async () => {
+    mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'cycle' }),
+    });
+    globalThis.fetch = mockFetch;
+
+    await expect(api.getAgents()).rejects.toThrow('409: cycle');
+  });
+
+  it('includes body.error "duplicate" in thrown message', async () => {
+    mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'duplicate' }),
+    });
+    globalThis.fetch = mockFetch;
+
+    await expect(api.getAgents()).rejects.toThrow('409: duplicate');
+  });
+
+  it('falls back to generic message when body is not JSON', async () => {
+    mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => { throw new Error('not json'); },
+    });
+    globalThis.fetch = mockFetch;
+
+    await expect(api.getAgents()).rejects.toThrow('API error: 500');
   });
 });

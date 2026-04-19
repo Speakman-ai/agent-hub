@@ -34,6 +34,7 @@ import {
   hasActiveSession,
   buildAssigneeOptions,
 } from '../utils/kanbanAssign';
+import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 
 const DEFAULT_COLUMNS = [
   { id: 'backlog', name: 'Backlog', color: '#6B7280' },
@@ -91,6 +92,10 @@ export default function KanbanScreen({ route, navigation }) {
   const [showAssigneePicker, setShowAssigneePicker] = useState(false);
   const [showReassign, setShowReassign] = useState(false);
   const [assigning, setAssigning] = useState(false);
+
+  // Blocker picker state
+  const [showBlockerPicker, setShowBlockerPicker] = useState(false);
+  const [blockerPickerQuery, setBlockerPickerQuery] = useState('');
 
   // Epic state
   const [selectedEpicId, setSelectedEpicId] = useState(null);
@@ -370,15 +375,78 @@ export default function KanbanScreen({ route, navigation }) {
     setShowMoveModal(true);
   };
 
-  const handleMoveCard = async (targetColumn) => {
-    if (!moveCardTarget) return;
+  const commitMoveCard = async (cardId, targetColumnId) => {
     try {
-      await api.moveKanbanCard(projectId, moveCardTarget.id, { columnId: targetColumn });
+      await api.moveKanbanCard(projectId, cardId, { columnId: targetColumnId });
       setShowMoveModal(false);
       setMoveCardTarget(null);
       await loadBoard();
     } catch {
       Alert.alert('Error', 'Failed to move card');
+    }
+  };
+
+  const handleMoveCard = async (targetColumnId) => {
+    if (!moveCardTarget) return;
+    const targetColumn = columns.find((c) => c.id === targetColumnId);
+    // Soft-warn when moving a blocked card into a sensitive column. The API
+    // will still allow the move either way.
+    if (shouldConfirmMove(moveCardTarget, moveCardTarget.column_id, targetColumn)) {
+      const unresolved = moveCardTarget.blockers.filter((b) => !b.done);
+      Alert.alert(
+        'Card is still blocked',
+        `"${moveCardTarget.title}" is blocked by ${unresolved.length} unresolved card(s):\n\n` +
+          unresolved.map((b) => `• ${b.title}`).join('\n') +
+          `\n\nMove into ${targetColumn?.name || 'column'} anyway?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Move anyway',
+            style: 'destructive',
+            onPress: () => commitMoveCard(moveCardTarget.id, targetColumnId),
+          },
+        ],
+      );
+      return;
+    }
+    await commitMoveCard(moveCardTarget.id, targetColumnId);
+  };
+
+  const refreshBoardAndSelected = async () => {
+    const data = await api.getProjectBoard(projectId);
+    setBoard(data);
+    if (selectedCard) {
+      const refreshed = data?.cards?.find((c) => c.id === selectedCard.id);
+      if (refreshed) setSelectedCard(refreshed);
+    }
+  };
+
+  const handleAddBlocker = async (blockedByCardId) => {
+    if (!selectedCard || !blockedByCardId) return;
+    try {
+      await api.addCardBlocker(projectId, selectedCard.id, blockedByCardId);
+      setShowBlockerPicker(false);
+      setBlockerPickerQuery('');
+      await refreshBoardAndSelected();
+    } catch (err) {
+      const msg = err?.message || '';
+      if (msg.includes('cycle')) {
+        Alert.alert('Cannot add', 'This would create a blocker cycle.');
+      } else if (msg.includes('duplicate')) {
+        Alert.alert('Already linked', 'That card is already a blocker.');
+      } else {
+        Alert.alert('Error', 'Failed to add blocker');
+      }
+    }
+  };
+
+  const handleRemoveBlocker = async (blockedByCardId) => {
+    if (!selectedCard || !blockedByCardId) return;
+    try {
+      await api.removeCardBlocker(projectId, selectedCard.id, blockedByCardId);
+      await refreshBoardAndSelected();
+    } catch {
+      Alert.alert('Error', 'Failed to remove blocker');
     }
   };
 
@@ -538,6 +606,66 @@ export default function KanbanScreen({ route, navigation }) {
               placeholderTextColor={colors.gray600}
             />
 
+            {/* Blocked by */}
+            {hasUnresolvedBlockers(selectedCard) && (
+              <View style={styles.blockerBanner} testID="blocker-banner">
+                <Text style={styles.blockerBannerText}>
+                  {'\u26A0'} This card is blocked by{' '}
+                  {selectedCard.blockers.filter((b) => !b.done).length} unresolved card(s).
+                </Text>
+              </View>
+            )}
+            <View style={styles.blockerHeaderRow}>
+              <Text style={styles.fieldLabel}>Blocked by</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowBlockerPicker(true);
+                  setBlockerPickerQuery('');
+                }}
+                style={styles.blockerAddBtn}
+              >
+                <Text style={styles.blockerAddBtnText}>+ Add</Text>
+              </TouchableOpacity>
+            </View>
+            {(selectedCard.blockers || []).length === 0 ? (
+              <Text style={styles.blockerEmpty}>No blockers</Text>
+            ) : (
+              selectedCard.blockers.map((b) => (
+                <View
+                  key={b.id}
+                  style={[styles.blockerRow, b.done ? styles.blockerRowDone : styles.blockerRowOpen]}
+                >
+                  <Text
+                    style={[styles.blockerRowText, b.done && styles.blockerRowTextDone]}
+                    numberOfLines={1}
+                  >
+                    {b.done ? '\u2713 ' : ''}
+                    {b.title}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => handleRemoveBlocker(b.id)}
+                    style={styles.blockerRemoveBtn}
+                  >
+                    <Text style={styles.blockerRemoveBtnText}>{'\u2715'}</Text>
+                  </TouchableOpacity>
+                </View>
+              ))
+            )}
+
+            {/* Blocks (inverse) */}
+            {(selectedCard.blocks || []).length > 0 && (
+              <>
+                <Text style={styles.fieldLabel}>Blocks</Text>
+                {selectedCard.blocks.map((b) => (
+                  <View key={b.id} style={styles.blockerRow}>
+                    <Text style={styles.blockerRowText} numberOfLines={1}>
+                      {b.title}
+                    </Text>
+                  </View>
+                ))}
+              </>
+            )}
+
             {/* Description */}
             <Text style={styles.fieldLabel}>Description</Text>
             <TextInput
@@ -639,6 +767,65 @@ export default function KanbanScreen({ route, navigation }) {
               <TouchableOpacity
                 style={styles.modalCancel}
                 onPress={() => setShowAssigneePicker(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        {/* Blocker picker */}
+        <Modal
+          visible={showBlockerPicker}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowBlockerPicker(false)}
+        >
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowBlockerPicker(false)}
+          >
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Add blocker</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={blockerPickerQuery}
+                onChangeText={setBlockerPickerQuery}
+                placeholder="Search cards..."
+                placeholderTextColor={colors.gray600}
+                autoFocus
+              />
+              <ScrollView style={{ maxHeight: 320, marginTop: 8 }}>
+                {(() => {
+                  const q = (blockerPickerQuery || '').toLowerCase().trim();
+                  const excluded = new Set([
+                    selectedCard?.id,
+                    ...((selectedCard?.blockers) || []).map((b) => b.id),
+                  ]);
+                  const options = (board?.cards || [])
+                    .filter((c) => !excluded.has(c.id))
+                    .filter((c) => !q || (c.title || '').toLowerCase().includes(q))
+                    .slice(0, 40);
+                  if (options.length === 0) {
+                    return <Text style={styles.blockerEmpty}>No matching cards</Text>;
+                  }
+                  return options.map((c) => (
+                    <TouchableOpacity
+                      key={c.id}
+                      style={styles.modalOption}
+                      onPress={() => handleAddBlocker(c.id)}
+                    >
+                      <Text style={styles.modalOptionText} numberOfLines={1}>
+                        {c.title}
+                      </Text>
+                    </TouchableOpacity>
+                  ));
+                })()}
+              </ScrollView>
+              <TouchableOpacity
+                style={styles.modalCancel}
+                onPress={() => setShowBlockerPicker(false)}
               >
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
@@ -784,6 +971,13 @@ export default function KanbanScreen({ route, navigation }) {
               <Text style={[styles.cardPriorityText, { color: getPriorityColor(card.priority) }]}>
                 {getPriorityLabel(card.priority)}
               </Text>
+              {hasUnresolvedBlockers(card) && (
+                <View style={styles.blockerBadge} testID="card-blocker-badge">
+                  <Text style={styles.blockerBadgeText}>
+                    {'\uD83D\uDD12 '}{card.blockers.filter((b) => !b.done).length}
+                  </Text>
+                </View>
+              )}
               {card.assignee ? (
                 <Text style={styles.cardAssignee} numberOfLines={1}>{card.assignee}</Text>
               ) : null}
@@ -1352,4 +1546,54 @@ const styles = StyleSheet.create({
     borderRadius: 6, backgroundColor: colors.red600,
   },
   deleteEpicBtnText: { fontSize: 13, color: colors.white, fontWeight: '500' },
+
+  // Blockers
+  blockerBadge: {
+    backgroundColor: 'rgba(185, 28, 28, 0.35)',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginLeft: 4,
+  },
+  blockerBadgeText: { color: '#FCA5A5', fontSize: 11, fontWeight: '500' },
+  blockerBanner: {
+    backgroundColor: 'rgba(127, 29, 29, 0.3)',
+    borderColor: '#991B1B',
+    borderWidth: 1,
+    borderRadius: 6,
+    padding: 8,
+    marginTop: 12,
+  },
+  blockerBannerText: { color: '#FCA5A5', fontSize: 12 },
+  blockerHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 12,
+  },
+  blockerAddBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    backgroundColor: colors.gray800,
+  },
+  blockerAddBtnText: { color: colors.gray300, fontSize: 12 },
+  blockerEmpty: { color: colors.gray600, fontSize: 12, marginTop: 4 },
+  blockerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.gray800,
+    borderLeftWidth: 2,
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginTop: 4,
+  },
+  blockerRowOpen: { borderLeftColor: '#B91C1C' },
+  blockerRowDone: { borderLeftColor: '#065F46', opacity: 0.7 },
+  blockerRowText: { flex: 1, color: colors.gray300, fontSize: 12 },
+  blockerRowTextDone: { color: colors.gray500 },
+  blockerRemoveBtn: { paddingHorizontal: 6, paddingVertical: 2 },
+  blockerRemoveBtnText: { color: colors.gray500, fontSize: 12 },
 });
