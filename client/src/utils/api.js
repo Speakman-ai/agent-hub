@@ -590,6 +590,12 @@ export const api = {
     return fetchJSON(`/projects/${projectId}/pulls${qs ? '?' + qs : ''}`);
   },
   getProjectPullDetail: (projectId, number) => fetchJSON(`/projects/${projectId}/pulls/${number}`),
+  resolvePR: (projectId, prNumber, { agentId } = {}) =>
+    fetchJSON(`/projects/${projectId}/pulls/${prNumber}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+      timeout: 60000,
+    }),
 
   // PR Actions
   mergePr: (prUrl, mergeMethod = 'squash') =>

@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Loader2,
   MessageSquare,
+  Wrench,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import {
@@ -153,7 +154,7 @@ function CommentBlock({ comment }) {
   );
 }
 
-function PrDetail({ detail, onBack, onRefresh, refreshing }) {
+function PrDetail({ detail, onBack, onRefresh, refreshing, onResolve, resolving, agentId }) {
   const pr = detail?.pr;
   if (!pr) return null;
 
@@ -163,6 +164,13 @@ function PrDetail({ detail, onBack, onRefresh, refreshing }) {
   const reviewState = summarizeReviews(detail.reviews);
   const rBadge = reviewsBadge(reviewState);
   const mBadge = mergeableBadge(pr.mergeable);
+
+  const resolveDisabled = resolving || !agentId;
+  const resolveTitle = !agentId
+    ? 'No agents configured'
+    : resolving
+      ? 'Resolving…'
+      : 'Spawn an agent session to resolve conflicts, CI failures, or review feedback on this PR';
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -177,6 +185,16 @@ function PrDetail({ detail, onBack, onRefresh, refreshing }) {
             Back to list
           </button>
           <span className="flex-1" />
+          <button
+            type="button"
+            onClick={onResolve}
+            disabled={resolveDisabled}
+            title={resolveTitle}
+            className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {resolving ? <Loader2 size={14} className="animate-spin" /> : <Wrench size={14} />}
+            Resolve PR
+          </button>
           <button
             type="button"
             onClick={onRefresh}
@@ -284,7 +302,7 @@ function PrDetail({ detail, onBack, onRefresh, refreshing }) {
 
 // ─── Main page ─────────────────────────────────────────────────
 
-export default function PullRequestsPage({ projectId, project }) {
+export default function PullRequestsPage({ projectId, project, onOpenSession, onToast }) {
   const [state, setState] = useState('open');
   const [pulls, setPulls] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -295,6 +313,14 @@ export default function PullRequestsPage({ projectId, project }) {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState(null);
+  const [resolving, setResolving] = useState(false);
+
+  const resolveAgentId =
+    Array.isArray(project?.agents) && project.agents.length > 0
+      ? typeof project.agents[0] === 'string'
+        ? project.agents[0]
+        : project.agents[0]?.id
+      : null;
 
   const loadList = useCallback(async () => {
     if (!projectId) {
@@ -361,6 +387,42 @@ export default function PullRequestsPage({ projectId, project }) {
     }
   };
 
+  const handleResolve = useCallback(async () => {
+    if (!projectId || !selectedNumber || !resolveAgentId || resolving) return;
+    setResolving(true);
+    try {
+      const res = await api.resolvePR(projectId, selectedNumber, {
+        agentId: resolveAgentId,
+      });
+      if (res?.sessionId) {
+        if (typeof onOpenSession === 'function') {
+          onOpenSession(resolveAgentId, res.sessionId);
+        }
+        if (typeof onToast === 'function') {
+          const kinds = Array.isArray(res.triggered) ? res.triggered.join(', ') : '';
+          onToast(
+            kinds ? `Resolving PR — ${kinds}` : 'Resolving PR — agent session started',
+            'success',
+            5000,
+          );
+        }
+      } else {
+        if (typeof onToast === 'function') {
+          onToast('Nothing to resolve — PR looks clean.', 'info', 5000);
+        }
+      }
+    } catch (err) {
+      const msg = err?.message || 'Failed to resolve PR';
+      if (typeof onToast === 'function') {
+        onToast(`Resolve PR failed: ${msg}`, 'error', 6000);
+      } else {
+        console.warn('Resolve PR failed:', msg);
+      }
+    } finally {
+      setResolving(false);
+    }
+  }, [projectId, selectedNumber, resolveAgentId, resolving, onOpenSession, onToast]);
+
   // ── Detail view ──
   if (selectedNumber) {
     if (detailLoading && !detail) {
@@ -402,6 +464,9 @@ export default function PullRequestsPage({ projectId, project }) {
           onBack={handleBack}
           onRefresh={handleRefresh}
           refreshing={refreshing || detailLoading}
+          onResolve={handleResolve}
+          resolving={resolving}
+          agentId={resolveAgentId}
         />
       );
     }

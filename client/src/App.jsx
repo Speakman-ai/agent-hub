@@ -2080,6 +2080,8 @@ export default function App() {
             <PullRequestsPage
               projectId={pullsProjectId}
               project={projects.find((p) => p.id === pullsProjectId)}
+              onOpenSession={handleOpenHandoffSession}
+              onToast={showToast}
             />
           ) : currentView === 'dashboard' ? (
             <DashboardView orgId={getActiveOrg()?.id} />
