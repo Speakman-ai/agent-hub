@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import config from './config.js';
 import { POOL_SCHEMA } from './container-pool/schema.js';
+import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -944,6 +945,11 @@ function initDb(dataDir: string): void {
   // Container pool (PR preview envs + scaffolding). Schema lives in a sibling
   // module so unit tests can apply the identical DDL to an in-memory DB.
   db.exec(POOL_SCHEMA);
+
+  // PR-env host port allocations (W2). Keyed by (repo, PR number) → port
+  // in the 3100..3999 reserve. Separate from pool_slots because the shape
+  // is different (arbitrary hundreds of entries, PR-keyed not slot-keyed).
+  db.exec(PORT_POOL_SCHEMA);
 
   // Migration: pool_slots gained `last_error TEXT` and `status` CHECK now
   // includes 'failed' (added in #458). SQLite can't ALTER a CHECK constraint

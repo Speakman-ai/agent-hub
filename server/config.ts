@@ -26,7 +26,7 @@ if (!existsSync(CONFIG_PATH) && existsSync(LEGACY_CONFIG_PATH)) {
   }
 }
 
-let fileConfig: Record<string, unknown> = {};
+export let fileConfig: Record<string, unknown> = {};
 try {
   fileConfig = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8')) as Record<string, unknown>;
 } catch {

@@ -2,11 +2,14 @@ import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { Router, Request, Response } from 'express';
-import config, { defaultModelForEngine } from '../config.js';
+import config, { defaultModelForEngine, fileConfig } from '../config.js';
 import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
 import { runCapture, postPrComment } from '../capture-engine.js';
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
+import { dispatchPrEnvBuild, dispatchPrEnvTeardown } from '../container-pool/pr-env-dispatch.js';
+import { getPrEnvBuilderDeps, readPrEnvConfig } from '../container-pool/pr-env-runtime.js';
+import { getDb } from '../db.js';
 import {
   CHECK_RUN_NAME,
   DEFAULT_REVIEWER_PHASES,
@@ -1298,6 +1301,44 @@ function handleKanbanWebhookEvent(
         `[Webhook/CheckRun] ${event}.rerequested → re-dispatched reviewer for ${prs.length} PR(s) on "${project.name}"`,
       );
       return true;
+    }
+  }
+
+  // ─── PR-env Builder Dispatch (W2) ───────────────────────────────
+  // opened / synchronize → build (or rebuild) a Docker-Compose preview env
+  // bound to the PR. closed → tear it down. This sits ABOVE the
+  // `if (!card && …) return false` short-circuit below because PR envs
+  // belong to the PR itself, not the optional kanban card — synchronize
+  // events on unlinked PRs still need to rebuild. Gated by the
+  // `AGENT_HUB_PR_ENV_ENABLED` feature flag; `getPrEnvBuilderDeps()` returns
+  // null when disabled and the dispatch becomes a no-op.
+  if (
+    event === 'pull_request' &&
+    payload.pull_request &&
+    payload.repository?.full_name &&
+    (action === 'opened' || action === 'synchronize' || action === 'closed')
+  ) {
+    const pr = payload.pull_request;
+    const repoFullName = payload.repository.full_name;
+    const prEnvDispatchDeps = {
+      db: getDb(),
+      stmts,
+      getBuilderDeps: () => getPrEnvBuilderDeps(readPrEnvConfig(fileConfig), getDb()),
+    };
+    if (action === 'closed') {
+      void dispatchPrEnvTeardown(prEnvDispatchDeps, {
+        repoFullName,
+        prNumber: pr.number,
+        card: card || null,
+      });
+    } else if (pr.head?.ref) {
+      void dispatchPrEnvBuild(prEnvDispatchDeps, {
+        repoFullName,
+        prNumber: pr.number,
+        branch: pr.head.ref,
+        commitSha: pr.head.sha,
+        card: card || null,
+      });
     }
   }
 
