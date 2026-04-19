@@ -80,8 +80,15 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  PR_ENV_IMAGE: ghcr.io/${{ github.repository }}/pr-env-base
-  SCAFFOLD_IMAGE: ghcr.io/${{ github.repository }}/scaffold-base
+  # NOTE: ghcr.io (and OCI registries in general) REJECT image refs that
+  # contain uppercase characters. `github.repository` preserves the
+  # user-entered casing of the org/repo (e.g. "Speakman-ai/agent-hub"),
+  # and GHA expression syntax has no `toLower()`, so we cannot build a
+  # valid image ref directly here. Each build job runs a "Resolve image
+  # refs" step up-front that writes lowercased PR_ENV_IMAGE /
+  # SCAFFOLD_IMAGE into $GITHUB_ENV; downstream steps then read them
+  # both as plain shell vars ($PR_ENV_IMAGE) AND via the env context
+  # (${{ env.PR_ENV_IMAGE }}) in action inputs.
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
@@ -151,6 +158,13 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: Resolve image refs (lowercased for GHCR)
+        run: |
+          set -eu
+          # GHA expression syntax has no toLower(); `tr` does.
+          REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "PR_ENV_IMAGE=ghcr.io/${REPO_LC}/pr-env-base" >> "$GITHUB_ENV"
+
       - name: Log in to GHCR
         # Skip login on pure PR-validation builds — we can still build
         # from layers, we just never push. Keeps forks working without
@@ -214,6 +228,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve image refs (lowercased for GHCR)
+        run: |
+          set -eu
+          REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "PR_ENV_IMAGE=ghcr.io/${REPO_LC}/pr-env-base" >> "$GITHUB_ENV"
+          echo "SCAFFOLD_IMAGE=ghcr.io/${REPO_LC}/scaffold-base" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
@@ -339,8 +360,13 @@ jobs:
           - Rollback: pin hosts to `<image>:<prev-date-tag>` via SSM
           EOF_BODY
           )
-          # Substitute (avoid embedding ${{ }} inside the heredoc which
-          # would be expanded by GHA before the shell sees it).
+          # Substitute (we use literal sentinels rather than GHA
+          # expression syntax inside the heredoc, because GHA scans the
+          # entire run-block body for its template tokens BEFORE the
+          # shell sees it — so even a token sitting inside a bash
+          # comment would either fail workflow parsing or be expanded
+          # too early. Plain shell vars + bash parameter expansion stay
+          # safely opaque to that scanner).
           BODY=${BODY//DATE_TAG_REPLACE/$DATE_TAG}
           BODY=${BODY//BUMPS_JSON_REPLACE/$(echo "$BUMPS_JSON" | jq --indent 2 '.')}
 
