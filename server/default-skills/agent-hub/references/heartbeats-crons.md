@@ -1,13 +1,15 @@
-# Heartbeats & Crons
+# Heartbeats & Crons — Scheduled Agents, Threads, Logs
 
-Two overlapping concepts. Both schedule agent work on a cron expression and
-emit into a live thread.
+Two overlapping concepts. Both schedule agent work on a cron expression
+and emit into a live thread.
 
-- **Heartbeats** are per-agent scheduled **check-ins** — typically a short
-  prompt that asks the agent to report status or pick up a task.
-- **Crons** are project-scoped **automated jobs** — longer prompts that run
-  as standalone sessions (dependabot merging, job-search monitoring,
+- **Heartbeats** are per-agent scheduled **check-ins** — typically a
+  short prompt that asks the agent to report status or pick up a task.
+- **Crons** are project-scoped **automated jobs** — longer prompts that
+  run as standalone sessions (dependabot merging, job-search monitoring,
   scheduled audits, etc.).
+
+Back to [SKILL.md](../SKILL.md).
 
 ## Heartbeats
 
@@ -45,9 +47,9 @@ scripts/crons.sh logs   <cronId>
 scripts/crons.sh thread <cronId>
 ```
 
-Crons write into their own threads for persistent output logs
-(see wiki page "Threads — Persistent Output Logs for Heartbeats & Crons"
-for the full thread contract).
+Crons write into their own threads for persistent output logs (see the
+wiki page "Threads — Persistent Output Logs for Heartbeats & Crons" for
+the full thread contract).
 
 ## Scheduling semantics
 

@@ -1,12 +1,14 @@
-# Deployment — Example Template
+# Deployment — Example Template (unlinked)
 
 > **Stub.** This is an example scaffold for self-hosting Agent Hub. Replace every
 > angle-bracket placeholder (`<your-host>`, `<your-bucket>`, `<your-role>`, etc.)
 > with values from your own infrastructure. Agent Hub does **not** ship with a
 > reference deployment and encodes no hostnames, bucket names, or IAM roles.
 >
-> A fuller desktop-build section is tracked as a separate follow-up — see the
-> "Overhaul agent-hub Skill" epic on the project kanban.
+> This file is intentionally **not linked from SKILL.md** — it's reserved as a
+> placeholder for operator-facing docs so the no-prod-infra guard has something
+> to assert against. For the agent-facing surfaces, start at
+> [SKILL.md](../SKILL.md).
 
 ## Topology
 
@@ -37,7 +39,7 @@ Browser / Mobile / Desktop
 > **Security:** `ALLOWED_ORIGINS` should list only the hosts your real web
 > clients use. Unknown origins get no CORS header and the browser's SOP blocks
 > them. Non-browser clients (Electron, mobile, server-to-server) bypass CORS
-> because they don't send an `Origin` header.
+> because they don't send an Origin header.
 
 ## Reverse Proxy
 

@@ -23,8 +23,8 @@ keep-coding-instructions: true
 
 You are an AI agent running inside **Agent Hub**, a full-stack platform for
 managing AI agents. This file is a **navigational overview**. Every surface
-below links to a reference doc (`references/<topic>.md`) and a script wrapper
-(`scripts/<name>.sh`) you can shell out to directly.
+below links to exactly one reference doc under `references/` and a script
+wrapper under `scripts/` you can shell out to directly.
 
 > **Never paste raw `curl` into the chat.** The API contract drifts; the
 > wrappers under `scripts/` are the single source of truth and already handle
@@ -35,11 +35,11 @@ below links to a reference doc (`references/<topic>.md`) and a script wrapper
 
 All scripts read these env vars:
 
-| Variable             | Default                     | Notes                                                                    |
-| -------------------- | --------------------------- | ------------------------------------------------------------------------ |
-| `AGENT_HUB_URL`      | `http://localhost:3051`     | Local API base. Always reachable from inside a session.                  |
-| `AGENT_HUB_API_KEY`  | (injected by the server)    | Sent as `x-api-key`; the server treats it as Owner for all orgs.         |
-| `PROJECT_ID`         | (required for most calls)   | Slug from the system prompt, e.g. `agent-hub`. See `scripts/server.sh`.  |
+| Variable               | Default                   | Notes                                                                    |
+| ---------------------- | ------------------------- | ------------------------------------------------------------------------ |
+| `AGENT_HUB_URL`        | `http://localhost:3051`   | Local API base. Always reachable from inside a session.                  |
+| `AGENT_HUB_API_KEY`    | (injected by the server)  | Sent as `x-api-key`; the server treats it as Owner for all orgs.         |
+| `PROJECT_ID`           | (required for most calls) | Slug from the system prompt, e.g. `agent-hub`. See `scripts/server.sh`.  |
 | `AGENT_HUB_SESSION_ID` | (injected)                | Your session id. Pass when creating cards to auto-link.                  |
 
 Identify yourself / the project:
@@ -78,9 +78,10 @@ scripts/epics.sh list | create | link | unlink
 
 Full reference: **[references/wiki.md](references/wiki.md)**
 
-Per-project wiki with SQLite FTS5. **Always search before creating** — update
-existing pages rather than duplicating. Categories: `general`, `api-docs`,
-`architecture`, `conventions`, `test-patterns`, `troubleshooting`, `onboarding`.
+Per-project wiki with SQLite FTS5. **Always search before creating** —
+update existing pages rather than duplicating. Categories: `general`,
+`api-docs`, `architecture`, `conventions`, `test-patterns`,
+`troubleshooting`, `onboarding`.
 
 ```bash
 # Deterministic wrappers:
@@ -92,97 +93,70 @@ scripts/wiki.sh read <slug>                             # single page
 scripts/wiki.sh list [category]                         # all pages (optionally filtered)
 ```
 
-## Sessions & Messages
+## Sessions — messages, ask mode, delegation
 
 Full reference: **[references/sessions.md](references/sessions.md)**
 
-Sessions hold chat history. Each row has an `ask_mode` flag (read-only / plan
-mode — see Ask Mode below).
+Sessions hold chat history and the `ask_mode` flag (read-only / plan
+mode). Coordination with sub-agents also lives here: `<delegate>` spawns
+parallel sub-agents, `<handoff>` transfers ownership, and
+`<agenthub:close-card>` auto-closes a duplicate card linked to your
+session. All three are fenced JSON blocks emitted at the end of a turn —
+see the reference for exact shape and lifecycle states.
 
 ```bash
-scripts/sessions.sh list <agentId>          # sessions for an agent
-scripts/sessions.sh messages <sessionId>    # message history
+scripts/sessions.sh list <agentId>           # sessions for an agent
+scripts/sessions.sh messages <sessionId>     # message history
 scripts/sessions.sh ask-mode <sessionId> true|false
 ```
 
-## Heartbeats — scheduled check-ins
+## Heartbeats & Crons — scheduled agents, threads, logs
 
 Full reference: **[references/heartbeats-crons.md](references/heartbeats-crons.md)**
 
-Per-agent scheduled prompts that run on a cron and emit into a thread log.
+Per-agent **heartbeats** run short scheduled check-ins; project-scoped
+**crons** run longer automated jobs. Both pipe streamed tokens into a
+thread row so the UI can show a persistent log per run without cluttering
+the session list.
 
 ```bash
 scripts/heartbeats.sh list
 scripts/heartbeats.sh update <agentId> '{"prompt":"…","schedule":"0 */6 * * *","enabled":true}'
-scripts/heartbeats.sh run    <agentId>
-scripts/heartbeats.sh thread <agentId>
-```
 
-## Crons — automated jobs
-
-Full reference: **[references/heartbeats-crons.md](references/heartbeats-crons.md)**
-
-Project-scoped cron jobs with their own execution logs and live threads.
-
-```bash
 scripts/crons.sh list
 scripts/crons.sh create '{"name":"…","schedule":"0 3 * * *","prompt":"…"}'
 scripts/crons.sh run    <cronId>
 scripts/crons.sh logs   <cronId>
 ```
 
-## Agent coordination — `<delegate>`, `<handoff>`, `<agenthub:close-card>`
+## Authentication & Multi-User Orgs
 
-Full reference: **[references/coordination.md](references/coordination.md)**
+Full reference: **[references/auth.md](references/auth.md)**
 
-These are **not** API calls — they're fenced JSON blocks your chat output
-emits. The server parses them after the CLI closes.
+Agent Hub is multi-user / multi-org. JWTs carry a `uid` claim and a
+current org context. Role hierarchy: **Owner > Admin > User** (see
+`server/roles.ts`). Sole-Owner deletion/demotion is refused. The
+`x-api-key` header is a break-glass that the server treats as Owner for
+every org — sub-agents (including you) use it to call the local API. The
+reference also covers config-file locations and the `trust proxy`
+coupling that per-IP rate limiters depend on.
 
-- `<delegate>` — spawn parallel sub-agent sessions (one-shot, results collected)
-- `<handoff>` — transfer ownership to a single sub-agent (terminal in your turn)
-- `<agenthub:close-card>` — auto-close a duplicate or already-done card
+## Errors — self-reporting & common failure modes
 
-See the reference for exact JSON shape and lifecycle states.
+Full reference: **[references/errors.md](references/errors.md)**
 
-## Ask Mode — read-only / plan-mode sessions
-
-Full reference: **[references/ask-mode.md](references/ask-mode.md)**
-
-When `sessions.ask_mode=1`, the Claude CLI runs with `--permission-mode plan`:
-reading, grep, analysis, planning, and writing proposed changes into the
-chat as prose/diffs are fine; mutating shell commands, file writes, PR
-creation, and sub-agent spawning are blocked without approval.
-
-## TOOL_ERROR self-reporting
-
-Full reference: **[references/tool-error.md](references/tool-error.md)**
-
-When a tool call blocks progress, log a **pipe-delimited, one-line** record
-into your daily notes so future Session Health tooling can mine patterns:
+When a tool call blocks progress, log a **pipe-delimited, one-line**
+record into your daily notes so future Session Health tooling can mine
+patterns:
 
 ```
 TOOL_ERROR | <ISO timestamp> | <tool name> | <command/action> | <exit code or error type> | <one-line summary>
 ```
 
-## Authentication & Multi-User Orgs
-
-Full reference: **[references/auth.md](references/auth.md)**
-
-Agent Hub is multi-user / multi-org. JWTs carry a `uid` claim and a current
-org context. Role hierarchy: **Owner > Admin > User** (see `server/roles.ts`).
-Sole-Owner deletion/demotion is refused. The `x-api-key` header is a
-break-glass that the server treats as Owner for every org — sub-agents
-(including you) use it to call the local API.
-
-## Electron Desktop Shell
-
-Full reference: **[references/electron.md](references/electron.md)**
-
-The desktop app wraps the same Express server (`electron/main.js`). Two
-gotchas worth knowing: Electron/mobile requests send **no Origin header** so
-they bypass CORS by design; packaged builds resolve data paths under
-`app.getPath('userData')` instead of the repo. Releases are out-of-band —
-agents propose PRs; humans run the release pipeline.
+The reference also lists the common failure modes (auth `401`/`403`,
+missing `PROJECT_ID`, column-name typos, wiki `409`, undispatched
+`<delegate>`/`<handoff>`, plan-mode blocks, `429` rate limits, WebSocket
+mid-stream drops) with the recovery step that usually unsticks them.
 
 ## Self-reporting checklist
 
@@ -191,25 +165,32 @@ agents propose PRs; humans run the release pipeline.
 2. **Move** the card as state changes (In Progress → Review → Done).
 3. **Comment** on the card when opening a PR, hitting a blocker, or
    finishing a subtask.
-4. **Search the wiki** before asking; **update** existing pages rather than
-   duplicating.
+4. **Search the wiki** before asking; **update** existing pages rather
+   than duplicating.
 5. **Log** `TOOL_ERROR` lines when tool failures block you.
 
 ## Architecture quick reference
 
-| Component  | Stack                                                | Location     |
-| ---------- | ---------------------------------------------------- | ------------ |
-| Server     | Express.js + SQLite (WAL) + WebSocket                | `server/`    |
-| Web Client | React + Vite + Tailwind                              | `client/`    |
-| Mobile     | React Native + Expo                                  | `mobile/`    |
-| Desktop    | Electron wrapper                                     | `electron/`  |
-| Deployment | Self-hosted Node.js — see `references/deployment-example.md` | `<your-host>` |
+| Component  | Stack                                     | Location     |
+| ---------- | ----------------------------------------- | ------------ |
+| Server     | Express.js + SQLite (WAL) + WebSocket     | `server/`    |
+| Web Client | React + Vite + Tailwind                   | `client/`    |
+| Mobile     | React Native + Expo                       | `mobile/`    |
+| Desktop    | Electron wrapper (`electron/main.js`)     | `electron/`  |
+| Deployment | Self-hosted Node.js behind a TLS proxy    | operator     |
 
-**DB tables:** `sessions`, `messages`, `heartbeat_logs`, `crons`, `wiki_pages`,
-`kanban_boards`, `kanban_columns`, `kanban_cards`, `kanban_epics`,
-`kanban_card_blockers`, `skill_registry`, `webhook_configs`, `device_tokens`,
-`delegations`, `handoffs`.
+**DB tables:** `sessions`, `messages`, `heartbeat_logs`, `crons`,
+`wiki_pages`, `kanban_boards`, `kanban_columns`, `kanban_cards`,
+`kanban_epics`, `kanban_card_blockers`, `skill_registry`,
+`webhook_configs`, `device_tokens`, `delegations`, `handoffs`.
 
-**Real-time:** WebSocket on the same port as HTTP. Events include `message`,
-`session_created`, `kanban_update`, `wiki_update`, `cron_session_update`,
-`auto_pr_created`.
+**Real-time:** WebSocket on the same port as HTTP. Events include
+`message`, `session_created`, `kanban_update`, `wiki_update`,
+`cron_session_update`, `auto_pr_created`.
+
+**Electron desktop shell:** wraps the same Express server; Electron and
+mobile requests send no Origin header and bypass CORS by design.
+Packaged builds resolve data paths under `app.getPath('userData')`
+instead of the repo — check which build a user is on before chasing
+"missing config" reports. Releases are out-of-band: agents propose PRs;
+humans run the release pipeline.

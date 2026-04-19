@@ -5,7 +5,7 @@
   "query": "The current task needs the mobile team to rework the drawer navigation. Delegate that piece to the 'hub-frontend' sub-agent with a clear note describing what they need to do and why.",
   "files": [
     "server/default-skills/agent-hub/SKILL.md",
-    "server/default-skills/agent-hub/references/coordination.md"
+    "server/default-skills/agent-hub/references/sessions.md"
   ],
   "expected_behavior": [
     {

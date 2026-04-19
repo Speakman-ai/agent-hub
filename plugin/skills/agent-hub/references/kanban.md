@@ -1,9 +1,11 @@
-# Kanban Boards — Cards, Columns, Comments, Epics
+# Kanban — Cards, Columns, Comments, Epics
 
 Every project has a board. Default columns (by name; IDs are per-project):
 **Backlog → To Do → In Progress → Review → Done**. Always use
 `scripts/board.sh` / `scripts/epics.sh` — never inline curl — so auth and
 `PROJECT_ID` are handled uniformly.
+
+Back to [SKILL.md](../SKILL.md).
 
 ## Board shape
 
@@ -63,8 +65,8 @@ create a loop.
 ## Column IDs
 
 Column UUIDs are per-project. Always discover them with
-`scripts/board.sh get` before moving cards — hard-coding IDs breaks when a
-project re-creates its board.
+`scripts/board.sh get` before moving cards — hard-coding IDs breaks when
+a project re-creates its board.
 
 ## Self-reporting flow
 

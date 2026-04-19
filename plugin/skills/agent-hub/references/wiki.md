@@ -1,8 +1,10 @@
-# Project Wiki — FTS5 Search, Pages, Categories
+# Wiki — FTS5 Search, Pages, Categories
 
 Every project has its own wiki with full-text search powered by SQLite
 FTS5. Pages are addressed by slug (derived from title on create) and
 grouped into categories.
+
+Back to [SKILL.md](../SKILL.md).
 
 ## Categories
 
