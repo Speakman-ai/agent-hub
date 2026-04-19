@@ -10,6 +10,7 @@ import humanCron from '../../../shared/utils/humanCron.js';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
 import AgentAvatar from './AgentAvatar.jsx';
 import AccountSection from './AccountSection.jsx';
+import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import * as LucideIcons from 'lucide-react';
 
@@ -4992,6 +4993,8 @@ export default function SettingsPage({
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
         <h2 className="text-2xl font-bold mb-6">Settings</h2>
+
+        <AuthUpgradeBanner />
 
         <div className="flex gap-1.5 sm:gap-2 mb-6 overflow-x-auto pb-1 -mx-1 px-1">
           {tabs.map((t) => (
