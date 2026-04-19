@@ -284,6 +284,15 @@ function ensureWorktree(
 }
 
 const app = express();
+// We run behind nginx on localhost:3051 (see Deployment section of
+// CLAUDE.md). Trust only the loopback proxy so `req.ip` resolves to the
+// original client via X-Forwarded-For — required for per-IP rate
+// limiting on login/invite-accept to work correctly. 'loopback' is the
+// safest setting: we don't blindly trust arbitrary upstream proxies.
+// NOTE: if we ever move behind ALB/Cloudflare/etc, revisit this value —
+// 'loopback' will drop the forwarded IP in that topology and per-IP
+// limits will collapse to the edge-proxy's IP.
+app.set('trust proxy', 'loopback');
 // CORS is locked to an explicit allowlist driven by ALLOWED_ORIGINS (see
 // ./cors-config.ts). The intentionally-public /api/bug-reports endpoint
 // installs its own `Access-Control-Allow-Origin: *` middleware in

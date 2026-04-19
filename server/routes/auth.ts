@@ -25,6 +25,7 @@
  * authentication. Everything else goes through the auth middleware.
  */
 import { Router, Request, Response } from 'express';
+import rateLimit, { type Options as RateLimitOptions } from 'express-rate-limit';
 import { signJwt } from '../jwt.js';
 import { hashPassword, verifyPassword } from '../password.js';
 import {
@@ -95,8 +96,108 @@ function issueToken(user: { id: string; username: string }, role: Role, jwtSecre
   return { token, expiresAt };
 }
 
-export default function createAuthRoutes(): Router {
+// ── Rate-limit defaults ────────────────────────────────────────────
+// Public launch blocker (see kanban "Auth hardening: rate-limit login
+// & invite-accept endpoints"). Without these, two-account brute-force
+// works over the internet. Thresholds were chosen to be permissive
+// enough that a human fat-fingering their password a few times won't
+// lock themselves out, but tight enough that a credential-stuffing
+// script can't meaningfully chip away at the space.
+// Exported so tests can pin the default thresholds — a typo here
+// (dropping a zero, swapping min↔h) would otherwise slip past CI since
+// the override-based tests pass their own numbers.
+export const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 min
+export const LOGIN_RATE_LIMIT_MAX = 10;
+export const INVITE_ACCEPT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 h
+export const INVITE_ACCEPT_RATE_LIMIT_MAX = 5;
+
+export interface AuthRoutesOptions {
+  /** Override login limiter. Tests pass tiny windows to exercise 429s quickly. */
+  loginRateLimit?: { windowMs: number; limit: number };
+  /** Override invite-accept limiter. */
+  inviteAcceptRateLimit?: { windowMs: number; limit: number };
+  /** Disable rate limiting entirely — used by tests that aren't about the limiter itself. */
+  disableRateLimit?: boolean;
+}
+
+type LimiterHandler = NonNullable<RateLimitOptions['handler']>;
+
+function makeLimitHandler(label: string, pathLabel: string): LimiterHandler {
+  return (req, res, _next, options) => {
+    // Console-warn rather than structured-log for v1 — fuels the
+    // Session Health observability work without introducing a new
+    // sink. We deliberately log `pathLabel` (the route pattern) rather
+    // than `req.originalUrl`: the invite-accept URL contains the real
+    // invite token, which is a bearer-equivalent secret. A fat-fingered
+    // invitee who trips the limiter would otherwise burn that token
+    // straight into PM2 logs. Username is also omitted for the same
+    // class of reason — a naive log scrape shouldn't double as an
+    // enumerated hit-list of targeted accounts.
+    const ip = req.ip ?? 'unknown';
+    console.warn(
+      `[auth] rate-limit hit label=${label} ip=${ip} path=${pathLabel} limit=${options.limit} windowMs=${options.windowMs}`,
+    );
+    // express-rate-limit will have already set Retry-After via
+    // standardHeaders='draft-7'. We just shape the body.
+    res.status(options.statusCode).json({
+      error: 'Too many requests. Please try again later.',
+      code: 'rate_limited',
+    });
+  };
+}
+
+function buildLoginLimiter(opts: AuthRoutesOptions) {
+  if (opts.disableRateLimit) {
+    return (_req: Request, _res: Response, next: () => void) => next();
+  }
+  const { windowMs, limit } = opts.loginRateLimit ?? {
+    windowMs: LOGIN_RATE_LIMIT_WINDOW_MS,
+    limit: LOGIN_RATE_LIMIT_MAX,
+  };
+  return rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    // `skipSuccessfulRequests: true` would mean a successful login
+    // doesn't burn quota — but it would also let an attacker who
+    // *happens* to guess a password mid-window avoid the rate cap.
+    // Keep the default (count everything) so successful logins still
+    // tick the meter.
+    //
+    // `keyGenerator` is omitted — express-rate-limit v8's default
+    // already uses `ipKeyGenerator(req.ip, ipv6Subnet)`. Leaving it
+    // unset also means IPv6 subnet masking stays consistent with the
+    // library default if we ever configure `ipv6Subnet`.
+    handler: makeLimitHandler('login', '/api/auth/login'),
+  });
+}
+
+function buildInviteAcceptLimiter(opts: AuthRoutesOptions) {
+  if (opts.disableRateLimit) {
+    return (_req: Request, _res: Response, next: () => void) => next();
+  }
+  const { windowMs, limit } = opts.inviteAcceptRateLimit ?? {
+    windowMs: INVITE_ACCEPT_RATE_LIMIT_WINDOW_MS,
+    limit: INVITE_ACCEPT_RATE_LIMIT_MAX,
+  };
+  return rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    // See comment in buildLoginLimiter — keyGenerator omitted on
+    // purpose to inherit the library default (ipKeyGenerator over
+    // req.ip). The pathLabel is critical here: the real URL contains
+    // the invite token, which must never hit the logs.
+    handler: makeLimitHandler('invite-accept', '/api/auth/invites/:token/accept'),
+  });
+}
+
+export default function createAuthRoutes(options: AuthRoutesOptions = {}): Router {
   const router = Router();
+  const loginLimiter = buildLoginLimiter(options);
+  const inviteAcceptLimiter = buildInviteAcceptLimiter(options);
 
   // ── Status (public) ────────────────────────────────────────────
   router.get('/api/auth/status', (_req: Request, res: Response) => {
@@ -174,8 +275,8 @@ export default function createAuthRoutes(): Router {
     });
   });
 
-  // ── Login (public) ─────────────────────────────────────────────
-  router.post('/api/auth/login', async (req: Request, res: Response) => {
+  // ── Login (public, rate-limited per IP) ────────────────────────
+  router.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
     const authRecord = getAuthRecord();
     if (!authRecord) {
       res.status(409).json({ error: 'Auth not configured. Call /api/auth/setup first.' });
@@ -609,87 +710,91 @@ export default function createAuthRoutes(): Router {
     });
   });
 
-  // POST /api/auth/invites/:token/accept — public (consumes invite)
-  router.post('/api/auth/invites/:token/accept', async (req: Request, res: Response) => {
-    const { token } = req.params as { token: string };
-    const row = getInvite(token);
-    const state = inviteState(row);
-    if (!row || state === 'not-found') {
-      res.status(404).json({ error: 'invite not found' });
-      return;
-    }
-    if (state === 'expired' || state === 'already-accepted') {
-      res.status(410).json({ error: `invite ${state}` });
-      return;
-    }
-
-    const { username: rawUser, password: rawPass } = req.body as {
-      username?: string;
-      password?: string;
-    };
-    const username = sanitizeUsername(rawUser);
-    const password = sanitizePassword(rawPass);
-    if (!username) {
-      res.status(400).json({ error: 'invalid username' });
-      return;
-    }
-    if (!password) {
-      res.status(400).json({
-        error: `password must be ${MIN_PASSWORD_LEN}–${MAX_PASSWORD_LEN} chars`,
-      });
-      return;
-    }
-    if (getUserByUsername(username)) {
-      res.status(409).json({ error: 'username already taken' });
-      return;
-    }
-
-    const passwordHash = await hashPassword(password);
-
-    // Wrap user creation + invite acceptance + membership in a single
-    // DB transaction so a crash mid-flow can't strand a consumed invite
-    // against a user row with no membership (a "ghost account" that can
-    // log in but 403s on every call). better-sqlite3's db.transaction()
-    // returns a function that commits on normal return and rolls back
-    // on any thrown error, so we throw an in-band sentinel when the
-    // atomic `markInviteAccepted` loses its race.
-    class InviteRaceLost extends Error {}
-    let user: { id: string; username: string };
-    try {
-      user = getOrgsDb().transaction(() => {
-        const u = createUser({ username, passwordHash });
-        const won = markInviteAccepted(token, u.id);
-        if (!won) {
-          // Losing the race rolls back the createUser + leaves the
-          // original winner's acceptance intact.
-          throw new InviteRaceLost();
-        }
-        createMembership(u.id, row.org_id, row.role);
-        return u;
-      })();
-    } catch (err) {
-      if (err instanceof InviteRaceLost) {
-        res.status(410).json({ error: 'invite no longer valid' });
+  // POST /api/auth/invites/:token/accept — public (consumes invite, rate-limited per IP)
+  router.post(
+    '/api/auth/invites/:token/accept',
+    inviteAcceptLimiter,
+    async (req: Request, res: Response) => {
+      const { token } = req.params as { token: string };
+      const row = getInvite(token);
+      const state = inviteState(row);
+      if (!row || state === 'not-found') {
+        res.status(404).json({ error: 'invite not found' });
         return;
       }
-      throw err;
-    }
+      if (state === 'expired' || state === 'already-accepted') {
+        res.status(410).json({ error: `invite ${state}` });
+        return;
+      }
 
-    const authRecord = getAuthRecord();
-    if (!authRecord) {
-      // Can't issue a token with no JWT secret on disk. Invite flow is
-      // post-setup only — this is effectively a server-misconfiguration.
-      res.status(500).json({ error: 'server auth not configured' });
-      return;
-    }
-    const { token: jwt, expiresAt } = issueToken(user, row.role, authRecord.jwtSecret);
-    res.status(201).json({
-      token: jwt,
-      expiresAt,
-      user: { id: user.id, username: user.username, role: row.role },
-      orgId: row.org_id,
-    });
-  });
+      const { username: rawUser, password: rawPass } = req.body as {
+        username?: string;
+        password?: string;
+      };
+      const username = sanitizeUsername(rawUser);
+      const password = sanitizePassword(rawPass);
+      if (!username) {
+        res.status(400).json({ error: 'invalid username' });
+        return;
+      }
+      if (!password) {
+        res.status(400).json({
+          error: `password must be ${MIN_PASSWORD_LEN}–${MAX_PASSWORD_LEN} chars`,
+        });
+        return;
+      }
+      if (getUserByUsername(username)) {
+        res.status(409).json({ error: 'username already taken' });
+        return;
+      }
+
+      const passwordHash = await hashPassword(password);
+
+      // Wrap user creation + invite acceptance + membership in a single
+      // DB transaction so a crash mid-flow can't strand a consumed invite
+      // against a user row with no membership (a "ghost account" that can
+      // log in but 403s on every call). better-sqlite3's db.transaction()
+      // returns a function that commits on normal return and rolls back
+      // on any thrown error, so we throw an in-band sentinel when the
+      // atomic `markInviteAccepted` loses its race.
+      class InviteRaceLost extends Error {}
+      let user: { id: string; username: string };
+      try {
+        user = getOrgsDb().transaction(() => {
+          const u = createUser({ username, passwordHash });
+          const won = markInviteAccepted(token, u.id);
+          if (!won) {
+            // Losing the race rolls back the createUser + leaves the
+            // original winner's acceptance intact.
+            throw new InviteRaceLost();
+          }
+          createMembership(u.id, row.org_id, row.role);
+          return u;
+        })();
+      } catch (err) {
+        if (err instanceof InviteRaceLost) {
+          res.status(410).json({ error: 'invite no longer valid' });
+          return;
+        }
+        throw err;
+      }
+
+      const authRecord = getAuthRecord();
+      if (!authRecord) {
+        // Can't issue a token with no JWT secret on disk. Invite flow is
+        // post-setup only — this is effectively a server-misconfiguration.
+        res.status(500).json({ error: 'server auth not configured' });
+        return;
+      }
+      const { token: jwt, expiresAt } = issueToken(user, row.role, authRecord.jwtSecret);
+      res.status(201).json({
+        token: jwt,
+        expiresAt,
+        user: { id: user.id, username: user.username, role: row.role },
+        orgId: row.org_id,
+      });
+    },
+  );
 
   // ── Logout (protected) ─────────────────────────────────────────
   // Stateless JWTs — logout is a client-side drop. The endpoint exists so

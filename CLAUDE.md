@@ -223,3 +223,7 @@ The Claude Code CLI binary appends a hidden `<system-reminder>` after every Read
 - Requests with no `Origin` header (Electron desktop shell, React Native mobile, curl, server-to-server) are always allowed — only browsers enforce CORS.
 - Unknown browser origins receive a normal HTTP response with **no** `Access-Control-Allow-Origin` header; the browser's SOP then blocks the response from reaching the caller.
 - The public bug-report intake endpoint at `POST /api/bug-reports` keeps its own `Access-Control-Allow-Origin: *` via `server/routes/bug-reports.ts` (intentionally cross-origin, rate-limited).
+
+### Rate limiting — `trust proxy` is coupled to the proxy topology
+- `server/index.ts` sets `app.set('trust proxy', 'loopback')` so `req.ip` resolves via `X-Forwarded-For` from our local nginx (127.0.0.1). This is what lets the per-IP login / invite-accept rate limiters in `server/routes/auth.ts` see the real client IP.
+- **If the topology ever changes** (moving behind AWS ALB, Cloudflare, or any non-loopback proxy), this value MUST be revisited. `'loopback'` will drop the forwarded IP outside 127.0.0.1 and per-IP limits will collapse to a single bucket (the edge proxy's IP). See the express docs on `trust proxy` for the hop-count / CIDR / `true` options.
