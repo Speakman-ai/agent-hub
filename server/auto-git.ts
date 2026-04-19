@@ -749,6 +749,16 @@ export async function autoCommitAndPR(
       return;
     }
 
+    // Reviewer sessions exist to review existing PRs — they never author new
+    // PRs, and the "Create PR" banner / `changes_ready` broadcast is never
+    // appropriate for them. Skip before any worktree / PR-discovery work so
+    // that even if a reviewer incidentally touched files, we don't surface a
+    // creation prompt on the client.
+    if (agent.role === 'reviewer') {
+      console.log(`[auto-commit] Session ${sessionId} — skipping (reviewer agent, no PR)`);
+      return;
+    }
+
     if (effectiveCwd === project.cwd) {
       console.log(`[auto-commit] Session ${sessionId} — skipping (not a worktree)`);
       return;

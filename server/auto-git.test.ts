@@ -463,6 +463,59 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       .run.mock.calls;
     expect(updateCalls).toHaveLength(0);
   });
+
+  it('skips reviewer-role sessions entirely (no changes_ready, no git work)', async () => {
+    // Reviewer sessions exist to review PRs, never to author them. Even if a
+    // reviewer's worktree has uncommitted changes, the "Create PR" banner must
+    // not surface. Fix for user-reported bug: review sessions should never
+    // prompt for PR creation.
+    const execCalls: string[] = [];
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        // Populate results that *would* trigger changes_ready on a dev agent.
+        if (cmd.includes('git remote -v')) {
+          callback?.(null, {
+            stdout: 'origin\thttps://github.com/test/repo.git (fetch)\n',
+            stderr: '',
+          });
+          return;
+        }
+        if (cmd.includes('git status --porcelain')) {
+          callback?.(null, { stdout: 'M file.ts\n', stderr: '' });
+          return;
+        }
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) {
+          callback?.(null, { stdout: 'review/pr-42\n', stderr: '' });
+          return;
+        }
+        callback?.(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const project = { id: 'test', cwd: '/repo' } as never;
+    const agent = { name: 'Reviewer', role: 'reviewer' } as never;
+
+    await autoCommitAndPR('sess-reviewer', 'reviewer-1', project, agent, '/worktree', '');
+
+    // No changes_ready broadcast.
+    const changesReadyEvents = mockBroadcast.mock.calls.filter(
+      (c: Array<Record<string, unknown>>) => c[0]?.type === 'changes_ready',
+    );
+    expect(changesReadyEvents).toHaveLength(0);
+
+    // No persistence of changes_ready.
+    const updateCalls = (mockStmts.updateSessionChangesReady as { run: ReturnType<typeof vi.fn> })
+      .run.mock.calls;
+    expect(updateCalls).toHaveLength(0);
+
+    // Early return before any git / gh invocation.
+    expect(execCalls).toHaveLength(0);
+  });
 });
 
 describe('commitPushAndCreatePR — existing PR early return re-applies auto-merge', () => {
