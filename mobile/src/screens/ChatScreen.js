@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import TopBar from '../components/TopBar';
@@ -54,10 +55,26 @@ export default function ChatScreen() {
     sessionAskMode,
     askSubmitted,
     handleAskSubmit,
+    reloadMessages,
   } = useApp();
 
   const flatListRef = useRef(null);
   const [showSwitcher, setShowSwitcher] = useState(false);
+
+  // Reload the active session's messages every time the Chat screen gains
+  // focus — either from a cold launch, returning from another stack screen,
+  // or the user tapping a session in the drawer (which routes through
+  // `navigation.navigate('Chat')`). This guarantees the chat reflects the
+  // server's latest history without having to toggle sessions off-and-on.
+  // The `activeSessionId` dep also covers the case where the session changes
+  // while this screen is already focused.
+  useFocusEffect(
+    useCallback(() => {
+      if (activeSessionId) {
+        reloadMessages();
+      }
+    }, [activeSessionId, reloadMessages]),
+  );
 
   // Auto-scroll when messages change
   useEffect(() => {

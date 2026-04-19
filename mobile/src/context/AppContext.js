@@ -18,6 +18,7 @@ import { registerForPushNotifications, presentLocalNotification } from '../utils
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
 import { routeNotificationTap } from '../utils/notificationRouting';
 import { uploadAttachments } from '../utils/uploadAttachments';
+import { createReloadMessages } from '../utils/sessionReload';
 
 const AppContext = createContext(null);
 
@@ -908,14 +909,28 @@ export function AppProvider({ children }) {
     }
   }, [activeSessionId, sessions]);
 
+  // Reload messages for the currently-active session. Exposed via context so
+  // screens (e.g. ChatScreen on navigation focus, DrawerContent when the user
+  // re-taps the already-active session) can force a refresh without waiting
+  // for `activeSessionId` to change. The race-guard logic lives in the pure
+  // `createReloadMessages` factory so it can be unit-tested in isolation.
+  const reloadMessages = useCallback(
+    createReloadMessages({
+      fetchMessages: (sid) => api.getMessages(sid),
+      getActiveSessionId: () => activeSessionIdRef.current,
+      setMessages,
+    }),
+    [],
+  );
+
   // Load messages when session changes
   useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);
       return;
     }
-    api.getMessages(activeSessionId).then(setMessages).catch(() => setMessages([]));
-  }, [activeSessionId]);
+    reloadMessages();
+  }, [activeSessionId, reloadMessages]);
 
   // Load handoffs emitted from this session so HandoffCard can resolve
   // `to_session_id` and render a tappable "Open session" link. Best-effort —
@@ -1339,6 +1354,7 @@ export function AppProvider({ children }) {
     activeSessionId,
     setActiveSessionId,
     messages,
+    reloadMessages,
     thinking,
     streamingContent,
     streamingMsgId,

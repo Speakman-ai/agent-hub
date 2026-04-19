@@ -35,6 +35,7 @@ export default function DrawerContent({ navigation }) {
     refreshAgents,
     cronSessions,
     unreadThreadCounts,
+    reloadMessages,
   } = useApp();
 
   const [collapsedAgents, setCollapsedAgents] = useState({});
@@ -62,7 +63,15 @@ export default function DrawerContent({ navigation }) {
   };
 
   const handleSessionSelect = (sessionId) => {
-    setActiveSessionId(sessionId);
+    // If the user taps the already-active session, `setActiveSessionId` is
+    // a no-op and React Navigation's focus event won't fire either — so the
+    // chat wouldn't refresh at all. Explicitly reload so every drawer tap
+    // pulls the latest message history from the server.
+    if (sessionId === activeSessionId) {
+      reloadMessages();
+    } else {
+      setActiveSessionId(sessionId);
+    }
     navigation.navigate('Chat');
     navigation.closeDrawer();
   };
@@ -79,7 +88,11 @@ export default function DrawerContent({ navigation }) {
   };
 
   const handleCronSessionSelect = (sessionId) => {
-    setActiveSessionId(sessionId);
+    if (sessionId === activeSessionId) {
+      reloadMessages();
+    } else {
+      setActiveSessionId(sessionId);
+    }
     navigation.navigate('Chat');
     navigation.closeDrawer();
   };
