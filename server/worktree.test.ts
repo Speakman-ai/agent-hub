@@ -96,6 +96,7 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
       worktree_branch: null,
       git_worktree_detected: 0,
       changes_ready: null,
+      stale_pr_notified_at: null,
       ask_mode: 0,
       cron_id: null,
       created_at: new Date().toISOString(),

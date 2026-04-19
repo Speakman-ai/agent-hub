@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   sessionCompletePush,
   changesReadyPush,
+  prCreationStalePush,
   cardStartedPush,
   cardReviewPush,
   prMergedPush,
@@ -61,6 +62,29 @@ describe('push formatters', () => {
     ).toContain('Hub — "Ship"');
     expect(changesReadyPush({ branch: 'feat/x' }).body).toMatch(
       /An agent has changes on .*feat\/x.*awaiting/,
+    );
+  });
+
+  it('formats pr_creation_stale with session, branch, and age', () => {
+    const { title, body } = prCreationStalePush({
+      agentName: 'Hub',
+      sessionName: 'Ship it',
+      branch: 'feature/x',
+      ageMinutes: 42,
+    });
+    expect(title).toBe('Still waiting — Create PR?');
+    expect(body).toBe('"Ship it" on `feature/x` has had changes awaiting PR for 42 min');
+  });
+
+  it('formats pr_creation_stale falling back when session/agent absent', () => {
+    const { body } = prCreationStalePush({ branch: 'feat/y', ageMinutes: 31 });
+    expect(body).toBe('A session on `feat/y` has had changes awaiting PR for 31 min');
+  });
+
+  it('formats pr_creation_stale without age suffix when age is missing or non-positive', () => {
+    expect(prCreationStalePush({ sessionName: 'S' }).body).toBe('"S" has had changes awaiting PR');
+    expect(prCreationStalePush({ sessionName: 'S', ageMinutes: 0 }).body).toBe(
+      '"S" has had changes awaiting PR',
     );
   });
 
@@ -136,6 +160,7 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
     const required: (typeof PUSH_EVENT_TYPES)[number][] = [
       'session_complete',
       'changes_ready',
+      'pr_creation_stale',
       'card_started',
       'card_review',
       'pr_merged',

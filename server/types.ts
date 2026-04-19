@@ -15,6 +15,7 @@ export interface SessionRow {
   worktree_branch: string | null;
   git_worktree_detected: number | null;
   changes_ready: string | null;
+  stale_pr_notified_at: string | null;
   ask_mode: number;
   cron_id: number | null;
   created_at: string;
@@ -624,6 +625,8 @@ export interface Stmts {
   updateSessionAskMode: Stmt;
   updateSessionChangesReady: Stmt;
   clearSessionChangesReady: Stmt;
+  getStalePendingPrSessions: Stmt;
+  markStalePrNotified: Stmt;
 
   // Background tasks
   insertBackgroundTask: Stmt;

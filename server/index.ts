@@ -41,6 +41,7 @@ import {
   runClaude,
 } from './heartbeat.js';
 import { startSlack } from './slack.js';
+import { startStalePrChecker } from './stale-pr-check.js';
 import { appendDailyNote } from './memory.js';
 import config from './config.js';
 import {
@@ -835,6 +836,20 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     startSlack(allAgents(), stmts!).catch((err: Error) => {
       console.error('Failed to start Slack bots:', err.message);
     });
+
+    // Periodic reminder for sessions stuck in "changes awaiting PR creation".
+    // Guarded under NODE_ENV so tests don't leak intervals or fire pushes.
+    if (process.env.NODE_ENV !== 'test') {
+      startStalePrChecker({
+        stmts: stmts!,
+        broadcast,
+        getAgent: (agentId: string) => {
+          const found = findAgent(agentId);
+          if (!found) return null;
+          return { name: found.agent.name, projectId: found.project.id };
+        },
+      });
+    }
 
     initIosBuildEngine({ stmts: stmts!, broadcast });
     initCaptureEngine({ stmts: stmts!, broadcast, uploadsDir: UPLOADS_DIR });

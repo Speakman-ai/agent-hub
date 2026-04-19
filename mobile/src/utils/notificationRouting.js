@@ -16,7 +16,7 @@
  * under Vitest without native mocks. All side effects (navigation, state
  * updates) happen in the caller, which inspects the returned `Route` tag.
  *
- * @typedef {'session_complete'|'changes_ready'|'card_started'|'card_review'|'pr_merged'|'thread_created'|'thread_entry'|'dispatch_failure'} EventKey
+ * @typedef {'session_complete'|'changes_ready'|'pr_creation_stale'|'card_started'|'card_review'|'pr_merged'|'thread_created'|'thread_entry'|'dispatch_failure'} EventKey
  *
  * @typedef {{ kind: 'chat', agentId: string | null, sessionId: string }} ChatRoute
  * @typedef {{ kind: 'kanban', projectId: string | null, cardId: string | null }} KanbanRoute
@@ -59,7 +59,7 @@ export function resolveAgentIdForSession(sessionId, sessions) {
 /**
  * Decide where a notification tap should navigate based on its payload.
  *
- * Chat events (`session_complete`, `changes_ready`) require at minimum a
+ * Chat events (`session_complete`, `changes_ready`, `pr_creation_stale`) require at minimum a
  * `sessionId`. `agentId` may be absent on server-sent pushes, in which case
  * the caller should consult the current sessions list (we do that here when
  * possible, but the caller may also need to fetch if the session isn't
@@ -92,7 +92,8 @@ export function routeNotificationTap(data, ctx = {}) {
 
   switch (event) {
     case 'session_complete':
-    case 'changes_ready': {
+    case 'changes_ready':
+    case 'pr_creation_stale': {
       const sessionId = typeof data.sessionId === 'string' ? data.sessionId : null;
       if (!sessionId) return null;
       const payloadAgentId = typeof data.agentId === 'string' ? data.agentId : null;

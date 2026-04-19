@@ -701,6 +701,17 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN changes_ready TEXT DEFAULT NULL');
   }
 
+  // Dedup column for the stale PR-creation notifier (see server/stale-pr-check.ts).
+  // NULL means "never notified for the current changes_ready"; set to an ISO
+  // timestamp once a push has been dispatched so the next cycle skips the row.
+  // Cleared back to NULL whenever `changes_ready` is cleared, so a future
+  // stale period re-fires.
+  try {
+    db.prepare('SELECT stale_pr_notified_at FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN stale_pr_notified_at TEXT DEFAULT NULL');
+  }
+
   // Fixup: original migration used NOT NULL DEFAULT 0, which falsely marks pre-existing
   // sessions as "CLI confirmed not in worktree". Reset stale defaults to NULL (unknown).
   {
@@ -1109,8 +1120,24 @@ function initDb(dataDir: string): void {
     updateSessionChangesReady: db.prepare(
       "UPDATE sessions SET changes_ready = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    // Also nulls `stale_pr_notified_at` so a future stale period for the
+    // same session re-notifies rather than being permanently suppressed by
+    // a prior notification.
     clearSessionChangesReady: db.prepare(
-      "UPDATE sessions SET changes_ready = NULL, updated_at = datetime('now') WHERE id = ?",
+      "UPDATE sessions SET changes_ready = NULL, stale_pr_notified_at = NULL, updated_at = datetime('now') WHERE id = ?",
+    ),
+    // Sessions that have had pending PR creation for > 30 min and haven't
+    // been notified yet. Threshold is baked into the SQL (mirrors the
+    // constant in stale-pr-check.ts).
+    getStalePendingPrSessions: db.prepare(
+      `SELECT id, name, agent_id, changes_ready, updated_at
+       FROM sessions
+       WHERE changes_ready IS NOT NULL
+         AND stale_pr_notified_at IS NULL
+         AND updated_at <= datetime('now', '-30 minutes')`,
+    ),
+    markStalePrNotified: db.prepare(
+      "UPDATE sessions SET stale_pr_notified_at = datetime('now') WHERE id = ?",
     ),
 
     // Background tasks

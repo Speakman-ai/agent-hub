@@ -15,6 +15,7 @@ function baseSession(overrides: Partial<SessionRow>): SessionRow {
     worktree_branch: null,
     git_worktree_detected: null,
     changes_ready: null,
+    stale_pr_notified_at: null,
     ask_mode: 0,
     cron_id: null,
     created_at: '',

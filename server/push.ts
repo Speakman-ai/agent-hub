@@ -25,6 +25,7 @@ import type { DeviceTokenRow } from './types.js';
 export const PUSH_EVENT_TYPES = [
   'session_complete',
   'changes_ready',
+  'pr_creation_stale',
   'card_started',
   'card_review',
   'pr_merged',
@@ -91,6 +92,35 @@ export function changesReadyPush(args: {
     ? `${who} has changes${where} awaiting PR creation`
     : `An agent has changes${where} awaiting PR creation`;
   return { title: 'Changes Ready — Create PR?', body };
+}
+
+/**
+ * Formatter for `pr_creation_stale` — emitted by the periodic
+ * `runStalePrCheck` when a session has had `changes_ready` metadata for
+ * longer than the stale threshold (default 30 min) without the user having
+ * created a PR. Separate from `changes_ready` so push-preference filters
+ * can opt out of the reminder independently from the initial "changes ready"
+ * push.
+ */
+export function prCreationStalePush(args: {
+  agentName?: string;
+  sessionName?: string;
+  branch?: string;
+  ageMinutes?: number;
+}): { title: string; body: string } {
+  const parts: string[] = [];
+  if (args.sessionName) parts.push(`"${args.sessionName}"`);
+  else if (args.agentName) parts.push(args.agentName);
+  const where = args.branch ? ` on \`${args.branch}\`` : '';
+  const age =
+    typeof args.ageMinutes === 'number' && Number.isFinite(args.ageMinutes) && args.ageMinutes > 0
+      ? ` for ${Math.round(args.ageMinutes)} min`
+      : '';
+  const subject = parts.join(' — ') || 'A session';
+  return {
+    title: 'Still waiting — Create PR?',
+    body: `${subject}${where} has had changes awaiting PR${age}`,
+  };
 }
 
 export function cardStartedPush(args: { cardTitle: string; assignee?: string }): {

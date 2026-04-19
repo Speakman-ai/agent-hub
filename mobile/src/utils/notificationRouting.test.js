@@ -90,6 +90,36 @@ describe('routeNotificationTap — chat events', () => {
       sessionId: 's9',
     });
   });
+
+  it('routes pr_creation_stale to chat like changes_ready', () => {
+    // The stale-PR reminder is a periodic re-notification of the same
+    // "changes awaiting PR" state, so tapping it should open the session.
+    const data = {
+      event: 'pr_creation_stale',
+      sessionId: 's7',
+      agentId: 'a7',
+      branch: 'feature/y',
+    };
+    expect(routeNotificationTap(data)).toEqual({
+      kind: 'chat',
+      agentId: 'a7',
+      sessionId: 's7',
+    });
+  });
+
+  it('routes pr_creation_stale (server push shape) and resolves agentId from sessions', () => {
+    const data = { type: 'pr_creation_stale', sessionId: 's7' };
+    const sessions = [{ id: 's7', agent_id: 'a7' }];
+    expect(routeNotificationTap(data, { sessions })).toEqual({
+      kind: 'chat',
+      agentId: 'a7',
+      sessionId: 's7',
+    });
+  });
+
+  it('returns null for pr_creation_stale without a sessionId', () => {
+    expect(routeNotificationTap({ type: 'pr_creation_stale' })).toBeNull();
+  });
 });
 
 describe('routeNotificationTap — kanban events', () => {
