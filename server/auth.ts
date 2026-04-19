@@ -3,15 +3,18 @@ import type { Request, Response, NextFunction } from 'express';
 import config from './config.js';
 import { verifyJwt } from './jwt.js';
 import { getAuthRecord } from './auth-store.js';
+import { getActiveOrgId } from './orgs.js';
+import { getUserById, getUserByUsername } from './users-store.js';
+import { getMembershipRole } from './memberships-store.js';
 import type { Role } from './roles.js';
 
 /**
  * Endpoints the auth middleware always lets through. Anything that is
- * needed BEFORE a client can authenticate (health, login) must be on
- * this list — everything else is gated by either a valid JWT or a valid
- * `X-API-Key`. Note: `/api/auth/setup` is handled separately below — it
- * is public only when no auth mechanism (neither apiKey nor JWT) is
- * configured.
+ * needed BEFORE a client can authenticate (health, login, invite
+ * landing) must be on this list — everything else is gated by either a
+ * valid JWT or a valid `X-API-Key`. Note: `/api/auth/setup` is handled
+ * separately below — it is public only when no auth mechanism (neither
+ * apiKey nor JWT) is configured.
  */
 const PUBLIC_PATHS: readonly string[] = [
   '/api/health',
@@ -24,17 +27,34 @@ const PUBLIC_PATHS: readonly string[] = [
   '/api/auth/login',
 ];
 
+/**
+ * Path prefixes that are public regardless of trailing path segments.
+ * Used for the invite landing + accept flow, which needs to be reachable
+ * from an email link by somebody who hasn't yet authenticated.
+ */
+const PUBLIC_PREFIXES: readonly string[] = ['/api/auth/invites/'];
+
+function isPublicPath(pathname: string): boolean {
+  if (PUBLIC_PATHS.includes(pathname)) return true;
+  return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
 /** Augmented Express request populated by the middleware on success. */
 export interface AuthenticatedRequest extends Request {
   /** Subject (username) when the caller used a JWT. */
   authUser?: string;
+  /** Stable user id resolved from the JWT (Phase 3). Absent on apiKey path. */
+  authUserId?: string;
+  /** Active org id at the time the request was authenticated. */
+  authOrgId?: string;
   /** True when the caller used the apiKey fallback. */
   authViaApiKey?: boolean;
   /**
-   * Resolved role for the authenticated caller (Phase 2). Populated from
-   * the user record on successful JWT verification, or forced to 'Owner'
-   * when the apiKey path is taken — the apiKey is the break-glass shared
-   * secret and is treated as full privilege for backward compatibility.
+   * Resolved role for the authenticated caller. Populated from the
+   * caller's membership in the active org (Phase 3), or forced to
+   * 'Owner' when the apiKey path is taken — the apiKey is the
+   * break-glass shared secret and is treated as full privilege for
+   * backward compatibility.
    */
   authRole?: Role;
 }
@@ -61,6 +81,50 @@ function extractApiKey(req: Request): string | null {
   return null;
 }
 
+/**
+ * Resolve the caller behind a verified JWT to a concrete user row + role.
+ * Returns `null` when the token's subject no longer maps to a user
+ * (deleted) or has no membership in the active org (403-worthy), so the
+ * middleware can choose the right HTTP status.
+ *
+ * Handles the pre-Phase-3 compatibility path: tokens issued before the
+ * `uid` claim existed are re-resolved by looking up `sub` (username) in
+ * the users table created by the migration.
+ */
+function resolveJwtCaller(payload: { sub: string; uid?: string }):
+  | {
+      userId: string;
+      username: string;
+      role: Role;
+      orgId: string;
+    }
+  | null
+  | 'orgs-db-unavailable' {
+  let user = null;
+  try {
+    if (typeof payload.uid === 'string' && payload.uid.length > 0) {
+      user = getUserById(payload.uid);
+    }
+    if (!user) {
+      // Pre-Phase-3 token fallback: `sub` is the username.
+      user = getUserByUsername(payload.sub);
+    }
+  } catch {
+    // orgs.db isn't initialized yet (tests / mid-boot). Signal the
+    // caller to fall back to the legacy auth.json role without
+    // enforcing per-org membership.
+    return 'orgs-db-unavailable';
+  }
+  if (!user) return null;
+
+  const orgId = getActiveOrgId();
+  const role = getMembershipRole(user.id, orgId);
+  if (!role) {
+    return { userId: user.id, username: user.username, role: 'User' as Role, orgId: '' };
+  }
+  return { userId: user.id, username: user.username, role, orgId };
+}
+
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const apiKey = config.apiKey;
   const authRecord = getAuthRecord();
@@ -77,7 +141,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     return;
   }
 
-  if (PUBLIC_PATHS.includes(req.path)) {
+  if (isPublicPath(req.path)) {
     next();
     return;
   }
@@ -103,12 +167,33 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     if (token) {
       const verified = verifyJwt(token, authRecord.jwtSecret);
       if (verified.ok) {
-        authedReq.authUser = verified.payload!.sub;
-        // Phase 1 is single-user, so the token's sub always maps to the
-        // stored record. When Phase 3 introduces multi-user we'll swap
-        // this lookup for a real users table; the middleware contract
-        // (req.authRole is a Role or undefined) stays the same.
-        authedReq.authRole = authRecord.role;
+        const resolved = resolveJwtCaller(verified.payload!);
+        if (resolved === 'orgs-db-unavailable') {
+          // Pre-Phase-3 environments / tests without orgs.db bootstrap.
+          // Fall back to the auth.json record's role and let the
+          // request through — this matches Phase 2 behavior.
+          authedReq.authUser = verified.payload!.sub;
+          authedReq.authRole = authRecord.role;
+          next();
+          return;
+        }
+        if (!resolved) {
+          // Token verified but the user row is gone (deleted after
+          // token issuance). Treat as expired-ish — 401 so the client
+          // knows to discard the token and re-auth.
+          res.status(401).json({ error: 'Token subject no longer exists.' });
+          return;
+        }
+        if (!resolved.orgId) {
+          res.status(403).json({
+            error: 'You are not a member of this org.',
+          });
+          return;
+        }
+        authedReq.authUser = resolved.username;
+        authedReq.authUserId = resolved.userId;
+        authedReq.authOrgId = resolved.orgId;
+        authedReq.authRole = resolved.role;
         next();
         return;
       }
@@ -124,8 +209,13 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     if (provided && provided === apiKey) {
       authedReq.authViaApiKey = true;
       // The apiKey is the break-glass shared secret; treat it as full
-      // privilege so existing CLI scripts keep working after Phase 2.
+      // privilege so existing CLI scripts keep working.
       authedReq.authRole = 'Owner';
+      try {
+        authedReq.authOrgId = getActiveOrgId();
+      } catch {
+        // orgs.db not initialized in some test harnesses — leave unset.
+      }
       next();
       return;
     }
@@ -151,7 +241,12 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 export interface WsAuthResult {
   ok: boolean;
   subject?: string;
+  userId?: string;
+  orgId?: string;
+  role?: Role;
   viaApiKey?: boolean;
+  /** When `ok === false`, a short reason so callers can log / close-code. */
+  reason?: 'unauthenticated' | 'no-membership' | 'unknown-user';
 }
 
 /**
@@ -160,8 +255,9 @@ export interface WsAuthResult {
  *     custom headers on a `new WebSocket(...)` handshake).
  *   - `?apiKey=<key>` — legacy API-key mechanism.
  *
- * Returns a structured result so callers can attach the identity to the
- * connection if they want — the existing call site just checks `.ok`.
+ * Phase 3: tokens that verify but don't map to a current user, or whose
+ * user has no membership in the active org, are rejected with a
+ * structured reason so the server can close the handshake cleanly.
  */
 export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
   const apiKey = config.apiKey;
@@ -173,14 +269,30 @@ export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
     const token = url.searchParams.get('token');
     if (token) {
       const verified = verifyJwt(token, authRecord.jwtSecret);
-      if (verified.ok) return { ok: true, subject: verified.payload!.sub };
+      if (verified.ok) {
+        const resolved = resolveJwtCaller(verified.payload!);
+        if (resolved === 'orgs-db-unavailable') {
+          return { ok: true, subject: verified.payload!.sub, role: authRecord.role };
+        }
+        if (!resolved) return { ok: false, reason: 'unknown-user' };
+        if (!resolved.orgId) return { ok: false, reason: 'no-membership' };
+        return {
+          ok: true,
+          subject: resolved.username,
+          userId: resolved.userId,
+          orgId: resolved.orgId,
+          role: resolved.role,
+        };
+      }
     }
   }
   if (apiKey) {
     const provided = url.searchParams.get('apiKey');
-    if (provided && provided === apiKey) return { ok: true, viaApiKey: true };
+    if (provided && provided === apiKey) {
+      return { ok: true, viaApiKey: true, role: 'Owner' };
+    }
   }
-  return { ok: false };
+  return { ok: false, reason: 'unauthenticated' };
 }
 
 /** Back-compat boolean wrapper used by the existing WebSocket setup. */

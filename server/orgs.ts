@@ -17,8 +17,37 @@ interface OrgsStmts {
   setActiveOrgId: Database.Statement<[string]>;
 }
 
-let orgsDb: Database.Database;
+let orgsDb: Database.Database | null = null;
 let orgsStmts: OrgsStmts;
+
+/**
+ * Override the `orgs.db` location — for tests only. Pass `null` to reset
+ * back to the default (`{config.dataDir}/orgs.db`).
+ */
+let orgsDbPathOverride: string | null = null;
+export function setOrgsDbPathForTests(p: string | null): void {
+  orgsDbPathOverride = p;
+  if (orgsDb) {
+    try {
+      orgsDb.close();
+    } catch {}
+    orgsDb = null;
+  }
+}
+
+/**
+ * Accessor for the shared orgs.db handle. Phase 3 stores (users,
+ * memberships, invites) live in the same database so a user can belong
+ * to multiple orgs without each per-org data-dir duplicating the
+ * identity table. Throws if `initOrgsDb()` hasn't run — callers are
+ * always downstream of server startup.
+ */
+export function getOrgsDb(): Database.Database {
+  if (!orgsDb) {
+    throw new Error('orgs.db not initialized — call initOrgsDb() first');
+  }
+  return orgsDb;
+}
 
 export function orgDataDir(orgId: string): string {
   if (orgId === 'default') return config.dataDir;
@@ -26,9 +55,13 @@ export function orgDataDir(orgId: string): string {
 }
 
 export function initOrgsDb(): void {
-  const dbPath = path.join(config.dataDir, 'orgs.db');
+  const dbPath = orgsDbPathOverride || path.join(config.dataDir, 'orgs.db');
+  mkdirSync(path.dirname(dbPath), { recursive: true });
   orgsDb = new Database(dbPath);
   orgsDb.pragma('journal_mode = WAL');
+  // Foreign keys are required for the ON DELETE CASCADE semantics on
+  // memberships/invites — SQLite disables them by default.
+  orgsDb.pragma('foreign_keys = ON');
 
   orgsDb.exec(`
     CREATE TABLE IF NOT EXISTS orgs (
@@ -48,7 +81,91 @@ export function initOrgsDb(): void {
       key TEXT PRIMARY KEY DEFAULT 'active' CHECK(key = 'active'),
       org_id TEXT NOT NULL DEFAULT 'default'
     );
+
+    -- ── Phase 3 multi-user tables ────────────────────────────────
+    -- Users live in the shared orgs.db so a single account can belong
+    -- to multiple orgs. Per-org roles are expressed via memberships.
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS memberships (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      org_id  TEXT NOT NULL REFERENCES orgs(id)  ON DELETE CASCADE,
+      role    TEXT NOT NULL CHECK(role IN ('Owner','Admin','User')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, org_id)
+    );
+
+    -- invites.created_by / accepted_by use ON DELETE SET NULL so we can
+    -- still delete a user who has ever minted or accepted an invite.
+    -- The audit trail (the invite row itself) stays; the user pointer
+    -- becomes NULL. created_by therefore cannot be NOT NULL — a deleted
+    -- admin's old invites will read as "creator unknown".
+    CREATE TABLE IF NOT EXISTS invites (
+      token       TEXT PRIMARY KEY,
+      org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+      email       TEXT,
+      role        TEXT NOT NULL CHECK(role IN ('Admin','User')),
+      expires_at  TEXT NOT NULL,
+      created_by  TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      accepted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      accepted_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_invites_org ON invites(org_id);
   `);
+
+  // Migration: earlier Phase 3 commits created `invites` with FKs that had
+  // no ON DELETE action (SQLite's NO ACTION default). With foreign_keys =
+  // ON, that made `DELETE FROM users` fail for any admin who had ever
+  // minted or accepted an invite — which is the normal workflow. Detect
+  // a pre-fix schema and rebuild the table with the correct clauses.
+  try {
+    const fkInfo = orgsDb.pragma('foreign_key_list(invites)') as Array<{
+      table: string;
+      from: string;
+      on_delete: string;
+    }>;
+    const needsRebuild = fkInfo.some(
+      (fk) =>
+        fk.table === 'users' &&
+        (fk.from === 'created_by' || fk.from === 'accepted_by') &&
+        fk.on_delete !== 'SET NULL',
+    );
+    if (needsRebuild) {
+      // Rebuild inside a transaction so a mid-migration crash leaves the
+      // old table in place. Column layout is identical — only FK
+      // semantics and the NOT NULL on created_by change.
+      orgsDb.exec(`
+        BEGIN;
+        ALTER TABLE invites RENAME TO invites__old;
+        CREATE TABLE invites (
+          token       TEXT PRIMARY KEY,
+          org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+          email       TEXT,
+          role        TEXT NOT NULL CHECK(role IN ('Admin','User')),
+          expires_at  TEXT NOT NULL,
+          created_by  TEXT REFERENCES users(id) ON DELETE SET NULL,
+          created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+          accepted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+          accepted_at TEXT
+        );
+        INSERT INTO invites (token, org_id, email, role, expires_at, created_by, created_at, accepted_by, accepted_at)
+          SELECT token, org_id, email, role, expires_at, created_by, created_at, accepted_by, accepted_at
+          FROM invites__old;
+        DROP TABLE invites__old;
+        CREATE INDEX IF NOT EXISTS idx_invites_org ON invites(org_id);
+        COMMIT;
+      `);
+    }
+  } catch {
+    // invites table didn't exist yet (fresh install path already creates
+    // it with the right schema above) — nothing to migrate.
+  }
 
   try {
     orgsDb.prepare('SELECT position FROM orgs LIMIT 1').get();
@@ -78,7 +195,15 @@ export function initOrgsDb(): void {
 
   const { count } = orgsStmts.count.get()!;
   if (count === 0) {
-    seedOrgsFromDisk();
+    // Tests point `orgsDbPathOverride` at a tmp dir; skip scanning the
+    // real `~/.agent-hub/orgs/` in that case — otherwise leftover
+    // worktree directories on the dev host pollute the tmp DB and
+    // collide with fixture org IDs.
+    if (orgsDbPathOverride) {
+      orgsStmts.insert.run('default', 'Default', 'local', '#6366f1', '', '', 0);
+    } else {
+      seedOrgsFromDisk();
+    }
   }
 }
 

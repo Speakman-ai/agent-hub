@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import type { AuthRecord } from './auth-store.js';
+import type { Role } from './roles.js';
+import type { UserRow } from './users-store.js';
 
 // ── Mocks ────────────────────────────────────────────────────────
 // `./config.js` is stubbed so tests can flip `apiKey` between cases. The
@@ -17,6 +19,39 @@ vi.mock('./auth-store.js', () => ({
   getAuthRecord: () => mockAuthRecord,
   isAuthConfigured: () => mockAuthRecord !== null,
 }));
+
+// Phase 3 — mock the orgs + users + memberships stores so we can drive
+// the middleware's per-org role resolution without spinning up SQLite.
+let mockActiveOrgId = 'default';
+const mockUsersById = new Map<string, UserRow>();
+const mockUsersByName = new Map<string, UserRow>();
+const mockMemberships = new Map<string, Role>(); // key: `${userId}|${orgId}`
+
+vi.mock('./orgs.js', () => ({
+  getActiveOrgId: () => mockActiveOrgId,
+}));
+vi.mock('./users-store.js', () => ({
+  getUserById: (id: string) => mockUsersById.get(id) ?? null,
+  getUserByUsername: (name: string) => mockUsersByName.get(name) ?? null,
+}));
+vi.mock('./memberships-store.js', () => ({
+  getMembershipRole: (userId: string, orgId: string) =>
+    mockMemberships.get(`${userId}|${orgId}`) ?? null,
+}));
+
+function seedUser(row: UserRow): void {
+  mockUsersById.set(row.id, row);
+  mockUsersByName.set(row.username, row);
+}
+function seedMembership(userId: string, orgId: string, role: Role): void {
+  mockMemberships.set(`${userId}|${orgId}`, role);
+}
+function resetPhase3Mocks(): void {
+  mockActiveOrgId = 'default';
+  mockUsersById.clear();
+  mockUsersByName.clear();
+  mockMemberships.clear();
+}
 
 const { default: config } = await import('./config.js');
 const { authMiddleware, authenticateWs, authenticateWsDetailed } = await import('./auth.js');
@@ -201,6 +236,12 @@ describe('authMiddleware (API key)', () => {
 
 describe('authMiddleware (JWT)', () => {
   const JWT_SECRET = 'jwt-unit-test-secret';
+  const OWNER_USER: UserRow = {
+    id: 'user-owner-uuid',
+    username: 'owner',
+    password_hash: 'scrypt$ignored',
+    created_at: '2026-04-18',
+  };
 
   beforeEach(() => {
     config.apiKey = null;
@@ -211,17 +252,85 @@ describe('authMiddleware (JWT)', () => {
       role: 'Owner',
       createdAt: '2026-04-18',
     };
+    resetPhase3Mocks();
+    seedUser(OWNER_USER);
+    seedMembership(OWNER_USER.id, 'default', 'Owner');
   });
 
   it('accepts a valid Bearer token and stashes the subject', () => {
-    const token = signJwt('owner', JWT_SECRET);
+    const token = signJwt('owner', JWT_SECRET, { claims: { uid: OWNER_USER.id } });
     const next = vi.fn();
     const req = mockReq({ headers: { authorization: `Bearer ${token}` } });
     authMiddleware(req, mockRes() as unknown as Response, next);
     expect(next).toHaveBeenCalledOnce();
     expect((req as Request & { authUser?: string }).authUser).toBe('owner');
-    // Phase 2: the middleware now also resolves and attaches the role.
+    // Phase 2/3: role comes from membership in the active org.
     expect((req as Request & { authRole?: string }).authRole).toBe('Owner');
+    expect((req as Request & { authUserId?: string }).authUserId).toBe(OWNER_USER.id);
+    expect((req as Request & { authOrgId?: string }).authOrgId).toBe('default');
+  });
+
+  it('accepts a pre-Phase-3 token (sub only, no uid) by falling back to username lookup', () => {
+    const legacyToken = signJwt('owner', JWT_SECRET); // no uid claim
+    const next = vi.fn();
+    const req = mockReq({ headers: { authorization: `Bearer ${legacyToken}` } });
+    authMiddleware(req, mockRes() as unknown as Response, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect((req as Request & { authUserId?: string }).authUserId).toBe(OWNER_USER.id);
+    expect((req as Request & { authRole?: string }).authRole).toBe('Owner');
+  });
+
+  it('rejects a JWT when the user has no membership in the active org (403)', () => {
+    // Seed a valid user without a membership row.
+    const stranger: UserRow = {
+      id: 'user-stranger-uuid',
+      username: 'stranger',
+      password_hash: 'x',
+      created_at: '2026-04-18',
+    };
+    seedUser(stranger);
+    const token = signJwt(stranger.username, JWT_SECRET, { claims: { uid: stranger.id } });
+    const next = vi.fn();
+    const res = mockRes();
+    authMiddleware(
+      mockReq({ headers: { authorization: `Bearer ${token}` } }),
+      res as unknown as Response,
+      next,
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
+    expect(res.body?.error).toMatch(/not a member/i);
+  });
+
+  it('rejects a JWT whose user row has been deleted with 401', () => {
+    const token = signJwt('ghost', JWT_SECRET, { claims: { uid: 'missing-uuid' } });
+    const next = vi.fn();
+    const res = mockRes();
+    authMiddleware(
+      mockReq({ headers: { authorization: `Bearer ${token}` } }),
+      res as unknown as Response,
+      next,
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body?.error).toMatch(/no longer exists/i);
+  });
+
+  it('uses the membership role for the active org (not the auth-store global role)', () => {
+    mockAuthRecord = {
+      ...mockAuthRecord!,
+      role: 'Owner', // irrelevant in Phase 3
+    };
+    // Demote the owner for this specific test by re-seeding membership.
+    mockMemberships.clear();
+    seedMembership(OWNER_USER.id, 'default', 'Admin');
+
+    const token = signJwt('owner', JWT_SECRET, { claims: { uid: OWNER_USER.id } });
+    const next = vi.fn();
+    const req = mockReq({ headers: { authorization: `Bearer ${token}` } });
+    authMiddleware(req, mockRes() as unknown as Response, next);
+    expect(next).toHaveBeenCalledOnce();
+    expect((req as Request & { authRole?: string }).authRole).toBe('Admin');
   });
 
   it('attaches authRole=Owner when the apiKey fallback is used', () => {
@@ -353,6 +462,7 @@ describe('authenticateWs', () => {
   beforeEach(() => {
     config.apiKey = null;
     mockAuthRecord = null;
+    resetPhase3Mocks();
   });
 
   it('returns true when no auth is configured', () => {
@@ -402,13 +512,48 @@ describe('authenticateWs', () => {
       role: 'Owner',
       createdAt: '2026-04-18',
     };
-    const token = signJwt('owner', 'ws-jwt-secret');
+    const user: UserRow = {
+      id: 'ws-owner-id',
+      username: 'owner',
+      password_hash: 'x',
+      created_at: '2026-04-18',
+    };
+    seedUser(user);
+    seedMembership(user.id, 'default', 'Owner');
+    const token = signJwt('owner', 'ws-jwt-secret', { claims: { uid: user.id } });
     const result = authenticateWsDetailed({
       url: `/ws?token=${encodeURIComponent(token)}`,
       headers: { host: 'localhost:3051' },
     } as unknown as import('http').IncomingMessage);
     expect(result.ok).toBe(true);
     expect(result.subject).toBe('owner');
+    expect(result.userId).toBe(user.id);
+    expect(result.role).toBe('Owner');
+    expect(result.orgId).toBe('default');
+  });
+
+  it('rejects a WS handshake from a user with no membership in the active org', () => {
+    mockAuthRecord = {
+      username: 'owner',
+      passwordHash: 'x',
+      jwtSecret: 'ws-jwt-secret',
+      role: 'Owner',
+      createdAt: '2026-04-18',
+    };
+    const stranger: UserRow = {
+      id: 'ws-stranger',
+      username: 'stranger',
+      password_hash: 'x',
+      created_at: '2026-04-18',
+    };
+    seedUser(stranger);
+    const token = signJwt(stranger.username, 'ws-jwt-secret', { claims: { uid: stranger.id } });
+    const result = authenticateWsDetailed({
+      url: `/ws?token=${encodeURIComponent(token)}`,
+      headers: { host: 'localhost:3051' },
+    } as unknown as import('http').IncomingMessage);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('no-membership');
   });
 
   it('rejects an invalid JWT via ?token=', () => {

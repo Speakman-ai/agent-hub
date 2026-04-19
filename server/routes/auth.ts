@@ -1,23 +1,28 @@
 /**
- * JWT authentication routes — Phase 1 (single-user model).
+ * Authentication & user-management routes.
  *
- *   POST /api/auth/setup    { username, password } → { ok }
- *       First-run bootstrap: creates the single user record. Rejected once
- *       auth is already configured unless the requester is the current
- *       authenticated user (covered by the auth middleware gating).
+ * Auth bootstrap (still single-user at install time):
+ *   POST /api/auth/setup    { username, password } → { ok, token, user }
  *   POST /api/auth/login    { username, password } → { token, expiresAt, user }
- *   GET  /api/auth/me       → { user: { username } }  (requires bearer token)
- *   POST /api/auth/logout   → { ok }                  (stateless — client drops the token)
- *   GET  /api/auth/status   → { authConfigured, username? }
+ *   GET  /api/auth/me       → { user: { username, role } }  (requires bearer token)
+ *   POST /api/auth/logout   → { ok }
+ *   GET  /api/auth/status   → { authConfigured, username?, role? }
  *
- * The login and status endpoints are public (listed in PUBLIC_PATHS in
- * `server/auth.ts`). Setup is gated by the auth middleware: when an
- * `apiKey` is configured, the caller must provide it to reach this
- * endpoint — this prevents an unauthenticated hijack during the window
- * between server upgrade and first JWT setup. Once JWT auth is
- * configured the handler itself returns 409.
- * `/me` and `/logout` go through the normal auth middleware which will
- * enforce the bearer token.
+ * Phase 3 additions — users + memberships + invites:
+ *   GET    /api/auth/users             (Admin+)  list members of active org
+ *   POST   /api/auth/users             (Owner)   create user + membership
+ *   PUT    /api/auth/users/:id/role    (Admin+/Owner) change membership role
+ *   DELETE /api/auth/users/:id         (Owner)   remove from active org
+ *   POST   /api/auth/users/:id/password            self or Owner — reset
+ *   POST   /api/auth/invites           (Admin+)  issue invite token
+ *   GET    /api/auth/invites           (Admin+)  list active invites
+ *   DELETE /api/auth/invites/:token    (Admin+)  revoke invite
+ *   GET    /api/auth/invites/:token    (public)  invite landing metadata
+ *   POST   /api/auth/invites/:token/accept (public) redeem invite
+ *
+ * PUBLIC_PATHS + PUBLIC_PREFIXES in `server/auth.ts` let `/status`,
+ * `/login`, and the invite landing/accept endpoints through without
+ * authentication. Everything else goes through the auth middleware.
  */
 import { Router, Request, Response } from 'express';
 import { signJwt } from '../jwt.js';
@@ -28,8 +33,36 @@ import {
   saveAuthRecord,
   generateJwtSecret,
 } from '../auth-store.js';
-import { requireRole, type Role } from '../roles.js';
+import { requireRole, hasAtLeastRole, parseRole, type Role } from '../roles.js';
 import type { AuthenticatedRequest } from '../auth.js';
+import { getActiveOrgId, getOrg, getOrgsDb } from '../orgs.js';
+import {
+  createUser,
+  getUserById,
+  getUserByUsername,
+  listUsers,
+  deleteUser,
+  updateUserPassword,
+  countUsers,
+  migrateAuthRecordIfNeeded,
+} from '../users-store.js';
+import {
+  createMembership,
+  deleteMembership,
+  getMembershipRole,
+  setMembershipRole,
+  countOwnersForOrg,
+  countMembershipsForUser,
+  listMembersForOrg,
+} from '../memberships-store.js';
+import {
+  createInvite,
+  deleteInvite,
+  getInvite,
+  inviteState,
+  listActiveInvitesForOrg,
+  markInviteAccepted,
+} from '../invites-store.js';
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
 
@@ -41,9 +74,9 @@ function sanitizeUsername(raw: unknown): string | null {
   return trimmed;
 }
 
-// Minimum password length for the single-admin credential. This account
-// grants full server control (process spawning, arbitrary shell via CLI),
-// so we follow NIST 800-63B guidance for privileged accounts (≥ 12).
+// Minimum password length for every account. These credentials grant full
+// server control (process spawning, arbitrary shell via CLI), so we
+// follow NIST 800-63B guidance for privileged accounts (≥ 12).
 const MIN_PASSWORD_LEN = 12;
 const MAX_PASSWORD_LEN = 256;
 
@@ -51,6 +84,15 @@ function sanitizePassword(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   if (raw.length < MIN_PASSWORD_LEN || raw.length > MAX_PASSWORD_LEN) return null;
   return raw;
+}
+
+function issueToken(user: { id: string; username: string }, role: Role, jwtSecret: string) {
+  const token = signJwt(user.username, jwtSecret, {
+    expiresInSec: DEFAULT_TOKEN_TTL_SEC,
+    claims: { role, uid: user.id },
+  });
+  const expiresAt = new Date(Date.now() + DEFAULT_TOKEN_TTL_SEC * 1000).toISOString();
+  return { token, expiresAt };
 }
 
 export default function createAuthRoutes(): Router {
@@ -62,10 +104,9 @@ export default function createAuthRoutes(): Router {
     res.json({
       authConfigured: !!record,
       username: record?.username ?? null,
-      // Role is safe to leak publicly — it's the owner's role, not a
-      // per-caller claim, and the login form already reveals the owner
-      // username. The UI uses it to decide whether to show the "first
-      // Owner" vs "sign in" copy.
+      // Role is safe to leak publicly — it's the owner's role at install
+      // time, not a per-caller claim. The UI uses it to decide whether
+      // to show the "first Owner" vs "sign in" copy.
       role: record?.role ?? null,
     });
   });
@@ -106,11 +147,24 @@ export default function createAuthRoutes(): Router {
       role: 'Owner',
     });
 
-    const token = signJwt(record.username, record.jwtSecret, {
-      expiresInSec: DEFAULT_TOKEN_TTL_SEC,
-      claims: { role: record.role },
-    });
-    const expiresAt = new Date(Date.now() + DEFAULT_TOKEN_TTL_SEC * 1000).toISOString();
+    // Phase 3: also seed the users + memberships tables. The migration
+    // helper is a no-op after the first run, so it's safe to call every
+    // time setup is invoked. Swallow orgs-db-not-initialized — a few
+    // legacy test paths skip that setup and we still want auth.json to
+    // land.
+    let user = null;
+    try {
+      migrateAuthRecordIfNeeded();
+      user = getUserByUsername(record.username);
+    } catch (err) {
+      console.error('[Auth] migrateAuthRecordIfNeeded after /setup failed:', err);
+    }
+
+    const { token, expiresAt } = issueToken(
+      user ?? { id: '', username: record.username },
+      record.role,
+      record.jwtSecret,
+    );
 
     res.json({
       ok: true,
@@ -122,8 +176,8 @@ export default function createAuthRoutes(): Router {
 
   // ── Login (public) ─────────────────────────────────────────────
   router.post('/api/auth/login', async (req: Request, res: Response) => {
-    const record = getAuthRecord();
-    if (!record) {
+    const authRecord = getAuthRecord();
+    if (!authRecord) {
       res.status(409).json({ error: 'Auth not configured. Call /api/auth/setup first.' });
       return;
     }
@@ -135,71 +189,518 @@ export default function createAuthRoutes(): Router {
     const password = typeof rawPass === 'string' ? rawPass : '';
 
     // Run verifyPassword even on an unknown user so response time doesn't
-    // leak whether the username exists.
-    const userMatches = username === record.username;
-    const ok = await verifyPassword(password, record.passwordHash);
-    if (!userMatches || !ok) {
+    // leak whether the username exists. If orgs.db isn't initialized
+    // (some legacy test paths / mid-boot), fall through to the auth.json
+    // single-user record so those callers keep working.
+    let user = null;
+    try {
+      user = getUserByUsername(username);
+    } catch {
+      user = null;
+    }
+    // Fallback for boot-in-progress: if the users table hasn't been
+    // seeded yet (rare — migration should have run), and the input
+    // matches the auth-store owner, accept against that record.
+    const usingAuthRecordFallback = !user && username === authRecord.username;
+    const storedHash = user?.password_hash ?? authRecord.passwordHash;
+
+    const ok = await verifyPassword(password, storedHash);
+    if ((!user && !usingAuthRecordFallback) || !ok) {
       res.status(401).json({ error: 'Invalid username or password' });
       return;
     }
 
-    const token = signJwt(record.username, record.jwtSecret, {
-      expiresInSec: DEFAULT_TOKEN_TTL_SEC,
-      claims: { role: record.role },
-    });
-    const expiresAt = new Date(Date.now() + DEFAULT_TOKEN_TTL_SEC * 1000).toISOString();
+    if (!user) {
+      // Run the migration and re-resolve so we can issue a proper uid token.
+      try {
+        migrateAuthRecordIfNeeded();
+        user = getUserByUsername(username);
+      } catch {
+        user = null;
+      }
+    }
+
+    // Resolve the caller's role in the currently active org. If they
+    // have no membership, reject the login so the client doesn't end up
+    // holding a token that fails every API call. If orgs.db isn't
+    // initialized yet (legacy boot paths), skip enforcement and fall
+    // back to the auth.json role.
+    let orgId = '';
+    let role: Role | null = null;
+    let orgsDbReady = false;
+    try {
+      orgId = getActiveOrgId();
+      orgsDbReady = true;
+      role = user ? getMembershipRole(user.id, orgId) : null;
+    } catch {
+      // orgs.db not initialized — skip membership enforcement.
+      orgsDbReady = false;
+    }
+
+    // Auto-seed an Owner membership for the *sole* user on a fresh
+    // install — this covers the Phase-2 → Phase-3 upgrade where the
+    // migration ran but the only user row doesn't yet have a membership
+    // in the active org. This is intentionally scoped to `countUsers()
+    // === 1`: in a multi-user install, a missing membership is a real
+    // permissions state ("removed from org") and we must NOT invent one.
+    if (user && !role && orgsDbReady && orgId) {
+      try {
+        if (countUsers() === 1) {
+          createMembership(user.id, orgId, 'Owner');
+          role = 'Owner';
+        }
+      } catch {}
+    }
+
+    // Multi-user case: user exists, orgs.db is healthy, they authed
+    // successfully, but they have no membership in the active org.
+    // Refuse to issue a token — per the comment above, a token without
+    // a membership would 403 on every subsequent API call. Surface that
+    // as an explicit login failure instead of a half-broken session.
+    if (user && !role && orgsDbReady) {
+      res.status(403).json({
+        error:
+          'You are not a member of the active organization. Ask an admin to add you or accept an invite.',
+        code: 'no_membership',
+      });
+      return;
+    }
+
+    // At this point either (a) we have a real membership role, or
+    // (b) orgs.db wasn't ready and we're on the legacy single-user
+    // fallback. Issuing authRecord.role in case (b) is safe because the
+    // middleware falls back to the same record for uninitialized-orgs.db
+    // requests.
+    const resolvedRole: Role = role ?? authRecord.role;
+    const subject = user ?? { id: '', username: authRecord.username };
+    const { token, expiresAt } = issueToken(subject, resolvedRole, authRecord.jwtSecret);
     res.json({
       token,
       expiresAt,
-      user: { username: record.username, role: record.role },
+      user: { username: subject.username, role: resolvedRole },
     });
   });
 
   // ── Current user (protected by auth middleware) ────────────────
   router.get('/api/auth/me', (req: Request, res: Response) => {
-    // The middleware has already validated the token or the apiKey. When
-    // JWT auth was used, it stashes the decoded payload on req (see
-    // `authMiddleware` in server/auth.ts).
     const record = getAuthRecord();
     const authedReq = req as AuthenticatedRequest;
     const subject = authedReq.authUser || record?.username || null;
-    // Role comes from the middleware (JWT path = record's role; apiKey
-    // path = 'Owner'). Fall back to the record's role if the middleware
-    // hasn't populated it (e.g., dev install with no auth configured).
     const role: Role | null = authedReq.authRole ?? record?.role ?? null;
     res.json({
       user: subject ? { username: subject, role } : null,
       authConfigured: !!record,
       role,
+      orgId: authedReq.authOrgId ?? null,
     });
   });
 
-  // ── Users list (Admin+) ────────────────────────────────────────
-  // Returns the roster of configured users — today that's the single
-  // Owner, but the shape is stable so the future multi-user UI can
-  // bind to it without another API migration. Gated by requireRole so
-  // the User tier can't enumerate administrators.
+  // ──────────────────────────────────────────────────────────────
+  //  Users — multi-user roster (Phase 3)
+  // ──────────────────────────────────────────────────────────────
+
+  // GET /api/auth/users — Admin+ — members of the active org
   router.get('/api/auth/users', requireRole('Admin'), (_req: Request, res: Response) => {
     const record = getAuthRecord();
-    const users = record
-      ? [
+    let orgId: string;
+    try {
+      orgId = getActiveOrgId();
+    } catch {
+      // orgs.db not initialized (some legacy test harnesses). Fall back
+      // to the single-user auth.json view — this keeps the pre-Phase-3
+      // behavior intact in those paths.
+      const users = record
+        ? [{ username: record.username, role: record.role, createdAt: record.createdAt }]
+        : [];
+      res.json({ users });
+      return;
+    }
+
+    const members = listMembersForOrg(orgId);
+    if (members.length === 0 && record) {
+      // orgs.db is healthy but migration hasn't been kicked yet (fresh
+      // setup followed by an immediate list). Fall back to the legacy
+      // shape — migration will catch up on next boot.
+      res.json({
+        users: [
           {
+            id: null,
             username: record.username,
             role: record.role,
             createdAt: record.createdAt,
           },
-        ]
-      : [];
-    res.json({ users });
+        ],
+      });
+      return;
+    }
+    res.json({
+      users: members.map((m) => ({
+        id: m.userId,
+        username: m.username,
+        role: m.role,
+        createdAt: m.createdAt,
+      })),
+    });
+  });
+
+  // POST /api/auth/users — Owner only
+  router.post('/api/auth/users', requireRole('Owner'), async (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    const {
+      username: rawUser,
+      password: rawPass,
+      role: rawRole,
+    } = req.body as {
+      username?: string;
+      password?: string;
+      role?: string;
+    };
+    const username = sanitizeUsername(rawUser);
+    const password = sanitizePassword(rawPass);
+    const role = parseRole(rawRole) ?? 'User';
+    if (!username) {
+      res.status(400).json({ error: 'invalid username' });
+      return;
+    }
+    if (!password) {
+      res
+        .status(400)
+        .json({ error: `password must be ${MIN_PASSWORD_LEN}–${MAX_PASSWORD_LEN} chars` });
+      return;
+    }
+    if (role === 'Owner' && authedReq.authRole !== 'Owner') {
+      // Belt-and-suspenders — requireRole('Owner') already gates this,
+      // but the extra check keeps the invariant readable at the route.
+      res.status(403).json({ error: 'Only an Owner can create another Owner.' });
+      return;
+    }
+    if (getUserByUsername(username)) {
+      res.status(409).json({ error: 'username already taken' });
+      return;
+    }
+    const orgId = getActiveOrgId();
+    const passwordHash = await hashPassword(password);
+    const user = createUser({ username, passwordHash });
+    createMembership(user.id, orgId, role);
+    res.status(201).json({
+      user: {
+        id: user.id,
+        username: user.username,
+        role,
+        createdAt: user.created_at,
+      },
+    });
+  });
+
+  // PUT /api/auth/users/:id/role — change membership role in active org
+  router.put('/api/auth/users/:id/role', requireRole('Admin'), (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    const { id } = req.params as { id: string };
+    const nextRole = parseRole((req.body as { role?: unknown }).role);
+    if (!nextRole) {
+      res.status(400).json({ error: 'role must be Owner, Admin, or User' });
+      return;
+    }
+
+    const target = getUserById(id);
+    if (!target) {
+      res.status(404).json({ error: 'user not found' });
+      return;
+    }
+    const orgId = getActiveOrgId();
+    const currentRole = getMembershipRole(id, orgId);
+    if (!currentRole) {
+      res.status(404).json({ error: 'user is not a member of this org' });
+      return;
+    }
+
+    // Promotions to or from Owner require Owner privilege on the caller.
+    const touchingOwner = currentRole === 'Owner' || nextRole === 'Owner';
+    if (touchingOwner && authedReq.authRole !== 'Owner') {
+      res.status(403).json({ error: 'Only an Owner can change the Owner role.' });
+      return;
+    }
+
+    // Preserve the "don't strand the org without an Owner" invariant.
+    if (currentRole === 'Owner' && nextRole !== 'Owner') {
+      const owners = countOwnersForOrg(orgId);
+      if (owners <= 1) {
+        res.status(400).json({
+          error: 'Cannot demote the only Owner of this org. Promote another user first.',
+        });
+        return;
+      }
+    }
+
+    setMembershipRole(id, orgId, nextRole);
+    res.json({ ok: true, userId: id, orgId, role: nextRole });
+  });
+
+  // DELETE /api/auth/users/:id — remove from active org (Owner only)
+  router.delete('/api/auth/users/:id', requireRole('Owner'), (req: Request, res: Response) => {
+    const { id } = req.params as { id: string };
+    const target = getUserById(id);
+    if (!target) {
+      res.status(404).json({ error: 'user not found' });
+      return;
+    }
+    const orgId = getActiveOrgId();
+    const currentRole = getMembershipRole(id, orgId);
+    if (!currentRole) {
+      res.status(404).json({ error: 'user is not a member of this org' });
+      return;
+    }
+    if (currentRole === 'Owner' && countOwnersForOrg(orgId) <= 1) {
+      res.status(400).json({ error: 'Cannot remove the only Owner of this org.' });
+      return;
+    }
+
+    deleteMembership(id, orgId);
+    let userDeleted = false;
+    if (countMembershipsForUser(id) === 0) {
+      deleteUser(id);
+      userDeleted = true;
+    }
+    res.json({ ok: true, userId: id, orgId, userDeleted });
+  });
+
+  // POST /api/auth/users/:id/password — self-reset or Owner-reset
+  router.post('/api/auth/users/:id/password', async (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    const { id } = req.params as { id: string };
+    const { newPassword } = req.body as { newPassword?: string };
+    const password = sanitizePassword(newPassword);
+    if (!password) {
+      res.status(400).json({
+        error: `newPassword must be ${MIN_PASSWORD_LEN}–${MAX_PASSWORD_LEN} chars`,
+      });
+      return;
+    }
+
+    const target = getUserById(id);
+    if (!target) {
+      res.status(404).json({ error: 'user not found' });
+      return;
+    }
+
+    const isSelf = authedReq.authUserId === id;
+    const isOwner = authedReq.authRole === 'Owner';
+    if (!isSelf && !isOwner) {
+      res.status(403).json({
+        error: 'You can only reset your own password. Owners can reset any password.',
+      });
+      return;
+    }
+
+    const passwordHash = await hashPassword(password);
+    updateUserPassword(id, passwordHash);
+    // Known limitation: stateless JWTs can't be server-revoked — tokens
+    // issued before this call remain valid until their `exp`. Phase 4
+    // will layer on a revocation list.
+    res.json({ ok: true, userId: id });
+  });
+
+  // ──────────────────────────────────────────────────────────────
+  //  Invites
+  // ──────────────────────────────────────────────────────────────
+
+  // POST /api/auth/invites — Admin+
+  router.post('/api/auth/invites', requireRole('Admin'), (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    const {
+      role: rawRole,
+      email,
+      ttlHours,
+    } = req.body as {
+      role?: string;
+      email?: string;
+      ttlHours?: number;
+    };
+    const role = parseRole(rawRole);
+    if (!role || role === 'Owner') {
+      res.status(400).json({ error: 'role must be Admin or User (Owner is never invited)' });
+      return;
+    }
+    if (!authedReq.authUserId || !authedReq.authOrgId) {
+      // API-key caller or misconfigured request — we need both to
+      // attribute the invite. Break-glass callers can POST with a
+      // bearer token if they need to issue invites.
+      res.status(400).json({ error: 'invite issuance requires an authenticated user session' });
+      return;
+    }
+    const invite = createInvite({
+      orgId: authedReq.authOrgId,
+      role,
+      email: email ?? null,
+      createdBy: authedReq.authUserId,
+      ttlHours,
+    });
+    const baseUrl = process.env.PUBLIC_ORIGIN || '';
+    const url = baseUrl
+      ? `${baseUrl.replace(/\/$/, '')}/invite/${invite.token}`
+      : `/invite/${invite.token}`;
+    res.status(201).json({
+      token: invite.token,
+      url,
+      role: invite.role,
+      email: invite.email,
+      expiresAt: invite.expires_at,
+      createdAt: invite.created_at,
+    });
+  });
+
+  // GET /api/auth/invites — Admin+ — list active invites for active org
+  router.get('/api/auth/invites', requireRole('Admin'), (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    const orgId = authedReq.authOrgId || getActiveOrgId();
+    const rows = listActiveInvitesForOrg(orgId);
+    res.json({
+      invites: rows.map((r) => ({
+        token: r.token,
+        orgId: r.org_id,
+        role: r.role,
+        email: r.email,
+        expiresAt: r.expires_at,
+        createdAt: r.created_at,
+      })),
+    });
+  });
+
+  // DELETE /api/auth/invites/:token — Admin+
+  router.delete('/api/auth/invites/:token', requireRole('Admin'), (req: Request, res: Response) => {
+    const { token } = req.params as { token: string };
+    const row = getInvite(token);
+    if (!row) {
+      res.status(404).json({ error: 'invite not found' });
+      return;
+    }
+    const authedReq = req as AuthenticatedRequest;
+    if (authedReq.authOrgId && row.org_id !== authedReq.authOrgId) {
+      // Prevent cross-org revocation — caller's active org has to
+      // match the invite's home org.
+      res.status(403).json({ error: 'invite belongs to another org' });
+      return;
+    }
+    deleteInvite(token);
+    res.json({ ok: true, token });
+  });
+
+  // GET /api/auth/invites/:token — public landing metadata
+  router.get('/api/auth/invites/:token', (req: Request, res: Response) => {
+    const { token } = req.params as { token: string };
+    const row = getInvite(token);
+    const state = inviteState(row);
+    if (!row || state === 'not-found') {
+      res.status(404).json({ error: 'invite not found' });
+      return;
+    }
+    if (state === 'expired') {
+      res.status(410).json({ error: 'invite expired', state });
+      return;
+    }
+    const org = getOrg(row.org_id);
+    res.json({
+      orgId: row.org_id,
+      orgName: org?.name ?? row.org_id,
+      role: row.role,
+      email: row.email,
+      expiresAt: row.expires_at,
+      accepted: state === 'already-accepted',
+    });
+  });
+
+  // POST /api/auth/invites/:token/accept — public (consumes invite)
+  router.post('/api/auth/invites/:token/accept', async (req: Request, res: Response) => {
+    const { token } = req.params as { token: string };
+    const row = getInvite(token);
+    const state = inviteState(row);
+    if (!row || state === 'not-found') {
+      res.status(404).json({ error: 'invite not found' });
+      return;
+    }
+    if (state === 'expired' || state === 'already-accepted') {
+      res.status(410).json({ error: `invite ${state}` });
+      return;
+    }
+
+    const { username: rawUser, password: rawPass } = req.body as {
+      username?: string;
+      password?: string;
+    };
+    const username = sanitizeUsername(rawUser);
+    const password = sanitizePassword(rawPass);
+    if (!username) {
+      res.status(400).json({ error: 'invalid username' });
+      return;
+    }
+    if (!password) {
+      res.status(400).json({
+        error: `password must be ${MIN_PASSWORD_LEN}–${MAX_PASSWORD_LEN} chars`,
+      });
+      return;
+    }
+    if (getUserByUsername(username)) {
+      res.status(409).json({ error: 'username already taken' });
+      return;
+    }
+
+    const passwordHash = await hashPassword(password);
+
+    // Wrap user creation + invite acceptance + membership in a single
+    // DB transaction so a crash mid-flow can't strand a consumed invite
+    // against a user row with no membership (a "ghost account" that can
+    // log in but 403s on every call). better-sqlite3's db.transaction()
+    // returns a function that commits on normal return and rolls back
+    // on any thrown error, so we throw an in-band sentinel when the
+    // atomic `markInviteAccepted` loses its race.
+    class InviteRaceLost extends Error {}
+    let user: { id: string; username: string };
+    try {
+      user = getOrgsDb().transaction(() => {
+        const u = createUser({ username, passwordHash });
+        const won = markInviteAccepted(token, u.id);
+        if (!won) {
+          // Losing the race rolls back the createUser + leaves the
+          // original winner's acceptance intact.
+          throw new InviteRaceLost();
+        }
+        createMembership(u.id, row.org_id, row.role);
+        return u;
+      })();
+    } catch (err) {
+      if (err instanceof InviteRaceLost) {
+        res.status(410).json({ error: 'invite no longer valid' });
+        return;
+      }
+      throw err;
+    }
+
+    const authRecord = getAuthRecord();
+    if (!authRecord) {
+      // Can't issue a token with no JWT secret on disk. Invite flow is
+      // post-setup only — this is effectively a server-misconfiguration.
+      res.status(500).json({ error: 'server auth not configured' });
+      return;
+    }
+    const { token: jwt, expiresAt } = issueToken(user, row.role, authRecord.jwtSecret);
+    res.status(201).json({
+      token: jwt,
+      expiresAt,
+      user: { id: user.id, username: user.username, role: row.role },
+      orgId: row.org_id,
+    });
   });
 
   // ── Logout (protected) ─────────────────────────────────────────
   // Stateless JWTs — logout is a client-side drop. The endpoint exists so
-  // the UI has a symmetric call to hit and so we have a hook for Phase 2
-  // revocation lists.
+  // the UI has a symmetric call and so we have a hook for future
+  // revocation lists (Phase 4).
   router.post('/api/auth/logout', (_req: Request, res: Response) => {
     res.json({ ok: true });
   });
 
   return router;
 }
+
+// Re-export so tests can verify helpers without reaching into internals.
+export const __internals = { hasAtLeastRole };

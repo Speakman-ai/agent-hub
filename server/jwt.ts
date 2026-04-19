@@ -19,6 +19,13 @@ export interface JwtPayload {
   sub: string;
   iat: number;
   exp: number;
+  /**
+   * Phase 3 — stable user id. Tokens issued before Phase 3 omit this
+   * claim; the auth middleware falls back to resolving `sub` (username)
+   * through the users table so outstanding tokens stay valid after the
+   * migration.
+   */
+  uid?: string;
   [claim: string]: unknown;
 }
 

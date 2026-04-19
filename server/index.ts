@@ -51,6 +51,7 @@ import {
 } from './github-app.js';
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
+import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { ensureSessionWorkspace } from './worktree.js';
 
 import createNoteRoutes from './routes/notes.js';
@@ -204,6 +205,19 @@ if (config.botGithubToken) {
 let _activeDataDir: string = config.dataDir;
 
 initOrgsDb();
+// Migrate the pre-Phase-3 single-user auth.json into the new users +
+// memberships tables. No-op when users already exist or auth.json is
+// missing (fresh install → setup flow seeds the first Owner directly).
+try {
+  const migrated = migrateAuthRecordIfNeeded();
+  if (migrated) {
+    console.log(
+      `[Auth] Migrated legacy auth.json user into users table (id=${migrated.migratedUserId})`,
+    );
+  }
+} catch (err) {
+  console.error('[Auth] Failed to migrate legacy auth.json → users table:', err);
+}
 
 initProjects(config.dataDir);
 
