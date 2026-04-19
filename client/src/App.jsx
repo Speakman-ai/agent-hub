@@ -10,6 +10,8 @@ import ForwardSessionModal, { filterForwardTargets } from './components/ForwardS
 import SettingsPage from './components/SettingsPage.jsx';
 import SkillsPage from './components/SkillsPage.jsx';
 import RoomChat from './components/RoomChat.jsx';
+import DesignsList from './components/DesignsList.jsx';
+import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.jsx';
@@ -115,6 +117,16 @@ export default function App() {
   const [roomThinking, setRoomThinking] = useState(null);
   const [roomProcessing, setRoomProcessing] = useState(false);
   const [roomQueueLength, setRoomQueueLength] = useState(0);
+  // Claude Design (Phase 1) — top-level, not project-scoped
+  const [designs, setDesigns] = useState([]);
+  const [activeDesignId, setActiveDesignId] = useState(null);
+  const [designMessages, setDesignMessages] = useState([]);
+  const [designStreaming, setDesignStreaming] = useState(null);
+  const [designThinking, setDesignThinking] = useState(false);
+  const [designProcessing, setDesignProcessing] = useState(false);
+  // Cache-buster for the design iframe. Bumped on every `design_updated` WS
+  // event for the active design so the iframe re-fetches the latest files.
+  const [designReloadToken, setDesignReloadToken] = useState(0);
   // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
   const [delegations, setDelegations] = useState({});
   // Rate-limit throttle state: Map of sessionId -> { active, retryAfterMs, clearedAt }
@@ -185,6 +197,8 @@ export default function App() {
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   const activeRoomIdRef = useRef(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
+  const activeDesignIdRef = useRef(activeDesignId);
+  activeDesignIdRef.current = activeDesignId;
 
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -712,6 +726,85 @@ export default function App() {
           }
           setRoomThinking(null);
           setRoomStreaming(null);
+        }
+        break;
+
+      // ─── Claude Design events ────────────────────────────────
+      case 'design_created':
+        // Broadcast from any client creating a design — refresh list
+        if (data.design) {
+          setDesigns((prev) => {
+            if (prev.some((d) => d.id === data.design.id)) return prev;
+            return [data.design, ...prev];
+          });
+        }
+        break;
+      case 'design_deleted':
+        setDesigns((prev) => prev.filter((d) => d.id !== data.designId));
+        if (activeDesignIdRef.current === data.designId) {
+          setActiveDesignId(null);
+          setDesignMessages([]);
+          setDesignStreaming(null);
+          setDesignThinking(false);
+          setDesignProcessing(false);
+          setCurrentView('designs');
+        }
+        break;
+      case 'design_updated':
+        // Fires once per assistant turn — bump the iframe reload token for
+        // the active design so the canvas re-fetches the new files.
+        if (data.designId === activeDesignIdRef.current) {
+          setDesignReloadToken((t) => t + 1);
+          setDesignStreaming(null);
+          setDesignThinking(false);
+          setDesignProcessing(false);
+        }
+        // Also refresh design row metadata (updated_at) in the list.
+        setDesigns((prev) =>
+          prev.map((d) =>
+            d.id === data.designId ? { ...d, updated_at: new Date().toISOString() } : d,
+          ),
+        );
+        break;
+      case 'design_message_added':
+        if (data.designId === activeDesignIdRef.current && data.message) {
+          // Streaming token deltas arrive as the same messageId with growing content;
+          // the final message also arrives as 'design_message_added'. Treat assistant
+          // deltas by keeping a separate streaming slot and flushing on role=='assistant'
+          // with a final flag (or when the message already exists in the list).
+          const msg = data.message;
+          if (msg.role === 'assistant' && msg.streaming) {
+            setDesignThinking(false);
+            setDesignStreaming({ messageId: msg.id, content: msg.content || '' });
+            setDesignProcessing(true);
+            break;
+          }
+          setDesignStreaming(null);
+          setDesignThinking(false);
+          setDesignMessages((prev) => {
+            if (prev.some((m) => m.id === msg.id)) {
+              return prev.map((m) => (m.id === msg.id ? msg : m));
+            }
+            return [...prev, msg];
+          });
+          // Keep processing=true until design_updated closes the turn; a user
+          // message shouldn't flip processing off.
+          if (msg.role === 'assistant') {
+            setDesignProcessing(false);
+          }
+        }
+        break;
+
+      case 'design_cancelled':
+        if (data.designId === activeDesignIdRef.current) {
+          setDesignStreaming(null);
+          setDesignThinking(false);
+          setDesignProcessing(false);
+        }
+        break;
+      case 'design_thinking':
+        if (data.designId === activeDesignIdRef.current) {
+          setDesignThinking(true);
         }
         break;
 
@@ -1562,6 +1655,42 @@ export default function App() {
 
   const activeRoom = rooms.find((r) => r.id === activeRoomId);
 
+  // ─── Designs data loading ───────────────────────────────────
+  const refreshDesigns = useCallback(() => {
+    api.getDesigns().then(setDesigns).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    refreshDesigns();
+  }, [refreshDesigns]);
+
+  // Load full design detail + messages when the active design changes.
+  useEffect(() => {
+    if (!activeDesignId) {
+      setDesignMessages([]);
+      setDesignStreaming(null);
+      setDesignThinking(false);
+      setDesignProcessing(false);
+      return;
+    }
+    // Reset the iframe cache-buster for a fresh design — ensures we don't
+    // reuse a stale frame from the previous design.
+    setDesignReloadToken((t) => t + 1);
+    api
+      .getDesign(activeDesignId)
+      .then((detail) => {
+        if (!detail) return;
+        setDesigns((prev) => {
+          const existing = prev.find((d) => d.id === detail.id);
+          return existing ? prev.map((d) => (d.id === detail.id ? { ...d, ...detail } : d)) : prev;
+        });
+      })
+      .catch(console.error);
+    api.getDesignMessages(activeDesignId).then(setDesignMessages).catch(console.error);
+  }, [activeDesignId]);
+
+  const activeDesign = designs.find((d) => d.id === activeDesignId);
+
   const handleNewSession = async () => {
     if (!activeAgentId) return;
     const session = await api.createSession(activeAgentId, undefined, { askMode: sessionAskMode });
@@ -1981,6 +2110,13 @@ export default function App() {
               if (view === 'notes' && extra) setNotesProjectId(extra);
               if (view === 'captures' && extra) setCapturesProjectId(extra);
               if (view === 'pulls' && extra) setPullsProjectId(extra);
+              if (view === 'design' && extra) setActiveDesignId(extra);
+              if (view === 'designs') {
+                // Opening the list view shouldn't clobber the last-opened design
+                // context, but we do clear any in-progress transient state.
+                setDesignStreaming(null);
+                setDesignThinking(false);
+              }
               if (view === 'threads' && extra) {
                 setThreadsProjectId(extra);
                 setActiveThreadId(null);
@@ -2017,6 +2153,14 @@ export default function App() {
             pullsProjectId={pullsProjectId}
             unreadThreadCounts={unreadThreadCounts}
             activeReviews={activeReviews}
+            designs={designs}
+            activeDesignId={activeDesignId}
+            onSelectDesign={(id) => {
+              setActiveDesignId(id);
+              setActiveSessionId(null);
+              setActiveRoomId(null);
+              setSidebarOpen(false);
+            }}
           />
         </div>
 
@@ -2137,6 +2281,28 @@ export default function App() {
               roomProcessing={roomProcessing}
               roomQueueLength={roomQueueLength}
               onRoomUpdated={handleRoomUpdated}
+            />
+          ) : currentView === 'designs' ? (
+            <DesignsList
+              designs={designs}
+              projects={projects}
+              onNavigate={(view, extra) => {
+                setCurrentView(view);
+                if (view === 'design' && extra) setActiveDesignId(extra);
+              }}
+              onChanged={refreshDesigns}
+            />
+          ) : currentView === 'design' && activeDesign ? (
+            <DesignView
+              design={activeDesign}
+              messages={designMessages}
+              streaming={designStreaming}
+              thinking={designThinking}
+              processing={designProcessing}
+              reloadToken={designReloadToken}
+              send={send}
+              onBack={() => setCurrentView('designs')}
+              onManualReload={() => setDesignReloadToken((t) => t + 1)}
             />
           ) : (
             <>

@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Container,
   BarChart3,
+  Palette,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
@@ -50,6 +51,9 @@ export default function Sidebar({
   pullsProjectId,
   unreadThreadCounts = {},
   activeReviews = {},
+  designs = [],
+  activeDesignId,
+  onSelectDesign,
   subagentsBySession = {},
   changesReadyBySession = {},
   deletingSessionIds = new Set(),
@@ -794,6 +798,46 @@ export default function Sidebar({
               </div>
             );
           })()}
+
+          {/* Designs — top-level nav section (not project-scoped).
+              Entry point for the Claude Design canvas; clicking opens the
+              designs list where the user can create/open a design. */}
+          <div className="mt-4">
+            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
+              Design
+            </div>
+            <button
+              onClick={() => onNavigate('designs')}
+              className={`w-full text-left px-3 py-2.5 rounded-lg mb-0.5 flex items-center gap-2 text-sm transition-colors ${
+                currentView === 'designs' || currentView === 'design'
+                  ? 'bg-gray-800 text-white'
+                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+              }`}
+            >
+              <Palette size={14} className="flex-shrink-0 text-purple-400" />
+              <span className="truncate">Designs</span>
+              {designs.length > 0 && (
+                <span className="text-gray-600 text-xs ml-auto">{designs.length}</span>
+              )}
+            </button>
+            {designs.slice(0, 5).map((d) => (
+              <button
+                key={d.id}
+                onClick={() => {
+                  onSelectDesign?.(d.id);
+                  onNavigate('design', d.id);
+                }}
+                className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                  activeDesignId === d.id && currentView === 'design'
+                    ? 'bg-gray-800 text-white'
+                    : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                }`}
+              >
+                <Palette size={12} className="flex-shrink-0" />
+                <span className="truncate">{d.name}</span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

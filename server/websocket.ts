@@ -40,6 +40,8 @@ export default function createWebSocket(
     handleDequeue,
     handleEditQueueItem,
     handleRoomDequeue,
+    handleDesignChat,
+    handleDesignCancel,
   } = deps;
 
   function broadcast(data: Record<string, unknown>): void {
@@ -146,6 +148,14 @@ export default function createWebSocket(
         typeof msg.messageId === 'string'
       ) {
         handleRoomDequeue(msg.roomId, msg.messageId);
+      } else if (
+        type === 'design_chat' &&
+        typeof msg.designId === 'string' &&
+        typeof msg.content === 'string'
+      ) {
+        handleDesignChat(ws, msg as unknown as import('./types.js').DesignChatMessage);
+      } else if (type === 'design_cancel' && typeof msg.designId === 'string') {
+        handleDesignCancel(msg.designId);
       } else if (type === 'delegation_cancel' && typeof msg.sessionId === 'string') {
         handleDelegationCancel(msg.sessionId);
       } else if (

@@ -108,6 +108,27 @@ export interface RoomMessageRow {
   created_at: string;
 }
 
+export interface DesignRow {
+  id: string;
+  name: string;
+  org_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DesignProjectRow {
+  design_id: string;
+  project_id: string;
+}
+
+export interface DesignMessageRow {
+  id: string;
+  design_id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  created_at: string;
+}
+
 export interface ActiveTaskRow {
   session_id: string;
   message_id: string;
@@ -742,6 +763,20 @@ export interface Stmts {
   getMaxRoomQueuePosition: Stmt;
   getAllQueuedRooms: Stmt;
 
+  // Designs
+  listDesigns: Stmt;
+  getDesign: Stmt;
+  createDesign: Stmt;
+  updateDesignName: Stmt;
+  touchDesign: Stmt;
+  deleteDesign: Stmt;
+  listDesignProjects: Stmt;
+  linkDesignProject: Stmt;
+  unlinkDesignProject: Stmt;
+  clearDesignProjects: Stmt;
+  listDesignMessages: Stmt;
+  appendDesignMessage: Stmt;
+
   // Slack messages
   addSlackMessage: Stmt;
   getSlackMessages: Stmt;
@@ -1286,11 +1321,24 @@ export interface RoomCancelMessage {
   roomId: string;
 }
 
+export interface DesignChatMessage {
+  type: 'design_chat';
+  designId: string;
+  content: string;
+}
+
+export interface DesignCancelMessage {
+  type: 'design_cancel';
+  designId: string;
+}
+
 export type WSIncomingMessage =
   | ChatMessage
   | RoomChatMessage
   | CancelMessage
   | RoomCancelMessage
+  | DesignChatMessage
+  | DesignCancelMessage
   | { type: 'delegation_cancel'; sessionId: string }
   | { type: 'dequeue'; sessionId: string; messageId: string }
   | { type: 'edit_queue_item'; sessionId: string; messageId: string; content: string }
@@ -1313,6 +1361,8 @@ export interface WebSocketDeps {
   handleDequeue: (sessionId: string, messageId: string) => void;
   handleEditQueueItem: (sessionId: string, messageId: string, content: string) => void;
   handleRoomDequeue: (roomId: string, messageId: string) => void;
+  handleDesignChat: (ws: unknown, msg: DesignChatMessage) => Promise<void>;
+  handleDesignCancel: (designId: string) => void;
 }
 
 // ─── Route Dependencies ──────────────────────────────────────────
@@ -1378,6 +1428,12 @@ export interface RoomAgentDetail {
 
 export interface RoomWithAgents extends RoomRow {
   agents: RoomAgentDetail[];
+}
+
+// ─── Design with linked projects ─────────────────────────────────
+
+export interface DesignWithProjects extends DesignRow {
+  linkedProjects: Project[];
 }
 
 // ─── Project Paths ───────────────────────────────────────────────

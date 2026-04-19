@@ -940,7 +940,43 @@ function initDb(dataDir: string): void {
       FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_room_message_queue ON room_message_queue(room_id, position ASC);
+
+    -- Designs: Claude-Design-style canvas. Each design is a singleton-agent
+    -- chat with an artifact directory on disk rendered in an iframe.
+    CREATE TABLE IF NOT EXISTS designs (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      org_id TEXT NOT NULL DEFAULT 'default',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS design_projects (
+      design_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      PRIMARY KEY (design_id, project_id),
+      FOREIGN KEY (design_id) REFERENCES designs(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS design_messages (
+      id TEXT PRIMARY KEY,
+      design_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (design_id) REFERENCES designs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_design_messages_design ON design_messages(design_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_design_projects_design ON design_projects(design_id);
   `);
+
+  // Migration: designs gained org_id for multi-org scoping.
+  try {
+    db.exec("ALTER TABLE designs ADD COLUMN org_id TEXT NOT NULL DEFAULT 'default'");
+  } catch (_e) {
+    /* column already exists */
+  }
 
   // Container pool (PR preview envs + scaffolding). Schema lives in a sibling
   // module so unit tests can apply the identical DDL to an in-memory DB.
@@ -1422,6 +1458,36 @@ function initDb(dataDir: string): void {
       'SELECT MAX(position) as max_pos FROM room_message_queue WHERE room_id = ?',
     ),
     getAllQueuedRooms: db.prepare('SELECT DISTINCT room_id FROM room_message_queue'),
+
+    // Designs
+    listDesigns: db.prepare('SELECT * FROM designs WHERE org_id = ? ORDER BY updated_at DESC'),
+    getDesign: db.prepare('SELECT * FROM designs WHERE id = ?'),
+    createDesign: db.prepare('INSERT INTO designs (id, name, org_id) VALUES (?, ?, ?)'),
+    updateDesignName: db.prepare(
+      "UPDATE designs SET name = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    touchDesign: db.prepare("UPDATE designs SET updated_at = datetime('now') WHERE id = ?"),
+    deleteDesign: db.prepare('DELETE FROM designs WHERE id = ?'),
+
+    // Design <-> project links
+    listDesignProjects: db.prepare(
+      'SELECT * FROM design_projects WHERE design_id = ? ORDER BY project_id ASC',
+    ),
+    linkDesignProject: db.prepare(
+      'INSERT OR IGNORE INTO design_projects (design_id, project_id) VALUES (?, ?)',
+    ),
+    unlinkDesignProject: db.prepare(
+      'DELETE FROM design_projects WHERE design_id = ? AND project_id = ?',
+    ),
+    clearDesignProjects: db.prepare('DELETE FROM design_projects WHERE design_id = ?'),
+
+    // Design messages
+    listDesignMessages: db.prepare(
+      'SELECT * FROM design_messages WHERE design_id = ? ORDER BY created_at ASC',
+    ),
+    appendDesignMessage: db.prepare(
+      'INSERT INTO design_messages (id, design_id, role, content) VALUES (?, ?, ?, ?)',
+    ),
 
     // Slack messages
     addSlackMessage: db.prepare(

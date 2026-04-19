@@ -190,6 +190,19 @@ export const api = {
     fetchJSON(`/rooms/${roomId}/summarize`, { method: 'POST', timeout: 120000 }),
   getProjectRoom: (projectId) => fetchJSON(`/projects/${projectId}/room`),
 
+  // Designs (Claude Design — Phase 1)
+  getDesigns: () => fetchJSON('/designs'),
+  getDesign: (id) => fetchJSON(`/designs/${id}`),
+  createDesign: ({ name, linkedProjectIds = [] } = {}) =>
+    fetchJSON('/designs', {
+      method: 'POST',
+      body: JSON.stringify({ name, linkedProjectIds }),
+    }),
+  updateDesign: (id, data) =>
+    fetchJSON(`/designs/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteDesign: (id) => fetchJSON(`/designs/${id}`, { method: 'DELETE' }),
+  getDesignMessages: (id) => fetchJSON(`/designs/${id}/messages`),
+
   // Usage
   getUsage: () => fetchJSON('/usage'),
 

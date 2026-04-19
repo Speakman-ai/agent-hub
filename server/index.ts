@@ -63,6 +63,7 @@ import createHeartbeatRoutes from './routes/heartbeats.js';
 import createCronRoutes from './routes/crons.js';
 import createMemoryRoutes from './routes/memory.js';
 import createRoomRoutes from './routes/rooms.js';
+import createDesignRoutes from './routes/designs.js';
 import createSkillRoutes, { DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import createClawhubRoutes from './routes/clawhub.js';
 import createWebhookRoutes, {
@@ -113,6 +114,9 @@ import {
   handleRoomDequeue,
 } from './room-chat.js';
 
+import { initDesignChat, handleDesignChat, handleDesignCancel } from './design-chat.js';
+import { ensureDesignsRoot, getDesign as getDesignStore } from './designs-store.js';
+
 import { initAutoGit, autoCommitAndPR, resolveSlashSkill } from './auto-git.js';
 
 import createChatHandler, {
@@ -138,6 +142,7 @@ import type {
   RouteDeps,
   ChatMessage,
   RoomChatMessage,
+  DesignChatMessage,
   SessionRow,
   ActiveTaskRow,
   KanbanCardRow,
@@ -388,6 +393,26 @@ initRoomChat({
   getMaxQueueSize: () => MAX_QUEUE_SIZE,
 });
 
+// Designs live under `<activeDataDir>/designs/`. We ensure the root exists
+// at boot so the artifact-dir creation inside createDesign() doesn't race
+// against a first-time deploy, and so the static mount can serve its own
+// 404s rather than throwing at registration time.
+function getDesignsRoot(): string {
+  return path.join(_activeDataDir, 'designs');
+}
+ensureDesignsRoot(getDesignsRoot());
+
+initDesignChat({
+  stmts: stmts!,
+  broadcast,
+  getClaudeBin: () => CLAUDE_BIN,
+  getDefaultModel: () => DEFAULT_MODEL,
+  getConfig: () => config,
+  getDesign: (id: string) => getDesignStore(id, findProject, getActiveOrgId()),
+  getDesignsRoot,
+  getDefaultSkillsDir: () => DEFAULT_SKILLS_DIR,
+});
+
 initAutonomous({
   stmts: stmts!,
   broadcast,
@@ -416,6 +441,33 @@ app.use(authMiddleware);
 const UPLOADS_DIR: string = path.join(__dirname, 'uploads');
 mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use('/uploads', express.static(UPLOADS_DIR));
+
+// Design artifact files: `<dataDir>/designs/<designId>/*` → `/design-files/<designId>/*`.
+// Each design's directory is its own mount root so path traversal (../..) can't
+// escape into a neighbouring design or out of the designs root entirely. We
+// resolve the requested path and verify it lives inside the per-design root
+// before handing off to express.static. Express already URL-decodes req.path
+// so `%2e%2e` and friends arrive normalized.
+app.use('/design-files/:designId', (req: Request, res: Response, next) => {
+  const designId = req.params.designId as string;
+  // Only allow [A-Za-z0-9-] ids so a malicious path segment (e.g. `..`, a
+  // trailing slash, a null byte) can't be laundered through the designId
+  // param. uuidv4 output is a strict subset of this alphabet.
+  if (!/^[A-Za-z0-9-]+$/.test(designId)) {
+    return res.status(400).json({ error: 'Invalid design id' });
+  }
+  // Verify the design belongs to the caller's org before serving files.
+  const design = getDesignStore(designId, findProject, getActiveOrgId());
+  if (!design) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const root = path.resolve(getDesignsRoot(), designId);
+  const requested = path.resolve(root, '.' + (req.path || '/'));
+  if (requested !== root && !requested.startsWith(root + path.sep)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  return express.static(root, { fallthrough: false })(req, res, next);
+});
 
 const CLIENT_DIST: string =
   process.env.AGENT_HUB_SERVE_CLIENT || path.join(__dirname, '..', 'client', 'dist');
@@ -480,6 +532,7 @@ app.use(createWikiRoutes(routeDeps));
 app.use(createHeartbeatRoutes(routeDeps));
 app.use(createCronRoutes(routeDeps));
 app.use(createRoomRoutes(routeDeps));
+app.use(createDesignRoutes({ ...routeDeps, getDesignsRoot }));
 app.use(createSkillRoutes(routeDeps));
 app.use(createClawhubRoutes(routeDeps));
 app.use(createWebhookRoutes(routeDeps));
@@ -525,6 +578,9 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
   handleDequeue,
   handleEditQueueItem,
   handleRoomDequeue,
+  handleDesignChat: (ws: unknown, msg: DesignChatMessage) =>
+    handleDesignChat(ws as WebSocketLike | null, msg),
+  handleDesignCancel,
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
