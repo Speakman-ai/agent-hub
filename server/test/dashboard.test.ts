@@ -122,6 +122,25 @@ describe('GET /api/orgs/:id/dashboard', () => {
     await request.get('/api/orgs/ghost-org-id/dashboard').expect(404);
   });
 
+  it('treats `:id = "active"` as an alias for the currently-active org', async () => {
+    // Remote-mode client bookmarks have browser-generated ids that don't
+    // exist on the remote server, so the client falls back to the alias.
+    // The response should be identical to requesting the active org by
+    // its real id.
+    const aliasRes = await request.get('/api/orgs/active/dashboard').expect(200);
+    const realRes = await request.get('/api/orgs/default/dashboard').expect(200);
+
+    const aliasBody = aliasRes.body as DashboardBody;
+    const realBody = realRes.body as DashboardBody;
+
+    // The alias resolves to the real org — so the returned `orgId` is the
+    // real id, not the literal string "active".
+    expect(aliasBody.orgId).toBe('default');
+    expect(aliasBody.isActive).toBe(true);
+    expect(aliasBody.orgName).toBe(realBody.orgName);
+    expect(aliasBody.headline).toEqual(realBody.headline);
+  });
+
   it('returns 409 when the requested org is not the active org', async () => {
     // Create a second org via the REST API. The test harness never calls
     // /api/orgs/:id/switch, so `default` remains active.

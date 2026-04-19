@@ -94,3 +94,65 @@ describe('fetchOrgs — connection-mode gating', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * getActiveOrgApiId resolves the right org id to send on org-scoped read
+ * endpoints. Remote-mode bookmarks have browser-generated ids that don't
+ * exist on the remote server — the helper returns the `active` alias for
+ * those. Local orgs pass through their real id.
+ */
+describe('getActiveOrgApiId', () => {
+  beforeEach(() => {
+    clearAllOrgState();
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    clearAllOrgState();
+    vi.restoreAllMocks();
+  });
+
+  it('returns the real id for a local org', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => [{ id: 'default', name: 'Default', mode: 'local', color: '#6366f1' }],
+    });
+
+    const { fetchOrgs, getActiveOrgApiId } = await import('./orgs.js');
+    await fetchOrgs();
+
+    expect(getActiveOrgApiId()).toBe('default');
+  });
+
+  it('returns "active" for a remote-mode org bookmark', async () => {
+    localStorage.setItem(
+      CONNECTION_KEY,
+      JSON.stringify({ mode: 'remote', remoteUrl: 'https://hub.example.com', apiKey: '' }),
+    );
+    localStorage.setItem(
+      REMOTE_ORGS_KEY,
+      JSON.stringify([
+        {
+          id: 'browser-random-xyz',
+          name: 'Acme Prod',
+          mode: 'remote',
+          color: '#6366f1',
+          remote_url: 'https://hub.example.com',
+          api_key: '',
+          created_at: '2026-04-01T00:00:00Z',
+        },
+      ]),
+    );
+
+    const { fetchOrgs, getActiveOrgApiId } = await import('./orgs.js');
+    await fetchOrgs();
+
+    // The bookmark's random id must NOT leak to the remote server.
+    expect(getActiveOrgApiId()).toBe('active');
+  });
+
+  it('returns null when there is no active org', async () => {
+    const { getActiveOrgApiId } = await import('./orgs.js');
+    expect(getActiveOrgApiId()).toBeNull();
+  });
+});

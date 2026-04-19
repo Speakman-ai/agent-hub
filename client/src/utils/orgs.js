@@ -127,6 +127,22 @@ export function getActiveOrg() {
 }
 
 /**
+ * Resolve the org id to send for org-scoped read endpoints (e.g. the
+ * dashboard). Remote orgs are client-side bookmarks whose random `id`
+ * doesn't exist on the remote server — for those we send the `active`
+ * alias, which the server resolves to its own active-org id. Local orgs
+ * use their real id so multi-org servers can still route explicitly.
+ *
+ * Returns `null` when there is no active org (caller should render the
+ * "pick an org" empty state).
+ */
+export function getActiveOrgApiId() {
+  const org = getActiveOrg();
+  if (!org) return null;
+  return org.mode === 'remote' ? 'active' : org.id;
+}
+
+/**
  * Switch to a different org by ID.
  * For local orgs: tells the server to switch data directories.
  * For remote orgs: updates connection config to point at the remote server.

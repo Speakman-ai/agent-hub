@@ -71,14 +71,24 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
    */
   router.get('/api/orgs/:id/dashboard', (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
-    const { id: orgId } = req.params as { id: string };
+    const { id: rawOrgId } = req.params as { id: string };
+
+    // `:id = 'active'` is an alias for the server's currently-active org.
+    // This exists primarily for remote-mode client bookmarks (see
+    // `client/src/utils/orgs.js`) whose `id` is a browser-generated random
+    // string that has no counterpart on the remote server — they can send
+    // `active` and get the remote's active-org dashboard without knowing
+    // its real id. Local callers still use explicit ids.
+    const activeOrgId = getActiveOrgId();
+    const orgId = rawOrgId === 'active' ? activeOrgId : rawOrgId;
 
     const org = getOrg(orgId);
     if (!org) return res.status(404).json({ error: 'Org not found' });
 
     // Membership gate: any member (Owner/Admin/User) can read their own
     // org's dashboard. apiKey callers are global. No-auth dev mode passes
-    // through.
+    // through. Gate against the resolved id so the `active` alias still
+    // enforces real membership on the underlying org.
     if (authIsConfigured() && !authedReq.authViaApiKey) {
       if (!authedReq.authUserId) {
         return res.status(401).json({ error: 'Authentication required.' });
@@ -89,10 +99,11 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       }
     }
 
-    const activeOrgId = getActiveOrgId();
     if (orgId !== activeOrgId) {
       // The per-org DBs aren't all mounted on this handle; ask the client
       // to switch first rather than silently returning stale / empty data.
+      // (Unreachable when `rawOrgId === 'active'` — we already resolved it
+      // to `activeOrgId` above.)
       return res.status(409).json({
         error: 'Org not active. Switch to this org before loading its dashboard.',
         activeOrgId,

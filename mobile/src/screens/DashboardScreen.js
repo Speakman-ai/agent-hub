@@ -54,7 +54,11 @@ export default function DashboardScreen() {
     setError(null);
     try {
       const base = getApiBaseUrl();
-      const res = await fetch(`${base}/orgs/${org.id}/dashboard`, {
+      // Mobile orgs are always remote bookmarks with browser-generated
+      // ids that don't exist on the remote server — send the `active`
+      // alias and let the server resolve it to its own active-org id.
+      // See `server/routes/dashboard.ts` for the alias contract.
+      const res = await fetch(`${base}/orgs/active/dashboard`, {
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       });
       if (!res.ok) {

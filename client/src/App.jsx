@@ -47,7 +47,13 @@ import {
   Loader2,
   ArrowLeftRight,
 } from 'lucide-react';
-import { migrateFromLegacy, fetchOrgs, getActiveOrg, getOrgs } from './utils/orgs.js';
+import {
+  migrateFromLegacy,
+  fetchOrgs,
+  getActiveOrg,
+  getActiveOrgApiId,
+  getOrgs,
+} from './utils/orgs.js';
 import { getApiBase, getAuthHeaders, getServerBase } from './utils/connection.js';
 import { extractSubmittedAskIds } from './utils/askAnswers.js';
 
@@ -2117,7 +2123,7 @@ export default function App() {
               onToast={showToast}
             />
           ) : currentView === 'dashboard' ? (
-            <DashboardView orgId={getActiveOrg()?.id} />
+            <DashboardView orgId={getActiveOrgApiId()} />
           ) : currentView === 'skills' ? (
             <SkillsPage agents={agents} projects={projects} />
           ) : currentView === 'room' && activeRoom ? (
