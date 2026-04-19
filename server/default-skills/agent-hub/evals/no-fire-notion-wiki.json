@@ -1,0 +1,36 @@
+{
+  "id": "no-fire-notion-wiki",
+  "description": "Should-not-fire case. User asks to search/update documentation in Notion. The word 'wiki' (and generic 'doc search' phrasing) is a known false-positive hook — the skill's anti-trigger clause explicitly lists Notion. Verifies the agent does NOT reach for scripts/wiki-*.sh when the doc surface is Notion, not the Agent Hub project wiki.",
+  "mode": "should-not-fire",
+  "skills": ["agent-hub"],
+  "query": "Please search our Notion workspace for the page titled 'Authentication policy' and update the section on JWT rotation to say we now rotate every 30 days instead of 90. The workspace is at notion.so/acme.",
+  "files": [
+    "server/default-skills/agent-hub/SKILL.md"
+  ],
+  "expected_behavior": [
+    {
+      "type": "not_contains_any",
+      "value": [
+        "scripts/wiki-search.sh",
+        "scripts/wiki-upsert.sh",
+        "scripts/wiki.sh"
+      ],
+      "rationale": "The wiki-*.sh wrappers only talk to the Agent Hub project wiki. Notion has its own API — mixing the two is the false positive."
+    },
+    {
+      "type": "not_contains_any",
+      "value": [
+        "localhost:3051",
+        "/api/projects/",
+        "FTS5",
+        "wiki_pages"
+      ],
+      "rationale": "Local Agent Hub API surfaces (FTS5 index, wiki_pages table) are irrelevant to Notion and signal a mis-trigger."
+    },
+    {
+      "type": "contains_any",
+      "value": ["Notion", "notion.so", "Notion API", "integration token"],
+      "rationale": "Correct response routes the user to the Notion API / integration-token flow, not the Agent Hub wiki."
+    }
+  ]
+}

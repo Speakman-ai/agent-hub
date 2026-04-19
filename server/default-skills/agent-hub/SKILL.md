@@ -1,21 +1,23 @@
 ---
 name: agent-hub
 description: >-
-  Agent Hub platform skill — load when running inside Agent Hub. Covers the local
-  Agent Hub API at http://localhost:3051 and every agent-facing surface: kanban
-  boards (cards, columns, comments, labels), epics (autonomous and grouped work),
-  the project wiki (FTS5 search, categories), sessions (messages, history,
-  ask_mode), heartbeats (scheduled check-ins), crons (automated jobs), and agent
-  coordination via <delegate> (parallel sub-agents) and <handoff> (ownership
-  transfer), plus the <agenthub:close-card> auto-close protocol, TOOL_ERROR
-  self-reporting, multi-user auth (Owner/Admin/User roles, x-api-key break-glass),
-  and Electron desktop specifics. TRIGGER when the agent is running on Agent Hub;
-  when URLs reference localhost:3051 or /api/projects/; or when a user mentions
-  kanban, board, cards, backlog, epic, wiki, session, heartbeat, cron, delegation,
-  handoff, ask mode, TOOL_ERROR, or the Agent Hub API, or asks how to self-report
-  work, link a session to a card, or call the platform from inside a session.
+  Agent Hub platform skill — load only when working against Agent Hub itself
+  (Agent Hub API at http://localhost:3051). Covers kanban boards, epics,
+  per-project wiki (FTS5), sessions, heartbeats, crons, delegation via
+  <delegate>/<handoff>, <agenthub:close-card>, TOOL_ERROR self-reporting,
+  multi-user auth, and Electron. TRIGGER only on Agent-Hub signals: env vars
+  AGENT_HUB_URL / AGENT_HUB_API_KEY / AGENT_HUB_SESSION_ID / PROJECT_ID; URLs
+  under localhost:3051 or /api/projects/<slug>/; the name "Agent Hub"; fenced
+  <delegate>, <handoff>, or <agenthub:close-card>; or scripts under this skill
+  (scripts/kanban-*.sh, scripts/wiki-*.sh, scripts/heartbeats.sh,
+  scripts/crons.sh). DO NOT TRIGGER on third-party kanban (Linear, Jira,
+  Trello, Asana, GitHub Projects), wikis (Notion, Confluence), or APIs
+  (GitHub, Slack, Stripe, AWS) unless about Agent Hub's own integration; on
+  generic Bash/git/Node help; or on the Claude Code CLI / Agent SDK alone —
+  coincidental vocabulary ("kanban in Linear", "wiki in Notion") is not a
+  trigger.
 category: platform
-version: 2.0.0
+version: 2.1.0
 keep-coding-instructions: true
 ---
 

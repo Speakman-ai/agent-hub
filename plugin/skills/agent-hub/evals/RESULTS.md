@@ -32,12 +32,22 @@ JSON report into `evals/archive/` (gitignored) for deeper inspection.
 
 ### Run 1 — TBD (pending first live execution)
 
+Should-fire matrix (happy path — skill is expected to surface its scripts):
+
 | eval           | haiku   | sonnet  | opus    | baseline-sonnet |
 | -------------- | ------- | ------- | ------- | --------------- |
 | create-ticket  | pending | pending | pending | pending         |
 | move-card      | pending | pending | pending | pending         |
 | search-wiki    | pending | pending | pending | pending         |
 | delegate-task  | pending | pending | pending | pending         |
+
+Should-not-fire matrix (anti-trigger — skill must stay out of the way):
+
+| eval                  | haiku   | sonnet  | opus    | baseline-sonnet |
+| --------------------- | ------- | ------- | ------- | --------------- |
+| no-fire-linear-kanban | pending | pending | pending | pending         |
+| no-fire-notion-wiki   | pending | pending | pending | pending         |
+| no-fire-github-api    | pending | pending | pending | pending         |
 
 **Notes** — fill in after first run:
 
@@ -46,6 +56,12 @@ JSON report into `evals/archive/` (gitignored) for deeper inspection.
 - How large is the baseline gap? (expected: baseline Sonnet should fail
   every `mentions_script` assertion, since the raw model has no reason to
   know `scripts/kanban-create-card.sh` exists).
+- For the `no-fire-*` row: ideally baseline and with-skill both pass
+  (the raw model has no reason to invent Agent Hub scripts either). A
+  regression where with-skill *fails* and baseline *passes* is the
+  exact false-positive scenario the P2 #6 anti-trigger clause is meant
+  to prevent — that pattern should open a follow-up card, not be
+  silenced.
 
 ## Shape validation
 

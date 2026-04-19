@@ -79,6 +79,31 @@ diff <(jq -S .results baseline-report.json) <(jq -S .results with-skill-report.j
 - `delegate-task` is a **bonus** — tracked for trend analysis but not a
   blocking gate.
 
+## Should-fire vs. should-not-fire
+
+Evals fall into two classes, distinguished by the optional top-level
+`mode` field:
+
+- **should-fire** (default, no `mode` set): happy-path scenarios where
+  the skill is expected to guide the model toward a specific Agent-Hub
+  script or pattern. Graded primarily by `mentions_script` and positive
+  `contains` assertions.
+- **should-fire-not / should-not-fire** (`"mode": "should-not-fire"`):
+  scenarios where the query only *looks* like it's about Agent Hub —
+  e.g. "kanban in Linear", "wiki in Notion", "GitHub REST API". The
+  SKILL.md frontmatter's `DO NOT TRIGGER` clause exists specifically to
+  suppress these. Graded primarily by `not_contains_any` assertions
+  against Agent Hub's scripts and localhost endpoints, plus a positive
+  `contains_any` asserting the agent points the user at the correct
+  *third-party* tool.
+
+The runner does not treat the two modes differently — it just runs the
+assertions. The `mode` field is a tag for humans reading reports.
+
+When the false-positive rate measured on `no-fire-*` cases trends up,
+revisit the `DO NOT TRIGGER` clause in SKILL.md rather than silencing
+the eval.
+
 ## What not to put here
 
 - LLM-as-judge grading. The whole point of the deterministic matchers is
