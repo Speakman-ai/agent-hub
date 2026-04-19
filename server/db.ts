@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import config from './config.js';
+import { POOL_SCHEMA } from './container-pool/schema.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -927,6 +928,10 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS idx_room_message_queue ON room_message_queue(room_id, position ASC);
   `);
+
+  // Container pool (PR preview envs + scaffolding). Schema lives in a sibling
+  // module so unit tests can apply the identical DDL to an in-memory DB.
+  db.exec(POOL_SCHEMA);
 
   try {
     db.exec(`
