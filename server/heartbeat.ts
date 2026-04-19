@@ -465,6 +465,11 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
             threadName: thread.name,
             threadType: thread.type,
             entry,
+            // When the cron has opted out of "ran" notifications, suppress
+            // the mobile push that `handleBroadcastForPush` would otherwise
+            // dispatch from this broadcast. The UI still receives the event
+            // and updates the thread view in real time.
+            suppressPush: !cronJob.notify_on_run,
           });
         }
       } catch (err) {
@@ -505,9 +510,11 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       );
       stmts.touchSession.run(session!.id);
 
-      // Only push when this cron has explicitly opted in. The thread/session
-      // entry above is unaffected — silent crons still log everywhere they
-      // always have, they just don't ping mobile devices on every tick.
+      // Only push when this cron has explicitly opted in. The thread and
+      // session rows above are still written and broadcast — but those
+      // broadcasts carry `suppressPush: true` when notify_on_run is off, so
+      // mobile devices don't get pinged via the `thread_entry` channel
+      // either. See `handleBroadcastForPush` in `push.ts`.
       if (cronJob.notify_on_run) {
         await sendPushNotifications(cronJob.name, result, session!.id, cronJob.id);
       }
@@ -566,6 +573,10 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
             threadName: thread.name,
             threadType: thread.type,
             entry,
+            // See success-path comment — honor per-cron notify_on_run on the
+            // error path too, so a silenced cron doesn't suddenly start
+            // pushing just because it happened to fail.
+            suppressPush: !cronJob.notify_on_run,
           });
         }
       } catch (threadErr) {

@@ -415,4 +415,47 @@ describe('handleBroadcastForPush', () => {
     expect(sent).toBe(0);
     expect(fetchFn).not.toHaveBeenCalled();
   });
+
+  it('short-circuits when the broadcast opts out via suppressPush', async () => {
+    const fetchFn = vi.fn() as unknown as typeof fetch;
+    const sent = await handleBroadcastForPush(
+      {
+        // A thread_entry_created for a cron with notify_on_run=0 — the
+        // runner marks the broadcast with suppressPush so mobile devices
+        // don't get a "Cron Update" push.
+        type: 'thread_entry_created',
+        threadId: 't1',
+        projectId: 'p1',
+        threadName: 'some cron',
+        threadType: 'cron',
+        entry: { id: 'e1', content: 'ok' },
+        suppressPush: true,
+      },
+      { fetchFn, getAllTokens: () => [token('a')], removeToken: () => {} },
+    );
+    expect(sent).toBe(0);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it('still dispatches when suppressPush is false or absent', async () => {
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
+      return {
+        json: async () => ({ data: body.map(() => ({ status: 'ok' })) }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const sent = await handleBroadcastForPush(
+      {
+        type: 'thread_entry_created',
+        threadId: 't1',
+        projectId: 'p1',
+        threadName: 'some cron',
+        threadType: 'cron',
+        entry: { id: 'e1', content: 'ok' },
+        suppressPush: false,
+      },
+      { fetchFn, getAllTokens: () => [token('a')], removeToken: () => {} },
+    );
+    expect(sent).toBe(1);
+  });
 });

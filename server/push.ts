@@ -352,11 +352,17 @@ interface BroadcastData {
  *
  * Unknown/ignored event types short-circuit with 0 so this is cheap to
  * call on every broadcast.
+ *
+ * Broadcasts may opt out of push entirely by setting `suppressPush: true`
+ * on the payload. Used by e.g. cron runs where the per-cron `notify_on_run`
+ * flag is off — the thread entry is still broadcast to the UI, but no
+ * mobile push is dispatched.
  */
 export async function handleBroadcastForPush(
   data: BroadcastData,
   deps?: PushDispatchDeps,
 ): Promise<number> {
+  if (data && data.suppressPush === true) return 0;
   const mapped = mapBroadcastToPush(data);
   if (!mapped) return 0;
   return dispatchPushEvent(mapped.event, mapped.payload, deps);
