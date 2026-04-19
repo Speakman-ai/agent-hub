@@ -47,10 +47,12 @@
 
 import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'crypto';
+import type { ExitReason } from './docker-lifecycle.js';
+import { isQuotaViolation } from './docker-lifecycle.js';
 
 export type QueueClass = 'pr_env' | 'scaffold';
 export type SlotClass = QueueClass | 'overflow';
-export type SlotStatus = 'free' | 'reserved' | 'busy' | 'draining';
+export type SlotStatus = 'free' | 'reserved' | 'busy' | 'draining' | 'failed';
 export type QueueStatus = 'queued' | 'dispatching' | 'failed';
 
 export interface Clock {
@@ -216,6 +218,9 @@ export class PoolAllocator {
    * Mark a slot as free and clear its binding. Called by the (future)
    * container lifecycle layer when a container exits — for W1 tests use
    * it to simulate a slot becoming available mid-scenario.
+   *
+   * Also clears `last_error`: a slot that was previously failed and has
+   * been explicitly released no longer carries stale failure metadata.
    */
   release(slotId: string): void {
     this.db
@@ -224,10 +229,99 @@ export class PoolAllocator {
             SET status = 'free',
                 container_id = NULL,
                 started_at = NULL,
-                last_activity_at = NULL
+                last_activity_at = NULL,
+                last_error = NULL
           WHERE slot_id = ?`,
       )
       .run(slotId);
+  }
+
+  /**
+   * Mark a slot as `failed` and persist a structured `ExitReason` so
+   * operator tooling can explain *why* without re-inspecting a
+   * container that may have already been garbage-collected by the
+   * Docker daemon. `container_id` is cleared so the slot can be
+   * reclaimed without the UNIQUE(container_id) constraint biting. The
+   * slot stays out of the dispatch pool until `reclaimFailedSlot()`
+   * promotes it back to `free`.
+   *
+   * Note: `started_at` is intentionally preserved (unlike `release()`
+   * which clears it) so operator triage can see when the now-failed
+   * container was originally started.
+   */
+  markSlotFailed(slotId: string, reason: ExitReason): void {
+    this.db
+      .prepare(
+        `UPDATE pool_slots
+            SET status = 'failed',
+                container_id = NULL,
+                last_activity_at = ?,
+                last_error = ?
+          WHERE slot_id = ?`,
+      )
+      .run(this.clock.nowIso(), JSON.stringify(reason), slotId);
+  }
+
+  /**
+   * High-level entry point for the container lifecycle layer: given a
+   * classified exit reason, either reclaim the slot (clean / crash) or
+   * mark it failed (quota violation). Returns the terminal slot status
+   * so the caller can branch on retry / alert behavior without
+   * re-querying.
+   *
+   * Quota violations (`oom`, `pids`) → `failed`. A human or the reaper
+   * must call `reclaimFailedSlot` once the root cause is understood.
+   *
+   * Transient crashes (`crash`) → `free`. The job-level retry policy
+   * lives elsewhere; the allocator only owns slot lifecycle.
+   *
+   * Clean exits → `free`. No error recorded.
+   */
+  handleContainerExit(slotId: string, reason: ExitReason): SlotStatus {
+    if (isQuotaViolation(reason)) {
+      this.markSlotFailed(slotId, reason);
+      return 'failed';
+    }
+    this.release(slotId);
+    return 'free';
+  }
+
+  /**
+   * Move a slot out of `failed` back to `free`. Only valid on a
+   * currently-failed slot — no-op if the slot is in any other state so
+   * callers can't accidentally clobber a live binding. Returns true if
+   * the transition actually ran.
+   */
+  reclaimFailedSlot(slotId: string): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE pool_slots
+          SET status = 'free',
+              container_id = NULL,
+              started_at = NULL,
+              last_activity_at = NULL,
+              last_error = NULL
+        WHERE slot_id = ? AND status = 'failed'`,
+      )
+      .run(slotId);
+    return info.changes > 0;
+  }
+
+  /**
+   * Read-only accessor for the recorded failure reason on a failed slot.
+   * Returns `null` if the slot is missing, not failed, or has no error
+   * payload. Used by the /settings/pool status endpoint and tests.
+   */
+  getSlotError(slotId: string): ExitReason | null {
+    const row = this.db
+      .prepare('SELECT last_error FROM pool_slots WHERE slot_id = ?')
+      .get(slotId) as { last_error: string | null } | undefined;
+    if (!row || !row.last_error) return null;
+    try {
+      return JSON.parse(row.last_error) as ExitReason;
+    } catch {
+      return null;
+    }
   }
 
   /**

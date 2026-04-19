@@ -1,0 +1,45 @@
+# Container pool — scaffolding job template (W1).
+#
+# Short-lived (30–90 s) container that runs `create-next-app`,
+# `create-expo-app`, or similar, then pushes the generated tree to the
+# user's GitHub repo and exits. Rendered per scaffold slot by the
+# dispatcher; `${VAR}` substitutions:
+#
+#   SCAFFOLD_SLOT_ID  — e.g. "scaffold-1" or "overflow-1"
+#   SCAFFOLD_IMAGE    — base image with node + the scaffold CLI baked in
+#   SCAFFOLD_SPEC     — JSON spec (template name, target repo, etc.) passed
+#                       to the entrypoint via env var
+#
+# Why larger caps than a PR env:
+#   `npm install` at scaffold time is CPU-bound (parallel tarball fetch,
+#   tree build, post-install scripts). We give it 2 vCPU of burst and 2 GiB
+#   of RAM so the 30–90 s happy path stays on the fast branch; longer
+#   starves the pool for no user-visible benefit.
+#
+# OOM handling:
+#   `restart: "no"` — a single attempt. If the container OOMs, the
+#   dispatcher's lifecycle hook re-queues exactly once (per spec §3.3
+#   "quota violation behavior") and surfaces a structured `ExitReason`
+#   through the allocator so the slot moves to `failed` → reclaim.
+#
+# Caps (card: W1 resource caps):
+#   mem_limit   2 GiB  (npm install RSS peak + safety headroom)
+#   cpus        2.0    (npm install is CPU-bound, §3)
+#   pids_limit  512    (npm fans out install workers)
+services:
+  scaffold:
+    image: ${SCAFFOLD_IMAGE}
+    container_name: ${SCAFFOLD_SLOT_ID}
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
+    pids_limit: 512
+    read_only: false
+    tmpfs:
+      - /tmp:size=256m
+    restart: "no"
+    environment:
+      - SCAFFOLD_SPEC=${SCAFFOLD_SPEC}
+    labels:
+      agent-hub.pool.class: scaffold
+      agent-hub.pool.slot_id: ${SCAFFOLD_SLOT_ID}

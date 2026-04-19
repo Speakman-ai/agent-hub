@@ -31,11 +31,21 @@ export const POOL_SCHEMA = `
   CREATE TABLE IF NOT EXISTS pool_slots (
     slot_id          TEXT PRIMARY KEY,
     class            TEXT NOT NULL CHECK(class IN ('pr_env','scaffold','overflow')),
+    -- 'failed' is a terminal state entered when the container exited due
+    -- to a quota violation (OOM kill, pids cap). The reaper / operator
+    -- must call reclaim() to move it back to 'free'; until then the slot
+    -- is held out of the dispatch pool so we don't re-bind onto a known
+    -- broken runtime before someone inspects what happened.
     status           TEXT NOT NULL DEFAULT 'free'
-                       CHECK(status IN ('free','reserved','busy','draining')),
+                       CHECK(status IN ('free','reserved','busy','draining','failed')),
     container_id     TEXT,
     started_at       TEXT,
     last_activity_at TEXT,
+    -- Structured exit reason recorded when a container is reaped. JSON
+    -- blob written by the lifecycle layer (see docker-lifecycle.ts).
+    -- Cleared on reclaim back to 'free'. NULL for slots that have never
+    -- failed.
+    last_error       TEXT,
     -- A given Docker container must only ever be bound to one slot. NULL
     -- container_ids are allowed to repeat (free slots). Partial UNIQUE index
     -- gives us that semantic since SQLite's table-level UNIQUE counts NULLs

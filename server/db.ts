@@ -945,6 +945,47 @@ function initDb(dataDir: string): void {
   // module so unit tests can apply the identical DDL to an in-memory DB.
   db.exec(POOL_SCHEMA);
 
+  // Migration: pool_slots gained `last_error TEXT` and `status` CHECK now
+  // includes 'failed' (added in #458). SQLite can't ALTER a CHECK constraint
+  // in-place, so we rebuild the table if the old shape is detected.
+  try {
+    db.exec('ALTER TABLE pool_slots ADD COLUMN last_error TEXT');
+  } catch (_e) {
+    /* column already exists */
+  }
+
+  // Rebuild pool_slots to extend the status CHECK set if it lacks 'failed'.
+  {
+    const ddl =
+      (
+        db
+          .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pool_slots'")
+          .get() as { sql: string } | undefined
+      )?.sql ?? '';
+    if (ddl && !ddl.includes("'failed'")) {
+      const handle = db;
+      handle.transaction(() => {
+        handle.exec(`
+          CREATE TABLE pool_slots_new (
+            slot_id          TEXT PRIMARY KEY,
+            class            TEXT NOT NULL CHECK(class IN ('pr_env','scaffold','overflow')),
+            status           TEXT NOT NULL DEFAULT 'free'
+                               CHECK(status IN ('free','reserved','busy','draining','failed')),
+            container_id     TEXT,
+            started_at       TEXT,
+            last_activity_at TEXT,
+            last_error       TEXT,
+            UNIQUE(container_id)
+          );
+          INSERT INTO pool_slots_new (slot_id, class, status, container_id, started_at, last_activity_at, last_error)
+            SELECT slot_id, class, status, container_id, started_at, last_activity_at, last_error FROM pool_slots;
+          DROP TABLE pool_slots;
+          ALTER TABLE pool_slots_new RENAME TO pool_slots;
+        `);
+      })();
+    }
+  }
+
   try {
     db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS wiki_pages_fts USING fts5(

@@ -359,6 +359,142 @@ describe('metrics snapshots', () => {
   });
 });
 
+describe('quota-violation lifecycle — slot moves to failed, is held out of dispatch', () => {
+  function oomReason(containerId = 'c-oom'): import('./docker-lifecycle.js').ExitReason {
+    return {
+      kind: 'oom',
+      exitCode: 137,
+      oomKilled: true,
+      message: 'container OOM-killed (mem_limit exceeded, exit 137)',
+      containerId,
+      finishedAt: '2026-04-19T12:00:00Z',
+    };
+  }
+
+  function pidsReason(containerId = 'c-pids'): import('./docker-lifecycle.js').ExitReason {
+    return {
+      kind: 'pids',
+      exitCode: 1,
+      oomKilled: false,
+      message: 'container hit pids_limit (fork/exec: EAGAIN)',
+      containerId,
+    };
+  }
+
+  it('handleContainerExit moves the slot to failed on OOM and records the reason', () => {
+    const { allocator, db } = freshAllocator({ prEnvSlots: 1, scaffoldSlots: 0, overflowSlots: 0 });
+    allocator.enqueue('pr_env', { pr: 1 });
+    allocator.tick();
+    expect(slotStatus(db, 'pr-1')).toBe('busy');
+
+    const terminal = allocator.handleContainerExit('pr-1', oomReason());
+    expect(terminal).toBe('failed');
+    expect(slotStatus(db, 'pr-1')).toBe('failed');
+
+    // container_id is cleared so the UNIQUE(container_id) constraint
+    // doesn't block a future rebind after reclaim.
+    expect(boundContainer(db, 'pr-1')).toBeNull();
+
+    const err = allocator.getSlotError('pr-1');
+    expect(err).not.toBeNull();
+    expect(err?.kind).toBe('oom');
+    expect(err?.oomKilled).toBe(true);
+    expect(err?.exitCode).toBe(137);
+  });
+
+  it('pids_limit violation is also treated as a quota violation (failed)', () => {
+    const { allocator, db } = freshAllocator({ prEnvSlots: 1, scaffoldSlots: 0, overflowSlots: 0 });
+    allocator.enqueue('pr_env', { pr: 1 });
+    allocator.tick();
+
+    allocator.handleContainerExit('pr-1', pidsReason());
+    expect(slotStatus(db, 'pr-1')).toBe('failed');
+    expect(allocator.getSlotError('pr-1')?.kind).toBe('pids');
+  });
+
+  it('clean exit releases the slot back to free (no error recorded)', () => {
+    const { allocator, db } = freshAllocator({ prEnvSlots: 1, scaffoldSlots: 0, overflowSlots: 0 });
+    allocator.enqueue('pr_env', { pr: 1 });
+    allocator.tick();
+
+    const terminal = allocator.handleContainerExit('pr-1', {
+      kind: 'clean',
+      exitCode: 0,
+      oomKilled: false,
+      message: 'container exited cleanly',
+      containerId: 'c-clean',
+    });
+    expect(terminal).toBe('free');
+    expect(slotStatus(db, 'pr-1')).toBe('free');
+    expect(allocator.getSlotError('pr-1')).toBeNull();
+  });
+
+  it('plain crash also releases the slot — retry policy is job-level, not slot-level', () => {
+    const { allocator, db } = freshAllocator({ prEnvSlots: 1, scaffoldSlots: 0, overflowSlots: 0 });
+    allocator.enqueue('pr_env', { pr: 1 });
+    allocator.tick();
+
+    const terminal = allocator.handleContainerExit('pr-1', {
+      kind: 'crash',
+      exitCode: 2,
+      oomKilled: false,
+      message: 'container exited 2: segfault',
+      containerId: 'c-crash',
+    });
+    expect(terminal).toBe('free');
+    expect(slotStatus(db, 'pr-1')).toBe('free');
+  });
+
+  it('a failed slot is held out of the dispatch pool until reclaimed', () => {
+    const { allocator, db } = freshAllocator({ prEnvSlots: 1, scaffoldSlots: 0, overflowSlots: 0 });
+    allocator.enqueue('pr_env', { pr: 1 });
+    allocator.tick();
+    allocator.handleContainerExit('pr-1', oomReason());
+    expect(slotStatus(db, 'pr-1')).toBe('failed');
+
+    // A new PR env request must NOT land on the failed slot — we don't
+    // want to silently rebind onto a known-broken runtime.
+    const pr2 = allocator.enqueue('pr_env', { pr: 2 });
+    const result = allocator.tick();
+    expect(result.assigned).toHaveLength(0);
+    expect(result.prEnvWaiting).toBe(1);
+    void pr2;
+
+    // Reclaim the slot — now the queued request can dispatch.
+    expect(allocator.reclaimFailedSlot('pr-1')).toBe(true);
+    expect(slotStatus(db, 'pr-1')).toBe('free');
+    expect(allocator.getSlotError('pr-1')).toBeNull();
+
+    const result2 = allocator.tick();
+    expect(result2.assigned).toHaveLength(1);
+    expect(result2.assigned[0].slotId).toBe('pr-1');
+  });
+
+  it('reclaimFailedSlot is a no-op on slots that are not in the failed state', () => {
+    const { allocator } = freshAllocator({ prEnvSlots: 1, scaffoldSlots: 0, overflowSlots: 0 });
+    // Busy slot — reclaim must not clobber the live binding.
+    allocator.enqueue('pr_env', { pr: 1 });
+    allocator.tick();
+    expect(allocator.reclaimFailedSlot('pr-1')).toBe(false);
+
+    // Unknown slot — returns false rather than throwing.
+    expect(allocator.reclaimFailedSlot('does-not-exist')).toBe(false);
+  });
+
+  it('failed slots count as "not free" in pool_util — they still consume the fleet', () => {
+    const { allocator } = freshAllocator({ prEnvSlots: 2, scaffoldSlots: 0, overflowSlots: 0 });
+    allocator.enqueue('pr_env', { pr: 1 });
+    allocator.tick();
+    // 1/2 busy.
+    expect(allocator.snapshotMetrics().poolUtil).toBe(0.5);
+
+    allocator.handleContainerExit('pr-1', oomReason());
+    // Still 1/2 "in use" — failed slots are out of rotation until
+    // reclaimed, which is the right utilization signal for alerting.
+    expect(allocator.snapshotMetrics().poolUtil).toBe(0.5);
+  });
+});
+
 describe('startDispatcher — 1 Hz tick driver', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());

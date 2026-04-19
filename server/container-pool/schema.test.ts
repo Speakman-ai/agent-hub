@@ -11,6 +11,41 @@ import Database from 'better-sqlite3';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { POOL_SCHEMA } from './schema.js';
 
+/** Pre-#458 schema: no last_error column, status CHECK lacks 'failed'. */
+const PRE_458_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS pool_slots (
+    slot_id          TEXT PRIMARY KEY,
+    class            TEXT NOT NULL CHECK(class IN ('pr_env','scaffold','overflow')),
+    status           TEXT NOT NULL DEFAULT 'free'
+                       CHECK(status IN ('free','reserved','busy','draining')),
+    container_id     TEXT,
+    started_at       TEXT,
+    last_activity_at TEXT,
+    UNIQUE(container_id)
+  );
+  CREATE TABLE IF NOT EXISTS pool_queue (
+    id             TEXT PRIMARY KEY,
+    class          TEXT NOT NULL CHECK(class IN ('pr_env','scaffold')),
+    payload        TEXT NOT NULL,
+    priority_tier  INTEGER NOT NULL DEFAULT 0,
+    enqueued_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    status         TEXT NOT NULL DEFAULT 'queued'
+                     CHECK(status IN ('queued','dispatching','failed'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_pool_queue_status_enqueued_at
+    ON pool_queue(status, enqueued_at);
+  CREATE TABLE IF NOT EXISTS pool_metrics (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT NOT NULL DEFAULT (datetime('now')),
+    pool_util   REAL NOT NULL,
+    queue_depth INTEGER NOT NULL,
+    evictions   INTEGER NOT NULL DEFAULT 0,
+    reaps       INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_pool_metrics_timestamp
+    ON pool_metrics(timestamp);
+`;
+
 function freshDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -41,7 +76,15 @@ describe('container pool schema — creation', () => {
     const byName = Object.fromEntries(info.map((c) => [c.name, c]));
 
     expect(Object.keys(byName).sort()).toEqual(
-      ['class', 'container_id', 'last_activity_at', 'slot_id', 'started_at', 'status'].sort(),
+      [
+        'class',
+        'container_id',
+        'last_activity_at',
+        'last_error',
+        'slot_id',
+        'started_at',
+        'status',
+      ].sort(),
     );
 
     // slot_id is the primary key.
@@ -53,6 +96,8 @@ describe('container pool schema — creation', () => {
     expect(byName.container_id.notnull).toBe(0);
     expect(byName.started_at.notnull).toBe(0);
     expect(byName.last_activity_at.notnull).toBe(0);
+    // last_error is nullable — only populated on the failed → reclaim path.
+    expect(byName.last_error.notnull).toBe(0);
     // status defaults to 'free' so a freshly inserted row is usable.
     expect(byName.status.dflt_value).toContain('free');
   });
@@ -199,6 +244,120 @@ describe('container pool schema — queue index', () => {
   it('creates idx_pool_metrics_timestamp for retention scans', () => {
     const indexes = db.pragma('index_list(pool_metrics)') as IndexListRow[];
     expect(indexes.some((i) => i.name === 'idx_pool_metrics_timestamp')).toBe(true);
+  });
+});
+
+describe('container pool schema — migration from pre-#458 shape', () => {
+  it('migrates a pre-#458 DB: adds last_error column and extends status CHECK', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    // Seed with old schema (no last_error, CHECK lacks "failed").
+    db.exec(PRE_458_SCHEMA);
+
+    // Insert a row with the old shape to verify data survives.
+    db.prepare(
+      "INSERT INTO pool_slots (slot_id, class, status, container_id) VALUES ('pr-1', 'pr_env', 'busy', 'c-abc')",
+    ).run();
+
+    // The old CHECK rejects 'failed'.
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO pool_slots (slot_id, class, status) VALUES ('pr-2', 'pr_env', 'failed')",
+        )
+        .run(),
+    ).toThrow(/CHECK constraint failed/i);
+
+    // --- Run the same migration logic as db.ts ---
+    try {
+      db.exec('ALTER TABLE pool_slots ADD COLUMN last_error TEXT');
+    } catch (_e) {
+      /* already exists */
+    }
+
+    const ddl =
+      (
+        db
+          .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pool_slots'")
+          .get() as { sql: string } | undefined
+      )?.sql ?? '';
+    if (ddl && !ddl.includes("'failed'")) {
+      db.transaction(() => {
+        db.exec(`
+          CREATE TABLE pool_slots_new (
+            slot_id          TEXT PRIMARY KEY,
+            class            TEXT NOT NULL CHECK(class IN ('pr_env','scaffold','overflow')),
+            status           TEXT NOT NULL DEFAULT 'free'
+                               CHECK(status IN ('free','reserved','busy','draining','failed')),
+            container_id     TEXT,
+            started_at       TEXT,
+            last_activity_at TEXT,
+            last_error       TEXT,
+            UNIQUE(container_id)
+          );
+          INSERT INTO pool_slots_new (slot_id, class, status, container_id, started_at, last_activity_at, last_error)
+            SELECT slot_id, class, status, container_id, started_at, last_activity_at, last_error FROM pool_slots;
+          DROP TABLE pool_slots;
+          ALTER TABLE pool_slots_new RENAME TO pool_slots;
+        `);
+      })();
+    }
+
+    // Re-apply POOL_SCHEMA (as db.ts does) — should be a no-op.
+    expect(() => db.exec(POOL_SCHEMA)).not.toThrow();
+
+    // Verify the migrated row survived.
+    const row = db.prepare('SELECT * FROM pool_slots WHERE slot_id = ?').get('pr-1') as Record<
+      string,
+      unknown
+    >;
+    expect(row.class).toBe('pr_env');
+    expect(row.status).toBe('busy');
+    expect(row.container_id).toBe('c-abc');
+
+    // Verify last_error column exists and is nullable.
+    const info = db.pragma('table_info(pool_slots)') as TableInfoRow[];
+    const lastError = info.find((c) => c.name === 'last_error');
+    expect(lastError).toBeDefined();
+    expect(lastError!.notnull).toBe(0);
+
+    // Verify 'failed' is now accepted by the CHECK constraint.
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO pool_slots (slot_id, class, status) VALUES ('pr-2', 'pr_env', 'failed')",
+        )
+        .run(),
+    ).not.toThrow();
+  });
+
+  it('is a no-op when the DB already has the new schema', () => {
+    const db = freshDb();
+    // Insert a row.
+    db.prepare(
+      "INSERT INTO pool_slots (slot_id, class, status) VALUES ('pr-1', 'pr_env', 'failed')",
+    ).run();
+
+    // Run migration again — should not throw or lose data.
+    try {
+      db.exec('ALTER TABLE pool_slots ADD COLUMN last_error TEXT');
+    } catch (_e) {
+      /* already exists */
+    }
+
+    const ddl =
+      (
+        db
+          .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pool_slots'")
+          .get() as { sql: string } | undefined
+      )?.sql ?? '';
+    // DDL already contains 'failed', so the rebuild should be skipped.
+    expect(ddl).toContain("'failed'");
+
+    const row = db.prepare('SELECT status FROM pool_slots WHERE slot_id = ?').get('pr-1') as {
+      status: string;
+    };
+    expect(row.status).toBe('failed');
   });
 });
 
