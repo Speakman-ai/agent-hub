@@ -13,6 +13,8 @@ import {
   CERT_RENEWAL_CRON,
 } from './container-pool/cert-renewal-heartbeat.js';
 import { readPrEnvConfig } from './container-pool/pr-env-runtime.js';
+import { runReaperHeartbeat, REAPER_CRON } from './container-pool/reaper-heartbeat.js';
+import { PoolAllocator } from './container-pool/allocator.js';
 import type {
   EnrichedAgent,
   CronRow,
@@ -718,6 +720,33 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   });
   scheduledTasks.set('system:cert-renewal', certRenewalTask);
   console.log(`[Scheduler] Cert-renewal heartbeat scheduled: ${CERT_RENEWAL_CRON}`);
+
+  // Container-pool reaper — every 3 min, reconciles pool_slots against
+  // the live Docker daemon and GitHub PR state so a dropped webhook
+  // doesn't leave a slot busy forever. No-op when PR-env feature is off
+  // (`getConfig()` returns null inside `runReaperHeartbeat`). The
+  // allocator is constructed lazily here because the container-pool
+  // dispatcher doesn't have a production home yet; when W1 lands in
+  // production, swap the lazy allocator out for the shared singleton.
+  const reaperAllocator = new PoolAllocator(db);
+  const reaperTask = cron.schedule(REAPER_CRON, () => {
+    runReaperHeartbeat({
+      db,
+      allocator: reaperAllocator,
+      getConfig: () => {
+        try {
+          return readPrEnvConfig(fileConfig);
+        } catch (err) {
+          console.error('[reaper] config read failed:', (err as Error).message);
+          return null;
+        }
+      },
+    }).catch((err: unknown) => {
+      console.error('[reaper] heartbeat threw:', (err as Error).message);
+    });
+  });
+  scheduledTasks.set('system:reaper', reaperTask);
+  console.log(`[Scheduler] Container-pool reaper scheduled: ${REAPER_CRON}`);
 
   console.log(`[Scheduler] ${scheduledTasks.size} tasks scheduled`);
 

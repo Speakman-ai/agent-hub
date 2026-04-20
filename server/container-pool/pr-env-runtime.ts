@@ -74,6 +74,13 @@ export interface PrEnvRuntimeConfig {
    * of dry-run. Ships dark — default dry-run-only until ops flips it.
    */
   certRenewalLive?: boolean;
+  /**
+   * The GitHub `owner/repo` this pool serves. Used by the reaper to
+   * cross-check PR state on GitHub when a webhook drop is suspected.
+   * Single-repo pools (the current default) set this once; multi-repo
+   * pools would override per-slot via `getRepoForSlot` on the reaper deps.
+   */
+  repoFullName: string;
 }
 
 function resolvePreviewBaseUrl(
@@ -114,6 +121,7 @@ export function readPrEnvConfig(
   const prodDbPath = fileBlock.prodDbPath ?? env.PR_ENV_PROD_DB ?? '';
   const prEnvDataDir = fileBlock.prEnvDataDir ?? env.PR_ENV_DATA_DIR ?? '';
   const envFilesDir = fileBlock.envFilesDir ?? env.PR_ENV_FILES_DIR ?? '';
+  const repoFullName = fileBlock.repoFullName ?? env.PR_ENV_REPO_FULL_NAME ?? '';
 
   const route53 = fileBlock.route53 ?? {
     accessKeyId: env.PR_ENV_ROUTE53_ACCESS_KEY_ID ?? '',
@@ -155,6 +163,7 @@ export function readPrEnvConfig(
   if (!nginx.certPath) missing.push('PR_ENV_NGINX_CERT_PATH / prEnv.nginx.certPath');
   if (!nginx.keyPath) missing.push('PR_ENV_NGINX_KEY_PATH / prEnv.nginx.keyPath');
   if (!nginx.previewHost) missing.push('PR_ENV_PREVIEW_HOST / prEnv.nginx.previewHost');
+  if (!repoFullName) missing.push('PR_ENV_REPO_FULL_NAME / prEnv.repoFullName');
   if (missing.length > 0) {
     throw new Error(
       `AGENT_HUB_PR_ENV_ENABLED=true but required config is unset: ${missing.join(', ')}`,
@@ -185,6 +194,7 @@ export function readPrEnvConfig(
     route53,
     nginx,
     certRenewalLive: fileBlock.certRenewalLive === true || env.PR_ENV_CERT_RENEWAL_LIVE === 'true',
+    repoFullName,
   };
 }
 

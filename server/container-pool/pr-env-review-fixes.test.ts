@@ -117,6 +117,7 @@ describe('readPrEnvConfig — required field validation', () => {
       expect(msg).toContain('PR_ENV_GITHUB_APP_ID');
       expect(msg).toContain('PR_ENV_GITHUB_INSTALLATION_ID');
       expect(msg).toContain('PR_ENV_GITHUB_PRIVATE_KEY');
+      expect(msg).toContain('PR_ENV_REPO_FULL_NAME');
       return;
     }
     throw new Error('expected readPrEnvConfig to throw');
@@ -139,6 +140,7 @@ describe('readPrEnvConfig — required field validation', () => {
         PR_ENV_NGINX_CERT_PATH: '/etc/letsencrypt/live/preview/fullchain.pem',
         PR_ENV_NGINX_KEY_PATH: '/etc/letsencrypt/live/preview/privkey.pem',
         PR_ENV_PREVIEW_HOST: 'preview.example.com',
+        PR_ENV_REPO_FULL_NAME: 'acme/repo',
       },
     );
     expect(result).not.toBeNull();
@@ -162,6 +164,7 @@ describe('readPrEnvConfig — required field validation', () => {
             keyPath: '/etc/letsencrypt/live/preview/privkey.pem',
             previewHost: 'preview.example.com',
           },
+          repoFullName: 'acme/repo',
         },
       },
       {},

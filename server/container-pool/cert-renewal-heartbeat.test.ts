@@ -45,6 +45,7 @@ function makeConfig(partial: Partial<PrEnvRuntimeConfig> = {}): PrEnvRuntimeConf
       previewHost: 'preview.agenthub.dev',
       certHome: '/var/lib/agent-hub/acme',
     },
+    repoFullName: 'Speakman-ai/agent-hub',
     ...partial,
   };
 }
