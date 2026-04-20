@@ -197,6 +197,10 @@ export interface TickMetrics {
   poolUtil: number;
   /** Sum of rows in `pool_queue` with status='queued' across both classes. */
   queueDepth: number;
+  /** W4: queued PR-env requests at sample time (sub-total of queueDepth). */
+  queueDepthPrEnv: number;
+  /** W4: queued scaffold requests at sample time (sub-total of queueDepth). */
+  queueDepthScaffold: number;
   /**
    * Evictions initiated since the allocator was constructed (in-process
    * counter). W4 populates this each time a slot transitions to `draining`
@@ -825,13 +829,29 @@ export class PoolAllocator {
    * cadence as `tick()` — kept separate so callers can throttle metric
    * writes (e.g. every 60 ticks) without skipping dispatches.
    */
-  writeMetrics(metrics: TickMetrics, timestamp: string = this.clock.nowIso()): void {
+  writeMetrics(
+    metrics: TickMetrics,
+    timestamp: string = this.clock.nowIso(),
+    options: { certDaysRemaining?: number | null } = {},
+  ): void {
+    const certDays = options.certDaysRemaining ?? null;
     this.db
       .prepare(
-        `INSERT INTO pool_metrics (timestamp, pool_util, queue_depth, evictions, reaps)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO pool_metrics (
+           timestamp, pool_util, queue_depth, queue_depth_pr_env,
+           queue_depth_scaffold, evictions, reaps, cert_days_remaining
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(timestamp, metrics.poolUtil, metrics.queueDepth, metrics.evictions, metrics.reaps);
+      .run(
+        timestamp,
+        metrics.poolUtil,
+        metrics.queueDepth,
+        metrics.queueDepthPrEnv,
+        metrics.queueDepthScaffold,
+        metrics.evictions,
+        metrics.reaps,
+        certDays,
+      );
   }
 
   /** Expose metrics without mutating state — used by tests and observability. */
@@ -848,11 +868,27 @@ export class PoolAllocator {
         n: number;
       }
     ).n;
+    const queueDepthPrEnv = (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM pool_queue WHERE status = 'queued' AND class = 'pr_env'",
+        )
+        .get() as { n: number }
+    ).n;
+    const queueDepthScaffold = (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM pool_queue WHERE status = 'queued' AND class = 'scaffold'",
+        )
+        .get() as { n: number }
+    ).n;
 
     const poolUtil = total === 0 ? 0 : busy / total;
     return {
       poolUtil: Math.min(1, Math.max(0, poolUtil)),
       queueDepth,
+      queueDepthPrEnv,
+      queueDepthScaffold,
       // W4: monotonic in-process counter of evictions initiated. The
       // dispatcher subtracts prior samples to produce per-interval deltas
       // when writing `pool_metrics`. Reaps remain at 0 until W5 lands.
@@ -932,11 +968,14 @@ export function startDispatcher(
     intervalMs?: number;
     metricsEveryNTicks?: number;
     onError?: (err: unknown) => void;
+    /** Optional callback that returns cert days remaining for metric rows. */
+    getCertDaysRemaining?: () => number | null;
   } = {},
 ): () => void {
   const intervalMs = options.intervalMs ?? 1000;
   const metricsEvery = options.metricsEveryNTicks ?? 60;
   const onError = options.onError ?? ((err) => console.error('[container-pool] tick failed', err));
+  const getCertDays = options.getCertDaysRemaining ?? (() => null);
 
   let ticks = 0;
   const timer = setInterval(() => {
@@ -944,7 +983,9 @@ export function startDispatcher(
       const result = allocator.tick();
       ticks++;
       if (ticks % metricsEvery === 0) {
-        allocator.writeMetrics(result.metrics);
+        allocator.writeMetrics(result.metrics, undefined, {
+          certDaysRemaining: getCertDays(),
+        });
       }
     } catch (err) {
       onError(err);

@@ -135,7 +135,17 @@ describe('container pool schema — creation', () => {
     const byName = Object.fromEntries(info.map((c) => [c.name, c]));
 
     expect(Object.keys(byName).sort()).toEqual(
-      ['evictions', 'id', 'pool_util', 'queue_depth', 'reaps', 'timestamp'].sort(),
+      [
+        'cert_days_remaining',
+        'evictions',
+        'id',
+        'pool_util',
+        'queue_depth',
+        'queue_depth_pr_env',
+        'queue_depth_scaffold',
+        'reaps',
+        'timestamp',
+      ].sort(),
     );
     expect(byName.id.pk).toBe(1);
     expect(byName.pool_util.type.toUpperCase()).toBe('REAL');
@@ -144,6 +154,43 @@ describe('container pool schema — creation', () => {
     // can omit them on quiet ticks.
     expect(byName.evictions.dflt_value).toBe('0');
     expect(byName.reaps.dflt_value).toBe('0');
+    // W4 per-class breakdown defaults to 0 so legacy rows keep working.
+    expect(byName.queue_depth_pr_env.dflt_value).toBe('0');
+    expect(byName.queue_depth_scaffold.dflt_value).toBe('0');
+    // cert_days_remaining is REAL + nullable (cert renewer may not yet have populated it).
+    expect(byName.cert_days_remaining.notnull).toBe(0);
+    expect(byName.cert_days_remaining.type.toUpperCase()).toBe('REAL');
+  });
+
+  it('creates pool_alerts with the documented columns and CHECK constraints', () => {
+    const info = db.pragma('table_info(pool_alerts)') as TableInfoRow[];
+    const byName = Object.fromEntries(info.map((c) => [c.name, c]));
+
+    expect(Object.keys(byName).sort()).toEqual(
+      ['alert_type', 'fired_at', 'id', 'message', 'resolved_at', 'severity', 'value'].sort(),
+    );
+    expect(byName.id.pk).toBe(1);
+    expect(byName.alert_type.notnull).toBe(1);
+    expect(byName.severity.notnull).toBe(1);
+    expect(byName.message.notnull).toBe(1);
+    // resolved_at is nullable until the breach clears.
+    expect(byName.resolved_at.notnull).toBe(0);
+
+    // CHECK constraints reject unknown alert_type / severity values.
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO pool_alerts (alert_type, severity, message) VALUES ('bogus', 'warn', 'm')",
+        )
+        .run(),
+    ).toThrow(/CHECK constraint failed/i);
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO pool_alerts (alert_type, severity, message) VALUES ('cert_expiring', 'panic', 'm')",
+        )
+        .run(),
+    ).toThrow(/CHECK constraint failed/i);
   });
 
   it('is idempotent — re-applying the schema does not error', () => {

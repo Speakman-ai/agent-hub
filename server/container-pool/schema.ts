@@ -89,14 +89,45 @@ export const POOL_SCHEMA = `
   -- Pool metrics: append-only snapshot written by the dispatcher every 60s.
   -- pool_util is a fraction in [0,1]; queue_depth is the sum across classes
   -- at sample time. evictions/reaps are per-sample counters (not cumulative).
+  -- W4: queue_depth_pr_env / queue_depth_scaffold are per-class breakdowns
+  -- so the dashboard can show which queue is backing up. cert_days_remaining
+  -- is the wildcard cert's remaining lifetime in days at sample time —
+  -- nullable because the renewer may not yet have populated it (or the
+  -- prEnv feature may be disabled). All new columns are nullable / defaulted
+  -- so legacy rows from before the W4 migration still satisfy NOT NULL.
   CREATE TABLE IF NOT EXISTS pool_metrics (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp   TEXT NOT NULL DEFAULT (datetime('now')),
-    pool_util   REAL NOT NULL,
-    queue_depth INTEGER NOT NULL,
-    evictions   INTEGER NOT NULL DEFAULT 0,
-    reaps       INTEGER NOT NULL DEFAULT 0
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp                TEXT NOT NULL DEFAULT (datetime('now')),
+    pool_util                REAL NOT NULL,
+    queue_depth              INTEGER NOT NULL,
+    queue_depth_pr_env       INTEGER NOT NULL DEFAULT 0,
+    queue_depth_scaffold     INTEGER NOT NULL DEFAULT 0,
+    evictions                INTEGER NOT NULL DEFAULT 0,
+    reaps                    INTEGER NOT NULL DEFAULT 0,
+    cert_days_remaining      REAL
   );
   CREATE INDEX IF NOT EXISTS idx_pool_metrics_timestamp
     ON pool_metrics(timestamp);
+
+  -- Pool alerts: append-only log of threshold-breach events emitted by the
+  -- pool-alerts heartbeat (W4 observability). Each row represents a single
+  -- firing — the heartbeat dedupes against the most recent un-resolved row
+  -- of the same alert_type so a sustained breach produces one row, not one
+  -- per tick. resolved_at is set when a subsequent tick observes the
+  -- breach has cleared. severity is informational (info|warn|critical).
+  CREATE TABLE IF NOT EXISTS pool_alerts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_type   TEXT NOT NULL CHECK(alert_type IN ('pool_util_high','queue_depth_high','cert_expiring')),
+    severity     TEXT NOT NULL DEFAULT 'warn' CHECK(severity IN ('info','warn','critical')),
+    message      TEXT NOT NULL,
+    fired_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at  TEXT,
+    -- Numeric snapshot of the breach value at fire time for the UI
+    -- (e.g. pool_util at 0.95, queue_depth=12, cert_days=7).
+    value        REAL
+  );
+  CREATE INDEX IF NOT EXISTS idx_pool_alerts_active
+    ON pool_alerts(alert_type, resolved_at);
+  CREATE INDEX IF NOT EXISTS idx_pool_alerts_fired_at
+    ON pool_alerts(fired_at);
 `;

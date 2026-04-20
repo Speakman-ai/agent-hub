@@ -14,6 +14,10 @@ import {
 } from './container-pool/cert-renewal-heartbeat.js';
 import { readPrEnvConfig } from './container-pool/pr-env-runtime.js';
 import { runReaperHeartbeat, REAPER_CRON } from './container-pool/reaper-heartbeat.js';
+import {
+  runPoolAlertsHeartbeat,
+  POOL_ALERTS_CRON,
+} from './container-pool/pool-alerts-heartbeat.js';
 import { PoolAllocator } from './container-pool/allocator.js';
 import type {
   EnrichedAgent,
@@ -747,6 +751,15 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   });
   scheduledTasks.set('system:reaper', reaperTask);
   console.log(`[Scheduler] Container-pool reaper scheduled: ${REAPER_CRON}`);
+
+  // Pool-alerts heartbeat — every minute, evaluates pool_metrics rows
+  // against alert thresholds and fires/resolves rows in pool_alerts.
+  // Pure SQLite reads/writes, no network or process spawn.
+  const poolAlertsTask = cron.schedule(POOL_ALERTS_CRON, () => {
+    runPoolAlertsHeartbeat({ db });
+  });
+  scheduledTasks.set('system:pool-alerts', poolAlertsTask);
+  console.log(`[Scheduler] Pool-alerts heartbeat scheduled: ${POOL_ALERTS_CRON}`);
 
   console.log(`[Scheduler] ${scheduledTasks.size} tasks scheduled`);
 

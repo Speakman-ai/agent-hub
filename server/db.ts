@@ -1055,6 +1055,22 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // Migration: W4 observability columns on pool_metrics. Per-class queue
+  // depth + cert lifetime so the dashboard can show which queue is
+  // backing up and warn before the wildcard cert expires. All nullable
+  // (or DEFAULT 0) so legacy rows continue to satisfy any NOT NULL.
+  for (const col of [
+    'queue_depth_pr_env INTEGER NOT NULL DEFAULT 0',
+    'queue_depth_scaffold INTEGER NOT NULL DEFAULT 0',
+    'cert_days_remaining REAL',
+  ]) {
+    try {
+      db.exec(`ALTER TABLE pool_metrics ADD COLUMN ${col}`);
+    } catch (_e) {
+      /* column already exists */
+    }
+  }
+
   try {
     db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS wiki_pages_fts USING fts5(

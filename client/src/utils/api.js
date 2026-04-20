@@ -625,4 +625,8 @@ export const api = {
       timeout: 30000,
     }),
   getPrStatus: (prUrl) => fetchJSON(`/pr/status?prUrl=${encodeURIComponent(prUrl)}`),
+
+  // Container pool observability (W4)
+  getPoolMetrics: (windowHours = 24) => fetchJSON(`/pool/metrics?windowHours=${windowHours}`),
+  getPoolAlerts: (status = 'active') => fetchJSON(`/pool/alerts?status=${status}`),
 };

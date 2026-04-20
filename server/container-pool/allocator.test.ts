@@ -360,6 +360,42 @@ describe('metrics snapshots', () => {
     expect(rows[0].evictions).toBe(0);
     expect(rows[0].reaps).toBe(0);
   });
+
+  it('writeMetrics persists W4 per-class queue depth and cert_days_remaining', () => {
+    const { allocator, db } = freshAllocator();
+    // Two PR-env queued (no slot bound yet) + one scaffold queued.
+    allocator.enqueue('pr_env', { pr: 1 });
+    allocator.enqueue('pr_env', { pr: 2 });
+    allocator.enqueue('scaffold', { template: 'next' });
+
+    const metrics = allocator.snapshotMetrics();
+    expect(metrics.queueDepthPrEnv + metrics.queueDepthScaffold).toBe(metrics.queueDepth);
+    allocator.writeMetrics(metrics, undefined, { certDaysRemaining: 12.5 });
+
+    const row = db
+      .prepare(
+        `SELECT queue_depth, queue_depth_pr_env, queue_depth_scaffold, cert_days_remaining
+           FROM pool_metrics`,
+      )
+      .get() as {
+      queue_depth: number;
+      queue_depth_pr_env: number;
+      queue_depth_scaffold: number;
+      cert_days_remaining: number | null;
+    };
+    expect(row.queue_depth_pr_env + row.queue_depth_scaffold).toBe(row.queue_depth);
+    expect(row.queue_depth_pr_env).toBeGreaterThanOrEqual(0);
+    expect(row.cert_days_remaining).toBeCloseTo(12.5, 5);
+  });
+
+  it('writeMetrics defaults cert_days_remaining to NULL when not provided', () => {
+    const { allocator, db } = freshAllocator();
+    allocator.writeMetrics(allocator.snapshotMetrics());
+    const row = db.prepare('SELECT cert_days_remaining FROM pool_metrics').get() as {
+      cert_days_remaining: number | null;
+    };
+    expect(row.cert_days_remaining).toBeNull();
+  });
 });
 
 describe('quota-violation lifecycle — slot moves to failed, is held out of dispatch', () => {

@@ -24,6 +24,8 @@
  * failing (CTO risk #3).
  */
 
+import { readFileSync } from 'fs';
+import { X509Certificate } from 'crypto';
 import type { PrEnvRuntimeConfig } from './pr-env-runtime.js';
 
 /** Route53 credentials block required for DNS-01 against AWS. */
@@ -249,5 +251,22 @@ export function wildcardDomainFromConfig(
     throw new Error(
       `wildcardDomainFromConfig: could not parse previewBaseUrl "${config.previewBaseUrl}": ${(err as Error).message}`,
     );
+  }
+}
+
+/**
+ * Read a PEM cert file and return the number of days until it expires.
+ * Returns `null` on any error (missing file, unparseable cert, etc.)
+ * so callers can safely pass the result to `writeMetrics`.
+ */
+export function readCertDaysRemaining(certPath: string): number | null {
+  try {
+    const pem = readFileSync(certPath, 'utf-8');
+    const cert = new X509Certificate(pem);
+    const expiresMs = new Date(cert.validTo).getTime();
+    const nowMs = Date.now();
+    return (expiresMs - nowMs) / (1000 * 60 * 60 * 24);
+  } catch {
+    return null;
   }
 }
