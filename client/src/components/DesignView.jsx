@@ -13,6 +13,33 @@ import { exportDesignPdf } from '../utils/exportDesignPdf.js';
  * emits a `design_updated` WS event for the active design id, so the agent's
  * file writes show up immediately on the canvas.
  */
+// Persisted key + clamp bounds for the split-pane width.
+const SPLIT_STORAGE_KEY = 'designSplitPct';
+const SPLIT_MIN_PCT = 15;
+const SPLIT_MAX_PCT = 85;
+const SPLIT_DEFAULT_PCT = 50;
+// Width of the resizer bar (Tailwind `w-1`). Kept in sync with the className
+// on the separator element so drag math can compensate for it — otherwise the
+// handle drifts by ~half a resizer width relative to the cursor at the clamp
+// edges.
+const RESIZER_WIDTH_PX = 4;
+
+export function clampSplitPct(pct) {
+  const n = Number(pct);
+  if (!Number.isFinite(n)) return SPLIT_DEFAULT_PCT;
+  return Math.min(SPLIT_MAX_PCT, Math.max(SPLIT_MIN_PCT, n));
+}
+
+function readStoredSplitPct() {
+  try {
+    const raw = globalThis.localStorage?.getItem(SPLIT_STORAGE_KEY);
+    if (raw == null) return SPLIT_DEFAULT_PCT;
+    return clampSplitPct(parseFloat(raw));
+  } catch {
+    return SPLIT_DEFAULT_PCT;
+  }
+}
+
 export default function DesignView({
   design,
   messages = [],
@@ -24,6 +51,96 @@ export default function DesignView({
   send,
   onManualReload,
 }) {
+  const splitContainerRef = useRef(null);
+  const [splitPct, setSplitPct] = useState(readStoredSplitPct);
+  const [dragging, setDragging] = useState(false);
+  // Skip the first persistence write — on mount we'd otherwise write back the
+  // value we just read from localStorage, which is redundant.
+  const hasMountedRef = useRef(false);
+
+  // Only apply split styles on md+ (768px) — mobile uses natural flex stacking.
+  const [isMd, setIsMd] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+    return window.matchMedia('(min-width: 768px)').matches;
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mql = window.matchMedia('(min-width: 768px)');
+    const handler = (e) => setIsMd(e.matches);
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, []);
+
+  // Persist on change (skip while dragging to avoid thrashing localStorage,
+  // and skip the first mount to avoid rewriting the just-read value).
+  useEffect(() => {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
+    if (dragging) return;
+    try {
+      globalThis.localStorage?.setItem(SPLIT_STORAGE_KEY, String(splitPct));
+    } catch {
+      // ignore — private mode / quota
+    }
+  }, [splitPct, dragging]);
+
+  const onResizerPointerDown = useCallback((e) => {
+    e.preventDefault();
+    const container = splitContainerRef.current;
+    if (!container) return;
+
+    setDragging(true);
+
+    const handleMove = (ev) => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      // The resizer itself occupies RESIZER_WIDTH_PX inside the flex row;
+      // shift the pointer origin by half its width and divide by the space
+      // actually available to the two panels so the handle tracks the cursor
+      // without ~4px drift at the clamp edges.
+      const usable = Math.max(1, rect.width - RESIZER_WIDTH_PX);
+      const offset = ev.clientX - rect.left - RESIZER_WIDTH_PX / 2;
+      const pct = (offset / usable) * 100;
+      setSplitPct(clampSplitPct(pct));
+    };
+    const handleUp = () => {
+      setDragging(false);
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+      window.removeEventListener('pointercancel', handleUp);
+    };
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    window.addEventListener('pointercancel', handleUp);
+  }, []);
+
+  const onResizerDoubleClick = useCallback(() => {
+    setSplitPct(SPLIT_DEFAULT_PCT);
+  }, []);
+
+  const onResizerKeyDown = useCallback((e) => {
+    const step = e.shiftKey ? 5 : 2;
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      setSplitPct((p) => clampSplitPct(p - step));
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      setSplitPct((p) => clampSplitPct(p + step));
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setSplitPct(SPLIT_MIN_PCT);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      setSplitPct(SPLIT_MAX_PCT);
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setSplitPct(SPLIT_DEFAULT_PCT);
+    }
+  }, []);
+
   // PDF export is disabled while the agent is still writing/streaming so the
   // capture reflects a stable snapshot of index.html.
   const [exporting, setExporting] = useState(false);
@@ -106,10 +223,18 @@ export default function DesignView({
         </div>
       </div>
 
-      {/* Body — split pane */}
-      <div className="flex-1 flex min-h-0 flex-col md:flex-row">
+      {/* Body — split pane (stacked on mobile, horizontally resizable on md+) */}
+      <div
+        ref={splitContainerRef}
+        className={`flex-1 flex min-h-0 flex-col md:flex-row ${
+          dragging ? 'select-none cursor-col-resize' : ''
+        }`}
+      >
         {/* Left: chat */}
-        <div className="flex flex-col w-full md:w-1/2 min-h-0 border-b md:border-b-0 md:border-r border-gray-800">
+        <div
+          className="flex flex-col w-full min-h-0 border-b md:border-b-0 border-gray-800"
+          style={isMd ? { flexBasis: `${splitPct}%`, flexGrow: 0, flexShrink: 0 } : undefined}
+        >
           <DesignChat
             design={design}
             messages={messages}
@@ -120,8 +245,33 @@ export default function DesignView({
           />
         </div>
 
+        {/* Resizer — hidden on mobile, a thin draggable bar on md+. */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-valuemin={SPLIT_MIN_PCT}
+          aria-valuemax={SPLIT_MAX_PCT}
+          aria-valuenow={Math.round(splitPct)}
+          aria-label="Resize chat panel"
+          tabIndex={0}
+          onPointerDown={onResizerPointerDown}
+          onDoubleClick={onResizerDoubleClick}
+          onKeyDown={onResizerKeyDown}
+          data-testid="design-split-resizer"
+          className={`hidden md:flex relative items-center justify-center flex-shrink-0 w-1 cursor-col-resize bg-gray-800 hover:bg-blue-500/60 focus:outline-none focus:bg-blue-500/80 transition-colors ${
+            dragging ? 'bg-blue-500' : ''
+          }`}
+          title="Drag to resize — double-click to reset"
+        >
+          {/* Wider invisible hit area for easier grabbing */}
+          <span className="absolute inset-y-0 -left-1.5 -right-1.5" aria-hidden="true" />
+        </div>
+
         {/* Right: canvas iframe */}
-        <div className="flex flex-col w-full md:w-1/2 min-h-0">
+        <div
+          className="flex flex-col w-full min-h-0"
+          style={isMd ? { flexBasis: `${100 - splitPct}%`, flexGrow: 1, flexShrink: 1 } : undefined}
+        >
           <DesignCanvas
             designId={design.id}
             reloadToken={reloadToken}
