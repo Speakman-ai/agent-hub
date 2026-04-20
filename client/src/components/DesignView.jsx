@@ -372,8 +372,15 @@ function DesignCanvas({ designId, reloadToken, onManualReload }) {
     setSrcdoc(null);
     setError(null);
 
+    // `/design-files/` is served by express.static BEFORE authMiddleware's
+    // gate (which only guards `/api/*` — see server/auth.ts). It is not
+    // cookie-authenticated, so we must NOT set `credentials: 'include'`: in
+    // remote mode (Vite client → EC2 hub) `cors-config.ts` replies with
+    // `credentials: false`, and the browser rejects the response with
+    // "Access-Control-Allow-Credentials must be 'true'". Path is gated by
+    // the opaque designId + per-design org check inside the handler.
     const url = `${base}/design-files/${designId}/index.html?v=${reloadToken}`;
-    fetch(url, { credentials: 'include' })
+    fetch(url)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.text();

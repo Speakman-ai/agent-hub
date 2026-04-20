@@ -66,6 +66,23 @@ describe('DesignView', () => {
     });
   });
 
+  // Regression: `/design-files/` is NOT behind authMiddleware (which only
+  // guards `/api/*`), and `cors-config.ts` sets `credentials: false`. Using
+  // `credentials: 'include'` here causes the browser to reject the response
+  // in remote mode (Vite client on localhost:3050 → hub on EC2) with
+  // "Access-Control-Allow-Credentials must be 'true'". Keep credentials off.
+  it('does not send fetch with credentials: include (would break cross-origin remote mode)', async () => {
+    render(<DesignView {...baseProps} />);
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalled();
+    });
+    const initArg = globalThis.fetch.mock.calls[0][1];
+    // Either no init object at all, or an init without credentials set.
+    if (initArg) {
+      expect(initArg.credentials).not.toBe('include');
+    }
+  });
+
   it('re-fetches index.html when reloadToken increments', async () => {
     const { rerender } = render(<DesignView {...baseProps} reloadToken={0} />);
     await waitFor(() => {
