@@ -80,8 +80,8 @@ export function getWsUrl() {
   const config = getConnectionConfig();
   const jwt = getJwtToken();
   if (config.mode === 'remote' && config.remoteUrl) {
-    // Convert http(s) to ws(s)
-    let wsUrl = config.remoteUrl.trim().replace(/\/+$/, '').replace(/^http/, 'ws');
+    // Convert http(s) to ws(s) and append /ws path for nginx proxy
+    let wsUrl = config.remoteUrl.trim().replace(/\/+$/, '').replace(/^http/, 'ws') + '/ws';
     // Prefer JWT over apiKey — matches REST header behavior.
     if (jwt) {
       wsUrl += `?token=${encodeURIComponent(jwt)}`;

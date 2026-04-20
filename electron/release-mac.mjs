@@ -140,9 +140,9 @@ function requireMac() {
   }
 }
 
-function run(cmd, args) {
+function run(cmd, args, opts = {}) {
   console.log(`\n$ ${cmd} ${args.join(' ')}`);
-  const result = spawnSync(cmd, args, { stdio: 'inherit', cwd: ROOT });
+  const result = spawnSync(cmd, args, { stdio: 'inherit', cwd: opts.cwd || ROOT });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
@@ -160,10 +160,19 @@ export async function main() {
   // 1. Build the React client
   run('npm', ['run', 'build']);
 
-  // 2. Build both DMGs in one electron-builder invocation
+  // 2. Ensure both platform esbuild binaries are present in server/node_modules.
+  //    The build machine is typically arm64, so only @esbuild/darwin-arm64 gets
+  //    installed by `npm install`. The x64 DMG needs @esbuild/darwin-x64 too —
+  //    without it, tsx (which uses esbuild) crashes on Intel Macs.
+  console.log('\nInstalling cross-platform esbuild binaries for server...');
+  run('npm', ['install', '--no-save', '@esbuild/darwin-arm64', '@esbuild/darwin-x64'], {
+    cwd: resolve(ROOT, 'server'),
+  });
+
+  // 3. Build both DMGs in one electron-builder invocation
   run('npx', electronBuilderArgs());
 
-  // 3. Upload each DMG to S3
+  // 4. Upload each DMG to S3
   const profile = resolveAwsProfile();
   if (profile) {
     console.log(`  (using AWS profile: ${profile})`);

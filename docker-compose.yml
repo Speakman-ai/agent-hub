@@ -1,8 +1,8 @@
 services:
   server:
     build:
-      context: ./server
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: server/Dockerfile
     container_name: agent-hub-server
     restart: unless-stopped
     volumes:
@@ -19,6 +19,7 @@ services:
       - AGENT_HUB_BOT_GITHUB_TOKEN=${AGENT_HUB_BOT_GITHUB_TOKEN:-}
       - AGENT_HUB_PUBLIC_URL=${AGENT_HUB_PUBLIC_URL:-}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3050}
     expose:
       - "3051"
     healthcheck:
@@ -30,8 +31,8 @@ services:
 
   client:
     build:
-      context: ./client
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: client/Dockerfile
     container_name: agent-hub-client
     restart: unless-stopped
     ports:

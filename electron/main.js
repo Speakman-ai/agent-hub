@@ -230,8 +230,8 @@ function startServer() {
       const text = data.toString();
       console.log('[server]', text.trimEnd());
       logStream.write(text);
-      // Detect the "listening on port" message
-      if (!started && text.includes('listening')) {
+      // Detect the server ready message
+      if (!started && (text.includes('listening') || text.includes('running on'))) {
         started = true;
         resolve();
       }
