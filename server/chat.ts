@@ -21,6 +21,7 @@ import {
   buildHandoffPromptSection,
 } from './handoff.js';
 import { parseCloseCardBlock, handleCardAutoClose } from './card-auto-close.js';
+import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import type {
   Project,
   Agent,
@@ -504,6 +505,90 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     }
     const { project, agent } = found;
     const enrichedAgent = getEnrichedAgent(agentId);
+
+    // ── Bug-report reroute guard ──────────────────────────────────
+    // User-request bug reports (payloads starting with "## Bug Report")
+    // must be owned by the project's intake agent — never a lead,
+    // specialist, reviewer, or docs agent. If a bug-report payload is
+    // addressed to anyone else, dispatch a fresh session for the intake
+    // agent and notify the caller. See `server/bug-report-reroute.ts`.
+    const intakeTarget = resolveBugReportReroute(project, agent, content, {
+      fromQueue: msg._fromQueue,
+      alreadyRerouted: msg._reroutedFromBugReport,
+    });
+    if (intakeTarget) {
+      const intakeSessionId = uuidv4();
+      const intakeEngine = intakeTarget.engine || 'claude-code';
+      const intakeModel =
+        (intakeTarget as AgentWithModel).model || defaultModelForEngine(intakeEngine);
+      const title = extractBugReportTitle(content) || 'Bug Report';
+      const sessionName = `[Bug] ${title.substring(0, 80)}`;
+
+      try {
+        stmts.createSession.run(
+          intakeSessionId,
+          intakeTarget.id,
+          sessionName,
+          intakeEngine,
+          intakeModel,
+          1,
+          0,
+        );
+        const taskId = uuidv4();
+        stmts.insertBackgroundTask.run(taskId, intakeSessionId, intakeTarget.id, content);
+      } catch (err) {
+        console.error('[Bug Reroute] Failed to create intake session:', (err as Error).message);
+        if (ws) {
+          ws.send(
+            JSON.stringify({
+              type: 'error',
+              sessionId,
+              error: 'Failed to reroute bug report to intake agent.',
+            }),
+          );
+        }
+        return;
+      }
+
+      if (ws) {
+        ws.send(
+          JSON.stringify({
+            type: 'bug_report_rerouted',
+            originalAgentId: agentId,
+            originalSessionId: sessionId,
+            intakeAgentId: intakeTarget.id,
+            intakeSessionId,
+            message: `Bug reports are handled by ${intakeTarget.name || intakeTarget.id}. Dispatched a fresh session there.`,
+          }),
+        );
+      }
+
+      setImmediate(() => {
+        try {
+          const result = handleChat(null, {
+            type: 'chat',
+            agentId: intakeTarget.id,
+            sessionId: intakeSessionId,
+            content,
+            _reroutedFromBugReport: true,
+          } as InternalChatMessage);
+          if (result && typeof (result as Promise<unknown>).catch === 'function') {
+            (result as Promise<unknown>).catch((err: Error) => {
+              console.error(
+                `[Bug Reroute] handleChat failed for intake session ${intakeSessionId}:`,
+                err.message,
+              );
+            });
+          }
+        } catch (err) {
+          console.error(
+            `[Bug Reroute] handleChat threw for intake session ${intakeSessionId}:`,
+            (err as Error).message,
+          );
+        }
+      });
+      return;
+    }
 
     const slashResult = resolveSlashSkill(agent, content, project);
     if (slashResult?.error) {

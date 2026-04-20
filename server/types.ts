@@ -1301,6 +1301,12 @@ export interface ChatMessage {
   images?: string[];
   _fromQueue?: boolean;
   _existingMsgId?: string;
+  /**
+   * Set to true when this message was produced by the bug-report reroute
+   * guard in `handleChat`. Prevents re-entrant reroutes if the intake agent
+   * itself is somehow misconfigured without role === 'intake'.
+   */
+  _reroutedFromBugReport?: boolean;
   hookSpecificOutput?: { sessionTitle?: string; [key: string]: unknown };
 }
 
