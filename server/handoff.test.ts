@@ -6,7 +6,10 @@ import {
   buildHandoffContextBlock,
   resolveTargetAgentId,
   deriveHandoffSessionTitle,
+  truncateHandoffMessageContent,
   HANDOFF_TRANSCRIPT_MAX_TURNS,
+  HANDOFF_TRANSCRIPT_MAX_CHARS_PER_MESSAGE,
+  HANDOFF_TRANSCRIPT_MAX_TOTAL_CHARS,
 } from './handoff.js';
 import type { Agent } from './types.js';
 
@@ -265,6 +268,132 @@ describe('buildHandoffContextBlock', () => {
       messages: [],
     });
     expect(out).toContain('_(no prior messages)_');
+  });
+
+  it('middle-truncates a message longer than HANDOFF_TRANSCRIPT_MAX_CHARS_PER_MESSAGE', () => {
+    // Build a message whose content is well past the 2000-char cap with
+    // recognisable head/tail markers so we can verify both survive.
+    const head = 'HEAD_MARKER_' + 'a'.repeat(3000);
+    const tail = 'b'.repeat(3000) + '_TAIL_MARKER';
+    const oversize = head + tail; // ~6024 chars — comfortably over the cap
+    const out = buildHandoffContextBlock({
+      fromAgentName: 'Lead',
+      note: 'x',
+      messages: [{ role: 'assistant', content: oversize }],
+    });
+    expect(out).toContain('HEAD_MARKER_');
+    expect(out).toContain('_TAIL_MARKER');
+    expect(out).toMatch(/_…\(truncated \d+ chars\)…_/);
+    // The middle "a"*3000 + "b"*3000 run should not survive intact.
+    expect(out).not.toContain('a'.repeat(3000));
+    expect(out).not.toContain('b'.repeat(3000));
+  });
+
+  it('honors an explicit maxCharsPerMessage override', () => {
+    const oversize = 'X'.repeat(500);
+    const out = buildHandoffContextBlock({
+      fromAgentName: 'Lead',
+      note: 'x',
+      messages: [{ role: 'assistant', content: oversize }],
+      maxCharsPerMessage: 50,
+    });
+    expect(out).toMatch(/_…\(truncated \d+ chars\)…_/);
+    // 500 input chars, 50-char budget → ~450 chars removed.
+    expect(out).toMatch(/_…\(truncated 450 chars\)…_/);
+  });
+
+  it('drops turns from the head when total body exceeds HANDOFF_TRANSCRIPT_MAX_TOTAL_CHARS', () => {
+    // 12 messages of ~2200 chars each. After the turn cap (10) we keep
+    // MSG2..MSG11. Each survivor exceeds the 2000 per-message cap so it gets
+    // middle-truncated to ~2030 chars — 10 × 2038 + 18 ≈ 20,398 > 20,000,
+    // which forces the head-drop path to trim at least one more turn.
+    const messages = Array.from({ length: 12 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `MSG${i}:` + 'x'.repeat(2200),
+    }));
+    const out = buildHandoffContextBlock({
+      fromAgentName: 'Lead',
+      note: 'x',
+      messages,
+    });
+    // Oldest messages (dropped by the turn cap) must be absent.
+    expect(out).not.toContain('MSG0:');
+    expect(out).not.toContain('MSG1:');
+    // At least one more turn must be dropped by the total-chars head-drop.
+    expect(out).not.toContain('MSG2:');
+    // Newest messages must survive.
+    expect(out).toContain('MSG11:');
+    // Label must reflect the surviving count — strictly less than the turn
+    // cap (otherwise the head-drop did not engage).
+    const labelMatch = out.match(/last (\d+) of 12 turns/);
+    expect(labelMatch).not.toBeNull();
+    const kept = Number(labelMatch![1]);
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(10);
+  });
+
+  it('honors an explicit maxTotalChars override', () => {
+    const messages = [
+      { role: 'user', content: 'AAA' },
+      { role: 'assistant', content: 'BBB' },
+      { role: 'user', content: 'CCC' },
+    ];
+    // Tight budget that can only hold one rendered turn (~14 chars).
+    const out = buildHandoffContextBlock({
+      fromAgentName: 'Lead',
+      note: 'x',
+      messages,
+      maxTotalChars: 20,
+    });
+    expect(out).toContain('CCC');
+    expect(out).not.toContain('AAA');
+    expect(out).toContain('last 1 of 3 turns');
+  });
+
+  it('exports sane defaults for all three knobs', () => {
+    expect(HANDOFF_TRANSCRIPT_MAX_TURNS).toBe(10);
+    expect(HANDOFF_TRANSCRIPT_MAX_CHARS_PER_MESSAGE).toBe(2000);
+    expect(HANDOFF_TRANSCRIPT_MAX_TOTAL_CHARS).toBe(20000);
+  });
+
+  it('maxTurns override is independently tunable', () => {
+    const messages = Array.from({ length: 8 }, (_, i) => ({
+      role: 'user',
+      content: `t${i}`,
+    }));
+    const out = buildHandoffContextBlock({
+      fromAgentName: 'Lead',
+      note: 'x',
+      messages,
+      maxTurns: 3,
+    });
+    expect(out).toContain('last 3 of 8 turns');
+    expect(out).toContain('t7');
+    expect(out).toContain('t5');
+    expect(out).not.toContain('t4');
+  });
+});
+
+describe('truncateHandoffMessageContent', () => {
+  it('returns content untouched when under the limit', () => {
+    expect(truncateHandoffMessageContent('hello', 100)).toBe('hello');
+  });
+
+  it('middle-truncates with a marker when over the limit', () => {
+    const content = 'A'.repeat(500) + 'B'.repeat(500);
+    const out = truncateHandoffMessageContent(content, 200);
+    expect(out).toContain('_…(truncated 800 chars)…_');
+    // Head preserves opening A's, tail preserves closing B's.
+    expect(out.startsWith('A'.repeat(100))).toBe(true);
+    expect(out.endsWith('B'.repeat(100))).toBe(true);
+  });
+
+  it('is a no-op when maxChars is non-positive or non-finite', () => {
+    const content = 'x'.repeat(100);
+    expect(truncateHandoffMessageContent(content, 0)).toBe(content);
+    expect(truncateHandoffMessageContent(content, -1)).toBe(content);
+    expect(truncateHandoffMessageContent(content, Number.NaN)).toBe(content);
+    expect(truncateHandoffMessageContent(content, Number.POSITIVE_INFINITY)).toBe(content);
   });
 });
 

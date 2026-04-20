@@ -41,10 +41,26 @@ import { buildPrTitle } from './auto-git.js';
 //   - Target must live in the same project as the source agent.
 //   - `<handoff>` is terminal in the turn — any text emitted after the closing
 //     tag is logged and otherwise ignored.
-//   - Transcript truncation uses a fixed tail-of-N-turns strategy. Tune
-//     HANDOFF_TRANSCRIPT_MAX_TURNS below.
+//   - Transcript truncation uses a layered cap strategy driven by three
+//     constants (tail-of-N-turns, then per-message middle-truncation, then
+//     total-body head-drop). Tune these below.
 
-export const HANDOFF_TRANSCRIPT_MAX_TURNS = 50;
+// Max number of tail turns to include in the transcript. Lower values cut
+// per-turn cost dramatically on handoff-chained sessions; 10 was chosen after
+// an April 2026 cost audit showed handoff prepend was responsible for
+// ~$0.50-1.00 of the post-revamp per-turn cost delta.
+export const HANDOFF_TRANSCRIPT_MAX_TURNS = 10;
+
+// Per-message character cap. Oversize messages are middle-truncated so both
+// the opening framing and the closing conclusions survive — assistant outputs
+// typically carry signal at both ends but filler in the middle.
+export const HANDOFF_TRANSCRIPT_MAX_CHARS_PER_MESSAGE = 2000;
+
+// Total body character budget. After per-message truncation, if the joined
+// transcript still exceeds this, whole turns are dropped from the head
+// (oldest first) until the body fits, and the "last X of Y turns" label is
+// updated to reflect the reduced count.
+export const HANDOFF_TRANSCRIPT_MAX_TOTAL_CHARS = 20000;
 
 export interface HandoffTask {
   toAgent: string;
@@ -80,6 +96,8 @@ export interface BuildHandoffContextArgs {
   note: string;
   messages: HandoffTranscriptMessage[];
   maxTurns?: number;
+  maxCharsPerMessage?: number;
+  maxTotalChars?: number;
 }
 
 export interface HandoffDeps {
@@ -364,33 +382,90 @@ export function deriveHandoffSessionTitle(note: string, fromAgentName: string): 
 // ─── Prompt builder ──────────────────────────────────────────────────────
 
 /**
+ * Middle-truncate a single message whose content exceeds `maxChars`. Keeps
+ * roughly half the budget from the head and half from the tail, with an
+ * `_…(truncated N chars)…_` marker between them. Head + tail are biased so
+ * that an odd budget goes to the head.
+ *
+ * Exported for tests.
+ */
+export function truncateHandoffMessageContent(content: string, maxChars: number): string {
+  if (!Number.isFinite(maxChars) || maxChars <= 0) return content;
+  if (typeof content !== 'string' || content.length <= maxChars) return content;
+  const headLen = Math.ceil(maxChars / 2);
+  const tailLen = Math.floor(maxChars / 2);
+  const head = content.slice(0, headLen);
+  const tail = content.slice(content.length - tailLen);
+  const removed = content.length - (headLen + tailLen);
+  return `${head}\n\n_…(truncated ${removed} chars)…_\n\n${tail}`;
+}
+
+/**
  * Render the HANDOFF FROM section that gets appended to the target agent's
  * enriched system prompt on its very first turn. Pure function — no DB
  * access, no side effects, easy to unit-test.
  *
- * Transcript is truncated to the last `maxTurns` messages (default
- * HANDOFF_TRANSCRIPT_MAX_TURNS). Tail preserves the most recent and typically
- * most relevant context.
+ * Truncation is layered so we always bound cost without losing framing:
+ *   1. Tail-of-N turns (`maxTurns`, default HANDOFF_TRANSCRIPT_MAX_TURNS).
+ *   2. Per-message middle-truncation (`maxCharsPerMessage`, default
+ *      HANDOFF_TRANSCRIPT_MAX_CHARS_PER_MESSAGE) — preserves ~half head +
+ *      half tail of oversize messages with a `_…(truncated N chars)…_` marker.
+ *   3. Total-body budget (`maxTotalChars`, default
+ *      HANDOFF_TRANSCRIPT_MAX_TOTAL_CHARS) — drops whole turns from the head
+ *      (oldest first) until the joined body fits; the truncation label
+ *      reflects the surviving count.
  */
 export function buildHandoffContextBlock(args: BuildHandoffContextArgs): string {
   const maxTurns = args.maxTurns ?? HANDOFF_TRANSCRIPT_MAX_TURNS;
+  const maxCharsPerMessage = args.maxCharsPerMessage ?? HANDOFF_TRANSCRIPT_MAX_CHARS_PER_MESSAGE;
+  const maxTotalChars = args.maxTotalChars ?? HANDOFF_TRANSCRIPT_MAX_TOTAL_CHARS;
+
   const total = args.messages.length;
-  const recent = total > maxTurns ? args.messages.slice(-maxTurns) : args.messages;
+  const afterTurnCap = total > maxTurns ? args.messages.slice(-maxTurns) : args.messages.slice();
+
+  // Step 2: per-message middle-truncation.
+  const afterPerMessageCap = afterTurnCap.map((m) => ({
+    role: m.role,
+    content:
+      Number.isFinite(maxCharsPerMessage) && maxCharsPerMessage > 0
+        ? truncateHandoffMessageContent(m.content ?? '', maxCharsPerMessage)
+        : (m.content ?? ''),
+  }));
+
+  // Step 3: total-budget head-drop. Join with the same separator used in the
+  // final render so the character accounting matches the emitted body.
+  const SEP = '\n\n';
+  const format = (m: HandoffTranscriptMessage): string => `[${m.role}]: ${m.content}`;
+  let kept = afterPerMessageCap.slice();
+  if (Number.isFinite(maxTotalChars) && maxTotalChars > 0) {
+    const joinLen = (arr: HandoffTranscriptMessage[]): number => {
+      if (arr.length === 0) return 0;
+      let n = 0;
+      for (let i = 0; i < arr.length; i += 1) {
+        n += format(arr[i]).length;
+      }
+      n += SEP.length * (arr.length - 1);
+      return n;
+    };
+    while (kept.length > 0 && joinLen(kept) > maxTotalChars) {
+      kept.shift();
+    }
+  }
+
+  const recent = kept;
+  const keptCount = recent.length;
+  const truncated = keptCount < total;
 
   const quotedNote = args.note
     .split('\n')
     .map((line) => `> ${line}`)
     .join('\n');
 
-  const transcriptBody =
-    recent.length === 0
-      ? '_(no prior messages)_'
-      : recent.map((m) => `[${m.role}]: ${m.content}`).join('\n\n');
+  const transcriptBody = keptCount === 0 ? '_(no prior messages)_' : recent.map(format).join(SEP);
 
-  const truncNote =
-    total > maxTurns
-      ? `### Previous session transcript (last ${recent.length} of ${total} turns)`
-      : `### Previous session transcript (${recent.length} turns)`;
+  const truncNote = truncated
+    ? `### Previous session transcript (last ${keptCount} of ${total} turns)`
+    : `### Previous session transcript (${keptCount} turns)`;
 
   return `## HANDOFF FROM ${args.fromAgentName}
 

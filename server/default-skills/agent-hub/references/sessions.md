@@ -124,9 +124,29 @@ lead stays running.
 
 End your turn and hand ownership of the conversation to a single
 sub-agent. A **new session** is created for the target with your
-transcript (tail of last 50 turns) plus the `note` pre-injected into
+transcript (capped — see below) plus the `note` pre-injected into
 their enriched system prompt via `buildHandoffPromptSection`. The user
 continues the conversation with the target; you do not see their reply.
+
+Transcript truncation is layered and tuned for cost (see the constants
+at the top of `server/handoff.ts` — these are the single tuning surface
+for handoff prepend cost):
+
+- `HANDOFF_TRANSCRIPT_MAX_TURNS = 10` — tail-of-N turns are kept; older
+  turns are dropped entirely. (Lowered from 50 in the April 2026
+  cost audit; tail-10 preserved the signal at ~1/5 the token cost.)
+- `HANDOFF_TRANSCRIPT_MAX_CHARS_PER_MESSAGE = 2000` — oversize messages
+  are **middle-truncated** with a `_…(truncated N chars)…_` marker so
+  both opening framing and closing conclusions survive (~1000 chars
+  head + 1000 chars tail).
+- `HANDOFF_TRANSCRIPT_MAX_TOTAL_CHARS = 20000` — if the joined body
+  still exceeds the budget after per-message caps, whole turns are
+  dropped from the head (oldest first) and the `last X of Y turns`
+  label in the rendered section reflects the surviving count.
+
+All three constants are overridable per-call via optional
+`maxTurns` / `maxCharsPerMessage` / `maxTotalChars` fields on
+`BuildHandoffContextArgs`, but in production the defaults apply.
 
 ```
 <handoff>
