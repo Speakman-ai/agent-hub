@@ -3,6 +3,7 @@ import path from 'path';
 import config from './config.js';
 import { POOL_SCHEMA } from './container-pool/schema.js';
 import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
+import { PREVIEW_AUTH_SCHEMA } from './container-pool/preview-auth-schema.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -986,6 +987,11 @@ function initDb(dataDir: string): void {
   // in the 3100..3999 reserve. Separate from pool_slots because the shape
   // is different (arbitrary hundreds of entries, PR-keyed not slot-keyed).
   db.exec(PORT_POOL_SCHEMA);
+
+  // Preview-URL auth (W2). Magic-link tokens (hashed) + OAuth session rows
+  // backing the `pr-N.<previewHost>` auth gate. See
+  // container-pool/preview-auth.ts for the middleware + OAuth flow.
+  db.exec(PREVIEW_AUTH_SCHEMA);
 
   // Migration: pool_slots gained `last_error TEXT` and `status` CHECK now
   // includes 'failed' (added in #458). SQLite can't ALTER a CHECK constraint
