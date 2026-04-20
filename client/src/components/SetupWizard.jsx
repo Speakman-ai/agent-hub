@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Bot, Rocket, Monitor, Cloud, Loader2, Plug } from 'lucide-react';
-import { getApiBase, getAuthHeaders } from '../utils/connection.js';
+import { getApiBase, getAuthHeaders, saveConnectionConfig } from '../utils/connection.js';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs.js';
 import { testConnection } from '../utils/connection.js';
 
@@ -97,8 +97,49 @@ export default function SetupWizard({ onComplete, setupStatus }) {
 
   const handleOrgContinue = async () => {
     if (!orgName.trim()) return;
-    // If an org already exists (e.g. the legacy-migrated "Default"), update it
-    // in place so first-run setup doesn't leave a stale duplicate behind.
+
+    // Remote mode: don't create/update a local org. The user's account and
+    // data live on the remote server — our only job here is to persist the
+    // connection config and reload the window against the remote URL. That
+    // server then serves its own React bundle, AuthGate, and LoginScreen.
+    //
+    // Without this branch we'd write org rows to the local SQLite (which
+    // the remote server will never see), then drop the user into step 3's
+    // local CLI configuration — neither of which belong on a machine that's
+    // only meant to be a thin client for a remote hub.
+    if (orgMode === 'remote') {
+      if (!orgRemoteUrl.trim()) {
+        setError('Enter a server URL and test the connection.');
+        return;
+      }
+      // Force a fresh connection test before committing. This prevents a
+      // typo'd URL from stranding the Electron window on an unreachable
+      // origin with no graceful back-out.
+      setOrgTesting(true);
+      const result = await testConnection(orgRemoteUrl, orgApiKey);
+      setOrgTestResult(result);
+      setOrgTesting(false);
+      if (!result.ok) {
+        setError('Connection test failed — fix the URL or API key before continuing.');
+        return;
+      }
+      setError(null);
+      saveConnectionConfig({
+        mode: 'remote',
+        remoteUrl: orgRemoteUrl.trim().replace(/\/+$/, ''),
+        apiKey: orgApiKey.trim(),
+      });
+      if (window.electronAPI?.navigateToOrg) {
+        window.electronAPI.navigateToOrg();
+      } else {
+        window.location.reload();
+      }
+      return;
+    }
+
+    // Local mode: if an org already exists (e.g. the legacy-migrated
+    // "Default"), update it in place so first-run setup doesn't leave a
+    // stale duplicate behind.
     const existing = getActiveOrg();
     if (existing) {
       await updateOrg(existing.id, {
@@ -300,6 +341,17 @@ export default function SetupWizard({ onComplete, setupStatus }) {
                 </div>
               )}
             </div>
+
+            {/* Remote-mode validation errors surface inline so the user can
+                correct the URL / key without jumping to another step. */}
+            {error && (
+              <div
+                role="alert"
+                className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-sm text-red-300"
+              >
+                {error}
+              </div>
+            )}
 
             <div className="flex gap-3 pt-1">
               <button

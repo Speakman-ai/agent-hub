@@ -1,22 +1,28 @@
 import { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, WifiOff, Settings as SettingsIcon, Monitor } from 'lucide-react';
 import LoginScreen from './LoginScreen.jsx';
-import { isAuthenticated } from '../utils/auth.js';
-import { getApiBase } from '../utils/connection.js';
-import { getAuthStatus } from '../utils/auth.js';
+import { isAuthenticated, getAuthStatus } from '../utils/auth.js';
+import { getApiBase, getConnectionConfig, saveConnectionConfig } from '../utils/connection.js';
 
 /**
  * Wraps the main app and blocks rendering until we know whether auth is
  * needed. If the server reports `authConfigured: true` and we don't have a
  * valid token, we render <LoginScreen /> instead of children.
  *
- * The existing legacy apiKey flow (via the SetupWizard / connection.js) is
- * preserved: when the server reports `authConfigured: false`, this gate is
- * a no-op and children render immediately.
+ * When we're in remote mode and the server is unreachable, we render a
+ * dedicated error screen with escape hatches instead of silently falling
+ * through. Falling through previously led the user to an empty-local-server
+ * setup wizard, which was the underlying bug behind "why is it asking me
+ * to create an account when I already have one?".
+ *
+ * The legacy apiKey flow (via the SetupWizard / connection.js) is preserved:
+ * when the server reports `authConfigured: false`, this gate is a no-op and
+ * children render immediately.
  */
 export default function AuthGate({ children }) {
   const [status, setStatus] = useState({ state: 'loading', required: false });
-  // Counter increments when the user authenticates; used to re-check.
+  // Counter increments when the user authenticates or edits connection;
+  // used to re-check.
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -28,10 +34,23 @@ export default function AuthGate({ children }) {
         setStatus({ state: 'ready', required: !!res.authConfigured });
       } catch (err) {
         if (cancelled) return;
-        // If the status endpoint itself is unreachable, surface the error
-        // but don't hard-block — the main app's connection handling will
-        // report the underlying issue. Treat as "not required" so the
-        // legacy flow can still attempt to connect.
+        const config = getConnectionConfig();
+        if (config.mode === 'remote' && config.remoteUrl) {
+          // Remote mode with an unreachable server — surface it so the
+          // user can fix the URL or fall back to local. Letting this
+          // fall through to `required: false` sends them to the local
+          // setup wizard against the wrong server.
+          setStatus({
+            state: 'unreachable',
+            required: false,
+            error: err?.message || 'Unknown error',
+            url: config.remoteUrl,
+          });
+          return;
+        }
+        // Local mode status endpoint down — legacy behavior: don't
+        // hard-block. The main app's connection handling will surface
+        // the underlying issue.
         setStatus({ state: 'ready', required: false, error: err?.message });
       }
     })();
@@ -42,9 +61,73 @@ export default function AuthGate({ children }) {
 
   if (status.state === 'loading') {
     return (
-      <div className="flex flex-col h-screen bg-gray-950 text-gray-100 items-center justify-center gap-3">
+      <div
+        data-testid="auth-gate-loading"
+        className="flex flex-col h-screen bg-gray-950 text-gray-100 items-center justify-center gap-3"
+      >
         <Loader2 size={24} className="animate-spin text-indigo-400" />
         <p className="text-xs text-gray-500">Checking authentication…</p>
+      </div>
+    );
+  }
+
+  if (status.state === 'unreachable') {
+    const onSwitchToLocal = () => {
+      saveConnectionConfig({ mode: 'local', remoteUrl: '', apiKey: '' });
+      if (window.electronAPI?.navigateToOrg) {
+        window.electronAPI.navigateToOrg();
+      } else {
+        window.location.reload();
+      }
+    };
+    const onEditConnection = () => {
+      // Clearing remoteUrl drops us back into the ConnectFirstScreen
+      // chooser on the next mount, where the user can re-enter the URL.
+      saveConnectionConfig({ mode: 'local', remoteUrl: '', apiKey: '' });
+      if (window.electronAPI?.navigateToOrg) {
+        window.electronAPI.navigateToOrg();
+      } else {
+        setNonce((n) => n + 1);
+      }
+    };
+    return (
+      <div
+        data-testid="remote-unreachable-screen"
+        className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4"
+      >
+        <div className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-6 space-y-4">
+          <div className="flex flex-col items-center gap-2">
+            <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center">
+              <WifiOff size={22} className="text-red-400" />
+            </div>
+            <h1 className="text-lg font-semibold text-white">Can&apos;t reach server</h1>
+          </div>
+          <div className="text-sm text-gray-300 space-y-1 text-center">
+            <p>
+              We couldn&apos;t reach{' '}
+              <span className="font-mono text-gray-100 break-all">{status.url}</span>.
+            </p>
+            {status.error && (
+              <p className="text-xs text-gray-500 font-mono break-words">{status.error}</p>
+            )}
+          </div>
+          <div className="flex flex-col gap-2 pt-2">
+            <button
+              onClick={onEditConnection}
+              className="w-full flex items-center justify-center gap-2 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded transition-colors"
+            >
+              <SettingsIcon size={14} />
+              Edit connection
+            </button>
+            <button
+              onClick={onSwitchToLocal}
+              className="w-full flex items-center justify-center gap-2 py-2 bg-gray-700 hover:bg-gray-600 text-gray-100 text-sm font-medium rounded transition-colors"
+            >
+              <Monitor size={14} />
+              Switch to local server
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
