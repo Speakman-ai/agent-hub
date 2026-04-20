@@ -1,7 +1,8 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
-import { Palette, ArrowLeft, RefreshCw } from 'lucide-react';
+import { Palette, ArrowLeft, RefreshCw, Download } from 'lucide-react';
 import { relativeTime } from '../utils/time.js';
 import { getServerBase } from '../utils/connection.js';
+import { exportDesignPdf } from '../utils/exportDesignPdf.js';
 
 /**
  * DesignView — split-pane Claude Design workspace:
@@ -23,6 +24,31 @@ export default function DesignView({
   send,
   onManualReload,
 }) {
+  // PDF export is disabled while the agent is still writing/streaming so the
+  // capture reflects a stable snapshot of index.html.
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(null);
+  const base = getServerBase();
+
+  const designId = design?.id;
+  const designName = design?.name;
+  const handleDownloadPdf = useCallback(async () => {
+    if (!designId || exporting || processing || streaming) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      await exportDesignPdf({
+        designId,
+        base,
+        filename: designName || `design-${designId}`,
+      });
+    } catch (err) {
+      setExportError(err?.message || 'Failed to export PDF');
+    } finally {
+      setExporting(false);
+    }
+  }, [base, designId, designName, exporting, processing, streaming]);
+
   if (!design) return null;
 
   return (
@@ -56,6 +82,27 @@ export default function DesignView({
               </div>
             )}
           </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {exportError && (
+            <span className="text-xs text-red-400 hidden sm:inline" title={exportError}>
+              {exportError}
+            </span>
+          )}
+          <button
+            onClick={handleDownloadPdf}
+            disabled={exporting || processing || !!streaming}
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-100 disabled:opacity-40 disabled:cursor-not-allowed border border-gray-700 hover:border-gray-500 rounded-md px-2 py-1 transition-colors"
+            title={
+              processing || streaming
+                ? 'Wait for the agent to finish before exporting'
+                : 'Download this design as a PDF'
+            }
+            aria-label="Download design as PDF"
+          >
+            <Download size={14} />
+            <span className="hidden sm:inline">{exporting ? 'Exporting…' : 'PDF'}</span>
+          </button>
         </div>
       </div>
 

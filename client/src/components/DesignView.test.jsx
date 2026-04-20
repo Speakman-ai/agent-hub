@@ -2,6 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import DesignView from './DesignView.jsx';
 
+// PDF export utility is side-effecty (DOM iframe + html2canvas + jsPDF). The
+// component-level tests mock it to a resolved promise so they can assert
+// wiring (button rendered, disabled states, click → util called) without
+// touching jsdom's limited canvas/PDF support. A dedicated unit test for the
+// util lives in ../utils/exportDesignPdf.test.js.
+vi.mock('../utils/exportDesignPdf.js', () => ({
+  exportDesignPdf: vi.fn(() => Promise.resolve()),
+}));
+import { exportDesignPdf } from '../utils/exportDesignPdf.js';
+
 /**
  * DesignView — split-pane behavior.
  *
@@ -133,5 +143,49 @@ describe('DesignView', () => {
     const cancelBtn = screen.getByText('Cancel');
     fireEvent.click(cancelBtn);
     expect(send).toHaveBeenCalledWith({ type: 'design_cancel', designId: 'd-1' });
+  });
+
+  describe('PDF export', () => {
+    beforeEach(() => {
+      exportDesignPdf.mockClear();
+    });
+
+    it('renders a Download PDF button in the header', () => {
+      render(<DesignView {...baseProps} />);
+      expect(screen.getByLabelText(/download design as pdf/i)).toBeInTheDocument();
+    });
+
+    it('invokes exportDesignPdf with the design id and name when clicked', async () => {
+      render(<DesignView {...baseProps} />);
+      const btn = screen.getByLabelText(/download design as pdf/i);
+      fireEvent.click(btn);
+
+      await waitFor(() => {
+        expect(exportDesignPdf).toHaveBeenCalledTimes(1);
+      });
+      const call = exportDesignPdf.mock.calls[0][0];
+      expect(call.designId).toBe('d-1');
+      expect(call.filename).toBe('Sales dashboard');
+      expect(typeof call.base).toBe('string');
+    });
+
+    it('disables the PDF button while the agent is processing', () => {
+      render(<DesignView {...baseProps} processing={true} />);
+      const btn = screen.getByLabelText(/download design as pdf/i);
+      expect(btn).toBeDisabled();
+    });
+
+    it('disables the PDF button while the agent is streaming', () => {
+      render(<DesignView {...baseProps} streaming={{ content: 'partial' }} />);
+      const btn = screen.getByLabelText(/download design as pdf/i);
+      expect(btn).toBeDisabled();
+    });
+
+    it('does not call exportDesignPdf when clicked while disabled', () => {
+      render(<DesignView {...baseProps} processing={true} />);
+      const btn = screen.getByLabelText(/download design as pdf/i);
+      fireEvent.click(btn);
+      expect(exportDesignPdf).not.toHaveBeenCalled();
+    });
   });
 });
