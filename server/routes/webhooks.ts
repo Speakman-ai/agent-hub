@@ -136,6 +136,18 @@ interface BoardData {
 
 // ─── Shared helpers (used by multiple routes and index.js) ──────
 
+/**
+ * HTML-comment sentinel we embed in bot-authored PR review / review-comment /
+ * issue-comment bodies. Used as a body-content marker so downstream webhook
+ * handlers can tell "posted by an Agent Hub bot" apart from "posted by the
+ * human whose credentials the server happens to be running as." Identity
+ * filters alone aren't enough: when the server's `gh` CLI auth is a human
+ * personal account (the common case on single-maintainer deployments), every
+ * manual review that human submits would be dropped as a self-trigger,
+ * leaving the author agent unable to wake up on CHANGES_REQUESTED.
+ */
+export const AGENT_HUB_BOT_SENTINEL = '<!-- agent-hub-bot -->';
+
 export function getWebhookCallbackUrl(): string {
   const baseUrl = config.publicUrl || `http://localhost:${config.port}`;
   return `${baseUrl.replace(/\/+$/, '')}/api/webhooks/github`;
@@ -1462,7 +1474,7 @@ function handleKanbanWebhookEvent(
   }
 }
 
-function handleWebhookPrReview(
+export function handleWebhookPrReview(
   deps: RouteDeps,
   card: KanbanCardRow,
   project: Project,
@@ -1480,8 +1492,26 @@ function handleWebhookPrReview(
   const ghAppSlug = getGhAppSlug();
   const appBotLogin = ghAppSlug ? `${ghAppSlug}[bot]` : null;
 
+  // Self-trigger filter.
+  //
+  // `ghBotUser` (bot PAT user) and `appBotLogin` (GitHub App bot) are
+  // distinct bot identities — any review under them is unambiguously
+  // automated and must be skipped to break the review→fix→review loop.
+  //
+  // `ghAuthenticatedUser` is the login of the server's default `gh` CLI
+  // auth, which is typically a *human* personal account on single-maintainer
+  // deployments. We can't skip all reviews from that identity — that was
+  // silently dropping legitimate human CHANGES_REQUESTED reviews, leaving
+  // the author agent permanently asleep. Instead, only skip when the review
+  // body carries our bot sentinel, which is the same convention already used
+  // for review/issue comments.
+  const reviewBodyHasBotSentinel =
+    typeof review.body === 'string' && review.body.includes(AGENT_HUB_BOT_SENTINEL);
+  const isAutoReviewFromCliUser =
+    !!ghAuthenticatedUser && sender === ghAuthenticatedUser && reviewBodyHasBotSentinel;
+
   if (
-    (ghAuthenticatedUser && sender === ghAuthenticatedUser) ||
+    isAutoReviewFromCliUser ||
     (ghBotUser && sender === ghBotUser) ||
     (appBotLogin && sender === appBotLogin)
   ) {
