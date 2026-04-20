@@ -88,3 +88,89 @@ describe('eventsToBlocks — progress_step handling', () => {
     expect(kinds).toEqual(['text', 'tool', 'text']);
   });
 });
+
+/**
+ * In Claude Code's `--permission-mode plan` flow, Claude calls the
+ * `ExitPlanMode` tool with a `plan` string. When the CLI runs
+ * non-interactively (`--print`), the permission prompt has no user to
+ * approve, so the tool_result comes back flagged `is_error: true` —
+ * and the generic ToolCard rendered the plan proposal as a red ERROR
+ * box. This made ask-mode sessions look broken to users.
+ *
+ * The fix routes ExitPlanMode tool_use events to a dedicated
+ * `plan_proposal` block kind so the client can render the plan as
+ * markdown without ERROR styling. These tests pin that routing.
+ *
+ * Bug: "Plan mode doesn't function properly" (user report, v1.5.0).
+ */
+describe('eventsToBlocks — ExitPlanMode routing', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('routes ExitPlanMode tool_use to a plan_proposal block, not a generic tool block', () => {
+    const events = wrap([
+      {
+        type: 'tool_use',
+        id: 'exit1',
+        tool: 'ExitPlanMode',
+        input: { plan: '# Refactor\n\n- Step 1\n- Step 2' },
+      },
+      {
+        type: 'tool_result',
+        toolUseId: 'exit1',
+        output: 'The user has chosen to stay in plan mode.',
+        isError: true,
+      },
+    ]);
+
+    const blocks = eventsToBlocks(events, false);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('plan_proposal');
+    expect(blocks[0].use.input.plan).toContain('Refactor');
+    // The declined tool_result is still paired with the tool_use so the card
+    // can render the "awaiting review" status. It must NOT surface as a
+    // standalone error block.
+    expect(blocks[0].result?.isError).toBe(true);
+    expect(blocks.some((b) => b.kind === 'error')).toBe(false);
+    expect(blocks.some((b) => b.kind === 'tool')).toBe(false);
+  });
+
+  it('still emits plan_proposal when the tool_result has not yet arrived (streaming)', () => {
+    const events = wrap([
+      {
+        type: 'tool_use',
+        id: 'exit2',
+        tool: 'ExitPlanMode',
+        input: { plan: 'Short plan.' },
+      },
+    ]);
+
+    const blocks = eventsToBlocks(events, false);
+    expect(blocks).toEqual([
+      {
+        kind: 'plan_proposal',
+        use: {
+          type: 'tool_use',
+          id: 'exit2',
+          tool: 'ExitPlanMode',
+          input: { plan: 'Short plan.' },
+        },
+        result: undefined,
+      },
+    ]);
+  });
+
+  it('leaves non-ExitPlanMode tool_use events as generic tool blocks', () => {
+    const events = wrap([
+      {
+        type: 'tool_use',
+        id: 'r1',
+        tool: 'Read',
+        input: { file_path: '/tmp/x.txt' },
+      },
+    ]);
+
+    const blocks = eventsToBlocks(events, false);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('tool');
+  });
+});

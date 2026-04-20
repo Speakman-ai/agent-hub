@@ -33,6 +33,7 @@ import {
   Cpu,
   Timer,
   Bookmark,
+  ClipboardList,
 } from 'lucide-react';
 
 /**
@@ -173,6 +174,15 @@ function SessionTail({
                     defaultOpen={verboseMode}
                   />
                 );
+              case 'plan_proposal':
+                return (
+                  <PlanProposalCard
+                    key={`b${i}`}
+                    use={block.use}
+                    result={block.result}
+                    defaultOpen={verboseMode}
+                  />
+                );
               case 'text':
                 return (
                   <TextBubble
@@ -273,8 +283,20 @@ export function eventsToBlocks(events, verbose) {
       blocks.push({ kind: 'thinking', event });
     } else if (t === 'tool_use') {
       const isSubagent = event.tool === 'Task' || event.tool === 'Agent';
+      // ExitPlanMode is the CLI tool Claude uses in --permission-mode plan to
+      // propose a plan and ask the user to approve exiting plan mode. In
+      // Agent Hub's non-interactive `--print` setup there's no live permission
+      // prompt, so the CLI always flags ExitPlanMode's tool_result as an
+      // error ("plan approval declined") — which is expected flow, NOT a
+      // failure. Route it to a dedicated plan-proposal card so the plan
+      // content is rendered as markdown and the red ERROR styling is
+      // suppressed. (Bug: "Plan mode doesn't function properly".)
+      const isExitPlanMode = event.tool === 'ExitPlanMode';
+      let kind = 'tool';
+      if (isSubagent) kind = 'subagent';
+      else if (isExitPlanMode) kind = 'plan_proposal';
       blocks.push({
-        kind: isSubagent ? 'subagent' : 'tool',
+        kind,
         use: event,
         result: resultByToolId[event.id],
       });
@@ -383,6 +405,10 @@ const TOOL_STYLES = {
   Task: { color: 'border-indigo-700/60 bg-indigo-950/30', icon: <Bot size={16} /> },
   TodoWrite: { color: 'border-gray-700/60 bg-gray-900/40', icon: <ListChecks size={16} /> },
   NotebookEdit: { color: 'border-amber-700/60 bg-amber-950/30', icon: <BookOpen size={16} /> },
+  ExitPlanMode: {
+    color: 'border-violet-700/60 bg-violet-950/30',
+    icon: <ClipboardList size={16} />,
+  },
 };
 
 /**
@@ -495,6 +521,89 @@ function ToolCard({ use, result, defaultOpen }) {
               >
                 {result.output || '(empty)'}
               </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * PlanProposalCard — dedicated rendering for the CLI's `ExitPlanMode` tool
+ * call. In Claude Code's `--permission-mode plan` flow, Claude calls
+ * ExitPlanMode with a markdown `plan` string to ask the user to approve
+ * leaving plan mode. In non-interactive (`--print`) mode the approval prompt
+ * has no user to answer and the CLI's tool_result comes back flagged
+ * `is_error: true` ("plan approval declined"). That's the EXPECTED flow in an
+ * ask-mode session — the user reviews the plan in the UI and decides whether
+ * to flip ask_mode off separately. The generic ToolCard rendered that as a
+ * red ERROR box, which made plan mode look broken. This card instead renders
+ * the plan as rendered markdown, omits the ERROR styling, and surfaces the
+ * CLI's decline message as a subtle status note.
+ */
+function PlanProposalCard({ use, result, defaultOpen }) {
+  const [open, setOpen] = useState(defaultOpen ?? true);
+  const planText = typeof use?.input?.plan === 'string' ? use.input.plan : '';
+  const stillRunning = !result;
+  // result.isError is expected in non-interactive plan mode — it just means
+  // "user did not approve exiting plan mode", which is the right default for
+  // an ask-mode session. We surface it as a neutral status, not an error.
+  const declined = !!result?.isError;
+  const summary = planText
+    .split('\n')
+    .find((l) => l.trim())
+    ?.replace(/^#+\s*/, '')
+    ?.slice(0, 120);
+
+  return (
+    <div className="border rounded-lg overflow-hidden border-violet-700/60 bg-violet-950/20">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-black/20"
+      >
+        <span className="flex-shrink-0 text-violet-300">
+          <ClipboardList size={16} />
+        </span>
+        <span className="font-mono font-semibold text-violet-200 flex-shrink-0">Plan proposal</span>
+        <span className="text-gray-400 truncate flex-1">{summary || '(empty plan)'}</span>
+        {stillRunning && (
+          <span className="text-emerald-400 text-[10px] animate-pulse">running…</span>
+        )}
+        {!stillRunning && declined && (
+          <span
+            className="text-violet-300 text-[10px] uppercase tracking-wide"
+            title="Plan-mode sessions are read-only — Claude surfaced this plan for your review. Toggle ask mode off to let Claude execute it."
+          >
+            awaiting review
+          </span>
+        )}
+        {!stillRunning && !declined && (
+          <span className="text-emerald-300 text-[10px] uppercase tracking-wide">approved</span>
+        )}
+        <span className="text-gray-500 text-2xl leading-none flex items-center">
+          {open ? '▼' : '▶'}
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-black/30 p-3">
+          {planText ? (
+            <div className="markdown-content text-sm text-gray-200 leading-relaxed">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
+                components={MARKDOWN_COMPONENTS}
+              >
+                {planText}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <div className="text-xs text-gray-500 italic">(empty plan)</div>
+          )}
+          {!stillRunning && declined && (
+            <div className="mt-3 text-[11px] text-violet-300/80 bg-violet-950/30 border border-violet-800/50 rounded px-2 py-1.5">
+              This session is in <strong>ask mode</strong> (plan-only). Review the proposal and, if
+              you want Claude to execute it, turn ask mode off in the session header.
             </div>
           )}
         </div>
@@ -632,6 +741,13 @@ function summarizeToolInput(tool, input) {
     const todos = input.todos;
     if (Array.isArray(todos)) return `${todos.length} todo${todos.length === 1 ? '' : 's'}`;
     return '';
+  }
+  if (tool === 'ExitPlanMode') {
+    const plan = typeof input.plan === 'string' ? input.plan.trim() : '';
+    if (!plan) return '';
+    // First non-empty line of the plan as a summary.
+    const firstLine = plan.split('\n').find((l) => l.trim()) || '';
+    return firstLine.replace(/^#+\s*/, '');
   }
   // Fallback: first string-valued field
   for (const v of Object.values(input)) {
