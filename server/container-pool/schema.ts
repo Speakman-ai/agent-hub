@@ -46,6 +46,17 @@ export const POOL_SCHEMA = `
     -- Cleared on reclaim back to 'free'. NULL for slots that have never
     -- failed.
     last_error       TEXT,
+    -- W4 eviction scoring metadata. Populated by the lifecycle layer from
+    -- the GitHub webhook path (PR state / commits) and by the Nginx access
+    -- log tailer / review webhook (HTTP hits / reviewer activity). All are
+    -- nullable — a slot that has never recorded a hit simply scores 0 on
+    -- the corresponding term. See wiki §4.1 for the full formula.
+    pr_number            INTEGER,
+    pr_state             TEXT
+                           CHECK(pr_state IS NULL OR pr_state IN ('open','closed','draft')),
+    pr_last_commit_at    TEXT,
+    last_http_hit_at     TEXT,
+    reviewer_activity_at TEXT,
     -- A given Docker container must only ever be bound to one slot. NULL
     -- container_ids are allowed to repeat (free slots). Partial UNIQUE index
     -- gives us that semantic since SQLite's table-level UNIQUE counts NULLs

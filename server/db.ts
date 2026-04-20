@@ -1028,6 +1028,27 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // Migration: W4 eviction scoring metadata on pool_slots. Each column is
+  // nullable and independent, so ALTER ADD COLUMN is sufficient (no table
+  // rebuild). Ordered AFTER the 'failed'-status rebuild above so we don't
+  // lose these columns to the INSERT ... SELECT projection list there.
+  // The CHECK on `pr_state` is enforced only by the fresh-create DDL in
+  // POOL_SCHEMA; rows written post-migration that somehow fail the check
+  // would have to come from direct SQL edits, which we accept.
+  for (const col of [
+    'pr_number INTEGER',
+    'pr_state TEXT',
+    'pr_last_commit_at TEXT',
+    'last_http_hit_at TEXT',
+    'reviewer_activity_at TEXT',
+  ]) {
+    try {
+      db.exec(`ALTER TABLE pool_slots ADD COLUMN ${col}`);
+    } catch (_e) {
+      /* column already exists */
+    }
+  }
+
   try {
     db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS wiki_pages_fts USING fts5(

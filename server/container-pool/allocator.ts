@@ -92,6 +92,51 @@ export interface AllocatorConfig {
    * spike pattern shows sub-tick PR arrivals losing races to scaffold.
    */
   scaffoldOverflowWaitMs: number;
+  /**
+   * W4 eviction policy — window during which a PR env is considered
+   * "human active" for the wiki §4.1 scoring term. An HTTP hit or
+   * reviewer action newer than this drops the score by `humanActiveBoost`.
+   * Default 10 min (600_000 ms) per spec.
+   */
+  humanActiveWindowMs: number;
+  /**
+   * W4 eviction policy — window during which reviewer activity hard-protects
+   * a PR env from eviction. Unlike `humanActiveWindowMs` (a score term that
+   * can in principle be overwhelmed by a very stale closed PR), a slot
+   * within this window is filtered out of the candidate set entirely. Per
+   * the W4 card: "Hard-protect PRs with reviewer activity in the last 10
+   * minutes — these are never evicted even under pressure." Default 10 min.
+   */
+  reviewerProtectWindowMs: number;
+  /**
+   * W4 eviction policy — points subtracted from the score when the slot
+   * is "human active" in the HTTP-hit sense. Matches wiki §4.1 (-100).
+   * Exposed as config so tests can dial it without recompiling.
+   */
+  humanActiveBoost: number;
+  /**
+   * W4 eviction policy — points added when the PR is closed/merged. The
+   * spec's +100 is dominant: a closed PR outscores even a freshly-committed
+   * open one by enough to always be the first eviction target (modulo
+   * reviewer-activity protection). Wiki §4.1.
+   */
+  closedPrBoost: number;
+  /**
+   * W4 eviction policy — points added when the PR is in draft state. Small
+   * tie-breaker boost (draft PRs are less likely to have an active reviewer).
+   * Wiki §4.1.
+   */
+  draftPrBoost: number;
+  /**
+   * W4 hard cap — when the PR-env queue grows past this depth AND every
+   * PR-capable slot (dedicated + overflow) is busy with no eligible
+   * eviction candidate, new PR-env requests are rejected outright. Spec
+   * §4.2 pins this at 20. The acceptance check is exposed via
+   * `canAcceptPrEnvRequest()`; callers (webhooks.ts) call it before
+   * enqueuing so the GitHub commit-status can be set to `error` with the
+   * saturated-pool message.
+   */
+  prQueueRejectThreshold: number;
 }
 
 export const DEFAULT_CONFIG: AllocatorConfig = {
@@ -99,7 +144,44 @@ export const DEFAULT_CONFIG: AllocatorConfig = {
   scaffoldSlots: 3,
   overflowSlots: 1,
   scaffoldOverflowWaitMs: 0,
+  humanActiveWindowMs: 10 * 60 * 1000,
+  reviewerProtectWindowMs: 10 * 60 * 1000,
+  humanActiveBoost: 100,
+  closedPrBoost: 100,
+  draftPrBoost: 5,
+  prQueueRejectThreshold: 20,
 };
+
+/** A running PR-env slot scored as an eviction candidate. */
+export interface EvictionCandidate {
+  slotId: string;
+  score: number;
+  /**
+   * True iff this slot is currently hard-protected by a recent reviewer
+   * action. Protected slots never appear in `selectEvictionCandidate()`
+   * but `scoreSlot()` still returns them so operators / metrics can see
+   * the score the slot *would* have had without the protection.
+   */
+  reviewerProtected: boolean;
+  prNumber: number | null;
+  prState: 'open' | 'closed' | 'draft' | null;
+}
+
+/**
+ * W4 acceptance-check result for a new incoming PR-env request.
+ *
+ * `queue`   — slot pressure is fine, caller should enqueue normally.
+ * `evict`   — pool is saturated but an eviction candidate exists.
+ *             Caller passes `slotId` to `markEvicting()` and enqueues;
+ *             the freed slot will be picked up by the next tick.
+ * `reject`  — saturated with no eviction candidate AND queue depth past
+ *             `prQueueRejectThreshold`. Caller must not enqueue; return
+ *             GitHub commit status `error`.
+ */
+export type PrEnvAdmission =
+  | { decision: 'queue' }
+  | { decision: 'evict'; slotId: string; score: number }
+  | { decision: 'reject'; reason: 'queue_saturated' };
 
 /** One successful queue→slot binding produced by `tick()`. */
 export interface DispatchDecision {
@@ -115,7 +197,13 @@ export interface TickMetrics {
   poolUtil: number;
   /** Sum of rows in `pool_queue` with status='queued' across both classes. */
   queueDepth: number;
-  /** Evictions performed this tick (W1 is queue-only — always 0). */
+  /**
+   * Evictions initiated since the allocator was constructed (in-process
+   * counter). W4 populates this each time a slot transitions to `draining`
+   * via `markEvicting()`. Resets only on process restart — the dispatcher
+   * subtracts prior samples to produce a per-sample delta for
+   * `pool_metrics.evictions`.
+   */
   evictions: number;
   /** Reaps performed this tick (W1 is queue-only — always 0). */
   reaps: number;
@@ -151,6 +239,20 @@ interface SlotRow {
   container_id: string | null;
 }
 
+interface SlotScoringRow {
+  slot_id: string;
+  class: SlotClass;
+  status: SlotStatus;
+  container_id: string | null;
+  started_at: string | null;
+  last_activity_at: string | null;
+  pr_number: number | null;
+  pr_state: 'open' | 'closed' | 'draft' | null;
+  pr_last_commit_at: string | null;
+  last_http_hit_at: string | null;
+  reviewer_activity_at: string | null;
+}
+
 /**
  * Parse a timestamp written by either `datetime('now')` (SQLite default,
  * `YYYY-MM-DD HH:MM:SS`) or our own `nowIso()` helper into ms. Falls back
@@ -171,6 +273,14 @@ export class PoolAllocator {
   private readonly db: Database;
   private readonly config: AllocatorConfig;
   private readonly clock: Clock;
+  /**
+   * Monotonic in-process counter of eviction decisions *initiated* by this
+   * allocator instance. A decision is counted once when the slot is
+   * transitioned to `draining` via `markEvicting()`; the downstream lifecycle
+   * layer is responsible for the actual container teardown. Never decremented,
+   * so the dispatcher tracks deltas by diffing snapshots.
+   */
+  private evictionsInitiated = 0;
 
   constructor(db: Database, options: { config?: Partial<AllocatorConfig>; clock?: Clock } = {}) {
     this.db = db;
@@ -332,6 +442,287 @@ export class PoolAllocator {
     }
   }
 
+  // ─── W4: eviction scoring ─────────────────────────────────────────────
+
+  /**
+   * Attach / update PR metadata on a running slot. Called by the PR-env
+   * lifecycle layer when a container is spawned and again on each
+   * `pull_request.synchronize` / `pull_request.closed` webhook.
+   *
+   * Only the fields present in `meta` are written — pass `{ prState: 'closed' }`
+   * on close without resending commit timestamps. Unknown slots are silently
+   * ignored (the slot may have already been recycled).
+   */
+  updatePrMetadata(
+    slotId: string,
+    meta: {
+      prNumber?: number | null;
+      prState?: 'open' | 'closed' | 'draft' | null;
+      prLastCommitAt?: string | null;
+    },
+  ): void {
+    const sets: string[] = [];
+    const params: Array<string | number | null> = [];
+    if ('prNumber' in meta) {
+      sets.push('pr_number = ?');
+      params.push(meta.prNumber ?? null);
+    }
+    if ('prState' in meta) {
+      sets.push('pr_state = ?');
+      params.push(meta.prState ?? null);
+    }
+    if ('prLastCommitAt' in meta) {
+      sets.push('pr_last_commit_at = ?');
+      params.push(meta.prLastCommitAt ?? null);
+    }
+    if (sets.length === 0) return;
+    params.push(slotId);
+    this.db.prepare(`UPDATE pool_slots SET ${sets.join(', ')} WHERE slot_id = ?`).run(...params);
+  }
+
+  /**
+   * Record an HTTP hit on the PR env container's public URL. Called from
+   * the Nginx access-log tailer (future) or from tests. Stamps
+   * `last_http_hit_at` to now; also used as the "human active" signal in
+   * the eviction score term.
+   */
+  recordHttpHit(slotId: string, timestamp: string = this.clock.nowIso()): void {
+    this.db
+      .prepare('UPDATE pool_slots SET last_http_hit_at = ? WHERE slot_id = ?')
+      .run(timestamp, slotId);
+  }
+
+  /**
+   * Record reviewer activity on the PR (comment, review, approval, change-
+   * request). Called from `webhooks.ts` on `pull_request_review.submitted`
+   * and `pull_request_review_comment.created` events, correlated to the
+   * slot via the payload's PR number. Activity in the last
+   * `reviewerProtectWindowMs` HARD-PROTECTS the slot from eviction — it
+   * never appears in the candidate set while the window is live.
+   */
+  recordReviewerActivity(slotId: string, timestamp: string = this.clock.nowIso()): void {
+    this.db
+      .prepare('UPDATE pool_slots SET reviewer_activity_at = ? WHERE slot_id = ?')
+      .run(timestamp, slotId);
+  }
+
+  /**
+   * Compute the eviction score for a single slot per wiki §4.1. Returns
+   * `null` for slots that aren't running PR envs (eviction only targets
+   * PR env containers — scaffolds are short-lived and never evicted).
+   *
+   * The score is intentionally a pure function of the row's state at call
+   * time so the same formula powers both the live dispatcher and operator
+   * tooling (`/settings/pool` status page).
+   */
+  scoreSlot(slotId: string, now: number = this.clock.nowMs()): EvictionCandidate | null {
+    const row = this.db
+      .prepare(
+        `SELECT slot_id, class, status, container_id, started_at, last_activity_at,
+                pr_number, pr_state, pr_last_commit_at, last_http_hit_at, reviewer_activity_at
+           FROM pool_slots
+          WHERE slot_id = ?`,
+      )
+      .get(slotId) as SlotScoringRow | undefined;
+    if (!row) return null;
+    return this.scoreRow(row, now);
+  }
+
+  /**
+   * Internal: score a pre-fetched row. Shared between `scoreSlot()` (single-
+   * row, public) and `selectEvictionCandidate()` (bulk, internal).
+   */
+  private scoreRow(row: SlotScoringRow, now: number): EvictionCandidate | null {
+    // Only running PR-env containers are eviction targets. Scaffolds are
+    // protected by the "scaffolding never preempts PR env" rule in §2.2,
+    // and the overflow slot is evictable only when it's PR-owned.
+    const isPrBinding =
+      row.class === 'pr_env' || (row.class === 'overflow' && row.pr_number !== null);
+    if (!isPrBinding) return null;
+    // Only `busy` slots are candidates — draining / failed / free are
+    // already out of the dispatch pool.
+    if (row.status !== 'busy') return null;
+
+    // Fallback for each timestamp: if it's missing, treat it as "0 hours
+    // ago" (no score contribution). A brand-new container with no PR
+    // metadata yet should score near zero, not be aggressively targeted.
+    const hoursSince = (iso: string | null): number => {
+      if (!iso) return 0;
+      const ms = parseEnqueuedMs(iso, this.clock);
+      const diff = Math.max(0, now - ms);
+      return diff / (1000 * 60 * 60);
+    };
+
+    const httpHitMs = row.last_http_hit_at ? parseEnqueuedMs(row.last_http_hit_at, this.clock) : 0;
+    const reviewerMs = row.reviewer_activity_at
+      ? parseEnqueuedMs(row.reviewer_activity_at, this.clock)
+      : 0;
+
+    const humanActive =
+      (httpHitMs > 0 && now - httpHitMs <= this.config.humanActiveWindowMs) ||
+      (reviewerMs > 0 && now - reviewerMs <= this.config.humanActiveWindowMs);
+
+    const reviewerProtected =
+      reviewerMs > 0 && now - reviewerMs <= this.config.reviewerProtectWindowMs;
+
+    const score =
+      hoursSince(row.last_http_hit_at) * 3 +
+      hoursSince(row.pr_last_commit_at) * 2 +
+      (row.pr_state === 'closed' ? this.config.closedPrBoost : 0) +
+      (row.pr_state === 'draft' ? this.config.draftPrBoost : 0) -
+      (humanActive ? this.config.humanActiveBoost : 0);
+
+    return {
+      slotId: row.slot_id,
+      score,
+      reviewerProtected,
+      prNumber: row.pr_number,
+      prState: row.pr_state,
+    };
+  }
+
+  /**
+   * Score every running PR-env binding. Exposed primarily for operator
+   * tooling — the dispatcher itself uses `selectEvictionCandidate()`
+   * which already filters + sorts internally.
+   */
+  scoreAllPrEnvSlots(now: number = this.clock.nowMs()): EvictionCandidate[] {
+    const rows = this.db
+      .prepare(
+        `SELECT slot_id, class, status, container_id, started_at, last_activity_at,
+                pr_number, pr_state, pr_last_commit_at, last_http_hit_at, reviewer_activity_at
+           FROM pool_slots
+          WHERE status = 'busy'
+            AND (class = 'pr_env' OR (class = 'overflow' AND pr_number IS NOT NULL))`,
+      )
+      .all() as SlotScoringRow[];
+    const out: EvictionCandidate[] = [];
+    for (const row of rows) {
+      const cand = this.scoreRow(row, now);
+      if (cand) out.push(cand);
+    }
+    return out;
+  }
+
+  /**
+   * Pick the best eviction candidate. Per wiki §4.2:
+   *
+   *   • Candidates with reviewer activity in the last
+   *     `reviewerProtectWindowMs` are filtered out (hard protect).
+   *   • Of the remainder, highest score wins.
+   *   • If the top score is ≤ 0 (everything is hot / recently committed),
+   *     return `null` — the caller should queue instead of evicting.
+   *
+   * Tie-breaking: when two candidates score equal, the one bound first
+   * (oldest `started_at`) wins. This keeps the policy stable under small
+   * timing jitter and matches the "the longer it's been live, the more
+   * likely it's abandoned" intuition.
+   */
+  selectEvictionCandidate(now: number = this.clock.nowMs()): EvictionCandidate | null {
+    const scored = this.scoreAllPrEnvSlots(now).filter((c) => !c.reviewerProtected);
+    if (scored.length === 0) return null;
+
+    // Pull started_at for tie-breaking. One extra query is cheap at pool
+    // sizes of 8–12 and keeps the main scoring pass uncluttered.
+    const startedAt = new Map<string, string | null>();
+    for (const c of scored) {
+      const r = this.db
+        .prepare('SELECT started_at FROM pool_slots WHERE slot_id = ?')
+        .get(c.slotId) as { started_at: string | null } | undefined;
+      startedAt.set(c.slotId, r?.started_at ?? null);
+    }
+
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      // Tie: oldest started_at first. NULLs sort last (shouldn't happen
+      // for a busy slot, but be defensive).
+      const as = startedAt.get(a.slotId);
+      const bs = startedAt.get(b.slotId);
+      if (as && bs) return as < bs ? -1 : as > bs ? 1 : 0;
+      if (as) return -1;
+      if (bs) return 1;
+      // Final fallback: slot_id lexicographic for determinism in tests.
+      return a.slotId < b.slotId ? -1 : 1;
+    });
+
+    const top = scored[0];
+    if (top.score <= 0) return null;
+    return top;
+  }
+
+  /**
+   * Admission check for a new PR-env request. Called by the GitHub webhook
+   * handler before `enqueue()`. The full rule set (wiki §§1.4, 4.2):
+   *
+   *   1. If any PR-capable slot is free → `queue` (the next tick binds it).
+   *   2. If all PR-capable slots are busy AND an eviction candidate exists
+   *      → `evict`. Caller transitions that slot to `draining` and enqueues
+   *      the new request; the freed slot is picked up on the next tick.
+   *   3. If saturated with no eviction candidate AND queue depth already
+   *      at / past `prQueueRejectThreshold` → `reject`.
+   *   4. Otherwise (saturated, no candidate, queue still has headroom) →
+   *      `queue`. The request will wait behind whatever unblocks first
+   *      (a reaper teardown, a reviewer-activity window expiring, etc.).
+   */
+  canAcceptPrEnvRequest(now: number = this.clock.nowMs()): PrEnvAdmission {
+    const freePr = (
+      this.db
+        .prepare("SELECT COUNT(*) AS n FROM pool_slots WHERE class = 'pr_env' AND status = 'free'")
+        .get() as { n: number }
+    ).n;
+    const freeOverflow = (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM pool_slots WHERE class = 'overflow' AND status = 'free'",
+        )
+        .get() as { n: number }
+    ).n;
+    if (freePr + freeOverflow > 0) return { decision: 'queue' };
+
+    const candidate = this.selectEvictionCandidate(now);
+    if (candidate) {
+      return { decision: 'evict', slotId: candidate.slotId, score: candidate.score };
+    }
+
+    const queueDepth = this.countQueued('pr_env');
+    if (queueDepth >= this.config.prQueueRejectThreshold) {
+      return { decision: 'reject', reason: 'queue_saturated' };
+    }
+    return { decision: 'queue' };
+  }
+
+  /**
+   * Transition a slot from `busy` to `draining` and bump the eviction
+   * counter. The actual container teardown is owned by the lifecycle layer
+   * (`docker compose down --timeout 30` per §4.3); this method only flips
+   * the accounting bit. Returns `true` if the slot actually transitioned
+   * (was busy beforehand), `false` otherwise — a double-evict call is a
+   * no-op rather than an error.
+   *
+   * After teardown completes the lifecycle layer calls `release(slotId)`
+   * to move the slot back to `free`, at which point the next `tick()`
+   * will bind the queued replacement.
+   */
+  markEvicting(slotId: string): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE pool_slots
+            SET status = 'draining'
+          WHERE slot_id = ? AND status = 'busy'`,
+      )
+      .run(slotId);
+    if (info.changes > 0) {
+      this.evictionsInitiated++;
+      return true;
+    }
+    return false;
+  }
+
+  /** Total evictions initiated by this process. Surfaced via `snapshotMetrics`. */
+  getEvictionsInitiated(): number {
+    return this.evictionsInitiated;
+  }
+
   /**
    * Run a single dispatch pass. The caller decides the cadence — prod uses
    * `startDispatcher(this, 1000)`, tests call `tick()` directly between
@@ -462,9 +853,10 @@ export class PoolAllocator {
     return {
       poolUtil: Math.min(1, Math.max(0, poolUtil)),
       queueDepth,
-      // W1 has no eviction / reap path yet. W2 will plumb real counts
-      // through by threading an accumulator into tick().
-      evictions: 0,
+      // W4: monotonic in-process counter of evictions initiated. The
+      // dispatcher subtracts prior samples to produce per-interval deltas
+      // when writing `pool_metrics`. Reaps remain at 0 until W5 lands.
+      evictions: this.evictionsInitiated,
       reaps: 0,
     };
   }

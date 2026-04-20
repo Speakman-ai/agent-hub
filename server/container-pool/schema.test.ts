@@ -81,6 +81,11 @@ describe('container pool schema — creation', () => {
         'container_id',
         'last_activity_at',
         'last_error',
+        'last_http_hit_at',
+        'pr_last_commit_at',
+        'pr_number',
+        'pr_state',
+        'reviewer_activity_at',
         'slot_id',
         'started_at',
         'status',
@@ -98,6 +103,13 @@ describe('container pool schema — creation', () => {
     expect(byName.last_activity_at.notnull).toBe(0);
     // last_error is nullable — only populated on the failed → reclaim path.
     expect(byName.last_error.notnull).toBe(0);
+    // W4 eviction metadata: all nullable (populated lazily by the lifecycle
+    // layer / webhooks, not required at bind time).
+    expect(byName.pr_number.notnull).toBe(0);
+    expect(byName.pr_state.notnull).toBe(0);
+    expect(byName.pr_last_commit_at.notnull).toBe(0);
+    expect(byName.last_http_hit_at.notnull).toBe(0);
+    expect(byName.reviewer_activity_at.notnull).toBe(0);
     // status defaults to 'free' so a freshly inserted row is usable.
     expect(byName.status.dflt_value).toContain('free');
   });
