@@ -95,6 +95,9 @@ import createPrListRoutes from './routes/pr-list.js';
 import createPrResolveRoutes from './routes/pr-resolve.js';
 import createBugReportRoutes from './routes/bug-reports.js';
 import createAuthRoutes from './routes/auth.js';
+import createPrEnvSettingsRoutes from './routes/pr-env-settings.js';
+import { migrateFileConfigToDb as migratePrEnvFileToDb } from './pr-env-store.js';
+import { fileConfig as prEnvFileConfig } from './config.js';
 
 import {
   initDelegation,
@@ -564,6 +567,20 @@ app.use(createPrListRoutes(routeDeps));
 app.use(createPrResolveRoutes(routeDeps));
 app.use(createBugReportRoutes(routeDeps));
 app.use(createAuthRoutes());
+app.use(createPrEnvSettingsRoutes(routeDeps));
+
+// One-shot migration: copy legacy `config.json` prEnv block into the new
+// pr_env_config DB row when the row doesn't exist yet. Idempotent after
+// the first successful run. Logged so the operator knows the UI is now
+// the source of truth.
+try {
+  const migrated = migratePrEnvFileToDb(prEnvFileConfig);
+  if (migrated) {
+    console.log('[pr-env] Migrated legacy config.json prEnv block → pr_env_config DB row');
+  }
+} catch (err) {
+  console.error('[pr-env] Failed to migrate legacy prEnv block into DB:', (err as Error).message);
+}
 
 const server = createServer(app);
 const drainingLock = new Set<string>();

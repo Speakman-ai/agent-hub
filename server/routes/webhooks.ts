@@ -9,6 +9,7 @@ import { runCapture, postPrComment } from '../capture-engine.js';
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
 import { dispatchPrEnvBuild, dispatchPrEnvTeardown } from '../container-pool/pr-env-dispatch.js';
 import { getPrEnvBuilderDeps, readPrEnvConfig } from '../container-pool/pr-env-runtime.js';
+import { readPrEnvConfigRow } from '../pr-env-store.js';
 import { getDb } from '../db.js';
 import {
   CHECK_RUN_NAME,
@@ -1323,7 +1324,11 @@ function handleKanbanWebhookEvent(
     const prEnvDispatchDeps = {
       db: getDb(),
       stmts,
-      getBuilderDeps: () => getPrEnvBuilderDeps(readPrEnvConfig(fileConfig), getDb()),
+      getBuilderDeps: () =>
+        getPrEnvBuilderDeps(
+          readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow()),
+          getDb(),
+        ),
     };
     if (action === 'closed') {
       void dispatchPrEnvTeardown(prEnvDispatchDeps, {

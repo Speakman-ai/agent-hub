@@ -23,6 +23,7 @@ import { buildPrEnvFile } from './env-template.js';
 import { PortPool, PORT_POOL_SCHEMA } from './port-pool.js';
 import type { ComposeRunner, FsOps, PrEnvBuilderDeps } from './pr-env-builder.js';
 import type { NginxFsOps, NginxRunner } from './nginx-writer.js';
+import type { PrEnvConfigRow } from '../pr-env-store.js';
 
 // ─── Shared runtime config ────────────────────────────────────────────────
 
@@ -86,8 +87,12 @@ export interface PrEnvRuntimeConfig {
 function resolvePreviewBaseUrl(
   fileBlock: Partial<PrEnvRuntimeConfig>,
   env: NodeJS.ProcessEnv,
+  dbRow: PrEnvConfigRow | null,
 ): string {
-  const url = fileBlock.previewBaseUrl ?? env.PR_ENV_PREVIEW_BASE_URL ?? '';
+  const url =
+    env.PR_ENV_PREVIEW_BASE_URL ||
+    (dbRow?.previewBaseUrl ?? '') ||
+    (fileBlock.previewBaseUrl ?? '');
   if (!url) {
     console.warn(
       '[pr-env] PR_ENV_PREVIEW_BASE_URL / prEnv.previewBaseUrl is unset — ' +
@@ -100,33 +105,86 @@ function resolvePreviewBaseUrl(
 }
 
 /**
- * Merge env-var overrides + `config.json`'s `prEnv` block into a typed
- * runtime config. Returns null if the feature flag isn't on.
+ * Merge env-var overrides + `config.json`'s `prEnv` block + DB row into a
+ * typed runtime config. Returns null if the feature flag isn't on.
+ *
+ * Precedence (highest → lowest):
+ *   1. env vars (for CI/dev overrides)
+ *   2. DB row (Tier-1/Tier-2 UI-owned fields) — AUTHORITATIVE once present
+ *   3. config.json `prEnv` block (legacy; preserved for pre-migration compat)
+ *   4. built-in defaults
+ *
+ * Boolean fields (`enabled`, `certRenewalLive`) follow strict precedence
+ * — not OR-composition. Once a DB row exists, its value wins over the file
+ * block in both directions, so flipping the UI toggle off actually turns
+ * the feature off even if the legacy file block still has `enabled: true`.
+ * Env vars remain a hard override for CI/dev unlock.
+ *
+ * The DB row is optional — callers that don't care about UI-written values
+ * can pass `dbRow = null` and behaviour falls back to the pre-UI path.
  */
 export function readPrEnvConfig(
   fileConfig: Record<string, unknown> | undefined,
   env: NodeJS.ProcessEnv = process.env,
+  dbRow: PrEnvConfigRow | null = null,
 ): PrEnvRuntimeConfig | null {
   const envFlag = env.AGENT_HUB_PR_ENV_ENABLED === 'true';
   const fileBlock = (fileConfig?.prEnv as Partial<PrEnvRuntimeConfig> | undefined) ?? {};
-  const enabled = envFlag || fileBlock.enabled === true;
+  // Boolean precedence: env override → DB (authoritative if row exists) → file.
+  // `dbRow != null` means the UI has written at least once, so the DB value is
+  // canonical — including `false`, which must be able to authoritatively
+  // disable the feature even if a legacy file block still says `enabled: true`.
+  const enabled = envFlag
+    ? true
+    : dbRow != null
+      ? dbRow.enabled === true
+      : fileBlock.enabled === true;
   if (!enabled) return null;
 
-  const github = fileBlock.github ?? {
-    appId: env.PR_ENV_GITHUB_APP_ID ?? '',
-    installationId: env.PR_ENV_GITHUB_INSTALLATION_ID ?? '',
-    privateKey: env.PR_ENV_GITHUB_PRIVATE_KEY ?? '',
+  // Helper: pick env → DB → file → fallback. Empty strings are treated as
+  // "not set" so a blank UI field doesn't shadow an env-var override.
+  const pick = (
+    envVal: string | undefined,
+    dbVal: string | undefined,
+    fileVal: string | undefined,
+    fallback = '',
+  ): string => envVal || dbVal || fileVal || fallback;
+
+  const github = {
+    appId: pick(env.PR_ENV_GITHUB_APP_ID, dbRow?.githubAppId, fileBlock.github?.appId),
+    installationId: pick(
+      env.PR_ENV_GITHUB_INSTALLATION_ID,
+      dbRow?.githubInstallationId,
+      fileBlock.github?.installationId,
+    ),
+    privateKey: pick(
+      env.PR_ENV_GITHUB_PRIVATE_KEY,
+      dbRow?.githubPrivateKey,
+      fileBlock.github?.privateKey,
+    ),
   };
 
   const prodDbPath = fileBlock.prodDbPath ?? env.PR_ENV_PROD_DB ?? '';
   const prEnvDataDir = fileBlock.prEnvDataDir ?? env.PR_ENV_DATA_DIR ?? '';
   const envFilesDir = fileBlock.envFilesDir ?? env.PR_ENV_FILES_DIR ?? '';
-  const repoFullName = fileBlock.repoFullName ?? env.PR_ENV_REPO_FULL_NAME ?? '';
+  const repoFullName = pick(env.PR_ENV_REPO_FULL_NAME, dbRow?.repoFullName, fileBlock.repoFullName);
 
-  const route53 = fileBlock.route53 ?? {
-    accessKeyId: env.PR_ENV_ROUTE53_ACCESS_KEY_ID ?? '',
-    secretAccessKey: env.PR_ENV_ROUTE53_SECRET_ACCESS_KEY ?? '',
-    hostedZoneId: env.PR_ENV_ROUTE53_HOSTED_ZONE_ID ?? '',
+  const route53 = {
+    accessKeyId: pick(
+      env.PR_ENV_ROUTE53_ACCESS_KEY_ID,
+      dbRow?.route53AccessKeyId,
+      fileBlock.route53?.accessKeyId,
+    ),
+    secretAccessKey: pick(
+      env.PR_ENV_ROUTE53_SECRET_ACCESS_KEY,
+      dbRow?.route53SecretAccessKey,
+      fileBlock.route53?.secretAccessKey,
+    ),
+    hostedZoneId: pick(
+      env.PR_ENV_ROUTE53_HOSTED_ZONE_ID,
+      dbRow?.route53HostedZoneId,
+      fileBlock.route53?.hostedZoneId,
+    ),
   };
 
   const nginxBlock: Partial<PrEnvRuntimeConfig['nginx']> = fileBlock.nginx ?? {};
@@ -139,7 +197,7 @@ export function readPrEnvConfig(
       nginxBlock.sitesEnabledDir ?? env.PR_ENV_NGINX_SITES_ENABLED ?? '/etc/nginx/sites-enabled',
     certPath: nginxBlock.certPath ?? env.PR_ENV_NGINX_CERT_PATH ?? '',
     keyPath: nginxBlock.keyPath ?? env.PR_ENV_NGINX_KEY_PATH ?? '',
-    previewHost: nginxBlock.previewHost ?? env.PR_ENV_PREVIEW_HOST ?? '',
+    previewHost: pick(env.PR_ENV_PREVIEW_HOST, dbRow?.previewHost, nginxBlock.previewHost),
     certHome: nginxBlock.certHome ?? env.PR_ENV_CERT_HOME ?? '/var/lib/agent-hub/acme',
   };
 
@@ -184,18 +242,45 @@ export function readPrEnvConfig(
         'templates',
         'pr-env.compose.yml',
       ),
-    previewBaseUrl: resolvePreviewBaseUrl(fileBlock, env),
+    previewBaseUrl: resolvePreviewBaseUrl(fileBlock, env, dbRow),
     github: {
       appId: github.appId ?? '',
       installationId: github.installationId ?? '',
       privateKey: github.privateKey ?? '',
     },
-    portRange: fileBlock.portRange,
+    portRange: resolvePortRange(fileBlock, dbRow),
     route53,
     nginx,
-    certRenewalLive: fileBlock.certRenewalLive === true || env.PR_ENV_CERT_RENEWAL_LIVE === 'true',
+    // Same env → DB → file precedence as `enabled` — see docstring above.
+    certRenewalLive:
+      env.PR_ENV_CERT_RENEWAL_LIVE === 'true'
+        ? true
+        : dbRow != null
+          ? dbRow.certRenewalLive === true
+          : fileBlock.certRenewalLive === true,
     repoFullName,
   };
+}
+
+/**
+ * Port range precedence: DB row → file block → undefined (PortPool uses
+ * its built-in default 3100–3999). Only accept both min+max together so we
+ * can't end up with a half-specified range.
+ */
+function resolvePortRange(
+  fileBlock: Partial<PrEnvRuntimeConfig>,
+  dbRow: PrEnvConfigRow | null,
+): { min: number; max: number } | undefined {
+  if (
+    dbRow &&
+    typeof dbRow.portRangeMin === 'number' &&
+    typeof dbRow.portRangeMax === 'number' &&
+    dbRow.portRangeMin > 0 &&
+    dbRow.portRangeMax >= dbRow.portRangeMin
+  ) {
+    return { min: dbRow.portRangeMin, max: dbRow.portRangeMax };
+  }
+  return fileBlock.portRange;
 }
 
 // ─── Production adapters ──────────────────────────────────────────────────

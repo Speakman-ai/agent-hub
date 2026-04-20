@@ -13,6 +13,7 @@ import {
   CERT_RENEWAL_CRON,
 } from './container-pool/cert-renewal-heartbeat.js';
 import { readPrEnvConfig } from './container-pool/pr-env-runtime.js';
+import { readPrEnvConfigRow } from './pr-env-store.js';
 import { runReaperHeartbeat, REAPER_CRON } from './container-pool/reaper-heartbeat.js';
 import {
   runPoolAlertsHeartbeat,
@@ -712,7 +713,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
     runCertRenewalHeartbeat({
       getConfig: () => {
         try {
-          return readPrEnvConfig(fileConfig);
+          return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow());
         } catch (err) {
           console.error('[cert-renewal] config read failed:', (err as Error).message);
           return null;
@@ -739,7 +740,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
       allocator: reaperAllocator,
       getConfig: () => {
         try {
-          return readPrEnvConfig(fileConfig);
+          return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow());
         } catch (err) {
           console.error('[reaper] config read failed:', (err as Error).message);
           return null;

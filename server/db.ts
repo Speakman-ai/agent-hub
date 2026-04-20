@@ -4,6 +4,7 @@ import config from './config.js';
 import { POOL_SCHEMA } from './container-pool/schema.js';
 import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
 import { PREVIEW_AUTH_SCHEMA } from './container-pool/preview-auth-schema.js';
+import { PR_ENV_CONFIG_SCHEMA } from './pr-env-schema.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -992,6 +993,13 @@ function initDb(dataDir: string): void {
   // backing the `pr-N.<previewHost>` auth gate. See
   // container-pool/preview-auth.ts for the middleware + OAuth flow.
   db.exec(PREVIEW_AUTH_SCHEMA);
+
+  // PR-env settings (Tier 1 + Tier 2 config). Singleton row keyed id=1;
+  // secret columns are AES-256-GCM encrypted at rest. See pr-env-store.ts.
+  // DDL lives in pr-env-schema.ts — shared with pr-env-store.ts so both
+  // paths can never drift. The dedicated module exists to break the
+  // circular dependency (pr-env-store.ts imports `getDb` from here).
+  db.exec(PR_ENV_CONFIG_SCHEMA);
 
   // Migration: pool_slots gained `last_error TEXT` and `status` CHECK now
   // includes 'failed' (added in #458). SQLite can't ALTER a CHECK constraint
