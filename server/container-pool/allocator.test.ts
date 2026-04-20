@@ -219,10 +219,13 @@ describe('overflow slot contention — pr_env wins immediately, scaffold waits',
   });
 
   it('pr_env that arrives mid-wait steals overflow from a waiting scaffold', () => {
+    // Explicit 120 s wait window — this test exercises the legacy/tunable
+    // bounded-wait behaviour, not the W3 default (0 ms).
     const { allocator, clock } = freshAllocator({
       prEnvSlots: 0,
       scaffoldSlots: 0,
       overflowSlots: 1,
+      scaffoldOverflowWaitMs: 120_000,
     });
     allocator.enqueue('scaffold', { template: 't' });
     // Not yet past the bounded wait — scaffold should NOT take overflow.

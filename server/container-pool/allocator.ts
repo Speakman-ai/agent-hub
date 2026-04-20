@@ -26,15 +26,21 @@
  *   • Scaffolding NEVER preempts a running PR env. There is no eviction
  *     path for scaffold requests; they queue or fall through to overflow.
  *
- *   • PR envs MAY briefly block scaffolding. When a scaffold request is
- *     queued and the overflow slot is free, the allocator holds overflow
- *     open for up to `scaffoldOverflowWaitMs` (default 120 000 ms) in case
- *     a PR env request arrives — scaffold only claims overflow after it
- *     has been waiting that long. This preserves the priority ordering
- *     (long-lived > short-lived) without letting scaffolds starve.
- *
  *   • The shared overflow slot is assigned per tick: PR-env head wins
- *     unconditionally, scaffold head wins only after the bounded wait.
+ *     unconditionally, scaffold head wins iff the PR-env queue is empty
+ *     at dispatch time. This matches the wiki §2.3 dispatcher loop and
+ *     the W3 demo-day requirement ("scaffolding may only take overflow
+ *     when the PR-env queue is empty"). Because every PR that arrives
+ *     during a tick's transaction is observed in the next peek, the
+ *     queue-empty check is equivalent to "no PR is waiting right now".
+ *
+ *   • `scaffoldOverflowWaitMs` (default 0) is a retained knob that lets
+ *     us delay scaffold-overflow eligibility by a bounded wait on top of
+ *     the queue-empty check. Kept for ops flexibility — W3 runs at 0ms
+ *     per the wiki spec, but a future week can raise it if a spike
+ *     pattern shows scaffold racing a PR arriving within sub-tick
+ *     windows. When > 0 the rule is "PR queue empty AND scaffold has
+ *     waited at least this long".
  *
  *   • `priority_tier` index decision (W1): deferred. All requests pin to
  *     tier 0 until the enterprise opt-out lands, so the existing
@@ -79,9 +85,11 @@ export interface AllocatorConfig {
   /** Shared overflow slots (spec §1.3: 1). */
   overflowSlots: number;
   /**
-   * How long a scaffold request must have been queued before it is allowed
-   * to claim the overflow slot. PR-env requests bypass this wait. Default
-   * 120 000 ms per spec §1.4.
+   * Extra wait (ms) imposed on top of the queue-empty check before a
+   * scaffold head can claim the overflow slot. PR-env requests always
+   * bypass this. Default 0 — the W3 rule is "scaffold may take overflow
+   * iff the PR-env queue is empty right now". Keep non-zero only if a
+   * spike pattern shows sub-tick PR arrivals losing races to scaffold.
    */
   scaffoldOverflowWaitMs: number;
 }
@@ -90,7 +98,7 @@ export const DEFAULT_CONFIG: AllocatorConfig = {
   prEnvSlots: 8,
   scaffoldSlots: 3,
   overflowSlots: 1,
-  scaffoldOverflowWaitMs: 120_000,
+  scaffoldOverflowWaitMs: 0,
 };
 
 /** One successful queue→slot binding produced by `tick()`. */
@@ -385,15 +393,18 @@ export class PoolAllocator {
           continue;
         }
 
+        // PR-env queue is empty (prHead was null above). Scaffold is now
+        // eligible for overflow — the only remaining gate is the optional
+        // bounded wait, which is 0 by default (W3 rule).
         const scafHead = this.peekQueueHead('scaffold');
         if (!scafHead) break;
 
         const waitedMs = this.clock.nowMs() - scafHead.enqueued_ms;
         if (waitedMs < this.config.scaffoldOverflowWaitMs) {
-          // Head hasn't aged into overflow eligibility yet; leave it and
-          // everything behind it queued. Bail out of the overflow loop —
-          // later heads are strictly younger so they can't be eligible
-          // either.
+          // Head hasn't aged past the configured bounded wait. Leave it
+          // and everything behind it queued — later heads are strictly
+          // younger so they can't be eligible either. With the default
+          // (0 ms) this branch is effectively unreachable.
           break;
         }
 
