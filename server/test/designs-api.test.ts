@@ -111,6 +111,47 @@ describe('Designs API — messages cascade', () => {
   });
 });
 
+describe('Designs API — status endpoint', () => {
+  it('GET /api/designs/:id/status returns inFlight:false when no turn is running', async () => {
+    const created = await request.post('/api/designs').send({ name: 'Idle' }).expect(201);
+    const id = (created.body as DesignBody).id;
+
+    const res = await request.get(`/api/designs/${id}/status`).expect(200);
+    expect(res.body).toEqual({ inFlight: false, messageId: null, streaming: '' });
+  });
+
+  it('GET /api/designs/:id/status reflects an active turn with partial streaming', async () => {
+    const created = await request.post('/api/designs').send({ name: 'Busy' }).expect(201);
+    const id = (created.body as DesignBody).id;
+
+    // Seed the in-memory `activeDesignProcesses` map directly to simulate a
+    // turn in flight without spawning the CLI. This is what the status
+    // endpoint reads; the fake entry is cleaned up at the end of the test.
+    const chat = await import('../design-chat.js');
+    chat.activeDesignProcesses.set(id, {
+      proc: null,
+      cancelled: false,
+      messageId: 'msg-123',
+      lastStream: 'partial output so far…',
+    } as unknown as Parameters<typeof chat.activeDesignProcesses.set>[1]);
+
+    try {
+      const res = await request.get(`/api/designs/${id}/status`).expect(200);
+      expect(res.body).toEqual({
+        inFlight: true,
+        messageId: 'msg-123',
+        streaming: 'partial output so far…',
+      });
+    } finally {
+      chat.activeDesignProcesses.delete(id);
+    }
+  });
+
+  it('GET /api/designs/:id/status returns 404 for unknown designs', async () => {
+    await request.get('/api/designs/nonexistent-id/status').expect(404);
+  });
+});
+
 describe('Designs API — cross-org isolation', () => {
   it('per-ID routes return 404 for a design belonging to a different org', async () => {
     // Create a design via the normal flow (it gets the server's active org).
@@ -126,6 +167,7 @@ describe('Designs API — cross-org isolation', () => {
     await request.patch(`/api/designs/${id}`).send({ name: 'Hijack' }).expect(404);
     await request.delete(`/api/designs/${id}`).expect(404);
     await request.get(`/api/designs/${id}/messages`).expect(404);
+    await request.get(`/api/designs/${id}/status`).expect(404);
     await request.get(`/design-files/${id}/index.html`).expect(404);
   });
 

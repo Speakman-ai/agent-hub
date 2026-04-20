@@ -202,6 +202,7 @@ export const api = {
     fetchJSON(`/designs/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteDesign: (id) => fetchJSON(`/designs/${id}`, { method: 'DELETE' }),
   getDesignMessages: (id) => fetchJSON(`/designs/${id}/messages`),
+  getDesignStatus: (id) => fetchJSON(`/designs/${id}/status`),
 
   // Usage
   getUsage: () => fetchJSON('/usage'),

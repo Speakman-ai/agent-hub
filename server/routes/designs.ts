@@ -16,6 +16,7 @@ import {
   deleteDesign,
   listDesignMessages,
 } from '../designs-store.js';
+import { getDesignStatus } from '../design-chat.js';
 import { getActiveOrgId } from '../orgs.js';
 
 interface DesignRouteDeps extends RouteDeps {
@@ -106,6 +107,20 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
     const design = getDesign(req.params.id as string, lookup, getActiveOrgId());
     if (!design) return res.status(404).json({ error: 'Design not found' });
     res.json(listDesignMessages(design.id));
+  });
+
+  /**
+   * Status probe — answers "is a CLI turn currently running for this design,
+   * and if so, what's the latest partial output?". The client calls this on
+   * view re-entry to restore the thinking/streaming indicators (closing the
+   * gap between navigation and the next WS broadcast) and to replay whatever
+   * text has already been produced so the user isn't staring at a blank
+   * spinner.
+   */
+  router.get('/api/designs/:id/status', (req: Request, res: Response) => {
+    const design = getDesign(req.params.id as string, lookup, getActiveOrgId());
+    if (!design) return res.status(404).json({ error: 'Design not found' });
+    res.json(getDesignStatus(design.id));
   });
 
   return router;

@@ -51,6 +51,18 @@ interface DesignChatDeps {
 interface DesignState {
   proc: ChildProcess | null;
   cancelled: boolean;
+  /**
+   * Id of the user message that triggered this turn. Exposed through the
+   * status endpoint so a re-entering client knows which message the
+   * "thinking…" indicator should hang below.
+   */
+  messageId: string | null;
+  /**
+   * Latest cumulative stdout we've broadcast for this turn. Cached so a
+   * re-entering client can fetch the current partial output from the status
+   * endpoint and skip waiting for the next `design_stream` chunk.
+   */
+  lastStream: string;
 }
 
 interface WebSocketLike {
@@ -78,6 +90,26 @@ export function initDesignChat(d: DesignChatDeps): void {
 }
 
 // ─── Cancel ──────────────────────────────────────────────────────────
+
+/**
+ * Snapshot of a design's current turn state for the `/status` endpoint.
+ * `inFlight: false` is returned with empty fields when no turn is running.
+ */
+export interface DesignStatus {
+  inFlight: boolean;
+  messageId: string | null;
+  streaming: string;
+}
+
+export function getDesignStatus(designId: string): DesignStatus {
+  const state = activeDesignProcesses.get(designId);
+  if (!state) return { inFlight: false, messageId: null, streaming: '' };
+  return {
+    inFlight: true,
+    messageId: state.messageId,
+    streaming: state.lastStream,
+  };
+}
 
 export function handleDesignCancel(designId: string): void {
   const state = activeDesignProcesses.get(designId);
@@ -196,7 +228,12 @@ export async function handleDesignChat(
   const userMsg = appendDesignMessage(designId, 'user', content);
   broadcast({ type: 'design_message_added', designId, message: userMsg });
 
-  const state: DesignState = { proc: null, cancelled: false };
+  const state: DesignState = {
+    proc: null,
+    cancelled: false,
+    messageId: userMsg.id,
+    lastStream: '',
+  };
   activeDesignProcesses.set(designId, state);
 
   try {
@@ -263,6 +300,7 @@ export async function handleDesignChat(
 
         proc.stdout!.on('data', (chunk: Buffer) => {
           output += chunk.toString();
+          state.lastStream = output;
           broadcast({
             type: 'design_stream',
             designId,

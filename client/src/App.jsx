@@ -805,6 +805,18 @@ export default function App() {
       case 'design_thinking':
         if (data.designId === activeDesignIdRef.current) {
           setDesignThinking(true);
+          setDesignProcessing(true);
+        }
+        break;
+      case 'design_stream':
+        // Server emits cumulative stdout on every chunk. As soon as any
+        // partial text arrives, we flip from the "thinking…" dot to the
+        // streaming view so the user sees progress. Ignored when the event
+        // is for a design the user has since navigated away from.
+        if (data.designId === activeDesignIdRef.current) {
+          setDesignThinking(false);
+          setDesignProcessing(true);
+          setDesignStreaming({ content: data.content || '' });
         }
         break;
 
@@ -1673,11 +1685,17 @@ export default function App() {
       setDesignProcessing(false);
       return;
     }
+    // Reset streaming UI state optimistically — the status probe below will
+    // restore it if a turn is actually in flight for this design.
+    setDesignStreaming(null);
+    setDesignThinking(false);
+    setDesignProcessing(false);
     // Reset the iframe cache-buster for a fresh design — ensures we don't
     // reuse a stale frame from the previous design.
     setDesignReloadToken((t) => t + 1);
+    const designId = activeDesignId;
     api
-      .getDesign(activeDesignId)
+      .getDesign(designId)
       .then((detail) => {
         if (!detail) return;
         setDesigns((prev) => {
@@ -1686,7 +1704,25 @@ export default function App() {
         });
       })
       .catch(console.error);
-    api.getDesignMessages(activeDesignId).then(setDesignMessages).catch(console.error);
+    api.getDesignMessages(designId).then(setDesignMessages).catch(console.error);
+    // Probe the server for an in-flight turn. If one is running, restore the
+    // thinking/streaming indicators so re-entering a design mid-turn doesn't
+    // show a silent UI. Guard against races: if the user switched designs
+    // again before the probe resolved, drop the result.
+    api
+      .getDesignStatus(designId)
+      .then((status) => {
+        if (!status || activeDesignIdRef.current !== designId) return;
+        if (!status.inFlight) return;
+        setDesignProcessing(true);
+        if (status.streaming) {
+          setDesignThinking(false);
+          setDesignStreaming({ content: status.streaming });
+        } else {
+          setDesignThinking(true);
+        }
+      })
+      .catch(console.error);
   }, [activeDesignId]);
 
   const activeDesign = designs.find((d) => d.id === activeDesignId);
