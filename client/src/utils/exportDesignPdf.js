@@ -18,6 +18,79 @@
 // is whatever html2canvas can reproduce (fonts/SVG are rasterized), which is
 // acceptable for a v1 and matches how this repo already uses html2canvas for
 // bug-report screenshots (see client/src/utils/bugReport.js).
+//
+// Error-recovery layers (see card "Design not accessible for export"):
+//   • Pre-flight probe — we `fetch()` the artifact URL first so we can
+//     distinguish "artifact missing / 404" from "iframe loaded but DOM
+//     access was denied". This surfaces a crisp error and, bonus, gives us
+//     the raw HTML to feed the srcdoc fallback.
+//   • Cross-origin detection — if the hub page (e.g. Vite dev on :3050) and
+//     the API `base` (e.g. :3051) don't share an origin, iframe
+//     contentDocument access will always be blocked by Same-Origin Policy.
+//     We detect that up-front and throw a distinct, actionable error
+//     instead of the generic "not accessible" message.
+//   • srcdoc fallback — when the page IS same-origin as the API but the
+//     iframe's contentDocument is still `null` (rare, usually a transient
+//     navigation/CSP hiccup), we swap to `iframe.srcdoc` with the
+//     prefetched HTML plus an injected `<base href>` so relative assets
+//     still resolve. about:srcdoc inherits the parent's origin, so DOM
+//     access is guaranteed to work.
+
+/**
+ * True if the given `base` URL shares an origin with the host page's
+ * `window.location`. Returns `false` on any parse error (treat as
+ * cross-origin — safer default).
+ *
+ * @param {string}   base
+ * @param {Document} hostDoc  The host document whose `defaultView` we read.
+ */
+function isSameOrigin(base, hostDoc) {
+  try {
+    const win = hostDoc?.defaultView || (typeof window !== 'undefined' ? window : null);
+    const href = win?.location?.href;
+    if (!href) return false;
+    const baseUrl = new URL(base, href);
+    return baseUrl.origin === win.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Inject a `<base href>` into a fetched design HTML document so relative
+ * asset URLs still resolve when the document is loaded via `srcdoc`.
+ */
+function withBaseHref(html, designUrl) {
+  const tag = `<base href="${designUrl}">`;
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, (m) => `${m}${tag}`);
+  }
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html[^>]*>/i, (m) => `${m}<head>${tag}</head>`);
+  }
+  return `<head>${tag}</head>${html}`;
+}
+
+/**
+ * Wait for an iframe `load` event (or `error`) with the given handlers.
+ * Returns a promise the caller can await once it has set `src`/`srcdoc`.
+ */
+function awaitIframeLoad(iframe, errorMessage) {
+  return new Promise((resolve, reject) => {
+    const onLoad = () => {
+      iframe.removeEventListener('load', onLoad);
+      iframe.removeEventListener('error', onError);
+      resolve();
+    };
+    const onError = () => {
+      iframe.removeEventListener('load', onLoad);
+      iframe.removeEventListener('error', onError);
+      reject(new Error(errorMessage));
+    };
+    iframe.addEventListener('load', onLoad);
+    iframe.addEventListener('error', onError);
+  });
+}
 
 /**
  * Render the given design as a PDF and trigger a browser download.
@@ -42,6 +115,35 @@ export async function exportDesignPdf({ designId, base, filename, doc } = {}) {
   if (!hostDoc) throw new Error('No document available for PDF export');
 
   const safeName = (filename || `design-${designId}`).replace(/[^a-z0-9._-]+/gi, '_');
+  const designUrl = `${base}/design-files/${encodeURIComponent(designId)}/index.html`;
+
+  // Layer 1: cross-origin guard. iframe.contentDocument is unreadable when
+  // the page and the iframe don't share an origin — no amount of retrying
+  // fixes it. Fail fast with a message the user can act on.
+  if (!isSameOrigin(base, hostDoc)) {
+    throw new Error(
+      'PDF export requires the hub to be served from the same origin as the API. ' +
+        'Open the design from the deployed hub or the Electron desktop app ' +
+        '(the Vite dev server on :3050 cannot export from an API on a different origin).',
+    );
+  }
+
+  // Layer 2: pre-flight probe. Surfaces a crisp 404/network error before we
+  // stand up the iframe, and hands us the raw HTML for the srcdoc fallback.
+  let prefetchedHtml = null;
+  try {
+    const res = await fetch(designUrl, { credentials: 'include' });
+    if (!res.ok) {
+      throw new Error(
+        `Design artifact is unavailable (HTTP ${res.status}). ` +
+          'The design may have been deleted, or the dev server is not proxying /design-files/.',
+      );
+    }
+    prefetchedHtml = await res.text();
+  } catch (err) {
+    if (err instanceof Error && /HTTP \d+/.test(err.message)) throw err;
+    throw new Error(`Unable to reach design artifact for export: ${err?.message || String(err)}`);
+  }
 
   // 1. Offscreen iframe that loads the design document same-origin.
   const iframe = hostDoc.createElement('iframe');
@@ -52,28 +154,23 @@ export async function exportDesignPdf({ designId, base, filename, doc } = {}) {
   iframe.style.width = '1024px';
   iframe.style.height = '768px';
   iframe.style.border = '0';
-  iframe.src = `${base}/design-files/${encodeURIComponent(designId)}/index.html`;
+  iframe.src = designUrl;
   hostDoc.body.appendChild(iframe);
 
   try {
-    await new Promise((resolve, reject) => {
-      const onLoad = () => {
-        iframe.removeEventListener('load', onLoad);
-        iframe.removeEventListener('error', onError);
-        resolve();
-      };
-      const onError = () => {
-        iframe.removeEventListener('load', onLoad);
-        iframe.removeEventListener('error', onError);
-        reject(new Error('Failed to load design for export'));
-      };
-      iframe.addEventListener('load', onLoad);
-      iframe.addEventListener('error', onError);
-    });
+    await awaitIframeLoad(iframe, 'Failed to load design for export');
 
-    const inner = iframe.contentDocument;
+    let inner = iframe.contentDocument;
     if (!inner || !inner.body) {
-      throw new Error('Design document is not accessible for export');
+      // Layer 3: srcdoc fallback. about:srcdoc inherits the parent's origin
+      // so contentDocument is always readable; the injected <base> keeps
+      // relative asset URLs resolving against the real artifact path.
+      iframe.srcdoc = withBaseHref(prefetchedHtml, designUrl);
+      await awaitIframeLoad(iframe, 'srcdoc fallback failed to load');
+      inner = iframe.contentDocument;
+      if (!inner || !inner.body) {
+        throw new Error('Design document is not accessible for export');
+      }
     }
 
     // Resize the iframe to the document's natural height so long-scroll
