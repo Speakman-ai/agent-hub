@@ -321,13 +321,77 @@ function DesignMessage({ message }) {
 }
 
 /**
+ * injectBaseHref — inject (or replace) a `<base href>` tag into an HTML
+ * document string so that relative asset paths inside an iframe loaded via
+ * `srcdoc` still resolve against the original server URL.
+ *
+ * `srcdoc` iframes have an opaque origin (about:srcdoc) and are NOT subject
+ * to `X-Frame-Options` — that header only gates top-level frame navigation,
+ * not inline documents or sub-resources. Injecting `<base>` is what lets
+ * relative `<link>`, `<script>`, `<img>` loads still reach the design-files
+ * directory on the server.
+ */
+export function injectBaseHref(html, baseHref) {
+  const safeHref = String(baseHref).replace(/"/g, '&quot;');
+  const baseTag = `<base href="${safeHref}">`;
+
+  // Replace existing <base ...> if present
+  if (/<base\b[^>]*>/i.test(html)) {
+    return html.replace(/<base\b[^>]*>/i, baseTag);
+  }
+
+  // Insert immediately after the opening <head ...> if present
+  if (/<head\b[^>]*>/i.test(html)) {
+    return html.replace(/(<head\b[^>]*>)/i, `$1${baseTag}`);
+  }
+
+  // Minimal fallback — prepend to the document
+  return `${baseTag}${html}`;
+}
+
+/**
  * DesignCanvas — sandboxed iframe that loads the design's static artifacts.
- * `reloadToken` is the cache-busting query param; incrementing it (e.g. on
- * every `design_updated` WS event) forces the iframe to re-fetch index.html.
+ *
+ * The deployed nginx config sends `X-Frame-Options: DENY` globally, which
+ * blocks `<iframe src="...">` loads of design-files with `ERR_BLOCKED_BY_RESPONSE`.
+ * Workaround: fetch the HTML as text and feed it to the iframe via `srcdoc`.
+ * `srcdoc` documents have an opaque origin and are not subject to XFO, and
+ * sub-resources (CSS/JS/images) are not gated by XFO either — we just need
+ * a `<base href>` so relative paths resolve back to the server.
+ *
+ * `reloadToken` re-runs the fetch (e.g. on every `design_updated` WS event)
+ * so the agent's file writes show up immediately on the canvas.
  */
 function DesignCanvas({ designId, reloadToken, onManualReload }) {
   const base = getServerBase();
-  const src = `${base}/design-files/${designId}/index.html?v=${reloadToken}`;
+  const [srcdoc, setSrcdoc] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSrcdoc(null);
+    setError(null);
+
+    const url = `${base}/design-files/${designId}/index.html?v=${reloadToken}`;
+    fetch(url, { credentials: 'include' })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.text();
+      })
+      .then((html) => {
+        if (cancelled) return;
+        const baseHref = `${base}/design-files/${designId}/`;
+        setSrcdoc(injectBaseHref(html, baseHref));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err?.message || 'Failed to load design');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [base, designId, reloadToken]);
 
   return (
     <>
@@ -341,13 +405,23 @@ function DesignCanvas({ designId, reloadToken, onManualReload }) {
           <RefreshCw size={14} />
         </button>
       </div>
-      <iframe
-        key={reloadToken}
-        title={`design-canvas-${designId}`}
-        src={src}
-        sandbox="allow-scripts"
-        className="flex-1 w-full bg-white border-0"
-      />
+      {error ? (
+        <div className="flex-1 flex items-center justify-center bg-white">
+          <div className="text-xs text-red-600">Failed to load design: {error}</div>
+        </div>
+      ) : srcdoc === null ? (
+        <div className="flex-1 flex items-center justify-center bg-white">
+          <div className="text-xs text-gray-500">Loading…</div>
+        </div>
+      ) : (
+        <iframe
+          key={reloadToken}
+          title={`design-canvas-${designId}`}
+          srcDoc={srcdoc}
+          sandbox="allow-scripts"
+          className="flex-1 w-full bg-white border-0"
+        />
+      )}
     </>
   );
 }

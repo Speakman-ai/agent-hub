@@ -1,16 +1,30 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import DesignView from './DesignView.jsx';
 
 /**
  * DesignView — split-pane behavior.
  *
- * The iframe src must include the current `reloadToken` as a cache-buster;
- * incrementing the token must cause the iframe to re-fetch index.html. This
- * is how the Design canvas stays in sync with agent file writes (the server
- * emits `design_updated`, App.jsx bumps the token).
+ * The Design canvas fetches index.html as text and feeds it to the iframe
+ * via `srcdoc` (to bypass the nginx-deployed `X-Frame-Options: DENY`).
+ * `reloadToken` is appended to the fetch URL as a cache-buster; bumping it
+ * must trigger a fresh fetch so the canvas stays in sync with agent writes
+ * (server emits `design_updated`, App.jsx bumps the token).
  */
 describe('DesignView', () => {
+  beforeEach(() => {
+    globalThis.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        text: () => Promise.resolve('<html><head></head><body></body></html>'),
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   const baseDesign = {
     id: 'd-1',
     name: 'Sales dashboard',
@@ -34,25 +48,36 @@ describe('DesignView', () => {
     expect(screen.getByText('Sales dashboard')).toBeInTheDocument();
   });
 
-  it('renders the iframe with reloadToken as the cache-buster', () => {
+  it('fetches index.html with the reloadToken cache-buster and renders a sandboxed srcdoc iframe', async () => {
     const { container } = render(<DesignView {...baseProps} reloadToken={0} />);
-    const iframe = container.querySelector('iframe');
-    expect(iframe).toBeTruthy();
-    expect(iframe.getAttribute('src')).toContain('/design-files/d-1/index.html');
-    expect(iframe.getAttribute('src')).toContain('v=0');
-    // Security: must be sandboxed
-    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts');
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalled();
+    });
+    const fetchUrl = globalThis.fetch.mock.calls[0][0];
+    expect(fetchUrl).toContain('/design-files/d-1/index.html');
+    expect(fetchUrl).toContain('v=0');
+
+    await waitFor(() => {
+      const iframe = container.querySelector('iframe');
+      expect(iframe).toBeTruthy();
+      // Security: must be sandboxed
+      expect(iframe.getAttribute('sandbox')).toBe('allow-scripts');
+    });
   });
 
-  it('iframe src updates when reloadToken increments', () => {
-    const { container, rerender } = render(<DesignView {...baseProps} reloadToken={1} />);
-    const firstSrc = container.querySelector('iframe').getAttribute('src');
-    expect(firstSrc).toContain('v=1');
+  it('re-fetches index.html when reloadToken increments', async () => {
+    const { rerender } = render(<DesignView {...baseProps} reloadToken={0} />);
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+    expect(globalThis.fetch.mock.calls[0][0]).toContain('v=0');
 
-    rerender(<DesignView {...baseProps} reloadToken={2} />);
-    const secondSrc = container.querySelector('iframe').getAttribute('src');
-    expect(secondSrc).toContain('v=2');
-    expect(secondSrc).not.toBe(firstSrc);
+    rerender(<DesignView {...baseProps} reloadToken={1} />);
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    });
+    expect(globalThis.fetch.mock.calls[1][0]).toContain('v=1');
   });
 
   it('renders past messages in the chat pane', () => {
