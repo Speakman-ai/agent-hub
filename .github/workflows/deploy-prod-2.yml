@@ -1,0 +1,179 @@
+name: Deploy Prod-2
+
+# Manual rollout of an existing release tag to agent-hub-prod-2.
+#
+# This was split out of `release-prod.yml` so prod-2 can be rolled
+# independently — typically after prod-1 has soaked for a while or after a
+# prod-1-only hotfix needs to be propagated. The release/tagging/notes/DMG
+# steps and prod-1 rollout still live in `release-prod.yml`; this workflow
+# only deploys an *existing* tag to the prod-2 instance.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to deploy (e.g. v1.2.3). Must already exist on origin.'
+        required: true
+        type: string
+
+permissions:
+  id-token: write # OIDC for AWS
+  contents: read
+
+jobs:
+  deploy-prod-2:
+    name: Deploy agent-hub-prod-2
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/agenthub/agent-hub' }}
+      INSTANCE_NAME_TAG: agent-hub-prod-2
+      TAG: ${{ github.event.inputs.tag }}
+    steps:
+      - name: Validate tag input
+        run: |
+          set -euo pipefail
+          if [ -z "${TAG:-}" ]; then
+            echo "::error::tag input is required"
+            exit 1
+          fi
+          # Light shape check — full existence is verified on the instance via
+          # `git fetch --all --tags --prune` + `git reset --hard "${TAG}"`.
+          case "$TAG" in
+            v[0-9]*) ;;
+            *)
+              echo "::error::tag '$TAG' does not look like a release tag (expected v<semver>)"
+              exit 1
+              ;;
+          esac
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-deploy-prod2-${{ github.run_id }}
+
+      - name: Resolve instance ID
+        id: resolve
+        run: |
+          set -euo pipefail
+          IDS=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=${INSTANCE_NAME_TAG}" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text)
+          COUNT=$(echo "$IDS" | wc -w)
+          if [ "$COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly 1 running instance with Name=${INSTANCE_NAME_TAG}, found $COUNT: $IDS"
+            exit 1
+          fi
+          echo "instance_id=$IDS" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy tag ${{ env.TAG }} via SSM
+        id: deploy
+        env:
+          INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+          # Same pattern as prod-1/dev: write inner script to tempfile,
+          # `exec setpriv ... -- bash --noprofile --norc <file>`. See
+          # deploy-dev.yml for the full explanation of why file-based + exec
+          # beats nested heredocs and why we dropped bash -l / the EXIT trap.
+          INNER_SCRIPT=$(cat <<INNER
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export NVM_DIR="\$HOME/.nvm"
+          # shellcheck disable=SC1091
+          [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+          cd ${DEPLOY_PATH}
+          git fetch --all --tags --prune
+          # Force-align the working tree with the release tag (prod is a
+          # deploy target, not a dev checkout — discard any drift).
+          git reset --hard "${TAG}"
+          git clean -fd
+          npm ci
+          (cd server && npm ci)
+          (cd client && npm ci)
+          npm run build
+          pm2 restart agent-hub
+          set -x
+          for i in \$(seq 1 12); do
+            if curl -fsS http://localhost:3051/api/health >/dev/null; then
+              echo "health ok on attempt \$i"
+              set +e
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "health check FAILED after 12 attempts" >&2
+          exit 1
+          INNER
+          )
+          INNER_B64=$(printf '%s\n' "$INNER_SCRIPT" | base64 -w0)
+
+          DEPLOY_SCRIPT=$(cat <<OUTER
+          set -eu
+          TMP=\$(mktemp /tmp/agent-hub-deploy.XXXXXX.sh)
+          printf '%s' '${INNER_B64}' | base64 -d > "\$TMP"
+          chmod 0750 "\$TMP"
+          chown agenthub:agenthub "\$TMP"
+          exec setpriv --reuid agenthub --regid agenthub --init-groups --reset-env -- bash --noprofile --norc "\$TMP"
+          OUTER
+          )
+
+          # See deploy-dev.yml for the explanation: shorthand --parameters
+          # does not decode JSON \n escapes, so we must pass the script via a
+          # JSON file.
+          jq -Rs '{commands: [.]}' <<< "$DEPLOY_SCRIPT" > "$RUNNER_TEMP/ssm-params.json"
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "release ${TAG} prod-2" \
+            --parameters "file://$RUNNER_TEMP/ssm-params.json" \
+            --cloud-watch-output-config CloudWatchOutputEnabled=true \
+            --query 'Command.CommandId' \
+            --output text)
+          echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deploy
+        env:
+          INSTANCE_ID: ${{ steps.resolve.outputs.instance_id }}
+          COMMAND_ID: ${{ steps.deploy.outputs.command_id }}
+        run: |
+          set -euo pipefail
+          # Cancel the in-flight SSM command if the GHA job is cancelled.
+          trap 'echo "Received signal; cancelling SSM command $COMMAND_ID..."; aws ssm cancel-command --command-id "$COMMAND_ID" --instance-ids "$INSTANCE_ID" || true; exit 130' INT TERM
+          for i in $(seq 1 120); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+            echo "[$i] status=$STATUS"
+            case "$STATUS" in
+              Success)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardOutputContent' --output text | tail -n 40
+                {
+                  echo "## ✅ Release ${TAG} rolled out to agent-hub-prod-2"
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                echo "::error::prod-2 deploy finished with status=$STATUS"
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardErrorContent' --output text || true
+                exit 1
+                ;;
+              *)
+                sleep 10
+                ;;
+            esac
+          done
+          echo "::error::Timed out waiting for SSM command $COMMAND_ID"
+          exit 1
