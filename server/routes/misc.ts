@@ -9,6 +9,12 @@ import type { RouteDeps, EnrichedAgent, AppConfig, Stmts, Project } from '../typ
 import { getLogBuffer } from '../server-log.js';
 import { PUSH_EVENT_TYPES } from '../push.js';
 import { isAuthConfigured } from '../auth-store.js';
+import {
+  computeUsageTotals,
+  computeUsageByAgent,
+  computeUsageByDay,
+  computeRecentSessions,
+} from '../usage-aggregation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Resolve the server version from server/package.json (one level up from
@@ -203,37 +209,13 @@ export default function createMiscRoutes(deps: RouteDeps): Router {
 
   router.get('/api/usage', (_req: Request, res: Response) => {
     try {
-      const totals = db!
-        .prepare(
-          `
-        SELECT COUNT(*) as count,
-               COALESCE(SUM(json_extract(payload, '$.costUsd')), 0) as total_cost,
-               COALESCE(SUM(json_extract(payload, '$.durationMs')), 0) as total_duration_ms,
-               COALESCE(SUM(json_extract(payload, '$.numTurns')), 0) as total_turns
-        FROM session_events WHERE event_type = 'result'
-      `,
-        )
-        .get() as Record<string, unknown>;
+      // Cost aggregation lives in `server/usage-aggregation.ts`. It
+      // deduplicates `total_cost_usd` per parent_id (MAX, not SUM) because
+      // the Claude Code CLI emits cumulative cost on each result event.
+      // See that module's header comment for the full rationale.
+      const totals = computeUsageTotals(db!);
 
-      const byAgent = db!
-        .prepare(
-          `
-        SELECT s.agent_id,
-               COUNT(*) as count,
-               COALESCE(SUM(json_extract(se.payload, '$.costUsd')), 0) as total_cost,
-               COALESCE(SUM(json_extract(se.payload, '$.durationMs')), 0) as total_duration_ms,
-               COALESCE(SUM(json_extract(se.payload, '$.numTurns')), 0) as total_turns
-        FROM session_events se
-        JOIN messages m ON se.parent_id = m.id
-        JOIN sessions s ON m.session_id = s.id
-        WHERE se.event_type = 'result' AND se.parent_kind = 'message'
-        GROUP BY s.agent_id
-        ORDER BY total_cost DESC
-      `,
-        )
-        .all() as Array<Record<string, unknown> & { agent_id: string }>;
-
-      const byAgentEnriched = byAgent.map((row) => {
+      const byAgentEnriched = computeUsageByAgent(db!).map((row) => {
         const agent = getEnrichedAgent(row.agent_id);
         return {
           ...row,
@@ -242,43 +224,9 @@ export default function createMiscRoutes(deps: RouteDeps): Router {
         };
       });
 
-      const byDay = db!
-        .prepare(
-          `
-        SELECT date(se.timestamp, 'localtime') as day,
-               COUNT(*) as count,
-               COALESCE(SUM(json_extract(se.payload, '$.costUsd')), 0) as cost,
-               COALESCE(SUM(json_extract(se.payload, '$.durationMs')), 0) as duration_ms,
-               COALESCE(SUM(json_extract(se.payload, '$.numTurns')), 0) as turns
-        FROM session_events se
-        WHERE se.event_type = 'result'
-          AND se.timestamp >= datetime('now', '-30 days')
-        GROUP BY date(se.timestamp, 'localtime')
-        ORDER BY day DESC
-      `,
-        )
-        .all() as Array<Record<string, unknown>>;
+      const byDay = computeUsageByDay(db!);
 
-      const recentSessions = (
-        db!
-          .prepare(
-            `
-        SELECT s.id, s.agent_id, s.name as session_name,
-               COUNT(*) as message_count,
-               COALESCE(SUM(json_extract(se.payload, '$.costUsd')), 0) as cost,
-               COALESCE(SUM(json_extract(se.payload, '$.durationMs')), 0) as duration_ms,
-               MAX(se.timestamp) as last_activity
-        FROM session_events se
-        JOIN messages m ON se.parent_id = m.id
-        JOIN sessions s ON m.session_id = s.id
-        WHERE se.event_type = 'result' AND se.parent_kind = 'message'
-        GROUP BY s.id
-        ORDER BY last_activity DESC
-        LIMIT 20
-      `,
-          )
-          .all() as Array<Record<string, unknown> & { agent_id: string }>
-      ).map((row) => {
+      const recentSessions = computeRecentSessions(db!).map((row) => {
         const agent = getEnrichedAgent(row.agent_id);
         return {
           ...row,

@@ -383,6 +383,23 @@ function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
     }
 
     case 'result':
+      // Cost/turns/duration contract — important for downstream aggregation:
+      //
+      //   • costUsd (= total_cost_usd) is CUMULATIVE. The Anthropic Agent SDK
+      //     docs describe it as "the cumulative estimated cost across all
+      //     steps in that call" (https://code.claude.com/docs/en/agent-sdk/
+      //     cost-tracking). In practice the Claude Code CLI sometimes emits
+      //     multiple `result` events under a single parent_id (same assistant
+      //     message / same CLI process); each subsequent event carries the
+      //     running cumulative total, NOT just its incremental spend.
+      //   • durationMs and numTurns, by contrast, are PER-EMISSION — each
+      //     result event reports only its own call's duration and turn count.
+      //
+      // We pass through all three verbatim. Aggregators (see
+      // `server/usage-aggregation.ts`) MUST take MAX(costUsd) per parent_id
+      // before summing, while durationMs/numTurns can be summed directly.
+      // Dropping/deduping at the parser would be lossy for UI event replay,
+      // so the dedupe lives at the aggregation layer.
       return [
         {
           type: 'result',
