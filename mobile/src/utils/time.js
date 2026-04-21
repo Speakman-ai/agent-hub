@@ -64,3 +64,36 @@ export function relativeFuture(dateStr) {
     overdue,
   };
 }
+
+/**
+ * Compute how long until a soft-deleted row is purged.
+ *
+ * Mirrors `client/src/utils/time.js#daysUntilPurge` so web + mobile render
+ * identical "purges in N days" countdowns for archived sessions. Soft-deleted
+ * sessions are hard-deleted `retentionDays` after `deletedAt` (default 7).
+ * Returns `null` for unparseable input so callers can hide the chip.
+ */
+export function daysUntilPurge(deletedAt, retentionDays = 7) {
+  if (!deletedAt) return null;
+  const str = String(deletedAt);
+  const raw = new Date(str);
+  const d = typeof deletedAt === 'string' && !str.includes('T') ? new Date(str + 'Z') : raw;
+  if (!d || isNaN(d)) return null;
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const msPerHour = 1000 * 60 * 60;
+  const ageMs = Date.now() - d.getTime();
+  const remainingMs = retentionDays * msPerDay - ageMs;
+  const daysLeft = Math.max(0, Math.ceil(remainingMs / msPerDay));
+  let label;
+  if (remainingMs <= 0) {
+    label = 'purging…';
+  } else if (remainingMs >= msPerDay) {
+    label = `purges in ${daysLeft}d`;
+  } else if (remainingMs < msPerHour) {
+    label = 'purges in <1h';
+  } else {
+    const hoursLeft = Math.ceil(remainingMs / msPerHour);
+    label = `purges in ${hoursLeft}h`;
+  }
+  return { daysLeft, label };
+}

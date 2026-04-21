@@ -15,11 +15,14 @@ import {
   Container,
   BarChart3,
   Palette,
+  Archive,
+  RotateCcw,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
 import AgentAvatar from './AgentAvatar.jsx';
+import { daysUntilPurge } from '../utils/time.js';
 
 export default function Sidebar({
   projects = [],
@@ -58,6 +61,9 @@ export default function Sidebar({
   changesReadyBySession = {},
   deletingSessionIds = new Set(),
   deletingBulk = null,
+  archivedSessions = [],
+  onRestoreSession,
+  restoringSessionIds = new Set(),
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [hoveredRoom, setHoveredRoom] = useState(null);
@@ -65,6 +71,7 @@ export default function Sidebar({
   const [showNewRoomInput, setShowNewRoomInput] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [collapsedAgents, setCollapsedAgents] = useState({});
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingSessionName, setEditingSessionName] = useState('');
   const [confirmAction, setConfirmAction] = useState(null); // 'clear-all' | 'clear-inactive' | null
@@ -490,6 +497,79 @@ export default function Sidebar({
                                             </div>
                                           )}
                                         </div>
+                                        {/* Archived (soft-deleted) sessions —
+                                            recovery window is 7 days, server
+                                            enforces the cut-off. Collapsed by
+                                            default to keep the sidebar quiet
+                                            when nothing is pending recovery. */}
+                                        {archivedSessions.length > 0 && (
+                                          <div
+                                            className="mt-2 border-t border-gray-800/50 pt-1"
+                                            data-testid="archived-sessions-section"
+                                          >
+                                            <button
+                                              onClick={() => setArchivedExpanded((v) => !v)}
+                                              className="w-full text-left px-2 py-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-600 hover:text-gray-400 transition-colors"
+                                            >
+                                              <Archive size={10} />
+                                              <span className="flex-1">
+                                                Archived ({archivedSessions.length})
+                                              </span>
+                                              <span className="text-gray-600">
+                                                {archivedExpanded ? '▾' : '▸'}
+                                              </span>
+                                            </button>
+                                            {archivedExpanded && (
+                                              <div data-testid="archived-sessions-list">
+                                                {archivedSessions.map((a) => {
+                                                  const purge = daysUntilPurge(a.deleted_at);
+                                                  // App.jsx always passes a Set; optional chaining
+                                                  // tolerates a stale consumer that forgot the prop.
+                                                  const isRestoring = restoringSessionIds.has(a.id);
+                                                  const urgent = purge && purge.daysLeft <= 1;
+                                                  return (
+                                                    <div
+                                                      key={a.id}
+                                                      className="group flex items-center rounded-md mb-0.5 px-2 py-1 text-xs text-gray-500 hover:bg-gray-800/40"
+                                                    >
+                                                      <div className="flex-1 min-w-0">
+                                                        <div className="truncate">{a.name}</div>
+                                                        {purge && (
+                                                          <div
+                                                            className={`text-[10px] ${
+                                                              urgent
+                                                                ? 'text-amber-400'
+                                                                : 'text-gray-600'
+                                                            }`}
+                                                          >
+                                                            {purge.label}
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                      <button
+                                                        onClick={() =>
+                                                          onRestoreSession && onRestoreSession(a.id)
+                                                        }
+                                                        disabled={isRestoring}
+                                                        className="ml-2 flex items-center gap-1 text-[10px] text-gray-500 hover:text-emerald-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                        title="Restore session"
+                                                      >
+                                                        {isRestoring ? (
+                                                          <span className="animate-spin inline-block">
+                                                            ⟳
+                                                          </span>
+                                                        ) : (
+                                                          <RotateCcw size={11} />
+                                                        )}
+                                                        Restore
+                                                      </button>
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
                                         {/* Confirmation dialog */}
                                         {confirmAction && (
                                           <div className="mx-1 mt-1 p-2 bg-gray-800 border border-gray-700 rounded-lg">

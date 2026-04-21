@@ -12,7 +12,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { getOrgs, getActiveOrg } from '../utils/orgs';
 import { colors } from '../theme/colors';
-import { relativeTime } from '../utils/time';
+import { relativeTime, daysUntilPurge } from '../utils/time';
 import humanCron from '../utils/humanCron';
 
 export default function DrawerContent({ navigation }) {
@@ -26,6 +26,9 @@ export default function DrawerContent({ navigation }) {
     setActiveSessionId,
     handleNewSession,
     handleDeleteSession,
+    archivedSessions,
+    handleRestoreSession,
+    restoringSessionIds,
     handleSwitchOrg,
     rooms,
     activeRoomId,
@@ -40,6 +43,7 @@ export default function DrawerContent({ navigation }) {
 
   const [collapsedAgents, setCollapsedAgents] = useState({});
   const [collapsedProjects, setCollapsedProjects] = useState({});
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [showOrgPicker, setShowOrgPicker] = useState(false);
 
   const orgState = getOrgs();
@@ -77,14 +81,27 @@ export default function DrawerContent({ navigation }) {
   };
 
   const confirmDeleteSession = (sessionId) => {
-    Alert.alert('Delete Session', 'Are you sure you want to delete this session?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => handleDeleteSession(sessionId),
-      },
-    ]);
+    // The confirmation copy already explains the 7-day window, so the
+    // archive action completes silently — no second "Archived" modal that
+    // would block interaction. The row appears in the Archived drawer
+    // section immediately and failures surface via an error Alert from
+    // handleDeleteSession itself.
+    Alert.alert(
+      'Delete Session',
+      'Archive this session? You can restore it within 7 days from the Archived section.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Archive',
+          style: 'destructive',
+          onPress: () => {
+            // Swallow the rejection — handleDeleteSession surfaces its own
+            // alert on failure, so we just need to avoid an unhandled promise.
+            handleDeleteSession(sessionId).catch(() => {});
+          },
+        },
+      ],
+    );
   };
 
   // Same reload-on-re-tap logic as handleSessionSelect — if the user taps the
@@ -186,6 +203,67 @@ export default function DrawerContent({ navigation }) {
           >
             <Text style={styles.newSessionText}>+ New Session</Text>
           </TouchableOpacity>
+
+          {/* Archived (soft-deleted within 7 days) — collapsed by default so
+              the drawer stays quiet when nothing is pending recovery. Mirror
+              of the web sidebar's Archived section in Sidebar.jsx. */}
+          {archivedSessions && archivedSessions.length > 0 && (
+            <View style={styles.archivedSection} testID="archived-sessions-section">
+              <TouchableOpacity
+                onPress={() => setArchivedExpanded((v) => !v)}
+                style={styles.archivedHeader}
+              >
+                <Text style={styles.archivedHeaderText}>
+                  Archived ({archivedSessions.length})
+                </Text>
+                <Text style={styles.archivedChevron}>
+                  {archivedExpanded ? '\u25BE' : '\u25B8'}
+                </Text>
+              </TouchableOpacity>
+              {archivedExpanded && (
+                <View testID="archived-sessions-list">
+                  {archivedSessions.map((a) => {
+                    const purge = daysUntilPurge(a.deleted_at);
+                    // AppContext always passes a Set; optional chaining keeps
+                    // this safe if a test mounts DrawerContent without it.
+                    const isRestoring = restoringSessionIds.has(a.id);
+                    const urgent = purge && purge.daysLeft <= 1;
+                    return (
+                      <View key={a.id} style={styles.archivedRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.archivedName} numberOfLines={1}>
+                            {a.name}
+                          </Text>
+                          {purge && (
+                            <Text
+                              style={[
+                                styles.archivedPurge,
+                                urgent && styles.archivedPurgeUrgent,
+                              ]}
+                            >
+                              {purge.label}
+                            </Text>
+                          )}
+                        </View>
+                        <TouchableOpacity
+                          onPress={() => handleRestoreSession(a.id)}
+                          disabled={isRestoring}
+                          style={[
+                            styles.restoreButton,
+                            isRestoring && styles.restoreButtonDisabled,
+                          ]}
+                        >
+                          <Text style={styles.restoreButtonText}>
+                            {isRestoring ? '…' : 'Restore'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          )}
         </View>
       )}
     </View>
@@ -772,6 +850,61 @@ const styles = StyleSheet.create({
   newSessionText: {
     fontSize: 12,
     color: colors.gray600,
+  },
+  archivedSection: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+  },
+  archivedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  archivedHeaderText: {
+    flex: 1,
+    fontSize: 10,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: colors.gray600,
+  },
+  archivedChevron: {
+    color: colors.gray600,
+    fontSize: 12,
+  },
+  archivedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  archivedName: {
+    fontSize: 12,
+    color: colors.gray500,
+  },
+  archivedPurge: {
+    fontSize: 10,
+    color: colors.gray600,
+    marginTop: 1,
+  },
+  archivedPurgeUrgent: {
+    color: '#fbbf24', // amber-400 — mirrors web sidebar's urgency signal
+  },
+  restoreButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: colors.gray800,
+    marginLeft: 8,
+  },
+  restoreButtonDisabled: {
+    opacity: 0.4,
+  },
+  restoreButtonText: {
+    fontSize: 11,
+    color: colors.gray300,
   },
   bottomNav: {
     borderTopWidth: 1,

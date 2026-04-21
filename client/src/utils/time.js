@@ -69,3 +69,41 @@ export function relativeFuture(dateStr) {
     overdue,
   };
 }
+
+/**
+ * Compute how long until a soft-deleted row is purged.
+ *
+ * Server-side rows carry `deleted_at` (ISO or SQLite datetime). Soft-deleted
+ * sessions are hard-deleted `retentionDays` after that timestamp. This helper
+ * returns a short human label plus the raw `daysLeft` integer so the caller
+ * can colour-code urgency (e.g. red when <= 1).
+ *
+ * Returns `null` when `deletedAt` is falsy or unparseable — callers should
+ * hide the countdown chip in that case.
+ */
+export function daysUntilPurge(deletedAt, retentionDays = 7) {
+  if (!deletedAt) return null;
+  const d = parseDate(deletedAt);
+  if (!d || isNaN(d)) return null;
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const msPerHour = 1000 * 60 * 60;
+  const ageMs = Date.now() - d.getTime();
+  const remainingMs = retentionDays * msPerDay - ageMs;
+  const daysLeft = Math.max(0, Math.ceil(remainingMs / msPerDay));
+  let label;
+  if (remainingMs <= 0) {
+    label = 'purging…';
+  } else if (remainingMs >= msPerDay) {
+    label = `purges in ${daysLeft}d`;
+  } else if (remainingMs < msPerHour) {
+    // Less than a full hour — collapse into "<1h" rather than flashing "1h"
+    // for a whole 60-minute window.
+    label = 'purges in <1h';
+  } else {
+    // Sub-day — surface hours so users can tell "22h left" apart from
+    // "2h left" before permanent purge.
+    const hoursLeft = Math.ceil(remainingMs / msPerHour);
+    label = `purges in ${hoursLeft}h`;
+  }
+  return { daysLeft, label };
+}

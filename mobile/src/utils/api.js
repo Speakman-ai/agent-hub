@@ -51,6 +51,10 @@ export const api = {
   summarizeSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST' }),
   deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
+  // Soft-delete recovery — rows within the 7-day window, newest first.
+  getArchivedSessions: (agentId) => fetchJSON(`/agents/${agentId}/archived-sessions`),
+  restoreSession: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/restore`, { method: 'POST' }),
   clearAllSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
   clearInactiveSessions: (agentId) =>
     fetchJSON(`/agents/${agentId}/sessions/inactive`, { method: 'DELETE' }),

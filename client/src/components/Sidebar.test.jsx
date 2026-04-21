@@ -135,3 +135,72 @@ describe('Sidebar — actionable session visibility', () => {
     expect(screen.queryByText('Only idle session')).not.toBeInTheDocument();
   });
 });
+
+describe('Sidebar — archived sessions', () => {
+  it('omits the Archived section when the list is empty', () => {
+    render(<Sidebar {...buildProps({ archivedSessions: [] })} />);
+    expect(screen.queryByTestId('archived-sessions-section')).not.toBeInTheDocument();
+  });
+
+  it('shows the collapsed Archived header with a count and hides rows until expanded', () => {
+    const archived = [
+      {
+        id: 'arch-1',
+        name: 'Deleted yesterday',
+        deleted_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        message_count: 4,
+      },
+    ];
+    render(<Sidebar {...buildProps({ archivedSessions: archived })} />);
+
+    const section = screen.getByTestId('archived-sessions-section');
+    expect(within(section).getByText(/Archived \(1\)/)).toBeInTheDocument();
+    // Rows are hidden behind the chevron.
+    expect(screen.queryByTestId('archived-sessions-list')).not.toBeInTheDocument();
+
+    fireEvent.click(within(section).getByText(/Archived \(1\)/));
+    expect(screen.getByTestId('archived-sessions-list')).toBeInTheDocument();
+    expect(screen.getByText('Deleted yesterday')).toBeInTheDocument();
+    // "purges in Nd" countdown should be visible.
+    expect(screen.getByText(/purges in/i)).toBeInTheDocument();
+  });
+
+  it('invokes onRestoreSession when the Restore button is clicked', () => {
+    const onRestoreSession = vi.fn();
+    const archived = [
+      {
+        id: 'arch-1',
+        name: 'Deleted yesterday',
+        deleted_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        message_count: 4,
+      },
+    ];
+    render(<Sidebar {...buildProps({ archivedSessions: archived, onRestoreSession })} />);
+    // Expand the section first.
+    fireEvent.click(screen.getByText(/Archived \(1\)/));
+    fireEvent.click(screen.getByRole('button', { name: /Restore/i }));
+    expect(onRestoreSession).toHaveBeenCalledWith('arch-1');
+  });
+
+  it('disables the Restore button while the row is being restored', () => {
+    const archived = [
+      {
+        id: 'arch-1',
+        name: 'Deleted yesterday',
+        deleted_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        message_count: 4,
+      },
+    ];
+    render(
+      <Sidebar
+        {...buildProps({
+          archivedSessions: archived,
+          restoringSessionIds: new Set(['arch-1']),
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByText(/Archived \(1\)/));
+    const btn = screen.getByRole('button', { name: /Restore/i });
+    expect(btn).toBeDisabled();
+  });
+});

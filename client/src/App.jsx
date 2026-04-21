@@ -70,6 +70,11 @@ export default function App() {
     _setActiveAgentId(id);
   }, []);
   const [sessions, setSessions] = useState([]);
+  // Soft-deleted sessions within the 7-day recovery window for the active
+  // agent. Shape: Array<SessionRow & { message_count:number, deleted_at:string }>.
+  // Server filters to 7-day window + newest-first; client just renders.
+  const [archivedSessions, setArchivedSessions] = useState([]);
+  const [restoringSessionIds, setRestoringSessionIds] = useState(new Set());
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
   // Handoffs (rows from GET /api/sessions/:id/handoffs) for the active
@@ -1239,6 +1244,23 @@ export default function App() {
         }
         break;
 
+      case 'session_restored': {
+        // Server broadcast after POST /api/sessions/:id/restore. We re-home
+        // the row in the live list without a full refetch and drop it from
+        // the Archived sidebar section. Tolerant of either identifier
+        // shape because the backend payload carries both.
+        const restoredId = data.sessionId || data.session?.id;
+        if (!restoredId) break;
+        setArchivedSessions((prev) => prev.filter((s) => s.id !== restoredId));
+        if (data.session && data.session.agent_id === activeAgentIdRef.current) {
+          setSessions((prev) => {
+            if (prev.some((s) => s.id === restoredId)) return prev;
+            return [data.session, ...prev];
+          });
+        }
+        break;
+      }
+
       case 'handoff_start': {
         // Append the just-created handoff row to the source session's list
         // so the HandoffCard "Open session" link appears without needing a
@@ -1415,6 +1437,13 @@ export default function App() {
     if (!activeAgentId) return;
     const targetSessionId = pendingSessionIdRef.current;
     pendingSessionIdRef.current = null;
+
+    // Fetch archived (soft-deleted within 7-day window) in parallel so the
+    // sidebar "Archived" section is ready as soon as the live list renders.
+    api
+      .getArchivedSessions(activeAgentId)
+      .then((rows) => setArchivedSessions(Array.isArray(rows) ? rows : []))
+      .catch(() => setArchivedSessions([]));
 
     api.getSessions(activeAgentId).then((data) => {
       setSessions(data);
@@ -1794,15 +1823,67 @@ export default function App() {
 
   const handleDeleteSession = async (sessionId) => {
     setDeletingSessionIds((prev) => new Set(prev).add(sessionId));
+    // Capture the row before the filter so we can optimistically add it to
+    // the Archived list — avoids a round-trip to refresh the archived view
+    // after every delete. The server's `session_restored` / subsequent page
+    // refresh will reconcile if anything drifts.
+    const deletedRow = sessions.find((s) => s.id === sessionId) || null;
     try {
       await api.deleteSession(sessionId);
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      if (deletedRow) {
+        setArchivedSessions((prev) => {
+          if (prev.some((s) => s.id === sessionId)) return prev;
+          return [
+            {
+              ...deletedRow,
+              // Client clock — may drift from server's UTC datetime('now')
+              // used by the purge cron. The next fetch reconciles; sub-day
+              // "purges in Nh" labels can briefly disagree.
+              deleted_at: new Date().toISOString(),
+              // Carry the live message_count through so the Archived row
+              // doesn't briefly flash "0" before the next fetch reconciles.
+              message_count: deletedRow.message_count ?? 0,
+            },
+            ...prev,
+          ];
+        });
+      }
       if (activeSessionId === sessionId) {
         const remaining = sessions.filter((s) => s.id !== sessionId);
         setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
       }
+      showToast('Archived — restore from Archived within 7 days', 'info', 6000);
+    } catch (err) {
+      showToast(`Archive failed: ${err?.message || 'unknown error'}`, 'error', 6000);
     } finally {
       setDeletingSessionIds((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
+    }
+  };
+
+  const handleRestoreSession = async (sessionId) => {
+    setRestoringSessionIds((prev) => new Set(prev).add(sessionId));
+    try {
+      const restored = await api.restoreSession(sessionId);
+      // Remove from archived list; the WS `session_restored` event is the
+      // canonical path for re-inserting into `sessions`, but we apply the
+      // same mutation here to cover initiator-only tabs with slow WS.
+      setArchivedSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      if (restored && restored.id) {
+        setSessions((prev) => {
+          if (prev.some((s) => s.id === restored.id)) return prev;
+          return [restored, ...prev];
+        });
+      }
+      showToast('Session restored', 'success', 3000);
+    } catch (err) {
+      showToast(`Restore failed: ${err?.message || 'unknown error'}`, 'error', 6000);
+    } finally {
+      setRestoringSessionIds((prev) => {
         const next = new Set(prev);
         next.delete(sessionId);
         return next;
@@ -2150,6 +2231,9 @@ export default function App() {
             onDeleteSession={handleDeleteSession}
             onClearAllSessions={handleClearAllSessions}
             onClearInactiveSessions={handleClearInactiveSessions}
+            archivedSessions={archivedSessions}
+            onRestoreSession={handleRestoreSession}
+            restoringSessionIds={restoringSessionIds}
             deletingSessionIds={deletingSessionIds}
             deletingBulk={deletingBulk}
             onRenameSession={handleRenameSession}

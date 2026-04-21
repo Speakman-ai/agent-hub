@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { relativeTime, formatElapsed, relativeFuture } from './time.js';
+import { relativeTime, formatElapsed, relativeFuture, daysUntilPurge } from './time.js';
 
 describe('relativeTime', () => {
   beforeEach(() => {
@@ -97,5 +97,71 @@ describe('relativeFuture', () => {
   it('handles SQLite datetime (no timezone) as UTC', () => {
     const result = relativeFuture('2026-04-18 12:05:00');
     expect(result).toEqual({ label: 'in 5m', overdue: false });
+  });
+});
+
+describe('daysUntilPurge', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-18T12:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns null for falsy / unparseable input', () => {
+    expect(daysUntilPurge(null)).toBeNull();
+    expect(daysUntilPurge('')).toBeNull();
+    expect(daysUntilPurge('not-a-date')).toBeNull();
+  });
+
+  it('returns 7d when just deleted (default retention)', () => {
+    const r = daysUntilPurge('2026-04-18T12:00:00Z');
+    expect(r.daysLeft).toBe(7);
+    expect(r.label).toBe('purges in 7d');
+  });
+
+  it('counts down with age', () => {
+    const r = daysUntilPurge('2026-04-15T12:00:00Z'); // 3 days old → 4 left
+    expect(r.daysLeft).toBe(4);
+    expect(r.label).toBe('purges in 4d');
+  });
+
+  it('switches to hour granularity when <1d remains', () => {
+    // 2026-04-18T12:00Z minus 2026-04-12T00:00Z = 6d12h → 12h left.
+    const r = daysUntilPurge('2026-04-12T00:00:00Z');
+    expect(r.daysLeft).toBe(1);
+    expect(r.label).toBe('purges in 12h');
+  });
+
+  it('shows Nh precisely at the sub-day boundary', () => {
+    // Clock 2026-04-18T12:00Z minus 6d22h → 2026-04-11T14:00Z. 2h left.
+    const r = daysUntilPurge('2026-04-11T14:00:00Z');
+    expect(r.label).toBe('purges in 2h');
+  });
+
+  it('uses "<1h" when well under an hour remains', () => {
+    const deletedAt = new Date(
+      new Date('2026-04-18T12:00:00Z').getTime() -
+        (6 * 24 * 60 * 60 * 1000 + 23 * 60 * 60 * 1000 + 59 * 60 * 1000 + 30 * 1000),
+    ).toISOString();
+    const r = daysUntilPurge(deletedAt);
+    expect(r.label).toBe('purges in <1h');
+  });
+
+  it('clamps to 0 once the window has elapsed', () => {
+    const r = daysUntilPurge('2026-04-01T12:00:00Z');
+    expect(r.daysLeft).toBe(0);
+    expect(r.label).toBe('purging…');
+  });
+
+  it('respects custom retentionDays', () => {
+    const r = daysUntilPurge('2026-04-17T12:00:00Z', 14);
+    expect(r.daysLeft).toBe(13);
+  });
+
+  it('handles SQLite datetime (no T) as UTC', () => {
+    const r = daysUntilPurge('2026-04-15 12:00:00');
+    expect(r.daysLeft).toBe(4);
   });
 });

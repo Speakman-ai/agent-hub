@@ -1,4 +1,5 @@
 import React, { createContext, useState, useCallback, useEffect, useContext, useMemo, useRef } from 'react';
+import { Alert } from 'react-native';
 import { api } from '../utils/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { extractSubmittedAskIds } from '../utils/askAnswers';
@@ -28,6 +29,11 @@ export function AppProvider({ children }) {
   const [projects, setProjects] = useState([]);
   const [activeAgentId, setActiveAgentId] = useState(null);
   const [sessions, setSessions] = useState([]);
+  // Soft-deleted sessions within the 7-day recovery window for the active
+  // agent. Shape: Array<SessionRow & { message_count:number, deleted_at:string }>.
+  // Mirrors App.jsx (web) so the drawer can render an "Archived" section.
+  const [archivedSessions, setArchivedSessions] = useState([]);
+  const [restoringSessionIds, setRestoringSessionIds] = useState(new Set());
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [thinking, setThinking] = useState(false);
@@ -522,6 +528,22 @@ export function AppProvider({ children }) {
         setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
         break;
 
+      case 'session_restored': {
+        // Server broadcast after POST /api/sessions/:id/restore. Re-home
+        // the row in the live list without a full refetch and drop it
+        // from the Archived drawer section. Tolerant of either id shape.
+        const restoredId = data.sessionId || data.session?.id;
+        if (!restoredId) break;
+        setArchivedSessions((prev) => prev.filter((s) => s.id !== restoredId));
+        if (data.session && data.session.agent_id === activeAgentIdRef.current) {
+          setSessions((prev) => {
+            if (prev.some((s) => s.id === restoredId)) return prev;
+            return [data.session, ...prev];
+          });
+        }
+        break;
+      }
+
       // A session was forwarded from another agent — if the new session
       // belongs to the currently-active agent, splice it into the sidebar
       // list so the user sees it without a manual refresh. Navigation of
@@ -849,6 +871,13 @@ export function AppProvider({ children }) {
     // Mirror of the web client's logic in `client/src/App.jsx:1277-1304`.
     const targetSessionId = pendingSessionIdRef.current;
     pendingSessionIdRef.current = null;
+    // Fetch archived (soft-deleted) sessions in parallel so the drawer's
+    // Archived section is populated at the same moment the live list lands.
+    api
+      .getArchivedSessions(activeAgentId)
+      .then((rows) => setArchivedSessions(Array.isArray(rows) ? rows : []))
+      .catch(() => setArchivedSessions([]));
+
     api.getSessions(activeAgentId).then((data) => {
       setSessions(data);
       // Hydrate the changes_ready banner state from persisted session rows so
@@ -1148,14 +1177,79 @@ export function AppProvider({ children }) {
   }, []);
 
   const handleDeleteSession = useCallback(async (sessionId) => {
-    await api.deleteSession(sessionId);
-    setSessions((prev) => {
-      const remaining = prev.filter((s) => s.id !== sessionId);
-      if (activeSessionIdRef.current === sessionId) {
-        setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+    // Mirror of the web client's pattern (client/src/App.jsx) — await the
+    // DELETE first, then mutate state only on success. Previously we removed
+    // the row from `sessions` *before* the await, so a failed DELETE (network
+    // drop, 5xx, auth) would leave the session invisible without adding it
+    // to `archivedSessions` — the exact data-loss surface this feature is
+    // meant to prevent. We also snapshot the row up-front so the archived
+    // list can carry the real message_count rather than a placeholder.
+    const deletedRow = sessionsRef.current?.find((s) => s.id === sessionId) || null;
+    try {
+      await api.deleteSession(sessionId);
+      setSessions((prev) => {
+        const remaining = prev.filter((s) => s.id !== sessionId);
+        if (activeSessionIdRef.current === sessionId) {
+          setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+        }
+        return remaining;
+      });
+      if (deletedRow) {
+        setArchivedSessions((prev) => {
+          if (prev.some((s) => s.id === sessionId)) return prev;
+          return [
+            {
+              ...deletedRow,
+              // Client clock — may drift from server's UTC datetime('now')
+              // used by the purge cron. The next fetch reconciles.
+              deleted_at: new Date().toISOString(),
+              message_count: deletedRow.message_count ?? 0,
+            },
+            ...prev,
+          ];
+        });
       }
-      return remaining;
+    } catch (err) {
+      // Surface the failure so the user knows the row is still live. No
+      // rollback needed because we never removed it optimistically.
+      Alert.alert(
+        'Delete failed',
+        err?.message || 'Could not archive this session. Please try again.',
+      );
+      throw err;
+    }
+  }, []);
+
+  const handleRestoreSession = useCallback(async (sessionId) => {
+    setRestoringSessionIds((prev) => {
+      const next = new Set(prev);
+      next.add(sessionId);
+      return next;
     });
+    try {
+      const restored = await api.restoreSession(sessionId);
+      // Drop from archived; the WS `session_restored` event is the canonical
+      // path for re-inserting into `sessions`, but we mirror here to cover
+      // the initiating device on a slow WS.
+      setArchivedSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      if (restored && restored.id) {
+        setSessions((prev) => {
+          if (prev.some((s) => s.id === restored.id)) return prev;
+          return [restored, ...prev];
+        });
+      }
+    } catch (err) {
+      Alert.alert(
+        'Restore failed',
+        err?.message || 'Could not restore this session. Please try again.',
+      );
+    } finally {
+      setRestoringSessionIds((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
+    }
   }, []);
 
   const handleCancel = useCallback(() => {
@@ -1374,6 +1468,9 @@ export function AppProvider({ children }) {
     handleEngineChange,
     handleModelChange,
     handleDeleteSession,
+    archivedSessions,
+    handleRestoreSession,
+    restoringSessionIds,
     handleCancel,
     handleSend,
     handleSwitchOrg,

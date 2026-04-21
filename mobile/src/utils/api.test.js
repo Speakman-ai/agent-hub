@@ -323,6 +323,42 @@ describe('api session summarization — URL + method parity with web client', ()
   });
 });
 
+describe('api soft-delete recovery — parity with web client', () => {
+  it('getArchivedSessions(agentId) → GET /agents/:id/archived-sessions', async () => {
+    await api.getArchivedSessions('agent-42');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/agents/agent-42/archived-sessions');
+    // fetchJSON default is GET (no method set)
+    expect(init.method).toBeUndefined();
+  });
+
+  it('restoreSession(id) → POST /sessions/:id/restore with no body', async () => {
+    await api.restoreSession('sess-1');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/sess-1/restore');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('restoreSession returns the restored SessionRow', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: 'sess-1', deleted_at: null, name: 'Restored' }),
+    });
+    const result = await api.restoreSession('sess-1');
+    expect(result).toEqual({ id: 'sess-1', deleted_at: null, name: 'Restored' });
+  });
+
+  it('restoreSession surfaces 404 when already purged', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: 'not archived' }),
+    });
+    await expect(api.restoreSession('sess-ghost')).rejects.toThrow(/404: not archived/);
+  });
+});
+
 describe('api upload helpers', () => {
   it('uploadImage → POST /upload with JSON body', async () => {
     await api.uploadImage('data:image/png;base64,AAA', 'shot.png');
