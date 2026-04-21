@@ -77,6 +77,25 @@ graph TB
 - **Claude Code CLI** and/or **Cursor Agent CLI** installed and accessible
 - **gh CLI** (optional — for webhook registration and PR workflows)
 
+### Installing the Cursor Agent CLI
+
+To run sessions with `engine: cursor-agent`, install the CLI from Cursor's
+official installer:
+
+```bash
+# Inspect the script first if you prefer:
+# curl -fsS https://cursor.com/install | less
+curl -fsS https://cursor.com/install | bash
+```
+
+This places a symlink at `~/.local/bin/agent`. Either add that to your
+`PATH`, symlink it into `/usr/local/bin/agent` (the server's default
+`cursorBin`), or point the server at it explicitly via the `CURSOR_BIN`
+env var or `cursorBin` in `server/config.json`.
+
+On EC2 this is handled automatically by Terraform `user_data` — see
+`ops/terraform/main.tf`.
+
 ## Quick Start
 
 ```bash

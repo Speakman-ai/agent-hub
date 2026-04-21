@@ -166,6 +166,25 @@ resource "aws_instance" "app" {
     useradd -m -s /bin/bash ${var.app_user}
     mkdir -p /home/${var.app_user}/app
     chown ${var.app_user}:${var.app_user} /home/${var.app_user}/app
+
+    # Install cursor-agent CLI (used by sessions with engine=cursor-agent).
+    # The official installer (https://cursor.com/install) is per-user and
+    # hardcodes the install path to $HOME/.local/share/cursor-agent/versions
+    # with a symlink at $HOME/.local/bin/agent. It does NOT honor PREFIX /
+    # INSTALL_DIR env vars, so we run it as the app user and then symlink
+    # into /usr/local/bin/agent to match the server's cursorBin default.
+    #
+    # IMPORTANT: `sudo -u` alone preserves $HOME from the caller (root), so
+    # the installer would write to /root/.local/... instead of the app user's
+    # home. We pass `-H` so sudo remaps $HOME to /home/${var.app_user}.
+    # Verified against https://cursor.com/docs/cli/installation on 2026-04-21.
+    sudo -H -u ${var.app_user} bash -c 'curl -fsSL https://cursor.com/install | bash' \
+      || echo "cursor-agent install failed; sessions with engine=cursor-agent will ENOENT" >&2
+    if [ -x /home/${var.app_user}/.local/bin/agent ]; then
+      ln -sf /home/${var.app_user}/.local/bin/agent /usr/local/bin/agent
+    else
+      echo "cursor-agent binary not found at /home/${var.app_user}/.local/bin/agent; /usr/local/bin/agent symlink NOT created" >&2
+    fi
   EOF
 
   tags = {

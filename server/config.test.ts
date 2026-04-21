@@ -10,8 +10,10 @@
  * These tests import config.ts fresh per case via vi.resetModules().
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 const originalEnv = { ...process.env };
 const PRODUCTION_DEFAULT = path.join(os.homedir(), '.agent-hub', 'data');
@@ -65,5 +67,36 @@ describe('config.ts — TEST_MODE safety rail', () => {
 
     const mod = await import('./config.js');
     expect(mod.default.dataDir).toBe(PRODUCTION_DEFAULT);
+  });
+});
+
+describe('config.ts ↔ Terraform install parity', () => {
+  // Guards the coupling between the server's cursorBin default and the
+  // provisioning step in ops/terraform/main.tf that installs the Cursor CLI
+  // and symlinks it into /usr/local/bin/agent. If someone flips one without
+  // the other, sessions with engine=cursor-agent fail to spawn on freshly
+  // provisioned EC2 boxes with a cryptic ENOENT — this test catches it early.
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const terraformMain = path.resolve(__dirname, '..', 'ops', 'terraform', 'main.tf');
+
+  it('cursorBin default matches the symlink created by Terraform user_data', async () => {
+    vi.resetModules();
+    // Point the config loader at an isolated tmp dir so a developer's local
+    // ~/.agent-hub/data/config.json with a `cursorBin` override does not
+    // fail this test for reasons unrelated to the Terraform/default coupling.
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = path.join(
+      os.tmpdir(),
+      `agent-hub-cursor-parity-${process.pid}`,
+    );
+    delete process.env.CURSOR_BIN;
+
+    const mod = await import('./config.js');
+    expect(mod.default.cursorBin).toBe('/usr/local/bin/agent');
+
+    const tf = fs.readFileSync(terraformMain, 'utf8');
+    expect(tf).toMatch(/https:\/\/cursor\.com\/install/);
+    expect(tf).toMatch(/\/usr\/local\/bin\/agent/);
   });
 });
