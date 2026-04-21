@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { partitionAttachmentFiles } from '../utils/attachmentValidation.js';
 
 // genId() only works in secure contexts (HTTPS / localhost).
 // Fall back to Math.random-based ID for plain HTTP (e.g. remote EC2 over HTTP).
@@ -20,6 +21,7 @@ export default function MessageInput({
   skills,
   askMode,
   draftKey,
+  onFileError,
 }) {
   // Per-session (per-draftKey) draft store. Lives for the component's lifetime
   // so switching agents/sessions preserves each composer's unsent text.
@@ -150,7 +152,15 @@ export default function MessageInput({
 
   const addImageFiles = useCallback(
     async (files) => {
-      const list = Array.from(files).filter((f) => f.size > 0);
+      // Pre-flight validation: reject files that would blow the 100 MB server
+      // limit (or are empty) *before* the user hits Send. Without this the
+      // upload would fail silently in handleSend and the text would go through
+      // without the video — exactly the "videos don't go through in chat" bug.
+      const { accepted, rejected } = partitionAttachmentFiles(Array.from(files));
+      if (rejected.length > 0 && typeof onFileError === 'function') {
+        for (const { reason } of rejected) onFileError(reason);
+      }
+      const list = accepted;
       if (list.length === 0) return;
 
       const newImages = [];
@@ -192,7 +202,7 @@ export default function MessageInput({
       }
       setImages((prev) => [...prev, ...newImages]);
     },
-    [resizeImage],
+    [resizeImage, onFileError],
   );
 
   const removeImage = useCallback((id) => {

@@ -38,4 +38,25 @@ describe('upload-validation', () => {
     expect(mimeLooksExecutable('application/x-executable')).toBe(true);
     expect(validateUploadContent('application/x-executable', buf)).toMatch(/MIME/i);
   });
+
+  it('allows common video MIME types used by the chat attachment flow', () => {
+    // ftyp atom at byte 4 is the hallmark of an ISO-BMFF container (mp4, mov,
+    // m4v, etc). We fake a tiny prefix; the validator only sniffs magic bytes
+    // for executables, so this should pass for all video MIME types we accept.
+    const ftypPrefix = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x20]), // box size
+      Buffer.from('ftypmp42', 'ascii'), // ftyp + brand
+      Buffer.alloc(16, 0),
+    ]);
+    for (const mime of [
+      'video/mp4',
+      'video/webm',
+      'video/quicktime',
+      'video/x-msvideo',
+      'video/x-matroska',
+    ]) {
+      expect(mimeLooksExecutable(mime)).toBe(false);
+      expect(validateUploadContent(mime, ftypPrefix)).toBeNull();
+    }
+  });
 });

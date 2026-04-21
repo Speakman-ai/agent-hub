@@ -1900,7 +1900,13 @@ export default function App() {
       sessionId = session.id;
     }
 
-    // Upload media (images + videos) first, then send chat with references
+    // Upload media (images + videos) first, then send chat with references.
+    //
+    // If any upload fails (e.g. a video over the 100 MB server limit, or a
+    // transient network error), surface the reason to the user via toast and
+    // abort the send — previously we swallowed the error and sent the text
+    // alone, which is exactly how users reported "videos don't go through in
+    // chat" (the text arrives, the video doesn't, the user has no idea why).
     let uploadedImages = [];
     if (images.length > 0) {
       try {
@@ -1914,7 +1920,13 @@ export default function App() {
         );
       } catch (err) {
         console.error('Media upload failed:', err);
-        // Still send the text message even if upload fails
+        const reason = err?.message || 'Unknown error';
+        showToast(
+          `Attachment upload failed: ${reason}. Your message was not sent — please retry or remove the attachment.`,
+          'error',
+          8000,
+        );
+        return;
       }
     }
 
@@ -2530,6 +2542,7 @@ export default function App() {
                 skills={skills}
                 askMode={sessionAskMode}
                 draftKey={activeSessionId || activeAgentId || 'none'}
+                onFileError={(msg) => showToast(msg, 'error', 6000)}
               />
             </>
           )}
