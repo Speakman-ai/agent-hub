@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { resolveServerMediaUrl } from '../utils/resolveServerMediaUrl.js';
 
 export function extractText(node) {
   if (typeof node === 'string') return node;
@@ -53,10 +54,18 @@ export const markdownComponents = {
   },
   a({ href, children, ...props }) {
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+      <a
+        href={href ? resolveServerMediaUrl(href) : href}
+        target="_blank"
+        rel="noopener noreferrer"
+        {...props}
+      >
         {children}
       </a>
     );
+  },
+  img({ src, alt, ...props }) {
+    return <img src={src ? resolveServerMediaUrl(src) : src} alt={alt} {...props} />;
   },
 };
 
@@ -79,10 +88,18 @@ export const markdownComponentsCompact = {
   },
   a({ href, children, ...props }) {
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+      <a
+        href={href ? resolveServerMediaUrl(href) : href}
+        target="_blank"
+        rel="noopener noreferrer"
+        {...props}
+      >
         {children}
       </a>
     );
+  },
+  img({ src, alt, ...props }) {
+    return <img src={src ? resolveServerMediaUrl(src) : src} alt={alt} {...props} />;
   },
 };
 
