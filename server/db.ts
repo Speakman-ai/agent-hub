@@ -1861,13 +1861,18 @@ function initDb(dataDir: string): void {
       'SELECT * FROM kanban_epics WHERE board_id = ? AND autonomous = 1 LIMIT 1',
     ),
     getEligibleAutonomousCards: db.prepare(
+      // Autonomous dispatch drains columns top-to-bottom in a fixed column
+      // order: 'To Do' first, then 'Backlog'. Within each column we sort by
+      // position ASC (the visual top of the column). Priority is intentionally
+      // NOT a sort key — operators express priority by dragging cards into
+      // 'To Do' or to the top of a column, not by setting the priority field.
       `SELECT c.* FROM kanban_cards c
        JOIN kanban_columns col ON c.column_id = col.id
        WHERE c.epic_id = ? AND col.name IN ('Backlog', 'To Do')
        AND (c.assignee IS NULL OR c.assignee = '')
        AND c.autonomous_iterations < ?
        ORDER BY
-         CASE c.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+         CASE col.name WHEN 'To Do' THEN 0 WHEN 'Backlog' THEN 1 ELSE 2 END,
          c.position ASC`,
     ),
     incrementCardIterations: db.prepare(
