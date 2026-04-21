@@ -12,6 +12,7 @@ import AgentAvatar from './AgentAvatar.jsx';
 import AccountSection from './AccountSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import PoolSection from './PoolSection.jsx';
+import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import * as LucideIcons from 'lucide-react';
 
@@ -4987,6 +4988,7 @@ export default function SettingsPage({
     { id: 'slack', icon: <MessageSquare size={16} />, text: 'Slack' },
     { id: 'usage', icon: <BarChart3 size={16} />, text: 'Usage' },
     { id: 'pool', icon: <Activity size={16} />, text: 'Pool' },
+    { id: 'pr-environments', icon: <GitBranch size={16} />, text: 'PR Environments' },
     { id: 'tool-errors', icon: <AlertTriangle size={16} />, text: 'Tool Errors' },
     { id: 'backup', icon: <HardDrive size={16} />, text: 'Backup' },
     { id: 'logs', icon: <FileText size={16} />, text: 'Logs' },
@@ -5043,6 +5045,7 @@ export default function SettingsPage({
           )}
           {tab === 'usage' && <UsageSection />}
           {tab === 'pool' && <PoolSection />}
+          {tab === 'pr-environments' && <PrEnvironmentsSection />}
           {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
           {tab === 'backup' && (
             <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />

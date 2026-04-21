@@ -629,4 +629,17 @@ export const api = {
   // Container pool observability (W4)
   getPoolMetrics: (windowHours = 24) => fetchJSON(`/pool/metrics?windowHours=${windowHours}`),
   getPoolAlerts: (status = 'active') => fetchJSON(`/pool/alerts?status=${status}`),
+
+  // PR environments settings (Tier 1 + Tier 2)
+  // GET returns secrets masked as `••••••••` when set, empty string when unset.
+  // PUT is partial-preserving: the mask sentinel is NOT overwritten server-side.
+  getPrEnvSettings: () => fetchJSON('/settings/pr-env'),
+  updatePrEnvSettings: (payload) =>
+    fetchJSON('/settings/pr-env', { method: 'PUT', body: JSON.stringify(payload) }),
+  validatePrEnvSettings: (payload = {}) =>
+    fetchJSON('/settings/pr-env/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      timeout: 30000,
+    }),
 };
