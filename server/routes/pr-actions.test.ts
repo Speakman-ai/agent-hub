@@ -27,6 +27,10 @@ vi.mock('util', async (importOriginal) => {
 
 // We test the parsePrUrl logic and route shape directly
 
+/** Meets `validateFormalReviewBody` rules (min length + alnum + not placeholder). */
+const SUBSTANTIVE_REVIEW_BODY =
+  '**[2/10]** `server/foo.ts:14` — trailing whitespace nit only. No findings above severity 3; mergeable.';
+
 describe('PR Actions route', () => {
   describe('parsePrUrl (via route validation)', () => {
     let app: express.Express;
@@ -245,40 +249,62 @@ describe('PR Actions route', () => {
       expect(res.body.error).toMatch(/Invalid review event/);
     });
 
-    it('accepts APPROVE, REQUEST_CHANGES, COMMENT (body required for the latter two)', async () => {
-      // APPROVE without body is valid
-      const approveRes = await request(app)
+    it('accepts APPROVE, REQUEST_CHANGES, COMMENT only with substantive bodies', async () => {
+      const approveNoBody = await request(app)
         .post('/api/pr/review')
         .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'APPROVE' });
-      // Will 501 because no App/bot token configured, but event validation passed
+      expect(approveNoBody.status).toBe(400);
+      expect(approveNoBody.body.error).toMatch(/body is required|at least \d+ characters/);
+
+      const approveTrivial = await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: 'test',
+      });
+      expect(approveTrivial.status).toBe(400);
+
+      const approveRes = await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: SUBSTANTIVE_REVIEW_BODY,
+      });
+      // Will 501 because no App/bot token configured, but validation passed
       expect(approveRes.status).not.toBe(400);
 
-      // REQUEST_CHANGES without body is rejected at validation
       const rcNoBody = await request(app)
         .post('/api/pr/review')
         .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'REQUEST_CHANGES' });
       expect(rcNoBody.status).toBe(400);
-      expect(rcNoBody.body.error).toMatch(/body is required/);
+      expect(rcNoBody.body.error).toMatch(/body is required|at least \d+ characters/);
 
-      // COMMENT without body is rejected at validation
       const commentNoBody = await request(app)
         .post('/api/pr/review')
         .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'COMMENT' });
       expect(commentNoBody.status).toBe(400);
 
-      // COMMENT with body passes validation
-      const commentOk = await request(app).post('/api/pr/review').send({
+      const commentTooShort = await request(app).post('/api/pr/review').send({
         prUrl: 'https://github.com/owner/repo/pull/42',
         event: 'COMMENT',
         body: 'notes',
       });
+      expect(commentTooShort.status).toBe(400);
+
+      const commentOk = await request(app)
+        .post('/api/pr/review')
+        .send({
+          prUrl: 'https://github.com/owner/repo/pull/42',
+          event: 'COMMENT',
+          body: `${SUBSTANTIVE_REVIEW_BODY} Need author input on API shape before endorsing merge.`,
+        });
       expect(commentOk.status).not.toBe(400);
     });
 
     it('returns 501 when no GitHub App installation and no bot token are configured', async () => {
-      const res = await request(app)
-        .post('/api/pr/review')
-        .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'APPROVE' });
+      const res = await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: SUBSTANTIVE_REVIEW_BODY,
+      });
       expect(res.status).toBe(501);
       expect(res.body.error).toMatch(/No GitHub App installation/);
     });
@@ -348,9 +374,11 @@ describe('PR Actions route', () => {
         state: 'APPROVED',
       });
 
-      const res = await request(app)
-        .post('/api/pr/review')
-        .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'APPROVE' });
+      const res = await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: SUBSTANTIVE_REVIEW_BODY,
+      });
 
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
@@ -367,7 +395,7 @@ describe('PR Actions route', () => {
       expect(endpoint).toBe('/repos/owner/repo/pulls/42/reviews');
       expect(opts).toMatchObject({
         method: 'POST',
-        body: { event: 'APPROVE' },
+        body: { event: 'APPROVE', body: SUBSTANTIVE_REVIEW_BODY },
         appId: '1',
         installationId: 42,
       });
@@ -377,17 +405,20 @@ describe('PR Actions route', () => {
       resolveInstallationId.mockReturnValue(42);
       githubApiRequest.mockResolvedValue({ id: 100, state: 'CHANGES_REQUESTED' });
 
+      const rcBody =
+        '**[6/10]** `server/bar.ts:3` — missing null guard on user input. Please fix the missing null check before merge; edge case when payload is undefined.';
+
       await request(app).post('/api/pr/review').send({
         prUrl: 'https://github.com/owner/repo/pull/42',
         event: 'REQUEST_CHANGES',
-        body: 'Please fix the missing null check.',
+        body: rcBody,
         commitId: 'abc123',
       });
 
       const [, opts] = githubApiRequest.mock.calls[0];
       expect(opts.body).toMatchObject({
         event: 'REQUEST_CHANGES',
-        body: 'Please fix the missing null check.',
+        body: rcBody,
         commit_id: 'abc123',
       });
     });
@@ -396,9 +427,11 @@ describe('PR Actions route', () => {
       resolveInstallationId.mockReturnValue(42);
       githubApiRequest.mockRejectedValue(new Error('GitHub API POST failed (403): forbidden'));
 
-      const res = await request(app)
-        .post('/api/pr/review')
-        .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'APPROVE' });
+      const res = await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: SUBSTANTIVE_REVIEW_BODY,
+      });
 
       expect(res.status).toBe(501);
       expect(res.body.error).toMatch(/No GitHub App installation|bot token/);
@@ -494,9 +527,11 @@ describe('PR Actions route', () => {
         state: 'APPROVED',
       });
 
-      const res = await request(app)
-        .post('/api/pr/review')
-        .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'APPROVE' });
+      const res = await request(app).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: SUBSTANTIVE_REVIEW_BODY,
+      });
 
       expect(res.status).toBe(200);
       expect(createReviewLogRun).toHaveBeenCalledTimes(1);
@@ -525,13 +560,13 @@ describe('PR Actions route', () => {
       await request(app).post('/api/pr/review').send({
         prUrl: 'https://github.com/owner/repo/pull/42',
         event: 'REQUEST_CHANGES',
-        body: 'Please fix the null check.',
+        body: '**[6/10]** `server/bar.ts:3` — missing null guard. Please fix the null check in server/bar.ts before merge; edge case when input is undefined.',
       });
 
       expect(createReviewLogRun).toHaveBeenCalledTimes(1);
       const args = createReviewLogRun.mock.calls[0];
       expect(args[7]).toBe('changes_requested');
-      expect(args[8]).toBe('Please fix the null check.');
+      expect(args[8]).toContain('missing null guard');
     });
 
     it('maps COMMENT → ambiguous', async () => {
@@ -541,7 +576,7 @@ describe('PR Actions route', () => {
       await request(app).post('/api/pr/review').send({
         prUrl: 'https://github.com/owner/repo/pull/42',
         event: 'COMMENT',
-        body: 'nit: naming',
+        body: '**[3/10]** `src/utils.ts:22` — nit: naming could match project conventions. I am leaving COMMENT because I want the author to confirm the preferred export style before merge.',
       });
 
       expect(createReviewLogRun).toHaveBeenCalledTimes(1);
@@ -609,9 +644,11 @@ describe('PR Actions route', () => {
       isolatedApp.use(express.json());
       isolatedApp.use(createPrActionRoutes(deps));
 
-      const res = await request(isolatedApp)
-        .post('/api/pr/review')
-        .send({ prUrl: 'https://github.com/owner/repo/pull/42', event: 'APPROVE' });
+      const res = await request(isolatedApp).post('/api/pr/review').send({
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        event: 'APPROVE',
+        body: SUBSTANTIVE_REVIEW_BODY,
+      });
 
       expect(res.status).toBe(200); // review still succeeds
       expect(getCard).toHaveBeenCalledWith('https://github.com/owner/repo/pull/42');

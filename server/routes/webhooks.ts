@@ -22,6 +22,11 @@ import {
   updateCheckRun,
   type CheckRunPhase,
 } from '../check-runs.js';
+import {
+  cancelAnalyzePhaseTimer,
+  clearAllAnalyzePhaseTimers,
+  scheduleReviewerAnalyzePhaseTransition,
+} from '../reviewer-analyze-phase-timer.js';
 import type {
   RouteDeps,
   Stmts,
@@ -710,26 +715,6 @@ const reviewerDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
  * Picked to land *after* a typical `gh pr diff` + first file read finish but
  * well before the `/api/pr/review` POST. Cancelled when the review completes.
  */
-const ANALYZE_PHASE_DELAY_MS = 15_000;
-const analyzePhaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-function analyzePhaseTimerKey(repoFullName: string, prNumber: number): string {
-  return `${repoFullName}#${prNumber}`;
-}
-
-/**
- * Cancel a pending `analyze` phase advance for a PR. Called from
- * `pr-actions.ts` when the formal review lands so we don't stomp on the
- * completed Check Run with a late-firing PATCH.
- */
-export function cancelAnalyzePhaseTimer(repoFullName: string, prNumber: number): void {
-  const key = analyzePhaseTimerKey(repoFullName, prNumber);
-  const t = analyzePhaseTimers.get(key);
-  if (t) {
-    clearTimeout(t);
-    analyzePhaseTimers.delete(key);
-  }
-}
 
 interface ReviewerDispatchOpts {
   prUrl: string;
@@ -964,20 +949,17 @@ async function runReviewerDispatch(
   // mid-run. Cancelled by `cancelAnalyzePhaseTimer` when the formal review
   // lands (and `patchCheckRunPhase` itself short-circuits on completed runs as
   // a defense-in-depth backstop against the race window).
-  const analyzeKey = analyzePhaseTimerKey(opts.repoFullName, opts.prNumber);
-  const existingAnalyze = analyzePhaseTimers.get(analyzeKey);
-  if (existingAnalyze) clearTimeout(existingAnalyze);
-  const analyzeTimer = setTimeout(() => {
-    analyzePhaseTimers.delete(analyzeKey);
-    patchCheckRunPhase(deps, opts.repoFullName, opts.prNumber, 'analyze', {
-      headline: `Reviewing PR #${opts.prNumber} — analyzing diff`,
-    }).catch(() => {
-      /* best-effort */
-    });
-  }, ANALYZE_PHASE_DELAY_MS);
-  // Don't keep the Node event loop alive just for the panel animation.
-  if (typeof analyzeTimer.unref === 'function') analyzeTimer.unref();
-  analyzePhaseTimers.set(analyzeKey, analyzeTimer);
+  scheduleReviewerAnalyzePhaseTransition({
+    repoFullName: opts.repoFullName,
+    prNumber: opts.prNumber,
+    onFire: () => {
+      patchCheckRunPhase(deps, opts.repoFullName, opts.prNumber, 'analyze', {
+        headline: `Reviewing PR #${opts.prNumber} — analyzing diff`,
+      }).catch(() => {
+        /* best-effort */
+      });
+    },
+  });
 
   const sessionId = crypto.randomUUID();
   const engine = reviewer.engine || 'claude-code';
@@ -1054,7 +1036,7 @@ Example:
 Walk this in order and pick the **first** match — do not hedge:
 
 1. **Does any finding score greater than 3 on the severity rubric?** → \`REQUEST_CHANGES\`. Body required: list every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`), blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the PR; do NOT downgrade to APPROVE because "the rest looked fine."
-2. **Otherwise (every finding scored ≤ 3)** → \`APPROVE\`. Body optional; if included, still prefix each note with its score (\`**[2/10]** …\`). \`APPROVE\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking comments under APPROVE are the normal, expected pattern.
+2. **Otherwise (every finding scored ≤ 3)** → \`APPROVE\`. **Body required** (Agent Hub rejects empty or placeholder-only reviews): write a substantive markdown summary — prefix each note with its score (\`**[2/10]** …\`) even when approving. \`APPROVE\` does not mean "zero thoughts" — it means the diff is **mergeable as-is** because nothing crossed the severity-3 threshold. Non-blocking comments under APPROVE are the normal, expected pattern.
 3. **Only if you genuinely cannot decide** (e.g., you want the author's take on a design question before endorsing, or the diff is half-done and you want to flag direction without blocking) → \`COMMENT\`. Body required. This should be rare — most reviews are APPROVE or REQUEST_CHANGES.
 
 **Hard rule (don't over-correct):** Non-blocking feedback does NOT require \`COMMENT\`. If nothing you wrote blocks merge, use \`APPROVE\` with your notes attached. \`COMMENT\` is for deliberate fence-sitting, not for "I had some suggestions." Defaulting every substantive-but-non-blocking review to COMMENT destroys the APPROVE signal just as badly as rubber-stamping everything to APPROVE did.
@@ -1070,7 +1052,7 @@ curl -sS -X POST "$AGENT_HUB_URL/api/pr/review" \\
   -d '{"prUrl":"${opts.prUrl}","event":"<EVENT>","body":"<markdown body>"}'
 \`\`\`
 
-Replace \`<EVENT>\` with exactly one of \`APPROVE\`, \`COMMENT\`, or \`REQUEST_CHANGES\` per the rubric above. For \`COMMENT\` and \`REQUEST_CHANGES\`, \`body\` is required and should be markdown-formatted with concrete file:line references.
+Replace \`<EVENT>\` with exactly one of \`APPROVE\`, \`COMMENT\`, or \`REQUEST_CHANGES\` per the rubric above. **Every event requires a substantive \`body\`** (minimum length + not placeholder-only — trivial strings like \`test\` are rejected server-side). Use markdown with concrete file:line references.
 
 Do **NOT** edit code. Do **NOT** merge. GitHub's native auto-merge handles landing approved PRs.`;
 
@@ -1093,8 +1075,7 @@ Do **NOT** edit code. Do **NOT** merge. GitHub's native auto-merge handles landi
 export function _clearReviewerDebounce(): void {
   for (const t of reviewerDebounceTimers.values()) clearTimeout(t);
   reviewerDebounceTimers.clear();
-  for (const t of analyzePhaseTimers.values()) clearTimeout(t);
-  analyzePhaseTimers.clear();
+  clearAllAnalyzePhaseTimers();
 }
 
 // ─── Review Comment Batching ────────────────────────────────────

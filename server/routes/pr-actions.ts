@@ -31,7 +31,8 @@ import {
   renderProgressSummary,
   reviewEventToConclusion,
 } from '../check-runs.js';
-import { cancelAnalyzePhaseTimer } from './webhooks.js';
+import { cancelAnalyzePhaseTimer } from '../reviewer-analyze-phase-timer.js';
+import { validateFormalReviewBody } from '../review-body-validation.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -401,11 +402,12 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
         .status(400)
         .json({ error: 'Invalid review event (must be APPROVE, REQUEST_CHANGES, or COMMENT)' });
     }
-    if ((event === 'REQUEST_CHANGES' || event === 'COMMENT') && !body?.trim()) {
-      return res
-        .status(400)
-        .json({ error: 'body is required when event is REQUEST_CHANGES or COMMENT' });
+
+    const bodyValidation = validateFormalReviewBody(event, body);
+    if (!bodyValidation.valid) {
+      return res.status(400).json({ error: bodyValidation.error });
     }
+    const reviewBody = bodyValidation.trimmed;
 
     interface ReviewApiResponse {
       id?: number;
@@ -414,8 +416,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       state?: string;
     }
 
-    const reviewPayload: Record<string, unknown> = { event };
-    if (body?.trim()) reviewPayload.body = body;
+    const reviewPayload: Record<string, unknown> = { event, body: reviewBody };
     if (commitId) reviewPayload.commit_id = commitId;
 
     // Tier 1: GitHub App (preferred — distinct identity from PR author)
@@ -436,10 +437,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
           )) as ReviewApiResponse;
           // Fire-and-forget: mark the Check Run as completed with the mapped
           // conclusion so the PR's Checks strip flips to green/yellow/red.
-          completeReviewerCheckRun(pr, event, body).catch(() => {
+          completeReviewerCheckRun(pr, event, reviewBody).catch(() => {
             /* best-effort */
           });
-          persistReviewLog({ prUrl, event, body, reviewerLogin: data.user?.login });
+          persistReviewLog({ prUrl, event, body: reviewBody, reviewerLogin: data.user?.login });
           return res.json({
             ok: true,
             method: 'github-app',
@@ -484,10 +485,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
           throw new Error(`GitHub API ${ghRes.status}: ${text.split('\n')[0]}`);
         }
         const data = (await ghRes.json()) as ReviewApiResponse;
-        completeReviewerCheckRun(pr, event, body).catch(() => {
+        completeReviewerCheckRun(pr, event, reviewBody).catch(() => {
           /* best-effort */
         });
-        persistReviewLog({ prUrl, event, body, reviewerLogin: data.user?.login });
+        persistReviewLog({ prUrl, event, body: reviewBody, reviewerLogin: data.user?.login });
         return res.json({
           ok: true,
           method: 'bot-token',
