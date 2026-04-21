@@ -2102,6 +2102,11 @@ export default function App() {
     setWikiProjectId(currentProjectId);
     setCurrentView('wiki');
   };
+  const goToNotes = () => {
+    if (!currentProjectId) return;
+    setNotesProjectId(currentProjectId);
+    setCurrentView('notes');
+  };
   const newConferenceRoom = () => {
     // MVP: prompt for name. A richer inline picker is tracked separately.
     const name =
@@ -2130,6 +2135,7 @@ export default function App() {
       'new-conference-room': newConferenceRoom,
       'go-to-board': goToBoard,
       'go-to-wiki': goToWiki,
+      'go-to-notes': goToNotes,
       'go-to-skills': () => setCurrentView('skills'),
       'go-to-settings': () => setCurrentView('settings'),
       'go-to-next-project': goToNextProject,

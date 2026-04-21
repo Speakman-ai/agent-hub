@@ -10,38 +10,37 @@
 //     `event.key`). Special tokens: "?" (literal question mark), "/" (slash),
 //     "Escape", "ArrowLeft", etc.
 //
-// Default shortcut lists are split by host: Chromium reserves many plain
-// Mod+letter chords for tabs/windows, which page scripts cannot reliably
-// override. Electron can own those chords, so we ship simpler bindings there
-// and keep Mod+Alt+… (etc.) for the web client. Action `id`s are stable across
-// both lists.
+// All default bindings include Alt/Option alongside Mod so they stay distinct
+// from browser tab shortcuts (web) and match the desktop shell (Electron).
+// Action `id`s are stable; `WEB_DEFAULT_SHORTCUTS` and `ELECTRON_DEFAULT_SHORTCUTS`
+// currently share the same registry.
 //
-// `DEFAULT_SHORTCUTS` is the browser-safe list — used as the `ShortcutsHelpModal`
-// fallback and as `getDefaultShortcuts(false)`. Future per-user overrides can
-// replace the list passed into `useKeyboardShortcuts`.
+// `DEFAULT_SHORTCUTS` is used as the `ShortcutsHelpModal` fallback and as
+// `getDefaultShortcuts(false)`. Future per-user overrides can replace the list
+// passed into `useKeyboardShortcuts`.
 
 const GO_TO_BOARD = {
   id: 'go-to-board',
   label: 'Go to board',
   description: 'Jump to the kanban board for the current project',
-  binding: 'Mod+B',
+  binding: 'Mod+Alt+B',
   group: 'Navigate',
 };
 
-/** Settings, next project, help — follows board + wiki + skills in both lists. */
+/** Settings, next project, help — follows board + wiki + notes + skills. */
 const SHORTCUT_ENTRIES_TAIL = [
   {
     id: 'go-to-settings',
     label: 'Settings',
     description: 'Open the settings page',
-    binding: 'Mod+,',
+    binding: 'Mod+Alt+,',
     group: 'Navigate',
   },
   {
     id: 'go-to-next-project',
     label: 'Go to next project',
     description: 'Cycle to the next project in the sidebar',
-    binding: 'Mod+ArrowRight',
+    binding: 'Mod+Alt+ArrowRight',
     group: 'Navigate',
   },
   {
@@ -53,7 +52,7 @@ const SHORTCUT_ENTRIES_TAIL = [
   },
 ];
 
-/** Browser / Vite — avoids reserved single-Mod chords (N/T/W/R/S/D). */
+/** Browser / Vite — every chord uses Mod+Alt+… so it does not fight tab shortcuts. */
 export const WEB_DEFAULT_SHORTCUTS = [
   {
     id: 'new-session',
@@ -92,62 +91,24 @@ export const WEB_DEFAULT_SHORTCUTS = [
     group: 'Navigate',
   },
   {
+    id: 'go-to-notes',
+    label: 'Notes',
+    description: 'Open daily notes for the current project',
+    binding: 'Mod+Alt+Shift+N',
+    group: 'Navigate',
+  },
+  {
     id: 'go-to-skills',
     label: 'Skills',
     description: 'Open the skills browser',
-    binding: 'Mod+Shift+K',
+    binding: 'Mod+Alt+Shift+K',
     group: 'Navigate',
   },
   ...SHORTCUT_ENTRIES_TAIL,
 ];
 
-/** Desktop shell — host can deliver Mod+N/T/… without fighting the browser. */
-export const ELECTRON_DEFAULT_SHORTCUTS = [
-  {
-    id: 'new-session',
-    label: 'New session',
-    description: 'Start a fresh chat with the active agent',
-    binding: 'Mod+N',
-    group: 'Create',
-  },
-  {
-    id: 'new-ticket-chat',
-    label: 'New Ticket Chat',
-    description: 'Open the kanban board and start a chat for a ticket',
-    binding: 'Mod+T',
-    group: 'Create',
-  },
-  {
-    id: 'new-doc-chat',
-    label: 'New Doc Chat',
-    description: 'Open the wiki and start a chat about a doc',
-    binding: 'Mod+D',
-    group: 'Create',
-  },
-  {
-    id: 'new-conference-room',
-    label: 'New conference room',
-    description: 'Create a multi-agent conference room',
-    binding: 'Mod+R',
-    group: 'Create',
-  },
-  GO_TO_BOARD,
-  {
-    id: 'go-to-wiki',
-    label: 'Wiki',
-    description: 'Open the wiki for the current project',
-    binding: 'Mod+W',
-    group: 'Navigate',
-  },
-  {
-    id: 'go-to-skills',
-    label: 'Skills',
-    description: 'Open the skills browser',
-    binding: 'Mod+S',
-    group: 'Navigate',
-  },
-  ...SHORTCUT_ENTRIES_TAIL,
-];
+/** Desktop shell — same bindings as web (Option/Alt keeps chords unambiguous). */
+export const ELECTRON_DEFAULT_SHORTCUTS = WEB_DEFAULT_SHORTCUTS;
 
 export function getDefaultShortcuts(isElectron = false) {
   return isElectron ? ELECTRON_DEFAULT_SHORTCUTS : WEB_DEFAULT_SHORTCUTS;

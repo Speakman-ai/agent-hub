@@ -154,6 +154,13 @@ describe('matchShortcut', () => {
         'mac',
       ),
     ).toBe(true);
+    expect(
+      matchShortcut(
+        makeEvent({ key: '˜', code: 'KeyN', meta: true, alt: true, shift: true }),
+        'Mod+Alt+Shift+N',
+        'mac',
+      ),
+    ).toBe(true);
   });
 
   it('prefers event.code for letter/digit keys in real browser events', () => {
@@ -229,8 +236,13 @@ describe('getDefaultShortcuts', () => {
 
   it('returns the electron list in the desktop profile', () => {
     expect(getDefaultShortcuts(true)).toBe(ELECTRON_DEFAULT_SHORTCUTS);
-    expect(getDefaultShortcuts(true).find((s) => s.id === 'new-session')?.binding).toBe('Mod+N');
-    expect(getDefaultShortcuts(true).find((s) => s.id === 'go-to-skills')?.binding).toBe('Mod+S');
+    expect(ELECTRON_DEFAULT_SHORTCUTS).toBe(WEB_DEFAULT_SHORTCUTS);
+    expect(getDefaultShortcuts(true).find((s) => s.id === 'new-session')?.binding).toBe(
+      'Mod+Alt+N',
+    );
+    expect(getDefaultShortcuts(true).find((s) => s.id === 'go-to-skills')?.binding).toBe(
+      'Mod+Alt+Shift+K',
+    );
   });
 });
 
@@ -247,6 +259,7 @@ describe.each([
       'new-conference-room',
       'go-to-board',
       'go-to-wiki',
+      'go-to-notes',
       'go-to-skills',
       'go-to-settings',
       'go-to-next-project',
