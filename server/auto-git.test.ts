@@ -22,6 +22,7 @@ import {
   buildPrTitle,
   buildPrBody,
   isGarbageTitle,
+  getProjectPreCommitCommands,
 } from './auto-git.js';
 import type { MessageRow } from './types.js';
 
@@ -105,6 +106,21 @@ function installExecAndGhMock(
     },
   );
 }
+
+describe('getProjectPreCommitCommands', () => {
+  it('returns trimmed non-empty strings from project.preCommitCommands', () => {
+    const project = {
+      id: 'p1',
+      preCommitCommands: ['  npm run lint  ', '', 'npm test', 3],
+    } as never;
+    expect(getProjectPreCommitCommands(project)).toEqual(['npm run lint', 'npm test']);
+  });
+
+  it('returns empty array when missing or invalid', () => {
+    expect(getProjectPreCommitCommands({ id: 'p' } as never)).toEqual([]);
+    expect(getProjectPreCommitCommands({ id: 'p', preCommitCommands: 'x' } as never)).toEqual([]);
+  });
+});
 
 describe('checkWorktreeChanges', () => {
   beforeEach(() => {
@@ -377,6 +393,98 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     // Should have set git user.name and user.email in the worktree
     expect(execCalls).toContain('git config user.name "My Name"');
     expect(execCalls).toContain('git config user.email "me@example.com"');
+  });
+
+  it('runs project pre-commit shell commands after git add and before git commit', async () => {
+    const execCalls: string[] = [];
+    const mockCard = {
+      id: 'card-1',
+      title: 'Test card',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 1,
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+    };
+    const mockStmtsWithCard = {
+      getKanbanCardBySession: { get: vi.fn(() => mockCard) },
+      getSession: { get: vi.fn(() => ({ name: 'Test session' })) },
+      updateKanbanCard: { run: vi.fn() },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: mockStmtsWithCard as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        if (cmd === 'git config user.name' && opts?.cwd === '/worktree') {
+          if (callback) callback(new Error('not set'), { stdout: '', stderr: '' });
+          return;
+        }
+        if (cmd === 'git config user.name' && opts?.cwd === '/repo') {
+          if (callback) callback(null, { stdout: 'My Name\n', stderr: '' });
+          return;
+        }
+        if (cmd === 'git config user.email' && opts?.cwd === '/repo') {
+          if (callback) callback(null, { stdout: 'me@example.com\n', stderr: '' });
+          return;
+        }
+        if (cmd.includes('git status --porcelain')) {
+          if (callback) callback(null, { stdout: 'M file.ts\n', stderr: '' });
+          return;
+        }
+        if (cmd.includes('git remote -v')) {
+          if (callback)
+            callback(null, {
+              stdout: 'origin\thttps://github.com/test/repo.git (fetch)\n',
+              stderr: '',
+            });
+          return;
+        }
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) {
+          if (callback) callback(null, { stdout: 'feature/precommit-test\n', stderr: '' });
+          return;
+        }
+        if (cmd.includes('git log')) {
+          if (callback) callback(new Error('no upstream'), { stdout: '', stderr: '' });
+          return;
+        }
+        if (cmd.includes('gh pr view') || cmd.includes('gh pr create')) {
+          if (callback)
+            callback(null, { stdout: 'https://github.com/test/repo/pull/99\n', stderr: '' });
+          return;
+        }
+        if (callback) callback(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const project = {
+      id: 'test',
+      cwd: '/repo',
+      preCommitCommands: ['npm run verify'],
+    } as never;
+    const agent = { name: 'test-agent', role: 'dev' } as never;
+
+    await autoCommitAndPR('sess-pc', 'agent-1', project, agent, '/worktree', '');
+
+    const hookIdx = execCalls.findIndex((c) => c === 'npm run verify');
+    const commitIdx = execCalls.findIndex((c) => c.startsWith('git commit'));
+    const addIndices = execCalls
+      .map((c, i) => (c.includes('git add -A') ? i : -1))
+      .filter((i) => i >= 0);
+    expect(addIndices.length).toBeGreaterThanOrEqual(2);
+    expect(hookIdx).toBeGreaterThan(addIndices[0]);
+    expect(addIndices[1]).toBeGreaterThan(hookIdx);
+    expect(commitIdx).toBeGreaterThan(addIndices[1]);
   });
 
   it('broadcasts changes_ready when no PR exists', async () => {

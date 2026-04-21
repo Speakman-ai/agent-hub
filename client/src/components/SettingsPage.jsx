@@ -4457,12 +4457,47 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     });
     return map;
   });
+  const [projectPreCommitInput, setProjectPreCommitInput] = useState(() => {
+    const map = {};
+    projects.forEach((p) => {
+      map[p.id] =
+        Array.isArray(p.preCommitCommands) && p.preCommitCommands.length
+          ? p.preCommitCommands.join('\n')
+          : '';
+    });
+    return map;
+  });
+
+  const preCommitServerSnap = useMemo(
+    () =>
+      JSON.stringify(Object.fromEntries(projects.map((p) => [p.id, p.preCommitCommands ?? []]))),
+    [projects],
+  );
+
+  useEffect(() => {
+    setProjectPreCommitInput(() =>
+      Object.fromEntries(
+        projects.map((p) => {
+          const fromServer =
+            Array.isArray(p.preCommitCommands) && p.preCommitCommands.length
+              ? p.preCommitCommands.join('\n')
+              : '';
+          return [p.id, fromServer];
+        }),
+      ),
+    );
+  }, [preCommitServerSnap]);
+
   const [projectCommandsSaved, setProjectCommandsSaved] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
 
   const saveProjectCommands = async (projectId) => {
     try {
       const cmds = projectCommands[projectId] || {};
+      const preCommitLines = (projectPreCommitInput[projectId] || '')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
       await api.updateProject(projectId, {
         commands: {
           install: cmds.install || null,
@@ -4470,6 +4505,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
           test: cmds.test || null,
           lint: cmds.lint || null,
         },
+        preCommitCommands: preCommitLines,
       });
       setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: true }));
       setTimeout(() => setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
@@ -4528,6 +4564,30 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                           />
                         </div>
                       ))}
+                      <div className="pt-1">
+                        <label className="text-xs text-gray-400 font-semibold">
+                          Pre-commit (before git commit)
+                        </label>
+                        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
+                          One shell command per line, run in the agent worktree after an initial{' '}
+                          <code className="text-gray-400">git add</code>, then the tree is{' '}
+                          <code className="text-gray-400">git add</code>’d again before{' '}
+                          <code className="text-gray-400">git commit</code> so formatters/fixers
+                          stay staged. Leave empty to skip. Native git hooks still run on commit.
+                        </p>
+                        <textarea
+                          value={projectPreCommitInput[p.id] ?? ''}
+                          onChange={(e) =>
+                            setProjectPreCommitInput((prev) => ({
+                              ...prev,
+                              [p.id]: e.target.value,
+                            }))
+                          }
+                          placeholder={'npm run lint\nnpm test'}
+                          rows={4}
+                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+                        />
+                      </div>
                       <button
                         onClick={() => saveProjectCommands(p.id)}
                         className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded-lg transition-colors"

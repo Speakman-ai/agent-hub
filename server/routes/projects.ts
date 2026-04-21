@@ -123,6 +123,7 @@ interface OnboardBody {
     cwd?: string;
     color?: string;
     githubRepo?: { owner: string; repo: string };
+    preCommitCommands?: unknown;
   };
   agents?: Array<{
     id: string;
@@ -147,6 +148,16 @@ interface ProjectCommands {
   build: string | null;
   test: string | null;
   lint: string | null;
+}
+
+/** Normalize `preCommitCommands` from JSON bodies (POST/PATCH/onboard). */
+function normalizePreCommitCommands(value: unknown): string[] {
+  if (value == null) return [];
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((x): x is string => typeof x === 'string')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 export default function createProjectRoutes(deps: RouteDeps): Router {
@@ -348,12 +359,13 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
 
   router.post('/api/projects', (req: Request, res: Response) => {
     const projects = getProjects();
-    const { id, name, cwd, color, commands } = req.body as {
+    const { id, name, cwd, color, commands, preCommitCommands } = req.body as {
       id?: string;
       name?: string;
       cwd?: string;
       color?: string;
       commands?: ProjectCommands;
+      preCommitCommands?: unknown;
     };
     if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) {
       return res.status(400).json({ error: 'id is required and must be alphanumeric+hyphens' });
@@ -378,6 +390,8 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         lint: commands.lint || null,
       };
     }
+    const pcCreate = normalizePreCommitCommands(preCommitCommands);
+    if (pcCreate.length) (project as Record<string, unknown>).preCommitCommands = pcCreate;
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(path.join(dataDir, 'agents'), { recursive: true });
     mkdirSync(path.join(dataDir, 'skills'), { recursive: true });
@@ -447,6 +461,12 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
           else delete projectGhw.reviewerModel;
         }
       }
+    }
+    if ((req.body as Record<string, unknown>).preCommitCommands !== undefined) {
+      const rawPc = (req.body as Record<string, unknown>).preCommitCommands;
+      const pc = normalizePreCommitCommands(rawPc);
+      if (pc.length) (project as Record<string, unknown>).preCommitCommands = pc;
+      else delete (project as Record<string, unknown>).preCommitCommands;
     }
     if (
       (req.body as Record<string, unknown>).githubRepo &&
@@ -718,6 +738,8 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         lint: commands.lint || null,
       };
     }
+    const pcOnboard = normalizePreCommitCommands(projectData.preCommitCommands);
+    if (pcOnboard.length) (project as Record<string, unknown>).preCommitCommands = pcOnboard;
 
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(path.join(dataDir, 'agents'), { recursive: true });

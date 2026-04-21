@@ -1135,6 +1135,14 @@ export interface Project {
   color?: string;
   githubRepo?: string;
   githubWorkflow?: GithubWorkflowSettings;
+  /**
+   * Shell commands run in the session worktree cwd after an initial `git add`
+   * and before `git commit` during auto-PR and manual “Create PR” flows. The
+   * server runs `git add -A` again after these commands so formatters/fixers
+   * that mutate files stay staged. Empty or absent skips this step (native
+   * git hooks still run with `git commit`).
+   */
+  preCommitCommands?: string[];
   agents: Agent[];
   [key: string]: unknown;
 }

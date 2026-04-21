@@ -17,6 +17,32 @@ import { resolveShouldAutoMerge } from './auto-merge.js';
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
+/** Wall-clock cap per configured pre-commit shell command (lint/test can be slow). */
+const PRECOMMIT_CMD_TIMEOUT_MS = 600_000;
+
+export function getProjectPreCommitCommands(project: Project): string[] {
+  const raw = (project as Record<string, unknown>).preCommitCommands;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((c): c is string => typeof c === 'string')
+    .map((c) => c.trim())
+    .filter(Boolean);
+}
+
+async function runProjectPreCommitCommands(project: Project, cwd: string): Promise<void> {
+  const cmds = getProjectPreCommitCommands(project);
+  if (!cmds.length) return;
+  for (const cmd of cmds) {
+    console.log(`[auto-commit] Pre-commit (${project.id}): ${cmd}`);
+    await execAsync(cmd, {
+      cwd,
+      timeout: PRECOMMIT_CMD_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env },
+    });
+  }
+}
+
 /** Run `gh` without a shell so PR bodies can contain backticks, `$`, `{`, etc. */
 async function runGh(
   args: string[],
@@ -541,6 +567,10 @@ async function commitPushAndCreatePR(
       .filter((line): line is string => line != null)
       .join('\n');
 
+    await execAsync('git add -A', { cwd: effectiveCwd });
+    await runProjectPreCommitCommands(project, effectiveCwd);
+    // Pre-commit commands may run formatters / fixers that write the tree; re-stage
+    // so those edits are included in the commit (matches typical hook UX).
     await execAsync('git add -A', { cwd: effectiveCwd });
     const fullMessage = `${commitTitle}\n${commitBody}`;
     await execFileAsync('git', ['commit', '-m', fullMessage], { cwd: effectiveCwd });

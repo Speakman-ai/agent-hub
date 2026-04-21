@@ -80,6 +80,20 @@ describe('Projects', () => {
       expect(res.body.commands.install).toBe('npm install');
       expect(res.body.commands.test).toBe('npm test');
     });
+
+    it('creates project with preCommitCommands', async () => {
+      const res = await request
+        .post('/api/projects')
+        .send({
+          id: 'proj-precommit-create',
+          name: 'Pre Project',
+          cwd: '/tmp',
+          preCommitCommands: ['npm run lint', '  '],
+        })
+        .expect(201);
+
+      expect(res.body.preCommitCommands).toEqual(['npm run lint']);
+    });
   });
 
   describe('GET /api/projects', () => {
@@ -142,6 +156,21 @@ describe('Projects', () => {
 
     it('returns 404 for nonexistent project', async () => {
       await request.patch('/api/projects/does-not-exist').send({ name: 'Nope' }).expect(404);
+    });
+
+    it('updates preCommitCommands and clears when empty array', async () => {
+      const proj = await createProject();
+      const withHooks = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ preCommitCommands: ['  npm run lint  ', 'npm test'] })
+        .expect(200);
+      expect(withHooks.body.preCommitCommands).toEqual(['npm run lint', 'npm test']);
+
+      const cleared = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ preCommitCommands: [] })
+        .expect(200);
+      expect(cleared.body.preCommitCommands).toBeUndefined();
     });
   });
 
