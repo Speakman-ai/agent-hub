@@ -18,6 +18,7 @@ interface FileConfig {
   claudeBin?: string;
   cursorBin?: string;
   geminiBin?: string;
+  codexBin?: string;
   githubApp?: GitHubAppConfig;
   [key: string]: unknown;
 }
@@ -189,6 +190,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       claudeBin: config.claudeBin,
       cursorBin: config.cursorBin,
       geminiBin: config.geminiBin,
+      codexBin: config.codexBin,
       defaultModel: config.defaultModel,
       defaultCwd: config.defaultCwd,
       port: config.port,
@@ -214,6 +216,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         claudeBin: fileConfig.claudeBin || null,
         cursorBin: fileConfig.cursorBin || null,
         geminiBin: fileConfig.geminiBin || null,
+        codexBin: fileConfig.codexBin || null,
       },
     });
   });
@@ -231,6 +234,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'claudeBin',
       'cursorBin',
       'geminiBin',
+      'codexBin',
       'defaultModel',
       'defaultCwd',
       'port',
@@ -262,6 +266,24 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       if (key in config) {
         Object.defineProperty(config, key, { value: val, writable: true, configurable: true });
       }
+    }
+
+    // Also update the module-level bin variables that chat.ts captures once at
+    // boot. Without this, `config.codexBin = '/new/path'` sticks but
+    // `getCodexBin()` still returns the original CODEX_BIN from index.ts, and
+    // spawns fail with ENOENT (close event fires with code=-2). Applies to
+    // every engine bin path equally.
+    if ('claudeBin' in updates && typeof updates.claudeBin === 'string') {
+      deps.setClaudeBin(updates.claudeBin);
+    }
+    if ('cursorBin' in updates && typeof updates.cursorBin === 'string' && deps.setCursorBin) {
+      deps.setCursorBin(updates.cursorBin);
+    }
+    if ('geminiBin' in updates && typeof updates.geminiBin === 'string' && deps.setGeminiBin) {
+      deps.setGeminiBin(updates.geminiBin);
+    }
+    if ('codexBin' in updates && typeof updates.codexBin === 'string' && deps.setCodexBin) {
+      deps.setCodexBin(updates.codexBin);
     }
 
     if ('botGithubToken' in updates) {

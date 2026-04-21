@@ -1177,6 +1177,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
     };
 
+    // Tracks whether proc.on('error') fired before 'close'. When spawn fails
+    // (e.g. ENOENT because the configured bin path doesn't exist), Node emits
+    // 'error' first with a useful message, then 'close' with code=-2 (-errno
+    // for ENOENT). Without this flag the close handler overwrites the useful
+    // "Failed to spawn codex: spawn /usr/local/bin/codex ENOENT" error with
+    // the cryptic "codex-cli exited with code -2".
+    let spawnErrored = false;
+
     proc.stdout!.on('data', (chunk: Buffer) => {
       for (const event of parser.feed(chunk)) handleEvent(event);
     });
@@ -1191,12 +1199,35 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         S.deleteActiveTask.run(sessionId);
       } catch {}
 
+      // If spawn already failed with ENOENT/EACCES/etc, the 'error' listener
+      // has already saved a clearer message. Bail out before we clobber it.
+      if (spawnErrored) return;
+
       for (const event of parser.flush()) handleEvent(event);
 
       const assembled = (finalText || partialFallback).trim();
 
       if (code !== 0 && !assembled) {
-        const errorMsg = errorOutput.trim() || `${engine} exited with code ${code}`;
+        // Node reports `-errno` on the close event when spawn fails without
+        // an 'error' listener firing first (rare, but guards against edge
+        // cases). -2 = ENOENT, -13 = EACCES. Produce a message that points
+        // at the actual bin path + the config key to edit, rather than the
+        // cryptic "codex-cli exited with code -2".
+        let errorMsg = errorOutput.trim() || `${engine} exited with code ${code}`;
+        if (code === -2 || code === -13) {
+          const configKey =
+            engine === 'cursor-agent'
+              ? 'cursorBin'
+              : engine === 'gemini-cli'
+                ? 'geminiBin'
+                : engine === 'codex-cli'
+                  ? 'codexBin'
+                  : 'claudeBin';
+          const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
+          errorMsg =
+            `${engine} binary ${reason} at ${bin}. ` +
+            `Update ${configKey} in Settings (or ~/.agent-hub/data/config.json) to the correct path.`;
+        }
         console.error(`[chat] ${engine} exited code=${code} session=${sessionId}`);
         console.error(`  bin: ${bin}`);
         console.error(`  cwd: ${effectiveCwd}`);
@@ -1551,6 +1582,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     });
 
     proc.on('error', (err: Error) => {
+      spawnErrored = true;
       activeProcesses.delete(sessionId);
       try {
         S.deleteActiveTask.run(sessionId);
@@ -1563,7 +1595,24 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             : engine === 'codex-cli'
               ? 'codex'
               : 'claude';
-      const errText = `Failed to spawn ${engineLabel}: ${err.message}`;
+      // Point the user at the correct config key. ENOENT here almost always
+      // means the configured bin path is wrong (wiki: "Spawn PATH Propagation").
+      const configKey =
+        engine === 'cursor-agent'
+          ? 'cursorBin'
+          : engine === 'gemini-cli'
+            ? 'geminiBin'
+            : engine === 'codex-cli'
+              ? 'codexBin'
+              : 'claudeBin';
+      const errnoCode = (err as NodeJS.ErrnoException).code;
+      const hint =
+        errnoCode === 'ENOENT'
+          ? ` — binary not found at ${bin}. Update ${configKey} in Settings or ~/.agent-hub/data/config.json.`
+          : errnoCode === 'EACCES'
+            ? ` — ${bin} is not executable. Update ${configKey} or chmod +x it.`
+            : '';
+      const errText = `Failed to spawn ${engineLabel}: ${err.message}${hint}`;
       saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
       broadcast({
         type: 'error',

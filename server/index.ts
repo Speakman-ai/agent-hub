@@ -537,6 +537,10 @@ const routeDeps: RouteDeps = {
   setClaudeBin: (v: string) => {
     CLAUDE_BIN = v;
   },
+  getCursorBin: () => CURSOR_BIN,
+  setCursorBin: (v: string) => {
+    CURSOR_BIN = v;
+  },
   getGeminiBin: () => GEMINI_BIN,
   setGeminiBin: (v: string) => {
     GEMINI_BIN = v;

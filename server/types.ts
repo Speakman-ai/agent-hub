@@ -1433,6 +1433,8 @@ export interface RouteDeps {
   ensureReviewerAgents: () => boolean;
   getClaudeBin: () => string;
   setClaudeBin: (v: string) => void;
+  getCursorBin?: () => string;
+  setCursorBin?: (v: string) => void;
   getGeminiBin?: () => string;
   setGeminiBin?: (v: string) => void;
   getCodexBin?: () => string;
