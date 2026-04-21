@@ -131,6 +131,36 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toContain('Memory Instructions');
   });
 
+  it('includes bias-to-action directive on first message', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('Bias to Action');
+    // Must explicitly call out the anti-patterns we want to eliminate
+    expect(prompt).toMatch(/Do you want me to create a card/i);
+    expect(prompt).toMatch(/Should I go ahead and implement/i);
+    // Must tell the agent to act, not ask
+    expect(prompt).toMatch(/just do the work/i);
+    // Must preserve the narrow "ask first" carve-out for destructive/ambiguous cases
+    expect(prompt).toMatch(/destructive and irreversible/i);
+  });
+
+  it('excludes bias-to-action directive on subsequent messages', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: false,
+    });
+    expect(prompt).not.toContain('Bias to Action');
+  });
+
+  it('bias-to-action directive ships for all projects (no project context required)', () => {
+    // Project-agnostic: even a bare project with no workspace files gets the directive.
+    const bareProject = makeProject({ id: 'some-other-project' });
+    const prompt = buildEnrichedPrompt(bareProject, makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('Bias to Action');
+  });
+
   it('excludes memory instructions on subsequent messages', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: false,
