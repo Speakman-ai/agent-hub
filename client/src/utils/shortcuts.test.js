@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_SHORTCUTS,
+  WEB_DEFAULT_SHORTCUTS,
+  ELECTRON_DEFAULT_SHORTCUTS,
+  getDefaultShortcuts,
   parseBinding,
   matchShortcut,
   formatShortcut,
@@ -91,14 +94,17 @@ describe('matchShortcut', () => {
     expect(matchShortcut(makeEvent({ key: '?', shift: true }), '?', 'other')).toBe(true);
   });
 
-  it('matches ArrowRight', () => {
+  it('matches Mod+ArrowRight', () => {
+    expect(
+      matchShortcut(makeEvent({ key: 'ArrowRight', ctrl: true }), 'Mod+ArrowRight', 'other'),
+    ).toBe(true);
     expect(
       matchShortcut(
         makeEvent({ key: 'ArrowRight', ctrl: true, shift: true }),
-        'Mod+Shift+ArrowRight',
+        'Mod+ArrowRight',
         'other',
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('is case-insensitive for letter keys', () => {
@@ -111,7 +117,7 @@ describe('matchShortcut', () => {
   it('matches via event.code on Mac when Option produces a dead key', () => {
     // Real-world regression: pressing Cmd+Option+N on macOS fires
     // event.key === '˜' (dead-tilde) but event.code === 'KeyN'. The matcher
-    // must accept it because `Mod+Alt+N` is the registered binding.
+    // must accept it because the binding includes Mod+Alt+letter.
     expect(
       matchShortcut(
         makeEvent({ key: '˜', code: 'KeyN', meta: true, alt: true }),
@@ -119,7 +125,7 @@ describe('matchShortcut', () => {
         'mac',
       ),
     ).toBe(true);
-    // Same for the other Option+letter dead-keys we ship by default.
+    // Same for other Option+letter dead-keys (still valid for custom bindings).
     expect(
       matchShortcut(
         makeEvent({ key: '†', code: 'KeyT', meta: true, alt: true }),
@@ -187,6 +193,8 @@ describe('formatShortcut', () => {
   });
 
   it('renders arrow keys as glyphs', () => {
+    expect(formatShortcut('Mod+ArrowRight', 'mac')).toBe('⌘→');
+    expect(formatShortcut('Mod+ArrowRight', 'other')).toBe('Ctrl+→');
     expect(formatShortcut('Mod+Shift+ArrowRight', 'mac')).toBe('⌘⇧→');
     expect(formatShortcut('Mod+Shift+ArrowRight', 'other')).toBe('Ctrl+Shift+→');
   });
@@ -211,9 +219,27 @@ describe('isEditableTarget', () => {
   });
 });
 
-describe('DEFAULT_SHORTCUTS registry', () => {
+describe('getDefaultShortcuts', () => {
+  it('returns the web list in the browser profile', () => {
+    expect(getDefaultShortcuts(false)).toBe(WEB_DEFAULT_SHORTCUTS);
+    expect(getDefaultShortcuts(false).find((s) => s.id === 'new-session')?.binding).toBe(
+      'Mod+Alt+N',
+    );
+  });
+
+  it('returns the electron list in the desktop profile', () => {
+    expect(getDefaultShortcuts(true)).toBe(ELECTRON_DEFAULT_SHORTCUTS);
+    expect(getDefaultShortcuts(true).find((s) => s.id === 'new-session')?.binding).toBe('Mod+N');
+    expect(getDefaultShortcuts(true).find((s) => s.id === 'go-to-skills')?.binding).toBe('Mod+S');
+  });
+});
+
+describe.each([
+  ['web', WEB_DEFAULT_SHORTCUTS],
+  ['electron', ELECTRON_DEFAULT_SHORTCUTS],
+])('%s default shortcut registry', (_label, list) => {
   it('covers the MVP action list', () => {
-    const ids = DEFAULT_SHORTCUTS.map((s) => s.id);
+    const ids = list.map((s) => s.id);
     const required = [
       'new-session',
       'new-ticket-chat',
@@ -232,18 +258,22 @@ describe('DEFAULT_SHORTCUTS registry', () => {
   });
 
   it('has no duplicate bindings', () => {
-    const bindings = DEFAULT_SHORTCUTS.map((s) => s.binding);
+    const bindings = list.map((s) => s.binding);
     const unique = new Set(bindings);
     expect(unique.size).toBe(bindings.length);
   });
 
   it('every shortcut parses cleanly', () => {
-    for (const s of DEFAULT_SHORTCUTS) {
+    for (const s of list) {
       const parsed = parseBinding(s.binding);
       expect(parsed, `binding "${s.binding}" for ${s.id}`).not.toBeNull();
       expect(parsed.key, `binding "${s.binding}" for ${s.id}`).toBeTruthy();
     }
   });
+});
+
+it('DEFAULT_SHORTCUTS matches web defaults (modal / hook fallback)', () => {
+  expect(DEFAULT_SHORTCUTS).toBe(WEB_DEFAULT_SHORTCUTS);
 });
 
 describe('getPlatform', () => {

@@ -23,10 +23,11 @@ import {
 //
 // Editable-field handling: a keydown originating in an input / textarea /
 // contenteditable is only skipped when the matched shortcut has no primary
-// modifier (Mod / Meta / Ctrl / Alt). Shortcuts like Cmd+B or Ctrl+Alt+N still
-// fire from inside the chat composer — without this the composer focus (which
-// is almost always held) would swallow every global shortcut. Plain / Shift-
-// only shortcuts such as `?` or `Escape` continue to defer to typing.
+// modifier (Mod / Meta / Ctrl / Alt). Shortcuts that include one of those
+// (e.g. Cmd+B or Mod+Alt+N in the web client) still fire from inside the chat
+// composer — without this the composer focus (which is almost always held)
+// would swallow every global shortcut. Plain / Shift-only shortcuts such as
+// `?` or `Escape` continue to defer to typing.
 export function useKeyboardShortcuts({
   handlers,
   shortcuts = DEFAULT_SHORTCUTS,

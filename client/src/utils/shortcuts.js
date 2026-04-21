@@ -10,11 +10,51 @@
 //     `event.key`). Special tokens: "?" (literal question mark), "/" (slash),
 //     "Escape", "ArrowLeft", etc.
 //
-// `DEFAULT_SHORTCUTS` is the registry consumed by `useKeyboardShortcuts` and
-// the `ShortcutsHelpModal`. Future iterations can override these per-user;
-// for MVP the defaults are hardcoded and the action IDs are stable.
+// Default shortcut lists are split by host: Chromium reserves many plain
+// Mod+letter chords for tabs/windows, which page scripts cannot reliably
+// override. Electron can own those chords, so we ship simpler bindings there
+// and keep Mod+Alt+… (etc.) for the web client. Action `id`s are stable across
+// both lists.
+//
+// `DEFAULT_SHORTCUTS` is the browser-safe list — used as the `ShortcutsHelpModal`
+// fallback and as `getDefaultShortcuts(false)`. Future per-user overrides can
+// replace the list passed into `useKeyboardShortcuts`.
 
-export const DEFAULT_SHORTCUTS = [
+const GO_TO_BOARD = {
+  id: 'go-to-board',
+  label: 'Go to board',
+  description: 'Jump to the kanban board for the current project',
+  binding: 'Mod+B',
+  group: 'Navigate',
+};
+
+/** Settings, next project, help — follows board + wiki + skills in both lists. */
+const SHORTCUT_ENTRIES_TAIL = [
+  {
+    id: 'go-to-settings',
+    label: 'Settings',
+    description: 'Open the settings page',
+    binding: 'Mod+,',
+    group: 'Navigate',
+  },
+  {
+    id: 'go-to-next-project',
+    label: 'Go to next project',
+    description: 'Cycle to the next project in the sidebar',
+    binding: 'Mod+ArrowRight',
+    group: 'Navigate',
+  },
+  {
+    id: 'show-help',
+    label: 'Show keyboard shortcuts',
+    description: 'Open this help dialog',
+    binding: '?',
+    group: 'Help',
+  },
+];
+
+/** Browser / Vite — avoids reserved single-Mod chords (N/T/W/R/S/D). */
+export const WEB_DEFAULT_SHORTCUTS = [
   {
     id: 'new-session',
     label: 'New session',
@@ -43,13 +83,7 @@ export const DEFAULT_SHORTCUTS = [
     binding: 'Mod+Alt+R',
     group: 'Create',
   },
-  {
-    id: 'go-to-board',
-    label: 'Go to board',
-    description: 'Jump to the kanban board for the current project',
-    binding: 'Mod+B',
-    group: 'Navigate',
-  },
+  GO_TO_BOARD,
   {
     id: 'go-to-wiki',
     label: 'Wiki',
@@ -64,28 +98,63 @@ export const DEFAULT_SHORTCUTS = [
     binding: 'Mod+Shift+K',
     group: 'Navigate',
   },
-  {
-    id: 'go-to-settings',
-    label: 'Settings',
-    description: 'Open the settings page',
-    binding: 'Mod+,',
-    group: 'Navigate',
-  },
-  {
-    id: 'go-to-next-project',
-    label: 'Go to next project',
-    description: 'Cycle to the next project in the sidebar',
-    binding: 'Mod+Shift+ArrowRight',
-    group: 'Navigate',
-  },
-  {
-    id: 'show-help',
-    label: 'Show keyboard shortcuts',
-    description: 'Open this help dialog',
-    binding: '?',
-    group: 'Help',
-  },
+  ...SHORTCUT_ENTRIES_TAIL,
 ];
+
+/** Desktop shell — host can deliver Mod+N/T/… without fighting the browser. */
+export const ELECTRON_DEFAULT_SHORTCUTS = [
+  {
+    id: 'new-session',
+    label: 'New session',
+    description: 'Start a fresh chat with the active agent',
+    binding: 'Mod+N',
+    group: 'Create',
+  },
+  {
+    id: 'new-ticket-chat',
+    label: 'New Ticket Chat',
+    description: 'Open the kanban board and start a chat for a ticket',
+    binding: 'Mod+T',
+    group: 'Create',
+  },
+  {
+    id: 'new-doc-chat',
+    label: 'New Doc Chat',
+    description: 'Open the wiki and start a chat about a doc',
+    binding: 'Mod+D',
+    group: 'Create',
+  },
+  {
+    id: 'new-conference-room',
+    label: 'New conference room',
+    description: 'Create a multi-agent conference room',
+    binding: 'Mod+R',
+    group: 'Create',
+  },
+  GO_TO_BOARD,
+  {
+    id: 'go-to-wiki',
+    label: 'Wiki',
+    description: 'Open the wiki for the current project',
+    binding: 'Mod+W',
+    group: 'Navigate',
+  },
+  {
+    id: 'go-to-skills',
+    label: 'Skills',
+    description: 'Open the skills browser',
+    binding: 'Mod+S',
+    group: 'Navigate',
+  },
+  ...SHORTCUT_ENTRIES_TAIL,
+];
+
+export function getDefaultShortcuts(isElectron = false) {
+  return isElectron ? ELECTRON_DEFAULT_SHORTCUTS : WEB_DEFAULT_SHORTCUTS;
+}
+
+/** Web defaults; same as `WEB_DEFAULT_SHORTCUTS` (modal fallback when parent omits `shortcuts`). */
+export const DEFAULT_SHORTCUTS = WEB_DEFAULT_SHORTCUTS;
 
 export function getPlatform(nav = typeof navigator !== 'undefined' ? navigator : null) {
   if (!nav) return 'other';

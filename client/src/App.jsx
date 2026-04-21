@@ -58,6 +58,7 @@ import {
 } from './utils/orgs.js';
 import { getApiBase, getAuthHeaders, getServerBase } from './utils/connection.js';
 import { extractSubmittedAskIds } from './utils/askAnswers.js';
+import { getDefaultShortcuts } from './utils/shortcuts.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -2081,6 +2082,9 @@ export default function App() {
     if (name && name.trim()) handleNewRoom(name.trim());
   };
 
+  const isElectron = typeof window !== 'undefined' && !!window.electronAPI?.isElectron;
+  const keyboardShortcutList = useMemo(() => getDefaultShortcuts(isElectron), [isElectron]);
+
   useKeyboardShortcuts({
     handlers: {
       'new-session': () => handleNewSession(),
@@ -2102,10 +2106,10 @@ export default function App() {
       'go-to-next-project': goToNextProject,
       'show-help': () => setShowShortcutsHelp(true),
     },
+    shortcuts: keyboardShortcutList,
     enabled: !showShortcutsHelp,
   });
 
-  const isElectron = !!window.electronAPI?.isElectron;
   const isMac = window.electronAPI?.platform === 'darwin';
 
   // Version-check for the "update available" modal. We fetch /api/health once
@@ -2639,6 +2643,7 @@ export default function App() {
         <ShortcutsHelpModal
           isOpen={showShortcutsHelp}
           onClose={() => setShowShortcutsHelp(false)}
+          shortcuts={keyboardShortcutList}
         />
 
         {/* Agent Switcher Modal */}
