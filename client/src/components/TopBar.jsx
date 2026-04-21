@@ -24,13 +24,15 @@ const ENGINE_MODELS = {
   ],
   'cursor-agent': [{ id: 'composer-2', label: 'Composer 2', short: 'Composer 2' }],
   // Codex model IDs must match server/config.ts → engineValidModels['codex-cli'].
-  // Default is gpt-5.2-codex (see server/config.ts → engineDefaultModels).
+  // Default is gpt-5.3-codex (see server/config.ts → engineDefaultModels).
+  // Only the models below are accepted under ChatGPT OAuth — older IDs
+  // (gpt-5, gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max) get
+  // rejected with HTTP 400. See server/codex-auth.ts for the runtime guard.
   'codex-cli': [
-    { id: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', short: '5.2 Codex' },
-    { id: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max', short: '5.1 Max' },
-    { id: 'gpt-5-codex', label: 'GPT-5 Codex', short: '5 Codex' },
-    { id: 'gpt-5', label: 'GPT-5', short: 'GPT-5' },
-    { id: 'gpt-5-mini', label: 'GPT-5 Mini', short: 'Mini' },
+    { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', short: '5.3 Codex' },
+    { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
+    { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
+    { id: 'gpt-5.2', label: 'GPT-5.2', short: '5.2' },
   ],
 };
 

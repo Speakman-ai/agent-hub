@@ -106,19 +106,29 @@ describe('<TopBar /> engine picker', () => {
     expect(onEngineChange).toHaveBeenCalledWith('codex-cli');
   });
 
-  it('reflects codex-cli as the active engine and shows gpt-5.2-codex as the default model', () => {
-    renderTopBar({ sessionEngine: 'codex-cli', sessionModel: 'gpt-5.2-codex' });
+  it('reflects codex-cli as the active engine and exposes only ChatGPT-accepted models', () => {
+    // Regression: previously the Codex dropdown offered gpt-5, gpt-5-mini,
+    // gpt-5-codex, gpt-5.2-codex, and gpt-5.1-codex-max — all rejected with
+    // HTTP 400 under ChatGPT OAuth. The current allowlist must only offer
+    // models the ChatGPT backend accepts. Keep in sync with
+    // server/config.ts → engineValidModels['codex-cli'].
+    renderTopBar({ sessionEngine: 'codex-cli', sessionModel: 'gpt-5.3-codex' });
     const trigger = screen.getByRole('button', { name: /select engine/i });
     expect(trigger.textContent).toMatch(/Codex/);
 
     const modelTrigger = screen.getByTitle(/^Model: /);
     fireEvent.click(modelTrigger);
-    // All allowlisted Codex models should be visible in the picker
-    expect(screen.getAllByText(/GPT-5.2 Codex/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/GPT-5.1 Codex Max/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/GPT-5 Codex/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/^GPT-5$/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/GPT-5 Mini/).length).toBeGreaterThan(0);
+    // Present:
+    expect(screen.getAllByText(/GPT-5.3 Codex/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^GPT-5.4$/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/GPT-5.4 Mini/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^GPT-5.2$/).length).toBeGreaterThan(0);
+    // Absent (previously allowlisted, all rejected under ChatGPT OAuth):
+    expect(screen.queryByText(/GPT-5.2 Codex/)).toBeNull();
+    expect(screen.queryByText(/GPT-5.1 Codex Max/)).toBeNull();
+    expect(screen.queryByText(/^GPT-5 Codex$/)).toBeNull();
+    expect(screen.queryByText(/^GPT-5$/)).toBeNull();
+    expect(screen.queryByText(/GPT-5 Mini/)).toBeNull();
   });
 
   it('shows only composer-2 as the model for cursor-agent', () => {
@@ -128,7 +138,7 @@ describe('<TopBar /> engine picker', () => {
     fireEvent.click(modelTrigger);
     expect(screen.getAllByText('Composer 2').length).toBeGreaterThan(0);
     // No other cursor models (Codex variants, auto, composer-2-fast) should be rendered
-    expect(screen.queryByText(/GPT-5.2 Codex/)).toBeNull();
+    expect(screen.queryByText(/GPT-5.3 Codex/)).toBeNull();
     expect(screen.queryByText(/Composer 2 Fast/)).toBeNull();
     expect(screen.queryByText(/^Auto$/)).toBeNull();
   });

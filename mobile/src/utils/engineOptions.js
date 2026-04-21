@@ -19,17 +19,20 @@ export const ENGINE_MODELS = {
     { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
   ],
   'cursor-agent': [{ id: 'composer-2', label: 'Composer 2', short: 'Composer 2' }],
+  // Codex — only models accepted under ChatGPT OAuth. Older IDs (gpt-5,
+  // gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max) are rejected
+  // with HTTP 400 by the ChatGPT backend. Keep in sync with server/config.ts
+  // and client/src/components/TopBar.jsx.
   'codex-cli': [
-    { id: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', short: '5.2 Codex' },
-    { id: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max', short: '5.1 Max' },
-    { id: 'gpt-5-codex', label: 'GPT-5 Codex', short: '5 Codex' },
-    { id: 'gpt-5', label: 'GPT-5', short: 'GPT-5' },
-    { id: 'gpt-5-mini', label: 'GPT-5 Mini', short: 'Mini' },
+    { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', short: '5.3 Codex' },
+    { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
+    { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
+    { id: 'gpt-5.2', label: 'GPT-5.2', short: '5.2' },
   ],
 };
 
 export const ENGINE_DEFAULT_MODELS = {
   'claude-code': 'claude-opus-4-7',
   'cursor-agent': 'composer-2',
-  'codex-cli': 'gpt-5.2-codex',
+  'codex-cli': 'gpt-5.3-codex',
 };

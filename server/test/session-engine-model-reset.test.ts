@@ -8,7 +8,7 @@
  * stale Claude model and the server correctly rejected it with:
  *
  *   400  Model "claude-opus-4-7" is not valid for engine "codex-cli".
- *        Allowed: gpt-5.2-codex, gpt-5.1-codex-max, gpt-5-codex, gpt-5, gpt-5-mini
+ *        Allowed: gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5.2
  *
  * Fix: when `PUT /api/sessions/:id/engine` switches to an engine whose
  * allowlist does not contain the session's current model, the server
@@ -56,7 +56,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
       .expect(200);
     expect(switched.body.engine).toBe('codex-cli');
     // Default codex model per config.ts.
-    expect(switched.body.model).toBe('gpt-5.2-codex');
+    expect(switched.body.model).toBe('gpt-5.3-codex');
 
     // Sanity check: a subsequent `PUT .../model` with the reset-to value
     // round-trips cleanly (the client no longer has a stale mismatched
@@ -64,9 +64,9 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
     // server accepts it).
     const replay = await request
       .put(`/api/sessions/${sessionId}/model`)
-      .send({ model: 'gpt-5.2-codex' })
+      .send({ model: 'gpt-5.3-codex' })
       .expect(200);
-    expect(replay.body.model).toBe('gpt-5.2-codex');
+    expect(replay.body.model).toBe('gpt-5.3-codex');
   });
 
   it('preserves the model on a same-engine PUT (no unnecessary reset)', async () => {
@@ -103,7 +103,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
       .send({ engine: 'codex-cli' })
       .expect(200);
     expect(switched.body.engine).toBe('codex-cli');
-    expect(switched.body.model).toBe('gpt-5.2-codex');
+    expect(switched.body.model).toBe('gpt-5.3-codex');
   });
 
   it('returns 404 when the session does not exist (no silent model write)', async () => {

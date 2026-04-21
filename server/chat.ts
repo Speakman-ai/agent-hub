@@ -22,6 +22,8 @@ import {
 } from './handoff.js';
 import { parseCloseCardBlock, handleCardAutoClose } from './card-auto-close.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
+import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { pickProcessErrorMessage } from './process-error-message.js';
 import type {
   Project,
   Agent,
@@ -931,8 +933,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // the closest parity with Claude Code's bypassPermissions default.
         args.push('--full-auto');
       }
-      if (model) {
+      // Auth-mode-aware --model gating. Under ChatGPT OAuth the Codex backend
+      // rejects most explicit `--model` IDs (HTTP 400 "not supported when
+      // using Codex with a ChatGPT account"). shouldPassModelFlag() filters
+      // the model against the ChatGPT allowlist; unsupported values get
+      // dropped so Codex falls back to its built-in ChatGPT default rather
+      // than 400ing the turn. API-key / unknown modes keep the prior
+      // pass-through behavior.
+      const codexAuth = detectCodexAuthMode();
+      if (model && shouldPassModelFlag(codexAuth.mode, model)) {
         args.push('--model', model);
+      } else if (model) {
+        console.warn(
+          `[chat] Dropping --model ${model} for codex-cli session ${sessionId}: ` +
+            `auth_mode=${codexAuth.mode} does not accept it. Falling back to codex default.`,
+        );
       }
       args.push(prompt);
       bin = CODEX_BIN;
@@ -966,6 +981,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     let toolResultOutputs = '';
     let seq = 0;
     let errorOutput = '';
+    // Accumulates error payloads that arrive on *stdout* (as JSONL for Codex /
+    // Gemini) so the close handler can surface a meaningful message even when
+    // stderr is empty or only contains informational noise (see
+    // CODEX_STDERR_NOISE below). Examples:
+    //   codex → turn.failed.error.message (HTTP 400 model-not-supported)
+    //   codex → unknown `codex error: ...`
+    let streamErrorMessage = '';
 
     let effectiveCwd: string = project.cwd;
     if (session!.use_worktree && (session!.worktree_path || isNewEngineSession)) {
@@ -1100,6 +1122,23 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         toolResultOutputs += '\n' + event.output;
       }
 
+      // Capture upstream engine errors that arrive on stdout so the close
+      // handler can surface them. For Codex the stream-parser turns a
+      // `turn.failed` JSONL event into `{type:'result', isError:true, text}`
+      // and an `error` event into `{type:'unknown', text:"codex error: ..."}`.
+      // Without this, the close handler only sees stderr — which for Codex
+      // is usually just the "Reading additional input from stdin..." notice.
+      if (event.type === 'result' && event.isError && event.text) {
+        if (!streamErrorMessage) streamErrorMessage = event.text;
+      }
+      if (
+        event.type === 'unknown' &&
+        typeof event.text === 'string' &&
+        (event.text.startsWith('codex error:') || event.text.startsWith('codex item error:'))
+      ) {
+        if (!streamErrorMessage) streamErrorMessage = event.text;
+      }
+
       // Progress-panel persistence: mirror progress_step events into the
       // session_progress table so reopening the session rehydrates the
       // ProgressPanel. Also broadcast a typed `session-progress` WS message
@@ -1213,7 +1252,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // cases). -2 = ENOENT, -13 = EACCES. Produce a message that points
         // at the actual bin path + the config key to edit, rather than the
         // cryptic "codex-cli exited with code -2".
-        let errorMsg = errorOutput.trim() || `${engine} exited with code ${code}`;
+        //
+        // pickProcessErrorMessage strips known stderr noise (e.g. Codex's
+        // "Reading additional input from stdin..." line) and falls back to
+        // streamErrorMessage (real upstream errors captured from stdout
+        // JSONL) before the generic exit-code message.
+        let errorMsg = pickProcessErrorMessage({
+          stderr: errorOutput,
+          streamErrorMessage,
+          engine,
+          exitCode: code,
+        });
         if (code === -2 || code === -13) {
           const configKey =
             engine === 'cursor-agent'

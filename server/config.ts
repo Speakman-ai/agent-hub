@@ -121,7 +121,12 @@ const config: AppConfig = {
     'claude-code': 'claude-opus-4-7',
     'cursor-agent': 'gpt-5.3-codex-high',
     'gemini-cli': 'gemini-2.5-pro',
-    'codex-cli': 'gpt-5.2-codex',
+    // Codex: default is gpt-5.3-codex, the current flagship Codex-tuned model
+    // accepted under BOTH auth modes (ChatGPT OAuth and API-key). Older IDs
+    // like gpt-5.2-codex / gpt-5-codex / gpt-5.1-codex-max get rejected with
+    // HTTP 400 under ChatGPT OAuth — see diagnosis in AGENTS' kanban card
+    // "Codex not working (round 2)".
+    'codex-cli': 'gpt-5.3-codex',
   },
 
   engineValidModels: (fileConfig.engineValidModels as Record<string, string[]>) || {
@@ -143,12 +148,21 @@ const config: AppConfig = {
     // currently accepts. We only list stable IDs — experimental/preview aliases are
     // left out of the allowlist so sessions don't stream with an unsupported name.
     'gemini-cli': ['auto', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-    // Codex model IDs per https://developers.openai.com/codex/models. The CLI
-    // defaults to `gpt-5.2-codex` for ChatGPT users and `gpt-5-codex` for
-    // API-key users on Linux/macOS. We list the stable published IDs the CLI
-    // accepts via `--model`; non-Codex-tuned GPT-5 variants are included so
-    // cost-sensitive sessions can downshift.
-    'codex-cli': ['gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5-codex', 'gpt-5', 'gpt-5-mini'],
+    // Codex model IDs per https://developers.openai.com/codex/models.
+    // IMPORTANT: the list below is the intersection of models accepted under
+    // BOTH auth modes (ChatGPT OAuth and API-key). Under ChatGPT OAuth the
+    // codex backend rejects older/API-only IDs with:
+    //   "The '<model>' model is not supported when using Codex with a
+    //   ChatGPT account." (HTTP 400, surfaced as a `turn.failed` JSONL event).
+    // Empirically (CLI 0.122, April 2026) the following fail under ChatGPT:
+    //   gpt-5, gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max,
+    //   gpt-5.3-codex-spark.
+    // These currently succeed under ChatGPT OAuth and are the only IDs we
+    // allow the UI to select. Keep in sync with client/src/components/TopBar.jsx
+    // and mobile/src/utils/engineOptions.js. Runtime guard in chat.ts will
+    // drop --model when an unsupported/stale ID is still persisted on a
+    // session (so resumes from old DBs don't spin forever).
+    'codex-cli': ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
   },
 
   // ── Timeouts ───────────────────────────────────────────────────
