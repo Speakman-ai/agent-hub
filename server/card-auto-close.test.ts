@@ -171,6 +171,7 @@ describe('handleCardAutoClose', () => {
     epic_id: null,
     documented: 0,
     autonomous_iterations: 0,
+    dispatched_by_autonomous: 0,
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
   };

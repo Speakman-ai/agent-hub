@@ -289,6 +289,8 @@ export interface KanbanCardRow {
   epic_id: string | null;
   documented: number;
   autonomous_iterations: number;
+  /** Set when autonomous dispatch increments iterations — controls auto-PR at session end vs Create PR banner. */
+  dispatched_by_autonomous: number;
   created_at: string;
   updated_at: string;
 }

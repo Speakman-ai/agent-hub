@@ -139,6 +139,7 @@ function makeCard(overrides: Partial<KanbanCardRow> = {}): KanbanCardRow {
     epic_id: 'epic-1',
     session_id: null,
     autonomous_iterations: 0,
+    dispatched_by_autonomous: 0,
     priority: 'medium',
     labels: '',
     github_issue_url: null,

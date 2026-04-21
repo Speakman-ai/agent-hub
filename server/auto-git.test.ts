@@ -311,6 +311,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       description: 'desc',
       priority: 'medium',
       autonomous_iterations: 1,
+      dispatched_by_autonomous: 1,
       epic_id: null,
     };
     const mockStmtsWithCard = {
@@ -531,6 +532,7 @@ describe('commitPushAndCreatePR — existing PR early return re-applies auto-mer
     description: 'desc',
     priority: 'medium',
     autonomous_iterations: 1,
+    dispatched_by_autonomous: 1,
     epic_id: null,
   };
 
@@ -756,6 +758,7 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
         description: 'desc',
         priority: 'medium',
         autonomous_iterations: 1,
+        dispatched_by_autonomous: 1,
         epic_id: null,
       },
     });
@@ -822,6 +825,7 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
         description: 'Refs `pulls/{pr}/reviews` and ${HOME} must not break /bin/sh.',
         priority: 'medium',
         autonomous_iterations: 1,
+        dispatched_by_autonomous: 1,
         epic_id: null,
       },
     });
@@ -912,6 +916,7 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
         description: 'd',
         priority: 'medium',
         autonomous_iterations: 1,
+        dispatched_by_autonomous: 1,
         epic_id: null,
       },
     });
@@ -952,13 +957,14 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
 describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched)', () => {
   // Regression: manually linking a kanban card to a session via `session_id`
   // must NOT hijack session-end into the autonomous auto-PR path. Only cards
-  // that were actually dispatched by the autonomous system
-  // (autonomous_iterations > 0 OR epic_id set) should take that path.
+  // with `dispatched_by_autonomous` (set when autonomous dispatch runs) take
+  // the auto-PR path; manual links and non-dispatch epic grouping stay ad-hoc.
   const mockBroadcast = vi.fn();
 
   function makeStmtsWithCard(card: Record<string, unknown>) {
+    const merged = { dispatched_by_autonomous: 0, ...card };
     return {
-      getKanbanCardBySession: { get: vi.fn(() => card) },
+      getKanbanCardBySession: { get: vi.fn(() => merged) },
       getSession: { get: vi.fn(() => ({ name: 'Test session' })) },
       setCardPrUrl: { run: vi.fn() },
       getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
@@ -1047,7 +1053,7 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
     expect(autoPrEvents).toHaveLength(0);
   });
 
-  it('card with autonomous_iterations=1 takes AUTONOMOUS path → opens PR, no changes_ready', async () => {
+  it('card with dispatched_by_autonomous=1 takes AUTONOMOUS path → opens PR, no changes_ready', async () => {
     const execCalls: string[] = [];
     const stmts = makeStmtsWithCard({
       id: 'card-auto',
@@ -1055,6 +1061,7 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
       description: 'desc',
       priority: 'medium',
       autonomous_iterations: 1,
+      dispatched_by_autonomous: 1,
       epic_id: null,
     });
 
@@ -1081,7 +1088,7 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
     expect(changesReadyEvents).toHaveLength(0);
   });
 
-  it('card with epic_id set (iters=0) takes AUTONOMOUS path → opens PR', async () => {
+  it('card with epic_id but dispatched_by_autonomous=1 (legacy autonomous epic) → opens PR', async () => {
     const execCalls: string[] = [];
     const stmts = makeStmtsWithCard({
       id: 'card-epic',
@@ -1089,6 +1096,7 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
       description: 'desc',
       priority: 'medium',
       autonomous_iterations: 0,
+      dispatched_by_autonomous: 1,
       epic_id: 'epic-xyz',
     });
 
@@ -1111,6 +1119,39 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
       (c: Array<Record<string, unknown>>) => c[0]?.type === 'changes_ready',
     );
     expect(changesReadyEvents).toHaveLength(0);
+  });
+
+  it('card with epic_id but dispatched_by_autonomous=0 → AD-HOC path (Create PR banner), no auto-open PR', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeStmtsWithCard({
+      id: 'card-epic-manual',
+      title: 'Grouped under epic only',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 0,
+      dispatched_by_autonomous: 0,
+      epic_id: 'epic-non-auto',
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecAdHocStyle(execCalls);
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-epic-manual', 'agent-1', project, agent, '/worktree', '');
+
+    const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(ghCreateCalls).toHaveLength(0);
+
+    const changesReadyEvents = mockBroadcast.mock.calls.filter(
+      (c: Array<Record<string, unknown>>) => c[0]?.type === 'changes_ready',
+    );
+    expect(changesReadyEvents).toHaveLength(1);
   });
 });
 
@@ -1395,6 +1436,7 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
       board_id: 'board-1',
       session_id: 'sess-dup',
       autonomous_iterations: 0,
+      dispatched_by_autonomous: 0,
       epic_id: null,
       pr_url: null,
     };
@@ -1470,6 +1512,7 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
       board_id: 'board-1',
       session_id: 'sess-dup',
       autonomous_iterations: 0,
+      dispatched_by_autonomous: 0,
       epic_id: null,
       pr_url: null,
     };

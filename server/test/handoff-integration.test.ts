@@ -608,6 +608,7 @@ describe('buildHandoffSeedingContent', () => {
     epic_id: null,
     documented: 0,
     autonomous_iterations: 0,
+    dispatched_by_autonomous: 0,
     created_at: '',
     updated_at: '',
   } as unknown as import('../types.js').KanbanCardRow;

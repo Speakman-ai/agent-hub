@@ -850,6 +850,21 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  try {
+    db.prepare('SELECT dispatched_by_autonomous FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec(
+      'ALTER TABLE kanban_cards ADD COLUMN dispatched_by_autonomous INTEGER NOT NULL DEFAULT 0',
+    );
+    db.exec('UPDATE kanban_cards SET dispatched_by_autonomous = 1 WHERE autonomous_iterations > 0');
+    db.exec(
+      `UPDATE kanban_cards SET dispatched_by_autonomous = 1
+       WHERE epic_id IS NOT NULL
+       AND epic_id IN (SELECT id FROM kanban_epics WHERE autonomous = 1)
+       AND dispatched_by_autonomous = 0`,
+    );
+  }
+
   // Per-device push notification preferences. JSON array of enabled event
   // type strings; NULL = all events enabled (legacy default).
   try {
@@ -1856,7 +1871,7 @@ function initDb(dataDir: string): void {
          c.position ASC`,
     ),
     incrementCardIterations: db.prepare(
-      `UPDATE kanban_cards SET autonomous_iterations = autonomous_iterations + 1, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE kanban_cards SET autonomous_iterations = autonomous_iterations + 1, dispatched_by_autonomous = 1, updated_at = datetime('now') WHERE id = ?`,
     ),
     resetCardIterations: db.prepare(
       `UPDATE kanban_cards SET autonomous_iterations = 0, updated_at = datetime('now') WHERE id = ?`,

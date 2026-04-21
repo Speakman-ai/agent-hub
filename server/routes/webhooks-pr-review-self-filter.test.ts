@@ -27,6 +27,7 @@ const CARD: KanbanCardRow = {
   github_issue_url: null,
   pr_url: 'https://github.com/owner/repo/pull/42',
   epic_id: null,
+  dispatched_by_autonomous: 0,
   position: 0,
   created_at: '',
   updated_at: '',
