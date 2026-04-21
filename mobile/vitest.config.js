@@ -1,8 +1,8 @@
 import { defineConfig } from 'vitest/config';
 
-// Mobile (React Native / Expo) unit tests — scoped to pure-JS utility
-// modules in `src/utils/`. Component tests need the Expo/jest-expo runner
-// and are intentionally out of scope here.
+// Mobile (React Native / Expo) unit tests — scoped to pure-JS modules in
+// `src/utils/` (including SessionTail lazy-fetch helpers used by components).
+// Full RN component tests need the Expo/jest-expo runner and stay out of scope.
 export default defineConfig({
   test: {
     globals: true,

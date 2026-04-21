@@ -24,7 +24,8 @@
  * @param {boolean|undefined} args.streaming      — true while the CLI is live
  * @param {Array|undefined} args.events           — already-loaded events; a
  *                                                  defined empty array means
- *                                                  "we tried, nothing here"
+ *                                                  "loaded successfully, DB had
+ *                                                  no rows" (never used for HTTP errors)
  * @returns {boolean}
  */
 export function shouldAutoLoadEvents({ messageId, streaming, events }) {

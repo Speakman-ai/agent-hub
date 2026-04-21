@@ -5,6 +5,7 @@ import { colors } from '../theme/colors';
 import { isFileModifyingTool } from '../utils/diff';
 import { eventsToBlocks, summarizeToolInput } from '../utils/sessionTailBlocks';
 import { shouldAutoLoadEvents } from '../utils/shouldAutoLoadEvents';
+import { applyLazyMessageEventsResult } from '../utils/sessionTailEventsLoad.js';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
 import AskUserQuestion from './AskUserQuestion';
@@ -33,6 +34,14 @@ function SessionTail({
   const [expanded, setExpanded] = useState(false);
   const [expandedBlocks, setExpandedBlocks] = useState({});
   const [loading, setLoading] = useState(false);
+  /** True after a lazy events GET fails — never cache [] on failure (web SessionTail parity). */
+  const [eventsFetchFailed, setEventsFetchFailed] = useState(false);
+  const [eventsFetchRetry, setEventsFetchRetry] = useState(0);
+
+  useEffect(() => {
+    setEventsFetchFailed(false);
+    setEventsFetchRetry(0);
+  }, [message?.id]);
 
   // Eagerly lazy-load events for historical (non-streaming) assistant messages
   // so any persisted `ask_user_question` events surface their picker without
@@ -41,20 +50,30 @@ function SessionTail({
   useEffect(() => {
     if (!shouldAutoLoadEvents({ messageId: message?.id, streaming, events })) return;
     if (loading) return;
+    if (eventsFetchFailed) return;
     let cancelled = false;
     setLoading(true);
     api
       .getMessageEvents(message.id)
       .then((data) => {
-        if (cancelled) return;
-        const mapped = (data || []).map((e) => ({
-          seq: e.seq,
-          event: typeof e.event === 'string' ? JSON.parse(e.event) : e.event,
-        }));
-        onEventsLoaded?.(message.id, mapped);
+        applyLazyMessageEventsResult({
+          cancelled,
+          ok: true,
+          data,
+          messageId: message.id,
+          onEventsLoaded,
+        });
+        if (!cancelled) setEventsFetchFailed(false);
       })
       .catch(() => {
-        if (!cancelled) onEventsLoaded?.(message.id, []);
+        applyLazyMessageEventsResult({
+          cancelled,
+          ok: false,
+          data: null,
+          messageId: message.id,
+          onEventsLoaded,
+        });
+        if (!cancelled) setEventsFetchFailed(true);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -63,7 +82,7 @@ function SessionTail({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [message?.id, streaming, events]);
+  }, [message?.id, streaming, events, eventsFetchFailed, eventsFetchRetry]);
 
   // Lazy-load events on expand (covers the edge case where a user manually
   // expands before the auto-load effect has run, e.g. mid-fetch retries).
@@ -73,16 +92,28 @@ function SessionTail({
       api
         .getMessageEvents(message.id)
         .then((data) => {
-          const mapped = (data || []).map((e) => ({
-            seq: e.seq,
-            event: typeof e.event === 'string' ? JSON.parse(e.event) : e.event,
-          }));
-          onEventsLoaded?.(message.id, mapped);
+          applyLazyMessageEventsResult({
+            cancelled: false,
+            ok: true,
+            data,
+            messageId: message.id,
+            onEventsLoaded,
+          });
+          setEventsFetchFailed(false);
         })
-        .catch(() => onEventsLoaded?.(message.id, []))
+        .catch(() => {
+          applyLazyMessageEventsResult({
+            cancelled: false,
+            ok: false,
+            data: null,
+            messageId: message.id,
+            onEventsLoaded,
+          });
+          setEventsFetchFailed(true);
+        })
         .finally(() => setLoading(false));
     }
-  }, [expanded, events, message.id, loading, onEventsLoaded]);
+  }, [expanded, events, message.id, loading, onEventsLoaded, eventsFetchRetry]);
 
   const blocks = useMemo(() => eventsToBlocks(events), [events]);
 
@@ -94,7 +125,24 @@ function SessionTail({
 
   if (!expanded) {
     const hasMeta = toolCount > 0 || thinkingCount > 0 || resultBlock;
-    if (!hasMeta && !events && askBlocks.length === 0) return null;
+    if (!hasMeta && !events && askBlocks.length === 0) {
+      if (eventsFetchFailed) {
+        return (
+          <View style={styles.retryBanner}>
+            <TouchableOpacity
+              onPress={() => {
+                setEventsFetchFailed(false);
+                setEventsFetchRetry((n) => n + 1);
+              }}
+              accessibilityRole="button"
+            >
+              <Text style={styles.retryText}>Could not load timeline. Tap to retry.</Text>
+            </TouchableOpacity>
+          </View>
+        );
+      }
+      return null;
+    }
 
     return (
       <View>
@@ -148,6 +196,18 @@ function SessionTail({
       ))}
 
       {loading && <Text style={styles.loadingText}>Loading events...</Text>}
+
+      {eventsFetchFailed && !loading && (
+        <TouchableOpacity
+          style={styles.retryBanner}
+          onPress={() => {
+            setEventsFetchFailed(false);
+            setEventsFetchRetry((n) => n + 1);
+          }}
+        >
+          <Text style={styles.retryText}>Could not load timeline. Tap to retry.</Text>
+        </TouchableOpacity>
+      )}
 
       {blocks.map((block, idx) => {
         const isBlockExpanded = expandedBlocks[idx];
@@ -365,6 +425,18 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   loadingText: { fontSize: 11, color: colors.gray600, padding: 12, fontStyle: 'italic' },
+  retryBanner: {
+    marginHorizontal: 12,
+    marginTop: 4,
+    marginBottom: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    backgroundColor: 'rgba(120, 53, 15, 0.2)',
+  },
+  retryText: { fontSize: 11, color: colors.amber400, textAlign: 'center' },
   eventRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',

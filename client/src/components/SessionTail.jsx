@@ -34,6 +34,7 @@ import {
   Timer,
   Bookmark,
   ClipboardList,
+  Loader2,
 } from 'lucide-react';
 
 /**
@@ -50,8 +51,10 @@ import {
  *                  May be undefined when not yet loaded.
  *   agentColor   — color stripe for the assistant identity
  *   streaming    — true while a process is actively producing events
- *   onEventsLoaded(messageId, events) — called after a successful HTTP fetch,
- *                  so the parent can hoist the events into shared state
+ *   onEventsLoaded(messageId, events) — called after a **successful** HTTP fetch
+ *                  so the parent can hoist the events into shared state. Never
+ *                  use an empty array to mean "fetch failed" — that poisons the
+ *                  parent's cache (`events !== undefined`) and skips refetch.
  */
 function SessionTail({
   message,
@@ -70,39 +73,133 @@ function SessionTail({
 }) {
   const messageId = message?.id;
 
+  /** Tracks lazy GET /messages/:id/events — must not conflate with "loaded empty". */
+  const [eventFetchState, setEventFetchState] = useState('idle');
+  /** Snapshot from the lazy fetch until the parent hoists the same rows into `events`. */
+  const [localEvents, setLocalEvents] = useState(null);
+  const [eventFetchRetry, setEventFetchRetry] = useState(0);
+
+  useEffect(() => {
+    setEventFetchState('idle');
+    setLocalEvents(null);
+  }, [messageId]);
+
   // If we don't have events yet AND this isn't a live stream, lazy-fetch them.
   // Live streams are populated via WS broadcasts, so no fetch is needed there.
   useEffect(() => {
     if (events !== undefined || streaming || !messageId) return;
     let cancelled = false;
+    setEventFetchState('loading');
     api
       .getMessageEvents(messageId)
       .then((rows) => {
         if (cancelled) return;
         // API returns [{ id, seq, event_type, event, timestamp }, ...]
-        onEventsLoaded?.(
-          messageId,
-          rows.map((r) => ({ seq: r.seq, event: r.event })),
-        );
+        const mapped = rows.map((r) => ({ seq: r.seq, event: r.event }));
+        setLocalEvents(mapped);
+        setEventFetchState('ok');
+        onEventsLoaded?.(messageId, mapped);
       })
       .catch(() => {
-        // Empty array signals "we tried, nothing here" so we don't loop.
-        if (!cancelled) onEventsLoaded?.(messageId, []);
+        if (!cancelled) {
+          setLocalEvents(null);
+          setEventFetchState('error');
+          // Do NOT call onEventsLoaded([]): once the parent caches any value
+          // (including []), `events !== undefined` and the lazy effect skips
+          // refetch — trapping LegacyAssistantBubble while persisted assistant
+          // content has ask fences stripped (bug: "question didn't generate").
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [messageId, events, streaming, onEventsLoaded]);
+  }, [messageId, events, streaming, onEventsLoaded, eventFetchRetry]);
 
-  const blocks = useMemo(() => eventsToBlocks(events ?? [], verboseMode), [events, verboseMode]);
-  const hasEvents = !!events && events.length > 0;
+  const effectiveEvents = events !== undefined ? events : localEvents;
+  const blocks = useMemo(
+    () => eventsToBlocks(effectiveEvents ?? [], verboseMode),
+    [effectiveEvents, verboseMode],
+  );
+  const hasEvents = !!effectiveEvents && effectiveEvents.length > 0;
+
+  const timelineFetchPending =
+    !streaming &&
+    !!messageId &&
+    events === undefined &&
+    eventFetchState !== 'ok' &&
+    eventFetchState !== 'error';
+
+  const timelineFetchFailed =
+    !streaming && !!messageId && events === undefined && eventFetchState === 'error';
+
+  // While we are fetching the event timeline, avoid LegacyAssistantBubble: it
+  // cannot render ask_user_question pickers, but persisted message.content has
+  // ask fences stripped — a failed fetch used to cache [] and trap us there.
+  if (timelineFetchPending) {
+    return (
+      <div className="flex justify-start mb-4">
+        <div className="max-w-[95%] sm:max-w-[90%] w-full bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
+          <Header
+            agentColor={agentColor}
+            engine={message?.engine}
+            model={message?.model}
+            streaming={false}
+            createdAt={message?.created_at}
+          />
+          <div
+            className="mt-3 flex items-center gap-2 text-xs text-gray-400"
+            data-testid="session-tail-events-loading"
+          >
+            <Loader2 size={14} className="animate-spin text-gray-500" aria-hidden />
+            <span>Loading message timeline…</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (timelineFetchFailed) {
+    return (
+      <div className="flex justify-start mb-4">
+        <div className="max-w-[95%] sm:max-w-[90%] w-full bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
+          <Header
+            agentColor={agentColor}
+            engine={message?.engine}
+            model={message?.model}
+            streaming={false}
+            createdAt={message?.created_at}
+          />
+          <div
+            className="mt-3 flex flex-col gap-2 rounded-lg border border-amber-800/50 bg-amber-950/25 px-3 py-2.5 text-xs text-amber-100"
+            data-testid="session-tail-events-error"
+          >
+            <span className="flex items-center gap-2">
+              <AlertTriangle size={14} className="text-amber-400 shrink-0" />
+              Could not load the message timeline (tools, pickers, and streaming blocks). Check your
+              connection and try again.
+            </span>
+            <button
+              type="button"
+              onClick={() => setEventFetchRetry((n) => n + 1)}
+              className="self-start rounded-md bg-amber-700/40 px-2.5 py-1 text-[11px] font-medium text-amber-50 hover:bg-amber-600/50"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Fallback: when there are no events to render (either truly legacy, or
-  // still loading) but we have saved message content, render the legacy
-  // bubble. This avoids a flash of "almost-empty container" while the lazy
-  // events fetch is in flight, and is the permanent rendering for messages
-  // saved before stream-json capture was added.
-  if (!streaming && !hasEvents && message?.content) {
+  // fetch completed with an empty timeline) but we have saved message content,
+  // render the legacy bubble. Pre-stream-json messages only.
+  if (
+    !streaming &&
+    !hasEvents &&
+    message?.content &&
+    (events !== undefined || eventFetchState === 'ok')
+  ) {
     return (
       <LegacyAssistantBubble
         message={message}
