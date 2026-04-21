@@ -245,13 +245,17 @@ function askEvent(ask: ExtractedAsk): AskUserQuestionEvent {
 
 export function createStreamParser(engine: string): StreamParser {
   let buffer = '';
+  // Codex `file_change` items are often emitted only on `item.completed` (no
+  // preceding `item.started`). Track ids that already got a tool_use so we
+  // don't duplicate when both events appear.
+  const codexFileChangeToolUseIssued = new Set<string>();
   const normalize: NormalizeFn =
     engine === 'cursor-agent'
       ? normalizeCursor
       : engine === 'gemini-cli'
         ? normalizeGemini
         : engine === 'codex-cli'
-          ? normalizeCodex
+          ? (raw) => normalizeCodex(raw, codexFileChangeToolUseIssued)
           : normalizeClaude;
 
   return {
@@ -772,7 +776,8 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
 //   agent_message      — final assistant text (emit assistant_text)
 //   reasoning          — chain-of-thought (emit thinking)
 //   command_execution  — shell command (emit tool_use on started, tool_result on completed)
-//   file_change        — pending/applied edits (tool_use + tool_result)
+//   file_change        — applied edits (tool_use + tool_result; often only
+//                        item.completed — see normalizeCodex)
 //   mcp_tool_call      — external MCP tool (tool_use + tool_result)
 //   web_search         — search query (tool_use)
 //   todo_list          — plan snapshot (currently ignored)
@@ -780,7 +785,10 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
 //
 // Codex does not stream token-level deltas today — agent_message arrives as a
 // whole item on `item.completed`, mirroring Gemini's non-partial behavior.
-function normalizeCodex(raw: Record<string, unknown>): StreamEvent[] {
+function normalizeCodex(
+  raw: Record<string, unknown>,
+  fileChangeToolUseIssued?: Set<string>,
+): StreamEvent[] {
   const type = raw.type as string | undefined;
 
   switch (type) {
@@ -870,6 +878,7 @@ function normalizeCodex(raw: Record<string, unknown>): StreamEvent[] {
         case 'file_change': {
           const changes = item.changes ?? [];
           if (type === 'item.started') {
+            fileChangeToolUseIssued?.add(id);
             return [
               {
                 type: 'tool_use',
@@ -880,14 +889,23 @@ function normalizeCodex(raw: Record<string, unknown>): StreamEvent[] {
             ];
           }
           if (type === 'item.completed') {
-            return [
-              {
-                type: 'tool_result',
-                toolUseId: id,
-                output: stringifyToolResult(changes),
-                isError: item.status === 'failed',
-              },
-            ];
+            const out: StreamEvent[] = [];
+            if (!fileChangeToolUseIssued?.has(id)) {
+              out.push({
+                type: 'tool_use',
+                id,
+                tool: 'Edit',
+                input: { changes } as Record<string, unknown>,
+              });
+            }
+            fileChangeToolUseIssued?.delete(id);
+            out.push({
+              type: 'tool_result',
+              toolUseId: id,
+              output: stringifyToolResult(changes),
+              isError: item.status === 'failed',
+            });
+            return out;
           }
           return [];
         }

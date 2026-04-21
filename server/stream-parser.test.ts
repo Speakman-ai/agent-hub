@@ -1,5 +1,10 @@
 import { createStreamParser, extractAskBlocks, extractStepMarkers } from './stream-parser.js';
-import type { AskUserQuestionEvent, ProgressStepEvent, StreamEvent } from './types.js';
+import type {
+  AskUserQuestionEvent,
+  ProgressStepEvent,
+  StreamEvent,
+  ToolUseEvent,
+} from './types.js';
 
 describe('createStreamParser — Claude Code', () => {
   function parse(lines: string[]): StreamEvent[] {
@@ -1223,6 +1228,57 @@ describe('createStreamParser — Codex CLI', () => {
     expect((events[0] as { input: Record<string, unknown> }).input).toEqual({
       query: 'node lts version',
     });
+  });
+
+  it('emits tool_use + tool_result for file_change on item.completed alone', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'fc_1',
+          type: 'file_change',
+          status: 'completed',
+          changes: [{ path: 'README.md', kind: 'update' }],
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('tool_use');
+    const toolUse = events[0] as ToolUseEvent;
+    expect(toolUse.tool).toBe('Edit');
+    expect(toolUse.id).toBe('fc_1');
+    expect(toolUse.input.changes).toEqual([{ path: 'README.md', kind: 'update' }]);
+    expect(events[1].type).toBe('tool_result');
+    expect((events[1] as { toolUseId: string }).toolUseId).toBe('fc_1');
+    expect((events[1] as { isError: boolean }).isError).toBe(false);
+  });
+
+  it('does not duplicate tool_use when file_change has item.started then item.completed', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.started',
+        item: {
+          id: 'fc_2',
+          type: 'file_change',
+          status: 'in_progress',
+          changes: [],
+        },
+      }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'fc_2',
+          type: 'file_change',
+          status: 'completed',
+          changes: [{ path: 'a.ts', kind: 'add' }],
+        },
+      }),
+    ]);
+    const toolUses = events.filter((e) => e.type === 'tool_use');
+    const toolResults = events.filter((e) => e.type === 'tool_result');
+    expect(toolUses).toHaveLength(1);
+    expect(toolResults).toHaveLength(1);
+    expect((toolResults[0] as { toolUseId: string }).toolUseId).toBe('fc_2');
   });
 
   it('emits tool_use + tool_result for mcp_tool_call', () => {

@@ -71,4 +71,13 @@ describe('parseDiffLines', () => {
     const { filePath } = parseDiffLines('Write', { path: '/legacy/a.js', content: 'x' });
     expect(filePath).toBe('/legacy/a.js');
   });
+
+  it('parses Codex file_change changes[]', () => {
+    const { filePath, action, additions } = parseDiffLines('Edit', {
+      changes: [{ path: 'x.ts', kind: 'update' }],
+    });
+    expect(filePath).toBe('x.ts');
+    expect(action).toBe('Update');
+    expect(additions[0]).toContain('line-level diff not included');
+  });
 });

@@ -85,4 +85,37 @@ describe('parseDiffLines', () => {
     expect(result.removals).toEqual(['']);
     expect(result.additions).toEqual(['']);
   });
+
+  it('parses Codex file_change changes[] (path + kind only)', () => {
+    const result = parseDiffLines('Edit', {
+      changes: [{ path: 'server/foo.ts', kind: 'update' }],
+    });
+    expect(result.filePath).toBe('server/foo.ts');
+    expect(result.action).toBe('Update');
+    expect(result.removals).toEqual([]);
+    expect(result.additions[0]).toContain('server/foo.ts');
+    expect(result.additions[0]).toContain('line-level diff not included');
+  });
+
+  it('parses Codex multi-file patch as Patch summary', () => {
+    const result = parseDiffLines('Edit', {
+      changes: [
+        { path: 'a.ts', kind: 'add' },
+        { path: 'b.ts', kind: 'delete' },
+      ],
+    });
+    expect(result.filePath).toBe('2 files');
+    expect(result.action).toBe('Patch');
+    expect(result.additions).toHaveLength(2);
+    expect(result.additions[0]).toMatch(/^add\s+a\.ts/);
+    expect(result.additions[1]).toMatch(/^delete\s+b\.ts/);
+  });
+
+  it('renders Codex unified_diff when present', () => {
+    const result = parseDiffLines('Edit', {
+      changes: [{ path: 'x.ts', kind: 'update', unified_diff: '-old\n+new' }],
+    });
+    expect(result.filePath).toBe('x.ts');
+    expect(result.additions).toEqual(['update  x.ts', '-old', '+new']);
+  });
 });
