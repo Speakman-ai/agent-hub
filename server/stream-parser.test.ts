@@ -913,6 +913,64 @@ describe('createStreamParser — Gemini CLI', () => {
     expect((events[0] as { input: Record<string, unknown> }).input).toEqual({ command: 'ls' });
   });
 
+  it('normalizes real google gemini-cli tool_use shape (tool_name/tool_id/parameters)', () => {
+    // Matches the stream-json schema shipped in google-gemini/gemini-cli PR #10883.
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_use',
+        tool_name: 'Bash',
+        tool_id: 'bash-123',
+        parameters: { command: 'ls -la' },
+        timestamp: '2025-10-10T12:00:02.000Z',
+      }),
+    ]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_use');
+    expect((events[0] as { id: string }).id).toBe('bash-123');
+    expect((events[0] as { tool: string }).tool).toBe('Bash');
+    expect((events[0] as { input: Record<string, unknown> }).input).toEqual({
+      command: 'ls -la',
+    });
+  });
+
+  it('pairs tool_result to tool_use via real gemini-cli tool_id field', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_use',
+        tool_name: 'Bash',
+        tool_id: 'bash-abc',
+        parameters: { command: 'echo hi' },
+      }),
+      JSON.stringify({
+        type: 'tool_result',
+        tool_id: 'bash-abc',
+        status: 'success',
+        output: 'hi',
+      }),
+      JSON.stringify({
+        type: 'tool_result',
+        tool_id: 'bash-xyz',
+        status: 'error',
+        output: 'nope',
+      }),
+    ]);
+
+    const use = events.find((e) => e.type === 'tool_use') as { id: string };
+    const results = events.filter((e) => e.type === 'tool_result') as Array<{
+      toolUseId: string;
+      output: string;
+      isError: boolean;
+    }>;
+    expect(use.id).toBe('bash-abc');
+    expect(results).toHaveLength(2);
+    expect(results[0].toolUseId).toBe('bash-abc');
+    expect(results[0].output).toBe('hi');
+    expect(results[0].isError).toBe(false);
+    expect(results[1].toolUseId).toBe('bash-xyz');
+    expect(results[1].isError).toBe(true);
+  });
+
   it('normalizes tool_result events including isError', () => {
     const events = parse([
       JSON.stringify({

@@ -660,10 +660,22 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
     }
 
     case 'tool_use': {
-      const id = (raw.id as string) ?? (raw.toolUseId as string) ?? simpleHash(JSON.stringify(raw));
-      const toolName = (raw.name as string) ?? (raw.tool as string) ?? 'unknown';
+      // Real Google gemini-cli stream-json uses `tool_name`/`tool_id`/`parameters`
+      // (see google-gemini/gemini-cli PR #10883). Earlier drafts of the docs used
+      // `name`/`id`/`input` / `tool`/`args`, so keep those as fallbacks for
+      // forward-compat with older CLI versions and test fixtures.
+      const id =
+        (raw.tool_id as string) ??
+        (raw.id as string) ??
+        (raw.toolUseId as string) ??
+        simpleHash(JSON.stringify(raw));
+      const toolName =
+        (raw.tool_name as string) ?? (raw.name as string) ?? (raw.tool as string) ?? 'unknown';
       const input =
-        (raw.input as Record<string, unknown>) ?? (raw.args as Record<string, unknown>) ?? {};
+        (raw.parameters as Record<string, unknown>) ??
+        (raw.input as Record<string, unknown>) ??
+        (raw.args as Record<string, unknown>) ??
+        {};
       return [
         {
           type: 'tool_use',
@@ -675,14 +687,16 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
     }
 
     case 'tool_result': {
-      const toolUseId = (raw.toolUseId as string) ?? (raw.tool_use_id as string) ?? '';
+      // Real gemini-cli pairs results via `tool_id`; older schema used `toolUseId`/`tool_use_id`.
+      const toolUseId =
+        (raw.tool_id as string) ?? (raw.toolUseId as string) ?? (raw.tool_use_id as string) ?? '';
       const output = stringifyToolResult(raw.output ?? raw.content);
       return [
         {
           type: 'tool_result',
           toolUseId,
           output,
-          isError: raw.isError === true || raw.is_error === true,
+          isError: raw.isError === true || raw.is_error === true || raw.status === 'error',
         },
       ];
     }
