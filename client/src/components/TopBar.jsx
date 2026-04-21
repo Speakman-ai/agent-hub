@@ -35,7 +35,7 @@ export default function TopBar({
   onNavigate,
   onToggleSidebar,
   sessionEngine,
-  onEngineChange: _onEngineChange,
+  onEngineChange,
   sessionModel,
   onModelChange,
   messages,
@@ -53,10 +53,12 @@ export default function TopBar({
   canForward,
 }) {
   const [modelOpen, setModelOpen] = useState(false);
+  const [engineOpen, setEngineOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportState, setExportState] = useState(null); // null | 'summarizing' | 'copied' | 'saving' | 'saved'
   const modelRef = useRef(null);
+  const engineRef = useRef(null);
   const exportRef = useRef(null);
   const currentEngine = ENGINE_OPTIONS.find((e) => e.id === sessionEngine) || ENGINE_OPTIONS[0];
   const engineModels = ENGINE_MODELS[sessionEngine] || ENGINE_MODELS['claude-code'];
@@ -67,6 +69,9 @@ export default function TopBar({
     const handler = (e) => {
       if (modelRef.current && !modelRef.current.contains(e.target)) {
         setModelOpen(false);
+      }
+      if (engineRef.current && !engineRef.current.contains(e.target)) {
+        setEngineOpen(false);
       }
       if (exportRef.current && !exportRef.current.contains(e.target)) {
         setExportOpen(false);
@@ -259,6 +264,65 @@ export default function TopBar({
           </button>
         )}
 
+        {/* Desktop: Engine Selector */}
+        {agent && (
+          <div className="hidden sm:flex items-center gap-1.5" ref={engineRef}>
+            <div className="relative">
+              <button
+                onClick={() => setEngineOpen((v) => !v)}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors border border-gray-700"
+                title={`Engine: ${currentEngine.label}`}
+                aria-label="Select engine"
+              >
+                <span
+                  className="w-2.5 h-2.5 rounded-full"
+                  style={{ backgroundColor: currentEngine.color }}
+                />
+                <span className="text-gray-300">{currentEngine.label}</span>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className={`h-3 w-3 text-gray-500 transition-transform ${engineOpen ? 'rotate-180' : ''}`}
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M5.293 7.293a1 1 0 011.414 0L10 11.586l4.293-4.293a1 1 0 111.414 1.414l-5 5a1 1 0 01-1.414 0l-5-5a1 1 0 010-1.414z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </button>
+              {engineOpen && (
+                <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-[180px] py-1">
+                  {ENGINE_OPTIONS.map((e) => (
+                    <button
+                      key={e.id}
+                      onClick={() => {
+                        onEngineChange(e.id);
+                        setEngineOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
+                        e.id === sessionEngine ? 'text-white' : 'text-gray-400'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full"
+                          style={{ backgroundColor: e.color }}
+                        />
+                        {e.label}
+                      </span>
+                      {e.id === sessionEngine && (
+                        <span className="text-emerald-400 text-xs">✓</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Desktop: Model Selector */}
         {agent && (
           <div className="hidden sm:flex items-center gap-1.5" ref={modelRef}>
@@ -334,6 +398,33 @@ export default function TopBar({
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setMobileMenuOpen(false)} />
                 <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-[200px] py-1">
+                  <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
+                    Engine
+                  </div>
+                  {ENGINE_OPTIONS.map((e) => (
+                    <button
+                      key={e.id}
+                      onClick={() => {
+                        onEngineChange(e.id);
+                        setMobileMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
+                        e.id === sessionEngine ? 'text-white' : 'text-gray-400'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full"
+                          style={{ backgroundColor: e.color }}
+                        />
+                        {e.label}
+                      </span>
+                      {e.id === sessionEngine && (
+                        <span className="text-emerald-400 text-xs">✓</span>
+                      )}
+                    </button>
+                  ))}
+                  <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
                     Model
                   </div>
