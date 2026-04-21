@@ -924,8 +924,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         },
       );
 
-      if (!result) {
-        return res.status(422).json({ error: 'No changes to commit or PR creation failed' });
+      if (!result.ok) {
+        return res.status(422).json({ error: result.error, code: result.code });
       }
 
       stmts.clearSessionChangesReady.run(sessionId);

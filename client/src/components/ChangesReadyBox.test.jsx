@@ -110,4 +110,16 @@ describe('ChangesReadyBox auto-merge default', () => {
     });
     expect(api.createPrFromSession).toHaveBeenCalledWith('session-1', { autoMerge: false });
   });
+
+  it('surfaces create-pr API error text in the inline error panel (Codex / multiline commit failures)', async () => {
+    api.createPrFromSession.mockRejectedValueOnce(
+      new Error('422: Git commit failed: pre-commit hook blocked the commit'),
+    );
+    render(<ChangesReadyBox {...baseProps} />);
+    fireEvent.click(screen.getByRole('button', { name: /create ticket & pr/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Git commit failed/)).toBeInTheDocument();
+    });
+  });
 });

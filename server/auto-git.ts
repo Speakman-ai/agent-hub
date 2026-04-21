@@ -463,6 +463,37 @@ export async function checkWorktreeChanges(cwd: string): Promise<WorktreeChanges
  *   - PR requirements not met → logged warning, PR still succeeds
  *   - Any other failure → logged, doesn't cascade
  */
+/** Result of `commitPushAndCreatePR` — discriminated union for logging + API errors. */
+export type CommitPushPrResult =
+  | { ok: true; prUrl: string }
+  | { ok: false; error: string; code: CommitPushPrFailureCode };
+
+export type CommitPushPrFailureCode =
+  | 'nothing_to_publish'
+  | 'commit_failed'
+  | 'push_failed'
+  | 'pr_failed';
+
+/** User-facing outcome of `manualCommitAndPR` (Create PR button / API). */
+export type ManualPrResult =
+  | { ok: true; prUrl: string; cardId: string }
+  | { ok: false; error: string; code: string };
+
+function humanizeCommitPrFailure(r: Extract<CommitPushPrResult, { ok: false }>): string {
+  switch (r.code) {
+    case 'nothing_to_publish':
+      return 'Nothing to publish: the worktree is clean and no open pull request was found for this branch.';
+    case 'push_failed':
+      return `Git push failed: ${r.error}`;
+    case 'pr_failed':
+      return `Could not open a pull request: ${r.error}`;
+    case 'commit_failed':
+      return `Git commit failed: ${r.error}`;
+    default:
+      return r.error;
+  }
+}
+
 async function enableAutoMergeIfNeeded(
   prUrl: string,
   project: Project,
@@ -487,7 +518,7 @@ async function commitPushAndCreatePR(
   effectiveCwd: string,
   card: KanbanCardRow | undefined,
   options?: { autoMergeOverride?: boolean },
-): Promise<{ prUrl: string } | null> {
+): Promise<CommitPushPrResult> {
   const d = getDeps();
 
   const changes = await checkWorktreeChanges(effectiveCwd);
@@ -520,12 +551,16 @@ async function commitPushAndCreatePR(
           const msg = err instanceof Error ? err.message : String(err);
           console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
         });
-        return { prUrl: existingPrUrl };
+        return { ok: true, prUrl: existingPrUrl };
       }
     } catch {
       // No open PR for this branch
     }
-    return null;
+    return {
+      ok: false,
+      error: 'No local changes to publish and no open pull request for this branch.',
+      code: 'nothing_to_publish',
+    };
   }
 
   console.log(
@@ -573,8 +608,16 @@ async function commitPushAndCreatePR(
     // so those edits are included in the commit (matches typical hook UX).
     await execAsync('git add -A', { cwd: effectiveCwd });
     const fullMessage = `${commitTitle}\n${commitBody}`;
-    await execFileAsync('git', ['commit', '-m', fullMessage], { cwd: effectiveCwd });
-    console.log(`[auto-commit] Committed: ${commitTitle}`);
+    try {
+      // execFile keeps `-m` body off /bin/sh — Codex/card bodies often contain
+      // newlines, backticks, and `$` that would break `exec('git commit -m "…"')`.
+      await execFileAsync('git', ['commit', '-m', fullMessage], { cwd: effectiveCwd });
+      console.log(`[auto-commit] Committed: ${commitTitle}`);
+    } catch (commitErr: unknown) {
+      const msg = commitErr instanceof Error ? commitErr.message : String(commitErr);
+      console.error(`[auto-commit] Commit failed: ${msg}`);
+      return { ok: false, error: msg, code: 'commit_failed' };
+    }
   } else {
     console.log(`[auto-commit] Agent already committed — skipping commit, will push + PR`);
   }
@@ -588,7 +631,7 @@ async function commitPushAndCreatePR(
   } catch (pushErr: unknown) {
     const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
     console.error(`[auto-commit] Push failed: ${msg}`);
-    return null;
+    return { ok: false, error: msg, code: 'push_failed' };
   }
 
   const config = d.getConfig();
@@ -744,7 +787,7 @@ async function commitPushAndCreatePR(
 
     const prUrl = prOutput.match(/https:\/\/github\.com\/.+\/pull\/\d+/)?.[0] || prOutput.trim();
     await broadcastAndMove(prUrl);
-    return { prUrl };
+    return { ok: true, prUrl };
   } catch (prErr: unknown) {
     const errMsg = prErr instanceof Error ? prErr.message : String(prErr);
     const existingMatch = errMsg.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
@@ -752,7 +795,7 @@ async function commitPushAndCreatePR(
       const prUrl = existingMatch[0];
       console.log(`[auto-commit] PR already exists: ${prUrl} — continuing flow`);
       await broadcastAndMove(prUrl);
-      return { prUrl };
+      return { ok: true, prUrl };
     }
 
     console.error(`[auto-commit] PR creation failed: ${errMsg}`);
@@ -775,12 +818,12 @@ async function commitPushAndCreatePR(
       if (discoveredUrl) {
         console.log(`[auto-commit] Discovered PR by branch name: ${discoveredUrl}`);
         await broadcastAndMove(discoveredUrl);
-        return { prUrl: discoveredUrl };
+        return { ok: true, prUrl: discoveredUrl };
       }
     } catch {
       // No PR found by branch name either
     }
-    return null;
+    return { ok: false, error: errMsg, code: 'pr_failed' };
   }
 }
 
@@ -870,8 +913,21 @@ export async function autoCommitAndPR(
         // pushes the branch, and gracefully handles "PR already exists" by
         // broadcasting `auto_pr_created` with the existing URL via the catch
         // branch in commitPushAndCreatePR. No new PR is opened.
-        await commitPushAndCreatePR(sessionId, agentId, project, agent, effectiveCwd, undefined);
-        d.stmts.clearSessionChangesReady.run(sessionId);
+        const prOutcome = await commitPushAndCreatePR(
+          sessionId,
+          agentId,
+          project,
+          agent,
+          effectiveCwd,
+          undefined,
+        );
+        if (prOutcome.ok) {
+          d.stmts.clearSessionChangesReady.run(sessionId);
+        } else {
+          console.error(
+            `[auto-commit] Ad-hoc push/PR path failed (${prOutcome.code}): ${prOutcome.error}`,
+          );
+        }
         return;
       }
 
@@ -909,7 +965,19 @@ export async function autoCommitAndPR(
     // autonomous system): commit, push, create PR, move card to Review. The
     // Reviewer agent is dispatched separately by the GitHub webhook handler
     // when the PR opens or syncs.
-    await commitPushAndCreatePR(sessionId, agentId, project, agent, effectiveCwd, card);
+    const autonomousOutcome = await commitPushAndCreatePR(
+      sessionId,
+      agentId,
+      project,
+      agent,
+      effectiveCwd,
+      card,
+    );
+    if (!autonomousOutcome.ok) {
+      console.error(
+        `[auto-commit] Autonomous PR path failed (${autonomousOutcome.code}): ${autonomousOutcome.error}`,
+      );
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[auto-commit] Failed: ${msg}`);
@@ -976,13 +1044,17 @@ export async function manualCommitAndPR(
   agent: Agent,
   effectiveCwd: string,
   options: { title?: string; autoMerge?: boolean },
-): Promise<{ prUrl: string; cardId: string } | null> {
+): Promise<ManualPrResult> {
   const d = getDeps();
 
   const board = d.stmts.getKanbanBoard?.get(project.id) as { id: string } | undefined;
   if (!board) {
     console.error(`[manual-pr] No kanban board found for project ${project.id}`);
-    return null;
+    return {
+      ok: false,
+      error: 'No kanban board is configured for this project.',
+      code: 'no_board',
+    };
   }
 
   // Reuse an existing card already linked to this session, if any. Without
@@ -1014,7 +1086,11 @@ export async function manualCommitAndPR(
     const targetCol = inProgressCol || cols[0];
     if (!targetCol) {
       console.error(`[manual-pr] No columns found on board`);
-      return null;
+      return {
+        ok: false,
+        error: 'The kanban board has no columns — cannot create a tracking card.',
+        code: 'no_columns',
+      };
     }
 
     // Build a rich description from session messages + git diff stat
@@ -1065,10 +1141,14 @@ export async function manualCommitAndPR(
     { autoMergeOverride: options.autoMerge },
   );
 
-  if (result?.prUrl) {
+  if (result.ok) {
     d.broadcast({ type: 'kanban_update', projectId: project.id });
-    return { prUrl: result.prUrl, cardId };
+    return { ok: true, prUrl: result.prUrl, cardId };
   }
 
-  return null;
+  return {
+    ok: false,
+    error: humanizeCommitPrFailure(result),
+    code: result.code,
+  };
 }

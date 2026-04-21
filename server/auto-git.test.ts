@@ -1659,8 +1659,11 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
     // The returned cardId MUST be the existing card's id — not a freshly
     // minted UUID. Otherwise the UI would show (and move to Review) a card
     // that doesn't exist in the DB.
-    expect(result?.cardId).toBe('existing-card-abc');
-    expect(result?.prUrl).toBe('https://github.com/test/repo/pull/777');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.cardId).toBe('existing-card-abc');
+      expect(result.prUrl).toBe('https://github.com/test/repo/pull/777');
+    }
   });
 
   it('CREATES a new card when the session has no linked card yet (ad-hoc flow)', async () => {
@@ -1684,7 +1687,87 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
     // Ad-hoc flow: exactly one new card was created, and the flow returned
     // its generated id (not null).
     expect(createKanbanCardRun).toHaveBeenCalledTimes(1);
-    expect(result?.prUrl).toBe('https://github.com/test/repo/pull/888');
-    expect(result?.cardId).toBeTruthy();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prUrl).toBe('https://github.com/test/repo/pull/888');
+      expect(result.cardId).toBeTruthy();
+    }
+  });
+
+  it('returns ok:false with commit_failed when git commit rejects (Create PR API can show this)', async () => {
+    const createKanbanCardRun = vi.fn();
+    const existingCard = {
+      id: 'existing-card-commit-fail',
+      title: 'Task with `backticks`\nand a newline in the title',
+      description: 'Body has `code` and $(date) — must not require shell quoting.',
+      priority: 'medium',
+      column_id: 'col-inprog',
+      board_id: 'board-1',
+      session_id: 'sess-commit-fail',
+      autonomous_iterations: 0,
+      dispatched_by_autonomous: 0,
+      epic_id: null,
+      pr_url: null,
+    };
+    const stmts = makeStmts({ existingCard, createKanbanCardRun });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('abc123 fix: thing\n');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/dup-check\n');
+        if (cmd.startsWith('git rev-parse HEAD')) return ok('abc123def\n');
+        if (cmd.includes('git diff --stat')) return ok('');
+        if (cmd.includes('git log main..HEAD')) return ok('');
+        if (cmd === 'git config user.name') return ok('Tester\n');
+        // execFile joins argv with spaces — full -m body is still one argv element.
+        if (cmd.startsWith('git commit -m')) return fail('pre-commit hook failed');
+        if (cmd.startsWith('gh pr view')) return ok('');
+        if (cmd.startsWith('gh pr create')) return ok('https://github.com/test/repo/pull/1\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    const result = await manualCommitAndPR(
+      'sess-commit-fail',
+      'agent-1',
+      project,
+      agent,
+      '/worktree',
+      {},
+    );
+
+    expect(createKanbanCardRun).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('commit_failed');
+      expect(result.error).toMatch(/Git commit failed/);
+    }
+
+    const gitCommitCalls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c: unknown[]) => c[0] === 'git' && Array.isArray(c[1]) && (c[1] as string[])[0] === 'commit',
+    );
+    expect(gitCommitCalls.length).toBe(1);
+    const argv = gitCommitCalls[0][1] as string[];
+    expect(argv[1]).toBe('-m');
+    const msgArg = argv[2];
+    expect(msgArg).toContain('`backticks`');
+    expect(msgArg).toContain('\n');
+    expect(msgArg).toContain('$(date)');
   });
 });
