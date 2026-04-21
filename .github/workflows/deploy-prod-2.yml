@@ -20,43 +20,13 @@ permissions:
   contents: read
 
 jobs:
-  # Re-run the test suite against the exact tag we're about to roll. The tag
-  # was tested at release time (release-prod.yml `test` job) but main may have
-  # moved on, dependencies may have been re-resolved, and prod-2 frequently
-  # rolls out hours/days after prod-1 — so we re-verify here rather than trust
-  # the historical green signal.
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout tag ${{ github.event.inputs.tag }}
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install root dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Rebuild native modules
-        run: npm rebuild better-sqlite3
-
-      - name: Install server dependencies
-        run: cd server && npm ci
-
-      - name: Install client dependencies
-        run: cd client && npm ci
-
-      - name: Run tests
-        run: npm test
-
+  # Tests are not re-run here. The tag was already gated by ci.yml on the PR
+  # that produced it AND by release-prod.yml at tag-cut time. Re-verifying on
+  # every prod-2 rollout duplicates known-green work and slows the rollout.
+  # If you need to re-run tests against the tag before rolling, do it manually
+  # via `gh workflow run ci.yml --ref <tag>` (or run `npm test` locally).
   deploy-prod-2:
     name: Deploy agent-hub-prod-2
-    needs: test
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}

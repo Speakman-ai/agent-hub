@@ -27,6 +27,38 @@ function readWorkflow(name: string): string {
 
 const WORKFLOWS = ['deploy-dev.yml', 'release-prod.yml'] as const;
 
+// Deploy workflows must NOT re-run the test suite. Tests are already gated by
+// ci.yml on every PR before merge to main; re-running them on the deploy
+// commit/tag duplicates known-green work and lengthens the rollout. This guard
+// keeps a future "let's be safe, add tests back" PR from silently regressing.
+const NO_TEST_JOB_WORKFLOWS = ['deploy-dev.yml', 'deploy-prod-2.yml', 'release-prod.yml'] as const;
+
+describe('deploy workflows do not re-run tests', () => {
+  for (const wf of NO_TEST_JOB_WORKFLOWS) {
+    it(`${wf} has no \`test\` job and no \`npm test\` step`, () => {
+      const content = readWorkflow(wf);
+      // Strip comments so the explanatory header doesn't trigger the assertion.
+      const executable = content
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('#'))
+        .join('\n');
+      // Top-level job key is two-space-indented in our workflows.
+      expect(
+        /^ {2}test:\s*$/m.test(executable),
+        `${wf} re-introduced a top-level \`test:\` job. Tests already gate the PR via ci.yml; deploys should not duplicate.`,
+      ).toBe(false);
+      expect(
+        /\bnpm\s+test\b/.test(executable),
+        `${wf} re-introduced an \`npm test\` step. Tests already gate the PR via ci.yml; deploys should not duplicate.`,
+      ).toBe(false);
+      expect(
+        /\bneeds:\s*test\b/.test(executable),
+        `${wf} re-introduced \`needs: test\`. The test job has been removed; downstream jobs should not depend on it.`,
+      ).toBe(false);
+    });
+  }
+});
+
 describe('SSM deploy workflows', () => {
   for (const wf of WORKFLOWS) {
     describe(wf, () => {

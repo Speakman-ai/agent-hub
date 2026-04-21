@@ -2,9 +2,11 @@ name: CI
 
 on:
   # PR-only. We deliberately do NOT run on push:main — tests already gate the
-  # PR before merge, and the deploy workflows (deploy-dev.yml, release-prod.yml,
-  # deploy-prod-2.yml) re-run tests on the deploy commit/tag, so a duplicate
-  # post-merge run on main would just burn runner minutes.
+  # PR before merge, so a duplicate post-merge run on main would just burn
+  # runner minutes. The deploy workflows (deploy-dev.yml, release-prod.yml,
+  # deploy-prod-2.yml) also no longer re-run tests; if you push directly to
+  # main without a PR, run `gh workflow run ci.yml --ref main` manually before
+  # triggering a deploy.
   pull_request:
     branches: [main]
 
