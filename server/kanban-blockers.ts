@@ -30,6 +30,16 @@ export function isColumnDone(columnName: string | null | undefined): boolean {
 }
 
 /**
+ * Shipped / release lanes count as closed for org headline metrics (`openCards`,
+ * `openPRs`, priority breakdown). Uses a word-boundary match on `shipped` so
+ * **"Unshipped"** is not misclassified (a naive `includes('shipped')` would).
+ */
+export function isColumnShippedLane(columnName: string | null | undefined): boolean {
+  if (!columnName) return false;
+  return /\bshipped\b/i.test(columnName.trim());
+}
+
+/**
  * Columns where the move-confirmation dialog should fire. Dragging a card
  * INTO Backlog or Done with unresolved blockers is never suspicious:
  *  - Backlog: still deferred, blockers irrelevant.

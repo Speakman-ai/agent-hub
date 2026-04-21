@@ -118,6 +118,40 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(seenSeed).toBe(true);
   });
 
+  it('does not count cards in Done-ish columns toward openCards', async () => {
+    const project = await createProject({ name: 'Dashboard openCards Done-ish test' });
+    const projectId = project.id as string;
+
+    const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const board = boardRes.body as {
+      columns: Array<{ id: string; name: string; position: number; color: string | null }>;
+    };
+    const doneCol = board.columns.find((c) => c.name === 'Done');
+    expect(doneCol).toBeDefined();
+
+    await request
+      .put(`/api/projects/${projectId}/board/columns/${doneCol!.id}`)
+      .send({
+        name: 'Deployed / Done',
+        position: doneCol!.position,
+        color: doneCol!.color ?? '#10B981',
+      })
+      .expect(200);
+
+    const dashBefore = await request.get('/api/orgs/default/dashboard').expect(200);
+    const openBefore = (dashBefore.body as DashboardBody).headline.openCards;
+
+    await createCard(projectId, {
+      title: 'Work finished in renamed Done column',
+      columnId: doneCol!.id,
+    });
+
+    const dashAfter = await request.get('/api/orgs/default/dashboard').expect(200);
+    const openAfter = (dashAfter.body as DashboardBody).headline.openCards;
+
+    expect(openAfter).toBe(openBefore);
+  });
+
   it('returns 404 for an unknown org', async () => {
     await request.get('/api/orgs/ghost-org-id/dashboard').expect(404);
   });

@@ -11,6 +11,7 @@ import {
   hasUnresolvedBlockers,
   isColumnBlockerSensitive,
   isColumnDone,
+  isColumnShippedLane,
   loadBoardBlockers,
 } from './kanban-blockers.js';
 import type { Stmts } from './types.js';
@@ -125,6 +126,30 @@ describe('isColumnDone', () => {
     expect(isColumnDone(null)).toBe(false);
     expect(isColumnDone(undefined)).toBe(false);
     expect(isColumnDone('')).toBe(false);
+  });
+});
+
+describe('isColumnShippedLane', () => {
+  it('matches standalone Shipped labels (case-insensitive)', () => {
+    expect(isColumnShippedLane('Shipped')).toBe(true);
+    expect(isColumnShippedLane('shipped')).toBe(true);
+    expect(isColumnShippedLane('SHIPPED')).toBe(true);
+  });
+  it('matches shipped as its own word inside a longer lane name', () => {
+    expect(isColumnShippedLane('Staging Shipped')).toBe(true);
+    expect(isColumnShippedLane('Pre-shipped')).toBe(true);
+  });
+  it('does NOT match Unshipped (still in-flight work)', () => {
+    expect(isColumnShippedLane('Unshipped')).toBe(false);
+    expect(isColumnShippedLane('unshipped')).toBe(false);
+  });
+  it('does NOT match substring shipped without a word boundary', () => {
+    expect(isColumnShippedLane('misshipped')).toBe(false);
+  });
+  it('handles null/undefined/empty', () => {
+    expect(isColumnShippedLane(null)).toBe(false);
+    expect(isColumnShippedLane(undefined)).toBe(false);
+    expect(isColumnShippedLane('')).toBe(false);
   });
 });
 

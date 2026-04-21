@@ -6,6 +6,7 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { getAuthRecord } from '../auth-store.js';
 import config from '../config.js';
 import type { RouteDeps } from '../types.js';
+import { isColumnDone, isColumnShippedLane } from '../kanban-blockers.js';
 
 /**
  * Mirrors `authIsConfigured` in routes/orgs.ts. When neither JWT-backed user
@@ -50,8 +51,9 @@ interface EscalationActivityRow {
   created_at: string;
 }
 
-interface DoneColumnRow {
-  id: string;
+/** Same semantics as headline "open" work: Done-ish columns + shipped lanes. */
+function isHeadlineClosedColumnName(name: string): boolean {
+  return isColumnDone(name) || isColumnShippedLane(name);
 }
 
 export default function createDashboardRoutes(deps: RouteDeps): Router {
@@ -126,16 +128,14 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
         }
       ).c || 0;
 
-    // "Done" is identified by column name rather than a flag — match the
-    // kanban convention used elsewhere (see `isColumnDone`). Case-insensitive
-    // so "done" / "Done" / "DONE" all match.
+    // "Done" is identified by column name (see `isColumnDone` in kanban-blockers).
+    // Must not require an exact spelling of "Done" — boards rename the lane to
+    // "Deployed / Done", "Done ✅", etc.; those must not count toward open cards.
     const doneColumnIds = (
-      db
-        .prepare(
-          "SELECT id FROM kanban_columns WHERE LOWER(name) = 'done' OR LOWER(name) = 'shipped'",
-        )
-        .all() as DoneColumnRow[]
-    ).map((r) => r.id);
+      db.prepare('SELECT id, name FROM kanban_columns').all() as { id: string; name: string }[]
+    )
+      .filter((row) => isHeadlineClosedColumnName(row.name))
+      .map((r) => r.id);
 
     const placeholders = doneColumnIds.length ? doneColumnIds.map(() => '?').join(',') : "''"; // Empty IN (...) isn't legal in SQLite — fall back to a value nothing equals.
 
