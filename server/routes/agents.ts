@@ -28,6 +28,31 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
 
   const router = Router();
 
+  router.post('/api/agents/bulk-engine', (req: Request, res: Response) => {
+    const { engine, model } = req.body as { engine?: string; model?: string };
+    const engines = Object.keys(deps.config.engineValidModels);
+    if (!engine || !engines.includes(engine)) {
+      return res.status(400).json({
+        error: `Invalid or missing engine. Must be one of: ${engines.join(', ')}`,
+      });
+    }
+    const allowed = deps.config.engineValidModels[engine] || [];
+    let resolved = defaultModelForEngine(engine);
+    if (model && typeof model === 'string' && allowed.includes(model)) {
+      resolved = model;
+    }
+    let updated = 0;
+    for (const p of deps.getProjects()) {
+      for (const a of p.agents) {
+        a.engine = engine;
+        a.model = resolved;
+        updated++;
+      }
+    }
+    saveProjects();
+    res.json({ updated, engine, model: resolved });
+  });
+
   router.get('/api/agents', (_req: Request, res: Response) => {
     const enriched = allAgents().map((a) => {
       const sessions = stmts.getSessions.all(a.id) as Array<{ id: string; updated_at: string }>;

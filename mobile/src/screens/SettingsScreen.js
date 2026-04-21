@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -1455,6 +1455,9 @@ function AgentConfigSection() {
   const [edits, setEdits] = useState({});
   const [showNew, setShowNew] = useState(false);
   const [modelConfig, setModelConfig] = useState(null);
+  const [bulkEngine, setBulkEngine] = useState('claude-code');
+  const [bulkModel, setBulkModel] = useState('');
+  const [bulkSaving, setBulkSaving] = useState(false);
   const [newForm, setNewForm] = useState({
     id: '',
     name: '',
@@ -1482,6 +1485,50 @@ function AgentConfigSection() {
   const getDefaultModel = (engine) => {
     if (!modelConfig) return '';
     return modelConfig.engineDefaultModels[engine] || modelConfig.defaultModel || '';
+  };
+
+  const engineChoices = useMemo(() => {
+    if (!modelConfig) return [];
+    return Object.keys(modelConfig.engineValidModels).filter(
+      (e) => (modelConfig.engineValidModels[e]?.length ?? 0) > 0,
+    );
+  }, [modelConfig]);
+
+  useEffect(() => {
+    if (engineChoices.length === 0) return;
+    if (!engineChoices.includes(bulkEngine)) {
+      setBulkEngine(engineChoices[0]);
+      setBulkModel('');
+    }
+  }, [engineChoices, bulkEngine]);
+
+  const handleBulkApplyAll = () => {
+    if (!modelConfig || agents.length === 0) return;
+    const effectiveModel = bulkModel || getDefaultModel(bulkEngine);
+    Alert.alert(
+      'Switch all agents',
+      `Set every agent to ${bulkEngine} / ${effectiveModel}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Apply',
+          style: 'default',
+          onPress: async () => {
+            setBulkSaving(true);
+            try {
+              await api.bulkSetAllAgentsEngine({ engine: bulkEngine, model: effectiveModel });
+              setEdits({});
+              refreshAgents();
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : 'Bulk update failed.';
+              Alert.alert('Error', msg);
+            } finally {
+              setBulkSaving(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const getEdit = (agentId) => {
@@ -1558,6 +1605,70 @@ function AgentConfigSection() {
         </TouchableOpacity>
       </View>
 
+      {agents.length > 0 && modelConfig && (
+        <View style={[styles.formCard, { marginBottom: 12 }]}>
+          <Text style={styles.fieldLabel}>Switch all agents</Text>
+          <Text style={[styles.cardMeta, { marginBottom: 8 }]}>
+            Bulk engine + model (for example when a subscription ends).
+          </Text>
+          <Text style={styles.fieldLabel}>Engine</Text>
+          <View style={styles.engineToggle}>
+            {engineChoices.map((eng) => (
+              <TouchableOpacity
+                key={eng}
+                style={[
+                  styles.engineOption,
+                  bulkEngine === eng && styles.engineOptionActive,
+                ]}
+                onPress={() => {
+                  setBulkEngine(eng);
+                  setBulkModel('');
+                }}
+              >
+                <Text
+                  style={[
+                    styles.engineOptionText,
+                    bulkEngine === eng && styles.engineOptionTextActive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {eng.replace('-code', '').replace('-cli', '').replace('-agent', '')}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={styles.fieldLabel}>Model</Text>
+          <View style={styles.engineToggle}>
+            {getModelsForEngine(bulkEngine).map((m) => (
+              <TouchableOpacity
+                key={m}
+                style={[
+                  styles.engineOption,
+                  (bulkModel || getDefaultModel(bulkEngine)) === m && styles.engineOptionActive,
+                ]}
+                onPress={() => setBulkModel(m)}
+              >
+                <Text
+                  style={[
+                    styles.engineOptionText,
+                    (bulkModel || getDefaultModel(bulkEngine)) === m && styles.engineOptionTextActive,
+                  ]}
+                >
+                  {m.replace(/^claude-/, '').replace(/^gpt-/, '')}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <TouchableOpacity
+            style={[styles.createButton, bulkSaving && { opacity: 0.6 }]}
+            disabled={bulkSaving}
+            onPress={handleBulkApplyAll}
+          >
+            <Text style={styles.createButtonText}>{bulkSaving ? 'Applying…' : 'Apply to all'}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {showNew && (
         <View style={styles.formCard}>
           <TextInput
@@ -1589,6 +1700,29 @@ function AgentConfigSection() {
             placeholderTextColor={colors.gray500}
             style={styles.formInput}
           />
+          <Text style={styles.fieldLabel}>Engine</Text>
+          <View style={styles.engineToggle}>
+            {engineChoices.map((eng) => (
+              <TouchableOpacity
+                key={eng}
+                style={[
+                  styles.engineOption,
+                  newForm.engine === eng && styles.engineOptionActive,
+                ]}
+                onPress={() => setNewForm({ ...newForm, engine: eng, model: '' })}
+              >
+                <Text
+                  style={[
+                    styles.engineOptionText,
+                    newForm.engine === eng && styles.engineOptionTextActive,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {eng}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
           <Text style={styles.fieldLabel}>Model</Text>
           <View style={styles.engineToggle}>
             {getModelsForEngine(newForm.engine).map((m) => (
@@ -1667,12 +1801,13 @@ function AgentConfigSection() {
 
                   <Text style={styles.fieldLabel}>Engine</Text>
                   <View style={styles.engineToggle}>
-                    {['claude-code', 'cursor-agent'].map((eng) => (
+                    {engineChoices.map((eng) => (
                       <TouchableOpacity
                         key={eng}
                         style={[
                           styles.engineOption,
-                          (edit.engine || 'claude-code') === eng && styles.engineOptionActive,
+                          (edit.engine || agent.engine || 'claude-code') === eng &&
+                            styles.engineOptionActive,
                         ]}
                         onPress={() => {
                           setEdit(agent.id, 'engine', eng);
@@ -1682,8 +1817,10 @@ function AgentConfigSection() {
                         <Text
                           style={[
                             styles.engineOptionText,
-                            (edit.engine || 'claude-code') === eng && styles.engineOptionTextActive,
+                            (edit.engine || agent.engine || 'claude-code') === eng &&
+                              styles.engineOptionTextActive,
                           ]}
+                          numberOfLines={1}
                         >
                           {eng}
                         </Text>

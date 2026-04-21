@@ -125,6 +125,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  bulkSetAllAgentsEngine: ({ engine, model }) =>
+    fetchJSON('/agents/bulk-engine', {
+      method: 'POST',
+      body: JSON.stringify({ engine, ...(model ? { model } : {}) }),
+    }),
   deleteAgent: (agentId) =>
     fetch(`${getApiBase()}/agents/${agentId}`, {
       method: 'DELETE',

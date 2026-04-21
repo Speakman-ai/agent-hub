@@ -223,6 +223,54 @@ describe('Agents', () => {
     });
   });
 
+  describe('POST /api/agents/bulk-engine', () => {
+    it('sets engine and model on every agent', async () => {
+      const proj = await createProject();
+      const a1 = await createAgent({ projectId: proj.id as string, name: 'Bulk A1' });
+      const a2 = await createAgent({
+        projectId: proj.id as string,
+        name: 'Bulk A2',
+        engine: 'cursor-agent',
+        model: 'composer-2',
+      });
+      const res = await request
+        .post('/api/agents/bulk-engine')
+        .send({ engine: 'codex-cli', model: 'gpt-5.2' })
+        .expect(200);
+
+      expect(res.body.updated).toBeGreaterThanOrEqual(2);
+      expect(res.body.engine).toBe('codex-cli');
+      expect(res.body.model).toBe('gpt-5.2');
+
+      const list = await request.get('/api/agents').expect(200);
+      const row1 = list.body.find((a: { id: string }) => a.id === a1.id);
+      const row2 = list.body.find((a: { id: string }) => a.id === a2.id);
+      expect(row1.engine).toBe('codex-cli');
+      expect(row2.engine).toBe('codex-cli');
+      expect(row1.model).toBe('gpt-5.2');
+      expect(row2.model).toBe('gpt-5.2');
+    });
+
+    it('falls back to the engine default when model is invalid', async () => {
+      const proj = await createProject();
+      await createAgent({ projectId: proj.id as string });
+      const res = await request
+        .post('/api/agents/bulk-engine')
+        .send({ engine: 'codex-cli', model: 'definitely-not-a-codex-model' })
+        .expect(200);
+
+      expect(res.body.engine).toBe('codex-cli');
+      expect(res.body.model).toBe('gpt-5.3-codex');
+    });
+
+    it('returns 400 for an unknown engine', async () => {
+      await request
+        .post('/api/agents/bulk-engine')
+        .send({ engine: 'not-an-engine', model: 'x' })
+        .expect(400);
+    });
+  });
+
   describe('PATCH /api/agents/:agentId', () => {
     it('updates agent name and engine', async () => {
       const agent = await createAgent();

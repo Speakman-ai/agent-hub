@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Component } from 'react';
+import { useState, useEffect, useRef, useMemo, Component } from 'react';
 import { api } from '../utils/api.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import {
@@ -4043,7 +4043,7 @@ function EditServerWrapper({
   );
 }
 
-function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChange }) {
+function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChange, showToast }) {
   const [agents, setAgents] = useState(initialAgents);
   const [expanded, setExpanded] = useState(null);
   const [saving, setSaving] = useState({});
@@ -4052,6 +4052,9 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   const [showNew, setShowNew] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [modelConfig, setModelConfig] = useState(null);
+  const [bulkEngine, setBulkEngine] = useState('claude-code');
+  const [bulkModel, setBulkModel] = useState('');
+  const [bulkSaving, setBulkSaving] = useState(false);
   const [newForm, setNewForm] = useState({
     id: '',
     name: '',
@@ -4083,6 +4086,49 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   const getDefaultModel = (engine) => {
     if (!modelConfig) return '';
     return modelConfig.engineDefaultModels[engine] || modelConfig.defaultModel || '';
+  };
+
+  /** Engines come only from `GET /api/config/models` so new server engines appear automatically. */
+  const engineChoices = useMemo(() => {
+    if (!modelConfig) return [];
+    return Object.keys(modelConfig.engineValidModels).filter(
+      (e) => (modelConfig.engineValidModels[e]?.length ?? 0) > 0,
+    );
+  }, [modelConfig]);
+
+  useEffect(() => {
+    if (engineChoices.length === 0) return;
+    if (!engineChoices.includes(bulkEngine)) {
+      setBulkEngine(engineChoices[0]);
+      setBulkModel('');
+    }
+  }, [engineChoices, bulkEngine]);
+
+  const handleBulkApplyAll = async () => {
+    if (!modelConfig || agents.length === 0) return;
+    const effectiveModel = bulkModel || getDefaultModel(bulkEngine);
+    if (
+      !window.confirm(
+        `Set all ${agents.length} agents to engine "${bulkEngine}" with model "${effectiveModel}"?`,
+      )
+    ) {
+      return;
+    }
+    setBulkSaving(true);
+    try {
+      await api.bulkSetAllAgentsEngine({ engine: bulkEngine, model: effectiveModel });
+      const list = await api.getAgents();
+      setAgents(list);
+      setEdits({});
+      if (onAgentsChange) onAgentsChange();
+      showToast?.(`Updated ${agents.length} agent(s) to ${bulkEngine}.`, 'success');
+    } catch (e) {
+      console.error('Bulk agent engine update failed:', e);
+      const msg = e instanceof Error ? e.message : 'Bulk engine update failed.';
+      showToast?.(msg, 'error');
+    } finally {
+      setBulkSaving(false);
+    }
   };
 
   const getEdit = (agentId) => {
@@ -4289,6 +4335,57 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         </button>
       </div>
 
+      {agents.length > 0 && modelConfig && (
+        <div className="bg-gray-800/80 rounded-xl p-4 mb-4 space-y-3 border border-gray-700/50">
+          <p className="text-xs text-gray-400">
+            Switch every agent at once (for example when moving off a provider or subscription). The
+            server validates the model against the selected engine.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+            <div>
+              <label className={labelClass}>Engine (all agents)</label>
+              <select
+                value={bulkEngine}
+                onChange={(e) => {
+                  setBulkEngine(e.target.value);
+                  setBulkModel('');
+                }}
+                className={inputClass}
+              >
+                {engineChoices.map((e) => (
+                  <option key={e} value={e}>
+                    {e}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={labelClass}>Model</label>
+              <select
+                value={bulkModel || getDefaultModel(bulkEngine)}
+                onChange={(e) => setBulkModel(e.target.value)}
+                className={inputClass}
+              >
+                {getModelsForEngine(bulkEngine).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                    {m === getDefaultModel(bulkEngine) ? ' (default)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              disabled={bulkSaving}
+              onClick={handleBulkApplyAll}
+              className="text-sm bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white px-3 py-2 rounded-lg transition-colors"
+            >
+              {bulkSaving ? 'Applying…' : 'Apply to all agents'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {showNew && (
         <form onSubmit={handleCreate} className="bg-gray-800 rounded-xl p-4 mb-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
@@ -4321,8 +4418,11 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                 onChange={(e) => setNewForm({ ...newForm, engine: e.target.value, model: '' })}
                 className={inputClass}
               >
-                <option value="claude-code">claude-code</option>
-                <option value="cursor-agent">cursor-agent</option>
+                {engineChoices.map((e) => (
+                  <option key={e} value={e}>
+                    {e}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -4569,8 +4669,11 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                         }}
                         className={inputClass}
                       >
-                        <option value="claude-code">claude-code</option>
-                        <option value="cursor-agent">cursor-agent</option>
+                        {engineChoices.map((e) => (
+                          <option key={e} value={e}>
+                            {e}
+                          </option>
+                        ))}
                       </select>
                     </div>
                     <div>
@@ -5635,6 +5738,7 @@ export default function SettingsPage({
               agents={agents}
               projects={projects}
               onAgentsChange={onAgentsChange}
+              showToast={showToast}
             />
           )}
           {tab === 'usage' && <UsageSection />}
