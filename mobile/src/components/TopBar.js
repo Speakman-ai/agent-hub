@@ -18,7 +18,7 @@ import { getActiveOrg } from '../utils/orgs';
 import { describeDetectionBadge } from '../utils/worktreeState';
 import { api } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
-import { ENGINE_OPTIONS, ENGINE_MODELS } from '../utils/engineOptions';
+import { engineOptionsFromConfig, modelsForEngine, modelDisplay } from '../utils/engineOptions';
 import BugReportButton from './BugReportButton';
 import ForwardSessionModal, { filterForwardTargets } from './ForwardSessionModal';
 
@@ -30,6 +30,7 @@ export default function TopBar({ projectId, agentId } = {}) {
     reconnecting,
     sessionEngine,
     sessionModel,
+    modelConfig,
     sessionWorktree,
     gitWorktreeDetected,
     handleWorktreeChange,
@@ -74,9 +75,13 @@ export default function TopBar({ projectId, agentId } = {}) {
     }
   };
 
-  const currentEngine = ENGINE_OPTIONS.find((e) => e.id === sessionEngine) || ENGINE_OPTIONS[0];
-  const engineModels = ENGINE_MODELS[sessionEngine] || ENGINE_MODELS['claude-code'];
-  const currentModel = engineModels.find((m) => m.id === sessionModel) || engineModels[0];
+  const engineOptions = engineOptionsFromConfig(modelConfig);
+  const currentEngine = engineOptions.find((e) => e.id === sessionEngine) || engineOptions[0];
+  const engineModels = modelsForEngine(sessionEngine, modelConfig);
+  const currentModel =
+    engineModels.find((m) => m.id === sessionModel) ||
+    engineModels[0] ||
+    modelDisplay(sessionModel || 'unknown-model');
   const worktreeBadge = describeDetectionBadge({
     enabled: sessionWorktree,
     detected: gitWorktreeDetected,
@@ -284,7 +289,7 @@ export default function TopBar({ projectId, agentId } = {}) {
           <View style={styles.pickerContainer}>
             {/* Engine section */}
             <Text style={styles.pickerSectionLabel}>ENGINE</Text>
-            {ENGINE_OPTIONS.map((eng) => (
+            {engineOptions.map((eng) => (
               <TouchableOpacity
                 key={eng.id}
                 style={styles.pickerItem}

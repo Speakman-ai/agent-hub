@@ -81,6 +81,31 @@ describe('<TopBar /> engine picker', () => {
     expect(cursorOption).toBeTruthy();
   });
 
+  it('hides engines with no authenticated models when modelConfig is provided', () => {
+    renderTopBar({
+      sessionEngine: 'claude-code',
+      modelConfig: {
+        defaultModel: 'claude-opus-4-7',
+        engineDefaultModels: {
+          'claude-code': 'claude-opus-4-7',
+          'cursor-agent': '',
+          'codex-cli': '',
+        },
+        engineValidModels: {
+          'claude-code': ['claude-opus-4-7'],
+          'cursor-agent': [],
+          'codex-cli': [],
+        },
+      },
+    });
+    const trigger = screen.getByRole('button', { name: /select engine/i });
+    fireEvent.click(trigger);
+    expect(screen.queryByText('Cursor Agent')).toBeNull();
+    expect(screen.queryByText(/^Codex$/)).toBeNull();
+    // Engine label appears on the trigger and again inside the open dropdown.
+    expect(screen.getAllByText('Claude Code').length).toBeGreaterThan(0);
+  });
+
   it('does not list Gemini CLI as an engine option', () => {
     renderTopBar({ sessionEngine: 'claude-code' });
     const trigger = screen.getByRole('button', { name: /select engine/i });

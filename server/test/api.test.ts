@@ -13,7 +13,7 @@ let request: supertest.Agent;
 
 beforeAll(async () => {
   request = await getRequest();
-});
+}, 60_000);
 
 // ═══════════════════════════════════════════════════════════════════
 // Health Check

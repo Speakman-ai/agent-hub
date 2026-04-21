@@ -36,3 +36,28 @@ export const ENGINE_DEFAULT_MODELS = {
   'cursor-agent': 'composer-2',
   'codex-cli': 'gpt-5.3-codex',
 };
+
+export function modelDisplay(id) {
+  const known = Object.values(ENGINE_MODELS)
+    .flat()
+    .find((m) => m.id === id);
+  if (known) return known;
+  const label = String(id || '')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return { id, label: label || 'Unknown model', short: label || 'Unknown' };
+}
+
+export function engineOptionsFromConfig(modelConfig) {
+  if (!modelConfig?.engineValidModels) return ENGINE_OPTIONS;
+  const filtered = ENGINE_OPTIONS.filter(
+    (opt) => (modelConfig.engineValidModels[opt.id]?.length ?? 0) > 0,
+  );
+  return filtered.length > 0 ? filtered : ENGINE_OPTIONS;
+}
+
+export function modelsForEngine(engine, modelConfig) {
+  const ids = modelConfig?.engineValidModels?.[engine];
+  if (Array.isArray(ids)) return ids.map((id) => modelDisplay(id));
+  return (ENGINE_MODELS[engine] || ENGINE_MODELS['claude-code']).map((m) => ({ ...m }));
+}

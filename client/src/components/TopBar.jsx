@@ -16,25 +16,30 @@ const ENGINE_OPTIONS = [
   { id: 'codex-cli', label: 'Codex', color: '#10A37F' },
 ];
 
-const ENGINE_MODELS = {
-  'claude-code': [
-    { id: 'claude-opus-4-7', label: 'Opus 4.7', short: 'Opus' },
-    { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
-    { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
-  ],
-  'cursor-agent': [{ id: 'composer-2', label: 'Composer 2', short: 'Composer 2' }],
-  // Codex model IDs must match server/config.ts → engineValidModels['codex-cli'].
-  // Default is gpt-5.3-codex (see server/config.ts → engineDefaultModels).
-  // Only the models below are accepted under ChatGPT OAuth — older IDs
-  // (gpt-5, gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max) get
-  // rejected with HTTP 400. See server/codex-auth.ts for the runtime guard.
-  'codex-cli': [
-    { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', short: '5.3 Codex' },
-    { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
-    { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
-    { id: 'gpt-5.2', label: 'GPT-5.2', short: '5.2' },
-  ],
+const MODEL_LABELS = {
+  'claude-opus-4-7': { label: 'Opus 4.7', short: 'Opus' },
+  'claude-opus-4-6': { label: 'Opus 4.6', short: 'Opus 4.6' },
+  'claude-sonnet-4-6': { label: 'Sonnet', short: 'Sonnet' },
+  'composer-2': { label: 'Composer 2', short: 'Composer 2' },
+  'gpt-5.3-codex': { label: 'GPT-5.3 Codex', short: '5.3 Codex' },
+  'gpt-5.4': { label: 'GPT-5.4', short: '5.4' },
+  'gpt-5.4-mini': { label: 'GPT-5.4 Mini', short: '5.4 Mini' },
+  'gpt-5.2': { label: 'GPT-5.2', short: '5.2' },
 };
+
+function modelDisplay(id) {
+  if (MODEL_LABELS[id]) return { id, ...MODEL_LABELS[id] };
+  const label = String(id || '')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return { id, label: label || 'Unknown model', short: label || 'Unknown' };
+}
+
+function fallbackModelsForEngine(engine) {
+  if (engine === 'cursor-agent') return ['composer-2'];
+  if (engine === 'codex-cli') return ['gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
+  return ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6'];
+}
 
 export default function TopBar({
   agent,
@@ -47,6 +52,7 @@ export default function TopBar({
   onEngineChange,
   sessionModel,
   onModelChange,
+  modelConfig,
   messages,
   activeSessionId,
   sessionWorktree,
@@ -69,9 +75,19 @@ export default function TopBar({
   const modelRef = useRef(null);
   const engineRef = useRef(null);
   const exportRef = useRef(null);
-  const currentEngine = ENGINE_OPTIONS.find((e) => e.id === sessionEngine) || ENGINE_OPTIONS[0];
-  const engineModels = ENGINE_MODELS[sessionEngine] || ENGINE_MODELS['claude-code'];
-  const currentModel = engineModels.find((m) => m.id === sessionModel) || engineModels[0];
+  const filteredEngineOptions = modelConfig?.engineValidModels
+    ? ENGINE_OPTIONS.filter((e) => (modelConfig.engineValidModels[e.id]?.length ?? 0) > 0)
+    : ENGINE_OPTIONS;
+  const engineOptions = filteredEngineOptions.length > 0 ? filteredEngineOptions : ENGINE_OPTIONS;
+  const currentEngine = engineOptions.find((e) => e.id === sessionEngine) || engineOptions[0];
+  const engineModelIds = modelConfig?.engineValidModels
+    ? modelConfig.engineValidModels[sessionEngine] || []
+    : fallbackModelsForEngine(sessionEngine);
+  const engineModels = engineModelIds.map((id) => modelDisplay(id));
+  const currentModel =
+    engineModels.find((m) => m.id === sessionModel) ||
+    engineModels[0] ||
+    modelDisplay(sessionModel || 'unknown-model');
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -303,7 +319,7 @@ export default function TopBar({
               </button>
               {engineOpen && (
                 <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-[180px] py-1">
-                  {ENGINE_OPTIONS.map((e) => (
+                  {engineOptions.map((e) => (
                     <button
                       key={e.id}
                       onClick={() => {
@@ -410,7 +426,7 @@ export default function TopBar({
                   <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
                     Engine
                   </div>
-                  {ENGINE_OPTIONS.map((e) => (
+                  {engineOptions.map((e) => (
                     <button
                       key={e.id}
                       onClick={() => {

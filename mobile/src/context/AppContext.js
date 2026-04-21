@@ -20,7 +20,10 @@ import { mapBroadcastToNotification } from '../utils/ticketNotifications';
 import { routeNotificationTap } from '../utils/notificationRouting';
 import { uploadAttachments } from '../utils/uploadAttachments';
 import { createReloadMessages } from '../utils/sessionReload';
-import { ENGINE_DEFAULT_MODELS } from '../utils/engineOptions';
+import {
+  firstEngineWithAuthenticatedModels,
+  defaultModelForAuthenticatedEngine,
+} from '../utils/authModelEngines';
 
 const AppContext = createContext(null);
 
@@ -42,6 +45,7 @@ export function AppProvider({ children }) {
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
+  const [modelConfig, setModelConfig] = useState(null);
   // Git-worktree isolation toggle + CLI-confirmed detection flag. Mirrors the
   // web client's `sessionWorktree` / `gitWorktreeDetected` state (App.jsx).
   const [sessionWorktree, setSessionWorktree] = useState(true);
@@ -116,6 +120,13 @@ export function AppProvider({ children }) {
   const [pushPermissionStatus, setPushPermissionStatus] = useState('unknown');
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
+  const defaultModelForEngine = (engine) => {
+    const fromConfig = modelConfig?.engineDefaultModels?.[engine];
+    if (fromConfig) return fromConfig;
+    if (engine === 'cursor-agent') return 'composer-2';
+    if (engine === 'codex-cli') return 'gpt-5.3-codex';
+    return 'claude-opus-4-7';
+  };
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
   const activeAgentIdRef = useRef(activeAgentId);
@@ -891,7 +902,7 @@ export function AppProvider({ children }) {
         setActiveSessionId(target.id);
         const agent = agents.find((a) => a.id === activeAgentId);
         setSessionEngine(target.engine || agent?.engine || 'claude-code');
-        setSessionModel(target.model || 'claude-opus-4-7');
+        setSessionModel(target.model || defaultModelForEngine(target.engine || agent?.engine || 'claude-code'));
         const wt = resolveSessionWorktree(target);
         setSessionWorktree(wt.enabled);
         setGitWorktreeDetected(wt.detected);
@@ -901,13 +912,29 @@ export function AppProvider({ children }) {
         setMessages([]);
         const agent = agents.find((a) => a.id === activeAgentId);
         setSessionEngine(agent?.engine || 'claude-code');
-        setSessionModel('claude-opus-4-7');
+        setSessionModel(defaultModelForEngine(agent?.engine || 'claude-code'));
         setSessionWorktree(true);
         setGitWorktreeDetected(null);
         setSessionAskMode(false);
       }
     }).catch((err) => console.error('Failed to load sessions:', err));
-  }, [configReady, activeAgentId]);
+  }, [configReady, activeAgentId, modelConfig]);
+
+  useEffect(() => {
+    if (!configReady || !getApiBaseUrl()) return;
+    let cancelled = false;
+    api
+      .getModelConfig()
+      .then((cfg) => {
+        if (!cancelled) setModelConfig(cfg);
+      })
+      .catch((err) => {
+        console.warn('[modelConfig] GET /api/config/models failed:', err?.message || err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [configReady]);
 
   // Load skills for /slash-command autocomplete when agent changes
   useEffect(() => {
@@ -933,6 +960,43 @@ export function AppProvider({ children }) {
       setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
     }
   }, [activeSessionId, sessions]);
+
+  // Mirror web App.jsx: if the session engine has no authenticated models,
+  // migrate to the first engine that does so TopBar state matches the server.
+  useEffect(() => {
+    if (!modelConfig || !activeSessionId) return;
+    const allowed = modelConfig.engineValidModels?.[sessionEngine];
+    if (Array.isArray(allowed) && allowed.length > 0) return;
+
+    const nextEngine = firstEngineWithAuthenticatedModels(modelConfig);
+    if (!nextEngine || nextEngine === sessionEngine) return;
+    const defaultModel = defaultModelForAuthenticatedEngine(modelConfig, nextEngine);
+    if (!defaultModel) return;
+
+    let cancelled = false;
+    const sid = activeSessionIdRef.current;
+    void (async () => {
+      try {
+        setSessionEngine(nextEngine);
+        setSessionModel(defaultModel);
+        const updatedEngine = await api.setSessionEngine(sid, nextEngine);
+        if (cancelled || activeSessionIdRef.current !== sid) return;
+        setSessions((prev) =>
+          prev.map((s) => (s.id === updatedEngine.id ? { ...s, engine: updatedEngine.engine } : s)),
+        );
+        const modelUpdated = await api.setSessionModel(sid, defaultModel);
+        if (cancelled || activeSessionIdRef.current !== sid) return;
+        setSessions((prev) =>
+          prev.map((s) => (s.id === modelUpdated.id ? { ...s, model: modelUpdated.model } : s)),
+        );
+      } catch (err) {
+        console.warn('[modelConfig] Failed to migrate session off unauthenticated engine:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [modelConfig, activeSessionId, sessionEngine, sessions]);
 
   // Reload messages for the currently-active session. Exposed via context so
   // screens (e.g. ChatScreen on navigation focus, DrawerContent when the user
@@ -1084,7 +1148,7 @@ export function AppProvider({ children }) {
     setActiveSessionId(session.id);
     const agent = agents.find((a) => a.id === activeAgentId);
     setSessionEngine(session.engine || agent?.engine || 'claude-code');
-    setSessionModel(session.model || 'claude-opus-4-7');
+    setSessionModel(session.model || defaultModelForEngine(session.engine || agent?.engine || 'claude-code'));
     const wt = resolveSessionWorktree(session);
     setSessionWorktree(wt.enabled);
     setGitWorktreeDetected(null); // Fresh session — CLI hasn't reported yet
@@ -1150,7 +1214,7 @@ export function AppProvider({ children }) {
 
   const handleEngineChange = useCallback(async (engine) => {
     setSessionEngine(engine);
-    const defaultModel = ENGINE_DEFAULT_MODELS[engine] || 'claude-opus-4-7';
+    const defaultModel = defaultModelForEngine(engine);
     setSessionModel(defaultModel);
     const sid = activeSessionIdRef.current;
     if (sid) {
@@ -1163,7 +1227,7 @@ export function AppProvider({ children }) {
         prev.map((s) => (s.id === modelUpdated.id ? { ...s, model: modelUpdated.model } : s))
       );
     }
-  }, []);
+  }, [modelConfig]);
 
   const handleModelChange = useCallback(async (model) => {
     setSessionModel(model);
@@ -1455,6 +1519,7 @@ export function AppProvider({ children }) {
     streamingEngine,
     sessionEngine,
     sessionModel,
+    modelConfig,
     sessionWorktree,
     gitWorktreeDetected,
     handleWorktreeChange,

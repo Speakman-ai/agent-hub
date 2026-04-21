@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import { exec, execFile } from 'child_process';
+import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { localDateStr } from '../memory.js';
 import {
@@ -14,6 +15,9 @@ import {
 import type { RouteDeps, AppConfig, GitHubAppConfig, Project, Stmts } from '../types.js';
 import { refreshShellPath, getCachedShellPath } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
+import { parseCursorStatusJson } from '../cursor-auth-parse.js';
+import { detectCodexAuthMode } from '../codex-auth.js';
+import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -155,6 +159,64 @@ interface LegacyExportData {
   };
 }
 
+function hasClaudeOauth(): boolean {
+  const credentialsPath = path.join(os.homedir(), '.claude', '.credentials.json');
+  if (!existsSync(credentialsPath)) return false;
+  try {
+    const raw = JSON.parse(readFileSync(credentialsPath, 'utf-8')) as {
+      claudeAiOauth?: { expiresAt?: number };
+    };
+    if (!raw?.claudeAiOauth) return false;
+    const expiresAt = raw.claudeAiOauth.expiresAt;
+    if (typeof expiresAt === 'number') return Date.now() < expiresAt;
+    // Missing expiresAt: some tooling may omit it while OAuth is still valid; we
+    // still treat that as unauthenticated here so the models list stays conservative.
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function runCursorStatus(binPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!existsSync(binPath)) return resolve(false);
+    const proc = execFile(
+      binPath,
+      ['status', '--format', 'json'],
+      { cwd: os.homedir(), timeout: 12_000, env: process.env },
+      (err, stdout, stderr) => {
+        const stdoutText = String(stdout ?? '');
+        const stderrText = String(stderr ?? '');
+        if (err) {
+          const parsed = parseCursorStatusJson(stdoutText, stderrText);
+          return resolve(parsed.ok && !!parsed.isAuthenticated);
+        }
+        const parsed = parseCursorStatusJson(stdoutText, stderrText);
+        resolve(parsed.ok && !!parsed.isAuthenticated);
+      },
+    );
+    proc.on('error', () => resolve(false));
+  });
+}
+
+/** Avoid spawning `cursor-agent status` on every models poll — UI hits this often. */
+const CURSOR_AUTH_CACHE_MS = 60_000;
+let cursorAuthCache: { bin: string; value: boolean; ts: number } | null = null;
+
+async function getCursorAuthenticatedCached(cursorBin: string): Promise<boolean> {
+  const now = Date.now();
+  if (
+    cursorAuthCache &&
+    cursorAuthCache.bin === cursorBin &&
+    now - cursorAuthCache.ts < CURSOR_AUTH_CACHE_MS
+  ) {
+    return cursorAuthCache.value;
+  }
+  const value = await runCursorStatus(cursorBin);
+  cursorAuthCache = { bin: cursorBin, value, ts: now };
+  return value;
+}
+
 interface SlackConfigData {
   accounts: Array<{
     botToken?: string;
@@ -222,12 +284,34 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     });
   });
 
-  router.get('/api/config/models', (_req: Request, res: Response) => {
-    res.json({
-      defaultModel: config.defaultModel,
-      engineDefaultModels: config.engineDefaultModels,
-      engineValidModels: config.engineValidModels,
-    });
+  router.get('/api/config/models', async (_req: Request, res: Response) => {
+    const claudeAuthenticated = !!(
+      config.anthropicApiKey ||
+      process.env.ANTHROPIC_API_KEY ||
+      hasClaudeOauth()
+    );
+    const geminiAuthenticated = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
+    const codexApiKeyConfigured = !!(
+      config.codexApiKey ||
+      process.env.CODEX_API_KEY ||
+      process.env.OPENAI_API_KEY
+    );
+    const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+    const codexAuth = detectCodexAuthMode(codexHome);
+    const codexAuthenticated =
+      codexApiKeyConfigured ||
+      (codexAuth.present && (codexAuth.mode === 'chatgpt' || codexAuth.mode === 'apikey'));
+    const cursorBin = deps.getCursorBin?.() ?? config.cursorBin;
+    const cursorAuthenticated = await getCursorAuthenticatedCached(cursorBin);
+
+    res.json(
+      buildAuthenticatedModelConfig(config, {
+        'claude-code': claudeAuthenticated,
+        'cursor-agent': cursorAuthenticated,
+        'gemini-cli': geminiAuthenticated,
+        'codex-cli': codexAuthenticated,
+      }),
+    );
   });
 
   router.patch('/api/config', (req: Request, res: Response) => {

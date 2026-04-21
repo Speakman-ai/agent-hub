@@ -60,6 +60,10 @@ import {
 import { getApiBase, getAuthHeaders, getServerBase } from './utils/connection.js';
 import { extractSubmittedAskIds } from './utils/askAnswers.js';
 import { getDefaultShortcuts } from './utils/shortcuts.js';
+import {
+  firstEngineWithAuthenticatedModels,
+  defaultModelForAuthenticatedEngine,
+} from './utils/authModelEngines.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -89,6 +93,7 @@ export default function App() {
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-7');
+  const [modelConfig, setModelConfig] = useState(null);
   const [sessionWorktree, setSessionWorktree] = useState(true);
   const [gitWorktreeDetected, setGitWorktreeDetected] = useState(null); // null = unknown, true/false from CLI
   const [sessionAskMode, setSessionAskMode] = useState(false);
@@ -238,6 +243,21 @@ export default function App() {
   currentViewRef.current = currentView;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getModelConfig()
+      .then((cfg) => {
+        if (!cancelled) setModelConfig(cfg);
+      })
+      .catch((err) => {
+        console.warn('[modelConfig] GET /api/config/models failed:', err?.message || err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Auto-scroll — instant on initial load, smooth for live updates.
   // Only auto-scrolls if user is already near the bottom (within threshold).
@@ -1506,7 +1526,13 @@ export default function App() {
       if (target) {
         setActiveSessionId(target.id);
         setSessionEngine(target.engine || activeAgent?.engine || 'claude-code');
-        setSessionModel(target.model || 'claude-opus-4-7');
+        setSessionModel(
+          target.model ||
+            modelConfig?.engineDefaultModels?.[
+              target.engine || activeAgent?.engine || 'claude-code'
+            ] ||
+            'claude-opus-4-7',
+        );
         setSessionWorktree(target.use_worktree !== 0);
         setGitWorktreeDetected(
           target.git_worktree_detected != null ? target.git_worktree_detected === 1 : null,
@@ -1515,14 +1541,15 @@ export default function App() {
       } else {
         setActiveSessionId(null);
         setMessages([]);
-        setSessionEngine(agents.find((a) => a.id === activeAgentId)?.engine || 'claude-code');
-        setSessionModel('claude-opus-4-7');
+        const fallbackEngine = agents.find((a) => a.id === activeAgentId)?.engine || 'claude-code';
+        setSessionEngine(fallbackEngine);
+        setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-7');
         setSessionWorktree(true);
         setGitWorktreeDetected(null);
         setSessionAskMode(false);
       }
     });
-  }, [activeAgentId]);
+  }, [activeAgentId, modelConfig]);
 
   // Load skills for slash-command autocomplete when agent changes
   useEffect(() => {
@@ -1552,6 +1579,45 @@ export default function App() {
     );
     setSessionAskMode(session?.ask_mode !== 0);
   }, [activeSessionId, sessions]);
+
+  // If the server reports no models for the session's engine (e.g. Cursor auth
+  // was revoked), migrate the session to the first authenticated engine so UI
+  // state matches what we send on the wire (avoids TopBar showing Claude while
+  // the session row is still cursor-agent).
+  useEffect(() => {
+    if (!modelConfig || !activeSessionId) return;
+    const allowed = modelConfig.engineValidModels?.[sessionEngine];
+    if (Array.isArray(allowed) && allowed.length > 0) return;
+
+    const nextEngine = firstEngineWithAuthenticatedModels(modelConfig);
+    if (!nextEngine || nextEngine === sessionEngine) return;
+    const defaultModel = defaultModelForAuthenticatedEngine(modelConfig, nextEngine);
+    if (!defaultModel) return;
+
+    let cancelled = false;
+    const sid = activeSessionIdRef.current;
+    void (async () => {
+      try {
+        setSessionEngine(nextEngine);
+        setSessionModel(defaultModel);
+        const updatedEngine = await api.setSessionEngine(sid, nextEngine);
+        if (cancelled || activeSessionIdRef.current !== sid) return;
+        setSessions((prev) =>
+          prev.map((s) => (s.id === updatedEngine.id ? { ...s, engine: updatedEngine.engine } : s)),
+        );
+        const modelUpdated = await api.setSessionModel(sid, defaultModel);
+        if (cancelled || activeSessionIdRef.current !== sid) return;
+        setSessions((prev) =>
+          prev.map((s) => (s.id === modelUpdated.id ? { ...s, model: modelUpdated.model } : s)),
+        );
+      } catch (err) {
+        console.warn('[modelConfig] Failed to migrate session off unauthenticated engine:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [modelConfig, activeSessionId, sessionEngine, sessions]);
 
   // Load messages when session changes
   useEffect(() => {
@@ -1847,7 +1913,13 @@ export default function App() {
     setSessions((prev) => [session, ...prev]);
     setActiveSessionId(session.id);
     setSessionEngine(session.engine || activeAgent?.engine || 'claude-code');
-    setSessionModel(session.model || 'claude-opus-4-7');
+    setSessionModel(
+      session.model ||
+        modelConfig?.engineDefaultModels?.[
+          session.engine || activeAgent?.engine || 'claude-code'
+        ] ||
+        'claude-opus-4-7',
+    );
     setSessionWorktree(session.use_worktree !== 0);
     setGitWorktreeDetected(null); // New session, not yet detected
     setSessionAskMode(session.ask_mode !== 0);
@@ -1855,14 +1927,20 @@ export default function App() {
     setCurrentView('chat');
   };
 
-  const ENGINE_DEFAULT_MODELS = {
-    'claude-code': 'claude-opus-4-7',
-    'cursor-agent': 'composer-2',
-  };
+  const defaultModelForEngine = useCallback(
+    (engine) => {
+      const fromConfig = modelConfig?.engineDefaultModels?.[engine];
+      if (fromConfig) return fromConfig;
+      if (engine === 'cursor-agent') return 'composer-2';
+      if (engine === 'codex-cli') return 'gpt-5.3-codex';
+      return 'claude-opus-4-7';
+    },
+    [modelConfig],
+  );
 
   const handleEngineChange = async (engine) => {
     setSessionEngine(engine);
-    const defaultModel = ENGINE_DEFAULT_MODELS[engine] || 'claude-opus-4-7';
+    const defaultModel = defaultModelForEngine(engine);
     setSessionModel(defaultModel);
     if (activeSessionId) {
       const updated = await api.setSessionEngine(activeSessionId, engine);
@@ -2413,6 +2491,7 @@ export default function App() {
             onEngineChange={handleEngineChange}
             sessionModel={sessionModel}
             onModelChange={handleModelChange}
+            modelConfig={modelConfig}
             messages={messages}
             activeSessionId={activeSessionId}
             sessionWorktree={sessionWorktree}
