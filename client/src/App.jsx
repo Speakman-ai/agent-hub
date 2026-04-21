@@ -1853,7 +1853,9 @@ export default function App() {
         const remaining = sessions.filter((s) => s.id !== sessionId);
         setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
       }
-      showToast('Archived — restore from Archived within 7 days', 'info', 6000);
+      // No success toast — the row appears in the sidebar's Archived
+      // section with its own "purges in Nh" countdown, which already
+      // tells the user what happened and when it'll be gone.
     } catch (err) {
       showToast(`Archive failed: ${err?.message || 'unknown error'}`, 'error', 6000);
     } finally {
