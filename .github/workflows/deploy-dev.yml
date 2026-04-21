@@ -21,8 +21,39 @@ permissions:
   contents: read
 
 jobs:
+  # Re-run the full test suite against the exact commit we're about to deploy.
+  # ci.yml runs tests on the PR but no longer on push:main, so this is the
+  # last gate before the deploy hits the instance. Keep this job in lockstep
+  # with the `test` job in ci.yml.
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Rebuild native modules
+        run: npm rebuild better-sqlite3
+
+      - name: Install server dependencies
+        run: cd server && npm ci
+
+      - name: Install client dependencies
+        run: cd client && npm ci
+
+      - name: Run tests
+        run: npm test
+
   deploy:
     name: Deploy to agent-hub-server
+    needs: test
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
