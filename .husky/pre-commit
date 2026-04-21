@@ -1,1 +1,18 @@
-npx lint-staged
+#!/usr/bin/env sh
+
+# Git hooks run from GUI clients (Cursor, VS Code, Agent Hub Electron) often
+# inherit a stripped PATH. Node from nvm/fnm/volta/asdf then is not visible, so
+# `npx` fails and eslint/prettier shebangs (`#!/usr/bin/env node`) break.
+# Prepend this repo's node_modules/.bin plus the same common dirs as
+# electron/main.js. See https://typicode.github.io/husky/how-to.html#node-version-managers-and-guis
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VOLTA_SEGMENT="${VOLTA_HOME:+$VOLTA_HOME/bin:}"
+export PATH="$ROOT/node_modules/.bin:$HOME/.asdf/shims:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$HOME/.local/bin:$HOME/.nvm/versions/node/current/bin:$HOME/.fnm/current/bin:${VOLTA_SEGMENT}$PATH"
+
+if [ ! -x "$ROOT/node_modules/.bin/eslint" ]; then
+  echo "husky(pre-commit): eslint is missing from $ROOT/node_modules/.bin." >&2
+  echo "  Run: npm install   (this repo sets include=dev in .npmrc so devDependencies install.)" >&2
+  exit 1
+fi
+
+exec npx --no-install lint-staged
