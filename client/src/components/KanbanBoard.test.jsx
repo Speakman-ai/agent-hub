@@ -22,6 +22,9 @@ vi.mock('../utils/api.js', () => ({
     getBoard: vi.fn(),
     get: vi.fn(),
     getCardComments: vi.fn(),
+    getModelConfig: vi.fn(() =>
+      Promise.resolve({ engineValidModels: { 'claude-code': ['claude-opus-4-7'] } }),
+    ),
     moveCard: vi.fn(),
     updateCard: vi.fn(),
     deleteCard: vi.fn(),

@@ -25,6 +25,7 @@ describe('epicFormToUpdateBody', () => {
       autonomousInterval: 7,
       autonomousMaxConcurrent: 3,
       autonomousMaxIterations: 5,
+      autonomousModel: null,
     });
   });
 
@@ -39,6 +40,26 @@ describe('epicFormToUpdateBody', () => {
     });
     expect(body.autonomousMaxConcurrent).toBe(4);
     expect(body.autonomousMaxIterations).toBe(9);
+    expect(body.autonomousModel).toBe(null);
+  });
+
+  it('passes trimmed autonomous_model when autonomous is on', () => {
+    const body = epicFormToUpdateBody({
+      name: 'x',
+      autonomous: 1,
+      autonomous_model: '  claude-sonnet-4-6  ',
+    });
+    expect(body.autonomousModel).toBe('claude-sonnet-4-6');
+  });
+
+  it('sends autonomousModel null when autonomous is off (clears epic override)', () => {
+    const body = epicFormToUpdateBody({
+      name: 'x',
+      autonomous: 0,
+      autonomous_model: 'claude-opus-4-7',
+    });
+    expect(body.autonomous).toBe(0);
+    expect(body.autonomousModel).toBe(null);
   });
 
   it('coerces autonomous falsy values to 0', () => {
@@ -52,6 +73,7 @@ describe('epicFormToUpdateBody', () => {
     expect(body.autonomousInterval).toBe(5);
     expect(body.autonomousMaxConcurrent).toBe(2);
     expect(body.autonomousMaxIterations).toBe(3);
+    expect(body.autonomousModel).toBe(null);
   });
 
   it('falls back to DEFAULT_EPIC_COLOR when color is missing', () => {

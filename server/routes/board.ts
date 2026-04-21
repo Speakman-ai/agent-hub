@@ -575,6 +575,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousInterval,
       autonomousMaxConcurrent,
       autonomousMaxIterations,
+      autonomousModel,
     } = req.body as {
       name?: string;
       description?: string | null;
@@ -583,7 +584,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousInterval?: number;
       autonomousMaxConcurrent?: number;
       autonomousMaxIterations?: number;
+      autonomousModel?: string | null;
     };
+
+    const nextAutonomousModel =
+      autonomousModel !== undefined
+        ? autonomousModel && String(autonomousModel).trim()
+          ? String(autonomousModel).trim()
+          : null
+        : epic.autonomous_model;
 
     if (autonomous && !epic.autonomous) {
       const currentAutonomous = stmts.getAutonomousEpic.get(epic.board_id) as
@@ -598,6 +607,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           currentAutonomous.autonomous_interval,
           currentAutonomous.autonomous_max_concurrent,
           currentAutonomous.autonomous_max_iterations,
+          currentAutonomous.autonomous_model ?? null,
           currentAutonomous.id,
         );
       }
@@ -623,6 +633,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousInterval ?? epic.autonomous_interval,
       autonomousMaxConcurrent ?? epic.autonomous_max_concurrent,
       autonomousMaxIterations ?? epic.autonomous_max_iterations,
+      nextAutonomousModel,
       req.params.epicId,
     );
 
@@ -677,6 +688,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       active: true,
       epicId: epic.id,
       epicName: epic.name,
+      model: epic.autonomous_model,
       interval: epic.autonomous_interval,
       maxConcurrent: epic.autonomous_max_concurrent,
       maxIterations: epic.autonomous_max_iterations,

@@ -375,6 +375,8 @@ export interface KanbanEpicRow {
   autonomous_interval: number;
   autonomous_max_concurrent: number;
   autonomous_max_iterations: number;
+  /** When set and valid for the assignee agent's engine, autonomous dispatch uses this instead of the agent's configured model. */
+  autonomous_model: string | null;
   position: number;
   created_at: string;
   updated_at: string;

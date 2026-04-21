@@ -39,6 +39,7 @@ describe('DEFAULT_EPIC_FORM', () => {
       autonomous_interval: 5,
       autonomous_max_concurrent: 2,
       autonomous_max_iterations: 3,
+      autonomous_model: '',
     });
   });
 });
@@ -68,6 +69,7 @@ describe('epicFormFromRow', () => {
       autonomous_interval: 10,
       autonomous_max_concurrent: 4,
       autonomous_max_iterations: 8,
+      autonomous_model: '',
     });
   });
 
@@ -79,6 +81,12 @@ describe('epicFormFromRow', () => {
 
   it('falls back to DEFAULT_EPIC_COLOR when color is missing', () => {
     expect(epicFormFromRow({ name: 'x' }).color).toBe(DEFAULT_EPIC_COLOR);
+  });
+
+  it('maps autonomous_model from the server row', () => {
+    expect(epicFormFromRow({ name: 'x', autonomous_model: 'gpt-5.3-codex' }).autonomous_model).toBe(
+      'gpt-5.3-codex',
+    );
   });
 });
 
@@ -101,12 +109,23 @@ describe('epicFormToUpdateBody', () => {
       autonomousInterval: 7,
       autonomousMaxConcurrent: 3,
       autonomousMaxIterations: 5,
+      autonomousModel: null,
     });
   });
 
   it('coerces autonomous falsy values to 0', () => {
     expect(epicFormToUpdateBody({ name: 'a', autonomous: false }).autonomous).toBe(0);
     expect(epicFormToUpdateBody({ name: 'a', autonomous: undefined }).autonomous).toBe(0);
+    expect(epicFormToUpdateBody({ name: 'a', autonomous: false }).autonomousModel).toBe(null);
+  });
+
+  it('passes trimmed autonomous_model when autonomous is on', () => {
+    const body = epicFormToUpdateBody({
+      name: 'x',
+      autonomous: 1,
+      autonomous_model: '  composer-2  ',
+    });
+    expect(body.autonomousModel).toBe('composer-2');
   });
 });
 

@@ -65,6 +65,21 @@ function getDeps(): AutonomousDeps {
   return deps;
 }
 
+/** Model for a new autonomous session: epic override when valid for the agent's engine, else agent default. */
+function sessionModelForAutonomousDispatch(
+  epic: KanbanEpicRow,
+  agent: Agent,
+  engineValidModels: Record<string, string[]>,
+): string {
+  const engine = agent.engine || 'claude-code';
+  const raw = typeof epic.autonomous_model === 'string' ? epic.autonomous_model.trim() : '';
+  if (raw) {
+    const allowed = engineValidModels[engine] || [];
+    if (allowed.includes(raw)) return raw;
+  }
+  return agent.model || defaultModelForEngine(engine);
+}
+
 export function initAutonomous(d: AutonomousDeps): void {
   deps = d;
 }
@@ -250,15 +265,9 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
 
       const sessionId = crypto.randomUUID();
       const engine = agent.engine || 'claude-code';
-      d.stmts.createSession.run(
-        sessionId,
-        agent.id,
-        card.title,
-        engine,
-        agent.model || defaultModelForEngine(engine),
-        1,
-        0,
-      );
+      const cfg = d.getConfig();
+      const model = sessionModelForAutonomousDispatch(epic, agent, cfg.engineValidModels || {});
+      d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, 1, 0);
 
       d.stmts.updateKanbanCard.run(
         card.title,

@@ -92,6 +92,7 @@ export default function KanbanBoard({
   const [showEpicForm, setShowEpicForm] = useState(false);
   const [epicForm, setEpicForm] = useState({ name: '', description: '', color: '#6366F1' });
   const [editingEpic, setEditingEpic] = useState(null);
+  const [modelConfig, setModelConfig] = useState(null);
 
   // Blockers
   const [showBlockerPicker, setShowBlockerPicker] = useState(false);
@@ -100,6 +101,14 @@ export default function KanbanBoard({
   const [pendingMove, setPendingMove] = useState(null); // { card, targetColumn, position }
 
   const addTitleRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof api.getModelConfig !== 'function') return;
+    api
+      .getModelConfig()
+      .then(setModelConfig)
+      .catch(() => setModelConfig(null));
+  }, []);
 
   const fetchBoard = useCallback(async () => {
     if (!projectId) return;
@@ -601,6 +610,7 @@ export default function KanbanBoard({
       autonomous_interval: epic.autonomous_interval || 5,
       autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
       autonomous_max_iterations: epic.autonomous_max_iterations || 3,
+      autonomous_model: epic.autonomous_model || '',
     });
     setShowEpicForm(false);
   };
@@ -933,6 +943,31 @@ export default function KanbanBoard({
                         max={10}
                         className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500"
                       />
+                    </div>
+                    <div className="w-full max-w-xs mt-2">
+                      <label className="block text-xs text-gray-500 mb-0.5">
+                        Session model (optional)
+                      </label>
+                      <select
+                        key={modelConfig ? 'models-loaded' : 'models-pending'}
+                        value={epicForm.autonomous_model ?? ''}
+                        onChange={(e) =>
+                          setEpicForm((f) => ({ ...f, autonomous_model: e.target.value }))
+                        }
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-gray-500"
+                      >
+                        <option value="">Each agent&apos;s default</option>
+                        {modelConfig?.engineValidModels &&
+                          Object.entries(modelConfig.engineValidModels).map(([eng, models]) => (
+                            <optgroup key={eng} label={eng}>
+                              {(models || []).map((m) => (
+                                <option key={`${eng}:${m}`} value={m}>
+                                  {m}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ))}
+                      </select>
                     </div>
                   </div>
                 )}

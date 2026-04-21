@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -104,6 +104,8 @@ export default function KanbanScreen({ route, navigation }) {
   const [editingEpic, setEditingEpic] = useState(null); // null = creating new
   const [epicForm, setEpicForm] = useState(DEFAULT_EPIC_FORM);
   const [epicSaving, setEpicSaving] = useState(false);
+  const [modelConfig, setModelConfig] = useState(null);
+  const [showAutonomousModelModal, setShowAutonomousModelModal] = useState(false);
 
   const columns = board?.columns || DEFAULT_COLUMNS;
   const epics = board?.epics || [];
@@ -131,6 +133,24 @@ export default function KanbanScreen({ route, navigation }) {
   useEffect(() => {
     loadBoard();
   }, [loadBoard, kanbanRefreshKey]);
+
+  useEffect(() => {
+    api
+      .getModelConfig()
+      .then(setModelConfig)
+      .catch(() => setModelConfig(null));
+  }, []);
+
+  const autonomousModelOptions = useMemo(() => {
+    if (!modelConfig?.engineValidModels) return [];
+    const s = new Set();
+    for (const arr of Object.values(modelConfig.engineValidModels)) {
+      for (const m of arr || []) {
+        if (m) s.add(m);
+      }
+    }
+    return Array.from(s).sort();
+  }, [modelConfig]);
 
   const cardsForColumn = (columnId) => {
     if (!board?.cards) return [];
@@ -1257,6 +1277,21 @@ export default function KanbanScreen({ route, navigation }) {
                       </View>
                     </View>
                   )}
+                  {epicForm.autonomous === 1 && (
+                    <View style={{ marginTop: 10 }}>
+                      <Text style={styles.autonomousSettingLabel}>Session model</Text>
+                      <TouchableOpacity
+                        style={styles.fieldInput}
+                        onPress={() => setShowAutonomousModelModal(true)}
+                      >
+                        <Text style={{ fontSize: 13, color: colors.gray200 }} numberOfLines={1}>
+                          {epicForm.autonomous_model
+                            ? epicForm.autonomous_model
+                            : "Each agent's default"}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </>
               )}
 
@@ -1296,6 +1331,54 @@ export default function KanbanScreen({ route, navigation }) {
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showAutonomousModelModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAutonomousModelModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowAutonomousModelModal(false)}
+        >
+          <View style={[styles.modalContent, { width: 300, maxHeight: 420 }]}>
+            <Text style={styles.modalTitle}>Autonomous session model</Text>
+            <ScrollView style={{ maxHeight: 340 }}>
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => {
+                  setEpicForm((f) => ({ ...f, autonomous_model: '' }));
+                  setShowAutonomousModelModal(false);
+                }}
+              >
+                <Text style={styles.modalOptionText}>Each agent's default</Text>
+              </TouchableOpacity>
+              {autonomousModelOptions.map((m) => (
+                <TouchableOpacity
+                  key={m}
+                  style={styles.modalOption}
+                  onPress={() => {
+                    setEpicForm((f) => ({ ...f, autonomous_model: m }));
+                    setShowAutonomousModelModal(false);
+                  }}
+                >
+                  <Text style={styles.modalOptionText} numberOfLines={2}>
+                    {m}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity
+              style={styles.modalCancel}
+              onPress={() => setShowAutonomousModelModal(false)}
+            >
+              <Text style={styles.modalCancelText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );

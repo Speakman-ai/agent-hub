@@ -369,6 +369,7 @@ function initDb(dataDir: string): void {
       autonomous_interval INTEGER NOT NULL DEFAULT 5,
       autonomous_max_concurrent INTEGER NOT NULL DEFAULT 2,
       autonomous_max_iterations INTEGER NOT NULL DEFAULT 3,
+      autonomous_model TEXT DEFAULT NULL,
       position INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -878,6 +879,12 @@ function initDb(dataDir: string): void {
        AND epic_id IN (SELECT id FROM kanban_epics WHERE autonomous = 1)
        AND dispatched_by_autonomous = 0`,
     );
+  }
+
+  try {
+    db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_epics ADD COLUMN autonomous_model TEXT DEFAULT NULL');
   }
 
   // Per-device push notification preferences. JSON array of enabled event
@@ -1914,7 +1921,7 @@ function initDb(dataDir: string): void {
       `INSERT INTO kanban_epics (id, board_id, name, description, color, position) VALUES (?, ?, ?, ?, ?, ?)`,
     ),
     updateKanbanEpic: db.prepare(
-      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_max_iterations = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_max_iterations = ?, autonomous_model = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     deleteKanbanEpic: db.prepare('DELETE FROM kanban_epics WHERE id = ?'),
     getKanbanCardsByEpic: db.prepare(

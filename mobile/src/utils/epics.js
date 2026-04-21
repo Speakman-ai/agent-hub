@@ -25,6 +25,7 @@ export const DEFAULT_EPIC_FORM = {
   autonomous_interval: 5,
   autonomous_max_concurrent: 2,
   autonomous_max_iterations: 3,
+  autonomous_model: '',
 };
 
 /**
@@ -41,6 +42,7 @@ export function epicFormFromRow(epic) {
     autonomous_interval: epic.autonomous_interval || 5,
     autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
     autonomous_max_iterations: epic.autonomous_max_iterations || 3,
+    autonomous_model: epic.autonomous_model || '',
   };
 }
 
@@ -49,14 +51,19 @@ export function epicFormFromRow(epic) {
  * The PUT /board/epics/:epicId endpoint accepts camelCase keys.
  */
 export function epicFormToUpdateBody(form) {
+  const autonomousOn = form.autonomous ? 1 : 0;
+  const rawModel =
+    typeof form.autonomous_model === 'string' ? form.autonomous_model.trim() : '';
+  const autonomousModel = autonomousOn ? (rawModel || null) : null;
   return {
     name: (form.name || '').trim(),
     description: form.description || '',
     color: form.color || DEFAULT_EPIC_COLOR,
-    autonomous: form.autonomous ? 1 : 0,
+    autonomous: autonomousOn,
     autonomousInterval: form.autonomous_interval || 5,
     autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
     autonomousMaxIterations: form.autonomous_max_iterations || 3,
+    autonomousModel,
   };
 }
 
