@@ -70,17 +70,24 @@ describe('config.ts — TEST_MODE safety rail', () => {
   });
 });
 
-describe('config.ts ↔ Terraform install parity', () => {
+describe('config.ts ↔ cursor-agent install parity', () => {
   // Guards the coupling between the server's cursorBin default and the
-  // provisioning step in ops/terraform/main.tf that installs the Cursor CLI
-  // and symlinks it into /usr/local/bin/agent. If someone flips one without
-  // the other, sessions with engine=cursor-agent fail to spawn on freshly
-  // provisioned EC2 boxes with a cryptic ENOENT — this test catches it early.
+  // provisioning / deploy steps that install the Cursor CLI. If someone
+  // flips one without the other, sessions with engine=cursor-agent fail
+  // to spawn on freshly provisioned EC2 boxes with a cryptic ENOENT —
+  // this test catches it early.
+  //
+  // Covers three rollout paths:
+  //   1. scripts/ensure-cursor-agent.sh — invoked on every deploy
+  //   2. ops/terraform/main.tf user_data — one-time bootstrap
+  //   3. The three deploy workflows that call the script
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
-  const terraformMain = path.resolve(__dirname, '..', 'ops', 'terraform', 'main.tf');
+  const repoRoot = path.resolve(__dirname, '..');
+  const terraformMain = path.join(repoRoot, 'ops', 'terraform', 'main.tf');
+  const installScript = path.join(repoRoot, 'scripts', 'ensure-cursor-agent.sh');
 
-  it('cursorBin default matches the symlink created by Terraform user_data', async () => {
+  it('cursorBin default tracks the installer-managed path ($HOME/.local/bin/agent)', async () => {
     vi.resetModules();
     // Point the config loader at an isolated tmp dir so a developer's local
     // ~/.agent-hub/data/config.json with a `cursorBin` override does not
@@ -93,10 +100,32 @@ describe('config.ts ↔ Terraform install parity', () => {
     delete process.env.CURSOR_BIN;
 
     const mod = await import('./config.js');
-    expect(mod.default.cursorBin).toBe('/usr/local/bin/agent');
+    const expected = path.join(os.homedir(), '.local', 'bin', 'agent');
+    expect(mod.default.cursorBin).toBe(expected);
+  });
 
+  it('scripts/ensure-cursor-agent.sh references the official installer and the matching bin path', () => {
+    const script = fs.readFileSync(installScript, 'utf8');
+    expect(script).toMatch(/https:\/\/cursor\.com\/install/);
+    expect(script).toMatch(/\.local\/bin\/agent/);
+  });
+
+  it('Terraform user_data bootstraps cursor-agent via the official installer', () => {
     const tf = fs.readFileSync(terraformMain, 'utf8');
     expect(tf).toMatch(/https:\/\/cursor\.com\/install/);
-    expect(tf).toMatch(/\/usr\/local\/bin\/agent/);
+  });
+
+  it('all three deploy workflows invoke scripts/ensure-cursor-agent.sh', () => {
+    const workflows = [
+      path.join(repoRoot, '.github', 'workflows', 'deploy-dev.yml'),
+      path.join(repoRoot, '.github', 'workflows', 'deploy-prod-2.yml'),
+      path.join(repoRoot, '.github', 'workflows', 'release-prod.yml'),
+    ];
+    for (const wf of workflows) {
+      const body = fs.readFileSync(wf, 'utf8');
+      expect(body, `${path.basename(wf)} should invoke ensure-cursor-agent.sh`).toMatch(
+        /scripts\/ensure-cursor-agent\.sh/,
+      );
+    }
   });
 });

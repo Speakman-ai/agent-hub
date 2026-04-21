@@ -91,8 +91,17 @@ const config: AppConfig = {
   host: resolve('AGENT_HUB_HOST', 'host', '0.0.0.0') as string,
 
   // ── CLI binary paths ───────────────────────────────────────────
+  // cursorBin default tracks the path used by Cursor's official per-user
+  // installer (https://cursor.com/install), which drops a symlink at
+  // $HOME/.local/bin/agent. Aligning the default here means a fresh box
+  // with just the installer run (and no config.json override) works out
+  // of the box — no sudo symlink into /usr/local/bin required.
   claudeBin: resolve('CLAUDE_BIN', 'claudeBin', '/usr/local/bin/claude') as string,
-  cursorBin: resolve('CURSOR_BIN', 'cursorBin', '/usr/local/bin/agent') as string,
+  cursorBin: resolve(
+    'CURSOR_BIN',
+    'cursorBin',
+    path.join(HOME, '.local', 'bin', 'agent'),
+  ) as string,
   geminiBin: resolve('GEMINI_BIN', 'geminiBin', '/usr/local/bin/gemini') as string,
 
   // ── Directories ────────────────────────────────────────────────

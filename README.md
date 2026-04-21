@@ -85,16 +85,24 @@ official installer:
 ```bash
 # Inspect the script first if you prefer:
 # curl -fsS https://cursor.com/install | less
-curl -fsS https://cursor.com/install | bash
+bash scripts/ensure-cursor-agent.sh
 ```
 
-This places a symlink at `~/.local/bin/agent`. Either add that to your
-`PATH`, symlink it into `/usr/local/bin/agent` (the server's default
-`cursorBin`), or point the server at it explicitly via the `CURSOR_BIN`
-env var or `cursorBin` in `server/config.json`.
+This wraps `curl -fsS https://cursor.com/install | bash` with an
+idempotent check, so it's safe to re-run. The installer drops a symlink
+at `~/.local/bin/agent`, which is also the server's default `cursorBin`
+— no additional configuration needed. To override (e.g. system-wide
+install at `/usr/local/bin/agent`), set the `CURSOR_BIN` env var or
+`cursorBin` in `~/.agent-hub/data/config.json`.
 
-On EC2 this is handled automatically by Terraform `user_data` — see
-`ops/terraform/main.tf`.
+On EC2 this is handled automatically:
+
+- **New instances**: `ops/terraform/main.tf` `user_data` runs the
+  official installer once at bootstrap.
+- **Every deploy**: the dev/prod-2/release-prod workflows in
+  `.github/workflows/` call `scripts/ensure-cursor-agent.sh` inside
+  the SSM rollout, so the CLI stays present on subsequent deploys
+  even if it was manually removed.
 
 ## Quick Start
 
