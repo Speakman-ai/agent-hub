@@ -14,7 +14,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
-import { buildSpawnEnv } from './config.js';
+import { buildSpawnEnv, defaultModelForEngine } from './config.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
 import type {
   Stmts,
@@ -31,7 +31,6 @@ interface DesignChatDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
   getClaudeBin: () => string;
-  getDefaultModel: () => string;
   getConfig: () => AppConfig;
   /**
    * Designs are hub-level, so project IDs on the row may not resolve to a
@@ -87,6 +86,27 @@ export const activeDesignProcesses = new Map<string, DesignState>();
 
 export function initDesignChat(d: DesignChatDeps): void {
   deps = d;
+}
+
+/**
+ * Resolve the Claude Code `--model` for Design Studio. Always uses the
+ * `claude-code` allowlist; a null/empty `agent_model` on the design falls back
+ * to `defaultModelForEngine('claude-code')`.
+ */
+export function resolveDesignStudioModel(
+  agentModel: string | null | undefined,
+  cfg: AppConfig,
+): string {
+  const allowed = cfg.engineValidModels['claude-code'] || [];
+  const configured = typeof agentModel === 'string' ? agentModel.trim() : '';
+  if (configured && allowed.includes(configured)) {
+    return configured;
+  }
+  const fallback = defaultModelForEngine('claude-code');
+  if (allowed.length === 0 || allowed.includes(fallback)) {
+    return fallback;
+  }
+  return allowed[0] ?? fallback;
 }
 
 // ─── Cancel ──────────────────────────────────────────────────────────
@@ -238,8 +258,8 @@ export async function handleDesignChat(
 
   try {
     const CLAUDE_BIN = d.getClaudeBin();
-    const DEFAULT_MODEL = d.getDefaultModel();
     const config = d.getConfig();
+    const cliModel = resolveDesignStudioModel(design.agent_model, config);
     const designsRoot = d.getDesignsRoot();
     const defaultSkillsDir = d.getDefaultSkillsDir();
     const designDir = path.join(designsRoot, designId);
@@ -275,7 +295,7 @@ export async function handleDesignChat(
           '--permission-mode',
           'bypassPermissions',
           '--model',
-          DEFAULT_MODEL,
+          cliModel,
           '--system-prompt',
           systemPrompt,
           userPrompt,

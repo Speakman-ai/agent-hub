@@ -115,6 +115,8 @@ export interface DesignRow {
   id: string;
   name: string;
   org_id: string;
+  /** Claude Code model id for Design Studio; null → hub default for claude-code. */
+  agent_model: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -793,6 +795,7 @@ export interface Stmts {
   getDesign: Stmt;
   createDesign: Stmt;
   updateDesignName: Stmt;
+  updateDesignAgentModel: Stmt;
   touchDesign: Stmt;
   deleteDesign: Stmt;
   listDesignProjects: Stmt;

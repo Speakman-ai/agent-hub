@@ -8,6 +8,7 @@ import {
   listDesigns,
   getDesign,
   renameDesign,
+  setDesignAgentModel,
   setLinkedProjects,
   linkProject,
   unlinkProject,
@@ -108,6 +109,15 @@ describe('designs-store — CRUD', () => {
     renameDesign(design.id, 'New');
     expect(getDesign(design.id, lookup)?.name).toBe('New');
     expect(() => renameDesign(design.id, '  ')).toThrow(/name is required/i);
+  });
+
+  it('setDesignAgentModel persists agent_model on the design row', () => {
+    const design = createDesign('M', [], designsRoot, lookup);
+    expect(getDesign(design.id, lookup)?.agent_model).toBeNull();
+    setDesignAgentModel(design.id, 'claude-sonnet-4-6');
+    expect(getDesign(design.id, lookup)?.agent_model).toBe('claude-sonnet-4-6');
+    setDesignAgentModel(design.id, null);
+    expect(getDesign(design.id, lookup)?.agent_model).toBeNull();
   });
 
   it('drops unknown project ids silently from the hydrated output', () => {

@@ -774,6 +774,13 @@ export default function App() {
           ),
         );
         break;
+      case 'design_metadata_updated':
+        if (data.design?.id) {
+          setDesigns((prev) =>
+            prev.map((d) => (d.id === data.design.id ? { ...d, ...data.design } : d)),
+          );
+        }
+        break;
       case 'design_message_added':
         if (data.designId === activeDesignIdRef.current && data.message) {
           // Streaming token deltas arrive as the same messageId with growing content;
@@ -2477,6 +2484,10 @@ export default function App() {
               send={send}
               onBack={() => setCurrentView('designs')}
               onManualReload={() => setDesignReloadToken((t) => t + 1)}
+              showToast={showToast}
+              onDesignRecordUpdated={(d) =>
+                setDesigns((prev) => prev.map((x) => (x.id === d.id ? { ...x, ...d } : x)))
+              }
             />
           ) : (
             <>

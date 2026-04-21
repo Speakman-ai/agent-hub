@@ -1044,6 +1044,13 @@ function initDb(dataDir: string): void {
     /* column already exists */
   }
 
+  // Migration: per-design Claude model for Design Studio (null = hub default).
+  try {
+    db.exec('ALTER TABLE designs ADD COLUMN agent_model TEXT');
+  } catch (_e) {
+    /* column already exists */
+  }
+
   // Container pool (PR preview envs + scaffolding). Schema lives in a sibling
   // module so unit tests can apply the identical DDL to an in-memory DB.
   db.exec(POOL_SCHEMA);
@@ -1634,6 +1641,9 @@ function initDb(dataDir: string): void {
     createDesign: db.prepare('INSERT INTO designs (id, name, org_id) VALUES (?, ?, ?)'),
     updateDesignName: db.prepare(
       "UPDATE designs SET name = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateDesignAgentModel: db.prepare(
+      "UPDATE designs SET agent_model = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     touchDesign: db.prepare("UPDATE designs SET updated_at = datetime('now') WHERE id = ?"),
     deleteDesign: db.prepare('DELETE FROM designs WHERE id = ?'),

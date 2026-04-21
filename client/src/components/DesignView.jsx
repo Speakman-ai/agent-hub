@@ -3,6 +3,7 @@ import { Palette, ArrowLeft, RefreshCw, Download } from 'lucide-react';
 import { relativeTime } from '../utils/time.js';
 import { getServerBase } from '../utils/connection.js';
 import { exportDesignPdf } from '../utils/exportDesignPdf.js';
+import { api } from '../utils/api.js';
 
 /**
  * DesignView — split-pane Claude Design workspace:
@@ -13,6 +14,59 @@ import { exportDesignPdf } from '../utils/exportDesignPdf.js';
  * emits a `design_updated` WS event for the active design id, so the agent's
  * file writes show up immediately on the canvas.
  */
+/**
+ * Claude Code model for Design Studio (`claude --model` on the server).
+ */
+function DesignStudioModelSelect({
+  design,
+  modelConfig,
+  disabled,
+  showToast,
+  onDesignRecordUpdated,
+}) {
+  const allowed = modelConfig?.engineValidModels?.['claude-code'] || [];
+  const hubDefault =
+    modelConfig?.engineDefaultModels?.['claude-code'] || modelConfig?.defaultModel || '';
+
+  if (!modelConfig || allowed.length === 0) return null;
+
+  const configured = typeof design?.agent_model === 'string' ? design.agent_model.trim() : '';
+  const value = configured && allowed.includes(configured) ? configured : '__default__';
+
+  const handleChange = async (e) => {
+    const v = e.target.value;
+    const payload = v === '__default__' ? { agentModel: null } : { agentModel: v };
+    try {
+      const updated = await api.updateDesign(design.id, payload);
+      onDesignRecordUpdated?.(updated);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast?.(msg, 'error');
+    }
+  };
+
+  return (
+    <label className="flex items-center gap-2 text-xs text-gray-500">
+      <span className="hidden sm:inline whitespace-nowrap">Model</span>
+      <select
+        value={value}
+        onChange={handleChange}
+        disabled={disabled}
+        data-testid="design-studio-model"
+        className="bg-gray-900 border border-gray-700 text-gray-200 rounded-md px-2 py-1 max-w-[200px] sm:max-w-[240px] truncate text-xs focus:outline-none focus:border-gray-500 disabled:opacity-50"
+        title="Claude model for the Design Studio agent"
+      >
+        <option value="__default__">{`Default (${hubDefault})`}</option>
+        {allowed.map((id) => (
+          <option key={id} value={id}>
+            {id}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 // Persisted key + clamp bounds for the split-pane width.
 const SPLIT_STORAGE_KEY = 'designSplitPct';
 const SPLIT_MIN_PCT = 15;
@@ -50,6 +104,8 @@ export default function DesignView({
   onBack,
   send,
   onManualReload,
+  showToast,
+  onDesignRecordUpdated,
 }) {
   const splitContainerRef = useRef(null);
   const [splitPct, setSplitPct] = useState(readStoredSplitPct);
@@ -145,7 +201,23 @@ export default function DesignView({
   // capture reflects a stable snapshot of index.html.
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState(null);
+  const [modelConfig, setModelConfig] = useState(null);
   const base = getServerBase();
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getModelConfig()
+      .then((cfg) => {
+        if (!cancelled) setModelConfig(cfg);
+      })
+      .catch(() => {
+        if (!cancelled) setModelConfig(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const designId = design?.id;
   const designName = design?.name;
@@ -200,7 +272,14 @@ export default function DesignView({
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 flex-shrink-0">
+          <DesignStudioModelSelect
+            design={design}
+            modelConfig={modelConfig}
+            disabled={processing}
+            showToast={showToast}
+            onDesignRecordUpdated={onDesignRecordUpdated}
+          />
           {exportError && (
             <span className="text-xs text-red-400 hidden sm:inline" title={exportError}>
               {exportError}

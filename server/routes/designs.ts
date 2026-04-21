@@ -12,6 +12,7 @@ import {
   listDesigns,
   getDesign,
   renameDesign,
+  setDesignAgentModel,
   setLinkedProjects,
   deleteDesign,
   listDesignMessages,
@@ -26,7 +27,7 @@ interface DesignRouteDeps extends RouteDeps {
 }
 
 export default function createDesignRoutes(deps: DesignRouteDeps): Router {
-  const { findProject, broadcast, getDesignsRoot } = deps;
+  const { findProject, broadcast, getDesignsRoot, config } = deps;
   const router = Router();
 
   function lookup(projectId: string) {
@@ -72,10 +73,38 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
     const design = getDesign(req.params.id as string, lookup, getActiveOrgId());
     if (!design) return res.status(404).json({ error: 'Design not found' });
 
-    const { name, linkedProjectIds } = req.body as {
+    const body = req.body as {
       name?: string;
       linkedProjectIds?: string[];
+      agentModel?: string | null;
     };
+    const { name, linkedProjectIds, agentModel } = body;
+    const rawBody = req.body as Record<string, unknown>;
+
+    if ('agentModel' in rawBody) {
+      const raw = agentModel;
+      if (raw !== null && raw !== undefined) {
+        if (typeof raw !== 'string') {
+          return res.status(400).json({ error: 'agentModel must be a string or null' });
+        }
+        const trimmed = raw.trim();
+        if (trimmed.length > 0) {
+          const all = config.allValidModels;
+          if (!all.includes(trimmed)) {
+            return res.status(400).json({
+              error: `Invalid model. Must be one of: ${all.join(', ')}`,
+            });
+          }
+          const allowed = config.engineValidModels['claude-code'] || [];
+          if (allowed.length > 0 && !allowed.includes(trimmed)) {
+            return res.status(400).json({
+              error: `Model "${trimmed}" is not valid for Design Studio (Claude Code). Allowed: ${allowed.join(', ')}`,
+            });
+          }
+        }
+      }
+    }
+
     try {
       if (typeof name === 'string' && name.trim()) {
         renameDesign(design.id, name);
@@ -86,13 +115,27 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
           linkedProjectIds.filter((x) => typeof x === 'string'),
         );
       }
+      if ('agentModel' in rawBody) {
+        const raw = agentModel;
+        if (raw !== null && raw !== undefined) {
+          const trimmed = (raw as string).trim();
+          if (trimmed.length === 0) {
+            setDesignAgentModel(design.id, null);
+          } else {
+            setDesignAgentModel(design.id, trimmed);
+          }
+        } else {
+          setDesignAgentModel(design.id, null);
+        }
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return res.status(400).json({ error: msg });
     }
 
     const updated = getDesign(design.id, lookup, getActiveOrgId());
-    broadcast({ type: 'design_updated', designId: updated?.id });
+    // Metadata-only — do not emit `design_updated` (that reloads the canvas iframe).
+    if (updated) broadcast({ type: 'design_metadata_updated', design: updated });
     res.json(updated);
   });
 

@@ -429,7 +429,6 @@ initDesignChat({
   stmts: stmts!,
   broadcast,
   getClaudeBin: () => CLAUDE_BIN,
-  getDefaultModel: () => DEFAULT_MODEL,
   getConfig: () => config,
   getDesign: (id: string) => getDesignStore(id, findProject, getActiveOrgId()),
   getDesignsRoot,

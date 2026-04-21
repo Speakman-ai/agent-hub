@@ -10,6 +10,18 @@ import DesignView, { clampSplitPct } from './DesignView.jsx';
 vi.mock('../utils/exportDesignPdf.js', () => ({
   exportDesignPdf: vi.fn(() => Promise.resolve()),
 }));
+vi.mock('../utils/api.js', () => ({
+  api: {
+    getModelConfig: vi.fn(() =>
+      Promise.resolve({
+        defaultModel: 'claude-opus-4-7',
+        engineDefaultModels: { 'claude-code': 'claude-opus-4-7' },
+        engineValidModels: { 'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-6'] },
+      }),
+    ),
+    updateDesign: vi.fn(() => Promise.resolve({})),
+  },
+}));
 import { exportDesignPdf } from '../utils/exportDesignPdf.js';
 
 /**
@@ -71,6 +83,13 @@ describe('DesignView', () => {
   it('renders the design name in the header', () => {
     render(<DesignView {...baseProps} />);
     expect(screen.getByText('Sales dashboard')).toBeInTheDocument();
+  });
+
+  it('shows a Claude model selector after model config loads', async () => {
+    render(<DesignView {...baseProps} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('design-studio-model')).toBeInTheDocument();
+    });
   });
 
   it('fetches index.html with the reloadToken cache-buster and renders a sandboxed srcdoc iframe', async () => {

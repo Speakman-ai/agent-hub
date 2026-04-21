@@ -11,6 +11,7 @@ interface DesignBody {
   id: string;
   name: string;
   linkedProjects: Array<{ id: string }>;
+  agent_model?: string | null;
 }
 
 interface MessageBody {
@@ -70,6 +71,35 @@ describe('Designs API — CRUD', () => {
     const body = res.body as DesignBody;
     expect(body.name).toBe('Renamed');
     expect(body.linkedProjects.map((p) => p.id)).toEqual([b.id]);
+  });
+
+  it('PATCH /api/designs/:id sets agent_model to a valid Claude Code model', async () => {
+    const mc = await request.get('/api/config/models').expect(200);
+    const allowed = (mc.body as { engineValidModels?: Record<string, string[]> })
+      .engineValidModels?.['claude-code'];
+    const pick = Array.isArray(allowed) && allowed.length > 0 ? allowed[0] : 'claude-opus-4-7';
+
+    const created = await request.post('/api/designs').send({ name: 'Model test' }).expect(201);
+    const id = (created.body as DesignBody).id;
+
+    const res = await request.patch(`/api/designs/${id}`).send({ agentModel: pick }).expect(200);
+    const body = res.body as DesignBody;
+    expect(body.agent_model).toBe(pick);
+
+    const cleared = await request
+      .patch(`/api/designs/${id}`)
+      .send({ agentModel: null })
+      .expect(200);
+    expect((cleared.body as DesignBody).agent_model).toBeNull();
+  });
+
+  it('PATCH /api/designs/:id rejects agentModel not valid for Claude Code', async () => {
+    const created = await request.post('/api/designs').send({ name: 'Bad model' }).expect(201);
+    const id = (created.body as DesignBody).id;
+    await request
+      .patch(`/api/designs/${id}`)
+      .send({ agentModel: 'definitely-not-a-real-model-id' })
+      .expect(400);
   });
 
   it('GET /api/designs/:id/messages is empty on create', async () => {

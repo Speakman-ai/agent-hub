@@ -103,6 +103,14 @@ export function renameDesign(id: string, name: string): void {
 }
 
 /**
+ * Persist which Claude Code `--model` Design Studio uses for this design.
+ * Pass `null` to clear and follow the hub default for `claude-code`.
+ */
+export function setDesignAgentModel(designId: string, agentModel: string | null): void {
+  getStmts().updateDesignAgentModel.run(agentModel, designId);
+}
+
+/**
  * Replace the set of linked projects for a design. Used by `PATCH` handlers
  * that let the caller pass a fresh `linkedProjectIds` array.
  */
