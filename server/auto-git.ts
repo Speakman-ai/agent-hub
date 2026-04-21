@@ -20,6 +20,39 @@ const execFileAsync = promisify(execFile);
 /** Wall-clock cap per configured pre-commit shell command (lint/test can be slow). */
 const PRECOMMIT_CMD_TIMEOUT_MS = 600_000;
 
+/**
+ * Cap for `git commit -m <msg>` passed as a single argv element. Kanban cards
+ * (especially Codex / autonomous flows) can embed very long descriptions; an
+ * oversized message exceeds OS argv limits (Windows is the strictest) and
+ * fails with spawn errors instead of a clear git message.
+ *
+ * On Windows, `CreateProcessW` limits the full command line to 32,767
+ * characters (see Microsoft Learn: command-line string max). Node's
+ * `execFile` still packs argv into that string, so the `-m` body must leave
+ * headroom for `git.exe` path, `commit`, `-m`, and quoting — not 50k.
+ */
+export const MAX_GIT_COMMIT_MESSAGE_CHARS = 27_000;
+
+/** Strip NULs (invalid in git metadata) and hard-cap length for argv safety. */
+export function truncateForGitCommitMessage(message: string): string {
+  const noNul = message.replace(/\0/g, '');
+  if (noNul.length <= MAX_GIT_COMMIT_MESSAGE_CHARS) return noNul;
+  const suffix = '\n\n… (truncated by Agent Hub)';
+  const budget = MAX_GIT_COMMIT_MESSAGE_CHARS - suffix.length;
+  return noNul.slice(0, Math.max(0, budget)) + suffix;
+}
+
+function formatExecFileError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const msg = err.message;
+  const stderr = (err as Error & { stderr?: Buffer }).stderr;
+  if (stderr?.length) {
+    const s = stderr.toString().trim();
+    if (s && !msg.includes(s)) return `${msg}\n${s}`;
+  }
+  return msg;
+}
+
 export function getProjectPreCommitCommands(project: Project): string[] {
   const raw = (project as Record<string, unknown>).preCommitCommands;
   if (!Array.isArray(raw)) return [];
@@ -568,7 +601,8 @@ async function commitPushAndCreatePR(
   );
 
   const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
-  const commitTitle = card?.title || session?.name || 'Agent task completion';
+  const rawTitle = (card?.title ?? session?.name ?? '').trim();
+  const commitTitle = rawTitle || 'Agent task completion';
 
   if (changes.hasUncommitted) {
     // Ensure git identity is configured (may be missing in shallow clones)
@@ -607,14 +641,14 @@ async function commitPushAndCreatePR(
     // Pre-commit commands may run formatters / fixers that write the tree; re-stage
     // so those edits are included in the commit (matches typical hook UX).
     await execAsync('git add -A', { cwd: effectiveCwd });
-    const fullMessage = `${commitTitle}\n${commitBody}`;
+    const fullMessage = truncateForGitCommitMessage(`${commitTitle}\n${commitBody}`);
     try {
       // execFile keeps `-m` body off /bin/sh — Codex/card bodies often contain
       // newlines, backticks, and `$` that would break `exec('git commit -m "…"')`.
       await execFileAsync('git', ['commit', '-m', fullMessage], { cwd: effectiveCwd });
       console.log(`[auto-commit] Committed: ${commitTitle}`);
     } catch (commitErr: unknown) {
-      const msg = commitErr instanceof Error ? commitErr.message : String(commitErr);
+      const msg = formatExecFileError(commitErr);
       console.error(`[auto-commit] Commit failed: ${msg}`);
       return { ok: false, error: msg, code: 'commit_failed' };
     }

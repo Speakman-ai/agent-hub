@@ -23,6 +23,8 @@ import {
   buildPrBody,
   isGarbageTitle,
   getProjectPreCommitCommands,
+  truncateForGitCommitMessage,
+  MAX_GIT_COMMIT_MESSAGE_CHARS,
 } from './auto-git.js';
 import type { MessageRow } from './types.js';
 
@@ -106,6 +108,32 @@ function installExecAndGhMock(
     },
   );
 }
+
+describe('truncateForGitCommitMessage', () => {
+  it('returns unchanged text when under the cap', () => {
+    const s = 'Title\n\nBody with `backticks` and $(cmd)';
+    expect(truncateForGitCommitMessage(s)).toBe(s);
+  });
+
+  it('strips NUL bytes', () => {
+    expect(truncateForGitCommitMessage('a\0b\0c')).toBe('abc');
+  });
+
+  it('truncates oversized messages and ends with the truncation marker', () => {
+    const huge = 'x'.repeat(MAX_GIT_COMMIT_MESSAGE_CHARS + 5000);
+    const out = truncateForGitCommitMessage(huge);
+    expect(out.length).toBeLessThanOrEqual(MAX_GIT_COMMIT_MESSAGE_CHARS);
+    expect(out.endsWith('\n\n… (truncated by Agent Hub)')).toBe(true);
+  });
+
+  it('keeps the cap under the Windows CreateProcess command-line limit (minus argv headroom)', () => {
+    const WIN32_MAX_CMDLINE_CHARS = 32767;
+    const argvOverheadReserve = 5000;
+    expect(MAX_GIT_COMMIT_MESSAGE_CHARS).toBeLessThanOrEqual(
+      WIN32_MAX_CMDLINE_CHARS - argvOverheadReserve,
+    );
+  });
+});
 
 describe('getProjectPreCommitCommands', () => {
   it('returns trimmed non-empty strings from project.preCommitCommands', () => {
