@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { spawn, ChildProcess } from 'child_process';
 import { Router, Request, Response } from 'express';
 import { defaultModelForEngine, buildSpawnEnv } from '../config.js';
+import { getDb } from '../db.js';
 import { manualCommitAndPR } from '../auto-git.js';
 import type {
   RouteDeps,
@@ -419,8 +420,22 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         error: 'Invalid engine. Must be claude-code, cursor-agent, gemini-cli, or codex-cli',
       });
     }
-    stmts.updateSessionEngine.run(engine, req.params.sessionId);
-    stmts.updateSessionEngineSessionId.run(null, req.params.sessionId);
+    // Load the session BEFORE updating the engine so we can check whether
+    // the current model is still valid for the new engine. If not, reset
+    // the model to the engine's default. Without this step, the session
+    // ends up in a mixed state (e.g. engine=codex-cli, model=claude-opus-4-7)
+    // and the next `PUT .../model` call — which the client fires right
+    // after — 400s with "Model X is not valid for engine Y".
+    const existing = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!existing) return res.status(404).json({ error: 'Session not found' });
+    const allowedForNewEngine = config.engineValidModels[engine] || [];
+    getDb().transaction(() => {
+      stmts.updateSessionEngine.run(engine, req.params.sessionId);
+      stmts.updateSessionEngineSessionId.run(null, req.params.sessionId);
+      if (!existing.model || !allowedForNewEngine.includes(existing.model)) {
+        stmts.updateSessionModel.run(defaultModelForEngine(engine), req.params.sessionId);
+      }
+    })();
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     res.json(session);
