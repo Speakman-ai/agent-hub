@@ -26,6 +26,7 @@
  */
 import { Router, Request, Response } from 'express';
 import rateLimit, { type Options as RateLimitOptions } from 'express-rate-limit';
+import config from '../config.js';
 import { signJwt } from '../jwt.js';
 import { hashPassword, verifyPassword } from '../password.js';
 import {
@@ -202,13 +203,25 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   // ── Status (public) ────────────────────────────────────────────
   router.get('/api/auth/status', (_req: Request, res: Response) => {
     const record = getAuthRecord();
+    const jwtConfigured = !!record;
+    const apiKeyConfigured = !!config.apiKey;
+    // `needsMigration` is true only for the apiKey-only deployment state:
+    // the server is already protected by the legacy shared secret, but no
+    // JWT `auth.json` has been written yet. The client uses this to show
+    // the "upgrade my auth" banner. Once /api/auth/setup has run the
+    // record exists and this flips to false even if the apiKey is still
+    // present (apiKey stays as break-glass, not a migration signal).
+    const needsMigration = apiKeyConfigured && !jwtConfigured;
     res.json({
-      authConfigured: !!record,
+      authConfigured: jwtConfigured,
       username: record?.username ?? null,
       // Role is safe to leak publicly — it's the owner's role at install
       // time, not a per-caller claim. The UI uses it to decide whether
       // to show the "first Owner" vs "sign in" copy.
       role: record?.role ?? null,
+      jwtConfigured,
+      apiKeyConfigured,
+      needsMigration,
     });
   });
 

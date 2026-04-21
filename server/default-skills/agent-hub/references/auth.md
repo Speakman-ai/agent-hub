@@ -88,6 +88,27 @@ The `uid` claim identifies the user across org switches. Pre-migration
 tokens that pre-date the claim are still accepted by `authMiddleware` for
 backward compatibility, but newly minted tokens always carry `uid`.
 
+## `/api/auth/status` response fields
+
+`GET /api/auth/status` is public and reports what auth surfaces the
+server currently exposes. Clients use it to decide between "sign in",
+"first-Owner setup", and "upgrade your auth" flows.
+
+| Field               | Meaning                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------ |
+| `authConfigured`    | Alias of `jwtConfigured`. True once `/api/auth/setup` has written `auth.json`.       |
+| `jwtConfigured`     | A JWT auth record exists — users can sign in.                                        |
+| `apiKeyConfigured`  | The legacy shared-secret `apiKey` is set in `config.json` (break-glass header).      |
+| `needsMigration`    | `apiKeyConfigured && !jwtConfigured` — the server is still running apiKey-only.      |
+| `username`, `role`  | The first-Owner's username + role at install time, or `null` pre-setup.              |
+
+`needsMigration` is the signal for the **"upgrade my auth" banner**: the
+server is already protected by the legacy shared secret, but no JWT
+record has been written yet. Once `/api/auth/setup` runs, the JWT record
+exists and `needsMigration` flips to `false` — even if the apiKey is
+still present, because it stays around as break-glass, not as a
+migration signal.
+
 ## Rate limiting — `trust proxy` is coupled to the proxy topology
 
 `server/index.ts` sets `app.set('trust proxy', 'loopback')` so `req.ip`

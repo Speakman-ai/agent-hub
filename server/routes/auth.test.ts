@@ -198,12 +198,20 @@ describe('GET /api/auth/status', () => {
     TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
     setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
     reloadAuthRecord();
+    mockConfig.apiKey = null;
   });
 
   it('reports unconfigured before setup', async () => {
     const res = await supertest(buildApp()).get('/api/auth/status');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ authConfigured: false, username: null, role: null });
+    expect(res.body).toEqual({
+      authConfigured: false,
+      username: null,
+      role: null,
+      jwtConfigured: false,
+      apiKeyConfigured: false,
+      needsMigration: false,
+    });
   });
 
   it('reports configured + username after setup', async () => {
@@ -212,7 +220,14 @@ describe('GET /api/auth/status', () => {
       .send({ username: 'owner', password: 'a-strong-password' });
     reloadAuthRecord();
     const res = await supertest(buildApp()).get('/api/auth/status');
-    expect(res.body).toEqual({ authConfigured: true, username: 'owner', role: 'Owner' });
+    expect(res.body).toEqual({
+      authConfigured: true,
+      username: 'owner',
+      role: 'Owner',
+      jwtConfigured: true,
+      apiKeyConfigured: false,
+      needsMigration: false,
+    });
   });
 });
 
