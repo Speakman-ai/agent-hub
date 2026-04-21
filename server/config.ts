@@ -11,6 +11,19 @@ const HOME = os.homedir();
 const DEFAULT_DATA_DIR = path.join(HOME, '.agent-hub', 'data');
 const DATA_DIR = process.env.AGENT_HUB_DATA_DIR || DEFAULT_DATA_DIR;
 
+// Hard safety rail: refuse to boot in test mode pointing at the production
+// data dir. This caught us once already — `server/designs-store.test.ts`'s
+// bulk-wipe beforeEach deleted production design rows because
+// AGENT_HUB_DATA_DIR was being set inside setup.ts instead of vitest.config.ts
+// `test.env`, leaving a window where config.ts loaded with the default path.
+// See PR adding `feature/designs-wipe-guard`.
+if (process.env.AGENT_HUB_TEST_MODE === '1' && DATA_DIR === DEFAULT_DATA_DIR) {
+  throw new Error(
+    `[config] AGENT_HUB_TEST_MODE=1 but AGENT_HUB_DATA_DIR resolves to the production default (${DEFAULT_DATA_DIR}). ` +
+      'Refusing to initialize — set AGENT_HUB_DATA_DIR to a tmp path in vitest.config.ts test.env.',
+  );
+}
+
 mkdirSync(DATA_DIR, { recursive: true });
 
 // ─── Load optional config.json ───────────────────────────────────

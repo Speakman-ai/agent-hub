@@ -8,6 +8,7 @@
  */
 
 import type supertest from 'supertest';
+import { tmpdir } from 'os';
 import { getRequest } from './helpers.js';
 import { getDb } from '../db.js';
 
@@ -44,6 +45,13 @@ interface AlertsBody {
 
 function clearPoolTables(): void {
   const db = getDb();
+  // Safety net — see PR feature/designs-wipe-guard. Refuse to issue bulk
+  // DELETEs against anything outside the tmp test data dir.
+  if (!db.name.startsWith(tmpdir())) {
+    throw new Error(
+      `Refusing to wipe pool tables in non-tmp DB at ${db.name} — expected path under ${tmpdir()}`,
+    );
+  }
   db.exec('DELETE FROM pool_metrics');
   db.exec('DELETE FROM pool_alerts');
 }

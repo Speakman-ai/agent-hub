@@ -52,6 +52,14 @@ beforeEach(() => {
   // Wipe the three design tables between tests so rows don't leak across
   // test files that share the setup.ts DB.
   const db = getDb();
+  // Safety net: last line of defence against test-env leaking into prod.
+  // Lost production design rows once when AGENT_HUB_DATA_DIR wasn't set in
+  // vitest.config.ts test.env — see PR feature/designs-wipe-guard.
+  if (!db.name.startsWith(tmpdir())) {
+    throw new Error(
+      `Refusing to wipe designs in non-tmp DB at ${db.name} — expected path under ${tmpdir()}`,
+    );
+  }
   db.exec('DELETE FROM design_messages; DELETE FROM design_projects; DELETE FROM designs;');
   projects.clear();
 });
