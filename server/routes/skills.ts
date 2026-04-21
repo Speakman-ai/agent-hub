@@ -49,39 +49,74 @@ interface PluginSkillInfo {
   keepCodingInstructions: boolean;
 }
 
-(function syncDefaultSkillsToClaude(): void {
+/**
+ * Merge-sync skills from DEFAULT_SKILLS_DIR and any extra skill directories
+ * (e.g. per-project skillsDir entries) into the Claude Code CLI's
+ * `~/.claude/plugins/local/agent-hub-skills` plugin target (or the
+ * `~/.claude/commands/` fallback when no plugin scaffolding exists).
+ *
+ * Called at server startup with every project's skillsDir, and again by
+ * the ClawHub install route so freshly-installed project skills register
+ * with the CLI without requiring a server restart.
+ *
+ * Later sources in `extraSkillDirs` override earlier ones when skill IDs
+ * collide — later iterations simply `cpSync` on top of the destination.
+ */
+export function syncSkillsToClaude(extraSkillDirs: string[] = []): void {
   try {
     const home = process.env.HOME || process.env.USERPROFILE;
     if (!home) return;
 
-    if (existsSync(PLUGIN_DIR) && existsSync(path.join(PLUGIN_DIR, '.claude-plugin'))) {
+    const pluginMode =
+      existsSync(PLUGIN_DIR) && existsSync(path.join(PLUGIN_DIR, '.claude-plugin'));
+
+    if (pluginMode) {
       const pluginDest = path.join(home, '.claude', 'plugins', 'local', 'agent-hub-skills');
       mkdirSync(pluginDest, { recursive: true });
+      // 1) Install plugin scaffolding (.claude-plugin/plugin.json + bundled skills).
       cpSync(PLUGIN_DIR, pluginDest, { recursive: true });
-      console.log(`[skills] Installed agent-hub-skills plugin to ${pluginDest}`);
+
+      // 2) Merge-sync DEFAULT_SKILLS_DIR + extras into <pluginDest>/skills.
+      const skillsTarget = path.join(pluginDest, 'skills');
+      mkdirSync(skillsTarget, { recursive: true });
+      const sources = [DEFAULT_SKILLS_DIR, ...extraSkillDirs].filter((d) => !!d && existsSync(d));
+      let merged = 0;
+      for (const src of sources) {
+        for (const entry of readdirSync(src, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const skillSrc = path.join(src, entry.name);
+          if (!existsSync(path.join(skillSrc, 'SKILL.md'))) continue;
+          cpSync(skillSrc, path.join(skillsTarget, entry.name), { recursive: true });
+          merged++;
+        }
+      }
+      console.log(
+        `[skills] Installed agent-hub-skills plugin to ${pluginDest} (+${merged} merged from ${sources.length} source(s))`,
+      );
       return;
     }
 
+    // Fallback: flat commands dir — one SKILL.md per skill name.
     const commandsDir = path.join(home, '.claude', 'commands');
-    if (!existsSync(DEFAULT_SKILLS_DIR)) return;
+    const sources = [DEFAULT_SKILLS_DIR, ...extraSkillDirs].filter((d) => !!d && existsSync(d));
+    if (sources.length === 0) return;
     mkdirSync(commandsDir, { recursive: true });
-    const entries = readdirSync(DEFAULT_SKILLS_DIR, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const skillMd = path.join(DEFAULT_SKILLS_DIR, entry.name, 'SKILL.md');
-        if (existsSync(skillMd)) {
-          const dest = path.join(commandsDir, entry.name + '.md');
-          writeFileSync(dest, readFileSync(skillMd, 'utf-8'));
-        }
+    let count = 0;
+    for (const src of sources) {
+      for (const entry of readdirSync(src, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const skillMd = path.join(src, entry.name, 'SKILL.md');
+        if (!existsSync(skillMd)) continue;
+        const dest = path.join(commandsDir, entry.name + '.md');
+        writeFileSync(dest, readFileSync(skillMd, 'utf-8'));
+        count++;
       }
     }
-    console.log(
-      `[skills] Synced ${entries.filter((e) => e.isDirectory()).length} default skills to ${commandsDir}`,
-    );
+    console.log(`[skills] Synced ${count} skills to ${commandsDir}`);
   } catch (e) {
-    console.warn('[skills] Failed to sync default skills:', (e as Error).message);
+    console.warn('[skills] Failed to sync skills:', (e as Error).message);
   }
-})();
+}
 
 function readSkillFrontmatter(skillDir: string): SkillFrontmatter | null {
   const skillMd = path.join(skillDir, 'SKILL.md');

@@ -65,7 +65,7 @@ import createPoolRoutes from './routes/pool.js';
 import createMemoryRoutes from './routes/memory.js';
 import createRoomRoutes from './routes/rooms.js';
 import createDesignRoutes from './routes/designs.js';
-import createSkillRoutes, { DEFAULT_SKILLS_DIR } from './routes/skills.js';
+import createSkillRoutes, { DEFAULT_SKILLS_DIR, syncSkillsToClaude } from './routes/skills.js';
 import createClawhubRoutes from './routes/clawhub.js';
 import createWebhookRoutes, {
   createGithubWebhookHandler,
@@ -255,6 +255,18 @@ ensureDocsAgents();
 ensureIntakeAgents();
 ensureReviewerAgents();
 ensureContextFiles();
+
+// Sync default + per-project skill dirs to the Claude Code CLI so both
+// bundled skills and ClawHub-installed project skills register at startup.
+// (Per-install syncs happen in server/routes/clawhub.ts.)
+try {
+  const projectSkillDirs = getProjects()
+    .map((p) => (p.ahw ? path.join(p.ahw, 'skills') : ''))
+    .filter((d) => !!d);
+  syncSkillsToClaude(projectSkillDirs);
+} catch (err) {
+  console.warn('[skills] Startup sync failed:', (err as Error).message);
+}
 
 function ensureWorktree(
   session: SessionRow,

@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'fs';
 import { spawn } from 'child_process';
 import matter from 'gray-matter';
 import type { RouteDeps } from '../types.js';
-import { DEFAULT_SKILLS_DIR } from './skills.js';
+import { DEFAULT_SKILLS_DIR, syncSkillsToClaude } from './skills.js';
 
 // ─── In-memory cache (30s TTL) ────────────────────────────────────
 interface CacheEntry {
@@ -264,6 +264,19 @@ export default function createClawhubRoutes(deps: RouteDeps): Router {
         });
       }
       const frontmatter = readInstalledFrontmatter(resolved.target.installPath);
+
+      // Register the freshly-installed skill with the Claude Code CLI
+      // without requiring a server restart. The sync function is
+      // idempotent and handles both plugin and fallback targets.
+      try {
+        syncSkillsToClaude([path.join(resolved.target.workdir, resolved.target.dir)]);
+      } catch (syncErr) {
+        console.warn(
+          `[clawhub] Post-install sync to Claude CLI failed for ${slug}:`,
+          (syncErr as Error).message,
+        );
+      }
+
       return res.json({
         slug,
         installedAt: new Date().toISOString(),
