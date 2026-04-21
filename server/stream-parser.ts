@@ -459,6 +459,14 @@ function normalizeCursor(raw: Record<string, unknown>): StreamEvent[] {
 
     case 'assistant': {
       if (raw.timestamp_ms === undefined) return [];
+      // Cursor stream-json + --stream-partial-output: events with BOTH
+      // `timestamp_ms` and `model_call_id` are buffered flushes emitted
+      // immediately before a tool call — they duplicate text already carried
+      // by prior streaming deltas. Skipping prevents doubled assistant output.
+      // See https://cursor.com/docs/cli/reference/output-format (stream-json).
+      if (raw.model_call_id != null && String(raw.model_call_id).trim() !== '') {
+        return [];
+      }
       const msg = raw.message as Record<string, unknown> | undefined;
       const content = (msg?.content ?? []) as Array<Record<string, unknown>>;
       const out: StreamEvent[] = [];

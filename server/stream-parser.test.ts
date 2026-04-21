@@ -522,6 +522,37 @@ describe('createStreamParser — Cursor Agent', () => {
     expect(events).toHaveLength(0);
   });
 
+  it('skips buffered flush before tool call (timestamp_ms + model_call_id duplicate)', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'assistant',
+        timestamp_ms: 99,
+        model_call_id: 'mc-1',
+        message: { content: [{ type: 'text', text: 'duplicate flush before tool' }] },
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
+  it('keeps streaming deltas (timestamp_ms only) before the duplicate flush', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'assistant',
+        timestamp_ms: 1,
+        message: { content: [{ type: 'text', text: 'Hello' }] },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp_ms: 2,
+        model_call_id: 'pre-tool',
+        message: { content: [{ type: 'text', text: 'Hello' }] },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('assistant_text');
+    expect((events[0] as { text: string }).text).toBe('Hello');
+  });
+
   it('parses tool_call started', () => {
     const events = parse([
       JSON.stringify({
