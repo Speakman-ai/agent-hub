@@ -32,6 +32,8 @@ export default function Sidebar({
   sessions,
   activeSessionId,
   onSelectSession,
+  /** When set (from App), switches to the session's agent then opens chat. */
+  onFocusSession,
   onNewSession,
   onDeleteSession,
   onClearAllSessions,
@@ -78,6 +80,15 @@ export default function Sidebar({
   const [serverVersion, setServerVersion] = useState(null);
   const [serverGitHash, setServerGitHash] = useState(null);
   const renameSavedRef = useRef(false);
+
+  const focusSession = (agentId, sessionId) => {
+    if (onFocusSession) {
+      onFocusSession(agentId, sessionId);
+    } else {
+      onSelectSession(sessionId);
+      onNavigate('chat');
+    }
+  };
 
   const clientVersion = import.meta.env.VITE_APP_VERSION || 'unknown';
   const clientGitHash = import.meta.env.VITE_GIT_HASH || '';
@@ -158,12 +169,10 @@ export default function Sidebar({
                 const isRunning = !!activeTaskSessionIds[cs.id];
                 return (
                   <button
+                    type="button"
                     key={cs.id}
-                    onClick={() => {
-                      onSelectSession(cs.id);
-                      onNavigate('chat');
-                    }}
-                    className={`w-full text-left px-3 py-2 rounded-lg mb-0.5 flex items-center gap-2 transition-colors ${
+                    onClick={() => focusSession(cs.agent_id || activeAgentId, cs.id)}
+                    className={`w-full text-left px-3 py-2 rounded-lg mb-0.5 flex items-center gap-2 transition-colors cursor-pointer ${
                       activeSessionId === cs.id && currentView === 'chat'
                         ? 'bg-gray-800 text-white'
                         : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
@@ -279,59 +288,76 @@ export default function Sidebar({
                             key={agent.id}
                             style={indent > 0 ? { marginLeft: `${indent * 12}px` } : {}}
                           >
-                            <button
-                              onClick={() => {
-                                onSelectAgent(agent.id);
-                                onNavigate('chat');
-                              }}
-                              className={`w-full text-left px-3 py-2 rounded-lg mb-0.5 flex items-center gap-2.5 transition-colors ${
+                            <div
+                              className={`w-full flex items-center gap-1 rounded-lg mb-0.5 transition-colors ${
                                 isActive && currentView === 'chat'
                                   ? 'bg-gray-800 text-white'
                                   : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
                               }`}
                             >
-                              <div className="relative flex-shrink-0">
-                                {indent > 0 && (
-                                  <span className="absolute -left-3 top-1/2 w-2 border-t border-gray-700" />
-                                )}
-                                {agent.avatar ? (
-                                  <AgentAvatar
-                                    avatar={agent.avatar}
-                                    color={agent.color}
-                                    size={20}
-                                    apiBase={getServerBase()}
-                                  />
-                                ) : (
-                                  <span
-                                    className={`block ${isTopLevel ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
-                                    style={{ backgroundColor: agent.color }}
-                                  />
-                                )}
-                                {isRecent(agent.lastActivity) && (
-                                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-500 rounded-full border border-gray-900" />
-                                )}
-                              </div>
-                              <span className="flex-1 truncate text-sm">
-                                {agent.name}
-                                {isLead && <span className="text-xs text-gray-600 ml-1">lead</span>}
-                                {activeReviews[agent.name] && (
-                                  <span
-                                    className="ml-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 animate-pulse"
-                                    title={`Reviewing: ${activeReviews[agent.name].cardTitle}`}
-                                  >
-                                    reviewing PR
-                                  </span>
-                                )}
-                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onSelectAgent(agent.id);
+                                  onNavigate('chat');
+                                }}
+                                className={`flex-1 min-w-0 text-left px-3 py-2 rounded-lg flex items-center gap-2.5 transition-colors cursor-pointer ${
+                                  isActive && currentView === 'chat'
+                                    ? 'text-white'
+                                    : 'text-gray-400 hover:text-gray-200'
+                                }`}
+                              >
+                                <div className="relative flex-shrink-0">
+                                  {indent > 0 && (
+                                    <span className="absolute -left-3 top-1/2 w-2 border-t border-gray-700" />
+                                  )}
+                                  {agent.avatar ? (
+                                    <AgentAvatar
+                                      avatar={agent.avatar}
+                                      color={agent.color}
+                                      size={20}
+                                      apiBase={getServerBase()}
+                                    />
+                                  ) : (
+                                    <span
+                                      className={`block ${isTopLevel ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
+                                      style={{ backgroundColor: agent.color }}
+                                    />
+                                  )}
+                                  {isRecent(agent.lastActivity) && (
+                                    <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-500 rounded-full border border-gray-900" />
+                                  )}
+                                </div>
+                                <span className="flex-1 truncate text-sm">
+                                  {agent.name}
+                                  {isLead && (
+                                    <span className="text-xs text-gray-600 ml-1">lead</span>
+                                  )}
+                                </span>
+                              </button>
+                              {activeReviews[agent.name] && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const sid = activeReviews[agent.name]?.sessionId;
+                                    if (sid) focusSession(agent.id, sid);
+                                  }}
+                                  className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-1 mr-1 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 animate-pulse cursor-pointer hover:bg-amber-500/30"
+                                  title={`Reviewing: ${activeReviews[agent.name].cardTitle}`}
+                                >
+                                  reviewing PR
+                                </button>
+                              )}
                               {isActive && (
                                 <button
+                                  type="button"
                                   onClick={(e) => toggleAgentCollapse(agent.id, e)}
-                                  className="text-gray-500 hover:text-gray-300 text-2xl leading-none flex items-center"
+                                  className="flex-shrink-0 pr-2 text-gray-500 hover:text-gray-300 text-2xl leading-none flex items-center cursor-pointer"
                                 >
                                   {collapsedAgents[agent.id] ? '▸' : '▾'}
                                 </button>
                               )}
-                            </button>
+                            </div>
 
                             {/* Sessions for active agent.
                                 When the agent row is collapsed we still render
@@ -355,7 +381,7 @@ export default function Sidebar({
                                           key={session.id}
                                           onMouseEnter={() => setHoveredSession(session.id)}
                                           onMouseLeave={() => setHoveredSession(null)}
-                                          className={`group flex items-center rounded-md mb-0.5 transition-colors ${
+                                          className={`group relative flex items-center rounded-md mb-0.5 transition-colors ${
                                             activeSessionId === session.id
                                               ? 'bg-gray-800 text-white'
                                               : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
@@ -404,16 +430,14 @@ export default function Sidebar({
                                             />
                                           ) : (
                                             <button
-                                              onClick={() => {
-                                                onSelectSession(session.id);
-                                                onNavigate('chat');
-                                              }}
+                                              type="button"
+                                              onClick={() => focusSession(agent.id, session.id)}
                                               onDoubleClick={(e) => {
                                                 e.stopPropagation();
                                                 setEditingSessionId(session.id);
                                                 setEditingSessionName(session.name);
                                               }}
-                                              className="flex-1 text-left px-2 py-2 md:py-1.5 truncate text-xs flex items-center gap-1.5"
+                                              className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
                                             >
                                               {isRunning && (
                                                 <span
@@ -443,16 +467,17 @@ export default function Sidebar({
                                             </button>
                                           )}
                                           {deletingSessionIds.has(session.id) ? (
-                                            <span className="pr-2 text-gray-500 text-xs animate-spin">
+                                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs animate-spin pointer-events-none">
                                               ⟳
                                             </span>
                                           ) : hoveredSession === session.id && !isEditing ? (
                                             <button
+                                              type="button"
                                               onClick={(e) => {
                                                 e.stopPropagation();
                                                 onDeleteSession(session.id);
                                               }}
-                                              className="pr-2 text-gray-600 hover:text-red-400 text-xs"
+                                              className="absolute right-1 top-1/2 -translate-y-1/2 z-10 p-1.5 text-gray-600 hover:text-red-400 text-xs rounded hover:bg-gray-700/80"
                                               title="Delete session"
                                             >
                                               ✕
@@ -748,12 +773,10 @@ export default function Sidebar({
                           const prReady = changesReadyBySession[session.id];
                           return (
                             <button
+                              type="button"
                               key={session.id}
-                              onClick={() => {
-                                onSelectSession(session.id);
-                                onNavigate('chat');
-                              }}
-                              className={`w-full text-left px-2 py-1 rounded-md mb-0.5 flex items-center gap-1.5 text-xs transition-colors ${
+                              onClick={() => focusSession(activeAgentId, session.id)}
+                              className={`w-full text-left px-2 py-1 rounded-md mb-0.5 flex items-center gap-1.5 text-xs transition-colors cursor-pointer ${
                                 activeSessionId === session.id
                                   ? 'bg-gray-800 text-white'
                                   : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'

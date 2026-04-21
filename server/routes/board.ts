@@ -280,6 +280,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         )?.get?.(columnId);
 
         if (col && previousColumnId !== columnId) {
+          let agentId: string | undefined;
+          if (updatedCard.session_id) {
+            const sess = stmts.getSession.get(updatedCard.session_id) as
+              | { agent_id: string }
+              | undefined;
+            agentId = sess?.agent_id;
+          }
           broadcast({
             type: 'card_moved',
             projectId: req.params.projectId,
@@ -288,6 +295,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
             columnName: col.name,
             assignee: updatedCard.assignee,
             prUrl: updatedCard.pr_url,
+            sessionId: updatedCard.session_id || undefined,
+            agentId,
           });
         }
         // Note: PR review is now triggered by the GitHub webhook handler

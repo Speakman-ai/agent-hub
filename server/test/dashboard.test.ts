@@ -116,6 +116,46 @@ describe('GET /api/orgs/:id/dashboard', () => {
       (t) => t === 'Dashboard seed card A' || t === 'Dashboard seed card B' || t === 'Seed Session',
     );
     expect(seenSeed).toBe(true);
+
+    // Card + session activity rows must carry navigation metadata (JOIN
+    // kanban_boards for project_id; sessions.agent_id for deep-links).
+    for (const entry of body.recentActivity) {
+      if (entry.type === 'card_created' || entry.type === 'card_updated') {
+        expect(entry.meta?.projectId).toBeTruthy();
+        expect(typeof entry.meta?.column).toBe('string');
+      }
+      if (entry.type === 'session_created') {
+        expect(entry.meta?.agentId).toBeTruthy();
+      }
+      if (entry.type === 'escalation') {
+        expect(entry.meta?.projectId).toBeTruthy();
+      }
+    }
+  });
+
+  it('surfaces prUrl on dashboard recent activity when a card has a PR link', async () => {
+    const project = await createProject({ name: 'Dashboard PR Meta Project' });
+    const projectId = project.id as string;
+
+    const card = await createCard(projectId, {
+      title: 'Dashboard PR meta card unique title',
+      priority: 'low',
+    });
+    const prUrl = 'https://github.com/Speakman-ai/agent-hub/pull/999';
+    await request
+      .put(`/api/projects/${projectId}/board/cards/${card.id as string}`)
+      .send({ prUrl })
+      .expect(200);
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    const entry = body.recentActivity.find(
+      (e) => e.title === 'Dashboard PR meta card unique title',
+    );
+    expect(entry).toBeDefined();
+    expect(entry!.meta?.projectId).toBe(projectId);
+    expect(entry!.meta?.prUrl).toBe(prUrl);
   });
 
   it('does not count cards in Done-ish columns toward openCards', async () => {

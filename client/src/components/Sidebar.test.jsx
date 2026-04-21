@@ -39,20 +39,30 @@ const buildProps = (overrides = {}) => {
     },
   ];
 
+  const onSelectAgent = overrides.onSelectAgent || vi.fn();
+  const onSelectSession = overrides.onSelectSession || vi.fn();
+  const onNavigate = overrides.onNavigate || vi.fn();
   return {
     projects,
     agents: [],
     activeAgentId: AGENT_ID,
-    onSelectAgent: vi.fn(),
+    onSelectAgent,
+    onFocusSession:
+      overrides.onFocusSession ||
+      ((agentId, sessionId) => {
+        onSelectAgent(agentId);
+        onSelectSession(sessionId);
+        onNavigate('chat');
+      }),
     sessions,
     activeSessionId: null,
-    onSelectSession: vi.fn(),
+    onSelectSession,
     onNewSession: vi.fn(),
     onDeleteSession: vi.fn(),
     onClearAllSessions: vi.fn(),
     onClearInactiveSessions: vi.fn(),
     onRenameSession: vi.fn(),
-    onNavigate: vi.fn(),
+    onNavigate,
     currentView: 'chat',
     activeTaskSessionIds: { 's-running': true },
     rooms: [],
@@ -68,6 +78,13 @@ describe('Sidebar — actionable session visibility', () => {
     expect(screen.getByText('Running task')).toBeInTheDocument();
     expect(screen.getByText('PR ready session')).toBeInTheDocument();
     expect(screen.getByText('Idle session')).toBeInTheDocument();
+  });
+
+  it('invokes onFocusSession with agent and session id when a session row is clicked', () => {
+    const onFocusSession = vi.fn();
+    render(<Sidebar {...buildProps({ onFocusSession })} />);
+    fireEvent.click(screen.getByText('PR ready session'));
+    expect(onFocusSession).toHaveBeenCalledWith(AGENT_ID, 's-pr');
   });
 
   it('hides idle sessions but keeps running and PR-ready ones when the agent is collapsed', () => {

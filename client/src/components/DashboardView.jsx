@@ -25,7 +25,19 @@ import { relativeTime } from '../utils/time.js';
  *
  * Refetches when `orgId` changes (so the OrgSwitcher just works).
  */
-export default function DashboardView({ orgId }) {
+/**
+ * @param {(agentId: string, sessionId: string) => void} [onOpenSession] — switch agent + open chat session
+ * @param {(projectId: string) => void} [onOpenKanban] — open project board
+ * @param {(projectId: string) => void} [onOpenPulls] — open project PR list
+ * @param {(url: string) => void} [onOpenExternalUrl] — open GitHub etc. (Electron uses shell)
+ */
+export default function DashboardView({
+  orgId,
+  onOpenSession,
+  onOpenKanban,
+  onOpenPulls,
+  onOpenExternalUrl,
+}) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -114,7 +126,13 @@ export default function DashboardView({ orgId }) {
           <>
             <HeadlineGrid headline={data.headline} />
             <KanbanBreakdown kanban={data.kanban} />
-            <RecentActivity items={data.recentActivity} />
+            <RecentActivity
+              items={data.recentActivity}
+              onOpenSession={onOpenSession}
+              onOpenKanban={onOpenKanban}
+              onOpenPulls={onOpenPulls}
+              onOpenExternalUrl={onOpenExternalUrl}
+            />
           </>
         )}
       </div>
@@ -247,7 +265,53 @@ const ACTIVITY_ICONS = {
   escalation: { Icon: AlertTriangle, color: 'text-rose-400', label: 'Escalation' },
 };
 
-function RecentActivity({ items = [] }) {
+function RecentActivity({
+  items = [],
+  onOpenSession,
+  onOpenKanban,
+  onOpenPulls,
+  onOpenExternalUrl,
+}) {
+  const handleRowActivate = (item) => {
+    const meta = item.meta || {};
+    if (item.type === 'session_created' && meta.agentId && onOpenSession) {
+      onOpenSession(String(meta.agentId), item.id);
+      return;
+    }
+    if (item.type === 'card_created' || item.type === 'card_updated') {
+      const prUrl = meta.prUrl != null ? String(meta.prUrl) : '';
+      if (prUrl && onOpenExternalUrl) {
+        onOpenExternalUrl(prUrl);
+        return;
+      }
+      if (meta.projectId && onOpenKanban) {
+        onOpenKanban(String(meta.projectId));
+        return;
+      }
+    }
+    if (item.type === 'escalation' && meta.projectId && onOpenKanban) {
+      onOpenKanban(String(meta.projectId));
+      return;
+    }
+    if (meta.projectId && onOpenPulls) {
+      onOpenPulls(String(meta.projectId));
+    }
+  };
+
+  const rowIsActionable = (item) => {
+    const meta = item.meta || {};
+    if (item.type === 'session_created') return Boolean(meta.agentId && onOpenSession);
+    if (item.type === 'card_created' || item.type === 'card_updated') {
+      return Boolean(
+        (meta.projectId && onOpenKanban) ||
+        (meta.prUrl && onOpenExternalUrl) ||
+        (meta.projectId && onOpenPulls),
+      );
+    }
+    if (item.type === 'escalation') return Boolean(meta.projectId && onOpenKanban);
+    return false;
+  };
+
   return (
     <section aria-label="Recent activity">
       <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-3">
@@ -261,11 +325,18 @@ function RecentActivity({ items = [] }) {
           <div className="px-4 py-6 text-center text-xs text-gray-600">No recent activity yet.</div>
         ) : (
           items.map((item) => {
-            const meta = ACTIVITY_ICONS[item.type] || ACTIVITY_ICONS.session_created;
-            const { Icon, color, label } = meta;
-            return (
-              <div key={`${item.type}-${item.id}`} className="px-4 py-3 flex items-center gap-3">
-                <Icon size={16} className={`${color} flex-shrink-0`} />
+            const iconMeta = ACTIVITY_ICONS[item.type] || ACTIVITY_ICONS.session_created;
+            const { Icon, color, label } = iconMeta;
+            const actionable = rowIsActionable(item);
+            const rowClass = actionable
+              ? 'w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-gray-800/50 cursor-pointer group'
+              : 'px-4 py-3 flex items-center gap-3';
+            const inner = (
+              <>
+                <Icon
+                  size={16}
+                  className={`${color} flex-shrink-0 ${actionable ? 'group-hover:opacity-90' : ''}`}
+                />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm text-white truncate">{item.title || '(untitled)'}</div>
                   <div className="text-[11px] text-gray-500">{label}</div>
@@ -273,6 +344,23 @@ function RecentActivity({ items = [] }) {
                 <div className="text-[11px] text-gray-500 flex-shrink-0">
                   {relativeTime(item.timestamp)}
                 </div>
+              </>
+            );
+            if (actionable) {
+              return (
+                <button
+                  key={`${item.type}-${item.id}`}
+                  type="button"
+                  className={rowClass}
+                  onClick={() => handleRowActivate(item)}
+                >
+                  {inner}
+                </button>
+              );
+            }
+            return (
+              <div key={`${item.type}-${item.id}`} className={rowClass}>
+                {inner}
               </div>
             );
           })

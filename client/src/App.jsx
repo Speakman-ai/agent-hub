@@ -226,6 +226,8 @@ export default function App() {
   // Track when a session was explicitly navigated to (e.g. from kanban assign)
   // so the agent-change useEffect doesn't overwrite it with a stale session ID.
   const pendingSessionIdRef = useRef(null);
+  /** Populated after `focusAgentSession` is defined — WebSocket toasts call `.current(...)`. */
+  const focusAgentSessionRef = useRef(null);
 
   // Refs for thread state (accessible inside WebSocket callback)
   const threadsProjectIdRef = useRef(threadsProjectId);
@@ -542,10 +544,7 @@ export default function App() {
               type: 'success',
               message: session?.name || 'Session completed',
               duration: 10000,
-              onClick: () => {
-                setActiveSessionId(data.sessionId);
-                setCurrentView('chat');
-              },
+              onClick: () => focusAgentSessionRef.current?.(session?.agent_id, data.sessionId),
             },
           ]);
           notify({ title, body, type: 'success' });
@@ -578,10 +577,7 @@ export default function App() {
               type: 'info',
               message: session?.name || 'Changes ready for PR',
               duration: 10000,
-              onClick: () => {
-                setActiveSessionId(data.sessionId);
-                setCurrentView('chat');
-              },
+              onClick: () => focusAgentSessionRef.current?.(data.agentId, data.sessionId),
             },
           ]);
           notify({ title, body, type: 'info' });
@@ -1018,8 +1014,8 @@ export default function App() {
             duration: 10000,
             onClick: data.sessionId
               ? () => {
-                  setActiveSessionId(data.sessionId);
-                  setCurrentView('chat');
+                  const row = sessionsRef.current.find((s) => s.id === data.sessionId);
+                  focusAgentSessionRef.current?.(row?.agent_id, data.sessionId);
                 }
               : undefined,
           },
@@ -1092,6 +1088,15 @@ export default function App() {
       // ── Ticket lifecycle notifications ─────────────────────────
       case 'card_moved': {
         const colLower = (data.columnName || '').toLowerCase();
+        const navigateCardToast = () => {
+          if (data.sessionId && data.agentId) {
+            focusAgentSessionRef.current?.(data.agentId, data.sessionId);
+          } else if (data.projectId) {
+            setCurrentView(`kanban:${data.projectId}`);
+            setSidebarOpen(false);
+          }
+        };
+        const canNavigateCardToast = Boolean((data.sessionId && data.agentId) || data.projectId);
         if (colLower === 'in progress') {
           const { title, body } = cardStartedNotification(data);
           setToasts((prev) => [
@@ -1101,6 +1106,7 @@ export default function App() {
               type: 'info',
               message: body,
               duration: 8000,
+              onClick: canNavigateCardToast ? navigateCardToast : undefined,
             },
           ]);
           notify({ title, body, type: 'info' });
@@ -1113,6 +1119,7 @@ export default function App() {
               type: 'info',
               message: body,
               duration: 8000,
+              onClick: canNavigateCardToast ? navigateCardToast : undefined,
             },
           ]);
           notify({ title, body, type: 'info' });
@@ -1122,6 +1129,20 @@ export default function App() {
 
       case 'webhook_pr_merged': {
         const { title, body } = prMergedNotification(data);
+        const navigatePrMergedToast = () => {
+          if (data.sessionId && data.agentId) {
+            focusAgentSessionRef.current?.(data.agentId, data.sessionId);
+          } else if (data.prUrl) {
+            window.open(String(data.prUrl), '_blank', 'noopener,noreferrer');
+          } else if (data.projectId) {
+            setPullsProjectId(data.projectId);
+            setCurrentView('pulls');
+            setSidebarOpen(false);
+          }
+        };
+        const canNavigatePrMerged = Boolean(
+          (data.sessionId && data.agentId) || data.prUrl || data.projectId,
+        );
         setToasts((prev) => [
           ...prev,
           {
@@ -1129,6 +1150,7 @@ export default function App() {
             type: 'success',
             message: body,
             duration: 10000,
+            onClick: canNavigatePrMerged ? navigatePrMergedToast : undefined,
           },
         ]);
         notify({ title, body, type: 'success' });
@@ -1601,6 +1623,32 @@ export default function App() {
     },
     [setActiveAgentId],
   );
+
+  /** Switch to the agent that owns the session, then open chat (used by sidebar, toasts, dashboard). */
+  const focusAgentSession = useCallback(
+    (agentId, sessionId) => {
+      if (!sessionId) return;
+      if (agentId) {
+        pendingSessionIdRef.current = sessionId;
+        setActiveAgentId(agentId);
+        setActiveSessionId(sessionId);
+      } else {
+        const s = sessionsRef.current.find((x) => x.id === sessionId);
+        if (s?.agent_id) {
+          pendingSessionIdRef.current = sessionId;
+          setActiveAgentId(s.agent_id);
+          setActiveSessionId(sessionId);
+        } else {
+          setActiveSessionId(sessionId);
+        }
+      }
+      setActiveRoomId(null);
+      setCurrentView('chat');
+      setSidebarOpen(false);
+    },
+    [setActiveAgentId],
+  );
+  focusAgentSessionRef.current = focusAgentSession;
 
   // Rehydrate the in-Hub ProgressPanel for the active session whenever the
   // session changes. Skip if we already have live steps in memory (avoid
@@ -2274,6 +2322,7 @@ export default function App() {
               setActiveAgentId(id);
               setSidebarOpen(false);
             }}
+            onFocusSession={focusAgentSession}
             sessions={sessions}
             activeSessionId={activeSessionId}
             onSelectSession={(id) => {
@@ -2454,7 +2503,22 @@ export default function App() {
               onToast={showToast}
             />
           ) : currentView === 'dashboard' ? (
-            <DashboardView orgId={getActiveOrgApiId()} />
+            <DashboardView
+              orgId={getActiveOrgApiId()}
+              onOpenSession={(agentId, sessionId) => focusAgentSession(agentId, sessionId)}
+              onOpenKanban={(projectId) => {
+                setCurrentView(`kanban:${projectId}`);
+                setSidebarOpen(false);
+              }}
+              onOpenPulls={(projectId) => {
+                setPullsProjectId(projectId);
+                setCurrentView('pulls');
+                setSidebarOpen(false);
+              }}
+              onOpenExternalUrl={(url) => {
+                window.open(url, '_blank', 'noopener,noreferrer');
+              }}
+            />
           ) : currentView === 'skills' ? (
             <SkillsPage agents={agents} projects={projects} />
           ) : currentView === 'room' && activeRoom ? (
@@ -2800,28 +2864,51 @@ function Toast({ toast, onDismiss }) {
     error: <AlertTriangle size={18} />,
   };
 
+  const interactive = Boolean(toast.onClick);
+
   return (
     <div
-      className={`${colors[toast.type] || colors.info} border rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm flex items-start gap-2.5 animate-slide-in`}
+      role={interactive ? 'button' : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={interactive ? String(toast.message) : undefined}
+      onClick={
+        interactive
+          ? () => {
+              toast.onClick();
+              onDismiss();
+            }
+          : undefined
+      }
+      onKeyDown={
+        interactive
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toast.onClick();
+                onDismiss();
+              }
+            }
+          : undefined
+      }
+      className={`${colors[toast.type] || colors.info} border rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm flex items-start gap-2.5 animate-slide-in ${
+        interactive ? 'cursor-pointer hover:brightness-110 transition-[filter]' : ''
+      }`}
     >
       <span className="flex-shrink-0">{icons[toast.type] || <Info size={18} />}</span>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium">{toast.message}</p>
         {toast.onClick && (
-          <button
-            onClick={() => {
-              toast.onClick();
-              onDismiss();
-            }}
-            className="text-xs underline opacity-75 hover:opacity-100 mt-0.5"
-          >
-            View session →
-          </button>
+          <p className="text-xs opacity-75 mt-0.5">Click this notification to open</p>
         )}
       </div>
       <button
-        onClick={onDismiss}
-        className="text-current opacity-50 hover:opacity-100 flex-shrink-0 text-lg leading-none"
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDismiss();
+        }}
+        className="text-current opacity-50 hover:opacity-100 flex-shrink-0 text-lg leading-none z-10"
+        aria-label="Dismiss notification"
       >
         &times;
       </button>

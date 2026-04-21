@@ -711,48 +711,60 @@ export default function KanbanBoard({
             <p className="text-xs text-gray-600">No review activity yet.</p>
           ) : (
             <div className="space-y-1">
-              {reviewLogs.slice(0, 10).map((log) => (
-                <div
-                  key={log.id}
-                  className="flex items-center gap-3 text-xs py-1 px-2 rounded bg-gray-800/50"
-                >
-                  <span
-                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                      log.outcome === 'approved'
-                        ? 'bg-emerald-400'
-                        : log.outcome === 'changes_requested'
-                          ? 'bg-red-400'
-                          : log.outcome === 'merge_conflict'
-                            ? 'bg-amber-400'
-                            : 'bg-gray-400'
-                    }`}
-                  />
-                  <span className="text-gray-300 truncate flex-1">
-                    {log.pr_url?.match(/\d+$/)?.[0] ? `PR #${log.pr_url.match(/\d+$/)[0]}` : 'PR'}
-                  </span>
-                  <span className="text-gray-500">{log.reviewer_agent}</span>
-                  <span
-                    className={`font-medium ${
-                      log.outcome === 'approved'
-                        ? 'text-emerald-400'
-                        : log.outcome === 'changes_requested'
-                          ? 'text-red-400'
-                          : 'text-gray-400'
+              {reviewLogs.slice(0, 10).map((log) => {
+                const prHref = log.pr_url?.startsWith('http') ? log.pr_url : null;
+                const Row = prHref ? 'a' : 'div';
+                const rowProps = prHref
+                  ? { href: prHref, target: '_blank', rel: 'noopener noreferrer' }
+                  : {};
+                return (
+                  <Row
+                    key={log.id}
+                    {...rowProps}
+                    className={`flex items-center gap-3 text-xs py-1 px-2 rounded bg-gray-800/50 ${
+                      prHref
+                        ? 'cursor-pointer hover:bg-gray-800 border border-transparent hover:border-gray-600'
+                        : ''
                     }`}
                   >
-                    {log.outcome === 'approved'
-                      ? 'Approved'
-                      : log.outcome === 'changes_requested'
-                        ? 'Changes Requested'
-                        : log.outcome === 'merge_conflict'
-                          ? 'Merge Conflict'
-                          : 'Ambiguous'}
-                  </span>
-                  <span className="text-gray-600 flex-shrink-0">
-                    {new Date(log.completed_at).toLocaleDateString()}
-                  </span>
-                </div>
-              ))}
+                    <span
+                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        log.outcome === 'approved'
+                          ? 'bg-emerald-400'
+                          : log.outcome === 'changes_requested'
+                            ? 'bg-red-400'
+                            : log.outcome === 'merge_conflict'
+                              ? 'bg-amber-400'
+                              : 'bg-gray-400'
+                      }`}
+                    />
+                    <span className="text-gray-300 truncate flex-1">
+                      {log.pr_url?.match(/\d+$/)?.[0] ? `PR #${log.pr_url.match(/\d+$/)[0]}` : 'PR'}
+                    </span>
+                    <span className="text-gray-500">{log.reviewer_agent}</span>
+                    <span
+                      className={`font-medium ${
+                        log.outcome === 'approved'
+                          ? 'text-emerald-400'
+                          : log.outcome === 'changes_requested'
+                            ? 'text-red-400'
+                            : 'text-gray-400'
+                      }`}
+                    >
+                      {log.outcome === 'approved'
+                        ? 'Approved'
+                        : log.outcome === 'changes_requested'
+                          ? 'Changes Requested'
+                          : log.outcome === 'merge_conflict'
+                            ? 'Merge Conflict'
+                            : 'Ambiguous'}
+                    </span>
+                    <span className="text-gray-600 flex-shrink-0">
+                      {new Date(log.completed_at).toLocaleDateString()}
+                    </span>
+                  </Row>
+                );
+              })}
             </div>
           )}
         </div>

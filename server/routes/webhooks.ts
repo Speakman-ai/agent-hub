@@ -1712,6 +1712,11 @@ function handleWebhookPrClosed(
       console.log(`[Webhook/Kanban] PR #${prNumber} merged — card "${card.title}" moved to Done`);
     }
 
+    let mergeAgentId: string | undefined;
+    if (card.session_id) {
+      const sess = stmts.getSession.get(card.session_id) as { agent_id: string } | undefined;
+      mergeAgentId = sess?.agent_id;
+    }
     broadcast({
       type: 'webhook_pr_merged',
       projectId: project.id,
@@ -1719,6 +1724,9 @@ function handleWebhookPrClosed(
       cardTitle: card.title,
       prNumber,
       mergedBy: sender,
+      prUrl: card.pr_url || (payload.pull_request?.html_url as string | undefined),
+      sessionId: card.session_id || undefined,
+      agentId: mergeAgentId,
     });
 
     tryAutonomousDispatch();
@@ -1733,6 +1741,11 @@ function handleWebhookPrClosed(
       );
     }
 
+    let closedAgentId: string | undefined;
+    if (card.session_id) {
+      const sess = stmts.getSession.get(card.session_id) as { agent_id: string } | undefined;
+      closedAgentId = sess?.agent_id;
+    }
     broadcast({
       type: 'webhook_pr_closed',
       projectId: project.id,
@@ -1740,6 +1753,9 @@ function handleWebhookPrClosed(
       cardTitle: card.title,
       prNumber,
       closedBy: sender,
+      prUrl: card.pr_url || (payload.pull_request?.html_url as string | undefined),
+      sessionId: card.session_id || undefined,
+      agentId: closedAgentId,
     });
     return true;
   }

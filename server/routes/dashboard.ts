@@ -34,6 +34,8 @@ interface CardActivityRow {
   priority: string;
   updated_at: string;
   created_at: string;
+  project_id: string;
+  pr_url: string | null;
 }
 
 interface SessionActivityRow {
@@ -211,9 +213,10 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     const recentCards = db
       .prepare(
         `SELECT k.id, k.title, c.name as column_name, k.priority,
-                k.updated_at, k.created_at
+                k.updated_at, k.created_at, b.project_id as project_id, k.pr_url as pr_url
          FROM kanban_cards k
          JOIN kanban_columns c ON c.id = k.column_id
+         JOIN kanban_boards b ON b.id = k.board_id
          ORDER BY k.updated_at DESC
          LIMIT ?`,
       )
@@ -254,7 +257,12 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
         id: c.id,
         title: c.title,
         timestamp: c.updated_at,
-        meta: { column: c.column_name, priority: c.priority },
+        meta: {
+          column: c.column_name,
+          priority: c.priority,
+          projectId: c.project_id,
+          ...(c.pr_url ? { prUrl: c.pr_url } : {}),
+        },
       });
     }
     for (const s of recentSessions) {

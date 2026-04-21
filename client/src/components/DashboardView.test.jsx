@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import DashboardView from './DashboardView.jsx';
 
 const SAMPLE = {
@@ -31,7 +31,7 @@ const SAMPLE = {
       id: 'c1',
       title: 'Add dashboard view',
       timestamp: new Date(Date.now() - 60_000).toISOString(),
-      meta: { column: 'Backlog', priority: 'medium' },
+      meta: { column: 'Backlog', priority: 'medium', projectId: 'proj-dash' },
     },
     {
       type: 'session_created',
@@ -130,6 +130,30 @@ describe('DashboardView', () => {
     expect(feed).toHaveTextContent('Card created');
     expect(feed).toHaveTextContent('Session started');
     expect(feed).toHaveTextContent('Escalation');
+  });
+
+  it('calls onOpenSession when a session activity row is clicked', async () => {
+    const onOpenSession = vi.fn();
+    render(<DashboardView orgId="org-1" onOpenSession={onOpenSession} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Hub Frontend session')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Hub Frontend session'));
+    expect(onOpenSession).toHaveBeenCalledWith('a1', 's1');
+  });
+
+  it('calls onOpenKanban when a card activity row is clicked', async () => {
+    const onOpenKanban = vi.fn();
+    render(<DashboardView orgId="org-1" onOpenKanban={onOpenKanban} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Add dashboard view')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Add dashboard view'));
+    expect(onOpenKanban).toHaveBeenCalledWith('proj-dash');
   });
 
   it('shows an error message when the fetch fails', async () => {
