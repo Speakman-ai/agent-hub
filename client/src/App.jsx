@@ -64,6 +64,7 @@ import {
   firstEngineWithAuthenticatedModels,
   defaultModelForAuthenticatedEngine,
 } from './utils/authModelEngines.js';
+import { isSessionAskModeEnabled, isSessionWorktreeEnabled } from './utils/sessionDerivedState.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -1533,11 +1534,11 @@ export default function App() {
             ] ||
             'claude-opus-4-7',
         );
-        setSessionWorktree(target.use_worktree !== 0);
+        setSessionWorktree(isSessionWorktreeEnabled(target));
         setGitWorktreeDetected(
           target.git_worktree_detected != null ? target.git_worktree_detected === 1 : null,
         );
-        setSessionAskMode(target.ask_mode !== 0);
+        setSessionAskMode(isSessionAskModeEnabled(target));
       } else {
         setActiveSessionId(null);
         setMessages([]);
@@ -1573,11 +1574,11 @@ export default function App() {
     if (session?.model) {
       setSessionModel(session.model);
     }
-    setSessionWorktree(session?.use_worktree !== 0);
+    setSessionWorktree(isSessionWorktreeEnabled(session));
     setGitWorktreeDetected(
       session?.git_worktree_detected != null ? session.git_worktree_detected === 1 : null,
     );
-    setSessionAskMode(session?.ask_mode !== 0);
+    setSessionAskMode(isSessionAskModeEnabled(session));
   }, [activeSessionId, sessions]);
 
   // If the server reports no models for the session's engine (e.g. Cursor auth
@@ -1922,7 +1923,7 @@ export default function App() {
     );
     setSessionWorktree(session.use_worktree !== 0);
     setGitWorktreeDetected(null); // New session, not yet detected
-    setSessionAskMode(session.ask_mode !== 0);
+    setSessionAskMode(isSessionAskModeEnabled(session));
     setMessages([]);
     setCurrentView('chat');
   };
