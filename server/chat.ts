@@ -27,6 +27,10 @@ import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
 import { allAgents } from './project-model.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
+import {
+  applyAssistantTextChunkForDelegationKickoff,
+  planDelegationRoundOnProcClose,
+} from './delegation-kickoff-buffer.js';
 import { clearDelegationUiMeta } from './delegation-state.js';
 import type {
   Project,
@@ -1109,6 +1113,61 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       );
     }
 
+    /** Set once we have a complete `<delegate>...</delegate>` block in the stream — workers may start before the lead CLI exits. Synthesis still runs after close (see `synthesizeResults`). */
+    let delegationWorkPromise: Promise<DelegationResult[]> | null = null;
+    let delegationSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function clearDelegationSafetyTimer(): void {
+      if (delegationSafetyTimer != null) {
+        clearTimeout(delegationSafetyTimer);
+        delegationSafetyTimer = null;
+      }
+    }
+
+    function startDelegationOnce(tasks: DelegateTask[]): void {
+      if (delegationWorkPromise !== null) return;
+      activeDelegationSessions.add(sessionId);
+      delegationSafetyTimer = setTimeout(
+        () => {
+          if (activeDelegationSessions.has(sessionId)) {
+            console.error(
+              `[Delegation] Safety timeout reached for session ${sessionId} — force-unlocking`,
+            );
+            handleDelegationCancel(sessionId);
+            broadcast({
+              type: 'delegation_error',
+              sessionId,
+              error: 'Delegation timed out (safety limit reached)',
+            });
+            drainQueue(sessionId);
+          }
+        },
+        (config as AppConfig & { delegationSafetyTimeoutMs?: number }).delegationSafetyTimeoutMs ||
+          900000,
+      );
+
+      delegationWorkPromise = handleDelegation(
+        sessionId,
+        assistantMsgId,
+        tasks,
+        enrichedAgent!,
+        project,
+        effectiveCwd,
+      );
+      void delegationWorkPromise.finally(() => {
+        clearDelegationSafetyTimer();
+      });
+    }
+
+    function tryKickoffDelegationFromStream(assistantAccumulated: string): void {
+      if (!enrichedAgent) return;
+      if (agent.role !== 'lead' || !agent.subAgents || agent.subAgents.length === 0) return;
+      if (!assistantAccumulated.includes('<delegate>')) return;
+      const tasks = parseDelegateBlock(assistantAccumulated);
+      if (!tasks || tasks.length === 0) return;
+      startDelegationOnce(tasks);
+    }
+
     if (engine === 'claude-code') {
       const isWorktree = effectiveCwd !== project.cwd;
       const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
@@ -1166,11 +1225,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       if (event.type === 'assistant_text') {
         const text = typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-        if (event.partial) partialFallback += text;
-        else finalText += text;
+        const { next, accumulatedForKickoff } = applyAssistantTextChunkForDelegationKickoff(
+          { finalText, partialFallback },
+          text,
+          event.partial,
+        );
+        finalText = next.finalText;
+        partialFallback = next.partialFallback;
         try {
           S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
         } catch {}
+        tryKickoffDelegationFromStream(accumulatedForKickoff);
       }
 
       if (event.type === 'system' && event.gitWorktree != null) {
@@ -1397,6 +1462,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sessionId,
           error: errorMsg,
         });
+        if (delegationWorkPromise) {
+          handleDelegationCancel(sessionId);
+          delegationWorkPromise = null;
+        }
         try {
           const bgTask = S.getBackgroundTaskBySession.get(sessionId) as
             | BackgroundTaskRow
@@ -1441,6 +1510,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[stream] Dropping assistant message for ${sessionId}: ${message}`);
+        if (delegationWorkPromise) {
+          handleDelegationCancel(sessionId);
+          delegationWorkPromise = null;
+        }
         drainQueue(sessionId);
         return;
       }
@@ -1626,6 +1699,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (enrichedAgent) {
         const detection = detectHandoffBlock(finalContent);
         if (detection.task) {
+          if (delegationWorkPromise) {
+            handleDelegationCancel(sessionId);
+            delegationWorkPromise = null;
+          }
           if (handoffHasTrailingContent(finalContent)) {
             console.warn(
               `[Handoff] Trailing content after </handoff> in session ${sessionId} — dropped (handoff is terminal).`,
@@ -1642,6 +1719,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           return;
         }
         if (detection.present && detection.reason) {
+          if (delegationWorkPromise) {
+            handleDelegationCancel(sessionId);
+            delegationWorkPromise = null;
+          }
           // The agent emitted a <handoff> tag but the payload was malformed
           // (bad JSON, missing fields, etc.). Previously this path silently
           // dropped the handoff with no UI feedback. Now: record a failed
@@ -1670,61 +1751,43 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       if (agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0) {
         const delegateTasks = parseDelegateBlock(finalContent);
-        if (delegateTasks && delegateTasks.length > 0) {
-          activeDelegationSessions.add(sessionId);
+        const closePlan = planDelegationRoundOnProcClose({
+          delegateTasks,
+          hadEarlyDelegationPromise: delegationWorkPromise != null,
+        });
+        if (closePlan.mode === 'delegate') {
+          if (closePlan.startIfNeeded) {
+            startDelegationOnce(delegateTasks!);
+          }
 
-          const delegationSafetyTimeout = setTimeout(
-            () => {
-              if (activeDelegationSessions.has(sessionId)) {
-                console.error(
-                  `[Delegation] Safety timeout reached for session ${sessionId} — force-unlocking`,
-                );
-                handleDelegationCancel(sessionId);
-                broadcast({
-                  type: 'delegation_error',
-                  sessionId,
-                  error: 'Delegation timed out (safety limit reached)',
-                });
+          if (delegationWorkPromise) {
+            void delegationWorkPromise
+              .then((results) => {
+                if (results.length > 0) {
+                  return synthesizeResults(
+                    sessionId,
+                    agentId,
+                    enrichedAgent!,
+                    project,
+                    results,
+                    content,
+                    effectiveCwd,
+                  );
+                }
+              })
+              .catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+                console.error('[Delegation] Failed:', message);
+                broadcast({ type: 'delegation_error', sessionId, error: message });
+              })
+              .finally(() => {
+                clearDelegationSafetyTimer();
+                activeDelegationSessions.delete(sessionId);
+                clearDelegationUiMeta(sessionId);
+                broadcastActiveTasksSnapshot(stmts, broadcast);
                 drainQueue(sessionId);
-              }
-            },
-            (config as AppConfig & { delegationSafetyTimeoutMs?: number })
-              .delegationSafetyTimeoutMs || 900000,
-          );
-
-          handleDelegation(
-            sessionId,
-            assistantMsgId,
-            delegateTasks,
-            enrichedAgent!,
-            project,
-            effectiveCwd,
-          )
-            .then((results) => {
-              if (results.length > 0) {
-                return synthesizeResults(
-                  sessionId,
-                  agentId,
-                  enrichedAgent!,
-                  project,
-                  results,
-                  content,
-                  effectiveCwd,
-                );
-              }
-            })
-            .catch((err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
-              console.error('[Delegation] Failed:', message);
-              broadcast({ type: 'delegation_error', sessionId, error: message });
-            })
-            .finally(() => {
-              clearTimeout(delegationSafetyTimeout);
-              activeDelegationSessions.delete(sessionId);
-              clearDelegationUiMeta(sessionId);
-              broadcastActiveTasksSnapshot(stmts, broadcast);
-              drainQueue(sessionId);
-            });
+              });
+          }
           return;
         }
       }
