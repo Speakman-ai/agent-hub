@@ -2,7 +2,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { spawn, ChildProcess } from 'child_process';
 import { Router, Request, Response } from 'express';
 import { defaultModelForEngine, buildSpawnEnv } from '../config.js';
-import { removeWorkspace } from '../worktree.js';
 import { manualCommitAndPR } from '../auto-git.js';
 import type {
   RouteDeps,
@@ -296,42 +295,55 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   router.delete('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
     const sessions = stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[];
-    let deleted = 0;
+    let archived = 0;
     for (const session of sessions) {
+      if (session.deleted_at) continue;
       const proc = activeProcesses.get(session.id);
       if (proc) {
-        proc.kill('SIGTERM');
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          /* best-effort */
+        }
         activeProcesses.delete(session.id);
       }
-      if (session.worktree_path) {
-        removeWorkspace(session.worktree_path);
+      stmts.softDeleteSession.run(session.id);
+      archived++;
+      try {
+        broadcast({ type: 'session_deleted', sessionId: session.id });
+      } catch {
+        /* best-effort */
       }
-      stmts.deleteSession.run(session.id);
-      deleted++;
     }
-    res.json({ ok: true, deleted });
+    // `deleted` mirrors `archived` for older clients that only read `deleted`.
+    res.json({ ok: true, archived, deleted: archived });
   });
 
   router.delete('/api/agents/:agentId/sessions/inactive', (req: Request, res: Response) => {
     const sessions = stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[];
-    let deleted = 0;
+    let archived = 0;
     for (const session of sessions) {
+      if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
-      if (session.worktree_path) {
-        removeWorkspace(session.worktree_path);
+      stmts.softDeleteSession.run(session.id);
+      archived++;
+      try {
+        broadcast({ type: 'session_deleted', sessionId: session.id });
+      } catch {
+        /* best-effort */
       }
-      stmts.deleteSession.run(session.id);
-      deleted++;
     }
-    res.json({ ok: true, deleted });
+    res.json({ ok: true, archived, deleted: archived });
   });
 
   // Single-session DELETE is a *soft* delete (archive). The row is marked with
   // `deleted_at` so it disappears from the live sidebar but stays recoverable
   // via POST /api/sessions/:sessionId/restore for 7 days. We deliberately
-  // leave the worktree on disk so a restore can reattach the same checkout —
-  // bulk `DELETE /api/agents/:agentId/sessions[/inactive]` and the 7-day purge
-  // are what actually reclaim worktree space.
+  // leave the worktree on disk so a restore can reattach the same checkout.
+  // Bulk `DELETE /api/agents/:agentId/sessions[/inactive]` uses the same
+  // soft-delete semantics. Hard removal (DB row + worktree) happens when the
+  // agent or project is deleted, or when a future purge job drops rows past
+  // the 7-day recovery window.
   router.delete('/api/sessions/:sessionId', (req: Request, res: Response) => {
     const sessionId = req.params.sessionId as string;
     const session = stmts.getSession.get(sessionId) as SessionRow | undefined;

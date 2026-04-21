@@ -91,29 +91,56 @@ describe('Session archive & restore', () => {
     expect(res.body.error).toMatch(/not archived/i);
   });
 
-  it('bulk DELETE includes archived sessions so they do not leak', async () => {
-    const session = await createSession({ agentId, name: 'bulk-archived' });
-    const sessionId = session.id as string;
+  it('bulk DELETE soft-archives live sessions and leaves prior archives restorable', async () => {
+    const agent = await createAgent({
+      projectId: 'archive-proj',
+      id: `bulk-archive-agent-${Date.now()}`,
+      name: 'Bulk archive isolation',
+    });
+    const aid = agent.id as string;
 
-    // Archive the session (soft-delete)
-    await request.delete(`/api/sessions/${sessionId}`).expect(200);
+    const alreadyArchived = await createSession({ agentId: aid, name: 'prior-archive' });
+    const priorId = alreadyArchived.id as string;
+    await request.delete(`/api/sessions/${priorId}`).expect(200);
 
-    // Verify it's in the archive list
-    const archived = await request.get(`/api/agents/${agentId}/archived-sessions`).expect(200);
-    expect((archived.body as Array<{ id: string }>).some((s) => s.id === sessionId)).toBe(true);
+    const stillLive = await createSession({ agentId: aid, name: 'bulk-to-archive' });
+    const liveId = stillLive.id as string;
 
-    // Bulk DELETE should hard-delete everything, including archived rows
-    const bulk = await request.delete(`/api/agents/${agentId}/sessions`).expect(200);
-    expect(bulk.body.deleted).toBeGreaterThanOrEqual(1);
+    const bulk = await request.delete(`/api/agents/${aid}/sessions`).expect(200);
+    expect(bulk.body.archived).toBe(1);
+    expect(bulk.body.deleted).toBe(1);
 
-    // The archived session should be gone from both lists
-    const archivedAfter = await request.get(`/api/agents/${agentId}/archived-sessions`).expect(200);
-    expect((archivedAfter.body as Array<{ id: string }>).some((s) => s.id === sessionId)).toBe(
-      false,
-    );
+    const liveList = await request.get(`/api/agents/${aid}/sessions`).expect(200);
+    expect((liveList.body as Array<{ id: string }>).some((s) => s.id === liveId)).toBe(false);
 
-    // Restore should 404 since the row is hard-deleted
-    await request.post(`/api/sessions/${sessionId}/restore`).expect(404);
+    const archivedAfter = await request.get(`/api/agents/${aid}/archived-sessions`).expect(200);
+    const ids = (archivedAfter.body as Array<{ id: string }>).map((s) => s.id);
+    expect(ids).toContain(priorId);
+    expect(ids).toContain(liveId);
+
+    await request.post(`/api/sessions/${priorId}/restore`).expect(200);
+    await request.post(`/api/sessions/${liveId}/restore`).expect(200);
+  });
+
+  it('bulk DELETE inactive soft-archives sessions without an active CLI process', async () => {
+    const agent = await createAgent({
+      projectId: 'archive-proj',
+      id: `inactive-bulk-agent-${Date.now()}`,
+      name: 'Inactive bulk isolation',
+    });
+    const aid = agent.id as string;
+    await createSession({ agentId: aid, name: 'idle-1' });
+    await createSession({ agentId: aid, name: 'idle-2' });
+
+    const bulk = await request.delete(`/api/agents/${aid}/sessions/inactive`).expect(200);
+    expect(bulk.body.archived).toBe(2);
+    expect(bulk.body.deleted).toBe(2);
+
+    const liveList = await request.get(`/api/agents/${aid}/sessions`).expect(200);
+    expect(liveList.body).toEqual([]);
+
+    const archived = await request.get(`/api/agents/${aid}/archived-sessions`).expect(200);
+    expect((archived.body as Array<{ id: string }>).length).toBe(2);
   });
 
   it('archiving the same session twice is idempotent (still 200, stays archived)', async () => {

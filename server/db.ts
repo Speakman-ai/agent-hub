@@ -1314,7 +1314,7 @@ function initDb(dataDir: string): void {
     // things that are already past the purge horizon; a follow-up cron can
     // hard-delete them.
     // All sessions for an agent regardless of archive status. Used by bulk
-    // DELETE endpoints that need to hard-delete everything (live + archived).
+    // archive endpoints so already-archived rows can be skipped.
     getAllSessionsByAgent: db.prepare(
       'SELECT * FROM sessions WHERE agent_id = ? ORDER BY updated_at DESC',
     ),
