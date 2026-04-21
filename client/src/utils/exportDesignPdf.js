@@ -234,8 +234,36 @@ export async function exportDesignPdf({ designId, base, filename, doc } = {}) {
       pageIndex += 1;
     }
 
-    pdf.save(`${safeName}.pdf`);
+    await finalizeDesignPdfDownload(pdf, safeName);
   } finally {
     iframe.remove();
   }
+}
+
+/**
+ * In Electron, jsPDF's anchor/blob download path is unreliable; delegate to the
+ * main process (native save dialog + fs.writeFile). Browsers keep using
+ * pdf.save().
+ *
+ * @param {*} pdf  jsPDF instance
+ * @param {string} safeName  Filename stem (already sanitized).
+ */
+async function finalizeDesignPdfDownload(pdf, safeName) {
+  const filename = `${safeName}.pdf`;
+  const electron = typeof window !== 'undefined' ? window.electronAPI : undefined;
+  if (electron?.saveDesignPdf) {
+    let arrayBuffer;
+    try {
+      arrayBuffer = pdf.output('arraybuffer');
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : String(err));
+    }
+    const result = await electron.saveDesignPdf({
+      defaultFilename: filename,
+      data: new Uint8Array(arrayBuffer),
+    });
+    if (result?.error) throw new Error(result.error);
+    return;
+  }
+  pdf.save(filename);
 }

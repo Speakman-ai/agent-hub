@@ -20,6 +20,7 @@ import {
   renameSync,
 } from 'fs';
 import { createNotificationHandlers } from './notifications.js';
+import { saveDesignPdfWithDialog } from './save-design-pdf-dialog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -470,6 +471,21 @@ ipcMain.handle('bug-report:capture-page', async () => {
     console.error('[bug-report:capture-page] Failed:', err);
     return null;
   }
+});
+
+// Design Studio — save exported PDF via native dialog (renderer uses jsPDF).
+ipcMain.handle('design-pdf:save', async (event, { defaultFilename, data }) => {
+  const win =
+    BrowserWindow.fromWebContents(event.sender) ||
+    BrowserWindow.getFocusedWindow() ||
+    mainWindow;
+  if (!win) return { error: 'No browser window' };
+  return saveDesignPdfWithDialog({
+    showSaveDialog: (w, opts) => dialog.showSaveDialog(w, opts),
+    mainWindow: win,
+    defaultFilename: typeof defaultFilename === 'string' ? defaultFilename : 'design.pdf',
+    data,
+  });
 });
 
 // ─── Notification IPC handlers ───────────────────────────────────

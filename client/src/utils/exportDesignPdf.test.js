@@ -24,6 +24,12 @@ vi.mock('jspdf', () => {
     addPage(...args) {
       addPageMock(...args);
     }
+    output(fmt) {
+      if (fmt === 'arraybuffer') {
+        return new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer;
+      }
+      return '';
+    }
     save(...args) {
       saveMock(...args);
     }
@@ -55,6 +61,7 @@ describe('exportDesignPdf', () => {
   let fetchMock;
 
   beforeEach(() => {
+    delete window.electronAPI;
     addImageMock.mockClear();
     addPageMock.mockClear();
     saveMock.mockClear();
@@ -326,5 +333,32 @@ describe('exportDesignPdf', () => {
     );
     // The base tag must be inside <head>, before <body>, so it's honored.
     expect(capturedSrcdoc.indexOf('<base')).toBeLessThan(capturedSrcdoc.indexOf('<body'));
+  });
+
+  it('delegates PDF bytes to Electron saveDesignPdf instead of jsPDF.save', async () => {
+    const saveDesignPdf = vi.fn().mockResolvedValue({ ok: true });
+    window.electronAPI = { saveDesignPdf };
+
+    html2canvasMock.mockResolvedValue(fakeCanvas({ width: 800, height: 800 }));
+    await exportDesignPdf({ designId: 'd-el', base: SAME_ORIGIN_BASE });
+
+    expect(saveDesignPdf).toHaveBeenCalledTimes(1);
+    const arg = saveDesignPdf.mock.calls[0][0];
+    expect(arg.defaultFilename).toBe('design-d-el.pdf');
+    expect(arg.data).toBeInstanceOf(Uint8Array);
+    expect(arg.data.length).toBe(4);
+    expect(saveMock).not.toHaveBeenCalled();
+  });
+
+  it('throws when Electron saveDesignPdf returns an error payload', async () => {
+    window.electronAPI = {
+      saveDesignPdf: vi.fn().mockResolvedValue({ error: 'disk full' }),
+    };
+    html2canvasMock.mockResolvedValue(fakeCanvas());
+
+    await expect(exportDesignPdf({ designId: 'd-bad', base: SAME_ORIGIN_BASE })).rejects.toThrow(
+      /disk full/,
+    );
+    expect(saveMock).not.toHaveBeenCalled();
   });
 });

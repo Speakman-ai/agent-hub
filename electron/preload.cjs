@@ -66,4 +66,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * is available. Used by the Bug Report button in place of html2canvas.
    */
   captureBugScreenshot: () => ipcRenderer.invoke('bug-report:capture-page'),
+
+  /**
+   * Save a rendered design PDF via the native OS save dialog (main process).
+   * @param {{ defaultFilename: string, data: Uint8Array }} payload
+   * @returns {Promise<{ ok?: true, filePath?: string, cancelled?: true, error?: string }>}
+   */
+  saveDesignPdf: (payload) => ipcRenderer.invoke('design-pdf:save', payload),
 });

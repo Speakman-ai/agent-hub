@@ -49,6 +49,10 @@ export default defineConfig({
       ? {
           '/api': `http://localhost:${apiPort}`,
           '/uploads': `http://localhost:${apiPort}`,
+          // Design Studio + PDF export fetch `/design-files/*` from the Vite
+          // origin (Electron dev loads :3050). Without this proxy, requests
+          // never reach Express on the API port.
+          '/design-files': `http://localhost:${apiPort}`,
         }
       : undefined,
   },
