@@ -54,6 +54,53 @@ describe('useKeyboardShortcuts', () => {
     input.remove();
   });
 
+  it('still fires modifier-bearing shortcuts from inside an input', () => {
+    // Regression: the chat composer is almost always focused, so bailing on
+    // all editable targets swallowed every global hotkey. Shortcuts with a
+    // primary modifier (Mod / Meta / Ctrl / Alt) must still fire.
+    const handler = vi.fn();
+    const shortcuts = [{ id: 'board', binding: 'Mod+B' }];
+    renderHook(() => useKeyboardShortcuts({ handlers: { board: handler }, shortcuts }));
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    // Fire both platform variants — whichever matches `getPlatform()` in jsdom
+    // will trigger the handler.
+    dispatchKey({ key: 'b', ctrl: true, target: textarea });
+    dispatchKey({ key: 'b', meta: true, target: textarea });
+    expect(handler).toHaveBeenCalled();
+    textarea.remove();
+  });
+
+  it('still skips shift-only shortcuts from inside an input', () => {
+    // Shift alone does not count as a primary modifier — typing `A` produces
+    // shiftKey=true, so a Shift+A binding inside the composer should defer
+    // to normal typing.
+    const handler = vi.fn();
+    const shortcuts = [{ id: 'shout', binding: 'Shift+A' }];
+    renderHook(() => useKeyboardShortcuts({ handlers: { shout: handler }, shortcuts }));
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    dispatchKey({ key: 'a', shift: true, target: input });
+    expect(handler).not.toHaveBeenCalled();
+    input.remove();
+  });
+
+  it('fires modifier shortcuts from contenteditable targets', () => {
+    const handler = vi.fn();
+    const shortcuts = [{ id: 'new', binding: 'Mod+Alt+N' }];
+    renderHook(() => useKeyboardShortcuts({ handlers: { new: handler }, shortcuts }));
+    const div = document.createElement('div');
+    div.setAttribute('contenteditable', 'true');
+    // jsdom doesn't wire up contentEditable → isContentEditable automatically;
+    // force it so the editable-check sees what the browser would.
+    Object.defineProperty(div, 'isContentEditable', { value: true });
+    document.body.appendChild(div);
+    dispatchKey({ key: 'n', ctrl: true, alt: true, target: div });
+    dispatchKey({ key: 'n', meta: true, alt: true, target: div });
+    expect(handler).toHaveBeenCalled();
+    div.remove();
+  });
+
   it('can be disabled via enabled=false', () => {
     const handler = vi.fn();
     const shortcuts = [{ id: 'help', binding: '?' }];

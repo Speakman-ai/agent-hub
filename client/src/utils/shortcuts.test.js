@@ -4,6 +4,7 @@ import {
   parseBinding,
   matchShortcut,
   formatShortcut,
+  hasPrimaryModifier,
   isEditableTarget,
   getPlatform,
 } from './shortcuts.js';
@@ -180,5 +181,26 @@ describe('getPlatform', () => {
   it('defaults to other', () => {
     expect(getPlatform({ platform: 'Win32' })).toBe('other');
     expect(getPlatform(null)).toBe('other');
+  });
+});
+
+describe('hasPrimaryModifier', () => {
+  it('returns true for Mod / Meta / Ctrl / Alt bindings', () => {
+    expect(hasPrimaryModifier('Mod+B')).toBe(true);
+    expect(hasPrimaryModifier('Meta+K')).toBe(true);
+    expect(hasPrimaryModifier('Ctrl+/')).toBe(true);
+    expect(hasPrimaryModifier('Alt+Enter')).toBe(true);
+    expect(hasPrimaryModifier('Mod+Shift+N')).toBe(true);
+    expect(hasPrimaryModifier('Mod+Alt+N')).toBe(true);
+  });
+  it('returns false for plain or Shift-only bindings', () => {
+    expect(hasPrimaryModifier('?')).toBe(false);
+    expect(hasPrimaryModifier('Escape')).toBe(false);
+    expect(hasPrimaryModifier('Shift+A')).toBe(false);
+  });
+  it('returns false for junk input', () => {
+    expect(hasPrimaryModifier('')).toBe(false);
+    expect(hasPrimaryModifier(null)).toBe(false);
+    expect(hasPrimaryModifier(undefined)).toBe(false);
   });
 });

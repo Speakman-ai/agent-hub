@@ -149,6 +149,17 @@ export function parseBinding(binding) {
 // physical key requires it, but the user intent is just the character itself.
 const SHIFTED_CHARS = new Set('~!@#$%^&*()_+{}|:"<>?'.split(''));
 
+// True if the binding requires a primary modifier (Mod / Meta / Ctrl / Alt).
+// Shift alone does NOT count — many typed characters require Shift, so a
+// Shift-only binding should still defer to normal typing in editable fields.
+// Used to decide whether a shortcut is safe to fire even when focus is inside
+// a text input (Cmd+B is safe; plain `?` is not).
+export function hasPrimaryModifier(binding) {
+  const parsed = typeof binding === 'string' ? parseBinding(binding) : binding;
+  if (!parsed) return false;
+  return !!(parsed.mod || parsed.meta || parsed.ctrl || parsed.alt);
+}
+
 // Returns true if `event` satisfies `binding` on the given `platform`.
 export function matchShortcut(event, binding, platform = getPlatform()) {
   const parsed = typeof binding === 'string' ? parseBinding(binding) : binding;
