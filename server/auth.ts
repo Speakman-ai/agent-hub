@@ -75,6 +75,13 @@ export interface AuthenticatedRequest extends Request {
   /** True when the caller used the apiKey fallback. */
   authViaApiKey?: boolean;
   /**
+   * True when `isActiveOrgLocal()` bypassed JWT/apiKey — the active org is a
+   * desktop/local install. Downstream membership gates that normally require
+   * `authUserId` must treat this as full access to the active org (mirrors
+   * `AuthGate`'s `activeOrgIsLocal` client bypass).
+   */
+  authLocalOrgBypass?: boolean;
+  /**
    * Resolved role for the authenticated caller. Populated from the
    * caller's membership in the active org (Phase 3), or forced to
    * 'Owner' when the apiKey path is taken — the apiKey is the
@@ -179,6 +186,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     const r = req as AuthenticatedRequest;
     r.authUser = 'local';
     r.authRole = 'Owner';
+    r.authLocalOrgBypass = true;
     try {
       r.authOrgId = getActiveOrgId();
     } catch {}

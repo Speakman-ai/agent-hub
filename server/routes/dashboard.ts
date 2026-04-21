@@ -109,7 +109,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     // org's dashboard. apiKey callers are global. No-auth dev mode passes
     // through. Gate against the resolved id so the `active` alias still
     // enforces real membership on the underlying org.
-    if (authIsConfigured() && !authedReq.authViaApiKey) {
+    if (authIsConfigured() && !authedReq.authViaApiKey && !authedReq.authLocalOrgBypass) {
       if (!authedReq.authUserId) {
         return res.status(401).json({ error: 'Authentication required.' });
       }

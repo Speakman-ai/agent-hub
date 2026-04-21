@@ -625,10 +625,12 @@ describe('authMiddleware — active-org local bypass', () => {
       authUser?: string;
       authRole?: string;
       authOrgId?: string;
+      authLocalOrgBypass?: boolean;
     };
     expect(r.authUser).toBe('local');
     expect(r.authRole).toBe('Owner');
     expect(r.authOrgId).toBe('default');
+    expect(r.authLocalOrgBypass).toBe(true);
   });
 
   it('returns 401 when active org is remote and no credentials are provided', () => {

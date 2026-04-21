@@ -229,4 +229,31 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(res.body).toHaveProperty('error');
     expect(res.body).toHaveProperty('activeOrgId', 'default');
   });
+
+  it('returns 200 without a bearer token when JWT auth is configured but the active org is local (Electron desktop)', async () => {
+    const { unlinkSync, existsSync } = await import('fs');
+    const path = await import('path');
+    const { saveAuthRecord, reloadAuthRecord } = await import('../auth-store.js');
+    const config = (await import('../config.js')).default;
+    const authPath = path.join(config.dataDir, 'auth.json');
+
+    try {
+      saveAuthRecord({
+        username: 'dash-local-owner',
+        passwordHash: 'scrypt$deadbeef',
+        jwtSecret: 'b'.repeat(64),
+      });
+      const res = await request.get('/api/orgs/default/dashboard').expect(200);
+      const body = res.body as DashboardBody;
+      expect(body.orgId).toBe('default');
+      expect(body.isActive).toBe(true);
+    } finally {
+      try {
+        if (existsSync(authPath)) unlinkSync(authPath);
+      } catch {
+        /* ignore */
+      }
+      reloadAuthRecord();
+    }
+  });
 });

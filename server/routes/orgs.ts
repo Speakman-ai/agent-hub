@@ -80,7 +80,7 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
     // apiKey callers are global Owner; JWT callers must be Admin+ of the
     // org being listed (not just the currently-active org). In the
     // no-auth-configured dev mode, allow through.
-    if (authIsConfigured() && !authedReq.authViaApiKey) {
+    if (authIsConfigured() && !authedReq.authViaApiKey && !authedReq.authLocalOrgBypass) {
       if (!authedReq.authUserId) {
         return res.status(401).json({ error: 'Authentication required.' });
       }
@@ -167,7 +167,7 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
     const existing = getOrg(orgId);
     if (!existing) return res.status(404).json({ error: 'Org not found' });
 
-    if (authIsConfigured() && !authedReq.authViaApiKey) {
+    if (authIsConfigured() && !authedReq.authViaApiKey && !authedReq.authLocalOrgBypass) {
       if (!authedReq.authUserId) {
         return res.status(401).json({ error: 'Authentication required.' });
       }
@@ -189,6 +189,7 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
     // will be set by the middleware and we fall back to the gate.
     if (!authIsConfigured()) return null;
     if (authedReq.authViaApiKey) return null;
+    if (authedReq.authLocalOrgBypass) return null;
     if (!authedReq.authUserId) return 'Authentication required.';
     const role = getMembershipRole(authedReq.authUserId, orgId);
     if (!role) return 'You are not a member of this org.';
