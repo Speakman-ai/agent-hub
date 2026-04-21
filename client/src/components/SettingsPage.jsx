@@ -1737,6 +1737,8 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
 
   // Per-project state
   const [projectWorkflow, setProjectWorkflow] = useState({});
+  const [modelConfig, setModelConfig] = useState(null);
+  const [reviewerModelSaving, setReviewerModelSaving] = useState({});
   const [projectRepos, setProjectRepos] = useState({});
   const [workflowSaved, setWorkflowSaved] = useState({});
   const [repoSaving, setRepoSaving] = useState({});
@@ -1847,6 +1849,13 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
     }
   };
 
+  useEffect(() => {
+    api
+      .getModelConfig()
+      .then(setModelConfig)
+      .catch(() => {});
+  }, []);
+
   // Init per-project state when projects arrive
   useEffect(() => {
     const wf = {};
@@ -1857,6 +1866,8 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
         autoReview: p.githubWorkflow?.autoReview !== false,
         waitForCI: p.githubWorkflow?.waitForCI || false,
         waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
+        reviewerModel:
+          typeof p.githubWorkflow?.reviewerModel === 'string' ? p.githubWorkflow.reviewerModel : '',
       };
       repos[p.id] = p.githubRepo || '';
       // Fire-and-forget: hydrate allowlist from the webhook API.
@@ -1984,6 +1995,33 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
         ...prev,
         [projectId]: { ...prev[projectId], [key]: !newValue },
       }));
+    }
+  };
+
+  const saveWorkflowReviewerModel = async (projectId, value) => {
+    const prevVal =
+      typeof projectWorkflow[projectId]?.reviewerModel === 'string'
+        ? projectWorkflow[projectId].reviewerModel
+        : '';
+    setProjectWorkflow((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], reviewerModel: value },
+    }));
+    setReviewerModelSaving((s) => ({ ...s, [projectId]: true }));
+    try {
+      await api.updateProject(projectId, {
+        githubWorkflow: { reviewerModel: value.trim() ? value.trim() : '' },
+      });
+      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
+      if (onProjectsChange) onProjectsChange();
+    } catch {
+      setProjectWorkflow((prev) => ({
+        ...prev,
+        [projectId]: { ...prev[projectId], reviewerModel: prevVal },
+      }));
+    } finally {
+      setReviewerModelSaving((s) => ({ ...s, [projectId]: false }));
     }
   };
 
@@ -2268,6 +2306,16 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
           {projects.map((p) => {
             const isExpanded = expandedProject === p.id;
             const repo = projectRepos[p.id] || '';
+            const reviewerAgent = p.agents?.find((a) => a.role === 'reviewer');
+            const reviewerEngine = reviewerAgent?.engine || 'claude-code';
+            let reviewerModelOpts =
+              modelConfig?.engineValidModels?.[reviewerEngine]
+                ?.slice()
+                .sort((a, b) => a.localeCompare(b)) || [];
+            const savedReviewerModel = projectWorkflow[p.id]?.reviewerModel || '';
+            if (savedReviewerModel && !reviewerModelOpts.includes(savedReviewerModel)) {
+              reviewerModelOpts = [savedReviewerModel, ...reviewerModelOpts];
+            }
 
             return (
               <div key={p.id} className="bg-gray-900/50 rounded-lg p-3">
@@ -2385,6 +2433,38 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
                         </button>
                       </div>
                     ))}
+                    <div className="pt-1 space-y-1">
+                      <label className={labelClass}>PR review model (GitHub webhook)</label>
+                      <p className="text-xs text-gray-500 mb-1">
+                        Model for the reviewer agent ({reviewerEngine}) when Auto Review runs after
+                        a PR webhook. Default follows the reviewer&apos;s Agents settings.
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={projectWorkflow[p.id]?.reviewerModel || ''}
+                          disabled={reviewerModelSaving[p.id] || reviewerModelOpts.length === 0}
+                          onChange={(e) => saveWorkflowReviewerModel(p.id, e.target.value)}
+                          className={`${inputClass} max-w-xl flex-1`}
+                        >
+                          <option value="">Same as reviewer agent</option>
+                          {reviewerModelOpts.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                        </select>
+                        {reviewerModelSaving[p.id] && (
+                          <Loader2 size={14} className="animate-spin text-gray-400 flex-shrink-0" />
+                        )}
+                      </div>
+                      {!modelConfig && <p className="text-[11px] text-gray-600">Loading models…</p>}
+                      {modelConfig && reviewerModelOpts.length === 0 && (
+                        <p className="text-[11px] text-amber-400/90">
+                          No models listed for this engine in server config — check
+                          engineValidModels.
+                        </p>
+                      )}
+                    </div>
                     {workflowSaved[p.id] && <span className="text-xs text-emerald-400">Saved</span>}
 
                     {/* Test Connection */}

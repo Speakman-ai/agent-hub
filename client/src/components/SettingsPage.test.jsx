@@ -22,6 +22,7 @@ vi.mock('../utils/api.js', () => ({
     getConfig: vi.fn(),
     updateConfig: vi.fn(),
     get: vi.fn(),
+    getModelConfig: vi.fn(),
   },
 }));
 
@@ -42,6 +43,11 @@ describe('GitHubSection — return from GitHub App auto-setup', () => {
     });
     // `/github-app/status` and other GET calls — resolve to empty objects.
     api.get.mockResolvedValue({});
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'claude-opus-4-7',
+      engineDefaultModels: {},
+      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+    });
   });
 
   afterEach(() => {

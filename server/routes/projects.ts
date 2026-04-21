@@ -424,7 +424,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         (project as Record<string, unknown>).githubWorkflow = {};
       const projectGhw = (project as Record<string, unknown>).githubWorkflow as Record<
         string,
-        boolean
+        unknown
       >;
       const bodyGhw = (req.body as Record<string, unknown>)
         .githubWorkflow as GithubWorkflowSettings;
@@ -436,6 +436,15 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       ] as const) {
         if (bodyGhw[key] !== undefined) {
           projectGhw[key] = !!bodyGhw[key];
+        }
+      }
+      if (bodyGhw.reviewerModel !== undefined) {
+        if (bodyGhw.reviewerModel === null || bodyGhw.reviewerModel === '') {
+          delete projectGhw.reviewerModel;
+        } else if (typeof bodyGhw.reviewerModel === 'string') {
+          const trimmed = bodyGhw.reviewerModel.trim();
+          if (trimmed) projectGhw.reviewerModel = trimmed;
+          else delete projectGhw.reviewerModel;
         }
       }
     }

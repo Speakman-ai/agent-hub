@@ -276,4 +276,18 @@ describe('dispatchReviewerForPR — session bookkeeping', () => {
     expect(sessionArgs[1]).toBe('reviewer-1');
     expect(sessionArgs[2]).toMatch(/^Review: PR #42 /);
   });
+
+  it('uses githubWorkflow.reviewerModel over the reviewer agent model when set', () => {
+    const deps = makeDeps();
+    const project = {
+      ...makeProject('reviewer'),
+      githubWorkflow: { reviewerModel: 'override-model-id' },
+    };
+
+    dispatchReviewerForPR(deps as never, project, OPTS);
+    vi.runAllTimers();
+
+    const sessionArgs = deps.stmts.createSession.run.mock.calls[0] || [];
+    expect(sessionArgs[4]).toBe('override-model-id');
+  });
 });

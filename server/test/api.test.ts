@@ -125,6 +125,21 @@ describe('Projects', () => {
       expect(res.body.githubWorkflow.waitForCI).toBe(true);
     });
 
+    it('updates githubWorkflow.reviewerModel and clears it when empty', async () => {
+      const proj = await createProject();
+      const withModel = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ githubWorkflow: { reviewerModel: '  claude-opus-4-20250514  ' } })
+        .expect(200);
+      expect(withModel.body.githubWorkflow.reviewerModel).toBe('claude-opus-4-20250514');
+
+      const cleared = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ githubWorkflow: { reviewerModel: '' } })
+        .expect(200);
+      expect(cleared.body.githubWorkflow.reviewerModel).toBeUndefined();
+    });
+
     it('returns 404 for nonexistent project', async () => {
       await request.patch('/api/projects/does-not-exist').send({ name: 'Nope' }).expect(404);
     });

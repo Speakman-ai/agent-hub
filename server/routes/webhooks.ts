@@ -974,12 +974,18 @@ async function runReviewerDispatch(
 
   const sessionId = crypto.randomUUID();
   const engine = reviewer.engine || 'claude-code';
+  const workflowModelRaw = project.githubWorkflow?.reviewerModel;
+  const workflowModel =
+    typeof workflowModelRaw === 'string' && workflowModelRaw.trim() ? workflowModelRaw.trim() : '';
+  const agentModel =
+    typeof reviewer.model === 'string' && reviewer.model.trim() ? reviewer.model.trim() : '';
+  const sessionModel = workflowModel || agentModel || defaultModelForEngine(engine);
   stmts.createSession.run(
     sessionId,
     reviewer.id,
     `Review: PR #${opts.prNumber} ${opts.prTitle}`.substring(0, 200),
     engine,
-    (reviewer.model as string | undefined) || defaultModelForEngine(engine),
+    sessionModel,
     1,
     0,
   );

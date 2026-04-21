@@ -1098,6 +1098,8 @@ export interface GithubWorkflowSettings {
   autoReview?: boolean;
   waitForCI?: boolean;
   waitForResolvedComments?: boolean;
+  /** When set, PR reviews dispatched via the GitHub webhook use this model instead of the reviewer agent's default `model`. */
+  reviewerModel?: string;
 }
 
 export interface Project {
