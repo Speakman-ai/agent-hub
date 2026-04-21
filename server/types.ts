@@ -912,6 +912,13 @@ export interface Stmts {
   deleteWikiPage: Stmt;
   getWikiPagesByCategory: Stmt;
 
+  // Wiki embeddings
+  getWikiEmbeddingsByProject: Stmt;
+  getWikiEmbeddingsByPage: Stmt;
+  deleteWikiEmbeddingsByPage: Stmt;
+  upsertWikiEmbedding: Stmt;
+  countWikiEmbeddingsByPage: Stmt;
+
   // Threads
   getThreadsByProject: Stmt;
   getThreadsByProjectAndType: Stmt;
@@ -956,6 +963,7 @@ export interface Stmts {
   // Bulk project cleanup
   deleteNotesByProject: Stmt;
   deleteWikiPagesByProject: Stmt;
+  deleteWikiEmbeddingsByProject: Stmt;
   deleteWebhookConfigsByProject: Stmt;
   deleteBoardsByProject: Stmt;
   deleteThreadsByProject: Stmt;

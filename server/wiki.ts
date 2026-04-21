@@ -2,6 +2,7 @@ import { db, stmts } from './db.js';
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import type { WikiPageRow, Stmts } from './types.js';
+import { scheduleEmbedPage, deletePageEmbeddings } from './wiki-embeddings.js';
 
 const CATEGORIES = [
   'general',
@@ -82,6 +83,8 @@ export function createPage(
     /* FTS table might not exist yet */
   }
 
+  scheduleEmbedPage(projectId, { id, title, content });
+
   return { id, slug, title, content, category, updatedBy };
 }
 
@@ -147,6 +150,12 @@ export function updatePage(
     /* FTS might not exist */
   }
 
+  // Re-embed only if title or content changed — category/slug-only updates
+  // don't affect semantic content.
+  if (title !== undefined || content !== undefined) {
+    scheduleEmbedPage(projectId, { id: existing.id, title: newTitle, content: newContent });
+  }
+
   return {
     id: existing.id,
     slug: newSlug,
@@ -170,6 +179,12 @@ export function deletePage(projectId: string, slug: string): boolean {
         .prepare('DELETE FROM wiki_pages_fts WHERE rowid = ?')
         .run(rowResult.rowid);
     }
+  } catch {
+    /* skip */
+  }
+
+  try {
+    deletePageEmbeddings(existing.id);
   } catch {
     /* skip */
   }

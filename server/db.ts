@@ -1117,6 +1117,25 @@ function initDb(dataDir: string): void {
     console.warn('[notes] FTS5 creation failed (may already exist):', (e as Error).message);
   }
 
+  // Wiki embeddings — chunk-level vectors for semantic/hybrid wiki search.
+  // One row per (page, chunk_idx). `embedding` is a raw Float32Array BLOB so
+  // we can load + cosine-rank in-memory (small N, hundreds of pages). `model`
+  // is recorded so we can re-embed when we switch models without churning
+  // the schema.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wiki_embeddings (
+      page_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      chunk_idx INTEGER NOT NULL,
+      chunk_text TEXT NOT NULL,
+      embedding BLOB NOT NULL,
+      model TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (page_id, chunk_idx)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wiki_embeddings_project ON wiki_embeddings(project_id);
+  `);
+
   const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get() as { count: number };
   if (cronCount.count === 0) {
     const insertCron = db.prepare(
@@ -1968,6 +1987,27 @@ function initDb(dataDir: string): void {
       'SELECT id, project_id, title, slug, category, updated_by, created_at, updated_at FROM wiki_pages WHERE project_id = ? AND category = ? ORDER BY updated_at DESC',
     ),
 
+    // Wiki embeddings
+    getWikiEmbeddingsByProject: db.prepare(
+      'SELECT page_id, chunk_idx, chunk_text, embedding, model FROM wiki_embeddings WHERE project_id = ?',
+    ),
+    getWikiEmbeddingsByPage: db.prepare(
+      'SELECT page_id, chunk_idx, chunk_text, embedding, model FROM wiki_embeddings WHERE page_id = ? ORDER BY chunk_idx ASC',
+    ),
+    deleteWikiEmbeddingsByPage: db.prepare('DELETE FROM wiki_embeddings WHERE page_id = ?'),
+    upsertWikiEmbedding: db.prepare(
+      `INSERT INTO wiki_embeddings (page_id, project_id, chunk_idx, chunk_text, embedding, model)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(page_id, chunk_idx) DO UPDATE SET
+         chunk_text = excluded.chunk_text,
+         embedding = excluded.embedding,
+         model = excluded.model,
+         created_at = datetime('now')`,
+    ),
+    countWikiEmbeddingsByPage: db.prepare(
+      'SELECT COUNT(*) as n FROM wiki_embeddings WHERE page_id = ?',
+    ),
+
     // Threads
     getThreadsByProject: db.prepare(
       'SELECT * FROM threads WHERE project_id = ? ORDER BY created_at DESC',
@@ -2066,6 +2106,7 @@ function initDb(dataDir: string): void {
     // Bulk project cleanup (cascade handles child rows via FK constraints)
     deleteNotesByProject: db.prepare('DELETE FROM notes WHERE project_id = ?'),
     deleteWikiPagesByProject: db.prepare('DELETE FROM wiki_pages WHERE project_id = ?'),
+    deleteWikiEmbeddingsByProject: db.prepare('DELETE FROM wiki_embeddings WHERE project_id = ?'),
     deleteWebhookConfigsByProject: db.prepare('DELETE FROM webhook_configs WHERE project_id = ?'),
     deleteBoardsByProject: db.prepare('DELETE FROM kanban_boards WHERE project_id = ?'),
     deleteThreadsByProject: db.prepare('DELETE FROM threads WHERE project_id = ?'),
