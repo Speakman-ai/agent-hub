@@ -63,6 +63,7 @@ interface PluginSkillInfo {
  * collide — later iterations simply `cpSync` on top of the destination.
  */
 export function syncSkillsToClaude(extraSkillDirs: string[] = []): void {
+  // TODO(skill-gateway): remove after one release once no active sessions rely on the native Skill tool.
   try {
     const home = process.env.HOME || process.env.USERPROFILE;
     if (!home) return;

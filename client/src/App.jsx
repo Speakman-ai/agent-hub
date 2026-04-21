@@ -13,6 +13,7 @@ import RoomChat from './components/RoomChat.jsx';
 import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
+import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
@@ -81,6 +82,7 @@ export default function App() {
   // Handoffs (rows from GET /api/sessions/:id/handoffs) for the active
   // source session — used by HandoffCard to render an "Open session" link.
   const [sessionHandoffs, setSessionHandoffs] = useState([]);
+  const [sessionSkillInvocations, setSessionSkillInvocations] = useState([]);
   const [thinking, setThinking] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingMsgId, setStreamingMsgId] = useState(null);
@@ -1554,6 +1556,33 @@ export default function App() {
     };
   }, [activeSessionId]);
 
+  useEffect(() => {
+    if (!activeSessionId) {
+      setSessionSkillInvocations([]);
+      return;
+    }
+
+    let cancelled = false;
+    const load = () =>
+      api
+        .getSessionSkillInvocations(activeSessionId)
+        .then((rows) => {
+          if (!cancelled) {
+            setSessionSkillInvocations(Array.isArray(rows) ? rows : []);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setSessionSkillInvocations([]);
+        });
+
+    load();
+    const timer = setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeSessionId]);
+
   // Navigate into a handoff's target session (called from HandoffCard).
   const handleOpenHandoffSession = useCallback(
     (targetAgentId, targetSessionId) => {
@@ -2547,6 +2576,9 @@ export default function App() {
                               />
                             </div>
                           )}
+                        <div className="px-4 max-w-[95%] sm:max-w-[90%]">
+                          <SkillInvocationsPanel invocations={sessionSkillInvocations} />
+                        </div>
                         {/* Ad-hoc PR creation prompt — shown when agent finishes work with uncommitted changes */}
                         {changesReady[activeSessionId] && !streamingMsgId && (
                           <ChangesReadyBox

@@ -543,7 +543,7 @@ async function commitPushAndCreatePR(
 
     await execAsync('git add -A', { cwd: effectiveCwd });
     const fullMessage = `${commitTitle}\n${commitBody}`;
-    await execAsync(`git commit -m ${JSON.stringify(fullMessage)}`, { cwd: effectiveCwd });
+    await execFileAsync('git', ['commit', '-m', fullMessage], { cwd: effectiveCwd });
     console.log(`[auto-commit] Committed: ${commitTitle}`);
   } else {
     console.log(`[auto-commit] Agent already committed — skipping commit, will push + PR`);

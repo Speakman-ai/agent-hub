@@ -16,6 +16,7 @@ export interface SessionRow {
   git_worktree_detected: number | null;
   changes_ready: string | null;
   stale_pr_notified_at: string | null;
+  pending_skill_context?: string | null;
   ask_mode: number;
   cron_id: number | null;
   created_at: string;
@@ -182,6 +183,17 @@ export interface HandoffRow {
   error: string | null;
   created_at: string;
   delivered_at: string | null;
+}
+
+export interface SkillInvocationRow {
+  id: string;
+  session_id: string;
+  skill_id: string;
+  source: 'project' | 'default' | null;
+  reason: string | null;
+  status: 'loaded' | 'not-found' | 'malformed';
+  injected_bytes: number | null;
+  created_at: string;
 }
 
 export interface BackgroundTaskRow {
@@ -658,6 +670,7 @@ export interface Stmts {
   updateSessionEngine: Stmt;
   updateSessionModel: Stmt;
   updateSessionEngineSessionId: Stmt;
+  updateSessionPendingSkillContext: Stmt;
   updateSessionWorktree: Stmt;
   updateSessionWorktreePath: Stmt;
   updateSessionGitWorktreeDetected: Stmt;
@@ -806,6 +819,8 @@ export interface Stmts {
   getHandoffById: Stmt;
   getHandoffByToSession: Stmt;
   getHandoffsFromSession: Stmt;
+  insertSkillInvocation: Stmt;
+  listSkillInvocationsForSession: Stmt;
 
   // Message queue
   enqueueMessage: Stmt;

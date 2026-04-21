@@ -79,12 +79,8 @@ function mockExec(results: Record<string, { stdout?: string; stderr?: string; er
       _opts: Record<string, unknown>,
       callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
     ) => {
-      if (file === 'gh') {
-        const cmd = ['gh', ...args].join(' ');
-        run(cmd, callback);
-      } else if (callback) {
-        callback(new Error(`unexpected execFile(${file})`), { stdout: '', stderr: '' });
-      }
+      const cmd = [file, ...args].join(' ');
+      run(cmd, callback);
     },
   );
 }
@@ -105,11 +101,7 @@ function installExecAndGhMock(
       opts: Record<string, unknown>,
       callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
     ) => {
-      if (file === 'gh') {
-        impl(['gh', ...args].join(' '), opts, callback);
-      } else if (callback) {
-        callback(new Error(`unexpected execFile(${file})`), { stdout: '', stderr: '' });
-      }
+      impl([file, ...args].join(' '), opts, callback);
     },
   );
 }

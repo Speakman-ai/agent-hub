@@ -263,6 +263,7 @@ try {
   const projectSkillDirs = getProjects()
     .map((p) => (p.ahw ? path.join(p.ahw, 'skills') : ''))
     .filter((d) => !!d);
+  // TODO(skill-gateway): remove after one release once no active sessions rely on the native Skill tool.
   syncSkillsToClaude(projectSkillDirs);
 } catch (err) {
   console.warn('[skills] Startup sync failed:', (err as Error).message);

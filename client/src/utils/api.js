@@ -61,6 +61,7 @@ export const api = {
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
   getSessionHandoffs: (sessionId) => fetchJSON(`/sessions/${sessionId}/handoffs`),
+  getSessionSkillInvocations: (sessionId) => fetchJSON(`/sessions/${sessionId}/skill-invocations`),
   summarizeSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST', timeout: 120000 }),
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),

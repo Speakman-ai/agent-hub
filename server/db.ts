@@ -256,6 +256,21 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_handoffs_from_session ON handoffs(from_session_id);
     CREATE INDEX IF NOT EXISTS idx_handoffs_to_session ON handoffs(to_session_id);
 
+    -- Skill invocations: emitted whenever an agent requests a skill load via
+    -- <agenthub:skill>. Stores load status + payload size for observability.
+    CREATE TABLE IF NOT EXISTS skill_invocations (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      skill_id TEXT NOT NULL,
+      source TEXT,
+      reason TEXT,
+      status TEXT NOT NULL CHECK(status IN ('loaded','not-found','malformed')),
+      injected_bytes INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_skill_invocations_session ON skill_invocations(session_id);
+
     CREATE TABLE IF NOT EXISTS background_tasks (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -837,6 +852,12 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  try {
+    db.prepare('SELECT pending_skill_context FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN pending_skill_context TEXT DEFAULT NULL');
+  }
+
   // Soft-delete ("archive") column. When set, the session is hidden from the
   // live `getSessions` list but remains in the DB for up to 7 days so users
   // can restore it via POST /api/sessions/:sessionId/restore.
@@ -1344,6 +1365,9 @@ function initDb(dataDir: string): void {
     updateSessionEngineSessionId: db.prepare(
       "UPDATE sessions SET engine_session_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    updateSessionPendingSkillContext: db.prepare(
+      "UPDATE sessions SET pending_skill_context = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
     updateSessionWorktree: db.prepare(
       "UPDATE sessions SET use_worktree = ?, updated_at = datetime('now') WHERE id = ?",
     ),
@@ -1668,6 +1692,14 @@ function initDb(dataDir: string): void {
     ),
     getHandoffsFromSession: db.prepare(
       'SELECT * FROM handoffs WHERE from_session_id = ? ORDER BY created_at ASC',
+    ),
+    insertSkillInvocation: db.prepare(
+      `INSERT INTO skill_invocations
+       (id, session_id, skill_id, source, reason, status, injected_bytes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    listSkillInvocationsForSession: db.prepare(
+      'SELECT * FROM skill_invocations WHERE session_id = ? ORDER BY created_at DESC',
     ),
 
     // Message queue

@@ -519,6 +519,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
+  router.get('/api/sessions/:sessionId/skill-invocations', (req: Request, res: Response) => {
+    try {
+      const rows = stmts.listSkillInvocationsForSession.all(req.params.sessionId);
+      res.json(rows);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   router.get('/api/sessions/:sessionId/queue', (req: Request, res: Response) => {
     try {
       const queue = stmts.getQueuedMessages.all(req.params.sessionId);

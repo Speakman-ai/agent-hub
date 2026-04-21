@@ -21,6 +21,7 @@ import {
   buildHandoffPromptSection,
 } from './handoff.js';
 import { parseCloseCardBlock, handleCardAutoClose } from './card-auto-close.js';
+import { detectSkillBlock as detectSkillInvokeBlock, handleSkillInvoke } from './skill-invoke.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
@@ -260,9 +261,16 @@ export function buildEnrichedPrompt(
 
     if (allSkills.length > 0) {
       const skillsList = allSkills.map((s) => `- **${s.name}**: ${s.description}`);
-      const exampleName = allSkills[0]?.name ?? 'skill-name';
       prompt += `\n\n## Available Skills
-Invoke a skill by calling the \`Skill\` tool with its **exact name** from the list below (e.g. \`Skill({ skill: "${exampleName}" })\`). These are the **only** skills registered for this agent — calling \`Skill\` with any other name (for example a third-party service like "linear" or "jira") will fail with \`Unknown skill\`. If the user asks for a capability that isn't in this list, complete the work directly using Bash, WebFetch, or other tools rather than guessing a skill name.
+To load a skill for your next turn, end your turn with a fenced block like:
+\`\`\`
+<agenthub:skill>
+{"name": "<skill-id>", "reason": "<one-liner why>"}
+</agenthub:skill>
+\`\`\`
+The SKILL.md body and referenced files will be injected into your next turn. This replaces the native \`Skill\` tool and works uniformly across claude-code, cursor-agent, and codex.
+
+Only the skills listed below are real here: use their exact \`name\` in \`<agenthub:skill>\` (anything else will not load). On engines that still expose the native \`Skill\` tool, calling it with an unregistered id fails with \`Unknown skill\` — same idea: do not invent third-party "skill" ids. For capabilities that are not in this list, use Bash, WebFetch, or your other normal tools instead of making up skill names.
 
 ${skillsList.join('\n')}`;
     }
@@ -492,6 +500,28 @@ Rules:
   }
 
   return prompt;
+}
+
+/**
+ * One-shot pending skill context for the next model turn.
+ * Clears the DB column **before** building the prompt suffix so a failed
+ * `UPDATE` never pairs an in-memory injection with a still-stored value
+ * (which would re-append on every later turn until the clear succeeds).
+ */
+export function consumePendingSkillInjection(
+  pendingRaw: string | null | undefined,
+  clearPending: () => void,
+): { suffix: string; forceSystemPromptThisTurn: boolean } {
+  const trimmed = pendingRaw?.trim() || '';
+  if (!trimmed) return { suffix: '', forceSystemPromptThisTurn: false };
+  try {
+    clearPending();
+    return { suffix: `\n\n${trimmed}`, forceSystemPromptThisTurn: true };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[skill-invoke] failed to clear pending_skill_context:', message);
+    return { suffix: '', forceSystemPromptThisTurn: false };
+  }
 }
 
 // ─── createChatHandler (factory) ───────────────────────────────────
@@ -787,7 +817,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
     const engine: string = session!.engine || 'claude-code';
     const model: string = session!.model || DEFAULT_MODEL;
-    const enrichedPrompt = buildEnrichedPrompt(
+    let enrichedPrompt = buildEnrichedPrompt(
       project as ProjectWithCommands,
       agent as AgentWithModel,
       {
@@ -797,6 +827,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         _getEnrichedAgent: getEnrichedAgent,
       },
     );
+    const { suffix: pendingSkillSuffix, forceSystemPromptThisTurn } = consumePendingSkillInjection(
+      session!.pending_skill_context,
+      () => stmts.updateSessionPendingSkillContext.run(null, sessionId),
+    );
+    if (pendingSkillSuffix) enrichedPrompt += pendingSkillSuffix;
     const assistantMsgId = uuidv4();
 
     let engineSessionId: string | null = session!.engine_session_id || null;
@@ -884,9 +919,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     let args: string[];
     let bin: string;
     if (engine === 'cursor-agent') {
-      const prompt = isNewEngineSession
-        ? `${enrichedPrompt}\n\n${finalPrompt}`
-        : cliContent + imagePromptSuffix;
+      const prompt =
+        isNewEngineSession || forceSystemPromptThisTurn
+          ? `${enrichedPrompt}\n\n${finalPrompt}`
+          : cliContent + imagePromptSuffix;
       args = [
         '-p',
         prompt,
@@ -914,9 +950,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // `needsHistoryBootstrap` branch earlier already concatenates prior
       // messages into `finalPrompt` when engineSessionId is null, which is
       // exactly the shape Gemini expects.
-      const prompt = isNewEngineSession
-        ? `${enrichedPrompt}\n\n${finalPrompt}`
-        : `${enrichedPrompt}\n\n${finalPrompt}`;
+      const prompt = `${enrichedPrompt}\n\n${finalPrompt}`;
       args = ['-p', prompt, '--output-format', 'stream-json'];
       if (model && model !== 'auto') {
         args.push('--model', model);
@@ -945,9 +979,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // no `--system-prompt` flag) and rely on `--skip-git-repo-check` so
       // fresh project cwds without a `.git` dir don't fail.
       const isAskMode = !!session!.ask_mode;
-      const prompt = isNewEngineSession
-        ? `${enrichedPrompt}\n\n${finalPrompt}`
-        : cliContent + imagePromptSuffix;
+      const prompt =
+        isNewEngineSession || forceSystemPromptThisTurn
+          ? `${enrichedPrompt}\n\n${finalPrompt}`
+          : cliContent + imagePromptSuffix;
       args = ['exec'];
       if (!isNewEngineSession && engineSessionId) {
         args.push('resume', engineSessionId);
@@ -1523,6 +1558,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       } catch (err) {
         console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
+      }
+
+      // Skill gateway: detect a terminal <agenthub:skill> block, resolve the
+      // requested skill body, and stash the resulting injection string so the
+      // next user turn includes it in the system prompt.
+      try {
+        const rawSkillBlock = detectSkillInvokeBlock(finalContent);
+        if (rawSkillBlock) {
+          const paths = resolveProjectPaths(project as Project, agent as Agent);
+          const injection = handleSkillInvoke({
+            rawBlock: rawSkillBlock,
+            paths: { skillsDir: paths.skillsDir },
+            sessionId,
+            stmts: stmts as Stmts,
+            broadcast,
+          });
+          const latest = stmts.getSession.get(sessionId) as SessionRow | undefined;
+          const existing = latest?.pending_skill_context?.trim() || '';
+          const nextContext = existing ? `${existing}\n\n${injection}` : injection;
+          stmts.updateSessionPendingSkillContext.run(nextContext, sessionId);
+        }
+      } catch (err) {
+        console.error('[skill-invoke] Unexpected error:', (err as Error).message);
       }
 
       // Handoff takes precedence over delegate — if the agent emitted a
