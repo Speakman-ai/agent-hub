@@ -34,6 +34,7 @@ const ACTIVITY_DOT = {
   card_updated: colors.amber400,
   session_created: colors.blue400,
   escalation: colors.rose400,
+  pr_created: colors.purple400,
 };
 
 export default function DashboardScreen() {

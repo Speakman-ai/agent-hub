@@ -686,6 +686,7 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
         clearSessionChangesReady: { run: vi.fn() },
         addMessage: { run: addMessageRun },
         getMessageById: { get: getMessageByIdGet },
+        createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
       } as Record<string, unknown>,
       addMessageRun,
       getMessageByIdGet,
@@ -743,17 +744,24 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
 
   it('inserts a system message + broadcasts message_added on successful PR creation', async () => {
     const execCalls: string[] = [];
-    const { stmts, addMessageRun, getMessageByIdGet } = makeStmtsWithMessageTable({
-      card: {
-        id: 'card-42',
-        title: 'Fix login bug',
-        description: 'desc',
-        priority: 'medium',
-        autonomous_iterations: 1,
-        dispatched_by_autonomous: 1,
-        epic_id: null,
-      },
-    });
+    const { stmts, addMessageRun, getMessageByIdGet, createPrCreationLogRun } = (() => {
+      const t = makeStmtsWithMessageTable({
+        card: {
+          id: 'card-42',
+          title: 'Fix login bug',
+          description: 'desc',
+          priority: 'medium',
+          autonomous_iterations: 1,
+          dispatched_by_autonomous: 1,
+          epic_id: null,
+        },
+      });
+      return {
+        ...t,
+        createPrCreationLogRun: (t.stmts.createPrCreationLog as { run: ReturnType<typeof vi.fn> })
+          .run,
+      };
+    })();
 
     initAutoGit({
       stmts: stmts as never,
@@ -806,6 +814,16 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
       .message;
     expect(msg.role).toBe('system');
     expect(JSON.parse(msg.metadata).prNumber).toBe(123);
+
+    expect(createPrCreationLogRun).toHaveBeenCalledTimes(1);
+    const prLogArgs = createPrCreationLogRun.mock.calls[0];
+    expect(prLogArgs[1]).toBe('p');
+    expect(prLogArgs[2]).toBe('card-42');
+    expect(prLogArgs[3]).toBe('sess-1');
+    expect(prLogArgs[4]).toBe('https://github.com/test/repo/pull/123');
+    expect(prLogArgs[5]).toBe(123);
+    expect(prLogArgs[6]).toBe('Fix login bug');
+    expect(prLogArgs[7]).toBe('dev');
   });
 
   it('invokes gh pr create via execFile so PR bodies can contain backticks and shell metacharacters', async () => {
@@ -943,6 +961,9 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
       (c: Array<Record<string, unknown>>) => c[0]?.type === 'auto_pr_created',
     );
     expect(autoPrEvents).toHaveLength(1);
+
+    const prLogRun = (stmts.createPrCreationLog as { run: ReturnType<typeof vi.fn> }).run;
+    expect(prLogRun).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -972,6 +993,7 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
       clearSessionChangesReady: { run: vi.fn() },
       addMessage: { run: vi.fn() },
       getMessageById: { get: vi.fn() },
+      createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
     } as Record<string, unknown>;
   }
 
@@ -1465,6 +1487,7 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
           created_at: '2026-04-18T00:00:00.000Z',
         })),
       },
+      createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
     } as Record<string, unknown>;
   }
 

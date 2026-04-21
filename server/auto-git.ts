@@ -663,6 +663,28 @@ async function commitPushAndCreatePR(
     // dispatched by the GitHub webhook handler when the PR opens/syncs.
     if (card) moveCardToReview(card, project, prUrl);
 
+    // Project + dashboard activity feeds (kanban Reviews panel, org dashboard).
+    try {
+      const prNumMatch = prUrl.match(/\/pull\/(\d+)/);
+      const prNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
+      const inserted = d.stmts.createPrCreationLog.run(
+        crypto.randomUUID(),
+        project.id,
+        card?.id ?? null,
+        sessionId,
+        prUrl,
+        prNumber,
+        prTitle,
+        agent.name || 'Agent',
+      );
+      if (inserted.changes > 0) {
+        d.broadcast({ type: 'kanban_update', projectId: project.id });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[auto-commit] Failed to persist PR creation activity log: ${msg}`);
+    }
+
     // Fire-and-forget: enable GitHub native auto-merge if the project or
     // per-PR override requests it. Failure here never blocks PR creation.
     enableAutoMergeIfNeeded(prUrl, project, options?.autoMergeOverride, effectiveCwd).catch(

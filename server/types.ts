@@ -1007,6 +1007,9 @@ export interface Stmts {
   getReviewLogsByCard: Stmt;
   getReviewLogsByPrUrl: Stmt;
 
+  createPrCreationLog: Stmt;
+  getPrCreationLogsByProject: Stmt;
+
   // pr_state — per-PR reviewer/check-run tracking
   upsertPrState: Stmt;
   updatePrStatePhase: Stmt;

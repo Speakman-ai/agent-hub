@@ -47,6 +47,13 @@ const SAMPLE = {
       timestamp: new Date(Date.now() - 2 * 3600_000).toISOString(),
       meta: { projectId: 'p1', escalationType: 'pr_stuck' },
     },
+    {
+      type: 'pr_created',
+      id: 'pr1',
+      title: 'PR #501: Ship activity feed',
+      timestamp: new Date(Date.now() - 45 * 60_000).toISOString(),
+      meta: { projectId: 'p1', prUrl: 'https://github.com/acme/app/pull/501', prNumber: 501 },
+    },
   ],
 };
 
@@ -126,10 +133,12 @@ describe('DashboardView', () => {
     expect(feed).toHaveTextContent('Add dashboard view');
     expect(feed).toHaveTextContent('Hub Frontend session');
     expect(feed).toHaveTextContent('PR stuck in review');
+    expect(feed).toHaveTextContent('PR #501: Ship activity feed');
     // Per-type label
     expect(feed).toHaveTextContent('Card created');
     expect(feed).toHaveTextContent('Session started');
     expect(feed).toHaveTextContent('Escalation');
+    expect(feed).toHaveTextContent('PR opened');
   });
 
   it('calls onOpenSession when a session activity row is clicked', async () => {

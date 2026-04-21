@@ -263,6 +263,7 @@ const ACTIVITY_ICONS = {
   card_updated: { Icon: Pencil, color: 'text-amber-400', label: 'Card updated' },
   session_created: { Icon: Sparkles, color: 'text-blue-400', label: 'Session started' },
   escalation: { Icon: AlertTriangle, color: 'text-rose-400', label: 'Escalation' },
+  pr_created: { Icon: GitPullRequest, color: 'text-violet-400', label: 'PR opened' },
 };
 
 function RecentActivity({

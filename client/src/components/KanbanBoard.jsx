@@ -681,7 +681,7 @@ export default function KanbanBoard({
             }`}
           >
             <Eye size={14} />
-            Reviews
+            PR & reviews
             {reviewLogs.length > 0 && (
               <span className="text-xs bg-gray-700/50 px-1.5 py-0.5 rounded-full">
                 {reviewLogs.length}
@@ -705,13 +705,52 @@ export default function KanbanBoard({
       {showReviewPanel && (
         <div className="px-6 py-3 border-b border-gray-800/50 bg-gray-850/50 space-y-2 max-h-48 overflow-y-auto">
           <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider">
-            Recent Review Activity
+            Recent PR & review activity
           </h4>
           {reviewLogs.length === 0 ? (
-            <p className="text-xs text-gray-600">No review activity yet.</p>
+            <p className="text-xs text-gray-600">No PR or review activity yet.</p>
           ) : (
             <div className="space-y-1">
               {reviewLogs.slice(0, 10).map((log) => {
+                const kind = log.event_kind || 'review';
+                if (kind === 'pr_created') {
+                  const n = log.pr_number ?? log.pr_url?.match(/\/pull\/(\d+)/)?.[1];
+                  const prHref =
+                    log.pr_url && String(log.pr_url).startsWith('http') ? String(log.pr_url) : null;
+                  return (
+                    <div
+                      key={log.id}
+                      className="flex items-center gap-3 text-xs py-1 px-2 rounded bg-gray-800/50"
+                    >
+                      <GitPullRequest size={14} className="text-violet-400 flex-shrink-0" />
+                      {prHref ? (
+                        <a
+                          href={prHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gray-300 truncate flex-1 hover:text-indigo-300"
+                          title={log.pr_title}
+                        >
+                          {n != null ? `PR #${n}` : 'PR'}
+                          {log.pr_title ? `: ${log.pr_title}` : ''}
+                        </a>
+                      ) : (
+                        <span className="text-gray-300 truncate flex-1" title={log.pr_title}>
+                          {n != null ? `PR #${n}` : 'PR'}
+                          {log.pr_title ? `: ${log.pr_title}` : ''}
+                        </span>
+                      )}
+                      <span className="text-gray-500 truncate max-w-[7rem]">
+                        {log.author_agent}
+                      </span>
+                      <span className="text-violet-300 font-medium flex-shrink-0">Opened</span>
+                      <span className="text-gray-600 flex-shrink-0">
+                        {new Date(log.completed_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                  );
+                }
+
                 const prHref = log.pr_url?.startsWith('http') ? log.pr_url : null;
                 const Row = prHref ? 'a' : 'div';
                 const rowProps = prHref
@@ -748,7 +787,9 @@ export default function KanbanBoard({
                           ? 'text-emerald-400'
                           : log.outcome === 'changes_requested'
                             ? 'text-red-400'
-                            : 'text-gray-400'
+                            : log.outcome === 'merge_conflict'
+                              ? 'text-amber-400'
+                              : 'text-gray-400'
                       }`}
                     >
                       {log.outcome === 'approved'

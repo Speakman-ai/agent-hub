@@ -941,6 +941,28 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_review_logs_pr ON review_logs(pr_url);
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pr_creation_logs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      card_id TEXT,
+      session_id TEXT,
+      pr_url TEXT NOT NULL,
+      pr_number INTEGER,
+      pr_title TEXT NOT NULL,
+      author_agent TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_pr_creation_logs_project ON pr_creation_logs(project_id);
+    CREATE INDEX IF NOT EXISTS idx_pr_creation_logs_card ON pr_creation_logs(card_id);
+    CREATE INDEX IF NOT EXISTS idx_pr_creation_logs_session ON pr_creation_logs(session_id);
+  `);
+
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_creation_logs_project_pr_url
+     ON pr_creation_logs(project_id, pr_url)`,
+  );
+
   // pr_state: per-PR reviewer run metadata, notably the GitHub Check Run id we
   // created for the live progress panel. Keyed by the canonical PR identity
   // (repo_full_name + pr_number). Each push (synchronize) rotates head_sha and
@@ -1892,6 +1914,14 @@ function initDb(dataDir: string): void {
     ),
     getReviewLogsByPrUrl: db.prepare(
       'SELECT * FROM review_logs WHERE pr_url = ? ORDER BY completed_at DESC',
+    ),
+
+    createPrCreationLog: db.prepare(
+      `INSERT OR IGNORE INTO pr_creation_logs (id, project_id, card_id, session_id, pr_url, pr_number, pr_title, author_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getPrCreationLogsByProject: db.prepare(
+      'SELECT * FROM pr_creation_logs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?',
     ),
 
     // pr_state — per-PR reviewer/check-run tracking

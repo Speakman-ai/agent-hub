@@ -24,6 +24,7 @@ export const ACTIVITY_LABELS = {
   card_updated: 'Card updated',
   session_created: 'Session started',
   escalation: 'Escalation',
+  pr_created: 'PR opened',
 };
 
 /**

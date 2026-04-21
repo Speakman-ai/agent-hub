@@ -37,7 +37,7 @@ interface DashboardBody {
     byPriority: { urgent: number; high: number; medium: number; low: number };
   };
   recentActivity: Array<{
-    type: 'card_created' | 'card_updated' | 'session_created' | 'escalation';
+    type: 'card_created' | 'card_updated' | 'session_created' | 'escalation' | 'pr_created';
     id: string;
     title: string;
     timestamp: string;

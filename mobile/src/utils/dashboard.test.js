@@ -92,6 +92,7 @@ describe('activityLabel', () => {
     expect(activityLabel('card_updated')).toBe('Card updated');
     expect(activityLabel('session_created')).toBe('Session started');
     expect(activityLabel('escalation')).toBe('Escalation');
+    expect(activityLabel('pr_created')).toBe('PR opened');
   });
 
   it('falls back to a generic label for unknown types', () => {

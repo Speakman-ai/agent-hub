@@ -53,6 +53,22 @@ interface EscalationActivityRow {
   created_at: string;
 }
 
+interface PrCreationActivityRow {
+  id: string;
+  project_id: string;
+  card_id: string | null;
+  session_id: string | null;
+  pr_url: string;
+  pr_number: number | null;
+  pr_title: string;
+  author_agent: string;
+  created_at: string;
+}
+
+interface DoneColumnRow {
+  id: string;
+}
+
 /** Same semantics as headline "open" work: Done-ish columns + shipped lanes. */
 function isHeadlineClosedColumnName(name: string): boolean {
   return isColumnDone(name) || isColumnShippedLane(name);
@@ -207,7 +223,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       }
     }
 
-    // ── Recent activity (union of three sources, sorted by timestamp) ─
+    // ── Recent activity (union of card/session/escalation/PR sources, sorted by timestamp) ─
     const ACTIVITY_LIMIT = 20;
 
     const recentCards = db
@@ -238,8 +254,17 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       )
       .all(ACTIVITY_LIMIT) as EscalationActivityRow[];
 
+    const recentPrCreations = db
+      .prepare(
+        `SELECT id, project_id, card_id, session_id, pr_url, pr_number, pr_title, author_agent, created_at
+         FROM pr_creation_logs
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(ACTIVITY_LIMIT) as PrCreationActivityRow[];
+
     type ActivityEntry = {
-      type: 'card_created' | 'card_updated' | 'session_created' | 'escalation';
+      type: 'card_created' | 'card_updated' | 'session_created' | 'escalation' | 'pr_created';
       id: string;
       title: string;
       timestamp: string;
@@ -281,6 +306,22 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
         title: e.title,
         timestamp: e.created_at,
         meta: { projectId: e.project_id, escalationType: e.type },
+      });
+    }
+    for (const p of recentPrCreations) {
+      activity.push({
+        type: 'pr_created',
+        id: p.id,
+        title: p.pr_number != null ? `PR #${p.pr_number}: ${p.pr_title}` : p.pr_title,
+        timestamp: p.created_at,
+        meta: {
+          projectId: p.project_id,
+          cardId: p.card_id,
+          sessionId: p.session_id,
+          prUrl: p.pr_url,
+          prNumber: p.pr_number,
+          authorAgent: p.author_agent,
+        },
       });
     }
 

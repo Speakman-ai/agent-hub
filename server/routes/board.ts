@@ -753,8 +753,49 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   // ─── Review Logs ─────────────────────────────────────────────────────
   router.get('/api/projects/:projectId/reviews', (req: Request, res: Response) => {
     const limit = parseInt(req.query.limit as string) || 50;
-    const rows = stmts.getReviewLogs.all(req.params.projectId, limit);
-    res.json(rows);
+    const projectId = req.params.projectId;
+    type ReviewRow = Record<string, unknown> & { completed_at: string };
+    const reviewRows = stmts.getReviewLogs.all(projectId, limit) as ReviewRow[];
+    const prRows = stmts.getPrCreationLogsByProject.all(projectId, limit) as Array<{
+      id: string;
+      project_id: string;
+      card_id: string | null;
+      session_id: string | null;
+      pr_url: string;
+      pr_number: number | null;
+      pr_title: string;
+      author_agent: string;
+      created_at: string;
+    }>;
+
+    const merged: Array<Record<string, unknown>> = [
+      ...reviewRows.map((r) => ({ event_kind: 'review', ...r })),
+      ...prRows.map((p) => ({
+        event_kind: 'pr_created',
+        id: p.id,
+        project_id: p.project_id,
+        card_id: p.card_id,
+        session_id: p.session_id,
+        pr_url: p.pr_url,
+        pr_number: p.pr_number,
+        pr_title: p.pr_title,
+        reviewer_agent: p.author_agent,
+        author_agent: p.author_agent,
+        outcome: null,
+        review_body: null,
+        started_at: p.created_at,
+        completed_at: p.created_at,
+      })),
+    ];
+    merged.sort((a, b) => {
+      const ta = new Date(String((a as { completed_at: string }).completed_at)).getTime();
+      const tb = new Date(String((b as { completed_at: string }).completed_at)).getTime();
+      if (tb !== ta) return tb - ta;
+      const ida = String((a as { id: string }).id);
+      const idb = String((b as { id: string }).id);
+      return ida < idb ? 1 : ida > idb ? -1 : 0;
+    });
+    res.json(merged.slice(0, limit));
   });
 
   // Active review sessions are now driven by the Reviewer agent's regular
