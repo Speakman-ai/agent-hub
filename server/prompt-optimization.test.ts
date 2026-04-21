@@ -161,6 +161,26 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toContain('Bias to Action');
   });
 
+  it('includes research-questions directive on first message', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    // Section heading present
+    expect(prompt).toContain('Research Questions');
+    // Must explicitly forbid the "want me to make a card" prompt pattern
+    expect(prompt).toMatch(/Want me to make a card to look into this/i);
+    // Must clarify the card semantics: work to ship vs. questions to answer
+    expect(prompt).toMatch(/work to ship/i);
+    expect(prompt).toMatch(/questions to answer/i);
+  });
+
+  it('excludes research-questions directive on subsequent messages', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: false,
+    });
+    expect(prompt).not.toContain('Research Questions');
+  });
+
   it('excludes memory instructions on subsequent messages', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: false,
