@@ -1743,7 +1743,7 @@ export default function App() {
 
   const ENGINE_DEFAULT_MODELS = {
     'claude-code': 'claude-opus-4-7',
-    'gemini-cli': 'gemini-2.5-pro',
+    'cursor-agent': 'composer-2',
   };
 
   const handleEngineChange = async (engine) => {

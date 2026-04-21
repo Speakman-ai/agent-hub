@@ -19,13 +19,9 @@ import { mapBroadcastToNotification } from '../utils/ticketNotifications';
 import { routeNotificationTap } from '../utils/notificationRouting';
 import { uploadAttachments } from '../utils/uploadAttachments';
 import { createReloadMessages } from '../utils/sessionReload';
+import { ENGINE_DEFAULT_MODELS } from '../utils/engineOptions';
 
 const AppContext = createContext(null);
-
-const ENGINE_DEFAULT_MODELS = {
-  'claude-code': 'claude-opus-4-7',
-  'cursor-agent': 'gpt-5.3-codex-high',
-};
 
 export function AppProvider({ children }) {
   const [agents, setAgents] = useState([]);

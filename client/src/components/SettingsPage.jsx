@@ -3975,7 +3975,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                 className={inputClass}
               >
                 <option value="claude-code">claude-code</option>
-                <option value="gemini-cli">gemini-cli</option>
+                <option value="cursor-agent">cursor-agent</option>
               </select>
             </div>
             <div>
@@ -4223,7 +4223,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                         className={inputClass}
                       >
                         <option value="claude-code">claude-code</option>
-                        <option value="gemini-cli">gemini-cli</option>
+                        <option value="cursor-agent">cursor-agent</option>
                       </select>
                     </div>
                     <div>

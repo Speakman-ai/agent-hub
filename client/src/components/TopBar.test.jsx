@@ -54,7 +54,7 @@ describe('<TopBar /> engine picker', () => {
     expect(trigger.textContent).toMatch(/Claude Code/);
   });
 
-  it('opens the engine dropdown and calls onEngineChange with gemini-cli', () => {
+  it('opens the engine dropdown and calls onEngineChange with cursor-agent', () => {
     const onEngineChange = vi.fn();
     renderTopBar({ sessionEngine: 'claude-code', onEngineChange });
 
@@ -62,22 +62,41 @@ describe('<TopBar /> engine picker', () => {
     fireEvent.click(trigger);
 
     // Both engine options should now be visible in the dropdown
-    expect(screen.getByText('Gemini CLI')).toBeTruthy();
+    expect(screen.getByText('Cursor Agent')).toBeTruthy();
 
-    fireEvent.click(screen.getByText('Gemini CLI'));
-    expect(onEngineChange).toHaveBeenCalledWith('gemini-cli');
+    fireEvent.click(screen.getByText('Cursor Agent'));
+    expect(onEngineChange).toHaveBeenCalledWith('cursor-agent');
   });
 
-  it('reflects gemini-cli as the active engine when selected', () => {
-    renderTopBar({ sessionEngine: 'gemini-cli', sessionModel: 'gemini-2.5-pro' });
+  it('reflects cursor-agent as the active engine when selected', () => {
+    renderTopBar({ sessionEngine: 'cursor-agent', sessionModel: 'composer-2' });
     const trigger = screen.getByRole('button', { name: /select engine/i });
-    expect(trigger.textContent).toMatch(/Gemini CLI/);
+    expect(trigger.textContent).toMatch(/Cursor Agent/);
 
     fireEvent.click(trigger);
     // Active option should have the checkmark
-    const geminiOption = screen
+    const cursorOption = screen
       .getAllByRole('button')
-      .find((b) => b.textContent.includes('Gemini CLI') && b.textContent.includes('✓'));
-    expect(geminiOption).toBeTruthy();
+      .find((b) => b.textContent.includes('Cursor Agent') && b.textContent.includes('✓'));
+    expect(cursorOption).toBeTruthy();
+  });
+
+  it('does not list Gemini CLI as an engine option', () => {
+    renderTopBar({ sessionEngine: 'claude-code' });
+    const trigger = screen.getByRole('button', { name: /select engine/i });
+    fireEvent.click(trigger);
+    expect(screen.queryByText('Gemini CLI')).toBeNull();
+  });
+
+  it('shows only composer-2 as the model for cursor-agent', () => {
+    renderTopBar({ sessionEngine: 'cursor-agent', sessionModel: 'composer-2' });
+    // The model trigger surfaces by its title attribute
+    const modelTrigger = screen.getByTitle(/^Model: /);
+    fireEvent.click(modelTrigger);
+    expect(screen.getAllByText('Composer 2').length).toBeGreaterThan(0);
+    // No other cursor models (Codex variants, auto, composer-2-fast) should be rendered
+    expect(screen.queryByText(/Codex/)).toBeNull();
+    expect(screen.queryByText(/Composer 2 Fast/)).toBeNull();
+    expect(screen.queryByText(/^Auto$/)).toBeNull();
   });
 });

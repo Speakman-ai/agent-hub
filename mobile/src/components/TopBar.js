@@ -18,33 +18,9 @@ import { getActiveOrg } from '../utils/orgs';
 import { describeDetectionBadge } from '../utils/worktreeState';
 import { api } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
+import { ENGINE_OPTIONS, ENGINE_MODELS } from '../utils/engineOptions';
 import BugReportButton from './BugReportButton';
 import ForwardSessionModal, { filterForwardTargets } from './ForwardSessionModal';
-
-const ENGINE_OPTIONS = [
-  { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
-  { id: 'cursor-agent', label: 'Cursor Agent', color: '#10B981' },
-];
-
-const ENGINE_MODELS = {
-  'claude-code': [
-    { id: 'claude-opus-4-7', label: 'Opus 4.7', short: 'Opus' },
-    { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
-    { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
-  ],
-  'cursor-agent': [
-    { id: 'gpt-5.3-codex-high', label: 'Codex 5.3 High', short: 'C5.3-H' },
-    { id: 'gpt-5.3-codex', label: 'Codex 5.3', short: 'C5.3' },
-    { id: 'gpt-5.3-codex-low', label: 'Codex 5.3 Low', short: 'C5.3-L' },
-    { id: 'gpt-5.3-codex-fast', label: 'Codex 5.3 Fast', short: 'C5.3-F' },
-    { id: 'gpt-5.2-codex-high', label: 'Codex 5.2 High', short: 'C5.2-H' },
-    { id: 'gpt-5.2-codex', label: 'Codex 5.2', short: 'C5.2' },
-    { id: 'gpt-5.1-codex-max-high', label: 'Codex 5.1 Max High', short: 'C5.1MH' },
-    { id: 'composer-2', label: 'Composer 2', short: 'Comp2' },
-    { id: 'composer-2-fast', label: 'Composer 2 Fast', short: 'Comp2F' },
-    { id: 'auto', label: 'Auto', short: 'Auto' },
-  ],
-};
 
 export default function TopBar({ projectId, agentId } = {}) {
   const {
