@@ -184,6 +184,81 @@ describe('Designs API — cross-org isolation', () => {
   });
 });
 
+describe('Designs API — files listing (agent read-access)', () => {
+  it('GET /api/designs/:id/files returns just the seed index.html on a fresh design', async () => {
+    const created = await request.post('/api/designs').send({ name: 'Fresh' }).expect(201);
+    const id = (created.body as DesignBody).id;
+
+    const res = await request.get(`/api/designs/${id}/files`).expect(200);
+    const body = res.body as {
+      designId: string;
+      files: Array<{ path: string; size: number; mtime: string }>;
+    };
+    expect(body.designId).toBe(id);
+    expect(body.files.map((f) => f.path)).toEqual(['index.html']);
+    const seed = body.files[0];
+    expect(seed!.size).toBeGreaterThan(0);
+    expect(typeof seed!.mtime).toBe('string');
+    // mtime should be parseable as a real date
+    expect(Number.isNaN(Date.parse(seed!.mtime))).toBe(false);
+  });
+
+  it('GET /api/designs/:id/files recurses into subdirectories and reports size/mtime', async () => {
+    const created = await request.post('/api/designs').send({ name: 'Tree' }).expect(201);
+    const id = (created.body as DesignBody).id;
+
+    // Drop a few fake artifacts into the on-disk dir (same as what a Design
+    // Studio turn would do via the CLI). We go through the store to avoid
+    // hard-coding the dataDir in the test.
+    const { mkdirSync, writeFileSync } = await import('fs');
+    const path = await import('path');
+    const { designDir } = await import('../designs-store.js');
+    // Resolve the designs root by inspecting a known location: the store's
+    // public path helper requires the root, so pull it from the same module
+    // the routes use. The static mount test above proves the directory
+    // exists at `<dataDir>/designs/<id>`; we re-derive it from the server
+    // by asking for the project config endpoint's data dir indirectly via
+    // an env-agnostic approach — write alongside `index.html`, located by
+    // walking up from the known seed.
+    //
+    // Simplest: the test setup pins AGENT_HUB_DATA_DIR, so construct the
+    // path the same way index.ts does.
+    const dataDir = process.env.AGENT_HUB_DATA_DIR as string;
+    expect(dataDir).toBeTruthy();
+    const root = designDir(path.join(dataDir, 'designs'), id);
+
+    writeFileSync(path.join(root, 'styles.css'), 'body { color: red; }', 'utf-8');
+    writeFileSync(path.join(root, 'app.js'), 'console.log("hi");', 'utf-8');
+    mkdirSync(path.join(root, 'assets'), { recursive: true });
+    writeFileSync(path.join(root, 'assets', 'hero.png'), Buffer.from([137, 80, 78, 71]));
+
+    const res = await request.get(`/api/designs/${id}/files`).expect(200);
+    const body = res.body as {
+      designId: string;
+      files: Array<{ path: string; size: number; mtime: string }>;
+    };
+    const paths = body.files.map((f) => f.path).sort();
+    expect(paths).toEqual(['app.js', 'assets/hero.png', 'index.html', 'styles.css']);
+
+    const hero = body.files.find((f) => f.path === 'assets/hero.png');
+    expect(hero?.size).toBe(4);
+  });
+
+  it('GET /api/designs/:id/files returns 404 for unknown designs', async () => {
+    await request.get('/api/designs/nonexistent-id/files').expect(404);
+  });
+
+  it('GET /api/designs/:id/files is org-scoped', async () => {
+    const created = await request.post('/api/designs').send({ name: 'Org-B' }).expect(201);
+    const id = (created.body as DesignBody).id;
+
+    const { getDb } = await import('../db.js');
+    getDb().prepare("UPDATE designs SET org_id = 'other-org' WHERE id = ?").run(id);
+
+    await request.get(`/api/designs/${id}/files`).expect(404);
+  });
+});
+
 describe('Designs API — path-traversal guard', () => {
   it('rejects an invalid designId segment with 400', async () => {
     // A `..` inside the designId slot fails the [A-Za-z0-9-]+ regex and

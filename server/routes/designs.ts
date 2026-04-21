@@ -15,6 +15,7 @@ import {
   setLinkedProjects,
   deleteDesign,
   listDesignMessages,
+  listDesignFilesRecursive,
 } from '../designs-store.js';
 import { getDesignStatus } from '../design-chat.js';
 import { getActiveOrgId } from '../orgs.js';
@@ -101,6 +102,24 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
     deleteDesign(design.id, getDesignsRoot());
     broadcast({ type: 'design_deleted', designId: design.id });
     res.json({ ok: true });
+  });
+
+  /**
+   * Recursive listing of the design's artifact files. Lets regular (non-
+   * Design-Studio) agents discover what a design has produced without
+   * guessing paths or scraping the iframe — the URL-encoded output of each
+   * entry can be fetched via the existing `/design-files/:id/<path>` mount.
+   *
+   * Shape:
+   *   { files: [{ path: "index.html", size: 1234, mtime: "..." }, ...] }
+   *
+   * org-scoped through `getDesign()` so cross-org reads 404.
+   */
+  router.get('/api/designs/:id/files', (req: Request, res: Response) => {
+    const design = getDesign(req.params.id as string, lookup, getActiveOrgId());
+    if (!design) return res.status(404).json({ error: 'Design not found' });
+    const files = listDesignFilesRecursive(getDesignsRoot(), design.id);
+    res.json({ designId: design.id, files });
   });
 
   router.get('/api/designs/:id/messages', (req: Request, res: Response) => {

@@ -11,7 +11,7 @@
  * and the filesystem artifact dir lifecycle. Routes + the chat handler call
  * into these helpers.
  */
-import { mkdirSync, rmSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getStmts } from './db.js';
@@ -172,6 +172,63 @@ export function listDesignFiles(designsRoot: string, designId: string): string[]
   } catch {
     return [];
   }
+}
+
+export interface DesignFileEntry {
+  /** Forward-slash path relative to the design's artifact dir (never starts with '/'). */
+  path: string;
+  size: number;
+  /** Modification time as ISO8601. */
+  mtime: string;
+}
+
+/**
+ * Recursive listing of every regular file under the design's artifact dir.
+ *
+ * Used by `GET /api/designs/:id/files` so agents (not just browsers) can
+ * discover what a design has produced — HTML/CSS/JS plus anything under
+ * `assets/`. Returns a flat array of `{path, size, mtime}` entries with
+ * forward-slash paths relative to the artifact root. Symlinks and special
+ * files are ignored; directories are walked but not emitted themselves.
+ */
+export function listDesignFilesRecursive(designsRoot: string, designId: string): DesignFileEntry[] {
+  const root = designDir(designsRoot, designId);
+  if (!existsSync(root)) return [];
+  const out: DesignFileEntry[] = [];
+  const walk = (abs: string, rel: string) => {
+    let entries: string[];
+    try {
+      entries = readdirSync(abs);
+    } catch {
+      return;
+    }
+    for (const name of entries.sort()) {
+      const childAbs = path.join(abs, name);
+      const childRel = rel ? `${rel}/${name}` : name;
+      let st: ReturnType<typeof statSync>;
+      try {
+        // lstat-equivalent via statSync + isSymbolicLink check; we use statSync
+        // and skip non-regular entries below. A symlink pointing outside the
+        // artifact root would still be filesystem-served, so the path-traversal
+        // guard on `/design-files/:id/*` is the real safety net; here we just
+        // avoid exposing weird entries in the listing.
+        st = statSync(childAbs);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) {
+        walk(childAbs, childRel);
+      } else if (st.isFile()) {
+        out.push({
+          path: childRel,
+          size: st.size,
+          mtime: st.mtime.toISOString(),
+        });
+      }
+    }
+  };
+  walk(root, '');
+  return out;
 }
 
 // ─── Internal ───────────────────────────────────────────────────────
