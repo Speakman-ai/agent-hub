@@ -101,6 +101,7 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
       cron_id: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      deleted_at: null,
     };
   }
 

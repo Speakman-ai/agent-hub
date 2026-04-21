@@ -51,7 +51,11 @@ describe('GET /api/sessions/:sessionId/progress', () => {
     expect(res.body.steps[1].finishedAt ?? null).toBeNull();
   });
 
-  it('cleans up progress rows when the session is deleted', async () => {
+  it('retains progress rows when the session is archived (soft-deleted) so restore preserves the panel', async () => {
+    // DELETE is now a soft-delete — progress rows are intentionally preserved
+    // so `POST /api/sessions/:id/restore` can bring the ProgressPanel back to
+    // its prior state. The 7-day purge (bulk DELETE) is what actually reclaims
+    // these rows.
     const session = (await createSession()) as { id: string };
     const stmts = getStmts();
     stmts.addSessionProgress.run(session.id, null, 'X', 'started', 1, null);
@@ -60,6 +64,10 @@ describe('GET /api/sessions/:sessionId/progress', () => {
     expect((stmts.getSessionProgress.all(session.id) as unknown[]).length).toBe(1);
 
     await request.delete(`/api/sessions/${session.id}`).expect(200);
-    expect((stmts.getSessionProgress.all(session.id) as unknown[]).length).toBe(0);
+    expect((stmts.getSessionProgress.all(session.id) as unknown[]).length).toBe(1);
+
+    // After restore, rows are still there.
+    await request.post(`/api/sessions/${session.id}/restore`).expect(200);
+    expect((stmts.getSessionProgress.all(session.id) as unknown[]).length).toBe(1);
   });
 });

@@ -284,7 +284,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.delete('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
-    const sessions = stmts.getSessions.all(req.params.agentId) as SessionRow[];
+    const sessions = stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[];
     let deleted = 0;
     for (const session of sessions) {
       const proc = activeProcesses.get(session.id);
@@ -302,7 +302,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.delete('/api/agents/:agentId/sessions/inactive', (req: Request, res: Response) => {
-    const sessions = stmts.getSessions.all(req.params.agentId) as SessionRow[];
+    const sessions = stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[];
     let deleted = 0;
     for (const session of sessions) {
       if (activeProcesses.has(session.id)) continue;
@@ -315,20 +315,70 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json({ ok: true, deleted });
   });
 
+  // Single-session DELETE is a *soft* delete (archive). The row is marked with
+  // `deleted_at` so it disappears from the live sidebar but stays recoverable
+  // via POST /api/sessions/:sessionId/restore for 7 days. We deliberately
+  // leave the worktree on disk so a restore can reattach the same checkout —
+  // bulk `DELETE /api/agents/:agentId/sessions[/inactive]` and the 7-day purge
+  // are what actually reclaim worktree space.
   router.delete('/api/sessions/:sessionId', (req: Request, res: Response) => {
-    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
-    if (session?.worktree_path) {
-      removeWorkspace(session.worktree_path);
+    const sessionId = req.params.sessionId as string;
+    const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    // Kill any in-flight CLI process so the archived session isn't still
+    // streaming output into a hidden row.
+    const proc = activeProcesses.get(sessionId);
+    if (proc) {
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        /* best-effort */
+      }
+      activeProcesses.delete(sessionId);
     }
-    // Clean up session_progress rows so dead sessions don't leak rows into the
-    // table (session_progress doesn't have an FK cascade).
+
+    stmts.softDeleteSession.run(sessionId);
+
+    // Broadcast `session_deleted` for cross-tab sync — the client treats
+    // archive identically to a hard delete on the live list.
     try {
-      stmts.deleteSessionProgress.run(req.params.sessionId);
+      broadcast({ type: 'session_deleted', sessionId });
     } catch {
       /* best-effort */
     }
-    stmts.deleteSession.run(req.params.sessionId);
-    res.json({ ok: true });
+
+    res.json({ ok: true, archived: true });
+  });
+
+  // Archived (soft-deleted) sessions for a given agent within the 7-day
+  // recovery window, newest first. Powers the sidebar "Archived" section.
+  router.get('/api/agents/:agentId/archived-sessions', (req: Request, res: Response) => {
+    const rows = stmts.getArchivedSessionsByAgent.all(req.params.agentId) as SessionRow[];
+    res.json(rows);
+  });
+
+  // Restore a soft-deleted session. 404 when the row either doesn't exist or
+  // isn't archived — the client uses the 404 to clear stale entries from the
+  // Archived sidebar.
+  router.post('/api/sessions/:sessionId/restore', (req: Request, res: Response) => {
+    const sessionId = req.params.sessionId as string;
+    const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!existing) return res.status(404).json({ error: 'Session not found' });
+    if (!existing.deleted_at) {
+      return res.status(409).json({ error: 'Session is not archived' });
+    }
+
+    stmts.restoreArchivedSession.run(sessionId);
+    const restored = stmts.getSession.get(sessionId) as SessionRow;
+
+    try {
+      broadcast({ type: 'session_restored', sessionId, session: restored });
+    } catch {
+      /* best-effort */
+    }
+
+    res.json(restored);
   });
 
   router.patch('/api/sessions/:sessionId', (req: Request, res: Response) => {

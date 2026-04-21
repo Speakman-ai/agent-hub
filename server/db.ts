@@ -836,6 +836,21 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  // Soft-delete ("archive") column. When set, the session is hidden from the
+  // live `getSessions` list but remains in the DB for up to 7 days so users
+  // can restore it via POST /api/sessions/:sessionId/restore.
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN deleted_at TEXT DEFAULT NULL');
+  } catch (_e) {
+    /* already exists */
+  }
+
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_deleted_at ON sessions(deleted_at)');
+  } catch (_e) {
+    /* already exists */
+  }
+
   try {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN pr_url TEXT');
   } catch (_e) {
@@ -1272,12 +1287,44 @@ function initDb(dataDir: string): void {
     createSession: db.prepare(
       'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ),
-    getSessions: db.prepare('SELECT * FROM sessions WHERE agent_id = ? ORDER BY updated_at DESC'),
+    // Live list excludes soft-deleted rows. Callers that need archived rows
+    // use `getArchivedSessionsByAgent`. `getSession` stays loose — many code
+    // paths (WebSocket, checkpoint lookups, active-process cleanup) legitimately
+    // need to look up a row regardless of archive status.
+    getSessions: db.prepare(
+      'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC',
+    ),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
     updateSessionName: db.prepare(
       "UPDATE sessions SET name = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     deleteSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
+    // Soft-delete: mark the row archived. Worktree is intentionally preserved
+    // until hard-delete so restore can reattach the same branch/checkout.
+    softDeleteSession: db.prepare(
+      "UPDATE sessions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+    ),
+    // Restore: clear deleted_at so the session rejoins the live list. Bumps
+    // updated_at so the row surfaces at the top of the sidebar after restore.
+    restoreArchivedSession: db.prepare(
+      "UPDATE sessions SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ? AND deleted_at IS NOT NULL",
+    ),
+    // Archived sessions within the 7-day recovery window, newest first.
+    // Rows older than 7 days are excluded so the UI doesn't offer to restore
+    // things that are already past the purge horizon; a follow-up cron can
+    // hard-delete them.
+    // All sessions for an agent regardless of archive status. Used by bulk
+    // DELETE endpoints that need to hard-delete everything (live + archived).
+    getAllSessionsByAgent: db.prepare(
+      'SELECT * FROM sessions WHERE agent_id = ? ORDER BY updated_at DESC',
+    ),
+    getArchivedSessionsByAgent: db.prepare(
+      `SELECT * FROM sessions
+       WHERE agent_id = ?
+         AND deleted_at IS NOT NULL
+         AND deleted_at >= datetime('now', '-7 days')
+       ORDER BY deleted_at DESC`,
+    ),
     touchSession: db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?"),
 
     // Sessions - engine & model

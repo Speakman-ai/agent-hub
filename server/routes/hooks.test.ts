@@ -20,6 +20,7 @@ function baseSession(overrides: Partial<SessionRow>): SessionRow {
     cron_id: null,
     created_at: '',
     updated_at: '',
+    deleted_at: null,
     ...overrides,
   };
 }

@@ -20,6 +20,8 @@ export interface SessionRow {
   cron_id: number | null;
   created_at: string;
   updated_at: string;
+  /** Soft-delete timestamp. NULL = active; non-NULL = archived (hidden from live list, recoverable for 7 days). */
+  deleted_at: string | null;
 }
 
 export interface MessageRow {
@@ -646,6 +648,10 @@ export interface Stmts {
   getSession: Stmt;
   updateSessionName: Stmt;
   deleteSession: Stmt;
+  softDeleteSession: Stmt;
+  restoreArchivedSession: Stmt;
+  getAllSessionsByAgent: Stmt;
+  getArchivedSessionsByAgent: Stmt;
   touchSession: Stmt;
   updateSessionEngine: Stmt;
   updateSessionModel: Stmt;
