@@ -281,6 +281,118 @@ describe('buildEnrichedPrompt — first message gating', () => {
   });
 });
 
+describe('buildEnrichedPrompt — agent identity anchoring', () => {
+  beforeEach(() => {
+    mkdirSync(tmpBase, { recursive: true });
+    mkdirSync(path.join(tmpBase, 'skills'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  it('starts the prompt with a "# You are <name>" identity header', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject(),
+      makeAgent({ id: 'pirate-bot', name: 'Pirate Bot' }),
+      { isFirstMessage: true },
+    );
+    // The very first line must anchor the agent's name and id so that
+    // downstream shared-context files (e.g. AGENTS.md) cannot silently
+    // reframe who this agent is.
+    expect(prompt.startsWith('# You are Pirate Bot')).toBe(true);
+    expect(prompt).toMatch(/Agent id: `pirate-bot`/);
+  });
+
+  it('falls back to the agent id when name is empty', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject(),
+      makeAgent({ id: 'no-name-agent', name: '' }),
+      { isFirstMessage: true },
+    );
+    expect(prompt.startsWith('# You are no-name-agent')).toBe(true);
+  });
+
+  it('appends an Identity Reminder after AGENTS.md to prevent role confusion', () => {
+    // Simulate the real-world failure mode: the project's AGENTS.md lists
+    // several named team roles. A newly-created agent whose own systemPrompt
+    // is short would otherwise latch onto one of those roles as its
+    // identity. The reminder must re-pin the agent's own name/id after the
+    // shared-context file has been injected.
+    writeFileSync(
+      path.join(tmpBase, 'AGENTS.md'),
+      '# Team\n\n### Lead (team-lead)\nCoordinator.\n\n### Frontend (team-frontend)\nOwns UI.',
+    );
+    const prompt = buildEnrichedPrompt(
+      makeProject(),
+      makeAgent({ id: 'pirate-bot', name: 'Pirate Bot' }),
+      { isFirstMessage: true },
+    );
+    expect(prompt).toContain('## AGENTS.md');
+    expect(prompt).toContain('## Identity Reminder');
+    const agentsIdx = prompt.indexOf('## AGENTS.md');
+    const reminderIdx = prompt.indexOf('## Identity Reminder');
+    // Reminder must come AFTER AGENTS.md, not before.
+    expect(reminderIdx).toBeGreaterThan(agentsIdx);
+    // Reminder must name the agent by name and id.
+    expect(prompt).toMatch(/You are \*\*Pirate Bot\*\* \(agent id: `pirate-bot`\)/);
+    expect(prompt).toMatch(/do not impersonate/i);
+  });
+
+  it('skips the Identity Reminder when no AGENTS.md is present', () => {
+    // If there is no shared team file, there is no role-confusion risk
+    // and emitting the reminder would just waste tokens.
+    const prompt = buildEnrichedPrompt(
+      makeProject(),
+      makeAgent({ id: 'pirate-bot', name: 'Pirate Bot' }),
+      { isFirstMessage: true },
+    );
+    expect(prompt).not.toContain('## Identity Reminder');
+  });
+
+  it('reminder references IDENTITY.md when present', () => {
+    writeFileSync(path.join(tmpBase, 'AGENTS.md'), '# Team\n\n### Lead\nCoordinator.');
+    // Mocked contextFilePath returns any file in tmpBase that exists;
+    // IDENTITY.md is normally per-agent, but the mock treats all context
+    // files as tmpBase-relative, which is enough to exercise the branch.
+    writeFileSync(path.join(tmpBase, 'IDENTITY.md'), 'I am a pirate.');
+    const prompt = buildEnrichedPrompt(
+      makeProject(),
+      makeAgent({ id: 'pirate-bot', name: 'Pirate Bot' }),
+      { isFirstMessage: true },
+    );
+    expect(prompt).toContain('## Identity Reminder');
+    expect(prompt).toMatch(/system prompt and IDENTITY\.md/);
+  });
+
+  it('identity anchor is present on subsequent messages too (role persistence)', () => {
+    // The role anchor must NOT be gated on isFirstMessage — the agent
+    // needs to know who it is on every turn, otherwise a long session
+    // could drift onto a different role mid-conversation.
+    const prompt = buildEnrichedPrompt(
+      makeProject(),
+      makeAgent({ id: 'pirate-bot', name: 'Pirate Bot' }),
+      { isFirstMessage: false },
+    );
+    expect(prompt.startsWith('# You are Pirate Bot')).toBe(true);
+  });
+
+  it('includes the agent role in the header when set', () => {
+    const prompt = buildEnrichedPrompt(
+      makeProject(),
+      makeAgent({ id: 'lead-1', name: 'Lead One', role: 'lead' }),
+      { isFirstMessage: true },
+    );
+    expect(prompt).toMatch(/Role: lead/);
+  });
+
+  it('still includes the agent system prompt body below the header', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: false });
+    // The original systemPrompt body must survive the new anchor.
+    expect(prompt).toContain('You are a test agent.');
+  });
+});
+
 describe('buildEnrichedPrompt — server owns PR creation', () => {
   const gitTmp = path.join(os.tmpdir(), `prompt-auto-test-${Date.now()}`);
 

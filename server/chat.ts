@@ -192,12 +192,24 @@ export function buildEnrichedPrompt(
     } as ProjectWithCommands;
   }
 
-  let prompt: string = agent.systemPrompt || '';
+  // Identity anchor — name + id + role at the very top of the prompt.
+  // Without this, newly-created agents whose project has an AGENTS.md
+  // describing the team (e.g. "agent-hub-lead", "hub-frontend", …) tend
+  // to latch onto one of the listed roles instead of their own
+  // configured identity. The anchor pins "who you are" before any
+  // shared project context can reframe it.
+  const displayName = (agent.name || '').trim() || agent.id;
+  const roleSuffix = agent.role ? ` · Role: ${agent.role}` : '';
+  const identityAnchor = `# You are ${displayName}\n\nAgent id: \`${agent.id}\`${roleSuffix}\n\n`;
+  const systemPromptBody = (agent.systemPrompt || '').trim();
+  let prompt: string = identityAnchor + systemPromptBody;
   if (!project.ahw) return prompt;
 
   const paths = resolveProjectPaths(project as Project, agent as Agent);
 
   const contextOrder = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md'];
+  let agentsMdIncluded = false;
+  let identityMdIncluded = false;
   for (const filename of contextOrder) {
     const filePath = contextFilePath(paths, filename);
     if (filePath && existsSync(filePath)) {
@@ -205,11 +217,26 @@ export function buildEnrichedPrompt(
         const content = readFileSync(filePath, 'utf-8');
         if (content.trim()) {
           prompt += `\n\n## ${filename}\n${content}`;
+          if (filename === 'AGENTS.md') agentsMdIncluded = true;
+          if (filename === 'IDENTITY.md') identityMdIncluded = true;
         }
       } catch {
         /* skip */
       }
     }
+  }
+
+  // Identity reaffirmation — only needed when AGENTS.md was loaded.
+  // AGENTS.md describes the project's agent team, and newly-created
+  // agents routinely pattern-match onto one of those team roles
+  // instead of following the system prompt / IDENTITY.md above.
+  // Re-pin the identity after the shared context so the model's last
+  // instruction on "who am I" is the right one.
+  if (agentsMdIncluded) {
+    const identitySources = identityMdIncluded
+      ? 'your system prompt and IDENTITY.md'
+      : 'your system prompt';
+    prompt += `\n\n## Identity Reminder\nYou are **${displayName}** (agent id: \`${agent.id}\`). The team descriptions in AGENTS.md above describe the project's agent team — they are context about your collaborators, **not** a role for you to adopt. Your own identity is defined by ${identitySources} at the top of this message. Do not impersonate any other agent listed in AGENTS.md unless that agent's id matches \`${agent.id}\`.`;
   }
 
   {
