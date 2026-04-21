@@ -1,0 +1,237 @@
+/**
+ * github-oauth.ts — GitHub user-to-server OAuth for "Sign in with GitHub".
+ *
+ * This is the user-identity half of GitHub auth, separate from the bot
+ * identity in `github-app.ts`:
+ *   - `github-app.ts` issues *installation* tokens (bot acts on repos it is
+ *     installed on) — used for formal PR reviews.
+ *   - `github-oauth.ts` issues *user* tokens (acts as the individual human
+ *     that signed in) — used for list/merge/close/comment as `@user`.
+ *
+ * Both reuse the *same* GitHub App registration — GitHub Apps can issue
+ * user-to-server tokens via the OAuth endpoints without the App being
+ * installed anywhere. The `clientId`/`clientSecret` come from the App's
+ * OAuth credentials (stored in `AppConfig.githubApp`).
+ *
+ * Tokens expire in 8 hours by default; refresh tokens in 6 months.
+ * Callers refresh transparently via `github-connections-store`.
+ *
+ * Docs (verified 2026-04-20):
+ *   https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
+ *   https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens
+ */
+
+export interface GitHubOAuthCredentials {
+  clientId: string;
+  clientSecret: string;
+}
+
+export interface GitHubTokenResponse {
+  access_token: string;
+  expires_in: number; // seconds; typically 28800 (8h)
+  refresh_token: string;
+  refresh_token_expires_in: number; // seconds; typically 15724800 (6mo)
+  token_type: 'bearer';
+  scope: string;
+}
+
+export interface GitHubUserInfo {
+  id: number;
+  login: string;
+  name: string | null;
+  avatar_url: string | null;
+  email: string | null;
+}
+
+/**
+ * Build the GitHub authorize URL the user's browser should hit to start
+ * the OAuth flow. The `state` is a short-lived signed token the caller
+ * mints via `server/jwt.ts` — it carries the hub userId and is verified
+ * on callback to prevent CSRF.
+ *
+ * We deliberately do NOT request `scope=` — GitHub Apps ignore the scope
+ * parameter and instead use the App's installed permissions. Passing a
+ * scope string would be a no-op at best and confusing at worst.
+ */
+export function buildAuthorizeUrl(opts: {
+  clientId: string;
+  redirectUri: string;
+  state: string;
+  /**
+   * If provided, GitHub will prompt only this specific login. Useful for
+   * "reconnect as a different account" flows. Usually left undefined.
+   */
+  login?: string;
+}): string {
+  const params = new URLSearchParams({
+    client_id: opts.clientId,
+    redirect_uri: opts.redirectUri,
+    state: opts.state,
+  });
+  if (opts.login) params.set('login', opts.login);
+  return `https://github.com/login/oauth/authorize?${params.toString()}`;
+}
+
+/**
+ * Exchange an OAuth code (delivered to our callback as `?code=...`) for
+ * a user access token + refresh token. Throws if GitHub returns an error.
+ *
+ * GitHub returns 200 with an `error` field on failures rather than a
+ * non-2xx status, so we have to check both paths.
+ */
+export async function exchangeCodeForToken(opts: {
+  credentials: GitHubOAuthCredentials;
+  code: string;
+  redirectUri: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GitHubTokenResponse> {
+  const f = opts.fetchImpl ?? fetch;
+  const body = new URLSearchParams({
+    client_id: opts.credentials.clientId,
+    client_secret: opts.credentials.clientSecret,
+    code: opts.code,
+    redirect_uri: opts.redirectUri,
+  });
+  const res = await f('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`GitHub OAuth token exchange failed (${res.status}): ${text}`);
+  }
+  const json = (await res.json()) as Partial<GitHubTokenResponse> & {
+    error?: string;
+    error_description?: string;
+  };
+  if (json.error) {
+    throw new Error(`GitHub OAuth error: ${json.error_description || json.error}`);
+  }
+  if (!json.access_token || !json.refresh_token) {
+    throw new Error('GitHub OAuth response missing access_token or refresh_token');
+  }
+  return json as GitHubTokenResponse;
+}
+
+/**
+ * Refresh an expiring/expired user access token using its paired
+ * refresh_token. The refresh_token is single-use — GitHub returns a new
+ * refresh_token in the response that callers MUST persist in place of
+ * the old one. Calling this twice with the same refresh_token will fail
+ * the second time.
+ */
+export async function refreshUserToken(opts: {
+  credentials: GitHubOAuthCredentials;
+  refreshToken: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GitHubTokenResponse> {
+  const f = opts.fetchImpl ?? fetch;
+  const body = new URLSearchParams({
+    client_id: opts.credentials.clientId,
+    client_secret: opts.credentials.clientSecret,
+    grant_type: 'refresh_token',
+    refresh_token: opts.refreshToken,
+  });
+  const res = await f('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`GitHub OAuth refresh failed (${res.status}): ${text}`);
+  }
+  const json = (await res.json()) as Partial<GitHubTokenResponse> & {
+    error?: string;
+    error_description?: string;
+  };
+  if (json.error) {
+    throw new Error(`GitHub OAuth refresh error: ${json.error_description || json.error}`);
+  }
+  if (!json.access_token || !json.refresh_token) {
+    throw new Error('GitHub OAuth refresh response missing tokens');
+  }
+  return json as GitHubTokenResponse;
+}
+
+/**
+ * Fetch the authenticated user's profile. We call this immediately after
+ * `exchangeCodeForToken` so we can persist the `login` alongside the
+ * token — knowing "this hub user is @speakmanra on GitHub" is what makes
+ * "acting as the user" meaningful.
+ */
+export async function fetchUserInfo(opts: {
+  accessToken: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GitHubUserInfo> {
+  const f = opts.fetchImpl ?? fetch;
+  const res = await f('https://api.github.com/user', {
+    headers: {
+      Authorization: `Bearer ${opts.accessToken}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`GitHub /user fetch failed (${res.status}): ${text}`);
+  }
+  const json = (await res.json()) as Partial<GitHubUserInfo>;
+  if (typeof json.id !== 'number' || typeof json.login !== 'string') {
+    throw new Error('GitHub /user response missing id or login');
+  }
+  return {
+    id: json.id,
+    login: json.login,
+    name: json.name ?? null,
+    avatar_url: json.avatar_url ?? null,
+    email: json.email ?? null,
+  };
+}
+
+/**
+ * Make a user-authenticated GitHub REST request. This is the user-tier
+ * analog of `githubApiRequest` in `github-app.ts`. The `token` here is
+ * the user access token, not an installation token.
+ *
+ * Callers should already have refreshed the token via the connections
+ * store before calling this.
+ */
+export async function githubUserApiRequest<T = Record<string, unknown>>(opts: {
+  accessToken: string;
+  endpoint: string;
+  method?: string;
+  body?: Record<string, unknown>;
+  fetchImpl?: typeof fetch;
+}): Promise<T> {
+  const f = opts.fetchImpl ?? fetch;
+  const url = opts.endpoint.startsWith('https://')
+    ? opts.endpoint
+    : `https://api.github.com${opts.endpoint}`;
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${opts.accessToken}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  const res = await f(url, {
+    method: opts.method || 'GET',
+    headers,
+    ...(opts.body && { body: JSON.stringify(opts.body) }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(
+      `GitHub user-API ${opts.method || 'GET'} ${opts.endpoint} failed (${res.status}): ${text}`,
+    );
+  }
+  if (res.status === 204) return {} as T;
+  return (await res.json()) as T;
+}

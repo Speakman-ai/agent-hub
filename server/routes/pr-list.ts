@@ -5,8 +5,13 @@
  * GET  /api/projects/:projectId/pulls/:number     — full detail: PR + reviews + check-runs + comments
  *
  * Auth chain mirrors routes/pr-actions.ts:
- *   1. GitHub App installation (if configured for the repo's owner)
- *   2. `gh` CLI fallback (optionally with `GH_TOKEN` from `botGithubToken`)
+ *   1. User OAuth token (if the calling user has "Sign in with GitHub" configured)
+ *   2. GitHub App installation (if configured for the repo's owner)
+ *   3. `gh` CLI fallback (optionally with `GH_TOKEN` from `botGithubToken`)
+ *
+ * The user-token tier lets non-admins use the PR viewer without
+ * requiring the GitHub App to be installed on their org — a hard
+ * blocker for users whose org admin won't approve the install.
  *
  * This is a read-only surface — no mutating actions live here. Merge/close/review
  * continue to live in pr-actions.ts so that write surfaces stay consolidated.
@@ -17,6 +22,9 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { RouteDeps, AppConfig, GitHubAppConfig } from '../types.js';
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
+import { githubUserApiRequest } from '../github-oauth.js';
+import { getActiveAccessToken } from '../github-connections-store.js';
+import type { AuthenticatedRequest } from '../auth.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
 
 const execFileAsync = promisify(execFile);
@@ -114,6 +122,34 @@ async function callApp<T>(config: AppConfig, owner: string, path: string): Promi
   return data as unknown as T;
 }
 
+/**
+ * Resolve a user access token for the caller (if any). Used by
+ * pr-list and pr-detail read endpoints.
+ *
+ * Returns null when:
+ *   - the request wasn't authenticated with a JWT (e.g. the apiKey path,
+ *     where there is no owning user)
+ *   - the user hasn't connected GitHub
+ *   - the server has no OAuth credentials configured
+ *   - the stored refresh token is dead
+ */
+export async function resolveUserToken(req: Request, config: AppConfig): Promise<string | null> {
+  const areq = req as AuthenticatedRequest;
+  if (!areq.authUserId) return null;
+  const app = config.githubApp;
+  const creds =
+    app?.clientId && app?.clientSecret
+      ? { clientId: app.clientId, clientSecret: app.clientSecret }
+      : null;
+  return getActiveAccessToken(areq.authUserId, creds);
+}
+
+async function callUser<T>(req: Request, config: AppConfig, path: string): Promise<T | null> {
+  const token = await resolveUserToken(req, config);
+  if (!token) return null;
+  return githubUserApiRequest<T>({ accessToken: token, endpoint: path });
+}
+
 async function callCli(config: AppConfig, args: string[]): Promise<string> {
   const env = botGhEnv(config);
   const { stdout } = await execFileAsync('gh', args, {
@@ -150,10 +186,29 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
       if (!Number.isFinite(limit) || limit <= 0) limit = DEFAULT_LIST_LIMIT;
       if (limit > MAX_LIST_LIMIT) limit = MAX_LIST_LIMIT;
 
+      const listPath = `/repos/${repo.owner}/${repo.repo}/pulls?state=${state}&per_page=${limit}&sort=updated&direction=desc`;
+
+      // Tier 0: User OAuth — prefer the caller's own identity so listings
+      // respect their repo visibility and "My PRs" can be filtered
+      // server-side without App install.
+      try {
+        const userData = await callUser<Array<Record<string, unknown>>>(req, config, listPath);
+        if (Array.isArray(userData)) {
+          return res.json({
+            repo: `${repo.owner}/${repo.repo}`,
+            state,
+            source: 'user-oauth',
+            pulls: userData.map(normalizePrSummary),
+          });
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[PR List] User OAuth list failed, trying GitHub App: ${msg.split('\n')[0]}`);
+      }
+
       // Tier 1: GitHub App
       try {
-        const appPath = `/repos/${repo.owner}/${repo.repo}/pulls?state=${state}&per_page=${limit}&sort=updated&direction=desc`;
-        const appData = await callApp<Array<Record<string, unknown>>>(config, repo.owner, appPath);
+        const appData = await callApp<Array<Record<string, unknown>>>(config, repo.owner, listPath);
         if (Array.isArray(appData)) {
           return res.json({
             repo: `${repo.owner}/${repo.repo}`,
@@ -243,7 +298,10 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
       }
 
       try {
-        const detail = await fetchPrDetail(config, repo, num);
+        const userToken = await resolveUserToken(req, config);
+        const detail = await fetchPrDetail(config, repo, num, {
+          userAccessToken: userToken,
+        });
         return res.json({
           repo: `${repo.owner}/${repo.repo}`,
           ...detail,

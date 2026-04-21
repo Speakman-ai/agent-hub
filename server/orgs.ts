@@ -173,6 +173,31 @@ export function initOrgsDb(): void {
     orgsDb.exec('ALTER TABLE orgs ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
   }
 
+  // GitHub user OAuth connection (per-user). Columns are added only if
+  // missing so upgrades from any earlier Phase-3 schema pick them up
+  // transparently. All six columns are nullable — an unconnected user
+  // has NULL in every GitHub-related column.
+  //
+  // Why columns on `users` rather than a separate table: the 1:1
+  // relationship is strict (a hub user links to exactly one GitHub
+  // identity), the row is queried on every PR-list/merge call, and
+  // keeping it inline avoids a JOIN hot-path.
+  const userGithubColumns: Array<{ name: string; ddl: string }> = [
+    { name: 'github_login', ddl: 'TEXT' },
+    { name: 'github_user_token', ddl: 'TEXT' },
+    { name: 'github_token_expires_at', ddl: 'TEXT' },
+    { name: 'github_refresh_token', ddl: 'TEXT' },
+    { name: 'github_refresh_expires_at', ddl: 'TEXT' },
+    { name: 'github_connected_at', ddl: 'TEXT' },
+  ];
+  for (const col of userGithubColumns) {
+    try {
+      orgsDb.prepare(`SELECT ${col.name} FROM users LIMIT 1`).get();
+    } catch {
+      orgsDb.exec(`ALTER TABLE users ADD COLUMN ${col.name} ${col.ddl}`);
+    }
+  }
+
   orgsStmts = {
     getAll: orgsDb.prepare('SELECT * FROM orgs ORDER BY position ASC, created_at ASC'),
     getById: orgsDb.prepare('SELECT * FROM orgs WHERE id = ?'),

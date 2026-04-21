@@ -25,6 +25,10 @@ const PUBLIC_PATHS: readonly string[] = [
   // ── Auth bootstrap endpoints ─────────────────────────────────
   '/api/auth/status',
   '/api/auth/login',
+  // GitHub OAuth callback — landed on via a cross-origin redirect from
+  // github.com, so no bearer token is sent. Identity is carried by a
+  // signed `state` JWT validated inside the route handler itself.
+  '/api/auth/github/callback',
 ];
 
 /**

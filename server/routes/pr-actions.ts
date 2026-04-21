@@ -21,6 +21,8 @@ import type {
   ReviewLogRow,
 } from '../types.js';
 import { githubApiRequest, resolveInstallationId } from '../github-app.js';
+import { githubUserApiRequest } from '../github-oauth.js';
+import { resolveUserToken } from './pr-list.js';
 import {
   DEFAULT_REVIEWER_PHASES,
   completeCheckRun,
@@ -211,7 +213,45 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       return res.status(400).json({ error: 'Invalid merge method' });
     }
 
-    // Try GitHub App first
+    // Tier 0: the caller's user OAuth token — merge shows up as the
+    // human in the "merged by" attribution, which is the behavior we
+    // want by default. Only applies when the user has linked GitHub.
+    try {
+      const userToken = await resolveUserToken(req, config);
+      if (userToken) {
+        await githubUserApiRequest({
+          accessToken: userToken,
+          endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/merge`,
+          method: 'PUT',
+          body: { merge_method: mergeMethod },
+        });
+        // Best-effort branch deletion using the same user token.
+        try {
+          const prData = await githubUserApiRequest<{ head?: { ref?: string } }>({
+            accessToken: userToken,
+            endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
+          });
+          if (prData.head?.ref) {
+            await githubUserApiRequest({
+              accessToken: userToken,
+              endpoint: `/repos/${pr.owner}/${pr.repo}/git/refs/heads/${prData.head.ref}`,
+              method: 'DELETE',
+            });
+          }
+        } catch {
+          /* branch deletion is best-effort */
+        }
+        return res.json({ ok: true, method: 'user-oauth', pr: pr.number });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (/already.*merged/i.test(msg)) {
+        return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
+      }
+      console.warn(`[PR Action] User OAuth merge failed, trying GitHub App: ${msg.split('\n')[0]}`);
+    }
+
+    // Tier 1: GitHub App
     if (hasGitHubApp(config)) {
       try {
         const app = config.githubApp as GitHubAppConfig;
@@ -248,7 +288,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : '';
-        if (/already.*merged|405/i.test(msg)) {
+        if (/already.*merged/i.test(msg)) {
           return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
         }
         console.warn(`[PR Action] GitHub App merge failed, trying gh CLI: ${msg.split('\n')[0]}`);
@@ -274,7 +314,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       return res.json({ ok: true, method: 'gh-cli', pr: pr.number });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (/already.*merged|405/i.test(msg)) {
+      if (/already.*merged/i.test(msg)) {
         return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
       }
       return res.status(500).json({ error: `Merge failed: ${msg.split('\n')[0]}` });
@@ -290,7 +330,24 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       return res.status(400).json({ error: 'Invalid PR URL' });
     }
 
-    // Try GitHub App first
+    // Tier 0: user OAuth — close attributes to the human.
+    try {
+      const userToken = await resolveUserToken(req, config);
+      if (userToken) {
+        await githubUserApiRequest({
+          accessToken: userToken,
+          endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
+          method: 'PATCH',
+          body: { state: 'closed' },
+        });
+        return res.json({ ok: true, method: 'user-oauth', pr: pr.number });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      console.warn(`[PR Action] User OAuth close failed, trying GitHub App: ${msg.split('\n')[0]}`);
+    }
+
+    // Tier 1: GitHub App
     if (hasGitHubApp(config)) {
       try {
         const app = config.githubApp as GitHubAppConfig;

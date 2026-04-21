@@ -24,7 +24,7 @@ import { Router, Request, Response } from 'express';
 import type { RouteDeps, SessionRow } from '../types.js';
 import { defaultModelForEngine } from '../config.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
-import { parseRepoFullName } from './pr-list.js';
+import { parseRepoFullName, resolveUserToken } from './pr-list.js';
 import { AUTOFIX_KINDS, loadAutofixTemplate, type AutofixKind } from '../prompts/autofix/index.js';
 
 /** CLI (`CONFLICTING`) and App (`dirty`, `conflicting`) values both get caught here. */
@@ -200,7 +200,8 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       // Fetch PR snapshot — bubbles up as 502 on failure so the UI can retry.
       let detail;
       try {
-        detail = await fetchPrDetail(config, repo, num);
+        const userToken = await resolveUserToken(req, config);
+        detail = await fetchPrDetail(config, repo, num, { userAccessToken: userToken });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         // If the fetch failed with a 404-ish message, surface that as 404

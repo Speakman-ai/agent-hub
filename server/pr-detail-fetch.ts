@@ -1,7 +1,6 @@
 /**
- * pr-detail-fetch.ts — Shared helper that fetches full PR detail from GitHub,
- * preferring the GitHub App installation when configured and falling back to
- * the `gh` CLI when the App is unavailable or errors.
+ * pr-detail-fetch.ts — Shared helper that fetches full PR detail from GitHub.
+ * Auth chain: User OAuth (optional) → GitHub App → `gh` CLI fallback.
  *
  * Extracted from `routes/pr-list.ts` so the same App→CLI fallback ladder can
  * be reused by `routes/pr-resolve.ts` without duplicating ~140 lines of
@@ -17,6 +16,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { AppConfig, GitHubAppConfig } from './types.js';
 import { githubApiRequest, resolveInstallationId } from './github-app.js';
+import { githubUserApiRequest } from './github-oauth.js';
 import {
   mergeableFromCli,
   normalizeCheckRuns,
@@ -27,8 +27,13 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+export interface PrDetailFetchOptions {
+  /** User OAuth access token (tier 0). When provided, tried before App/CLI. */
+  userAccessToken?: string | null;
+}
+
 export interface PrDetailFetchResult {
-  source: 'github-app' | 'gh-cli';
+  source: 'user-oauth' | 'github-app' | 'gh-cli';
   pr: Record<string, unknown>;
   reviews: Array<Record<string, unknown>>;
   comments: Array<Record<string, unknown>>;
@@ -57,16 +62,52 @@ async function callCli(config: AppConfig, args: string[]): Promise<string> {
 }
 
 /**
- * Fetch PR detail via the GitHub App → `gh` CLI fallback ladder.
+ * Fetch PR detail via the User OAuth → GitHub App → `gh` CLI fallback ladder.
  *
- * Throws when both tiers fail; throws with a descriptive message (first line
+ * Throws when all tiers fail; throws with a descriptive message (first line
  * of the underlying error) so callers can pass it through as 502 text.
  */
 export async function fetchPrDetail(
   config: AppConfig,
   repo: { owner: string; repo: string },
   num: number,
+  opts?: PrDetailFetchOptions,
 ): Promise<PrDetailFetchResult> {
+  // Tier 0: User OAuth — respects the caller's repo visibility
+  if (opts?.userAccessToken) {
+    try {
+      const uReq = <T>(path: string) =>
+        githubUserApiRequest<T>({ accessToken: opts.userAccessToken!, endpoint: path });
+
+      const prData = await uReq<Record<string, unknown>>(
+        `/repos/${repo.owner}/${repo.repo}/pulls/${num}`,
+      );
+      const head = prData.head as Record<string, unknown> | undefined;
+      const sha = head?.sha as string | undefined;
+
+      const [reviewsRaw, commentsRaw, checksRaw] = await Promise.all([
+        uReq(`/repos/${repo.owner}/${repo.repo}/pulls/${num}/reviews?per_page=50`).catch(() => []),
+        uReq(`/repos/${repo.owner}/${repo.repo}/issues/${num}/comments?per_page=50`).catch(
+          () => [],
+        ),
+        sha
+          ? uReq(`/repos/${repo.owner}/${repo.repo}/commits/${sha}/check-runs`).catch(() => ({}))
+          : Promise.resolve({}),
+      ]);
+
+      return {
+        source: 'user-oauth',
+        pr: normalizePrSummary(prData),
+        reviews: normalizeReviews(reviewsRaw as unknown),
+        comments: normalizeIssueComments(commentsRaw as unknown),
+        checks: normalizeCheckRuns(checksRaw as unknown),
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[PR Detail] User OAuth fetch failed, trying GitHub App: ${msg.split('\n')[0]}`);
+    }
+  }
+
   // Tier 1: GitHub App
   if (hasGitHubApp(config)) {
     const app = config.githubApp as GitHubAppConfig;
