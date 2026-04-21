@@ -3,6 +3,9 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { AppConfig } from './types.js';
+import { resolveSpawnPath, refreshShellPath, getCachedShellPath } from './shell-path.js';
+
+export { refreshShellPath, getCachedShellPath };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOME = os.homedir();
@@ -160,6 +163,10 @@ export function defaultModelForEngine(engine: string): string {
 
 export function buildSpawnEnv(cfg: AppConfig = config): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
+  // Merge the login-shell PATH into the spawn env so newly-installed CLIs
+  // (aws, gh, etc.) are visible without restarting the server. See
+  // server/shell-path.ts for the full rationale.
+  env.PATH = resolveSpawnPath(process.env.PATH);
   if (cfg.anthropicApiKey) {
     env.ANTHROPIC_API_KEY = cfg.anthropicApiKey;
   }

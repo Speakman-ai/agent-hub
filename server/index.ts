@@ -43,7 +43,7 @@ import {
 import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
 import { appendDailyNote } from './memory.js';
-import config from './config.js';
+import config, { refreshShellPath } from './config.js';
 import {
   getAppInfo,
   getAppInstallations,
@@ -881,6 +881,15 @@ if (CLIENT_DIST && existsSync(CLIENT_DIST)) {
 export { app, server };
 
 if (!process.env.AGENT_HUB_TEST_MODE) {
+  // Capture the login shell's PATH up-front so the first spawn already sees
+  // everything the shell rc files expose (aws, gh, nvm shims, etc.). Running
+  // this synchronously at startup trades ~50–200ms of boot time for one fewer
+  // surprise when a new CLI is installed before the first agent spawn.
+  // refreshShellPath() catches internally and falls back to FALLBACK_DIRS on
+  // failure, so this cannot throw in practice.
+  const shellPath = refreshShellPath();
+  console.log(`[shell-path] Captured spawn PATH from ${shellPath.source}`);
+
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Agent Hub server running on http://localhost:${PORT}`);
     console.log(`Loaded ${getProjects().length} projects, ${allAgents().length} agents`);

@@ -12,6 +12,7 @@ import {
   clearTokenCache,
 } from '../github-app.js';
 import type { RouteDeps, AppConfig, GitHubAppConfig, Project, Stmts } from '../types.js';
+import { refreshShellPath, getCachedShellPath } from '../config.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -284,6 +285,37 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         Object.entries(updates).map(([k, v]) => [k, k === 'botGithubToken' && v ? '••••••••' : v]),
       ),
     });
+  });
+
+  // ─── Spawn-env PATH refresh ─────────────────────────────────────────────
+  // Returns the current cached login-shell PATH used when spawning agents.
+  router.get('/api/config/spawn-path', (_req: Request, res: Response) => {
+    const cached = getCachedShellPath();
+    res.json({
+      path: cached.value,
+      source: cached.source,
+      capturedAt: cached.capturedAt,
+      entries: cached.value ? cached.value.split(':').filter(Boolean) : [],
+    });
+  });
+
+  // Re-runs the login shell to pick up newly-installed CLIs (aws, gh, etc.)
+  // and updates the cached PATH that `buildSpawnEnv` merges into every spawn.
+  // Idempotent — safe to call whenever the user has installed a new tool.
+  router.post('/api/config/refresh-spawn-path', (_req: Request, res: Response) => {
+    try {
+      const cached = refreshShellPath();
+      console.log(`[shell-path] Refreshed spawn PATH from ${cached.source}`);
+      res.json({
+        ok: true,
+        path: cached.value,
+        source: cached.source,
+        capturedAt: cached.capturedAt,
+        entries: cached.value ? cached.value.split(':').filter(Boolean) : [],
+      });
+    } catch (err: unknown) {
+      res.status(500).json({ error: (err as Error).message });
+    }
   });
 
   // ─── GitHub App Setup (Manifest Flow) ──────────────────────────────────────
