@@ -406,6 +406,22 @@ export const api = {
       timeout: 35000,
     }),
   logoutCodex: () => fetchJSON('/config/codex-auth', { method: 'DELETE' }),
+  getCursorAuth: () => fetchJSON('/config/cursor-auth'),
+  startCursorLogin: () =>
+    fetchJSON('/config/cursor-auth/login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 22000,
+    }),
+  cancelCursorLogin: () => fetchJSON('/config/cursor-auth/cancel-login', { method: 'POST' }),
+  logoutCursor: () => fetchJSON('/config/cursor-auth', { method: 'DELETE', timeout: 35000 }),
+  startCodexDeviceLogin: () =>
+    fetchJSON('/config/codex-auth/device-login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 50000,
+    }),
+  cancelCodexDeviceLogin: () => fetchJSON('/config/codex-auth/cancel-login', { method: 'POST' }),
 
   // Per-project export/import
   exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),

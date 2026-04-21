@@ -11,6 +11,7 @@ import CronSchedulePicker from './CronSchedulePicker.jsx';
 import AgentAvatar from './AgentAvatar.jsx';
 import AccountSection from './AccountSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
+import CursorAuthSection from './CursorAuthSection.jsx';
 import PoolSection from './PoolSection.jsx';
 import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
@@ -1332,11 +1333,8 @@ function GeminiAuthSection() {
 }
 
 /**
- * Codex CLI auth panel — sibling of GeminiAuthSection but scoped to Codex.
- * Currently exposes API-key management only (CODEX_API_KEY / OPENAI_API_KEY).
- * ChatGPT OAuth via `codex login` is still a terminal-only flow; the status
- * endpoint returns `oauth.loggedIn: null` which we surface as "Not managed
- * here" so users know where to look.
+ * Codex CLI auth — API key plus ChatGPT device login (`codex login --device-auth`).
+ * See https://developers.openai.com/codex/noninteractive
  */
 function CodexAuthSection() {
   const [auth, setAuth] = useState(null);
@@ -1347,6 +1345,20 @@ function CodexAuthSection() {
   const [apiKeySaving, setApiKeySaving] = useState(false);
   const [apiKeyValidating, setApiKeyValidating] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState(null);
+  const [deviceLoading, setDeviceLoading] = useState(false);
+  const [deviceAuthUrl, setDeviceAuthUrl] = useState(null);
+  const [deviceUserCode, setDeviceUserCode] = useState(null);
+  const [deviceMsg, setDeviceMsg] = useState(null);
+  const [deviceCopied, setDeviceCopied] = useState(null);
+  const [fullLogoutBusy, setFullLogoutBusy] = useState(false);
+  const codexDeviceTimersRef = useRef({ intervalId: null, timeoutId: null });
+
+  const clearCodexDeviceTimers = () => {
+    const { intervalId, timeoutId } = codexDeviceTimersRef.current;
+    if (intervalId !== null) clearInterval(intervalId);
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    codexDeviceTimersRef.current = { intervalId: null, timeoutId: null };
+  };
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
@@ -1367,6 +1379,13 @@ function CodexAuthSection() {
   useEffect(() => {
     fetchAuth();
   }, []);
+
+  useEffect(
+    () => () => {
+      clearCodexDeviceTimers();
+    },
+    [],
+  );
 
   const handleSaveApiKey = async () => {
     setApiKeySaving(true);
@@ -1416,6 +1435,91 @@ function CodexAuthSection() {
     setApiKeyValidating(false);
   };
 
+  const handleDeviceLogin = async () => {
+    clearCodexDeviceTimers();
+    setDeviceLoading(true);
+    setDeviceAuthUrl(null);
+    setDeviceUserCode(null);
+    setDeviceMsg(null);
+    try {
+      const data = await api.startCodexDeviceLogin();
+      if (data.deviceAuthUrl && data.userCode) {
+        setDeviceAuthUrl(data.deviceAuthUrl);
+        setDeviceUserCode(data.userCode);
+        window.open(data.deviceAuthUrl, '_blank');
+        const timeoutId = setTimeout(() => {
+          clearCodexDeviceTimers();
+          setDeviceLoading(false);
+        }, 900_000);
+        const intervalId = setInterval(async () => {
+          try {
+            const st = await api.getCodexAuth();
+            if (st.uiStatus === 'authenticated' && !st.loginInProgress) {
+              clearCodexDeviceTimers();
+              setAuth(st);
+              setDeviceAuthUrl(null);
+              setDeviceUserCode(null);
+              setDeviceLoading(false);
+              setDeviceMsg({ type: 'success', msg: 'Codex is authenticated on this host.' });
+            } else if (!st.loginInProgress && st.uiStatus !== 'authenticated') {
+              clearCodexDeviceTimers();
+              setAuth(st);
+              setDeviceAuthUrl(null);
+              setDeviceUserCode(null);
+              setDeviceLoading(false);
+              setDeviceMsg({
+                type: 'error',
+                msg: st.statusError || 'Device login did not complete.',
+              });
+            }
+          } catch {
+            /* keep polling */
+          }
+        }, 3000);
+        codexDeviceTimersRef.current = { intervalId, timeoutId };
+      } else {
+        setDeviceLoading(false);
+        setDeviceMsg({ type: 'error', msg: data.output || 'Could not start device login.' });
+      }
+    } catch (err) {
+      setDeviceLoading(false);
+      setDeviceMsg({ type: 'error', msg: err.message || 'Device login failed' });
+    }
+  };
+
+  const handleCancelDevice = async () => {
+    clearCodexDeviceTimers();
+    try {
+      await api.cancelCodexDeviceLogin();
+    } catch {
+      /* ignore */
+    }
+    setDeviceLoading(false);
+    setDeviceAuthUrl(null);
+    setDeviceUserCode(null);
+    setDeviceMsg(null);
+  };
+
+  const handleFullLogoutCodex = async () => {
+    setDeviceMsg(null);
+    setFullLogoutBusy(true);
+    try {
+      const r = await api.logoutCodex();
+      setDeviceMsg({ type: 'success', msg: r.output || 'Codex credentials cleared.' });
+      await fetchAuth();
+    } catch (err) {
+      setDeviceMsg({ type: 'error', msg: err.message || 'Logout failed' });
+    }
+    setFullLogoutBusy(false);
+  };
+
+  const copyDeviceCode = () => {
+    if (!deviceUserCode) return;
+    navigator.clipboard.writeText(deviceUserCode);
+    setDeviceCopied('code');
+    setTimeout(() => setDeviceCopied(null), 2000);
+  };
+
   if (loading)
     return (
       <div className="flex items-center gap-2 text-sm text-gray-400 py-4">
@@ -1439,15 +1543,22 @@ function CodexAuthSection() {
   const apiKeySource = auth?.apiKey?.source;
   const masked = auth?.apiKey?.masked;
   const activeMethod = auth?.activeMethod;
+  const uiStatus = auth?.uiStatus || 'missing';
+  const loginInProgress = !!auth?.loginInProgress;
+  const uiBadge =
+    uiStatus === 'authenticated'
+      ? 'bg-emerald-500/15 text-emerald-400'
+      : uiStatus === 'pending'
+        ? 'bg-amber-500/15 text-amber-400'
+        : 'bg-red-500/15 text-red-400';
 
   return (
     <div className="space-y-6">
       <div>
         <h3 className="text-lg font-semibold mb-1">Codex CLI Authentication</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Configure the <code>CODEX_API_KEY</code> (or <code>OPENAI_API_KEY</code>) used when Agent
-          Hub spawns the <code>codex</code> CLI. ChatGPT OAuth via <code>codex login</code> is still
-          managed from the terminal and not driven by this panel.
+          Use an OpenAI API key (recommended for automation per Codex docs) or sign in with a
+          ChatGPT-linked Codex account using device authorization — no SSH required.
         </p>
       </div>
 
@@ -1456,18 +1567,34 @@ function CodexAuthSection() {
           <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
             <Shield size={16} /> Authentication Status
           </h4>
-          <span
-            className={`text-xs px-2.5 py-1 rounded-full font-medium ${
-              activeMethod === 'api-key'
-                ? 'bg-blue-500/15 text-blue-400'
-                : 'bg-red-500/15 text-red-400'
-            }`}
-          >
-            {activeMethod === 'api-key' ? 'API Key Active' : 'Not configured'}
+          <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${uiBadge}`}>
+            {uiStatus === 'authenticated'
+              ? 'Authenticated'
+              : uiStatus === 'pending'
+                ? 'Pending login'
+                : 'Missing'}
           </span>
         </div>
 
+        {auth?.statusError && uiStatus !== 'authenticated' && (
+          <p className="text-xs text-amber-400/90 mb-2">{auth.statusError}</p>
+        )}
+
         <div className="grid grid-cols-2 gap-2 text-xs">
+          <span className="text-gray-500">Hub method</span>
+          <span className="text-gray-300">
+            {activeMethod === 'api-key'
+              ? 'API key'
+              : activeMethod === 'oauth'
+                ? 'ChatGPT (CLI cache)'
+                : 'None'}
+          </span>
+          <span className="text-gray-500">Device login</span>
+          <span className="text-gray-300">{loginInProgress ? 'In progress' : 'Idle'}</span>
+          <span className="text-gray-500">OAuth cache</span>
+          <span className="text-gray-300 font-mono">
+            {auth?.oauth?.mode ? String(auth.oauth.mode) : '—'}
+          </span>
           <span className="text-gray-500">API Key</span>
           <span className="text-gray-300 font-mono">
             {apiKeyConfigured ? masked || '••••••••' : '—'}
@@ -1481,6 +1608,77 @@ function CodexAuthSection() {
                 : 'Not set'}
           </span>
         </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <Globe size={16} /> ChatGPT sign-in (device code)
+        </h4>
+        <p className="text-xs text-gray-500">
+          Starts <code>codex login --device-auth</code> on the Hub. Open the verification URL, paste
+          the one-time code, then wait for this page to show Authenticated (see{' '}
+          <a
+            href="https://developers.openai.com/codex/noninteractive"
+            target="_blank"
+            rel="noreferrer"
+            className="text-blue-400 hover:underline"
+          >
+            Codex non-interactive docs
+          </a>
+          ).
+        </p>
+        {deviceAuthUrl && (
+          <div className="rounded-lg border border-gray-700 bg-gray-900/80 p-3 space-y-2 text-xs">
+            <p className="text-gray-400">Verification page</p>
+            <a
+              href={deviceAuthUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-blue-400 hover:underline break-all flex items-center gap-1"
+            >
+              {deviceAuthUrl} <ExternalLink size={12} />
+            </a>
+            <p className="text-gray-400 pt-1">One-time code</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <code className="text-lg tracking-widest text-white">{deviceUserCode}</code>
+              <button
+                type="button"
+                onClick={copyDeviceCode}
+                className="text-gray-400 hover:text-white flex items-center gap-1 text-xs"
+              >
+                <Copy size={12} /> {deviceCopied === 'code' ? 'Copied' : 'Copy code'}
+              </button>
+            </div>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleDeviceLogin}
+            disabled={deviceLoading || !auth?.binary?.present}
+            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg"
+          >
+            {deviceLoading && <Loader2 size={14} className="animate-spin" />}
+            <LogIn size={14} />
+            {deviceLoading ? 'Waiting for OpenAI…' : 'Start ChatGPT device login'}
+          </button>
+          {deviceLoading && (
+            <button
+              type="button"
+              onClick={handleCancelDevice}
+              className="text-sm text-gray-400 hover:text-white px-3 py-2"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+        {deviceMsg && (
+          <p
+            className={`text-xs ${deviceMsg.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}
+          >
+            {deviceMsg.msg}
+          </p>
+        )}
       </div>
 
       <div className="bg-gray-800 rounded-xl p-4 space-y-3">
@@ -1554,6 +1752,26 @@ function CodexAuthSection() {
             {apiKeyStatus.msg}
           </p>
         )}
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <LogOut size={16} /> Clear Hub key + CLI session
+        </h4>
+        <p className="text-xs text-gray-500">
+          Removes the saved API key from Agent Hub configuration and runs <code>codex logout</code>{' '}
+          so ChatGPT tokens are cleared on this host.
+        </p>
+        <button
+          type="button"
+          onClick={handleFullLogoutCodex}
+          disabled={fullLogoutBusy}
+          className="flex items-center gap-2 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-300 text-sm px-4 py-2 rounded-lg disabled:opacity-50"
+        >
+          {fullLogoutBusy && <Loader2 size={14} className="animate-spin" />}
+          <LogOut size={14} />
+          Full sign out (Hub + CLI)
+        </button>
       </div>
     </div>
   );
@@ -5717,6 +5935,8 @@ export default function SettingsPage({
               <ClaudeAuthSection />
               <div className="h-px bg-gray-800" />
               <GeminiAuthSection />
+              <div className="h-px bg-gray-800" />
+              <CursorAuthSection />
               <div className="h-px bg-gray-800" />
               <CodexAuthSection />
             </div>

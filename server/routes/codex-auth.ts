@@ -1,24 +1,25 @@
 import { Router, Request, Response } from 'express';
-import { readFileSync, writeFileSync } from 'fs';
-import { spawn } from 'child_process';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
+import { homedir } from 'os';
 import type { RouteDeps, AppConfig } from '../types.js';
+import { detectCodexAuthMode } from '../codex-auth.js';
+import {
+  computeCodexUiStatus,
+  extractCodexDeviceUrl,
+  extractCodexDeviceUserCode,
+} from '../codex-device-auth-parse.js';
+
+const HOME = homedir();
 
 /**
  * Codex CLI auth routes.
  *
- * The Codex CLI supports two auth modes (per
- * https://developers.openai.com/codex/noninteractive):
- *   1. ChatGPT OAuth — stored as a cached token under `$CODEX_HOME` by the
- *      CLI's own `codex login` interactive command.
- *   2. API key via the `OPENAI_API_KEY` (preferred) or `CODEX_API_KEY` env var.
- *
- * Agent Hub ships mode (2) in this first pass since it's the only one that
- * cleanly round-trips through a headless server. Users who want OAuth can run
- * `codex login` at the shell; a future iteration can detect the resulting
- * cache and surface it as "OAuth active" here. API-key management (set /
- * validate / clear) mirrors `routes/gemini-auth.ts` so the frontend auth panel
- * can reuse the same UX pattern.
+ * Auth modes (per https://developers.openai.com/codex/noninteractive and
+ * `codex login --help`):
+ *   - API key: `CODEX_API_KEY` / `OPENAI_API_KEY` or persisted `codexApiKey` in config.
+ *   - ChatGPT OAuth: `codex login --device-auth` (UI-driven here) or interactive `codex login`.
  */
 interface CodexRunResult {
   stdout: string;
@@ -29,10 +30,11 @@ interface CodexRunResult {
 function runCodex(
   bin: string,
   args: string[],
-  opts: { env?: Record<string, string>; timeout?: number } = {},
+  opts: { env?: Record<string, string>; timeout?: number; cwd?: string } = {},
 ): Promise<CodexRunResult> {
   return new Promise((resolve) => {
     const proc = spawn(bin, args, {
+      cwd: opts.cwd ?? process.cwd(),
       env: { ...process.env, ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: opts.timeout || 30_000,
@@ -48,12 +50,25 @@ function runCodex(
   });
 }
 
+let activeDeviceLoginProc: ChildProcess | null = null;
+let activeDeviceLoginId: string | null = null;
+
 export default function createCodexAuthRoutes(deps: RouteDeps): Router {
-  const { config } = deps;
+  const { config, broadcast, getCodexBin } = deps;
   const router = Router();
+
+  const binPath = (): string => getCodexBin?.() ?? config.codexBin;
+
+  const resetDeviceLogin = (): void => {
+    activeDeviceLoginProc = null;
+    activeDeviceLoginId = null;
+  };
 
   // ── Status ───────────────────────────────────────────────────────────
   router.get('/api/config/codex-auth', (_req: Request, res: Response) => {
+    const bin = binPath();
+    const binaryPresent = existsSync(bin);
+
     const apiKeyConfigured = !!(
       config.codexApiKey ||
       process.env.CODEX_API_KEY ||
@@ -66,24 +81,160 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
           ? 'config'
           : null;
 
-    // Masked preview for UI display when the key is configured.
     const rawKey =
       config.codexApiKey || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || null;
     const masked = rawKey ? `••••••••${rawKey.slice(-4)}` : null;
 
+    const codexHome = process.env.CODEX_HOME ?? path.join(HOME, '.codex');
+    const authModeInfo = detectCodexAuthMode(codexHome);
+    const chatgptOAuthFromFile = authModeInfo.present && authModeInfo.mode === 'chatgpt';
+    const cliApiKeyFromFile = authModeInfo.present && authModeInfo.mode === 'apikey';
+
+    const oauthLoggedIn: boolean | null = !binaryPresent ? null : chatgptOAuthFromFile;
+
+    const loginInProgress = !!activeDeviceLoginProc;
+    const uiStatus = computeCodexUiStatus({
+      binaryPresent,
+      loginInProgress,
+      apiKeyConfigured,
+      chatgptOAuthFromFile,
+      cliApiKeyFromFile,
+    });
+
+    let activeMethod: 'api-key' | 'oauth' | 'none' = 'none';
+    if (apiKeyConfigured) activeMethod = 'api-key';
+    else if (cliApiKeyFromFile) activeMethod = 'api-key';
+    else if (chatgptOAuthFromFile) activeMethod = 'oauth';
+
     res.json({
+      uiStatus,
+      binary: { present: binaryPresent, path: bin },
       apiKey: {
         configured: apiKeyConfigured,
         source: apiKeySource,
         masked,
       },
-      activeMethod: apiKeyConfigured ? 'api-key' : 'none',
-      // Stub — real OAuth detection would check `$CODEX_HOME/auth.json`. We
-      // expose `loggedIn: null` so the UI can treat "unknown" distinctly from
-      // "logged out" and instruct users to run `codex login` in the terminal
-      // until we wire a server-driven OAuth flow.
-      oauth: { loggedIn: null as boolean | null },
+      activeMethod,
+      oauth: {
+        loggedIn: oauthLoggedIn,
+        mode: binaryPresent ? authModeInfo.mode : null,
+        authJsonPath: binaryPresent ? authModeInfo.path : null,
+      },
+      loginInProgress,
+      statusError: binaryPresent
+        ? null
+        : `Codex CLI binary not found at ${bin}. Set codexBin in Settings → General.`,
     });
+  });
+
+  // ── ChatGPT device login (headless-friendly) ─────────────────────────
+  router.post('/api/config/codex-auth/device-login', (_req: Request, res: Response) => {
+    if (activeDeviceLoginProc) {
+      try {
+        activeDeviceLoginProc.kill('SIGTERM');
+      } catch {
+        /* ignore */
+      }
+      resetDeviceLogin();
+    }
+
+    const bin = binPath();
+    if (!existsSync(bin)) {
+      return res.status(400).json({ ok: false, error: `Codex binary not found at ${bin}` });
+    }
+
+    const loginId = Date.now().toString(36);
+    activeDeviceLoginId = loginId;
+
+    const proc = spawn(bin, ['login', '--device-auth'], {
+      cwd: HOME,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    activeDeviceLoginProc = proc;
+
+    let allOutput = '';
+    let responded = false;
+
+    const trySend = (): void => {
+      if (responded) return;
+      const url = extractCodexDeviceUrl(allOutput);
+      const userCode = extractCodexDeviceUserCode(allOutput);
+      if (url && userCode) {
+        responded = true;
+        res.json({ ok: true, loginId, deviceAuthUrl: url, userCode });
+      }
+    };
+
+    const onData = (chunk: Buffer): void => {
+      allOutput += chunk.toString();
+      trySend();
+    };
+
+    proc.stdout?.on('data', onData);
+    proc.stderr?.on('data', onData);
+
+    proc.on('close', (code) => {
+      if (activeDeviceLoginId === loginId) {
+        resetDeviceLogin();
+      }
+
+      if (!responded) {
+        responded = true;
+        res.json({
+          ok: false,
+          loginId,
+          output: allOutput.trim() || `Device login exited with code ${code}`,
+        });
+      } else if (broadcast) {
+        const status = code === 0 ? 'success' : 'failed';
+        broadcast({
+          type: 'codex-auth-update',
+          loginId,
+          status,
+          ...(status === 'failed' && {
+            error: allOutput.trim().slice(0, 500) || 'Device login failed',
+          }),
+        });
+      }
+    });
+
+    proc.on('error', (err) => {
+      if (activeDeviceLoginId === loginId) resetDeviceLogin();
+      if (!responded) {
+        responded = true;
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+
+    setTimeout(() => {
+      if (!responded) {
+        responded = true;
+        res.json({
+          ok: false,
+          output: allOutput.trim() || 'Timed out waiting for Codex device code',
+        });
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 45_000);
+  });
+
+  router.post('/api/config/codex-auth/cancel-login', (_req: Request, res: Response) => {
+    if (activeDeviceLoginProc) {
+      try {
+        activeDeviceLoginProc.kill('SIGTERM');
+      } catch {
+        /* ignore */
+      }
+      resetDeviceLogin();
+      res.json({ ok: true, output: 'Device login cancelled' });
+    } else {
+      res.json({ ok: true, output: 'No device login in progress' });
+    }
   });
 
   // ── Set / clear API key ──────────────────────────────────────────────
@@ -126,14 +277,11 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
       return res.status(400).json({ error: 'apiKey is required' });
     }
 
+    const bin = binPath();
+
     try {
-      // `codex exec --json --skip-git-repo-check --sandbox read-only "..."`
-      // exits non-zero and prints a 401 message when the key is invalid. A
-      // valid key reaches the model and comes back with a completion. We use
-      // a 30s timeout since the Responses API can take several seconds to
-      // warm up on first hit.
       const { stdout, stderr, code } = await runCodex(
-        config.codexBin,
+        bin,
         [
           'exec',
           '--json',
@@ -148,8 +296,6 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
         },
       );
 
-      // Codex JSONL events — look for a `turn.completed` (success) or a
-      // `turn.failed`/`error` carrying 401/auth in the message (failure).
       const combined = stdout + '\n' + stderr;
       const looksAuthFailed = /401|unauthorized|missing bearer|invalid api key/i.test(combined);
       const valid = code === 0 && !looksAuthFailed;
@@ -164,8 +310,8 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ── Clear / logout ───────────────────────────────────────────────────
-  router.delete('/api/config/codex-auth', (_req: Request, res: Response) => {
+  // ── Clear API key + CLI OAuth cache ───────────────────────────────────
+  router.delete('/api/config/codex-auth', async (_req: Request, res: Response) => {
     const configPath = path.join(config.dataDir, 'config.json');
     let fileConfig: Record<string, unknown> = {};
     try {
@@ -179,7 +325,23 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
     mutableConfig.codexApiKey = null;
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
 
-    res.json({ ok: true, output: 'Codex API key cleared' });
+    const bin = binPath();
+    const parts: string[] = ['Codex API key cleared from Agent Hub config'];
+    if (existsSync(bin)) {
+      const { stdout, stderr, code } = await runCodex(bin, ['logout'], {
+        cwd: HOME,
+        timeout: 60_000,
+      });
+      const msg = (stdout + stderr).trim();
+      if (msg) parts.unshift(msg);
+      if (code !== 0 && !/not logged in|Successfully logged out/i.test(msg)) {
+        parts.push(
+          `codex logout exited with code ${code} — run codex logout on the host if OAuth persists`,
+        );
+      }
+    }
+
+    res.json({ ok: true, output: parts.join(' — ') });
   });
 
   return router;
