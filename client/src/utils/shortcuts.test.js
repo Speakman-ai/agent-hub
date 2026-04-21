@@ -9,9 +9,17 @@ import {
   getPlatform,
 } from './shortcuts.js';
 
-function makeEvent({ key = '', meta = false, ctrl = false, alt = false, shift = false } = {}) {
+function makeEvent({
+  key = '',
+  code = '',
+  meta = false,
+  ctrl = false,
+  alt = false,
+  shift = false,
+} = {}) {
   return {
     key,
+    code,
     metaKey: meta,
     ctrlKey: ctrl,
     altKey: alt,
@@ -98,6 +106,71 @@ describe('matchShortcut', () => {
     expect(
       matchShortcut(makeEvent({ key: 'N', meta: true, shift: true }), 'Mod+Shift+N', 'mac'),
     ).toBe(true);
+  });
+
+  it('matches via event.code on Mac when Option produces a dead key', () => {
+    // Real-world regression: pressing Cmd+Option+N on macOS fires
+    // event.key === '˜' (dead-tilde) but event.code === 'KeyN'. The matcher
+    // must accept it because `Mod+Alt+N` is the registered binding.
+    expect(
+      matchShortcut(
+        makeEvent({ key: '˜', code: 'KeyN', meta: true, alt: true }),
+        'Mod+Alt+N',
+        'mac',
+      ),
+    ).toBe(true);
+    // Same for the other Option+letter dead-keys we ship by default.
+    expect(
+      matchShortcut(
+        makeEvent({ key: '†', code: 'KeyT', meta: true, alt: true }),
+        'Mod+Alt+T',
+        'mac',
+      ),
+    ).toBe(true);
+    expect(
+      matchShortcut(
+        makeEvent({ key: '∂', code: 'KeyD', meta: true, alt: true }),
+        'Mod+Alt+D',
+        'mac',
+      ),
+    ).toBe(true);
+    expect(
+      matchShortcut(
+        makeEvent({ key: '®', code: 'KeyR', meta: true, alt: true }),
+        'Mod+Alt+R',
+        'mac',
+      ),
+    ).toBe(true);
+    expect(
+      matchShortcut(
+        makeEvent({ key: '∑', code: 'KeyW', meta: true, alt: true }),
+        'Mod+Alt+W',
+        'mac',
+      ),
+    ).toBe(true);
+  });
+
+  it('prefers event.code for letter/digit keys in real browser events', () => {
+    // When both key and code are present on the event (normal browser),
+    // code is authoritative so layout-swapped keyboards still match.
+    expect(matchShortcut(makeEvent({ key: 'b', code: 'KeyB', meta: true }), 'Mod+B', 'mac')).toBe(
+      true,
+    );
+    // Wrong code should NOT match even if event.key happens to align.
+    expect(matchShortcut(makeEvent({ key: 'b', code: 'KeyN', meta: true }), 'Mod+B', 'mac')).toBe(
+      false,
+    );
+  });
+
+  it('still matches non-letter/digit keys via event.key', () => {
+    // ArrowRight / Escape / "," / "?" have no stable `code` we can rely on
+    // across layouts, so they fall back to `event.key` matching.
+    expect(
+      matchShortcut(makeEvent({ key: 'ArrowRight', code: 'ArrowRight' }), 'ArrowRight', 'mac'),
+    ).toBe(true);
+    expect(matchShortcut(makeEvent({ key: ',', code: 'Comma', meta: true }), 'Mod+,', 'mac')).toBe(
+      true,
+    );
   });
 });
 

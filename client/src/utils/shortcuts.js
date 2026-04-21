@@ -102,6 +102,22 @@ export function getPlatform(nav = typeof navigator !== 'undefined' ? navigator :
   return 'other';
 }
 
+// Derive the stable `KeyboardEvent.code` value for a binding key, if one
+// exists. `event.code` is layout- and modifier-independent, so it's the right
+// thing to check for letter/digit keys when modifiers like Option (macOS) or
+// AltGr produce dead keys or composed characters — e.g. Option+N on macOS
+// fires event.key === '˜' but event.code === 'KeyN'.
+//
+// Returns null for keys we don't have a stable code for (symbols/punctuation
+// where `code` depends on layout), so matching falls back to `event.key`.
+function codeForKey(key) {
+  if (typeof key !== 'string' || key.length !== 1) return null;
+  const c = key.toLowerCase();
+  if (c >= 'a' && c <= 'z') return `Key${c.toUpperCase()}`;
+  if (c >= '0' && c <= '9') return `Digit${c}`;
+  return null;
+}
+
 // Parse "Mod+Shift+N" → { mod: true, shift: true, key: 'n', raw: 'Mod+Shift+N' }
 export function parseBinding(binding) {
   if (typeof binding !== 'string' || binding.length === 0) {
@@ -119,6 +135,7 @@ export function parseBinding(binding) {
     alt: false,
     shift: false,
     key: '',
+    code: null,
     raw: binding,
   };
   for (let i = 0; i < parts.length; i++) {
@@ -140,6 +157,7 @@ export function parseBinding(binding) {
       result.key = lower;
     }
   }
+  result.code = codeForKey(result.key);
   return result;
 }
 
@@ -181,6 +199,14 @@ export function matchShortcut(event, binding, platform = getPlatform()) {
   const skipShiftCheck = !wantShift && SHIFTED_CHARS.has(parsed.key);
   if (!skipShiftCheck && !!event.shiftKey !== !!wantShift) return false;
 
+  // Prefer `event.code` for letters/digits — it's stable across layouts and
+  // doesn't collapse to a dead key when Option is held on macOS (Option+N
+  // fires event.key === '˜' but event.code === 'KeyN'). Fall back to
+  // `event.key` for everything else (symbols, arrows, Escape, etc.) where
+  // `code` is layout-dependent.
+  if (parsed.code && event.code) {
+    return event.code === parsed.code;
+  }
   const eventKey = (event.key || '').toLowerCase();
   return eventKey === parsed.key;
 }

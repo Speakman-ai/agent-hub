@@ -2,9 +2,18 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts.js';
 
-function dispatchKey({ key, meta = false, ctrl = false, shift = false, alt = false, target } = {}) {
+function dispatchKey({
+  key,
+  code = '',
+  meta = false,
+  ctrl = false,
+  shift = false,
+  alt = false,
+  target,
+} = {}) {
   const ev = new KeyboardEvent('keydown', {
     key,
+    code,
     metaKey: meta,
     ctrlKey: ctrl,
     shiftKey: shift,
@@ -83,6 +92,18 @@ describe('useKeyboardShortcuts', () => {
     dispatchKey({ key: 'a', shift: true, target: input });
     expect(handler).not.toHaveBeenCalled();
     input.remove();
+  });
+
+  it('fires on macOS Cmd+Option+<letter> even when event.key is a dead key', () => {
+    // On macOS, Option+N yields event.key === '˜' (dead tilde); the binding
+    // still has to fire because event.code === 'KeyN' is stable. This is the
+    // primary real-world regression for the target platform.
+    const handler = vi.fn();
+    const shortcuts = [{ id: 'new', binding: 'Mod+Alt+N' }];
+    renderHook(() => useKeyboardShortcuts({ handlers: { new: handler }, shortcuts }));
+    dispatchKey({ key: '˜', code: 'KeyN', meta: true, alt: true });
+    dispatchKey({ key: 'n', code: 'KeyN', ctrl: true, alt: true }); // non-mac equivalent
+    expect(handler).toHaveBeenCalled();
   });
 
   it('fires modifier shortcuts from contenteditable targets', () => {
