@@ -114,6 +114,7 @@ export interface ChatHandlerDeps {
   getClaudeBin: () => string;
   getCursorBin: () => string;
   getGeminiBin: () => string;
+  getCodexBin: () => string;
   uploadsDir: string;
   resolveSlashSkill: (agent: Agent, content: string, project: Project) => SlashSkillResult | null;
   createCursorChat: ((cwd: string) => Promise<string>) | undefined;
@@ -477,6 +478,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     getClaudeBin,
     getCursorBin,
     getGeminiBin,
+    getCodexBin,
     uploadsDir,
     resolveSlashSkill,
     createCursorChat: _createCursorChat,
@@ -849,6 +851,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const CLAUDE_BIN = getClaudeBin();
     const CURSOR_BIN = getCursorBin();
     const GEMINI_BIN = getGeminiBin();
+    const CODEX_BIN = getCodexBin();
     let args: string[];
     let bin: string;
     if (engine === 'cursor-agent') {
@@ -894,6 +897,45 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         args.push('--yolo');
       }
       bin = GEMINI_BIN;
+    } else if (engine === 'codex-cli') {
+      // Codex CLI flags per https://developers.openai.com/codex/noninteractive:
+      //   codex exec --json "<prompt>"                  — new turn
+      //   codex exec resume <session-id> --json "..."   — continue a session
+      //   codex exec resume --last --json "..."         — continue the newest recorded session
+      //   --sandbox read-only|workspace-write|danger-full-access
+      //   --full-auto                                   — low-friction workspace-write alias
+      //   -m / --model                                  — model selector
+      //   -C / --cd <dir>                               — working root
+      //   --skip-git-repo-check                         — allow non-git cwds (worktrees are fine)
+      //   --ephemeral                                   — don't persist session rollout files
+      //
+      // Codex has its own on-disk session store; we key resumes off the
+      // `thread_id` captured from the `thread.started` JSONL event (see
+      // `engine_session_id` tracking in stream-parser.ts + chat event hook).
+      // On the first turn we pass the enriched system prompt inline (Codex has
+      // no `--system-prompt` flag) and rely on `--skip-git-repo-check` so
+      // fresh project cwds without a `.git` dir don't fail.
+      const isAskMode = !!session!.ask_mode;
+      const prompt = isNewEngineSession
+        ? `${enrichedPrompt}\n\n${finalPrompt}`
+        : cliContent + imagePromptSuffix;
+      args = ['exec'];
+      if (!isNewEngineSession && engineSessionId) {
+        args.push('resume', engineSessionId);
+      }
+      args.push('--json', '--skip-git-repo-check');
+      if (isAskMode) {
+        args.push('--sandbox', 'read-only');
+      } else {
+        // --full-auto = `-a on-request --sandbox workspace-write`, which is
+        // the closest parity with Claude Code's bypassPermissions default.
+        args.push('--full-auto');
+      }
+      if (model) {
+        args.push('--model', model);
+      }
+      args.push(prompt);
+      bin = CODEX_BIN;
     } else {
       const isAskMode = !!session!.ask_mode;
       args = [
@@ -1023,6 +1065,24 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sessionId,
           gitWorktree: event.gitWorktree,
         });
+      }
+
+      // Codex emits the engine-side session id inside the first `thread.started`
+      // event (normalized to a `system` event by normalizeCodex). Persist it on
+      // the first appearance so subsequent turns can `codex exec resume <id>`.
+      if (
+        engine === 'codex-cli' &&
+        event.type === 'system' &&
+        event.sessionId &&
+        !engineSessionId
+      ) {
+        engineSessionId = event.sessionId;
+        try {
+          S.updateSessionEngineSessionId.run(event.sessionId, sessionId);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn('[chat] Failed to persist codex engine_session_id:', message);
+        }
       }
 
       if (event.type === 'checkpoint' && event.uuid) {
@@ -1496,7 +1556,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         S.deleteActiveTask.run(sessionId);
       } catch {}
       const engineLabel =
-        engine === 'cursor-agent' ? 'cursor agent' : engine === 'gemini-cli' ? 'gemini' : 'claude';
+        engine === 'cursor-agent'
+          ? 'cursor agent'
+          : engine === 'gemini-cli'
+            ? 'gemini'
+            : engine === 'codex-cli'
+              ? 'codex'
+              : 'claude';
       const errText = `Failed to spawn ${engineLabel}: ${err.message}`;
       saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
       broadcast({

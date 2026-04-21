@@ -1331,6 +1331,234 @@ function GeminiAuthSection() {
   );
 }
 
+/**
+ * Codex CLI auth panel — sibling of GeminiAuthSection but scoped to Codex.
+ * Currently exposes API-key management only (CODEX_API_KEY / OPENAI_API_KEY).
+ * ChatGPT OAuth via `codex login` is still a terminal-only flow; the status
+ * endpoint returns `oauth.loggedIn: null` which we surface as "Not managed
+ * here" so users know where to look.
+ */
+function CodexAuthSection() {
+  const [auth, setAuth] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [apiKeySaving, setApiKeySaving] = useState(false);
+  const [apiKeyValidating, setApiKeyValidating] = useState(false);
+  const [apiKeyStatus, setApiKeyStatus] = useState(null);
+
+  const inputClass =
+    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+
+  const fetchAuth = async () => {
+    setError(null);
+    try {
+      const data = await api.getCodexAuth();
+      setAuth(data);
+    } catch (err) {
+      setAuth(null);
+      setError(err.message || 'Failed to load Codex auth status');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAuth();
+  }, []);
+
+  const handleSaveApiKey = async () => {
+    setApiKeySaving(true);
+    setApiKeyStatus(null);
+    try {
+      const result = await api.setCodexApiKey(apiKeyInput);
+      if (result.ok) {
+        setApiKeyStatus({
+          type: 'success',
+          msg: result.masked ? `Saved: ${result.masked}` : 'API key cleared',
+        });
+        setApiKeyInput('');
+        await fetchAuth();
+      }
+    } catch (err) {
+      setApiKeyStatus({ type: 'error', msg: err.message });
+    }
+    setApiKeySaving(false);
+  };
+
+  const handleClearApiKey = async () => {
+    setApiKeySaving(true);
+    setApiKeyStatus(null);
+    try {
+      await api.setCodexApiKey('');
+      setApiKeyStatus({ type: 'success', msg: 'API key cleared' });
+      await fetchAuth();
+    } catch (err) {
+      setApiKeyStatus({ type: 'error', msg: err.message });
+    }
+    setApiKeySaving(false);
+  };
+
+  const handleValidateApiKey = async () => {
+    if (!apiKeyInput) return;
+    setApiKeyValidating(true);
+    setApiKeyStatus(null);
+    try {
+      const result = await api.validateCodexApiKey(apiKeyInput);
+      setApiKeyStatus({
+        type: result.valid ? 'success' : 'error',
+        msg: result.output,
+      });
+    } catch (err) {
+      setApiKeyStatus({ type: 'error', msg: err.message });
+    }
+    setApiKeyValidating(false);
+  };
+
+  if (loading)
+    return (
+      <div className="flex items-center gap-2 text-sm text-gray-400 py-4">
+        <Loader2 size={16} className="animate-spin" />
+        <span>Loading Codex auth status...</span>
+      </div>
+    );
+
+  if (error && !auth)
+    return (
+      <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+        <div className="flex items-center gap-2 text-red-400 text-sm mb-2">
+          <AlertCircle size={16} />
+          <span className="font-medium">Failed to load Codex auth status</span>
+        </div>
+        <p className="text-xs text-gray-400">{error}</p>
+      </div>
+    );
+
+  const apiKeyConfigured = auth?.apiKey?.configured;
+  const apiKeySource = auth?.apiKey?.source;
+  const masked = auth?.apiKey?.masked;
+  const activeMethod = auth?.activeMethod;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold mb-1">Codex CLI Authentication</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Configure the <code>CODEX_API_KEY</code> (or <code>OPENAI_API_KEY</code>) used when Agent
+          Hub spawns the <code>codex</code> CLI. ChatGPT OAuth via <code>codex login</code> is still
+          managed from the terminal and not driven by this panel.
+        </p>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <Shield size={16} /> Authentication Status
+          </h4>
+          <span
+            className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+              activeMethod === 'api-key'
+                ? 'bg-blue-500/15 text-blue-400'
+                : 'bg-red-500/15 text-red-400'
+            }`}
+          >
+            {activeMethod === 'api-key' ? 'API Key Active' : 'Not configured'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <span className="text-gray-500">API Key</span>
+          <span className="text-gray-300 font-mono">
+            {apiKeyConfigured ? masked || '••••••••' : '—'}
+          </span>
+          <span className="text-gray-500">Source</span>
+          <span className="text-gray-300">
+            {apiKeySource === 'environment'
+              ? 'Environment (CODEX_API_KEY / OPENAI_API_KEY)'
+              : apiKeySource === 'config'
+                ? 'Config file'
+                : 'Not set'}
+          </span>
+        </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <Key size={16} /> Set or update API key
+        </h4>
+        <p className="text-xs text-gray-500">
+          Paste an OpenAI API key from{' '}
+          <a
+            href="https://platform.openai.com/api-keys"
+            target="_blank"
+            rel="noreferrer"
+            className="text-blue-400 hover:underline"
+          >
+            platform.openai.com
+          </a>
+          . Agent Hub will export it as <code>CODEX_API_KEY</code> and <code>OPENAI_API_KEY</code>{' '}
+          when spawning the Codex CLI.
+        </p>
+
+        <div className="flex items-center gap-2">
+          <input
+            type={showApiKey ? 'text' : 'password'}
+            value={apiKeyInput}
+            onChange={(e) => setApiKeyInput(e.target.value)}
+            placeholder="sk-..."
+            className={inputClass}
+          />
+          <button
+            type="button"
+            onClick={() => setShowApiKey((v) => !v)}
+            className="text-xs text-gray-400 hover:text-white px-2 py-1.5"
+          >
+            {showApiKey ? 'Hide' : 'Show'}
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleValidateApiKey}
+            disabled={!apiKeyInput || apiKeyValidating}
+            className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            {apiKeyValidating && <Loader2 size={12} className="animate-spin" />}
+            Validate
+          </button>
+          <button
+            onClick={handleSaveApiKey}
+            disabled={!apiKeyInput || apiKeySaving}
+            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+          >
+            {apiKeySaving ? 'Saving...' : 'Save'}
+          </button>
+          {apiKeyConfigured && (
+            <button
+              onClick={handleClearApiKey}
+              disabled={apiKeySaving}
+              className="text-xs text-red-400 hover:text-red-300 px-2 py-1.5 transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        {apiKeyStatus && (
+          <p
+            className={`text-xs ${
+              apiKeyStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+            }`}
+          >
+            {apiKeyStatus.msg}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function GeneralSection() {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1347,6 +1575,7 @@ export function GeneralSection() {
           claudeBin: data.claudeBin,
           cursorBin: data.cursorBin,
           geminiBin: data.geminiBin,
+          codexBin: data.codexBin,
         });
         setLoading(false);
       })
@@ -1357,7 +1586,8 @@ export function GeneralSection() {
     config &&
     (edits.claudeBin !== config.claudeBin ||
       (edits.cursorBin ?? '') !== (config.cursorBin ?? '') ||
-      (edits.geminiBin ?? '') !== (config.geminiBin ?? ''));
+      (edits.geminiBin ?? '') !== (config.geminiBin ?? '') ||
+      (edits.codexBin ?? '') !== (config.codexBin ?? ''));
 
   const handleSave = async () => {
     setSaving(true);
@@ -1366,6 +1596,7 @@ export function GeneralSection() {
         claudeBin: edits.claudeBin,
         cursorBin: edits.cursorBin,
         geminiBin: edits.geminiBin,
+        codexBin: edits.codexBin,
       };
       await api.updateConfig(payload);
       setConfig((prev) => ({ ...prev, ...payload }));
@@ -1439,6 +1670,20 @@ export function GeneralSection() {
             Path to the <code>gemini</code> binary (install via{' '}
             <code>npm install -g @google/gemini-cli</code>). Used for all gemini-cli engine
             sessions.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Codex CLI</label>
+          <input
+            value={edits.codexBin || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, codexBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/codex"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the <code>codex</code> binary (install via{' '}
+            <code>npm install -g @openai/codex</code>). Used for all codex-cli engine sessions.
           </p>
         </div>
 
@@ -5289,6 +5534,8 @@ export default function SettingsPage({
               <ClaudeAuthSection />
               <div className="h-px bg-gray-800" />
               <GeminiAuthSection />
+              <div className="h-px bg-gray-800" />
+              <CodexAuthSection />
             </div>
           )}
           {tab === 'github' && (

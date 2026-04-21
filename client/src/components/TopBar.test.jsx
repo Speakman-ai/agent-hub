@@ -88,6 +88,39 @@ describe('<TopBar /> engine picker', () => {
     expect(screen.queryByText('Gemini CLI')).toBeNull();
   });
 
+  it('lists Codex as a selectable engine option and calls onEngineChange with codex-cli', () => {
+    const onEngineChange = vi.fn();
+    renderTopBar({ sessionEngine: 'claude-code', onEngineChange });
+    const trigger = screen.getByRole('button', { name: /select engine/i });
+    fireEvent.click(trigger);
+
+    // Use getAllByText since "Codex" can appear in the dropdown plus any
+    // model-preview text — we only care that at least one option is clickable.
+    const codexOption = screen
+      .getAllByRole('button')
+      .find(
+        (b) => /^\s*Codex(\s|$)/.test(b.textContent || '') && !b.textContent.includes('Model:'),
+      );
+    expect(codexOption).toBeTruthy();
+    fireEvent.click(codexOption);
+    expect(onEngineChange).toHaveBeenCalledWith('codex-cli');
+  });
+
+  it('reflects codex-cli as the active engine and shows gpt-5.2-codex as the default model', () => {
+    renderTopBar({ sessionEngine: 'codex-cli', sessionModel: 'gpt-5.2-codex' });
+    const trigger = screen.getByRole('button', { name: /select engine/i });
+    expect(trigger.textContent).toMatch(/Codex/);
+
+    const modelTrigger = screen.getByTitle(/^Model: /);
+    fireEvent.click(modelTrigger);
+    // All allowlisted Codex models should be visible in the picker
+    expect(screen.getAllByText(/GPT-5.2 Codex/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/GPT-5.1 Codex Max/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/GPT-5 Codex/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^GPT-5$/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/GPT-5 Mini/).length).toBeGreaterThan(0);
+  });
+
   it('shows only composer-2 as the model for cursor-agent', () => {
     renderTopBar({ sessionEngine: 'cursor-agent', sessionModel: 'composer-2' });
     // The model trigger surfaces by its title attribute
@@ -95,7 +128,7 @@ describe('<TopBar /> engine picker', () => {
     fireEvent.click(modelTrigger);
     expect(screen.getAllByText('Composer 2').length).toBeGreaterThan(0);
     // No other cursor models (Codex variants, auto, composer-2-fast) should be rendered
-    expect(screen.queryByText(/Codex/)).toBeNull();
+    expect(screen.queryByText(/GPT-5.2 Codex/)).toBeNull();
     expect(screen.queryByText(/Composer 2 Fast/)).toBeNull();
     expect(screen.queryByText(/^Auto$/)).toBeNull();
   });

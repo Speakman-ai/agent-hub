@@ -13,6 +13,7 @@ const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_BIN: string = config.claudeBin;
 const CURSOR_BIN: string = config.cursorBin;
 const GEMINI_BIN: string = config.geminiBin;
+const CODEX_BIN: string = config.codexBin;
 const TIMEOUT_MS: number = config.slackTimeoutMs;
 
 interface SlackAccount {
@@ -173,6 +174,12 @@ function runAgent(
       const combinedPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
       args = ['-p', combinedPrompt, '--yolo'];
       bin = GEMINI_BIN;
+    } else if (engine === 'codex-cli') {
+      // Codex exec has no --system-prompt flag either — concatenate. We stay
+      // read-only here since Slack one-shots shouldn't mutate the workspace.
+      const combinedPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
+      args = ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', combinedPrompt];
+      bin = CODEX_BIN;
     } else {
       args = ['--print', '--permission-mode', 'bypassPermissions'];
       if (systemPrompt) {

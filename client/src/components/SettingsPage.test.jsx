@@ -115,6 +115,7 @@ describe('GeneralSection — CLI binary paths', () => {
       claudeBin: '/usr/bin/claude',
       cursorBin: '/home/agenthub/.local/bin/agent',
       geminiBin: '/usr/local/bin/gemini',
+      codexBin: '/usr/local/bin/codex',
       port: 3051,
       defaultCwd: '/tmp',
       publicUrl: '',
@@ -147,6 +148,27 @@ describe('GeneralSection — CLI binary paths', () => {
     await waitFor(() => {
       expect(api.updateConfig).toHaveBeenCalledWith(
         expect.objectContaining({ cursorBin: '/usr/local/bin/agent' }),
+      );
+    });
+  });
+
+  it('renders a codexBin input pre-populated from config', async () => {
+    const { findByDisplayValue, getByText } = render(<GeneralSection />);
+    await waitFor(() => expect(getByText('Codex CLI')).toBeTruthy());
+    expect(await findByDisplayValue('/usr/local/bin/codex')).toBeTruthy();
+  });
+
+  it('sends codexBin in the updateConfig payload when saved', async () => {
+    const { findByDisplayValue, getByText } = render(<GeneralSection />);
+
+    const codexInput = await findByDisplayValue('/usr/local/bin/codex');
+    fireEvent.change(codexInput, { target: { value: '/opt/codex/bin/codex' } });
+
+    fireEvent.click(getByText('Save'));
+
+    await waitFor(() => {
+      expect(api.updateConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ codexBin: '/opt/codex/bin/codex' }),
       );
     });
   });

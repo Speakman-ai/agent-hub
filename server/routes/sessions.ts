@@ -86,6 +86,17 @@ export function summarizeTranscript(
       if (model && model !== 'auto') {
         args.push('--model', model);
       }
+    } else if (engine === 'codex-cli') {
+      // Codex exec has no `--system-prompt` flag — concatenate into the body.
+      // `--skip-git-repo-check` lets us run outside a git cwd, and
+      // `--sandbox read-only` keeps the summary pass from mutating anything.
+      bin = config.codexBin;
+      const combined = `${systemPrompt}\n\n${userPrompt}`;
+      args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only'];
+      if (model) {
+        args.push('--model', model);
+      }
+      args.push(combined);
     } else {
       bin = CLAUDE_BIN;
       args = [
@@ -391,10 +402,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   router.put('/api/sessions/:sessionId/engine', (req: Request, res: Response) => {
     const { engine } = req.body;
-    if (!engine || !['claude-code', 'cursor-agent', 'gemini-cli'].includes(engine)) {
-      return res
-        .status(400)
-        .json({ error: 'Invalid engine. Must be claude-code, cursor-agent, or gemini-cli' });
+    if (!engine || !['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli'].includes(engine)) {
+      return res.status(400).json({
+        error: 'Invalid engine. Must be claude-code, cursor-agent, gemini-cli, or codex-cli',
+      });
     }
     stmts.updateSessionEngine.run(engine, req.params.sessionId);
     stmts.updateSessionEngineSessionId.run(null, req.params.sessionId);

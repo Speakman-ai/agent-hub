@@ -6,14 +6,37 @@ import {
 } from './engineOptions.js';
 
 describe('mobile engine picker constants', () => {
-  it('exposes exactly claude-code and cursor-agent as engine options', () => {
+  it('exposes exactly claude-code, cursor-agent, and codex-cli as engine options', () => {
     const ids = ENGINE_OPTIONS.map((e) => e.id);
-    expect(ids).toEqual(['claude-code', 'cursor-agent']);
+    expect(ids).toEqual(['claude-code', 'cursor-agent', 'codex-cli']);
   });
 
   it('does not list gemini-cli as an engine option', () => {
     const ids = ENGINE_OPTIONS.map((e) => e.id);
     expect(ids).not.toContain('gemini-cli');
+  });
+
+  it('lists codex-cli with the "Codex" label', () => {
+    const codex = ENGINE_OPTIONS.find((e) => e.id === 'codex-cli');
+    expect(codex).toBeTruthy();
+    expect(codex.label).toBe('Codex');
+  });
+
+  it('defaults codex-cli to gpt-5.2-codex', () => {
+    expect(ENGINE_DEFAULT_MODELS['codex-cli']).toBe('gpt-5.2-codex');
+    const allowed = ENGINE_MODELS['codex-cli'].map((m) => m.id);
+    expect(allowed).toContain('gpt-5.2-codex');
+  });
+
+  it('exposes the full Codex model allowlist', () => {
+    const models = ENGINE_MODELS['codex-cli'].map((m) => m.id);
+    expect(models).toEqual([
+      'gpt-5.2-codex',
+      'gpt-5.1-codex-max',
+      'gpt-5-codex',
+      'gpt-5',
+      'gpt-5-mini',
+    ]);
   });
 
   it('exposes only composer-2 as the model for cursor-agent', () => {

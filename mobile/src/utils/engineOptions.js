@@ -9,6 +9,7 @@
 export const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
   { id: 'cursor-agent', label: 'Cursor Agent', color: '#10B981' },
+  { id: 'codex-cli', label: 'Codex', color: '#10A37F' },
 ];
 
 export const ENGINE_MODELS = {
@@ -18,9 +19,17 @@ export const ENGINE_MODELS = {
     { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
   ],
   'cursor-agent': [{ id: 'composer-2', label: 'Composer 2', short: 'Composer 2' }],
+  'codex-cli': [
+    { id: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', short: '5.2 Codex' },
+    { id: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max', short: '5.1 Max' },
+    { id: 'gpt-5-codex', label: 'GPT-5 Codex', short: '5 Codex' },
+    { id: 'gpt-5', label: 'GPT-5', short: 'GPT-5' },
+    { id: 'gpt-5-mini', label: 'GPT-5 Mini', short: 'Mini' },
+  ],
 };
 
 export const ENGINE_DEFAULT_MODELS = {
   'claude-code': 'claude-opus-4-7',
   'cursor-agent': 'composer-2',
+  'codex-cli': 'gpt-5.2-codex',
 };

@@ -883,5 +883,6 @@ function defaultModelForEngine(engine: string): string {
   // runs for the target session.
   if (engine === 'cursor-agent') return 'gpt-4';
   if (engine === 'gemini-cli') return 'gemini-2.5-pro';
+  if (engine === 'codex-cli') return 'gpt-5.2-codex';
   return 'claude-opus-4-7';
 }

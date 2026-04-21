@@ -250,7 +250,9 @@ export function createStreamParser(engine: string): StreamParser {
       ? normalizeCursor
       : engine === 'gemini-cli'
         ? normalizeGemini
-        : normalizeClaude;
+        : engine === 'codex-cli'
+          ? normalizeCodex
+          : normalizeClaude;
 
   return {
     feed(chunk: Buffer | string): StreamEvent[] {
@@ -741,5 +743,239 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
 
     default:
       return [{ type: 'unknown', text: `unhandled gemini event: ${raw.type as string}` }];
+  }
+}
+
+// ─── Codex CLI normalizer ──────────────────────────────────────────────
+//
+// Shape reference: https://developers.openai.com/codex/noninteractive.
+// `codex exec --json` emits a newline-delimited event stream:
+//
+//   { "type": "thread.started", "thread_id": "..." }
+//   { "type": "turn.started" }
+//   { "type": "item.started",   "item": { "id": "...", "type": "...", ... } }
+//   { "type": "item.updated",   "item": { ... } }
+//   { "type": "item.completed", "item": { ... } }
+//   { "type": "turn.completed", "usage": { input_tokens, output_tokens, ... } }
+//   { "type": "turn.failed",    "error": { "message": "..." } }
+//   { "type": "error",          "message": "..." }
+//
+// Item `type` values we care about:
+//   agent_message      — final assistant text (emit assistant_text)
+//   reasoning          — chain-of-thought (emit thinking)
+//   command_execution  — shell command (emit tool_use on started, tool_result on completed)
+//   file_change        — pending/applied edits (tool_use + tool_result)
+//   mcp_tool_call      — external MCP tool (tool_use + tool_result)
+//   web_search         — search query (tool_use)
+//   todo_list          — plan snapshot (currently ignored)
+//   error              — item-level failure (unknown text)
+//
+// Codex does not stream token-level deltas today — agent_message arrives as a
+// whole item on `item.completed`, mirroring Gemini's non-partial behavior.
+function normalizeCodex(raw: Record<string, unknown>): StreamEvent[] {
+  const type = raw.type as string | undefined;
+
+  switch (type) {
+    case 'thread.started':
+      // The thread_id doubles as the resume handle: `codex exec resume <id>`.
+      return [
+        {
+          type: 'system',
+          sessionId: (raw.thread_id as string) ?? null,
+          model: (raw.model as string) ?? null,
+          cwd: (raw.cwd as string) ?? null,
+          tools: [],
+        },
+      ];
+
+    case 'turn.started':
+      return [];
+
+    case 'item.started':
+    case 'item.updated':
+    case 'item.completed': {
+      const item = (raw.item ?? {}) as Record<string, unknown>;
+      const itemType = item.type as string | undefined;
+      const id = (item.id as string) ?? '';
+
+      switch (itemType) {
+        case 'agent_message': {
+          // Only emit the final text on item.completed — partial/updated items
+          // would duplicate text that Codex finalizes atomically.
+          if (type !== 'item.completed') return [];
+          const text = typeof item.text === 'string' ? (item.text as string) : '';
+          if (!text) return [];
+          const { strippedText: afterAsk, asks } = extractAskBlocks(text);
+          const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+          const out: StreamEvent[] = [];
+          if (asks.length > 0 || steps.length > 0) {
+            if (afterSteps) {
+              out.push({ type: 'assistant_text', text: afterSteps, partial: false });
+            }
+            for (const s of steps) out.push(stepEvent(s));
+            for (const ask of asks) out.push(askEvent(ask));
+          } else {
+            out.push({ type: 'assistant_text', text, partial: false });
+          }
+          return out;
+        }
+
+        case 'reasoning': {
+          if (type !== 'item.completed') return [];
+          const text = typeof item.text === 'string' ? (item.text as string) : '';
+          if (!text) return [];
+          return [{ type: 'thinking', text }];
+        }
+
+        case 'command_execution': {
+          const command = typeof item.command === 'string' ? (item.command as string) : '';
+          if (type === 'item.started') {
+            return [
+              {
+                type: 'tool_use',
+                id,
+                tool: 'Bash',
+                input: { command },
+              },
+            ];
+          }
+          if (type === 'item.completed') {
+            const exitCode = typeof item.exit_code === 'number' ? (item.exit_code as number) : 0;
+            const output =
+              typeof item.aggregated_output === 'string'
+                ? (item.aggregated_output as string)
+                : typeof item.output === 'string'
+                  ? (item.output as string)
+                  : '';
+            return [
+              {
+                type: 'tool_result',
+                toolUseId: id,
+                output,
+                isError: exitCode !== 0 || item.status === 'failed',
+              },
+            ];
+          }
+          return [];
+        }
+
+        case 'file_change': {
+          const changes = item.changes ?? [];
+          if (type === 'item.started') {
+            return [
+              {
+                type: 'tool_use',
+                id,
+                tool: 'Edit',
+                input: { changes } as Record<string, unknown>,
+              },
+            ];
+          }
+          if (type === 'item.completed') {
+            return [
+              {
+                type: 'tool_result',
+                toolUseId: id,
+                output: stringifyToolResult(changes),
+                isError: item.status === 'failed',
+              },
+            ];
+          }
+          return [];
+        }
+
+        case 'mcp_tool_call': {
+          const server = (item.server as string) ?? 'mcp';
+          const tool = (item.tool as string) ?? 'tool';
+          const toolName = `${server}:${tool}`;
+          if (type === 'item.started') {
+            const args = (item.arguments as Record<string, unknown>) ?? {};
+            return [
+              {
+                type: 'tool_use',
+                id,
+                tool: toolName,
+                input: args,
+              },
+            ];
+          }
+          if (type === 'item.completed') {
+            const output = stringifyToolResult(item.result ?? item.error ?? '');
+            return [
+              {
+                type: 'tool_result',
+                toolUseId: id,
+                output,
+                isError: item.status === 'failed' || !!item.error,
+              },
+            ];
+          }
+          return [];
+        }
+
+        case 'web_search': {
+          if (type !== 'item.started') return [];
+          const query = (item.query as string) ?? '';
+          return [
+            {
+              type: 'tool_use',
+              id,
+              tool: 'WebSearch',
+              input: { query },
+            },
+          ];
+        }
+
+        case 'error': {
+          if (type !== 'item.completed') return [];
+          const msg = (item.message as string) ?? 'unknown codex item error';
+          return [{ type: 'unknown', text: `codex item error: ${msg}` }];
+        }
+
+        case 'todo_list':
+        default:
+          return [];
+      }
+    }
+
+    case 'turn.completed': {
+      const usage = (raw.usage as Record<string, unknown> | undefined) ?? {};
+      return [
+        {
+          type: 'result',
+          text: '',
+          durationMs: (usage.duration_ms as number) ?? null,
+          costUsd: null,
+          numTurns:
+            typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number'
+              ? 1
+              : null,
+          isError: false,
+          stopReason: null,
+        },
+      ];
+    }
+
+    case 'turn.failed': {
+      const err = (raw.error as Record<string, unknown> | undefined) ?? {};
+      const message = (err.message as string) ?? 'codex turn failed';
+      return [
+        {
+          type: 'result',
+          text: message,
+          durationMs: null,
+          costUsd: null,
+          numTurns: null,
+          isError: true,
+          stopReason: null,
+        },
+      ];
+    }
+
+    case 'error':
+      return [{ type: 'unknown', text: `codex error: ${(raw.message as string) ?? ''}` }];
+
+    default:
+      return [{ type: 'unknown', text: `unhandled codex event: ${type ?? 'undefined'}` }];
   }
 }

@@ -103,6 +103,7 @@ const config: AppConfig = {
     path.join(HOME, '.local', 'bin', 'agent'),
   ) as string,
   geminiBin: resolve('GEMINI_BIN', 'geminiBin', '/usr/local/bin/gemini') as string,
+  codexBin: resolve('CODEX_BIN', 'codexBin', '/usr/local/bin/codex') as string,
 
   // ── Directories ────────────────────────────────────────────────
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME) as string,
@@ -120,6 +121,7 @@ const config: AppConfig = {
     'claude-code': 'claude-opus-4-7',
     'cursor-agent': 'gpt-5.3-codex-high',
     'gemini-cli': 'gemini-2.5-pro',
+    'codex-cli': 'gpt-5.2-codex',
   },
 
   engineValidModels: (fileConfig.engineValidModels as Record<string, string[]>) || {
@@ -141,6 +143,12 @@ const config: AppConfig = {
     // currently accepts. We only list stable IDs — experimental/preview aliases are
     // left out of the allowlist so sessions don't stream with an unsupported name.
     'gemini-cli': ['auto', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    // Codex model IDs per https://developers.openai.com/codex/models. The CLI
+    // defaults to `gpt-5.2-codex` for ChatGPT users and `gpt-5-codex` for
+    // API-key users on Linux/macOS. We list the stable published IDs the CLI
+    // accepts via `--model`; non-Codex-tuned GPT-5 variants are included so
+    // cost-sensitive sessions can downshift.
+    'codex-cli': ['gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5-codex', 'gpt-5', 'gpt-5-mini'],
   },
 
   // ── Timeouts ───────────────────────────────────────────────────
@@ -160,6 +168,12 @@ const config: AppConfig = {
   anthropicApiKey: resolve('ANTHROPIC_API_KEY', 'anthropicApiKey', null),
   openaiApiKey: resolve('OPENAI_API_KEY', 'openaiApiKey', null),
   geminiApiKey: resolve('GEMINI_API_KEY', 'geminiApiKey', null),
+  // Codex CLI reads its API key from either `OPENAI_API_KEY` or `CODEX_API_KEY`
+  // (see https://developers.openai.com/codex/noninteractive). We expose
+  // `codexApiKey` as a dedicated field so the Codex auth panel can toggle it
+  // independently of the existing `openaiApiKey` (which we leave untouched for
+  // forward-compat with any future OpenAI SDK integrations).
+  codexApiKey: resolve('CODEX_API_KEY', 'codexApiKey', null),
 
   // ── Slack ──────────────────────────────────────────────────────
   slackWebhookUrl:
@@ -191,6 +205,14 @@ export function buildSpawnEnv(cfg: AppConfig = config): NodeJS.ProcessEnv {
     // The Gemini CLI reads GEMINI_API_KEY from the environment when no cached
     // OAuth token is present. See https://geminicli.com/docs/cli/cli-reference.
     env.GEMINI_API_KEY = cfg.geminiApiKey;
+  }
+  if (cfg.codexApiKey) {
+    // The Codex CLI reads OPENAI_API_KEY (preferred) or CODEX_API_KEY from the
+    // environment when no ChatGPT OAuth token is cached. See
+    // https://developers.openai.com/codex/noninteractive. We set both so either
+    // variable name works regardless of which the installed CLI version prefers.
+    env.OPENAI_API_KEY = cfg.codexApiKey;
+    env.CODEX_API_KEY = cfg.codexApiKey;
   }
   return env;
 }

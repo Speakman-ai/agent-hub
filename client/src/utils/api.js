@@ -386,6 +386,21 @@ export const api = {
     }),
   logoutGemini: () => fetchJSON('/config/gemini-auth', { method: 'DELETE' }),
 
+  // Codex CLI Authentication — mirrors the Gemini/Claude shape. Backend is
+  // server/routes/codex-auth.ts; CODEX_API_KEY / OPENAI_API_KEY are both
+  // accepted. validate-key issues a real `codex exec --json` turn so the
+  // timeout needs to exceed the Responses API warm-up (~30s).
+  getCodexAuth: () => fetchJSON('/config/codex-auth'),
+  setCodexApiKey: (apiKey) =>
+    fetchJSON('/config/codex-auth/api-key', { method: 'POST', body: JSON.stringify({ apiKey }) }),
+  validateCodexApiKey: (apiKey) =>
+    fetchJSON('/config/codex-auth/validate-key', {
+      method: 'POST',
+      body: JSON.stringify({ apiKey }),
+      timeout: 35000,
+    }),
+  logoutCodex: () => fetchJSON('/config/codex-auth', { method: 'DELETE' }),
+
   // Per-project export/import
   exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),
   importProject: (projectId, data) =>

@@ -11,6 +11,9 @@ import BugReportButton from './BugReportButton.jsx';
 const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
   { id: 'cursor-agent', label: 'Cursor Agent', color: '#10B981' },
+  // OpenAI Codex CLI — green brand color (#10A37F) per openai.com. See
+  // server/routes/codex-auth.ts + server/config.ts for the auth + model contract.
+  { id: 'codex-cli', label: 'Codex', color: '#10A37F' },
 ];
 
 const ENGINE_MODELS = {
@@ -20,6 +23,15 @@ const ENGINE_MODELS = {
     { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
   ],
   'cursor-agent': [{ id: 'composer-2', label: 'Composer 2', short: 'Composer 2' }],
+  // Codex model IDs must match server/config.ts → engineValidModels['codex-cli'].
+  // Default is gpt-5.2-codex (see server/config.ts → engineDefaultModels).
+  'codex-cli': [
+    { id: 'gpt-5.2-codex', label: 'GPT-5.2 Codex', short: '5.2 Codex' },
+    { id: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max', short: '5.1 Max' },
+    { id: 'gpt-5-codex', label: 'GPT-5 Codex', short: '5 Codex' },
+    { id: 'gpt-5', label: 'GPT-5', short: 'GPT-5' },
+    { id: 'gpt-5-mini', label: 'GPT-5 Mini', short: 'Mini' },
+  ],
 };
 
 export default function TopBar({

@@ -1048,3 +1048,254 @@ describe('createStreamParser — Gemini CLI', () => {
     expect(events[0].type).toBe('unknown');
   });
 });
+
+describe('createStreamParser — Codex CLI', () => {
+  function parse(lines: string[]): StreamEvent[] {
+    const parser = createStreamParser('codex-cli');
+    const events: StreamEvent[] = [];
+    for (const line of lines) {
+      events.push(...parser.feed(line + '\n'));
+    }
+    events.push(...parser.flush());
+    return events;
+  }
+
+  it('normalizes thread.started into a system event with sessionId', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'thread.started',
+        thread_id: '019db065-acf4-7221-a047-4bf736bc773d',
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('system');
+    expect((events[0] as { sessionId: string }).sessionId).toBe(
+      '019db065-acf4-7221-a047-4bf736bc773d',
+    );
+  });
+
+  it('drops turn.started without emitting an event', () => {
+    const events = parse([JSON.stringify({ type: 'turn.started' })]);
+    expect(events).toHaveLength(0);
+  });
+
+  it('emits finalized assistant_text from agent_message on item.completed', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'item_3',
+          type: 'agent_message',
+          text: 'Repo contains docs, sdk, and examples directories.',
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('assistant_text');
+    expect((events[0] as { partial: boolean }).partial).toBe(false);
+    expect((events[0] as { text: string }).text).toBe(
+      'Repo contains docs, sdk, and examples directories.',
+    );
+  });
+
+  it('does not emit assistant_text on item.started or item.updated for agent_message', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.started',
+        item: { id: 'item_3', type: 'agent_message', text: 'partial' },
+      }),
+      JSON.stringify({
+        type: 'item.updated',
+        item: { id: 'item_3', type: 'agent_message', text: 'partial' },
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
+  it('emits thinking for reasoning item.completed', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.completed',
+        item: { id: 'item_2', type: 'reasoning', text: 'planning the approach' },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('thinking');
+    expect((events[0] as { text: string }).text).toBe('planning the approach');
+  });
+
+  it('emits tool_use on command_execution started and tool_result on completed', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.started',
+        item: {
+          id: 'item_1',
+          type: 'command_execution',
+          command: 'bash -lc ls',
+          status: 'in_progress',
+        },
+      }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'item_1',
+          type: 'command_execution',
+          command: 'bash -lc ls',
+          aggregated_output: 'docs\nsdk\nexamples',
+          exit_code: 0,
+          status: 'completed',
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('tool_use');
+    expect((events[0] as { tool: string }).tool).toBe('Bash');
+    expect((events[0] as { id: string }).id).toBe('item_1');
+    expect((events[0] as { input: Record<string, unknown> }).input).toEqual({
+      command: 'bash -lc ls',
+    });
+    expect(events[1].type).toBe('tool_result');
+    expect((events[1] as { toolUseId: string }).toolUseId).toBe('item_1');
+    expect((events[1] as { output: string }).output).toBe('docs\nsdk\nexamples');
+    expect((events[1] as { isError: boolean }).isError).toBe(false);
+  });
+
+  it('marks command_execution with non-zero exit_code as an error', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'item_1',
+          type: 'command_execution',
+          command: 'false',
+          aggregated_output: '',
+          exit_code: 1,
+          status: 'failed',
+        },
+      }),
+    ]);
+    const result = events.find((e) => e.type === 'tool_result') as { isError: boolean };
+    expect(result).toBeDefined();
+    expect(result.isError).toBe(true);
+  });
+
+  it('emits tool_use for web_search on item.started', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.started',
+        item: { id: 'item_4', type: 'web_search', query: 'node lts version' },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_use');
+    expect((events[0] as { tool: string }).tool).toBe('WebSearch');
+    expect((events[0] as { input: Record<string, unknown> }).input).toEqual({
+      query: 'node lts version',
+    });
+  });
+
+  it('emits tool_use + tool_result for mcp_tool_call', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.started',
+        item: {
+          id: 'mcp_1',
+          type: 'mcp_tool_call',
+          server: 'github',
+          tool: 'list_issues',
+          arguments: { repo: 'openai/codex' },
+          status: 'in_progress',
+        },
+      }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'mcp_1',
+          type: 'mcp_tool_call',
+          server: 'github',
+          tool: 'list_issues',
+          result: { count: 3 },
+          status: 'completed',
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(2);
+    expect((events[0] as { tool: string }).tool).toBe('github:list_issues');
+    expect((events[0] as { input: Record<string, unknown> }).input).toEqual({
+      repo: 'openai/codex',
+    });
+    expect(events[1].type).toBe('tool_result');
+    expect((events[1] as { isError: boolean }).isError).toBe(false);
+  });
+
+  it('emits a result event on turn.completed', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 24763, cached_input_tokens: 24448, output_tokens: 122 },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('result');
+    expect((events[0] as { isError: boolean }).isError).toBe(false);
+    expect((events[0] as { numTurns: number }).numTurns).toBe(1);
+  });
+
+  it('emits a failed result event on turn.failed', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'turn.failed',
+        error: { message: 'upstream 500' },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('result');
+    expect((events[0] as { isError: boolean }).isError).toBe(true);
+    expect((events[0] as { text: string }).text).toBe('upstream 500');
+  });
+
+  it('replays a real captured Codex exec --json session without crashing', () => {
+    // Fixture captured locally against `codex exec --json --skip-git-repo-check
+    // --sandbox read-only "hi"` on 2026-04-21 (codex-cli 0.122.0). The auth
+    // failure path is what gets exercised when CODEX_API_KEY is unset — these
+    // lines are the canonical sequence we need to tolerate even on cold-start
+    // boxes. Real successful turns add item.* events between turn.started and
+    // turn.failed/completed, which are covered by the unit tests above.
+    const fixture = [
+      '{"type":"thread.started","thread_id":"019db065-acf4-7221-a047-4bf736bc773d"}',
+      '{"type":"turn.started"}',
+      '{"type":"error","message":"Reconnecting... 1/5 (401 Unauthorized)"}',
+      '{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized"}}',
+    ];
+    const events = parse(fixture);
+
+    const system = events.find((e) => e.type === 'system') as { sessionId: string } | undefined;
+    expect(system?.sessionId).toBe('019db065-acf4-7221-a047-4bf736bc773d');
+
+    const result = events.find((e) => e.type === 'result') as { isError: boolean } | undefined;
+    expect(result).toBeDefined();
+    expect(result?.isError).toBe(true);
+  });
+
+  it('returns an unknown event for unrecognized codex types', () => {
+    const events = parse([JSON.stringify({ type: 'mystery.event' })]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('unknown');
+  });
+
+  it('extracts agenthub:ask fenced blocks from agent_message text', () => {
+    const text =
+      'Need your input:\n\n```agenthub:ask\n[{"question": "Library?","header": "Library","multiSelect": false,"options": [{"label": "A","description": "a"}, {"label": "B","description": "b"}]}]\n```';
+    const events = parse([
+      JSON.stringify({
+        type: 'item.completed',
+        item: { id: 'msg_1', type: 'agent_message', text },
+      }),
+    ]);
+    const ask = events.find((e) => e.type === 'ask_user_question') as
+      | { questions: Array<{ question: string }> }
+      | undefined;
+    expect(ask).toBeDefined();
+    expect(ask?.questions[0].question).toBe('Library?');
+  });
+});
