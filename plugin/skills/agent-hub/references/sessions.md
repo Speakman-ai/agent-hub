@@ -32,7 +32,7 @@ scripts/sessions.sh messages <sessionId>     # full message history
 
 ## Session row
 
-Notable columns: `id`, `agent_id`, `engine` (`claude` | `cursor`), `model`,
+Notable columns: `id`, `agent_id`, `engine` (`claude-code` | `cursor-agent` | `gemini-cli`), `model`,
 `ask_mode` (0/1 — see below), `created_at`, `updated_at`, `title`,
 `last_message_at`.
 

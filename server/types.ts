@@ -1129,6 +1129,7 @@ export interface AppConfig {
   host: string;
   claudeBin: string;
   cursorBin: string;
+  geminiBin: string;
   defaultCwd: string;
   dataDir: string;
   projectsDir: string;
@@ -1146,6 +1147,7 @@ export interface AppConfig {
   apiKey: string | null;
   anthropicApiKey: string | null;
   openaiApiKey: string | null;
+  geminiApiKey: string | null;
   slackWebhookUrl: string | null;
   capturesEnabled: boolean;
   readonly allValidModels: string[];
@@ -1415,6 +1417,8 @@ export interface RouteDeps {
   ensureReviewerAgents: () => boolean;
   getClaudeBin: () => string;
   setClaudeBin: (v: string) => void;
+  getGeminiBin?: () => string;
+  setGeminiBin?: (v: string) => void;
   initDb: (dataDir: string) => void;
   reloadProjects: (dataDir: string) => void;
   setActiveDataDir: (v: string) => void;

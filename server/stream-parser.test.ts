@@ -817,3 +817,176 @@ describe('extractStepMarkers — [[STEP:...]] progress protocol', () => {
     expect(progress[0].status).toBe('started');
   });
 });
+
+describe('createStreamParser — Gemini CLI', () => {
+  function parse(lines: string[]): StreamEvent[] {
+    const parser = createStreamParser('gemini-cli');
+    const events: StreamEvent[] = [];
+    for (const line of lines) {
+      events.push(...parser.feed(line + '\n'));
+    }
+    events.push(...parser.flush());
+    return events;
+  }
+
+  it('parses init event into a system event', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'init',
+        sessionId: 'gem-1',
+        model: 'gemini-2.5-pro',
+        cwd: '/home/user',
+        tools: ['shell', 'readFile'],
+      }),
+    ]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('system');
+    expect((events[0] as { sessionId: string }).sessionId).toBe('gem-1');
+    expect((events[0] as { model: string }).model).toBe('gemini-2.5-pro');
+    expect((events[0] as { tools: string[] }).tools).toEqual(['shell', 'readFile']);
+  });
+
+  it('emits partial assistant_text for partial message events', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        partial: true,
+        content: [{ type: 'text', text: 'Hel' }],
+      }),
+      JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        partial: true,
+        content: [{ type: 'text', text: 'lo' }],
+      }),
+    ]);
+
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('assistant_text');
+    expect((events[0] as { partial: boolean }).partial).toBe(true);
+    expect((events[0] as { text: string }).text).toBe('Hel');
+    expect((events[1] as { text: string }).text).toBe('lo');
+  });
+
+  it('emits finalized assistant_text for non-partial message events', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Hello world' }],
+      }),
+    ]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('assistant_text');
+    expect((events[0] as { partial: boolean }).partial).toBe(false);
+    expect((events[0] as { text: string }).text).toBe('Hello world');
+  });
+
+  it('ignores non-assistant message events', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'text', text: 'from the user' }],
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
+  it('normalizes tool_use events', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_use',
+        id: 'tool-1',
+        name: 'shell',
+        input: { command: 'ls' },
+      }),
+    ]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_use');
+    expect((events[0] as { id: string }).id).toBe('tool-1');
+    expect((events[0] as { tool: string }).tool).toBe('shell');
+    expect((events[0] as { input: Record<string, unknown> }).input).toEqual({ command: 'ls' });
+  });
+
+  it('normalizes tool_result events including isError', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_result',
+        toolUseId: 'tool-1',
+        output: 'file1\nfile2',
+        isError: false,
+      }),
+      JSON.stringify({
+        type: 'tool_result',
+        toolUseId: 'tool-2',
+        output: 'boom',
+        isError: true,
+      }),
+    ]);
+
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('tool_result');
+    expect((events[0] as { toolUseId: string }).toolUseId).toBe('tool-1');
+    expect((events[0] as { output: string }).output).toBe('file1\nfile2');
+    expect((events[0] as { isError: boolean }).isError).toBe(false);
+    expect((events[1] as { isError: boolean }).isError).toBe(true);
+  });
+
+  it('emits a result event with duration + cost from stats', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'result',
+        response: 'final answer',
+        stats: { durationMs: 1234, turns: 3, costUsd: 0.002 },
+      }),
+    ]);
+
+    const result = events.find((e) => e.type === 'result');
+    expect(result).toBeDefined();
+    expect((result as { text: string }).text).toBe('final answer');
+    expect((result as { durationMs: number | null }).durationMs).toBe(1234);
+    expect((result as { numTurns: number | null }).numTurns).toBe(3);
+    expect((result as { costUsd: number | null }).costUsd).toBe(0.002);
+    expect((result as { isError: boolean }).isError).toBe(false);
+  });
+
+  it('extracts ask blocks from a finalized assistant message', () => {
+    const askBlock = [
+      '```agenthub:ask',
+      JSON.stringify([
+        {
+          question: 'Which library?',
+          header: 'Library',
+          multiSelect: false,
+          options: [{ label: 'A' }, { label: 'B' }],
+        },
+      ]),
+      '```',
+    ].join('\n');
+
+    const events = parse([
+      JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: `Preamble\n\n${askBlock}\n\nEpilogue` }],
+      }),
+    ]);
+
+    const ask = events.find((e) => e.type === 'ask_user_question') as
+      | AskUserQuestionEvent
+      | undefined;
+    expect(ask).toBeDefined();
+    expect(ask?.questions[0].question).toBe('Which library?');
+  });
+
+  it('returns an unknown event for unrecognized types', () => {
+    const events = parse([JSON.stringify({ type: 'gobbledygook' })]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('unknown');
+  });
+});

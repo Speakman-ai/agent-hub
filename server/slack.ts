@@ -12,6 +12,7 @@ import type { EnrichedAgent, Stmts, AppConfig, SlackMessageRow } from './types.j
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_BIN: string = config.claudeBin;
 const CURSOR_BIN: string = config.cursorBin;
+const GEMINI_BIN: string = config.geminiBin;
 const TIMEOUT_MS: number = config.slackTimeoutMs;
 
 interface SlackAccount {
@@ -167,6 +168,11 @@ function runAgent(
       const combinedPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
       args = ['-p', combinedPrompt, '--force'];
       bin = CURSOR_BIN;
+    } else if (engine === 'gemini-cli') {
+      // Gemini CLI has no --system-prompt flag; prepend it to the user turn.
+      const combinedPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
+      args = ['-p', combinedPrompt, '--yolo'];
+      bin = GEMINI_BIN;
     } else {
       args = ['--print', '--permission-mode', 'bypassPermissions'];
       if (systemPrompt) {

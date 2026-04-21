@@ -371,6 +371,18 @@ export const api = {
       timeout: 35000,
     }),
 
+  // Gemini CLI Authentication
+  getGeminiAuth: () => fetchJSON('/config/gemini-auth'),
+  setGeminiApiKey: (apiKey) =>
+    fetchJSON('/config/gemini-auth/api-key', { method: 'POST', body: JSON.stringify({ apiKey }) }),
+  validateGeminiApiKey: (apiKey) =>
+    fetchJSON('/config/gemini-auth/validate-key', {
+      method: 'POST',
+      body: JSON.stringify({ apiKey }),
+      timeout: 35000,
+    }),
+  logoutGemini: () => fetchJSON('/config/gemini-auth', { method: 'DELETE' }),
+
   // Per-project export/import
   exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),
   importProject: (projectId, data) =>

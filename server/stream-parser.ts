@@ -245,7 +245,12 @@ function askEvent(ask: ExtractedAsk): AskUserQuestionEvent {
 
 export function createStreamParser(engine: string): StreamParser {
   let buffer = '';
-  const normalize: NormalizeFn = engine === 'cursor-agent' ? normalizeCursor : normalizeClaude;
+  const normalize: NormalizeFn =
+    engine === 'cursor-agent'
+      ? normalizeCursor
+      : engine === 'gemini-cli'
+        ? normalizeGemini
+        : normalizeClaude;
 
   return {
     feed(chunk: Buffer | string): StreamEvent[] {
@@ -589,4 +594,138 @@ function friendlyCursorToolName(variant: string | undefined): string {
   if (CURSOR_TOOL_MAP[variant]) return CURSOR_TOOL_MAP[variant];
   const stripped = variant.replace(/ToolCall$/, '');
   return stripped.charAt(0).toUpperCase() + stripped.slice(1);
+}
+
+// ─── Gemini CLI normalizer ─────────────────────────────────────────────
+//
+// Shape reference: https://geminicli.com/docs/cli/headless
+// Gemini's stream-json output is a newline-delimited sequence of events:
+//
+//   { "type": "init",        "sessionId": "...", "model": "...", "cwd": "...", "tools": [...] }
+//   { "type": "message",     "role": "assistant", "content": [ {type:"text", text:"..."} ] }
+//   { "type": "message",     "role": "assistant", "content": [ {type:"text", text:"..."} ], "partial": true }
+//   { "type": "tool_use",    "id": "...", "name": "shell", "input": { ... } }
+//   { "type": "tool_result", "toolUseId": "...", "output": "...", "isError": false }
+//   { "type": "error",       "message": "..." }
+//   { "type": "result",      "response": "...", "stats": { durationMs, turns, costUsd } }
+//
+// We normalize these into the same StreamEvent shape emitted for Claude/Cursor
+// so the chat UI can render Gemini sessions without any engine-aware logic.
+// Ask blocks and progress-step markers are extracted from assistant text the
+// same way we do for Claude.
+function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
+  switch (raw.type) {
+    case 'init':
+      return [
+        {
+          type: 'system',
+          sessionId: (raw.sessionId as string) ?? (raw.session_id as string) ?? null,
+          model: (raw.model as string) ?? null,
+          cwd: (raw.cwd as string) ?? null,
+          tools: Array.isArray(raw.tools) ? (raw.tools as string[]) : [],
+        },
+      ];
+
+    case 'message': {
+      const role = raw.role as string | undefined;
+      if (role && role !== 'assistant') return [];
+      const partial = raw.partial === true;
+      const content = (raw.content ?? []) as Array<Record<string, unknown>>;
+      const out: StreamEvent[] = [];
+      for (const block of content) {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          const text = block.text as string;
+          if (partial) {
+            out.push({ type: 'assistant_text', text, partial: true });
+            continue;
+          }
+          // Finalized assistant text — run ask + step extraction to mirror
+          // normalizeClaude's behavior so pickers render in Gemini sessions too.
+          const { strippedText: afterAsk, asks } = extractAskBlocks(text);
+          const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+          if (asks.length > 0 || steps.length > 0) {
+            if (afterSteps) {
+              out.push({ type: 'assistant_text', text: afterSteps, partial: false });
+            }
+            for (const s of steps) out.push(stepEvent(s));
+            for (const ask of asks) out.push(askEvent(ask));
+          } else {
+            out.push({ type: 'assistant_text', text, partial: false });
+          }
+        } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
+          out.push({ type: 'thinking', text: block.thinking as string });
+        }
+      }
+      return out;
+    }
+
+    case 'tool_use': {
+      const id = (raw.id as string) ?? (raw.toolUseId as string) ?? simpleHash(JSON.stringify(raw));
+      const toolName = (raw.name as string) ?? (raw.tool as string) ?? 'unknown';
+      const input =
+        (raw.input as Record<string, unknown>) ?? (raw.args as Record<string, unknown>) ?? {};
+      return [
+        {
+          type: 'tool_use',
+          id,
+          tool: toolName,
+          input,
+        },
+      ];
+    }
+
+    case 'tool_result': {
+      const toolUseId = (raw.toolUseId as string) ?? (raw.tool_use_id as string) ?? '';
+      const output = stringifyToolResult(raw.output ?? raw.content);
+      return [
+        {
+          type: 'tool_result',
+          toolUseId,
+          output,
+          isError: raw.isError === true || raw.is_error === true,
+        },
+      ];
+    }
+
+    case 'error':
+      return [
+        {
+          type: 'unknown',
+          text: `gemini error: ${(raw.message as string) ?? JSON.stringify(raw)}`,
+        },
+      ];
+
+    case 'result': {
+      const stats = (raw.stats as Record<string, unknown> | undefined) ?? {};
+      const resultText = (raw.response as string) ?? (raw.result as string) ?? '';
+      // Gemini emits a single terminal `result` event (per docs). Run ask/step
+      // extraction against the final response so fenced pickers render even
+      // when Gemini doesn't stream the assistant text as partials first.
+      const out: StreamEvent[] = [];
+      if (resultText) {
+        const { strippedText: afterAsk, asks } = extractAskBlocks(resultText);
+        const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+        if (asks.length > 0 || steps.length > 0) {
+          if (afterSteps) {
+            out.push({ type: 'assistant_text', text: afterSteps, partial: false });
+          }
+          for (const s of steps) out.push(stepEvent(s));
+          for (const ask of asks) out.push(askEvent(ask));
+        }
+      }
+      out.push({
+        type: 'result',
+        text: resultText,
+        durationMs: (stats.durationMs as number) ?? (raw.duration_ms as number) ?? null,
+        costUsd: (stats.costUsd as number) ?? (raw.total_cost_usd as number) ?? null,
+        numTurns: (stats.turns as number) ?? (raw.num_turns as number) ?? null,
+        isError: raw.error !== undefined || raw.isError === true,
+        stopReason: (raw.stopReason as string) ?? null,
+      });
+      return out;
+    }
+
+    default:
+      return [{ type: 'unknown', text: `unhandled gemini event: ${raw.type as string}` }];
+  }
 }

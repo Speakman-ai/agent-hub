@@ -113,6 +113,7 @@ export interface ChatHandlerDeps {
   autonomousProjects: Set<string>;
   getClaudeBin: () => string;
   getCursorBin: () => string;
+  getGeminiBin: () => string;
   uploadsDir: string;
   resolveSlashSkill: (agent: Agent, content: string, project: Project) => SlashSkillResult | null;
   createCursorChat: ((cwd: string) => Promise<string>) | undefined;
@@ -465,6 +466,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     autonomousProjects,
     getClaudeBin,
     getCursorBin,
+    getGeminiBin,
     uploadsDir,
     resolveSlashSkill,
     createCursorChat: _createCursorChat,
@@ -836,6 +838,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
     const CLAUDE_BIN = getClaudeBin();
     const CURSOR_BIN = getCursorBin();
+    const GEMINI_BIN = getGeminiBin();
     let args: string[];
     let bin: string;
     if (engine === 'cursor-agent') {
@@ -855,6 +858,32 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         '--stream-partial-output',
       ];
       bin = CURSOR_BIN;
+    } else if (engine === 'gemini-cli') {
+      // Gemini CLI flags per https://geminicli.com/docs/cli/cli-reference:
+      //   -p / --prompt         prompt text (forces non-interactive mode)
+      //   -m / --model          model selector (we pass through the session model)
+      //   -o / --output-format  'stream-json' emits JSONL events we parse in
+      //                         normalizeGemini (init / message / tool_use /
+      //                         tool_result / result).
+      //   --yolo                auto-approve tool calls — matches how we run
+      //                         Claude Code with --permission-mode bypassPermissions.
+      // Gemini does not (yet) expose a --resume flag for stateful sessions, so
+      // we always inject the enriched prompt + full history on each turn. The
+      // `needsHistoryBootstrap` branch earlier already concatenates prior
+      // messages into `finalPrompt` when engineSessionId is null, which is
+      // exactly the shape Gemini expects.
+      const prompt = isNewEngineSession
+        ? `${enrichedPrompt}\n\n${finalPrompt}`
+        : `${enrichedPrompt}\n\n${finalPrompt}`;
+      args = ['-p', prompt, '--output-format', 'stream-json'];
+      if (model && model !== 'auto') {
+        args.push('--model', model);
+      }
+      const isAskMode = !!session!.ask_mode;
+      if (!isAskMode) {
+        args.push('--yolo');
+      }
+      bin = GEMINI_BIN;
     } else {
       const isAskMode = !!session!.ask_mode;
       args = [
@@ -1456,7 +1485,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       try {
         S.deleteActiveTask.run(sessionId);
       } catch {}
-      const errText = `Failed to spawn ${engine === 'cursor-agent' ? 'cursor agent' : 'claude'}: ${err.message}`;
+      const engineLabel =
+        engine === 'cursor-agent' ? 'cursor agent' : engine === 'gemini-cli' ? 'gemini' : 'claude';
+      const errText = `Failed to spawn ${engineLabel}: ${err.message}`;
       saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
       broadcast({
         type: 'error',

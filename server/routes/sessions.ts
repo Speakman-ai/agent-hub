@@ -62,15 +62,41 @@ export function summarizeTranscript(
   const userPrompt = `Summarize this conversation:\n\n${transcript}`;
 
   return new Promise((resolve, reject) => {
-    const bin = engine === 'cursor-agent' ? CURSOR_BIN : CLAUDE_BIN;
-    const args = [
-      '--print',
-      '--model',
-      model || DEFAULT_MODEL,
-      '--system-prompt',
-      systemPrompt,
-      userPrompt,
-    ];
+    const GEMINI_BIN = config.geminiBin;
+    // Engine→bin + args mapping. Each CLI has its own flag conventions, so we
+    // branch rather than force a common shape.
+    let bin: string;
+    let args: string[];
+    if (engine === 'cursor-agent') {
+      bin = CURSOR_BIN;
+      args = [
+        '--print',
+        '--model',
+        model || DEFAULT_MODEL,
+        '--system-prompt',
+        systemPrompt,
+        userPrompt,
+      ];
+    } else if (engine === 'gemini-cli') {
+      // Gemini CLI doesn't have a --system-prompt flag — concatenate into
+      // the prompt body like we do in slack.ts runAgent().
+      bin = GEMINI_BIN;
+      const combined = `${systemPrompt}\n\n${userPrompt}`;
+      args = ['-p', combined];
+      if (model && model !== 'auto') {
+        args.push('--model', model);
+      }
+    } else {
+      bin = CLAUDE_BIN;
+      args = [
+        '--print',
+        '--model',
+        model || DEFAULT_MODEL,
+        '--system-prompt',
+        systemPrompt,
+        userPrompt,
+      ];
+    }
 
     let output = '';
     let errorOutput = '';
@@ -315,8 +341,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   router.put('/api/sessions/:sessionId/engine', (req: Request, res: Response) => {
     const { engine } = req.body;
-    if (!engine || !['claude-code', 'cursor-agent'].includes(engine)) {
-      return res.status(400).json({ error: 'Invalid engine. Must be claude-code or cursor-agent' });
+    if (!engine || !['claude-code', 'cursor-agent', 'gemini-cli'].includes(engine)) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid engine. Must be claude-code, cursor-agent, or gemini-cli' });
     }
     stmts.updateSessionEngine.run(engine, req.params.sessionId);
     stmts.updateSessionEngineSessionId.run(null, req.params.sessionId);

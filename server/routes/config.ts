@@ -17,6 +17,7 @@ import { refreshShellPath, getCachedShellPath } from '../config.js';
 interface FileConfig {
   claudeBin?: string;
   cursorBin?: string;
+  geminiBin?: string;
   githubApp?: GitHubAppConfig;
   [key: string]: unknown;
 }
@@ -187,6 +188,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     res.json({
       claudeBin: config.claudeBin,
       cursorBin: config.cursorBin,
+      geminiBin: config.geminiBin,
       defaultModel: config.defaultModel,
       defaultCwd: config.defaultCwd,
       port: config.port,
@@ -211,6 +213,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       _file: {
         claudeBin: fileConfig.claudeBin || null,
         cursorBin: fileConfig.cursorBin || null,
+        geminiBin: fileConfig.geminiBin || null,
       },
     });
   });
@@ -227,6 +230,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     const allowed = [
       'claudeBin',
       'cursorBin',
+      'geminiBin',
       'defaultModel',
       'defaultCwd',
       'port',

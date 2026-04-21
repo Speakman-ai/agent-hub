@@ -882,5 +882,6 @@ function defaultModelForEngine(engine: string): string {
   // independently testable). The real config defaults apply when handleChat
   // runs for the target session.
   if (engine === 'cursor-agent') return 'gpt-4';
+  if (engine === 'gemini-cli') return 'gemini-2.5-pro';
   return 'claude-opus-4-7';
 }

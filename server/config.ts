@@ -93,6 +93,7 @@ const config: AppConfig = {
   // ── CLI binary paths ───────────────────────────────────────────
   claudeBin: resolve('CLAUDE_BIN', 'claudeBin', '/usr/local/bin/claude') as string,
   cursorBin: resolve('CURSOR_BIN', 'cursorBin', '/usr/local/bin/agent') as string,
+  geminiBin: resolve('GEMINI_BIN', 'geminiBin', '/usr/local/bin/gemini') as string,
 
   // ── Directories ────────────────────────────────────────────────
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME) as string,
@@ -109,6 +110,7 @@ const config: AppConfig = {
   engineDefaultModels: (fileConfig.engineDefaultModels as Record<string, string>) || {
     'claude-code': 'claude-opus-4-7',
     'cursor-agent': 'gpt-5.3-codex-high',
+    'gemini-cli': 'gemini-2.5-pro',
   },
 
   engineValidModels: (fileConfig.engineValidModels as Record<string, string[]>) || {
@@ -125,6 +127,11 @@ const config: AppConfig = {
       'composer-2-fast',
       'auto',
     ],
+    // Gemini model IDs per https://geminicli.com/docs/cli/cli-reference (--model flag).
+    // `auto` lets the CLI pick; other IDs are the first-party Google models the CLI
+    // currently accepts. We only list stable IDs — experimental/preview aliases are
+    // left out of the allowlist so sessions don't stream with an unsupported name.
+    'gemini-cli': ['auto', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
   },
 
   // ── Timeouts ───────────────────────────────────────────────────
@@ -143,6 +150,7 @@ const config: AppConfig = {
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
   anthropicApiKey: resolve('ANTHROPIC_API_KEY', 'anthropicApiKey', null),
   openaiApiKey: resolve('OPENAI_API_KEY', 'openaiApiKey', null),
+  geminiApiKey: resolve('GEMINI_API_KEY', 'geminiApiKey', null),
 
   // ── Slack ──────────────────────────────────────────────────────
   slackWebhookUrl:
@@ -169,6 +177,11 @@ export function buildSpawnEnv(cfg: AppConfig = config): NodeJS.ProcessEnv {
   env.PATH = resolveSpawnPath(process.env.PATH);
   if (cfg.anthropicApiKey) {
     env.ANTHROPIC_API_KEY = cfg.anthropicApiKey;
+  }
+  if (cfg.geminiApiKey) {
+    // The Gemini CLI reads GEMINI_API_KEY from the environment when no cached
+    // OAuth token is present. See https://geminicli.com/docs/cli/cli-reference.
+    env.GEMINI_API_KEY = cfg.geminiApiKey;
   }
   return env;
 }

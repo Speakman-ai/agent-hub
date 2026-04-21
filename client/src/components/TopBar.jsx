@@ -8,13 +8,22 @@ import {
 import { api } from '../utils/api.js';
 import BugReportButton from './BugReportButton.jsx';
 
-const ENGINE_OPTIONS = [{ id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' }];
+const ENGINE_OPTIONS = [
+  { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
+  { id: 'gemini-cli', label: 'Gemini CLI', color: '#1A73E8' },
+];
 
 const ENGINE_MODELS = {
   'claude-code': [
     { id: 'claude-opus-4-7', label: 'Opus 4.7', short: 'Opus' },
     { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
     { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
+  ],
+  'gemini-cli': [
+    { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', short: '2.5 Pro' },
+    { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', short: '2.5 Flash' },
+    { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', short: 'Flash-Lite' },
+    { id: 'auto', label: 'Auto', short: 'Auto' },
   ],
 };
 

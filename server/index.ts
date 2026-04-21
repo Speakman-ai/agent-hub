@@ -83,6 +83,7 @@ import createTranscribeRoutes from './routes/transcribe.js';
 import createMiscRoutes, { createHealthRoute } from './routes/misc.js';
 import createHookRoutes from './routes/hooks.js';
 import createClaudeAuthRoutes from './routes/claude-auth.js';
+import createGeminiAuthRoutes from './routes/gemini-auth.js';
 import createThreadRoutes from './routes/threads.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createCaptureRoutes, { createCaptureGlobalRoutes } from './routes/captures.js';
@@ -161,6 +162,7 @@ const PORT: number = config.port;
 
 let CLAUDE_BIN: string = config.claudeBin;
 let CURSOR_BIN: string = config.cursorBin;
+let GEMINI_BIN: string = config.geminiBin;
 
 let handleChat: ((ws: unknown, msg: ChatMessage) => Promise<void>) | undefined;
 let saveErrorMessage:
@@ -521,6 +523,10 @@ const routeDeps: RouteDeps = {
   setClaudeBin: (v: string) => {
     CLAUDE_BIN = v;
   },
+  getGeminiBin: () => GEMINI_BIN,
+  setGeminiBin: (v: string) => {
+    GEMINI_BIN = v;
+  },
   initDb,
   reloadProjects,
   setActiveDataDir: (v: string) => {
@@ -554,6 +560,7 @@ app.use(createTranscribeRoutes(routeDeps));
 app.use(createMiscRoutes(routeDeps));
 app.use(createHookRoutes(routeDeps));
 app.use(createClaudeAuthRoutes(routeDeps));
+app.use(createGeminiAuthRoutes(routeDeps));
 app.use(createThreadRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
 // `/api/captures/status` is the only non-project-scoped endpoint — everything
@@ -615,6 +622,7 @@ const chatHandler = createChatHandler({
   autonomousProjects,
   getClaudeBin: () => CLAUDE_BIN,
   getCursorBin: () => CURSOR_BIN,
+  getGeminiBin: () => GEMINI_BIN,
   uploadsDir: UPLOADS_DIR,
   resolveSlashSkill,
   createCursorChat: undefined,

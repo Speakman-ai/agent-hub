@@ -62,6 +62,10 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
+# Gemini CLI — lets agents run the `gemini-cli` engine.
+# See https://geminicli.com/docs/ for install + auth details.
+RUN npm install -g @google/gemini-cli
+
 WORKDIR /app
 
 # Copy built node_modules and source from build stage
