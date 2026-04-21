@@ -53,3 +53,6 @@ server/connection.json
 server/active-org.json
 server/remote-orgs.json
 server/server.log
+.codex/
+.claude/
+.cursor/
