@@ -983,7 +983,7 @@ export async function manualCommitAndPR(
     const cardDescription = buildCardDescription(messages, diffStat);
 
     // createKanbanCard params: (id, column_id, board_id, title, description, priority,
-    //   assignee, labels, session_id, github_issue_url, created_by, position)
+    //   assignee, labels, session_id, github_issue_url, created_by, assign_model, position)
     d.stmts.createKanbanCard.run(
       cardId,
       targetCol.id,
@@ -996,6 +996,7 @@ export async function manualCommitAndPR(
       sessionId,
       '',
       agent.name || '',
+      null,
       0,
     );
     console.log(`[manual-pr] Created card "${cardTitle}" and linked to session ${sessionId}`);

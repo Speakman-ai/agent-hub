@@ -305,6 +305,8 @@ export interface KanbanCardRow {
   autonomous_iterations: number;
   /** Set when autonomous dispatch increments iterations — controls auto-PR at session end vs Create PR banner. */
   dispatched_by_autonomous: number;
+  /** Optional model id chosen at assign time; null/absent means use agent + engine defaults. */
+  assign_model?: string | null;
   created_at: string;
   updated_at: string;
 }

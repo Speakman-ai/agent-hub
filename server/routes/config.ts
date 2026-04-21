@@ -13,6 +13,7 @@ import {
 } from '../github-app.js';
 import type { RouteDeps, AppConfig, GitHubAppConfig, Project, Stmts } from '../types.js';
 import { refreshShellPath, getCachedShellPath } from '../config.js';
+import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -1168,6 +1169,24 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           const newColId = colIdMap[card.column_id];
           if (!newColId) continue;
           const newEpicId = card.epic_id ? epicIdMap[card.epic_id] || null : null;
+          const importAssignModelRaw = (card as { assign_model?: string | null }).assign_model;
+          let importAssignModel =
+            typeof importAssignModelRaw === 'string' && importAssignModelRaw.trim()
+              ? importAssignModelRaw.trim()
+              : null;
+          if (importAssignModel) {
+            const assigneeForModel =
+              typeof card.assignee === 'string' && card.assignee.trim()
+                ? card.assignee.trim()
+                : null;
+            const v = validateKanbanAssignModel(
+              importAssignModel,
+              targetProject,
+              assigneeForModel,
+              config,
+            );
+            if (!v.ok) importAssignModel = null;
+          }
           stmts.createKanbanCard.run(
             newCardId,
             newColId,
@@ -1180,6 +1199,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             null,
             card.github_issue_url || null,
             card.created_by || 'import',
+            importAssignModel,
             card.position || 0,
           );
           if (newEpicId) {
@@ -1187,12 +1207,13 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
               card.title,
               card.description || '',
               card.priority || 'medium',
-              card.labels || '',
-              card.assignee || '',
+              card.assignee || null,
+              card.labels || null,
               null,
               card.github_issue_url || null,
               card.pr_url || null,
               newEpicId,
+              importAssignModel,
               newCardId,
             );
           }

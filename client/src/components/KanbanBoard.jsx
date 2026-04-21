@@ -92,13 +92,15 @@ export default function KanbanBoard({
   const [showEpicForm, setShowEpicForm] = useState(false);
   const [epicForm, setEpicForm] = useState({ name: '', description: '', color: '#6366F1' });
   const [editingEpic, setEditingEpic] = useState(null);
-  const [modelConfig, setModelConfig] = useState(null);
 
   // Blockers
   const [showBlockerPicker, setShowBlockerPicker] = useState(false);
   const [blockerPickerQuery, setBlockerPickerQuery] = useState('');
   const [blockerError, setBlockerError] = useState(null);
   const [pendingMove, setPendingMove] = useState(null); // { card, targetColumn, position }
+
+  /** Engine→valid models map from GET /api/config/models (optional model on card assign + epic autonomous). */
+  const [modelConfig, setModelConfig] = useState(null);
 
   const addTitleRef = useRef(null);
 
@@ -107,7 +109,10 @@ export default function KanbanBoard({
     api
       .getModelConfig()
       .then(setModelConfig)
-      .catch(() => setModelConfig(null));
+      .catch((err) => {
+        console.warn('[KanbanBoard] getModelConfig failed — session model picker disabled:', err);
+        setModelConfig(null);
+      });
   }, []);
 
   const fetchBoard = useCallback(async () => {
@@ -494,6 +499,7 @@ export default function KanbanBoard({
       description: card.description || '',
       priority: card.priority || 'medium',
       assignee: card.assignee || '',
+      assign_model: card.assign_model || '',
       labels: card.labels || '',
       github_issue_url: card.github_issue_url || '',
       pr_url: card.pr_url || '',
@@ -1384,7 +1390,14 @@ export default function KanbanBoard({
                           Open Session
                         </button>
                         <button
-                          onClick={() => setShowReassign(true)}
+                          onClick={() => {
+                            setShowReassign(true);
+                            setDetailForm((f) => ({
+                              ...f,
+                              assign_model: selectedCard.assign_model || '',
+                              assignee: selectedCard.assignee || f.assignee,
+                            }));
+                          }}
                           className="mt-2 w-full text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 px-3 py-1.5 rounded-lg transition-colors"
                         >
                           Reassign
@@ -1396,7 +1409,7 @@ export default function KanbanBoard({
                             try {
                               const updated = await api.unassignCard(projectId, selectedCard.id);
                               setSelectedCard(updated);
-                              setDetailForm((f) => ({ ...f, assignee: '' }));
+                              setDetailForm((f) => ({ ...f, assignee: '', assign_model: '' }));
                               setShowReassign(false);
                               fetchBoard();
                             } catch (err) {
@@ -1416,7 +1429,11 @@ export default function KanbanBoard({
                         <select
                           value={detailForm.assignee}
                           onChange={(e) =>
-                            setDetailForm((f) => ({ ...f, assignee: e.target.value }))
+                            setDetailForm((f) => ({
+                              ...f,
+                              assignee: e.target.value,
+                              assign_model: '',
+                            }))
                           }
                           className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
                         >
@@ -1427,6 +1444,35 @@ export default function KanbanBoard({
                             </option>
                           ))}
                         </select>
+                        {detailForm.assignee &&
+                          modelConfig &&
+                          (() => {
+                            const selAgent = agents.find((a) => a.name === detailForm.assignee);
+                            const eng = selAgent?.engine || 'claude-code';
+                            const opts = modelConfig.engineValidModels?.[eng] || [];
+                            if (opts.length === 0) return null;
+                            return (
+                              <div className="mt-2">
+                                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                                  Session model
+                                </label>
+                                <select
+                                  value={detailForm.assign_model || ''}
+                                  onChange={(e) =>
+                                    setDetailForm((f) => ({ ...f, assign_model: e.target.value }))
+                                  }
+                                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                                >
+                                  <option value="">Agent default</option>
+                                  {opts.map((m) => (
+                                    <option key={m} value={m}>
+                                      {m}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            );
+                          })()}
                         {detailForm.assignee && (
                           <button
                             onClick={async () => {
@@ -1434,10 +1480,14 @@ export default function KanbanBoard({
                               if (!agent) return;
                               setAssigning(true);
                               try {
+                                const assignOpts = {};
+                                if (detailForm.assign_model?.trim())
+                                  assignOpts.model = detailForm.assign_model.trim();
                                 const result = await api.assignCard(
                                   projectId,
                                   selectedCard.id,
                                   agent.id,
+                                  assignOpts,
                                 );
                                 setSelectedCard(null);
                                 setShowReassign(false);

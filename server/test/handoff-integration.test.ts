@@ -442,6 +442,7 @@ describe('handleHandoff — end-to-end', () => {
       opts.srcSessionId,
       null,
       'system',
+      null,
       0,
     );
     if (epicId) {

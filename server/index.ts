@@ -791,6 +791,7 @@ function reconcileOrphanedTasks(): ResumeEntry[] {
           card.github_issue_url,
           card.pr_url,
           card.epic_id,
+          card.assign_model ?? null,
           card.id,
         );
         console.log(

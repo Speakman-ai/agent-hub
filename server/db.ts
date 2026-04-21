@@ -903,6 +903,12 @@ function initDb(dataDir: string): void {
   }
 
   try {
+    db.prepare('SELECT assign_model FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN assign_model TEXT');
+  }
+
+  try {
     db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE kanban_epics ADD COLUMN autonomous_model TEXT DEFAULT NULL');
@@ -1786,11 +1792,11 @@ function initDb(dataDir: string): void {
     ),
     getKanbanCard: db.prepare('SELECT * FROM kanban_cards WHERE id = ?'),
     createKanbanCard: db.prepare(
-      `INSERT INTO kanban_cards (id, column_id, board_id, title, description, priority, assignee, labels, session_id, github_issue_url, created_by, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO kanban_cards (id, column_id, board_id, title, description, priority, assignee, labels, session_id, github_issue_url, created_by, assign_model, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     updateKanbanCard: db.prepare(
-      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, assign_model = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     moveKanbanCard: db.prepare(
       `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`,

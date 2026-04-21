@@ -442,11 +442,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  assignCard: (projectId, cardId, agentId) =>
-    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, {
+  assignCard: (projectId, cardId, agentId, opts = {}) => {
+    const body = { agentId };
+    if (opts.model != null && String(opts.model).trim()) body.model = String(opts.model).trim();
+    return fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, {
       method: 'POST',
-      body: JSON.stringify({ agentId }),
-    }),
+      body: JSON.stringify(body),
+    });
+  },
   unassignCard: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/unassign`, {
       method: 'POST',

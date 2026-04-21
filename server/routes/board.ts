@@ -13,6 +13,7 @@ import type {
   KanbanCardBlockerRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
+import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 
 interface BoardData {
   board: KanbanBoardRow;
@@ -76,6 +77,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     scheduleAutonomousEpic,
     autonomousCrons,
     runAutonomousLoop,
+    config,
   } = deps;
 
   const router = Router();
@@ -180,6 +182,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       sessionId || null,
       githubIssueUrl || null,
       createdBy || null,
+      null,
       maxPos,
     );
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
@@ -189,6 +192,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.put('/api/projects/:projectId/board/cards/:cardId', (req: Request, res: Response) => {
     const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
     if (!card) return res.status(404).json({ error: 'Card not found' });
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
     const body = req.body as Record<string, unknown>;
 
     // Non-nullable fields: only overwrite when a new value is supplied.
@@ -222,6 +227,19 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const hasEpicId = 'epicId' in body || 'epic_id' in body;
     const epicId = (body.epicId ?? body.epic_id) as string | null | undefined;
 
+    const hasAssignModel = 'assignModel' in body || 'assign_model' in body;
+    const assignModel = (body.assignModel ?? body.assign_model) as string | null | undefined;
+
+    const nextAssignee = hasAssignee ? (assignee ?? null) : card.assignee;
+    if (hasAssignModel) {
+      const normalized =
+        assignModel != null && String(assignModel).trim() ? String(assignModel).trim() : null;
+      if (normalized) {
+        const v = validateKanbanAssignModel(normalized, project, nextAssignee, config);
+        if (!v.ok) return res.status(400).json({ error: v.error });
+      }
+    }
+
     stmts.updateKanbanCard.run(
       title ?? card.title,
       hasDescription ? (description ?? null) : card.description,
@@ -232,6 +250,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       hasGithubIssueUrl ? (githubIssueUrl ?? null) : card.github_issue_url,
       hasPrUrl ? (prUrl ?? null) : card.pr_url,
       hasEpicId ? (epicId ?? null) : card.epic_id,
+      hasAssignModel
+        ? assignModel != null && String(assignModel).trim()
+          ? String(assignModel).trim()
+          : null
+        : card.assign_model,
       req.params.cardId,
     );
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
@@ -282,24 +305,25 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
       if (!card) return res.status(404).json({ error: 'Card not found' });
 
-      const { agentId } = req.body as { agentId?: string };
+      const { agentId, model: modelBody } = req.body as { agentId?: string; model?: string | null };
       if (!agentId) return res.status(400).json({ error: 'agentId is required' });
 
       const found = findAgent(agentId);
       if (!found) return res.status(404).json({ error: 'Agent not found' });
       const { agent } = found;
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
 
       const sessionId = crypto.randomUUID();
       const engine = agent.engine || 'claude-code';
-      stmts.createSession.run(
-        sessionId,
-        agentId,
-        card.title,
-        engine,
-        agent.model || defaultModelForEngine(engine),
-        1,
-        0,
-      );
+      const trimmedOverride =
+        typeof modelBody === 'string' && modelBody.trim() ? modelBody.trim() : null;
+      if (trimmedOverride) {
+        const v = validateKanbanAssignModel(trimmedOverride, project, agent.name, config);
+        if (!v.ok) return res.status(400).json({ error: v.error });
+      }
+      const resolvedModel = trimmedOverride ?? (agent.model || defaultModelForEngine(engine));
+      stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, 1, 0);
 
       const board = stmts.getKanbanBoard.get(req.params.projectId) as KanbanBoardRow | undefined;
       let inProgressColumnId = card.column_id;
@@ -319,6 +343,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         card.github_issue_url,
         card.pr_url,
         card.epic_id,
+        trimmedOverride,
         req.params.cardId,
       );
       stmts.moveKanbanCard.run(inProgressColumnId, 0, req.params.cardId);
@@ -405,6 +430,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         card.github_issue_url,
         card.pr_url,
         card.epic_id,
+        null,
         req.params.cardId,
       );
 

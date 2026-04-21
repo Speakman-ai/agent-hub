@@ -241,6 +241,7 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
           card.github_issue_url,
           card.pr_url,
           card.epic_id,
+          card.assign_model,
           card.id,
         );
         d.stmts.moveKanbanCard.run(card.column_id, card.position, card.id);
@@ -266,7 +267,17 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
       const sessionId = crypto.randomUUID();
       const engine = agent.engine || 'claude-code';
       const cfg = d.getConfig();
-      const model = sessionModelForAutonomousDispatch(epic, agent, cfg.engineValidModels || {});
+      const engineValidModels = cfg.engineValidModels || {};
+      const cardRaw = typeof card.assign_model === 'string' ? card.assign_model.trim() : '';
+      let model: string;
+      if (cardRaw) {
+        const allowed = engineValidModels[engine] || [];
+        model = allowed.includes(cardRaw)
+          ? cardRaw
+          : sessionModelForAutonomousDispatch(epic, agent, engineValidModels);
+      } else {
+        model = sessionModelForAutonomousDispatch(epic, agent, engineValidModels);
+      }
       d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, 1, 0);
 
       d.stmts.updateKanbanCard.run(
@@ -279,6 +290,7 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
         card.github_issue_url,
         card.pr_url,
         card.epic_id,
+        card.assign_model,
         card.id,
       );
       d.stmts.moveKanbanCard.run(inProgressColId || card.column_id, 0, card.id);

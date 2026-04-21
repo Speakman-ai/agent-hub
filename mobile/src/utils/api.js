@@ -301,11 +301,14 @@ export const api = {
   // Assign a kanban card to an agent. Server spawns a new session tied to the
   // card, moves the card into "In Progress", and returns `{ sessionId, ... }`.
   // Mirrors the web client's `api.assignCard`.
-  assignCard: (projectId, cardId, agentId) =>
-    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, {
+  assignCard: (projectId, cardId, agentId, opts = {}) => {
+    const body = { agentId };
+    if (opts.model != null && String(opts.model).trim()) body.model = String(opts.model).trim();
+    return fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, {
       method: 'POST',
-      body: JSON.stringify({ agentId }),
-    }),
+      body: JSON.stringify(body),
+    });
+  },
   getCardComments: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`),
   addCardComment: (projectId, cardId, data) =>

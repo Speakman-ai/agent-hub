@@ -22,9 +22,11 @@ vi.mock('../utils/api.js', () => ({
     getBoard: vi.fn(),
     get: vi.fn(),
     getCardComments: vi.fn(),
-    getModelConfig: vi.fn(() =>
-      Promise.resolve({ engineValidModels: { 'claude-code': ['claude-opus-4-7'] } }),
-    ),
+    getModelConfig: vi.fn().mockResolvedValue({
+      defaultModel: 'claude-opus-4-7',
+      engineDefaultModels: {},
+      engineValidModels: { 'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-20250514'] },
+    }),
     moveCard: vi.fn(),
     updateCard: vi.fn(),
     deleteCard: vi.fn(),
@@ -192,12 +194,18 @@ describe('KanbanBoard reassign active session', () => {
     api.getBoard.mockReset();
     api.get.mockReset();
     api.getCardComments.mockReset();
+    api.getModelConfig.mockReset();
     api.assignCard.mockReset();
     api.get.mockResolvedValue([
       { id: 'agent-a', name: 'AgentA' },
       { id: 'agent-b', name: 'AgentB' },
     ]);
     api.getCardComments.mockResolvedValue([]);
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'claude-opus-4-7',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-7' },
+      engineValidModels: { 'claude-code': ['claude-opus-4-7', 'claude-sonnet-4-20250514'] },
+    });
   });
 
   it('shows a Reassign button when the card has an active session, and reveals the agent picker on click', async () => {
@@ -220,8 +228,8 @@ describe('KanbanBoard reassign active session', () => {
         project={{ name: 'P' }}
         refreshKey={0}
         agents={[
-          { id: 'agent-a', name: 'AgentA' },
-          { id: 'agent-b', name: 'AgentB' },
+          { id: 'agent-a', name: 'AgentA', engine: 'claude-code' },
+          { id: 'agent-b', name: 'AgentB', engine: 'claude-code' },
         ]}
       />,
     );
@@ -256,7 +264,58 @@ describe('KanbanBoard reassign active session', () => {
     // Clicking it fires the assignCard API with the new agent id.
     api.assignCard.mockResolvedValueOnce({ sessionId: 'sess-2' });
     fireEvent.click(within(modal).getByRole('button', { name: /Reassign & Start/i }));
-    await waitFor(() => expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-b'));
+    await waitFor(() => expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-b', {}));
+  });
+
+  it('passes model to assignCard when Session model override is chosen', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-1',
+          title: 'Assigned card',
+          column_id: 'col-todo',
+          position: 0,
+          assignee: 'AgentA',
+          session_id: 'sess-1',
+        },
+      ]),
+    );
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[
+          { id: 'agent-a', name: 'AgentA', engine: 'claude-code' },
+          { id: 'agent-b', name: 'AgentB', engine: 'claude-code' },
+        ]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Assigned card')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Assigned card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+    fireEvent.click(within(modal).getByRole('button', { name: /^Reassign$/i }));
+
+    const combos = within(modal).getAllByRole('combobox');
+    const assigneeSelect = combos.find((c) =>
+      Array.from(c.options).some((o) => o.textContent === 'Unassigned'),
+    );
+    fireEvent.change(assigneeSelect, { target: { value: 'AgentB' } });
+
+    const modelSelect = combos.find((c) =>
+      Array.from(c.options).some((o) => o.textContent === 'Agent default'),
+    );
+    expect(modelSelect).toBeDefined();
+    fireEvent.change(modelSelect, { target: { value: 'claude-sonnet-4-20250514' } });
+
+    api.assignCard.mockResolvedValueOnce({ sessionId: 'sess-2' });
+    fireEvent.click(within(modal).getByRole('button', { name: /Reassign & Start/i }));
+    await waitFor(() =>
+      expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-b', {
+        model: 'claude-sonnet-4-20250514',
+      }),
+    );
   });
 
   it('Cancel returns to the Open Session view without calling assignCard', async () => {
@@ -279,8 +338,8 @@ describe('KanbanBoard reassign active session', () => {
         project={{ name: 'P' }}
         refreshKey={0}
         agents={[
-          { id: 'agent-a', name: 'AgentA' },
-          { id: 'agent-b', name: 'AgentB' },
+          { id: 'agent-a', name: 'AgentA', engine: 'claude-code' },
+          { id: 'agent-b', name: 'AgentB', engine: 'claude-code' },
         ]}
       />,
     );

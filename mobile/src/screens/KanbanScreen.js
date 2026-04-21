@@ -61,6 +61,12 @@ function getPriorityLabel(priority) {
   return opt ? opt.label : priority || 'None';
 }
 
+function validModelsForAgent(agents, modelConfig, agentName) {
+  const agent = findAgentByName(agents, agentName);
+  if (!agent || !modelConfig?.engineValidModels) return [];
+  return modelConfig.engineValidModels[agent.engine || 'claude-code'] || [];
+}
+
 export default function KanbanScreen({ route, navigation }) {
   const { projectId, project } = route.params || {};
   const { agents, kanbanRefreshKey, setActiveAgentId, setActiveSessionId } = useApp();
@@ -92,6 +98,9 @@ export default function KanbanScreen({ route, navigation }) {
   const [showAssigneePicker, setShowAssigneePicker] = useState(false);
   const [showReassign, setShowReassign] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  const [editAssignModel, setEditAssignModel] = useState('');
+  const [showAssignModelPicker, setShowAssignModelPicker] = useState(false);
+  const [modelConfig, setModelConfig] = useState(null);
 
   // Blocker picker state
   const [showBlockerPicker, setShowBlockerPicker] = useState(false);
@@ -104,7 +113,6 @@ export default function KanbanScreen({ route, navigation }) {
   const [editingEpic, setEditingEpic] = useState(null); // null = creating new
   const [epicForm, setEpicForm] = useState(DEFAULT_EPIC_FORM);
   const [epicSaving, setEpicSaving] = useState(false);
-  const [modelConfig, setModelConfig] = useState(null);
   const [showAutonomousModelModal, setShowAutonomousModelModal] = useState(false);
 
   const columns = board?.columns || DEFAULT_COLUMNS;
@@ -135,6 +143,7 @@ export default function KanbanScreen({ route, navigation }) {
   }, [loadBoard, kanbanRefreshKey]);
 
   useEffect(() => {
+    if (typeof api.getModelConfig !== 'function') return;
     api
       .getModelConfig()
       .then(setModelConfig)
@@ -193,6 +202,7 @@ export default function KanbanScreen({ route, navigation }) {
     setEditDescription(card.description || '');
     setEditPriority(card.priority || 'medium');
     setEditAssignee(card.assignee || '');
+    setEditAssignModel(card.assign_model || '');
     setEditLabels(typeof card.labels === 'string' ? card.labels : (card.labels || []).join(', '));
     setEditGithubUrl(card.github_issue_url || '');
     setEditEpicId(card.epic_id || '');
@@ -291,7 +301,13 @@ export default function KanbanScreen({ route, navigation }) {
   // `editAssignee` to match the server schema (card.assignee = agent.name).
   const handleSelectAssignee = (agentName) => {
     setEditAssignee(agentName || '');
+    setEditAssignModel('');
     setShowAssigneePicker(false);
+  };
+
+  const handleSelectAssignModel = (modelId) => {
+    setEditAssignModel(modelId || '');
+    setShowAssignModelPicker(false);
   };
 
   // Spawn a session on the selected agent and attach it to this card. Server
@@ -306,7 +322,9 @@ export default function KanbanScreen({ route, navigation }) {
     }
     setAssigning(true);
     try {
-      const result = await api.assignCard(projectId, selectedCard.id, agent.id);
+      const assignOpts = {};
+      if (editAssignModel.trim()) assignOpts.model = editAssignModel.trim();
+      const result = await api.assignCard(projectId, selectedCard.id, agent.id, assignOpts);
       setSelectedCard(null);
       setShowReassign(false);
       await loadBoard();
@@ -563,6 +581,17 @@ export default function KanbanScreen({ route, navigation }) {
                   )}
                   <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
                 </TouchableOpacity>
+                {!!editAssignee && validModelsForAgent(agents, modelConfig, editAssignee).length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.epicPickerBtn, { marginTop: 8 }]}
+                    onPress={() => setShowAssignModelPicker(true)}
+                  >
+                    <Text style={styles.epicPickerText}>
+                      {editAssignModel ? editAssignModel : 'Session model: Agent default'}
+                    </Text>
+                    <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
+                  </TouchableOpacity>
+                )}
                 {!!editAssignee && (
                   <TouchableOpacity
                     style={[
@@ -587,6 +616,7 @@ export default function KanbanScreen({ route, navigation }) {
                     onPress={() => {
                       setShowReassign(false);
                       setEditAssignee(selectedCard.assignee || '');
+                      setEditAssignModel(selectedCard.assign_model || '');
                     }}
                   >
                     <Text style={styles.reassignBtnText}>Cancel</Text>
@@ -787,6 +817,48 @@ export default function KanbanScreen({ route, navigation }) {
               <TouchableOpacity
                 style={styles.modalCancel}
                 onPress={() => setShowAssigneePicker(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        <Modal
+          visible={showAssignModelPicker}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowAssignModelPicker(false)}
+        >
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowAssignModelPicker(false)}
+          >
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Session model</Text>
+              <ScrollView style={{ maxHeight: 320 }}>
+                <TouchableOpacity
+                  style={styles.modalOption}
+                  onPress={() => handleSelectAssignModel('')}
+                >
+                  <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]} />
+                  <Text style={styles.modalOptionText}>Agent default</Text>
+                </TouchableOpacity>
+                {validModelsForAgent(agents, modelConfig, editAssignee).map((m) => (
+                  <TouchableOpacity
+                    key={m}
+                    style={styles.modalOption}
+                    onPress={() => handleSelectAssignModel(m)}
+                  >
+                    <View style={[styles.modalOptionDot, { backgroundColor: colors.blue500 }]} />
+                    <Text style={styles.modalOptionText}>{m}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity
+                style={styles.modalCancel}
+                onPress={() => setShowAssignModelPicker(false)}
               >
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>

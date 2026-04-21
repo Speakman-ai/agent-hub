@@ -83,6 +83,21 @@ describe('PUT board card — clearing nullable fields with explicit null', () =>
     expect((res.body as { assignee: unknown }).assignee).toBeNull();
   });
 
+  it('clears assign_model when null is passed', async () => {
+    const card = await seedCard();
+    await request
+      .put(`/api/projects/${projectId}/board/cards/${card.id}`)
+      .send({ assignModel: 'claude-sonnet-4-6' })
+      .expect(200);
+
+    const res = await request
+      .put(`/api/projects/${projectId}/board/cards/${card.id}`)
+      .send({ assign_model: null })
+      .expect(200);
+
+    expect((res.body as { assign_model: unknown }).assign_model).toBeNull();
+  });
+
   it('clears labels when null is passed', async () => {
     const card = await seedCard();
     expect(card.labels).toBe('bug,user-report');

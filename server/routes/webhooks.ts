@@ -577,12 +577,18 @@ export function dispatchReviewFeedback(
 
     const sessionId = crypto.randomUUID();
     const engine = agent.engine || 'claude-code';
+    const cardRaw = typeof card.assign_model === 'string' ? card.assign_model.trim() : '';
+    const allowedForEngine = config.engineValidModels[engine] || [];
+    const resolvedModel =
+      cardRaw && allowedForEngine.includes(cardRaw)
+        ? cardRaw
+        : (agent.model as string | undefined) || defaultModelForEngine(engine);
     stmts.createSession.run(
       sessionId,
       agent.id,
       `Review fixes: ${card.title}`,
       engine,
-      (agent.model as string | undefined) || defaultModelForEngine(engine),
+      resolvedModel,
       1,
       0,
     );
@@ -597,6 +603,7 @@ export function dispatchReviewFeedback(
       card.github_issue_url,
       card.pr_url,
       card.epic_id,
+      card.assign_model,
       card.id,
     );
 
