@@ -1331,7 +1331,7 @@ function GeminiAuthSection() {
   );
 }
 
-function GeneralSection() {
+export function GeneralSection() {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
   const [edits, setEdits] = useState({});
@@ -1345,6 +1345,7 @@ function GeneralSection() {
         setConfig(data);
         setEdits({
           claudeBin: data.claudeBin,
+          cursorBin: data.cursorBin,
           geminiBin: data.geminiBin,
         });
         setLoading(false);
@@ -1354,12 +1355,18 @@ function GeneralSection() {
 
   const isDirty =
     config &&
-    (edits.claudeBin !== config.claudeBin || (edits.geminiBin ?? '') !== (config.geminiBin ?? ''));
+    (edits.claudeBin !== config.claudeBin ||
+      (edits.cursorBin ?? '') !== (config.cursorBin ?? '') ||
+      (edits.geminiBin ?? '') !== (config.geminiBin ?? ''));
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      const payload = { claudeBin: edits.claudeBin, geminiBin: edits.geminiBin };
+      const payload = {
+        claudeBin: edits.claudeBin,
+        cursorBin: edits.cursorBin,
+        geminiBin: edits.geminiBin,
+      };
       await api.updateConfig(payload);
       setConfig((prev) => ({ ...prev, ...payload }));
       setSaveStatus('saved');
@@ -1402,6 +1409,21 @@ function GeneralSection() {
           />
           <p className="text-xs text-gray-600 mt-1">
             Path to the <code>claude</code> binary. Used for all claude-code engine sessions.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Cursor Agent CLI</label>
+          <input
+            value={edits.cursorBin || ''}
+            onChange={(e) => setEdits((prev) => ({ ...prev, cursorBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/agent"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the <code>cursor-agent</code> binary (or its <code>agent</code> symlink, install
+            via <code>curl -fsSL https://cursor.com/install | bash</code>). Used for all
+            cursor-agent engine sessions.
           </p>
         </div>
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
-import { GitHubSection } from './SettingsPage.jsx';
+import { render, waitFor, fireEvent } from '@testing-library/react';
+import { GeneralSection, GitHubSection } from './SettingsPage.jsx';
 import { api } from '../utils/api.js';
 
 /**
@@ -20,6 +20,7 @@ import { api } from '../utils/api.js';
 vi.mock('../utils/api.js', () => ({
   api: {
     getConfig: vi.fn(),
+    updateConfig: vi.fn(),
     get: vi.fn(),
   },
 }));
@@ -105,5 +106,48 @@ describe('GitHubSection — return from GitHub App auto-setup', () => {
     expect(onProjectsChange).not.toHaveBeenCalled();
 
     alertSpy.mockRestore();
+  });
+});
+
+describe('GeneralSection — CLI binary paths', () => {
+  beforeEach(() => {
+    api.getConfig.mockResolvedValue({
+      claudeBin: '/usr/bin/claude',
+      cursorBin: '/home/agenthub/.local/bin/agent',
+      geminiBin: '/usr/local/bin/gemini',
+      port: 3051,
+      defaultCwd: '/tmp',
+      publicUrl: '',
+      githubApp: null,
+      _file: {},
+    });
+    api.updateConfig.mockResolvedValue({ ok: true });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders a cursorBin input pre-populated from config', async () => {
+    const { findByDisplayValue, getByText } = render(<GeneralSection />);
+    // Section label visible alongside the claude/gemini ones
+    await waitFor(() => expect(getByText('Cursor Agent CLI')).toBeTruthy());
+    // Input is wired to the loaded config value
+    expect(await findByDisplayValue('/home/agenthub/.local/bin/agent')).toBeTruthy();
+  });
+
+  it('sends cursorBin in the updateConfig payload when saved', async () => {
+    const { findByDisplayValue, getByText } = render(<GeneralSection />);
+
+    const cursorInput = await findByDisplayValue('/home/agenthub/.local/bin/agent');
+    fireEvent.change(cursorInput, { target: { value: '/usr/local/bin/agent' } });
+
+    fireEvent.click(getByText('Save'));
+
+    await waitFor(() => {
+      expect(api.updateConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ cursorBin: '/usr/local/bin/agent' }),
+      );
+    });
   });
 });
