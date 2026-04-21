@@ -261,6 +261,7 @@ describe.each([
       'go-to-wiki',
       'go-to-notes',
       'go-to-skills',
+      'go-to-pulls',
       'go-to-settings',
       'go-to-next-project',
       'show-help',

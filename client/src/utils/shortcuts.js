@@ -104,6 +104,13 @@ export const WEB_DEFAULT_SHORTCUTS = [
     binding: 'Mod+Alt+Shift+K',
     group: 'Navigate',
   },
+  {
+    id: 'go-to-pulls',
+    label: 'Pulls',
+    description: 'Open pull requests for the current project',
+    binding: 'Mod+Shift+P',
+    group: 'Navigate',
+  },
   ...SHORTCUT_ENTRIES_TAIL,
 ];
 
