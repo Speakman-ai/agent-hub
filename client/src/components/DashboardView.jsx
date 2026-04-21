@@ -285,6 +285,10 @@ function RecentActivity({
         onOpenExternalUrl(prUrl);
         return;
       }
+      if (meta.projectId && onOpenPulls) {
+        onOpenPulls(String(meta.projectId));
+        return;
+      }
       if (meta.projectId && onOpenKanban) {
         onOpenKanban(String(meta.projectId));
         return;

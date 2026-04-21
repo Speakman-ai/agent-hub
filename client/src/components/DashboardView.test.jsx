@@ -165,6 +165,20 @@ describe('DashboardView', () => {
     expect(onOpenKanban).toHaveBeenCalledWith('proj-dash');
   });
 
+  it('prefers onOpenPulls over onOpenKanban for card rows when both are provided', async () => {
+    const onOpenKanban = vi.fn();
+    const onOpenPulls = vi.fn();
+    render(<DashboardView orgId="org-1" onOpenKanban={onOpenKanban} onOpenPulls={onOpenPulls} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Add dashboard view')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Add dashboard view'));
+    expect(onOpenPulls).toHaveBeenCalledWith('proj-dash');
+    expect(onOpenKanban).not.toHaveBeenCalled();
+  });
+
   it('shows an error message when the fetch fails', async () => {
     vi.stubGlobal(
       'fetch',
