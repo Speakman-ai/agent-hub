@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import supertest from 'supertest';
 import { tmpdir } from 'os';
@@ -204,6 +204,9 @@ describe('GET /api/auth/status', () => {
   it('reports unconfigured before setup', async () => {
     const res = await supertest(buildApp()).get('/api/auth/status');
     expect(res.status).toBe(200);
+    // `activeOrgIsLocal` is `false` here because orgs.db hasn't been
+    // initialized in this test path — the endpoint's try/catch swallows
+    // the "orgs.db not initialized" error and falls back to false.
     expect(res.body).toEqual({
       authConfigured: false,
       username: null,
@@ -211,6 +214,7 @@ describe('GET /api/auth/status', () => {
       jwtConfigured: false,
       apiKeyConfigured: false,
       needsMigration: false,
+      activeOrgIsLocal: false,
     });
   });
 
@@ -227,7 +231,45 @@ describe('GET /api/auth/status', () => {
       jwtConfigured: true,
       apiKeyConfigured: false,
       needsMigration: false,
+      activeOrgIsLocal: false,
     });
+  });
+});
+
+// Dedicated block for `activeOrgIsLocal` — initialises a throwaway
+// orgs.db per test so we can exercise both local and remote modes
+// through the real handler rather than a mocked store.
+describe('GET /api/auth/status — activeOrgIsLocal field', () => {
+  beforeEach(async () => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    reloadAuthRecord();
+    // Point the orgs.db at a per-test tmp file and init the default
+    // schema. initOrgsDb seeds a single 'default' org with mode='local'.
+    const { setOrgsDbPathForTests, initOrgsDb } = await import('../orgs.js');
+    setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
+    initOrgsDb();
+  });
+
+  afterEach(async () => {
+    // Close the per-test orgs.db and clear the override so subsequent
+    // describe blocks see an un-initialised orgs store again.
+    const { setOrgsDbPathForTests } = await import('../orgs.js');
+    setOrgsDbPathForTests(null);
+  });
+
+  it('reports true when the active org is local (default seed)', async () => {
+    const res = await supertest(buildApp()).get('/api/auth/status');
+    expect(res.status).toBe(200);
+    expect(res.body.activeOrgIsLocal).toBe(true);
+  });
+
+  it('reports false when the active org is remote', async () => {
+    const { updateOrg } = await import('../orgs.js');
+    updateOrg('default', { mode: 'remote' });
+    const res = await supertest(buildApp()).get('/api/auth/status');
+    expect(res.status).toBe(200);
+    expect(res.body.activeOrgIsLocal).toBe(false);
   });
 });
 

@@ -18,9 +18,18 @@ import { getApiBase, getConnectionConfig, saveConnectionConfig } from '../utils/
  * The legacy apiKey flow (via the SetupWizard / connection.js) is preserved:
  * when the server reports `authConfigured: false`, this gate is a no-op and
  * children render immediately.
+ *
+ * Local-mode orgs: when `activeOrgIsLocal` is true, the server bypasses
+ * auth for that org. We mirror that on the client by skipping the
+ * LoginScreen render, so single-user local environments don't see a
+ * sign-in prompt even when auth is globally configured.
  */
 export default function AuthGate({ children }) {
-  const [status, setStatus] = useState({ state: 'loading', required: false });
+  const [status, setStatus] = useState({
+    state: 'loading',
+    required: false,
+    activeOrgIsLocal: false,
+  });
   // Counter increments when the user authenticates or edits connection;
   // used to re-check.
   const [nonce, setNonce] = useState(0);
@@ -31,7 +40,11 @@ export default function AuthGate({ children }) {
       try {
         const res = await getAuthStatus(getApiBase());
         if (cancelled) return;
-        setStatus({ state: 'ready', required: !!res.authConfigured });
+        setStatus({
+          state: 'ready',
+          required: !!res.authConfigured,
+          activeOrgIsLocal: !!res.activeOrgIsLocal,
+        });
       } catch (err) {
         if (cancelled) return;
         const config = getConnectionConfig();
@@ -43,6 +56,7 @@ export default function AuthGate({ children }) {
           setStatus({
             state: 'unreachable',
             required: false,
+            activeOrgIsLocal: false,
             error: err?.message || 'Unknown error',
             url: config.remoteUrl,
           });
@@ -51,7 +65,12 @@ export default function AuthGate({ children }) {
         // Local mode status endpoint down — legacy behavior: don't
         // hard-block. The main app's connection handling will surface
         // the underlying issue.
-        setStatus({ state: 'ready', required: false, error: err?.message });
+        setStatus({
+          state: 'ready',
+          required: false,
+          activeOrgIsLocal: false,
+          error: err?.message,
+        });
       }
     })();
     return () => {
@@ -132,7 +151,13 @@ export default function AuthGate({ children }) {
     );
   }
 
-  if (status.required && !isAuthenticated()) {
+  // Skip the login prompt entirely when the active org is local-mode —
+  // the server is already letting those requests through without a token.
+  // Note: `nonce` only re-checks auth status on login success / connection
+  // edit. If the active org changes mid-session (e.g. via the org switcher),
+  // `reloadForOrgSwitch()` triggers a full app reload, so the gate is
+  // re-evaluated naturally — no explicit event wiring needed.
+  if (status.required && !status.activeOrgIsLocal && !isAuthenticated()) {
     return <LoginScreen onAuthenticated={() => setNonce((n) => n + 1)} />;
   }
 

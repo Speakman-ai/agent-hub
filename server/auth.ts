@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from 'express';
 import config from './config.js';
 import { verifyJwt } from './jwt.js';
 import { getAuthRecord } from './auth-store.js';
-import { getActiveOrgId } from './orgs.js';
+import { getActiveOrgId, getOrg } from './orgs.js';
 import { getUserById, getUserByUsername } from './users-store.js';
 import { getMembershipRole } from './memberships-store.js';
 import type { Role } from './roles.js';
@@ -41,6 +41,27 @@ const PUBLIC_PREFIXES: readonly string[] = ['/api/auth/invites/'];
 function isPublicPath(pathname: string): boolean {
   if (PUBLIC_PATHS.includes(pathname)) return true;
   return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
+/**
+ * Returns true iff the currently active org has `mode='local'`. Local
+ * orgs are single-tenant dev/desktop installs where the auth gate is
+ * intentionally bypassed — the REST middleware and WS handshake use this
+ * helper to short-circuit to a synthetic `local` Owner identity.
+ *
+ * Safety: if orgs.db isn't initialized yet (mid-boot / legacy test
+ * harness), we return `false` so the caller falls through to the
+ * existing JWT/apiKey gate rather than accidentally bypassing auth.
+ */
+function isActiveOrgLocal(): boolean {
+  try {
+    const orgId = getActiveOrgId();
+    const org = getOrg(orgId);
+    return org?.mode === 'local';
+  } catch {
+    // orgs.db not initialized — DO NOT bypass auth in this case.
+    return false;
+  }
 }
 
 /** Augmented Express request populated by the middleware on success. */
@@ -148,6 +169,20 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   if (isPublicPath(req.path)) {
     next();
     return;
+  }
+
+  // Local-mode active org: the desktop/dev install intentionally runs
+  // without per-user auth. Populate a synthetic `local` Owner identity
+  // so downstream handlers still see `authUser`, `authRole`, and
+  // `authOrgId`, then short-circuit the JWT/apiKey branches below.
+  if (isActiveOrgLocal()) {
+    const r = req as AuthenticatedRequest;
+    r.authUser = 'local';
+    r.authRole = 'Owner';
+    try {
+      r.authOrgId = getActiveOrgId();
+    } catch {}
+    return next();
   }
 
   // `/api/auth/setup` is public only when no auth is protecting the server
@@ -267,6 +302,17 @@ export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
   const apiKey = config.apiKey;
   const authRecord = getAuthRecord();
   if (!apiKey && !authRecord) return { ok: true };
+
+  // Local-mode active org: mirror the REST bypass — return a synthetic
+  // `local` Owner handshake so the WS session has an attributable
+  // identity without requiring a token.
+  if (isActiveOrgLocal()) {
+    let orgId = '';
+    try {
+      orgId = getActiveOrgId();
+    } catch {}
+    return { ok: true, subject: 'local', role: 'Owner', orgId };
+  }
 
   const url = new URL(request.url!, `http://${request.headers.host}`);
   if (authRecord) {

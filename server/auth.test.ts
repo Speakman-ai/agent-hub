@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import type { AuthRecord } from './auth-store.js';
 import type { Role } from './roles.js';
@@ -23,12 +23,24 @@ vi.mock('./auth-store.js', () => ({
 // Phase 3 — mock the orgs + users + memberships stores so we can drive
 // the middleware's per-org role resolution without spinning up SQLite.
 let mockActiveOrgId = 'default';
+let mockActiveOrgMode: 'local' | 'remote' = 'remote';
+let mockOrgsDbUnavailable = false;
 const mockUsersById = new Map<string, UserRow>();
 const mockUsersByName = new Map<string, UserRow>();
 const mockMemberships = new Map<string, Role>(); // key: `${userId}|${orgId}`
 
 vi.mock('./orgs.js', () => ({
-  getActiveOrgId: () => mockActiveOrgId,
+  getActiveOrgId: () => {
+    if (mockOrgsDbUnavailable) throw new Error('orgs.db not initialized');
+    return mockActiveOrgId;
+  },
+  getOrg: (id: string) => {
+    if (mockOrgsDbUnavailable) throw new Error('orgs.db not initialized');
+    if (id === mockActiveOrgId) {
+      return { id, name: id, mode: mockActiveOrgMode };
+    }
+    return undefined;
+  },
 }));
 vi.mock('./users-store.js', () => ({
   getUserById: (id: string) => mockUsersById.get(id) ?? null,
@@ -48,6 +60,8 @@ function seedMembership(userId: string, orgId: string, role: Role): void {
 }
 function resetPhase3Mocks(): void {
   mockActiveOrgId = 'default';
+  mockActiveOrgMode = 'remote';
+  mockOrgsDbUnavailable = false;
   mockUsersById.clear();
   mockUsersByName.clear();
   mockMemberships.clear();
@@ -571,5 +585,135 @@ describe('authenticateWs', () => {
         headers: { host: 'localhost:3051' },
       } as unknown as import('http').IncomingMessage),
     ).toBe(false);
+  });
+});
+
+// ─── Active-org local bypass (card 3d72338d) ────────────────────────
+// When the *active* org has `mode='local'`, the REST middleware and WS
+// handshake short-circuit the JWT/apiKey gate and install a synthetic
+// `local` Owner identity. This block verifies the bypass, its inverse
+// (remote mode falls through to the real gate), that switching the
+// active org flips enforcement, and — critically — that an
+// un-initialized orgs.db does NOT accidentally open the gate.
+describe('authMiddleware — active-org local bypass', () => {
+  beforeEach(() => {
+    config.apiKey = null;
+    mockAuthRecord = {
+      username: 'owner',
+      passwordHash: 'scrypt$ignored',
+      jwtSecret: 'active-org-bypass-secret',
+      role: 'Owner',
+      createdAt: '2026-04-18',
+    };
+    resetPhase3Mocks();
+  });
+
+  afterEach(() => {
+    // Reset mocks so the 'local' mode doesn't leak into unrelated
+    // suites that expect the default 'remote' fall-through.
+    resetPhase3Mocks();
+  });
+
+  it('bypasses the gate when active org is local and populates synthetic identity', () => {
+    mockActiveOrgId = 'default';
+    mockActiveOrgMode = 'local';
+    const next = vi.fn();
+    const req = mockReq();
+    authMiddleware(req, mockRes() as unknown as Response, next);
+    expect(next).toHaveBeenCalledOnce();
+    const r = req as Request & {
+      authUser?: string;
+      authRole?: string;
+      authOrgId?: string;
+    };
+    expect(r.authUser).toBe('local');
+    expect(r.authRole).toBe('Owner');
+    expect(r.authOrgId).toBe('default');
+  });
+
+  it('returns 401 when active org is remote and no credentials are provided', () => {
+    mockActiveOrgMode = 'remote';
+    const next = vi.fn();
+    const res = mockRes();
+    authMiddleware(mockReq(), res as unknown as Response, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('flips enforcement when the active org changes between requests', () => {
+    // First request: local → bypass
+    mockActiveOrgId = 'default';
+    mockActiveOrgMode = 'local';
+    const next1 = vi.fn();
+    authMiddleware(mockReq(), mockRes() as unknown as Response, next1);
+    expect(next1).toHaveBeenCalledOnce();
+
+    // Simulate `setActiveOrgId('remote-org')` — the active org is now
+    // remote. Same request should now be gated.
+    mockActiveOrgId = 'remote-org';
+    mockActiveOrgMode = 'remote';
+    const next2 = vi.fn();
+    const res2 = mockRes();
+    authMiddleware(mockReq(), res2 as unknown as Response, next2);
+    expect(next2).not.toHaveBeenCalled();
+    expect(res2.statusCode).toBe(401);
+  });
+
+  it('does NOT bypass when orgs.db is unavailable — falls through to the JWT gate', () => {
+    mockOrgsDbUnavailable = true;
+    const next = vi.fn();
+    const res = mockRes();
+    authMiddleware(mockReq(), res as unknown as Response, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+describe('authenticateWsDetailed — active-org local bypass', () => {
+  beforeEach(() => {
+    config.apiKey = null;
+    mockAuthRecord = {
+      username: 'owner',
+      passwordHash: 'x',
+      jwtSecret: 'ws-active-org-secret',
+      role: 'Owner',
+      createdAt: '2026-04-18',
+    };
+    resetPhase3Mocks();
+  });
+
+  afterEach(() => {
+    resetPhase3Mocks();
+  });
+
+  it('returns ok with synthetic local Owner when active org is local', () => {
+    mockActiveOrgId = 'default';
+    mockActiveOrgMode = 'local';
+    const result = authenticateWsDetailed({
+      url: '/ws',
+      headers: { host: 'localhost:3051' },
+    } as unknown as import('http').IncomingMessage);
+    expect(result.ok).toBe(true);
+    expect(result.subject).toBe('local');
+    expect(result.role).toBe('Owner');
+    expect(result.orgId).toBe('default');
+  });
+
+  it('rejects WS handshake when active org is remote and no token is provided', () => {
+    mockActiveOrgMode = 'remote';
+    const result = authenticateWsDetailed({
+      url: '/ws',
+      headers: { host: 'localhost:3051' },
+    } as unknown as import('http').IncomingMessage);
+    expect(result.ok).toBe(false);
+  });
+
+  it('does NOT bypass on WS handshake when orgs.db is unavailable', () => {
+    mockOrgsDbUnavailable = true;
+    const result = authenticateWsDetailed({
+      url: '/ws',
+      headers: { host: 'localhost:3051' },
+    } as unknown as import('http').IncomingMessage);
+    expect(result.ok).toBe(false);
   });
 });

@@ -212,6 +212,16 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     // record exists and this flips to false even if the apiKey is still
     // present (apiKey stays as break-glass, not a migration signal).
     const needsMigration = apiKeyConfigured && !jwtConfigured;
+    // Signals to the client whether the auth gate is short-circuited by
+    // the active org's mode. If orgs.db isn't up yet we report `false`
+    // rather than throwing — the client can retry after boot.
+    let activeOrgIsLocal = false;
+    try {
+      const org = getOrg(getActiveOrgId());
+      activeOrgIsLocal = org?.mode === 'local';
+    } catch {
+      activeOrgIsLocal = false;
+    }
     res.json({
       authConfigured: jwtConfigured,
       username: record?.username ?? null,
@@ -222,6 +232,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       jwtConfigured,
       apiKeyConfigured,
       needsMigration,
+      activeOrgIsLocal,
     });
   });
 

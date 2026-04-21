@@ -27,7 +27,7 @@ const { default: createOrgRoutes } = await import('./orgs.js');
 const { default: createAuthRoutes } = await import('./auth.js');
 const { authMiddleware } = await import('../auth.js');
 const { setAuthFilePathForTests, reloadAuthRecord } = await import('../auth-store.js');
-const { initOrgsDb, setOrgsDbPathForTests, createOrg } = await import('../orgs.js');
+const { initOrgsDb, setOrgsDbPathForTests, createOrg, updateOrg } = await import('../orgs.js');
 const { getUserByUsername } = await import('../users-store.js');
 const { createMembership, getMembershipRole } = await import('../memberships-store.js');
 
@@ -68,6 +68,12 @@ beforeEach(() => {
   setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
   setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
   initOrgsDb();
+  // These integration tests validate JWT / Owner / membership auth
+  // enforcement. The default-seeded org is mode='local', which would
+  // short-circuit the middleware via the local-bypass (card 3d72338d)
+  // and hide the gate we want to test. Flip it to 'remote' so the
+  // middleware exercises the real auth path for the whole suite.
+  updateOrg('default', { mode: 'remote' });
   reloadAuthRecord();
   mockConfig.apiKey = null;
 });

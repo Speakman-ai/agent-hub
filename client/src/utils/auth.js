@@ -140,7 +140,24 @@ export async function setup({ baseUrl, username, password }) {
   return data;
 }
 
-/** GET /api/auth/status — unauthenticated probe. */
+/**
+ * GET /api/auth/status — unauthenticated probe.
+ *
+ * Returns the parsed JSON body as-is:
+ *   {
+ *     authConfigured: boolean,
+ *     username: string | null,
+ *     role: 'Owner' | 'Admin' | 'User' | null,
+ *     jwtConfigured: boolean,
+ *     apiKeyConfigured: boolean,
+ *     needsMigration: boolean,
+ *     activeOrgIsLocal: boolean,  // true when the active org is in local
+ *                                 // mode and auth should be bypassed
+ *   }
+ *
+ * Callers (e.g. AuthGate) consume `activeOrgIsLocal` to suppress the login
+ * screen for local-mode orgs even when auth is globally configured.
+ */
 export async function getAuthStatus(baseUrl) {
   const res = await fetch(`${baseUrl}/auth/status`, {
     headers: { 'Content-Type': 'application/json' },

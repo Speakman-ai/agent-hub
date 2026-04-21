@@ -100,6 +100,7 @@ server currently exposes. Clients use it to decide between "sign in",
 | `jwtConfigured`     | A JWT auth record exists — users can sign in.                                        |
 | `apiKeyConfigured`  | The legacy shared-secret `apiKey` is set in `config.json` (break-glass header).      |
 | `needsMigration`    | `apiKeyConfigured && !jwtConfigured` — the server is still running apiKey-only.      |
+| `activeOrgIsLocal`  | Active org is in `local` mode — the auth gate is short-circuited for this browser.   |
 | `username`, `role`  | The first-Owner's username + role at install time, or `null` pre-setup.              |
 
 `needsMigration` is the signal for the **"upgrade my auth" banner**: the
@@ -108,6 +109,15 @@ record has been written yet. Once `/api/auth/setup` runs, the JWT record
 exists and `needsMigration` flips to `false` — even if the apiKey is
 still present, because it stays around as break-glass, not as a
 migration signal.
+
+`activeOrgIsLocal` is the signal for the **local-org auth bypass**: when
+the active org's `mode` is `local`, `authMiddleware` treats the caller
+as an authenticated Owner without requiring a JWT cookie or `x-api-key`
+header. This is the single-user install path — the UI uses this flag to
+skip the login screen entirely. If `orgs.db` isn't up yet (early boot),
+the field reports `false` rather than throwing; the client can retry
+after boot. Remote / multi-user orgs leave this `false` and go through
+the normal JWT flow.
 
 ## Rate limiting — `trust proxy` is coupled to the proxy topology
 

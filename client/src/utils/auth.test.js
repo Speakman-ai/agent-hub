@@ -134,6 +134,39 @@ describe('auth network helpers', () => {
     expect(await getAuthStatus('/api')).toEqual(body);
   });
 
+  it('getAuthStatus passes through activeOrgIsLocal for local-mode orgs', async () => {
+    const body = {
+      authConfigured: true,
+      username: 'owner',
+      role: 'Owner',
+      activeOrgIsLocal: true,
+    };
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+    });
+    const result = await getAuthStatus('/api');
+    expect(result.activeOrgIsLocal).toBe(true);
+    expect(result).toEqual(body);
+  });
+
+  it('getAuthStatus passes through activeOrgIsLocal:false for cloud orgs', async () => {
+    const body = {
+      authConfigured: true,
+      username: 'owner',
+      role: 'Owner',
+      activeOrgIsLocal: false,
+    };
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+    });
+    const result = await getAuthStatus('/api');
+    expect(result.activeOrgIsLocal).toBe(false);
+  });
+
   it('logout drops the stored token', async () => {
     setToken({ token: 'x' });
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });

@@ -160,3 +160,75 @@ describe('AuthGate — remote unreachable', () => {
     expect(window.electronAPI.navigateToOrg).toHaveBeenCalled();
   });
 });
+
+// ─── Active-org local bypass (card 3d72338d) ────────────────────────
+// Matrix covered here:
+//   authConfigured | activeOrgIsLocal | token? | expected
+//   ---------------+------------------+--------+-----------------
+//   true           | true             | no     | children render (local bypass)
+//   true           | false            | no     | <LoginScreen /> renders
+//   false          | false            | no     | children render (legacy flow)
+describe('AuthGate — active-org local bypass', () => {
+  it('renders children (not LoginScreen) when the active org is local, even with authConfigured=true', async () => {
+    getAuthStatus.mockResolvedValue({
+      authConfigured: true,
+      username: 'owner',
+      role: 'Owner',
+      activeOrgIsLocal: true,
+    });
+    isAuthenticated.mockReturnValue(false);
+
+    render(
+      <AuthGate>
+        <Child />
+      </AuthGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-child')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('login-screen')).toBeNull();
+  });
+
+  it('renders LoginScreen when auth is configured, org is NOT local, and no token is stored', async () => {
+    getAuthStatus.mockResolvedValue({
+      authConfigured: true,
+      username: 'owner',
+      role: null,
+      activeOrgIsLocal: false,
+    });
+    isAuthenticated.mockReturnValue(false);
+
+    render(
+      <AuthGate>
+        <Child />
+      </AuthGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('login-screen')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('app-child')).toBeNull();
+  });
+
+  it('renders children when auth is not configured at all (legacy unchanged flow)', async () => {
+    getAuthStatus.mockResolvedValue({
+      authConfigured: false,
+      username: null,
+      role: null,
+      activeOrgIsLocal: false,
+    });
+    isAuthenticated.mockReturnValue(false);
+
+    render(
+      <AuthGate>
+        <Child />
+      </AuthGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-child')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('login-screen')).toBeNull();
+  });
+});

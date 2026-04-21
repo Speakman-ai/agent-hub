@@ -41,7 +41,8 @@ vi.mock('../config.js', () => ({ default: mockConfig }));
 const { default: createAuthRoutes } = await import('./auth.js');
 const { authMiddleware } = await import('../auth.js');
 const { setAuthFilePathForTests, reloadAuthRecord } = await import('../auth-store.js');
-const { initOrgsDb, setOrgsDbPathForTests, createOrg, getOrgsDb } = await import('../orgs.js');
+const { initOrgsDb, setOrgsDbPathForTests, createOrg, getOrgsDb, updateOrg } =
+  await import('../orgs.js');
 const { getUserByUsername, countUsers } = await import('../users-store.js');
 const { getMembershipRole } = await import('../memberships-store.js');
 
@@ -58,6 +59,12 @@ beforeEach(() => {
   setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
   setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
   initOrgsDb();
+  // These tests validate the apiKey→JWT migration gate. The default-
+  // seeded org is mode='local', which would short-circuit the
+  // middleware via the local-bypass (card 3d72338d) and hide the gate
+  // we want to exercise. Flip it to 'remote' so the apiKey path is
+  // actually enforced for the whole suite.
+  updateOrg('default', { mode: 'remote' });
   reloadAuthRecord();
   mockConfig.apiKey = null;
 });
