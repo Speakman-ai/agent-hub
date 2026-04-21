@@ -10,13 +10,13 @@ import type {
   MessageRow,
   SessionRow,
   BackgroundTaskRow,
-  ActiveTaskRow,
   SessionEventRow,
   SessionProgressRow,
   CheckpointRow,
   AgentLookup,
   EnrichedAgent,
 } from '../types.js';
+import { buildActiveTasksSnapshot } from '../active-tasks.js';
 
 function safeParse(s: string): Record<string, unknown> {
   try {
@@ -569,18 +569,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   router.get('/api/active-tasks', (_req: Request, res: Response) => {
     try {
-      res.json(
-        (stmts.getAllActiveTasks.all() as ActiveTaskRow[]).map((t) => ({
-          sessionId: t.session_id,
-          messageId: t.message_id,
-          agentId: t.agent_id,
-          engine: t.engine,
-          model: t.model,
-          prompt: t.prompt,
-          content: t.streamed_output || '',
-          startedAt: t.started_at,
-        })),
-      );
+      res.json(buildActiveTasksSnapshot(stmts));
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

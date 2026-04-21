@@ -120,6 +120,15 @@ lead stays running.
   and synthesize. Not for multi-turn ownership — use `<handoff>` for
   that.
 
+### Active session indicators during delegation
+
+After the lead CLI exits, the `active_tasks` row for that session is cleared,
+but **sub-agent CLIs may still be running** until results are collected and
+(optionally) synthesized. The server merges in-flight delegation into
+`GET /api/active-tasks` and WebSocket `active-tasks-snapshot` so web,
+Electron, and mobile session lists keep showing the lead session as busy
+until delegation completes.
+
 ### `<handoff>` — ownership transfer to one specialist
 
 End your turn and hand ownership of the conversation to a single

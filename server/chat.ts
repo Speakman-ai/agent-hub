@@ -25,6 +25,8 @@ import { detectSkillBlock as detectSkillInvokeBlock, handleSkillInvoke } from '.
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
+import { broadcastActiveTasksSnapshot } from './active-tasks.js';
+import { clearDelegationUiMeta } from './delegation-state.js';
 import type {
   Project,
   Agent,
@@ -779,7 +781,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
         if (isDelegating) {
           handleDelegationCancel(sessionId);
-          activeDelegationSessions.delete(sessionId);
           setTimeout(() => drainQueue(sessionId), 500);
         }
         broadcast({ type: 'interrupted', sessionId });
@@ -1643,7 +1644,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 console.error(
                   `[Delegation] Safety timeout reached for session ${sessionId} — force-unlocking`,
                 );
-                activeDelegationSessions.delete(sessionId);
                 handleDelegationCancel(sessionId);
                 broadcast({
                   type: 'delegation_error',
@@ -1686,6 +1686,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             .finally(() => {
               clearTimeout(delegationSafetyTimeout);
               activeDelegationSessions.delete(sessionId);
+              clearDelegationUiMeta(sessionId);
+              broadcastActiveTasksSnapshot(stmts, broadcast);
               drainQueue(sessionId);
             });
           return;

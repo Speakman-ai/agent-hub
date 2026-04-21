@@ -7,22 +7,11 @@ import { handleBroadcastForPush } from './push.js';
 import type {
   WebSocketDeps,
   BroadcastFn,
-  ActiveTaskRow,
   ActiveRoomTaskRow,
   MessageQueueRow,
   RoomMessageQueueRow,
 } from './types.js';
-
-interface ActiveTaskSnapshot {
-  sessionId: string;
-  messageId: string;
-  agentId: string;
-  engine: string;
-  model: string | null;
-  prompt: string;
-  content: string;
-  startedAt: string;
-}
+import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
 
 export default function createWebSocket(
   server: Server,
@@ -58,23 +47,6 @@ export default function createWebSocket(
     });
   }
 
-  function activeTasksSnapshot(): ActiveTaskSnapshot[] {
-    try {
-      return (stmts!.getAllActiveTasks.all() as ActiveTaskRow[]).map((t) => ({
-        sessionId: t.session_id,
-        messageId: t.message_id,
-        agentId: t.agent_id,
-        engine: t.engine,
-        model: t.model,
-        prompt: t.prompt,
-        content: t.streamed_output || '',
-        startedAt: t.started_at,
-      }));
-    } catch {
-      return [];
-    }
-  }
-
   wss.on('connection', (ws: WsClient, request: IncomingMessage) => {
     if (!authenticateWs(request)) {
       ws.close(4401, 'Unauthorized — invalid or missing API key');
@@ -84,8 +56,15 @@ export default function createWebSocket(
     console.log('Client connected');
 
     try {
-      ws.send(JSON.stringify({ type: 'active-tasks-snapshot', tasks: activeTasksSnapshot() }));
-    } catch {}
+      ws.send(
+        JSON.stringify({
+          type: 'active-tasks-snapshot',
+          tasks: buildActiveTasksSnapshotLenient(stmts!),
+        }),
+      );
+    } catch {
+      /* send failure — client may have disconnected */
+    }
 
     try {
       const roomTasks = stmts!.getAllActiveRoomTasks.all() as ActiveRoomTaskRow[];

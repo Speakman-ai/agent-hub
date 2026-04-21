@@ -672,7 +672,6 @@ function handleCancel(sessionId: string): void {
     proc.kill('SIGTERM');
   }
   handleDelegationCancel(sessionId);
-  activeDelegationSessions.delete(sessionId);
   stmts!.clearSessionQueue.run(sessionId);
   broadcast({ type: 'queue_updated', sessionId, queue: [] });
 }

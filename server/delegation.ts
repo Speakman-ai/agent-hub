@@ -2,6 +2,12 @@ import { spawn, type ChildProcess } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { buildSpawnEnv } from './config.js';
 import type { EnrichedAgent, Project, Stmts, BroadcastFn, AppConfig, SessionRow } from './types.js';
+import {
+  activeDelegationSessions,
+  delegationSessionUiMeta,
+  clearDelegationUiMeta,
+} from './delegation-state.js';
+import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 
 interface DelegationDeps {
   stmts: Stmts;
@@ -58,7 +64,8 @@ export interface DelegationResult {
 
 let deps: DelegationDeps | null = null;
 
-export const activeDelegationSessions = new Set<string>();
+/** @see delegation-state.ts — re-exported for chat/index callers */
+export { activeDelegationSessions } from './delegation-state.js';
 
 const activeDelegations = new Map<string, DelegationState>();
 
@@ -98,7 +105,10 @@ export function handleDelegationCancel(sessionId: string): void {
       } catch {}
     }
   }
+  activeDelegationSessions.delete(sessionId);
+  clearDelegationUiMeta(sessionId);
   broadcast({ type: 'delegation_cancelled', sessionId });
+  broadcastActiveTasksSnapshot(stmts, broadcast);
 }
 
 export async function handleDelegation(
@@ -144,12 +154,17 @@ export async function handleDelegation(
     return [];
   }
 
+  delegationSessionUiMeta.set(sessionId, {
+    parentMessageId,
+    startedAt: new Date().toISOString(),
+  });
   broadcast({
     type: 'delegation_start',
     sessionId,
     parentMessageId,
     tasks: validTasks.map((t) => ({ agentId: t.agentId, task: t.task })),
   });
+  broadcastActiveTasksSnapshot(stmts, broadcast);
 
   const results = await Promise.all(
     validTasks.map(async (task): Promise<DelegationResult> => {
