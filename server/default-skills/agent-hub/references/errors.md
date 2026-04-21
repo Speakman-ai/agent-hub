@@ -270,8 +270,9 @@ work, log a `TOOL_ERROR` and escalate.
   attempt — non-zero exit with no stdout, spawn error (e.g. missing
   `claudeBin`), or timeout. The dispatcher retries up to
   `delegationMaxAttempts` (default 3, linear backoff via
-  `delegationRetryBackoffMs`) before giving up; cancellation is terminal
-  and is never retried. On exhaustion the server:
+  `delegationRetryBackoffMs`) before giving up; **user cancellation** is
+  terminal and is never retried (see below). On **retry exhaustion** the
+  server:
   - tags the `delegations` row `status = 'error'` with the descriptive
     message,
   - emits `delegation_agent_error` with `attempts: N`,
@@ -283,6 +284,21 @@ work, log a `TOOL_ERROR` and escalate.
   that first; otherwise re-emit the `<delegate>` block in a follow-up
   turn. The lead already sees the error via synthesis, so acknowledge
   and decide — don't silently re-dispatch the same failing task.
+
+### `<delegate>` cancelled mid-flight (user stop)
+
+- **Symptom**: `delegation_cancelled` in the client; synthesis text
+  explicitly tells the **lead** to take over; `delegations` rows show
+  `status = 'cancelled'` (not `error`).
+- **Cause**: the user stopped delegation or interrupted while sub-agent
+  CLIs were still running. `handleDelegationCancel` in `server/delegation.ts`
+  signals each subprocess, updates the DB, and broadcasts
+  `delegation_cancelled`. Per-task `delegation_agent_error` is **not**
+  emitted for user cancel (avoids the UI flipping a row from cancelled
+  styling back to error).
+- **Recovery**: the next synthesis turn uses **lead takeover** prompt text
+  (`buildDelegationSynthesisPrompt`): carry out the delegated `task`
+  strings yourself in the lead session — the work is not dropped.
 
 ### Plan mode blocks a write
 

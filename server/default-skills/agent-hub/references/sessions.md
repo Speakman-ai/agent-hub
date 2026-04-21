@@ -114,11 +114,31 @@ lead stays running.
   cap, but keep N small (≤ 4) — every spawn is a real CLI subprocess with
   its own context.
 - **Return shape**: a synthesis message containing per-task
-  `{agentId, agentName, output, error}`. Failed sub-agents surface as
-  `error`, not as an exception — the lead always gets something back.
+  `{agentId, agentName, task, output, error}` (`task` is the delegated
+  instruction string). Failed sub-agents surface as `error`, not as an
+  exception — the lead always gets something back.
 - **When to use**: short parallel side-quests whose results you will read
   and synthesize. Not for multi-turn ownership — use `<handoff>` for
   that.
+
+### User cancellation → lead takeover
+
+If the user cancels in-flight delegation (WebSocket `delegation_cancel` with
+the **lead** `sessionId`, Stop while delegates run, or an interrupt that
+calls `handleDelegationCancel`), the server kills sub-processes, marks
+matching `delegations` rows `status = 'cancelled'`, clears delegation UI
+meta, and broadcasts `delegation_cancelled`. Each cancelled task still
+returns a result with `error: "Cancelled"` and the original `task` text.
+
+After the round completes, `synthesizeResults` runs. When any task was
+cancelled, `buildDelegationSynthesisPrompt` switches to **lead takeover**
+mode: the prompt **splits** finished vs cancelled vs other-failure rows so
+the lead incorporates completed sub-agent stdout without redoing it, while
+personally executing only the cancelled (and unresolved failed) tasks. It
+includes partial sub-agent output if any was streamed, repeats the user's
+original message, and instructs the lead to **finish the work in-session**
+(not merely describe the cancellation). The lead's resume session receives
+that as the next synthesis turn.
 
 ### Active session indicators during delegation
 

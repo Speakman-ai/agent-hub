@@ -23,7 +23,12 @@ vi.mock('./config.js', () => ({
 }));
 
 import { spawn } from 'child_process';
-import { initDelegation, handleDelegation } from './delegation.js';
+import {
+  initDelegation,
+  handleDelegation,
+  handleDelegationCancel,
+  buildDelegationSynthesisPrompt,
+} from './delegation.js';
 import type { BroadcastFn, EnrichedAgent, Project, Stmts } from './types.js';
 
 /**
@@ -43,7 +48,11 @@ function makeFakeProc(): {
   const proc = Object.assign(new EventEmitter(), {
     stdout: new EventEmitter(),
     stderr: new EventEmitter(),
-    kill: vi.fn(),
+    kill: vi.fn((sig?: string) => {
+      // Real SIGTERM ends the process → `close` on stdout/stderr pipes then exit.
+      void sig;
+      proc.emit('close', null);
+    }),
   });
   return {
     proc,
@@ -272,5 +281,130 @@ describe('handleDelegation — retry logic', () => {
     const results = await pending;
     expect(results[0].output).toBe('recovered');
     expect(results[0].error).toBeNull();
+  });
+
+  it('returns Cancelled with task text when user cancels mid-run', async () => {
+    const pending = handleDelegation(
+      'session-cancel-1',
+      'msg-c1',
+      [{ agentId: 'sub-1', task: 'parallel research' }],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    await flush();
+    expect(fakeProcs.length).toBe(1);
+    handleDelegationCancel('session-cancel-1');
+    await flush(5);
+
+    const results = await pending;
+    expect(results).toHaveLength(1);
+    expect(results[0].error).toBe('Cancelled');
+    expect(results[0].task).toBe('parallel research');
+    expect(results[0].output).toBeNull();
+
+    const cancelledDb = stmts.updateDelegation.run.mock.calls.filter((c) => c[0] === 'cancelled');
+    expect(cancelledDb.length).toBeGreaterThanOrEqual(1);
+
+    const cancelledBroadcasts = broadcast.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.type === 'delegation_cancelled');
+    expect(cancelledBroadcasts).toHaveLength(1);
+
+    const agentErrAfterCancel = broadcast.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.type === 'delegation_agent_error');
+    expect(agentErrAfterCancel).toHaveLength(0);
+  });
+});
+
+describe('buildDelegationSynthesisPrompt', () => {
+  it('instructs the lead to take over when any delegation was cancelled', () => {
+    const prompt = buildDelegationSynthesisPrompt(
+      [
+        {
+          agentId: 'sub-1',
+          agentName: 'Sub',
+          task: 'Fix the login bug',
+          output: null,
+          error: 'Cancelled',
+        },
+      ],
+      'Please fix auth',
+    );
+    expect(prompt).toContain('lead must take over');
+    expect(prompt).toContain('Fix the login bug');
+    expect(prompt).toContain('Please fix auth');
+    expect(prompt).toContain('Delegation cancellation');
+  });
+
+  it('uses the standard synthesis template when nothing was cancelled', () => {
+    const prompt = buildDelegationSynthesisPrompt(
+      [
+        {
+          agentId: 'sub-1',
+          agentName: 'Sub',
+          task: 'Do X',
+          output: 'Done',
+          error: null,
+        },
+      ],
+      'Hi',
+    );
+    expect(prompt).toContain('Your team completed the delegated tasks');
+    expect(prompt).not.toContain('lead must take over');
+  });
+
+  it('still uses takeover mode when one of several tasks was cancelled', () => {
+    const prompt = buildDelegationSynthesisPrompt(
+      [
+        {
+          agentId: 'a1',
+          agentName: 'A',
+          task: 'task one',
+          output: 'ok',
+          error: null,
+        },
+        {
+          agentId: 'a2',
+          agentName: 'B',
+          task: 'task two',
+          output: null,
+          error: 'Cancelled',
+        },
+      ],
+      'Original',
+    );
+    expect(prompt).toContain('lead must take over');
+    expect(prompt).toContain('Sub-agents that finished');
+    expect(prompt).toContain('Cancelled — you must carry out yourself');
+    expect(prompt).toContain('task one');
+    expect(prompt).toContain('task two');
+  });
+
+  it('surfaces non-cancel failures alongside cancelled rows in takeover mode', () => {
+    const prompt = buildDelegationSynthesisPrompt(
+      [
+        {
+          agentId: 'x',
+          agentName: 'X',
+          task: 'do a',
+          output: null,
+          error: 'Delegation to X failed after 1 attempts: nope',
+        },
+        {
+          agentId: 'y',
+          agentName: 'Y',
+          task: 'do b',
+          output: null,
+          error: 'Cancelled',
+        },
+      ],
+      'orig',
+    );
+    expect(prompt).toContain('Failed (not user-cancel)');
+    expect(prompt).toContain('nope');
+    expect(prompt).toContain('Cancelled — you must carry out yourself');
   });
 });

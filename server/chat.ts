@@ -511,6 +511,7 @@ Your available sub-agents:
 ${subAgentDescriptions}
 
 Guidelines: Delegate only for parallel specialist work. Each task must be self-contained. For simple tasks, just do it directly.
+If the user cancels delegation mid-flight, the server will prompt your next synthesis turn to **finish the delegated work yourself** (you receive each sub-task verbatim).
 **IMPORTANT: Do NOT use the Agent tool for delegation.** Use the \`<delegate>\` block — the server spawns sub-agents as separate CLI processes.
 
 ## Handoff

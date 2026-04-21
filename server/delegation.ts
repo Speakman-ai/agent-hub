@@ -58,6 +58,8 @@ interface DelegationState {
 export interface DelegationResult {
   agentId: string;
   agentName: string;
+  /** Sub-agent instruction from the `<delegate>` block (needed for lead takeover after cancel). */
+  task: string;
   output: string | null;
   error: string | null;
 }
@@ -91,19 +93,15 @@ export function parseDelegateBlock(text: string): DelegateTask[] | null {
 
 export function handleDelegationCancel(sessionId: string): void {
   const { stmts, broadcast } = deps!;
+  const keyPrefix = `${sessionId}:`;
   for (const [compositeKey, state] of activeDelegations) {
-    if (compositeKey.startsWith(sessionId + ':')) {
-      state.cancelled = true;
-      if (state.proc) state.proc.kill('SIGTERM');
-      try {
-        stmts.updateDelegation.run(
-          'cancelled',
-          null,
-          'Cancelled by user',
-          compositeKey.split(':')[1],
-        );
-      } catch {}
-    }
+    if (!compositeKey.startsWith(keyPrefix)) continue;
+    const delegationId = compositeKey.slice(keyPrefix.length);
+    state.cancelled = true;
+    if (state.proc) state.proc.kill('SIGTERM');
+    try {
+      stmts.updateDelegation.run('cancelled', null, 'Cancelled by user', delegationId);
+    } catch {}
   }
   activeDelegationSessions.delete(sessionId);
   clearDelegationUiMeta(sessionId);
@@ -335,7 +333,13 @@ export async function handleDelegation(
           output,
         });
 
-        return { agentId: subAgent.id, agentName: subAgent.name, output, error: null };
+        return {
+          agentId: subAgent.id,
+          agentName: subAgent.name,
+          task: task.task,
+          output,
+          error: null,
+        };
       }
 
       // All attempts exhausted (or cancelled). Build a descriptive error so
@@ -349,18 +353,26 @@ export async function handleDelegation(
           }: ${lastError ?? 'unknown error'}`;
 
       try {
-        stmts.updateDelegation.run('error', null, finalError, delegationId);
+        if (wasCancelled) {
+          stmts.updateDelegation.run('cancelled', null, 'Cancelled by user', delegationId);
+        } else {
+          stmts.updateDelegation.run('error', null, finalError, delegationId);
+        }
       } catch {}
 
-      broadcast({
-        type: 'delegation_agent_error',
-        sessionId,
-        delegationId,
-        agentId: subAgent.id,
-        agentName: subAgent.name,
-        error: finalError,
-        attempts: attemptsMade,
-      });
+      // User cancel already surfaced `delegation_cancelled`; broadcasting
+      // `delegation_agent_error` here would clobber client UI back to "error".
+      if (!wasCancelled) {
+        broadcast({
+          type: 'delegation_agent_error',
+          sessionId,
+          delegationId,
+          agentId: subAgent.id,
+          agentName: subAgent.name,
+          error: finalError,
+          attempts: attemptsMade,
+        });
+      }
 
       // TOOL_ERROR self-report — structured line per AGENTS.md convention.
       if (!wasCancelled && project.ahw) {
@@ -377,6 +389,7 @@ export async function handleDelegation(
       return {
         agentId: subAgent.id,
         agentName: subAgent.name,
+        task: task.task,
         output: null,
         error: finalError,
       };
@@ -385,6 +398,88 @@ export async function handleDelegation(
 
   broadcast({ type: 'delegation_round_done', sessionId, parentMessageId });
   return results;
+}
+
+/**
+ * Builds the user-visible synthesis prompt for the lead agent after a
+ * delegation round. When any sub-agent was cancelled, the prompt instructs the
+ * lead to take over the work instead of only summarizing an empty outcome.
+ */
+export function buildDelegationSynthesisPrompt(
+  results: DelegationResult[],
+  originalUserMessage: string,
+): string {
+  const anyCancelled = results.some((r) => r.error === 'Cancelled');
+
+  const resultsSummary = results
+    .map((r) => {
+      const header = `## ${r.agentName} (${r.agentId})`;
+      const taskBlock = r.task ? `**Delegated task:**\n${r.task}\n\n` : '';
+      if (r.error) return `${header}\n${taskBlock}⚠️ Error: ${r.error}`;
+      return `${header}\n${taskBlock}${r.output ?? ''}`;
+    })
+    .join('\n\n');
+
+  if (anyCancelled) {
+    const completed = results.filter((r) => r.error == null && r.output != null);
+    const cancelled = results.filter((r) => r.error === 'Cancelled');
+    const failedOther = results.filter((r) => r.error != null && r.error !== 'Cancelled');
+
+    const completedSection =
+      completed.length === 0
+        ? ''
+        : [
+            '### Sub-agents that finished (review output below)',
+            'These delegates completed before any cancel. **Incorporate their output** into your answer; do not redo their work unless it is clearly wrong or incomplete.',
+            ...completed.map(
+              (r) => `- **${r.agentName}** (${r.agentId})${r.task ? ` — ${r.task}` : ''}`,
+            ),
+            '',
+          ].join('\n');
+
+    const cancelledSection =
+      cancelled.length === 0
+        ? ''
+        : [
+            '### Cancelled — you must carry out yourself',
+            'The user stopped these delegates mid-flight. **Execute these tasks yourself** (same tools as a normal turn), or state clearly what is still blocked.',
+            ...cancelled.map(
+              (r) => `- **${r.agentName}** (${r.agentId})${r.task ? ` — ${r.task}` : ''}`,
+            ),
+            '',
+          ].join('\n');
+
+    const failedSection =
+      failedOther.length === 0
+        ? ''
+        : [
+            '### Failed (not user-cancel)',
+            'These delegates exhausted retries or hit another error — see the detailed section below. Decide whether to fix and retry, take over manually, or explain the blocker to the user.',
+            ...failedOther.map(
+              (r) =>
+                `- **${r.agentName}** (${r.agentId})${r.task ? ` — ${r.task}` : ''} — ⚠️ ${r.error}`,
+            ),
+            '',
+          ].join('\n');
+
+    return [
+      '## Delegation cancellation — lead must take over',
+      "The user cancelled at least one in-flight delegated sub-agent before it finished. **You are the lead agent — you must personally continue and complete the user's request** using your own tools. Treat finished delegates as a handoff of their stdout; treat cancelled ones as work you still owe. Do not treat this as a terminal handoff; do not ask the user to re-run delegation unless they explicitly want that.",
+      '',
+      completedSection,
+      cancelledSection,
+      failedSection,
+      '### Sub-agent outputs (may be partial or empty)',
+      resultsSummary,
+      '',
+      '### Original user message',
+      originalUserMessage,
+      '',
+      'Write your reply to the user: briefly acknowledge the cancellation when helpful, then **do the remaining work** implied by the delegated tasks and the original message (implementation, investigation, or a substantive completion — not only meta-commentary about what was cancelled).',
+    ].join('\n');
+  }
+
+  return `Your team completed the delegated tasks. Here are their results:\n\n${resultsSummary}\n\nSynthesize these results for the user. The original request was:\n${originalUserMessage}\n\nProvide a clear, unified summary of what was accomplished, any issues encountered, and next steps if applicable.`;
 }
 
 export async function synthesizeResults(
@@ -417,15 +512,7 @@ export async function synthesizeResults(
   const engine = 'claude-code';
   const model: string = (enrichedAgent?.model as string | undefined) || DEFAULT_MODEL;
 
-  const resultsSummary = results
-    .map((r) => {
-      const header = `## ${r.agentName} (${r.agentId})`;
-      if (r.error) return `${header}\n⚠️ Error: ${r.error}`;
-      return `${header}\n${r.output}`;
-    })
-    .join('\n\n');
-
-  const synthesisPrompt = `Your team completed the delegated tasks. Here are their results:\n\n${resultsSummary}\n\nSynthesize these results for the user. The original request was:\n${originalUserMessage}\n\nProvide a clear, unified summary of what was accomplished, any issues encountered, and next steps if applicable.`;
+  const synthesisPrompt = buildDelegationSynthesisPrompt(results, originalUserMessage);
 
   broadcast({
     type: 'thinking',
