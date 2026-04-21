@@ -52,6 +52,10 @@ vi.mock('./project-paths.js', () => ({
   },
 }));
 
+vi.mock('./project-model.js', () => ({
+  allAgents: () => [],
+}));
+
 import { buildEnrichedPrompt } from './chat.js';
 import { getMemoryContext } from './memory.js';
 

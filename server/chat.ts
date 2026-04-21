@@ -25,6 +25,7 @@ import { detectSkillBlock as detectSkillInvokeBlock, handleSkillInvoke } from '.
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
+import { allAgents } from './project-model.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { clearDelegationUiMeta } from './delegation-state.js';
 import type {
@@ -175,6 +176,34 @@ export interface ChatHandlerResult {
 /** Minimal socket shape used by chat handlers (matches `ws` from the `ws` package). */
 export type WebSocketLike = { send: (data: string) => void };
 
+// ─── Project agent roster (same project) ───────────────────────────
+
+export type ProjectAgentRosterPeer = { id: string; name: string; role?: string };
+
+/**
+ * Markdown block listing peer agents for injection into the enriched system prompt.
+ * Excludes the current agent; empty when there are no peers.
+ */
+export function formatProjectAgentRosterSection(peers: ProjectAgentRosterPeer[]): string {
+  if (peers.length === 0) return '';
+  const lines = peers.map((p) => {
+    const display = (p.name || '').trim() || p.id;
+    const roleBit = p.role ? ` · Role: ${p.role}` : '';
+    return `- **${display}** (\`${p.id}\`)${roleBit}`;
+  });
+  return `\n\n## Project agent roster (same project)\nOther agents on this project you may reference by name or \`id\` in chat, \`<handoff>\`, \`<delegate>\`, and conference rooms:\n${lines.join('\n')}`;
+}
+
+function peersOnProject(projectId: string, excludeAgentId: string): ProjectAgentRosterPeer[] {
+  return allAgents()
+    .filter((a) => a.projectId === projectId && a.id !== excludeAgentId)
+    .map((a) => ({
+      id: a.id,
+      name: (a.name || '').trim() || a.id,
+      role: typeof a.role === 'string' && a.role.trim() ? a.role.trim() : undefined,
+    }));
+}
+
 // ─── buildEnrichedPrompt ───────────────────────────────────────────
 
 export function buildEnrichedPrompt(
@@ -204,8 +233,15 @@ export function buildEnrichedPrompt(
   const displayName = (agent.name || '').trim() || agent.id;
   const roleSuffix = agent.role ? ` · Role: ${agent.role}` : '';
   const identityAnchor = `# You are ${displayName}\n\nAgent id: \`${agent.id}\`${roleSuffix}\n\n`;
+  const projectId =
+    (project as ProjectWithCommands & { id?: string }).id ||
+    (agent as EnrichedAgent).projectId ||
+    undefined;
+  const rosterSection = projectId
+    ? formatProjectAgentRosterSection(peersOnProject(projectId, agent.id))
+    : '';
   const systemPromptBody = (agent.systemPrompt || '').trim();
-  let prompt: string = identityAnchor + systemPromptBody;
+  let prompt: string = identityAnchor + rosterSection + systemPromptBody;
   if (!project.ahw) return prompt;
 
   const paths = resolveProjectPaths(project as Project, agent as Agent);
@@ -280,8 +316,6 @@ ${skillsList.join('\n')}`;
 
   const isFirstMessage = options.isFirstMessage !== false; // default true for backward compat
 
-  const projectId =
-    (project as ProjectWithCommands & { id?: string }).id || (agent as EnrichedAgent).projectId;
   {
     if (projectId) {
       const wikiContext = getWikiContext(projectId);

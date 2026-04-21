@@ -57,6 +57,10 @@ vi.mock('./project-paths.js', () => ({
   contextFilePath: () => null,
 }));
 
+vi.mock('./project-model.js', () => ({
+  allAgents: () => [],
+}));
+
 import { buildEnrichedPrompt } from './chat.js';
 
 function makeProject(overrides = {}) {
