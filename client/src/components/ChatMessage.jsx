@@ -214,7 +214,9 @@ function MessageAttachments({ attachments }) {
 }
 
 const ENGINE_BADGES = {
-  'claude-code': { icon: 'purple', label: 'Claude Code' },
+  'claude-code': { dotClass: 'bg-purple-500', label: 'Claude Code' },
+  'cursor-agent': { dotClass: 'bg-emerald-500', label: 'Cursor Agent' },
+  'codex-cli': { dotClass: 'bg-sky-500', label: 'Codex' },
 };
 
 function SystemPrCreatedMessage({ message }) {
@@ -335,7 +337,7 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
                 className="text-xs text-gray-600 flex items-center gap-1"
                 title={engineBadge.label}
               >
-                <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />
+                <span className={`w-2.5 h-2.5 rounded-full inline-block ${engineBadge.dotClass}`} />
                 <span className="hidden sm:inline">{engineBadge.label}</span>
               </span>
             )}

@@ -11,6 +11,7 @@ import {
   describeHandoffReason,
   describeDelegateReason,
 } from '../utils/coordinationBlocks.js';
+import { deriveAssistantTailOutcome } from '../utils/assistantTailOutcome.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
 import DelegateCard from './DelegateCard.jsx';
@@ -132,6 +133,15 @@ function SessionTail({
   const timelineFetchFailed =
     !streaming && !!messageId && events === undefined && eventFetchState === 'error';
 
+  const outcome = useMemo(() => {
+    if (timelineFetchPending || timelineFetchFailed) return null;
+    return deriveAssistantTailOutcome({
+      streaming,
+      events: effectiveEvents ?? [],
+      messageContent: message?.content,
+    });
+  }, [timelineFetchPending, timelineFetchFailed, streaming, effectiveEvents, message?.content]);
+
   // While we are fetching the event timeline, avoid LegacyAssistantBubble: it
   // cannot render ask_user_question pickers, but persisted message.content has
   // ask fences stripped — a failed fetch used to cache [] and trap us there.
@@ -145,6 +155,7 @@ function SessionTail({
             model={message?.model}
             streaming={false}
             createdAt={message?.created_at}
+            outcome={null}
           />
           <div
             className="mt-3 flex items-center gap-2 text-xs text-gray-400"
@@ -168,6 +179,7 @@ function SessionTail({
             model={message?.model}
             streaming={false}
             createdAt={message?.created_at}
+            outcome={null}
           />
           <div
             className="mt-3 flex flex-col gap-2 rounded-lg border border-amber-800/50 bg-amber-950/25 px-3 py-2.5 text-xs text-amber-100"
@@ -222,6 +234,7 @@ function SessionTail({
           model={message?.model}
           streaming={streaming}
           createdAt={message?.created_at}
+          outcome={outcome}
         />
 
         {/* Streaming with no events yet — render the legacy `stream` content
@@ -422,31 +435,76 @@ const ENGINE_BADGES = {
     icon: <span className="w-2.5 h-2.5 rounded-full bg-purple-500 inline-block" />,
     label: 'Claude Code',
   },
+  'cursor-agent': {
+    icon: <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />,
+    label: 'Cursor Agent',
+  },
+  'codex-cli': {
+    icon: <span className="w-2.5 h-2.5 rounded-full bg-sky-500 inline-block" />,
+    label: 'Codex',
+  },
 };
 
 const MARKDOWN_COMPONENTS = markdownComponentsCompact;
 
-function Header({ agentColor, engine, model, streaming, createdAt }) {
+function truncateStatusDetail(s, max) {
+  if (!s) return '';
+  const one = s.replace(/\s+/g, ' ').trim();
+  if (!one) return '';
+  return one.length <= max ? one : `${one.slice(0, max - 1)}…`;
+}
+
+function Header({ agentColor, engine, model, streaming, createdAt, outcome }) {
   const badge = engine ? ENGINE_BADGES[engine] : null;
   const modelLabel = model ? model.replace('claude-', '').replace(/-/g, ' ') : null;
+  const phase = outcome?.phase;
+  const showWorking = streaming || phase === 'working';
+  const showTerminal = !showWorking && outcome && (phase === 'done' || phase === 'error');
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: agentColor }} />
-      <span className="text-gray-500 font-medium">Assistant</span>
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: agentColor }} />
+      <span className="text-gray-500 font-medium shrink-0">Assistant</span>
       {badge && (
-        <span className="text-gray-600 flex items-center gap-1" title={badge.label}>
+        <span className="text-gray-600 flex items-center gap-1 shrink-0" title={badge.label}>
           {badge.icon}
           <span className="hidden sm:inline">{badge.label}</span>
         </span>
       )}
-      {modelLabel && <span className="text-gray-600">· {modelLabel}</span>}
-      {streaming && (
-        <span className="flex items-center gap-1 ml-1">
+      {modelLabel && <span className="text-gray-600 shrink-0">· {modelLabel}</span>}
+      {showWorking && (
+        <span
+          className="flex items-center gap-1 ml-0.5 shrink-0"
+          data-testid="assistant-status-working"
+        >
           <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
           <span className="text-emerald-500">streaming</span>
         </span>
       )}
-      <span className="ml-auto text-gray-600">{createdAt ? relativeTime(createdAt) : ''}</span>
+      {showTerminal && phase === 'done' && (
+        <span
+          className="flex items-center gap-1 ml-0.5 shrink-0 text-emerald-400/95"
+          data-testid="assistant-status-done"
+        >
+          <ListChecks size={12} className="shrink-0" aria-hidden />
+          <span className="text-[11px] font-medium">done</span>
+        </span>
+      )}
+      {showTerminal && phase === 'error' && (
+        <span
+          className="flex items-center gap-1 ml-0.5 min-w-0 max-w-full sm:max-w-[min(100%,20rem)] text-red-400/95"
+          title={outcome.detail || 'Error'}
+          data-testid="assistant-status-error"
+        >
+          <AlertTriangle size={12} className="shrink-0" aria-hidden />
+          <span className="text-[11px] font-medium truncate">
+            error
+            {outcome.detail ? ` — ${truncateStatusDetail(outcome.detail, 96)}` : ''}
+          </span>
+        </span>
+      )}
+      <span className="ml-auto text-gray-600 shrink-0">
+        {createdAt ? relativeTime(createdAt) : ''}
+      </span>
     </div>
   );
 }
@@ -1093,6 +1151,11 @@ function LegacyAssistantBubble({
   const delegateReasonText = delegateMalformed
     ? describeDelegateReason(delegateMalformed.reason)
     : null;
+  const outcome = deriveAssistantTailOutcome({
+    streaming: false,
+    events: [],
+    messageContent: message.content,
+  });
   return (
     <div className="flex justify-start mb-4">
       <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
@@ -1102,6 +1165,7 @@ function LegacyAssistantBubble({
           model={message.model}
           streaming={false}
           createdAt={message.created_at}
+          outcome={outcome}
         />
         {stripped && (
           <div className="markdown-content text-gray-200 mt-1">
