@@ -26,6 +26,11 @@ import { githubUserApiRequest } from '../github-oauth.js';
 import { getActiveAccessToken } from '../github-connections-store.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
+import {
+  enrichPullListRowsWithGraphql,
+  enrichPullListRowsWithInstallationGraphql,
+  normalizeCheckRollupItems,
+} from '../pr-pull-list-enrichment.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -93,8 +98,22 @@ export function normalizePrSummary(raw: Record<string, unknown>): Record<string,
     additions: raw.additions,
     deletions: raw.deletions,
     changed_files: raw.changed_files,
-    mergeable: raw.mergeable ?? null,
+    mergeable:
+      typeof raw.mergeable === 'boolean'
+        ? raw.mergeable
+        : typeof raw.mergeable === 'string'
+          ? mergeableFromCli(raw.mergeable)
+          : (raw.mergeable ?? null),
     mergeable_state: raw.mergeable_state ?? null,
+    merge_state_status:
+      raw.merge_state_status === undefined || raw.merge_state_status === null
+        ? null
+        : String(raw.merge_state_status),
+    review_decision:
+      raw.review_decision === null || raw.review_decision === undefined
+        ? null
+        : String(raw.review_decision),
+    check_rollup: Array.isArray(raw.check_rollup) ? raw.check_rollup : null,
   };
 }
 
@@ -144,12 +163,6 @@ export async function resolveUserToken(req: Request, config: AppConfig): Promise
   return getActiveAccessToken(areq.authUserId, creds);
 }
 
-async function callUser<T>(req: Request, config: AppConfig, path: string): Promise<T | null> {
-  const token = await resolveUserToken(req, config);
-  if (!token) return null;
-  return githubUserApiRequest<T>({ accessToken: token, endpoint: path });
-}
-
 async function callCli(config: AppConfig, args: string[]): Promise<string> {
   const env = botGhEnv(config);
   const { stdout } = await execFileAsync('gh', args, {
@@ -191,30 +204,68 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
       // Tier 0: User OAuth — prefer the caller's own identity so listings
       // respect their repo visibility and "My PRs" can be filtered
       // server-side without App install.
-      try {
-        const userData = await callUser<Array<Record<string, unknown>>>(req, config, listPath);
-        if (Array.isArray(userData)) {
-          return res.json({
-            repo: `${repo.owner}/${repo.repo}`,
-            state,
-            source: 'user-oauth',
-            pulls: userData.map(normalizePrSummary),
+      const userToken = await resolveUserToken(req, config);
+      if (userToken) {
+        try {
+          const userData = await githubUserApiRequest<Array<Record<string, unknown>>>({
+            accessToken: userToken,
+            endpoint: listPath,
           });
+          if (Array.isArray(userData)) {
+            const pulls = userData.map(normalizePrSummary);
+            try {
+              await enrichPullListRowsWithGraphql({
+                owner: repo.owner,
+                repo: repo.repo,
+                bearerToken: userToken,
+                pulls,
+              });
+            } catch (enrichErr: unknown) {
+              const em = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
+              console.warn(`[PR List] User OAuth GraphQL enrichment skipped: ${em.split('\n')[0]}`);
+            }
+            return res.json({
+              repo: `${repo.owner}/${repo.repo}`,
+              state,
+              source: 'user-oauth',
+              pulls,
+            });
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[PR List] User OAuth list failed, trying GitHub App: ${msg.split('\n')[0]}`,
+          );
         }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[PR List] User OAuth list failed, trying GitHub App: ${msg.split('\n')[0]}`);
       }
 
       // Tier 1: GitHub App
       try {
         const appData = await callApp<Array<Record<string, unknown>>>(config, repo.owner, listPath);
         if (Array.isArray(appData)) {
+          const pulls = appData.map(normalizePrSummary);
+          const ghApp = config.githubApp as GitHubAppConfig | undefined;
+          const instId = ghApp ? resolveInstallationId(ghApp, repo.owner) : null;
+          if (ghApp?.appId && ghApp.privateKey && instId) {
+            try {
+              await enrichPullListRowsWithInstallationGraphql({
+                appId: ghApp.appId,
+                privateKey: ghApp.privateKey,
+                installationId: instId,
+                owner: repo.owner,
+                repo: repo.repo,
+                pulls,
+              });
+            } catch (enrichErr: unknown) {
+              const em = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
+              console.warn(`[PR List] App GraphQL enrichment skipped: ${em.split('\n')[0]}`);
+            }
+          }
           return res.json({
             repo: `${repo.owner}/${repo.repo}`,
             state,
             source: 'github-app',
-            pulls: appData.map(normalizePrSummary),
+            pulls,
           });
         }
       } catch (err: unknown) {
@@ -235,13 +286,14 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
           '--limit',
           String(limit),
           '--json',
-          'number,title,state,isDraft,url,author,headRefName,baseRefName,createdAt,updatedAt,labels,additions,deletions,changedFiles,comments',
+          'number,title,state,isDraft,url,author,headRefName,baseRefName,createdAt,updatedAt,labels,additions,deletions,changedFiles,comments,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup',
         ]);
         const raw = JSON.parse(stdout) as Array<Record<string, unknown>>;
         const pulls = raw.map((pr) => {
           const author = pr.author as Record<string, unknown> | null | undefined;
           const comments = pr.comments as Array<unknown> | undefined;
           const labels = (pr.labels as Array<Record<string, unknown>> | undefined) || [];
+          const rollup = normalizeCheckRollupItems(pr.statusCheckRollup);
           return {
             number: pr.number,
             title: pr.title,
@@ -262,8 +314,17 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
             additions: pr.additions,
             deletions: pr.deletions,
             changed_files: pr.changedFiles,
-            mergeable: null,
-            mergeable_state: null,
+            mergeable: mergeableFromCli(pr.mergeable),
+            mergeable_state: pr.mergeable ?? null,
+            merge_state_status:
+              pr.mergeStateStatus === null || pr.mergeStateStatus === undefined
+                ? null
+                : String(pr.mergeStateStatus),
+            review_decision:
+              pr.reviewDecision === null || pr.reviewDecision === undefined
+                ? null
+                : String(pr.reviewDecision),
+            check_rollup: rollup.length > 0 ? rollup : null,
           };
         });
         return res.json({

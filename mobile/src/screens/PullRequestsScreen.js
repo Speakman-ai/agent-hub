@@ -25,6 +25,8 @@ import {
   summarizeReviews,
   reviewsBadge,
   mergeableBadge,
+  reviewDecisionListBadge,
+  mergePipelineListBadge,
 } from '../utils/prFormatting';
 import PrCapturesSection from '../components/PrCapturesSection';
 import { resolveAgentIdFromProject } from '../utils/projectAgents';
@@ -35,9 +37,13 @@ const STATE_TABS = [
   { key: 'all', label: 'All' },
 ];
 
-function Badge({ label, color, bg }) {
+function Badge({ label, color, bg, title }) {
+  const a11y = title ? `${label}. ${title}` : label;
   return (
-    <View style={[styles.badge, { backgroundColor: bg || colors.gray700_40 }]}>
+    <View
+      style={[styles.badge, { backgroundColor: bg || colors.gray700_40 }]}
+      accessibilityLabel={a11y}
+    >
       <Text style={[styles.badgeText, { color: color || colors.gray400 }]}>{label}</Text>
     </View>
   );
@@ -46,6 +52,11 @@ function Badge({ label, color, bg }) {
 function PrListItem({ pr, onPress }) {
   const state = prStateBadge(pr);
   const diff = diffSummary(pr);
+  const showCi = Array.isArray(pr.check_rollup) && pr.check_rollup.length > 0;
+  const ciBadge = showCi ? checksBadge(summarizeChecks(pr.check_rollup)) : null;
+  const reviewB = reviewDecisionListBadge(pr.review_decision);
+  const mBadge = mergeableBadge(pr.mergeable);
+  const pipeB = mergePipelineListBadge(pr);
   return (
     <TouchableOpacity style={styles.listItem} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.listItemHeader}>
@@ -64,6 +75,22 @@ function PrListItem({ pr, onPress }) {
         </Text>
       </View>
       {diff ? <Text style={styles.diffText}>{diff}</Text> : null}
+      {(ciBadge || reviewB || mBadge.show || pipeB) && (
+        <View style={[styles.labelsRow, { marginTop: 8 }]}>
+          {ciBadge ? <Badge label={ciBadge.label} color={ciBadge.color} bg={ciBadge.bg} /> : null}
+          {reviewB ? <Badge label={reviewB.label} color={reviewB.color} bg={reviewB.bg} /> : null}
+          {mBadge.show ? (
+            <Badge
+              label={mBadge.label}
+              color={mBadge.good ? colors.emerald400 : colors.red400}
+              bg={mBadge.good ? colors.emerald900_40 : colors.red900_50}
+            />
+          ) : null}
+          {pipeB ? (
+            <Badge label={pipeB.label} color={pipeB.color} bg={pipeB.bg} title={pipeB.title} />
+          ) : null}
+        </View>
+      )}
       {Array.isArray(pr.labels) && pr.labels.length > 0 && (
         <View style={styles.labelsRow}>
           {pr.labels.slice(0, 4).map((l) => (

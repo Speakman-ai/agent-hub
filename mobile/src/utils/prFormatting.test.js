@@ -9,6 +9,8 @@ import {
   summarizeReviews,
   reviewsBadge,
   mergeableBadge,
+  reviewDecisionListBadge,
+  mergePipelineListBadge,
 } from './prFormatting';
 
 describe('prNumberFromUrl', () => {
@@ -260,6 +262,25 @@ describe('mergeableBadge', () => {
     expect(mergeableBadge('MERGEABLE')).toEqual({ show: false });
     expect(mergeableBadge(0)).toEqual({ show: false });
     expect(mergeableBadge(1)).toEqual({ show: false });
+  });
+});
+
+describe('reviewDecisionListBadge', () => {
+  it('maps GitHub reviewDecision strings', () => {
+    expect(reviewDecisionListBadge('APPROVED')?.label).toBe('Approved');
+    expect(reviewDecisionListBadge('REVIEW_REQUIRED')?.label).toBe('Pending review');
+  });
+
+  it('returns null when absent', () => {
+    expect(reviewDecisionListBadge(null)).toBeNull();
+  });
+});
+
+describe('mergePipelineListBadge', () => {
+  it('returns Blocked', () => {
+    expect(mergePipelineListBadge({ mergeable: true, merge_state_status: 'BLOCKED' })?.label).toBe(
+      'Blocked',
+    );
   });
 });
 

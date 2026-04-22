@@ -9,6 +9,8 @@ import {
   summarizeReviews,
   reviewsBadge,
   mergeableBadge,
+  reviewDecisionListBadge,
+  mergePipelineListBadge,
   checkRowStyle,
   reviewStateColor,
 } from './prFormatting.js';
@@ -266,6 +268,30 @@ describe('mergeableBadge', () => {
     expect(mergeableBadge('MERGEABLE')).toEqual({ show: false });
     expect(mergeableBadge(0)).toEqual({ show: false });
     expect(mergeableBadge(1)).toEqual({ show: false });
+  });
+});
+
+describe('reviewDecisionListBadge', () => {
+  it('maps GitHub reviewDecision strings', () => {
+    expect(reviewDecisionListBadge('APPROVED')?.label).toBe('Approved');
+    expect(reviewDecisionListBadge('CHANGES_REQUESTED')?.label).toBe('Changes requested');
+    expect(reviewDecisionListBadge('REVIEW_REQUIRED')?.label).toBe('Pending review');
+  });
+
+  it('returns null when absent', () => {
+    expect(reviewDecisionListBadge(null)).toBeNull();
+    expect(reviewDecisionListBadge('')).toBeNull();
+  });
+});
+
+describe('mergePipelineListBadge', () => {
+  it('returns Blocked for merge_state_status', () => {
+    const b = mergePipelineListBadge({ mergeable: true, merge_state_status: 'BLOCKED' });
+    expect(b?.label).toBe('Blocked');
+  });
+
+  it('returns null when mergeable is false (conflicts badge owns that)', () => {
+    expect(mergePipelineListBadge({ mergeable: false, merge_state_status: 'DIRTY' })).toBeNull();
   });
 });
 

@@ -213,6 +213,69 @@ export function reviewsBadge(state) {
 }
 
 /**
+ * GitHub GraphQL `reviewDecision` on the PR list row (REST list omits this).
+ * @param {string|null|undefined} decision
+ * @returns {{label:string,color:string,bg:string}|null}
+ */
+export function reviewDecisionListBadge(decision) {
+  if (!decision || typeof decision !== 'string') return null;
+  const d = decision.toUpperCase();
+  if (d === 'APPROVED') return reviewsBadge('approved');
+  if (d === 'CHANGES_REQUESTED') return reviewsBadge('changes_requested');
+  if (d === 'REVIEW_REQUIRED') return reviewsBadge('pending');
+  return null;
+}
+
+/**
+ * Merge queue / branch-protection hints beyond boolean `mergeable`.
+ * Skips when `mergeable === false` (Conflicts badge already covers that).
+ * @param {{ merge_state_status?: string|null, mergeable_state?: string|null, mergeable?: boolean|null }} pr
+ * @returns {{label:string,color:string,bg:string,title?:string}|null}
+ */
+export function mergePipelineListBadge(pr) {
+  if (!pr) return null;
+  if (pr.mergeable === false) return null;
+  const upper = String(pr.merge_state_status || '').toUpperCase();
+  const rest = String(pr.mergeable_state || '').toLowerCase();
+
+  if (upper === 'BLOCKED' || rest === 'blocked') {
+    return {
+      label: 'Blocked',
+      color: TOKEN.yellow.text,
+      bg: TOKEN.yellow.bg,
+      title: 'Merging is blocked (required reviews, checks, or branch protection).',
+    };
+  }
+  if (upper === 'BEHIND' || rest === 'behind') {
+    return {
+      label: 'Behind',
+      color: TOKEN.gray.text,
+      bg: TOKEN.gray.bg,
+      title: 'Head branch is behind the base branch.',
+    };
+  }
+  if (upper === 'UNSTABLE' || rest === 'unstable') {
+    return {
+      label: 'Unstable',
+      color: TOKEN.yellow.text,
+      bg: TOKEN.yellow.bg,
+      title: 'Required checks failed or were cancelled.',
+    };
+  }
+  if (pr.mergeable !== true && pr.mergeable !== false) {
+    if (upper === 'DIRTY' || rest === 'dirty') {
+      return {
+        label: 'Conflicted',
+        color: TOKEN.red.text,
+        bg: TOKEN.red.bg,
+        title: 'GitHub reports merge conflicts while mergeability is still computing.',
+      };
+    }
+  }
+  return null;
+}
+
+/**
  * Tailwind classes + icon hint for a single check-run row. The caller picks
  * the matching lucide-react icon from `iconKey`.
  * @param {{status?:string, conclusion?:string}} chk

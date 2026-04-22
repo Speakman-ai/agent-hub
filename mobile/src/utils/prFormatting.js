@@ -205,3 +205,62 @@ export function reviewsBadge(state) {
       return { label: 'No reviews', color: colors.gray500, bg: colors.gray700_40 };
   }
 }
+
+/**
+ * @param {string|null|undefined} decision
+ * @returns {{label:string,color:string,bg:string}|null}
+ */
+export function reviewDecisionListBadge(decision) {
+  if (!decision || typeof decision !== 'string') return null;
+  const d = decision.toUpperCase();
+  if (d === 'APPROVED') return reviewsBadge('approved');
+  if (d === 'CHANGES_REQUESTED') return reviewsBadge('changes_requested');
+  if (d === 'REVIEW_REQUIRED') return reviewsBadge('pending');
+  return null;
+}
+
+/**
+ * @param {{ merge_state_status?: string|null, mergeable_state?: string|null, mergeable?: boolean|null }} pr
+ * @returns {{label:string,color:string,bg:string,title?:string}|null}
+ */
+export function mergePipelineListBadge(pr) {
+  if (!pr) return null;
+  if (pr.mergeable === false) return null;
+  const upper = String(pr.merge_state_status || '').toUpperCase();
+  const rest = String(pr.mergeable_state || '').toLowerCase();
+  if (upper === 'BLOCKED' || rest === 'blocked') {
+    return {
+      label: 'Blocked',
+      color: colors.yellow400,
+      bg: colors.yellow900_50,
+      title: 'Merging is blocked (required reviews, checks, or branch protection).',
+    };
+  }
+  if (upper === 'BEHIND' || rest === 'behind') {
+    return {
+      label: 'Behind',
+      color: colors.gray400,
+      bg: colors.gray700_40,
+      title: 'Head branch is behind the base branch.',
+    };
+  }
+  if (upper === 'UNSTABLE' || rest === 'unstable') {
+    return {
+      label: 'Unstable',
+      color: colors.yellow400,
+      bg: colors.yellow900_50,
+      title: 'Required checks failed or were cancelled.',
+    };
+  }
+  if (pr.mergeable !== true && pr.mergeable !== false) {
+    if (upper === 'DIRTY' || rest === 'dirty') {
+      return {
+        label: 'Conflicted',
+        color: colors.red400,
+        bg: colors.red900_50,
+        title: 'GitHub reports merge conflicts while mergeability is still computing.',
+      };
+    }
+  }
+  return null;
+}

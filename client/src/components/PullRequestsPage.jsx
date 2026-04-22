@@ -22,15 +22,18 @@ import {
   summarizeReviews,
   reviewsBadge,
   mergeableBadge,
+  reviewDecisionListBadge,
+  mergePipelineListBadge,
   checkRowStyle,
   reviewStateColor,
 } from '../utils/prFormatting.js';
 
 // ─── Shared atoms ──────────────────────────────────────────────
 
-function Badge({ label, color, bg }) {
+function Badge({ label, color, bg, title }) {
   return (
     <span
+      title={title || undefined}
       className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${bg} ${color}`}
     >
       {label}
@@ -56,6 +59,11 @@ const STATE_TABS = [
 function PrListItem({ pr, onClick }) {
   const state = prStateBadge(pr);
   const diff = diffSummary(pr);
+  const showCi = Array.isArray(pr.check_rollup) && pr.check_rollup.length > 0;
+  const ciBadge = showCi ? checksBadge(summarizeChecks(pr.check_rollup)) : null;
+  const reviewB = reviewDecisionListBadge(pr.review_decision);
+  const mBadge = mergeableBadge(pr.mergeable);
+  const pipeB = mergePipelineListBadge(pr);
   return (
     <button
       type="button"
@@ -74,6 +82,22 @@ function PrListItem({ pr, onClick }) {
         {pr.head ? ` · ${pr.head} → ${pr.base || 'main'}` : ''}
       </div>
       {diff && <div className="mt-1 text-xs text-gray-400 tabular-nums">{diff}</div>}
+      {(ciBadge || reviewB || mBadge.show || pipeB) && (
+        <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+          {ciBadge && <Badge label={ciBadge.label} color={ciBadge.color} bg={ciBadge.bg} />}
+          {reviewB && <Badge label={reviewB.label} color={reviewB.color} bg={reviewB.bg} />}
+          {mBadge.show && (
+            <Badge
+              label={mBadge.label}
+              color={mBadge.good ? 'text-emerald-400' : 'text-red-400'}
+              bg={mBadge.good ? 'bg-emerald-500/10' : 'bg-red-500/10'}
+            />
+          )}
+          {pipeB && (
+            <Badge label={pipeB.label} color={pipeB.color} bg={pipeB.bg} title={pipeB.title} />
+          )}
+        </div>
+      )}
       {Array.isArray(pr.labels) && pr.labels.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {pr.labels.slice(0, 4).map((l) => (

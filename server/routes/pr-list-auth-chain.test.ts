@@ -50,6 +50,15 @@ vi.mock('util', async (importOriginal) => {
   return { ...actual, promisify: () => vi.fn() };
 });
 
+vi.mock('../pr-pull-list-enrichment.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    enrichPullListRowsWithGraphql: vi.fn().mockResolvedValue(undefined),
+    enrichPullListRowsWithInstallationGraphql: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 const { initOrgsDb, setOrgsDbPathForTests } = await import('../orgs.js');
 const { createUser } = await import('../users-store.js');
 const { upsertGithubConnection } = await import('../github-connections-store.js');
