@@ -21,6 +21,8 @@ import {
   buildHandoffPromptSection,
 } from './handoff.js';
 import { parseCloseCardBlock, handleCardAutoClose } from './card-auto-close.js';
+import { getProjectVerifyBeforeDoneCommands } from './auto-git.js';
+import { runVerifiedCloseCardFlow } from './verify-before-done-close-card.js';
 import {
   detectSkillBlock as detectSkillInvokeBlock,
   handleSkillInvoke,
@@ -45,6 +47,7 @@ import {
 } from './wiki-rag.js';
 import { runWebSearchForQuery, MAX_WEB_SEARCH_CALLS_PER_SESSION } from './web-search.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
+import { VERIFY_BEFORE_DONE_MSG_MAX_BYTES } from './verify-before-done-constants.js';
 import {
   applyAssistantTextChunkForDelegationKickoff,
   planDelegationRoundOnProcClose,
@@ -857,6 +860,52 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       console.error('Failed to persist error message:', message);
     }
     return content;
+  }
+
+  function persistVerifyBeforeDoneSystemMessage(
+    sessionId: string,
+    content: string,
+    meta: Record<string, unknown>,
+  ): void {
+    let clipped = content;
+    if (Buffer.byteLength(clipped, 'utf8') > VERIFY_BEFORE_DONE_MSG_MAX_BYTES) {
+      clipped =
+        clipUtf8StringToMaxBytes(clipped, VERIFY_BEFORE_DONE_MSG_MAX_BYTES) + '\n\n… (truncated)';
+    }
+    const msgId = uuidv4();
+    const metadata = JSON.stringify(meta);
+    try {
+      stmts.addMessage.run(msgId, sessionId, 'system', clipped, null, null, null, metadata);
+      stmts.touchSession.run(sessionId);
+      const insertedMessage = (stmts.getMessageById.get(msgId) as MessageRow | undefined) ?? {
+        id: msgId,
+        session_id: sessionId,
+        role: 'system' as const,
+        content: clipped,
+        engine: null,
+        model: null,
+        attachments: null,
+        metadata,
+        created_at: new Date().toISOString(),
+      };
+      broadcast({ type: 'message_added', sessionId, message: insertedMessage });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[verify-before-done] Failed to persist system message:', message);
+      // Live clients still get a receipt; reload may not show it (not in DB).
+      const fallback: MessageRow = {
+        id: msgId,
+        session_id: sessionId,
+        role: 'system',
+        content: clipped,
+        engine: null,
+        model: null,
+        attachments: null,
+        metadata,
+        created_at: new Date().toISOString(),
+      };
+      broadcast({ type: 'message_added', sessionId, message: fallback });
+    }
   }
 
   function createCursorChat(cwd: string): Promise<string> {
@@ -2270,22 +2319,43 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       // Auto-close the linked kanban card when the agent reports the work
       // is a duplicate or already done via an `<agenthub:close-card>` block.
-      // Best-effort — failures here must not affect chat, handoff, or
-      // delegation. Runs before handoff/delegate because it's a pure
-      // side-effect on the kanban board (the two flows are not mutually
-      // exclusive, though in practice an agent emits one or the other).
+      // Optional `verifyBeforeDoneCommands` on the project runs in the session
+      // worktree first; output streams via `done_verify_log` WebSocket events.
+      // On failure the card is not moved and a system message records why.
+      // Runs before handoff/delegate (same ordering as before).
       if (closeTask) {
         try {
           const projectId =
             (project as Project & { id?: string }).id ||
             (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
             '';
-          handleCardAutoClose(sessionId, closeTask, {
-            stmts: stmts as Stmts,
-            broadcast,
-            projectId,
-            author: agent.id,
-          });
+          const verifyCmds = getProjectVerifyBeforeDoneCommands(project);
+          if (!verifyCmds.length) {
+            handleCardAutoClose(sessionId, closeTask, {
+              stmts: stmts as Stmts,
+              broadcast,
+              projectId,
+              author: agent.id,
+            });
+          } else if (!existsSync(effectiveCwd)) {
+            persistVerifyBeforeDoneSystemMessage(
+              sessionId,
+              `**Pre-done verification could not run:** the session worktree path does not exist or is unreachable:\n\`${effectiveCwd}\`\n\nThe linked kanban card was **not** moved to Done.`,
+              { kind: 'verify_before_done', outcome: 'cwd_missing', cwd: effectiveCwd },
+            );
+          } else {
+            await runVerifiedCloseCardFlow({
+              sessionId,
+              closeTask,
+              project,
+              effectiveCwd,
+              projectId,
+              author: agent.id,
+              stmts: stmts as Stmts,
+              broadcast,
+              persistSystemMessage: persistVerifyBeforeDoneSystemMessage,
+            });
+          }
         } catch (err) {
           console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
         }

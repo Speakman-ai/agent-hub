@@ -202,9 +202,10 @@ describe('handleCardAutoClose', () => {
       { stmts, broadcast, projectId: 'proj-1', author: 'hub-backend' },
     );
 
-    expect(result).not.toBeNull();
-    expect(result!.cardId).toBe('card-1');
-    expect(result!.doneColumnId).toBe('col-done');
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected CardAutoCloseOutcome.ok');
+    expect(result.result.cardId).toBe('card-1');
+    expect(result.result.doneColumnId).toBe('col-done');
     expect(moveRun).toHaveBeenCalledWith('col-done', 0, 'card-1');
     expect(commentRun).toHaveBeenCalledTimes(1);
     const [, cardIdArg, authorArg, bodyArg] = commentRun.mock.calls[0];
@@ -254,7 +255,7 @@ describe('handleCardAutoClose', () => {
       { stmts, broadcast, projectId: 'proj-1' },
     );
 
-    expect(result).toBeNull();
+    expect(result).toEqual({ ok: false, reason: 'no_linked_card' });
     expect(moveRun).not.toHaveBeenCalled();
     expect(commentRun).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();
@@ -277,9 +278,30 @@ describe('handleCardAutoClose', () => {
       { stmts, broadcast: vi.fn(), projectId: 'proj-1' },
     );
 
-    expect(result).not.toBeNull();
+    expect(result.ok).toBe(true);
     expect(moveRun).not.toHaveBeenCalled();
     expect(commentRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns move_failed when the Done column move throws', () => {
+    const stmts = makeStmts({
+      getKanbanCardBySession: { get: vi.fn().mockReturnValue(card) },
+      getKanbanColumns: { all: vi.fn().mockReturnValue([doneCol]) },
+      moveKanbanCard: {
+        run: vi.fn().mockImplementation(() => {
+          throw new Error('constraint');
+        }),
+      },
+      createKanbanCardComment: { run: vi.fn() },
+    } as unknown as Partial<Stmts>);
+
+    const result = handleCardAutoClose(
+      'sess-1',
+      { reason: 'already-done', note: 'n/a' },
+      { stmts, broadcast: vi.fn(), projectId: 'proj-1' },
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'move_failed' });
   });
 
   it('does not throw when the comment insert fails — the move is still reported', () => {
@@ -301,7 +323,7 @@ describe('handleCardAutoClose', () => {
       { stmts, broadcast: vi.fn(), projectId: 'proj-1' },
     );
 
-    expect(result).not.toBeNull();
+    expect(result.ok).toBe(true);
     expect(moveRun).toHaveBeenCalledTimes(1);
     errSpy.mockRestore();
   });

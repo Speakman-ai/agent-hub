@@ -266,9 +266,24 @@ parked. End your turn with:
   `note` (required, non-empty, one-line shown in the auto-close comment),
   `duplicateOfCardId` (optional canonical card id).
 - **Server behavior**: finds the card linked to the current session via
-  `kanban_cards.session_id`, moves it to the Done column, and appends an
-  explanatory comment referencing this session. Best-effort — if there's
-  no linked card or Done column, the chat flow is unaffected.
+  `kanban_cards.session_id`. If the project row defines
+  **`verifyBeforeDoneCommands`** (shell commands, one per line — same UI bucket
+  as **Project Settings → Verify before Done** next to pre-commit hooks), the
+  host runs them **sequentially in the session worktree** before moving the card
+  to **Done**. Output streams to clients as WebSocket **`done_verify_log`** chunks
+  (buffer cleared with **`done_verify_log_done`**). If a command exits non-zero
+  or times out, the card **is not moved** and a **system** message records the
+  failure (command output is indented markdown, not triple-backtick fenced). If
+  verify commands succeed and the close completes, the persisted **system** message
+  includes **bounded** verify command output (same indented style) plus
+  **`meta.cardClose`:** **`moved`** when a column move ran, or **`already_in_done`**
+  when the card was already in Done (audit comment is best-effort; no `moveKanbanCard`).
+  If verification succeeds but the board move cannot complete (no Done column,
+  move SQL error, no linked card, etc.), the system message names the specific
+  failure — it is **not** collapsed into a generic “no card” case. When
+  `verifyBeforeDoneCommands` is **empty or absent**, the legacy path applies:
+  move to Done + comment best-effort; missing card / column / DB issues are
+  silent no-ops for the main chat turn.
 - **Requires**: the session must be linked to a card (it is whenever the
   sidebar was auto-renamed to the card title, i.e. when the card was
   created with `session_id: $AGENT_HUB_SESSION_ID`).

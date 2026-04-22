@@ -25,6 +25,8 @@ import {
   buildPrBody,
   isGarbageTitle,
   getProjectPreCommitCommands,
+  getProjectVerifyBeforeDoneCommands,
+  runProjectVerifyBeforeDoneCommands,
   truncateForGitCommitMessage,
   MAX_GIT_COMMIT_MESSAGE_CHARS,
   runShellCommandStreaming,
@@ -240,6 +242,78 @@ describe('getProjectPreCommitCommands', () => {
   it('returns empty array when missing or invalid', () => {
     expect(getProjectPreCommitCommands({ id: 'p' } as never)).toEqual([]);
     expect(getProjectPreCommitCommands({ id: 'p', preCommitCommands: 'x' } as never)).toEqual([]);
+  });
+});
+
+describe('getProjectVerifyBeforeDoneCommands', () => {
+  it('returns trimmed non-empty strings from project.verifyBeforeDoneCommands', () => {
+    const project = {
+      id: 'p1',
+      verifyBeforeDoneCommands: ['  npm test  ', '', 'npm run lint', false],
+    } as never;
+    expect(getProjectVerifyBeforeDoneCommands(project)).toEqual(['npm test', 'npm run lint']);
+  });
+
+  it('returns empty array when missing or invalid', () => {
+    expect(getProjectVerifyBeforeDoneCommands({ id: 'p' } as never)).toEqual([]);
+    expect(
+      getProjectVerifyBeforeDoneCommands({ id: 'p', verifyBeforeDoneCommands: 'x' } as never),
+    ).toEqual([]);
+  });
+});
+
+describe('runProjectVerifyBeforeDoneCommands', () => {
+  it('is a no-op when no commands are configured', async () => {
+    await expect(
+      runProjectVerifyBeforeDoneCommands({ id: 'p' } as never, '/tmp'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('runs a successful shell command', async () => {
+    const spawnMock = spawn as unknown as Mock;
+    spawnMock.mockImplementation(() => {
+      const ee = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+      };
+      ee.stdout = new EventEmitter();
+      ee.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        ee.stdout.emit('data', Buffer.from('ok\n'));
+        ee.emit('close', 0, null);
+      });
+      return ee;
+    });
+    const chunks: string[] = [];
+    await runProjectVerifyBeforeDoneCommands(
+      { id: 'p', verifyBeforeDoneCommands: ['echo hi'] } as never,
+      '/tmp',
+      (c) => chunks.push(c),
+    );
+    expect(chunks.join('')).toContain('$ echo hi');
+    expect(chunks.join('')).toContain('ok');
+  });
+
+  it('rejects when the command exits non-zero', async () => {
+    const spawnMock = spawn as unknown as Mock;
+    spawnMock.mockImplementation(() => {
+      const ee = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+      };
+      ee.stdout = new EventEmitter();
+      ee.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        ee.emit('close', 1, null);
+      });
+      return ee;
+    });
+    await expect(
+      runProjectVerifyBeforeDoneCommands(
+        { id: 'p', verifyBeforeDoneCommands: ['false'] } as never,
+        '/tmp',
+      ),
+    ).rejects.toThrow(/failed/);
   });
 });
 
@@ -2021,5 +2095,24 @@ describe('runShellCommandStreaming — output byte cap', () => {
       /exceeded 1000 bytes/i,
     );
     expect(killMock).toHaveBeenCalled();
+  });
+
+  it('uses Pre-done verification wording when logKind is verify_before_done', async () => {
+    vi.clearAllMocks();
+    (spawn as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      const ee = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+      };
+      ee.stdout = new EventEmitter();
+      ee.stderr = new EventEmitter();
+      queueMicrotask(() => ee.emit('close', 1, null));
+      return ee;
+    });
+    await expect(
+      runShellCommandStreaming('false', '/tmp', 3000, undefined, {
+        logKind: 'verify_before_done',
+      }),
+    ).rejects.toThrow(/Pre-done verification command/i);
   });
 });

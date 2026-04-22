@@ -43,6 +43,18 @@ export interface CardAutoCloseResult {
   commentId: string;
 }
 
+/** Why {@link handleCardAutoClose} could not complete when `ok` is false. */
+export type CardAutoCloseFailureReason =
+  | 'card_lookup_failed'
+  | 'no_linked_card'
+  | 'column_lookup_failed'
+  | 'no_done_column'
+  | 'move_failed';
+
+export type CardAutoCloseOutcome =
+  | { ok: true; result: CardAutoCloseResult }
+  | { ok: false; reason: CardAutoCloseFailureReason };
+
 export interface CardAutoCloseDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
@@ -155,9 +167,10 @@ export function pickDoneColumn(columns: readonly KanbanColumnRow[]): KanbanColum
 
 /**
  * Move the card linked to `sessionId` into the board's Done column and
- * append an explanatory comment. No-op (returns `null`) when the session
- * has no linked card, the card's board has no columns, or the card is
- * already in the target column.
+ * append an explanatory comment. Returns `{ ok: false, reason }` when the
+ * session has no linked card, lookups fail, there is no Done column, or the
+ * move fails. When the card is already in Done, `{ ok: true }` is still
+ * returned after recording the audit comment.
  *
  * Best-effort: all exceptions are caught and logged; the function never
  * throws. Callers typically invoke this from the post-stream hook in
@@ -167,7 +180,7 @@ export function handleCardAutoClose(
   sessionId: string,
   task: CloseCardTask,
   deps: CardAutoCloseDeps,
-): CardAutoCloseResult | null {
+): CardAutoCloseOutcome {
   const { stmts, broadcast, projectId, author } = deps;
 
   let card: KanbanCardRow | undefined;
@@ -175,19 +188,19 @@ export function handleCardAutoClose(
     card = stmts.getKanbanCardBySession.get(sessionId) as KanbanCardRow | undefined;
   } catch (err) {
     console.error('[CardAutoClose] Card lookup failed:', (err as Error).message);
-    return null;
+    return { ok: false, reason: 'card_lookup_failed' };
   }
-  if (!card) return null;
+  if (!card) return { ok: false, reason: 'no_linked_card' };
 
   let columns: KanbanColumnRow[] = [];
   try {
     columns = stmts.getKanbanColumns.all(card.board_id) as KanbanColumnRow[];
   } catch (err) {
     console.error('[CardAutoClose] Column lookup failed:', (err as Error).message);
-    return null;
+    return { ok: false, reason: 'column_lookup_failed' };
   }
   const doneColumn = pickDoneColumn(columns);
-  if (!doneColumn) return null;
+  if (!doneColumn) return { ok: false, reason: 'no_done_column' };
 
   // If the card is already in Done, there's nothing to move — but still
   // drop the comment so the audit trail captures the agent's reasoning.
@@ -197,7 +210,7 @@ export function handleCardAutoClose(
       stmts.moveKanbanCard.run(doneColumn.id, 0, card.id);
     } catch (err) {
       console.error('[CardAutoClose] Move failed:', (err as Error).message);
-      return null;
+      return { ok: false, reason: 'move_failed' };
     }
   }
 
@@ -227,9 +240,12 @@ export function handleCardAutoClose(
   }
 
   return {
-    cardId: card.id,
-    previousColumnId,
-    doneColumnId: doneColumn.id,
-    commentId,
+    ok: true,
+    result: {
+      cardId: card.id,
+      previousColumnId,
+      doneColumnId: doneColumn.id,
+      commentId,
+    },
   };
 }

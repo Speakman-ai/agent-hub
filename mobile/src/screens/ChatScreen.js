@@ -3,6 +3,7 @@ import {
   View,
   Text,
   FlatList,
+  ScrollView,
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
@@ -49,6 +50,7 @@ export default function ChatScreen() {
     activeSessionId,
     changesReady,
     createPrLogBySession,
+    doneVerifyLogBySession,
     dismissChangesReady,
     beginCreatePrPublish,
     projects,
@@ -80,12 +82,17 @@ export default function ChatScreen() {
 
   // Auto-scroll when messages change
   useEffect(() => {
-    if (messages.length > 0 || thinking || streamingContent) {
+    if (
+      messages.length > 0 ||
+      thinking ||
+      streamingContent ||
+      doneVerifyLogBySession?.[activeSessionId]
+    ) {
       setTimeout(() => {
         flatListRef.current?.scrollToEnd({ animated: true });
       }, 100);
     }
-  }, [messages, thinking, streamingContent]);
+  }, [messages, thinking, streamingContent, doneVerifyLogBySession, activeSessionId]);
 
   const queuedIds = new Set((messageQueues[activeSessionId] || []).map((q) => q.id));
   const activeDelegation = delegations[activeSessionId];
@@ -103,6 +110,9 @@ export default function ChatScreen() {
       : []),
     ...(activeDelegation?.tasks?.length > 0
       ? [{ type: 'delegation', key: 'delegation', data: activeDelegation }]
+      : []),
+    ...(doneVerifyLogBySession?.[activeSessionId]
+      ? [{ type: 'verify-done', key: 'verify-done' }]
       : []),
     ...(pendingChanges && !thinking && !streamingContent
       ? [{ type: 'changes-ready', key: 'changes-ready', data: pendingChanges }]
@@ -180,6 +190,23 @@ export default function ChatScreen() {
               sessionId={activeSessionId}
               onCancel={handleDelegationCancel}
             />
+          </View>
+        );
+      case 'verify-done':
+        return (
+          <View style={{ paddingHorizontal: 12, marginBottom: 8 }}>
+            <View style={styles.verifyBanner}>
+              <Text style={styles.verifyTitle}>Pre-done verification</Text>
+              <ScrollView
+                style={styles.verifyScroll}
+                nestedScrollEnabled
+                keyboardShouldPersistTaps="handled"
+              >
+                <Text selectable style={styles.verifyPre}>
+                  {doneVerifyLogBySession[activeSessionId]}
+                </Text>
+              </ScrollView>
+            </View>
           </View>
         );
       case 'changes-ready':
@@ -300,5 +327,27 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.gray700,
     marginTop: 16,
+  },
+  verifyBanner: {
+    borderWidth: 1,
+    borderColor: 'rgba(217, 119, 6, 0.35)',
+    backgroundColor: 'rgba(69, 26, 3, 0.35)',
+    borderRadius: 10,
+    padding: 10,
+  },
+  verifyScroll: {
+    maxHeight: 288,
+  },
+  verifyTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: 'rgba(254, 243, 199, 0.95)',
+    marginBottom: 6,
+  },
+  verifyPre: {
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    color: colors.gray300,
+    lineHeight: 16,
   },
 });

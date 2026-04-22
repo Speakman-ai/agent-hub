@@ -1168,6 +1168,13 @@ export interface Project {
    * git hooks still run with `git commit`).
    */
   preCommitCommands?: string[];
+  /**
+   * Shell commands run in the session worktree before the server moves a
+   * linked kanban card to **Done** in response to `<agenthub:close-card>`.
+   * On failure the card stays put and a system message is inserted. Empty or
+   * absent skips verification.
+   */
+  verifyBeforeDoneCommands?: string[];
   agents: Agent[];
   [key: string]: unknown;
 }

@@ -92,6 +92,44 @@ export function getProjectPreCommitCommands(project: Project): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Shell commands run in the session worktree when an agent emits
+ * `<agenthub:close-card>` and the host is about to move the linked card to
+ * **Done**. If any command exits non-zero, the card is not moved and a system
+ * message records the failure. Empty or absent skips verification.
+ */
+export function getProjectVerifyBeforeDoneCommands(project: Project): string[] {
+  const raw = (project as Record<string, unknown>).verifyBeforeDoneCommands;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((c): c is string => typeof c === 'string')
+    .map((c) => c.trim())
+    .filter(Boolean);
+}
+
+/** Same wall-clock cap as pre-commit hooks — lint/test suites can be slow. */
+const VERIFY_BEFORE_DONE_CMD_TIMEOUT_MS = PRECOMMIT_CMD_TIMEOUT_MS;
+
+/**
+ * Run {@link getProjectVerifyBeforeDoneCommands} sequentially in `cwd`.
+ * Streams stdout/stderr through `onChunk` when provided.
+ */
+export async function runProjectVerifyBeforeDoneCommands(
+  project: Project,
+  cwd: string,
+  onChunk?: (chunk: string) => void,
+): Promise<void> {
+  const cmds = getProjectVerifyBeforeDoneCommands(project);
+  if (!cmds.length) return;
+  for (const cmd of cmds) {
+    console.log(`[verify-before-done] (${project.id}): ${cmd}`);
+    if (onChunk) onChunk(`\n$ ${cmd}\n`);
+    await runShellCommandStreaming(cmd, cwd, VERIFY_BEFORE_DONE_CMD_TIMEOUT_MS, onChunk, {
+      logKind: 'verify_before_done',
+    });
+  }
+}
+
 async function runProjectPreCommitCommands(
   project: Project,
   cwd: string,
@@ -106,19 +144,41 @@ async function runProjectPreCommitCommands(
   }
 }
 
+export type RunShellCommandLogKind = 'pre_commit' | 'verify_before_done';
+
+export type RunShellCommandStreamingOptions = {
+  maxOutputBytes?: number;
+  logKind?: RunShellCommandLogKind;
+};
+
+function shellCommandErrorPrefix(kind: RunShellCommandLogKind): string {
+  return kind === 'verify_before_done' ? 'Pre-done verification command' : 'Pre-commit command';
+}
+
 /**
  * Run a shell command with live stdout/stderr (used for project pre-commit
  * hooks configured on the Agent Hub project row).
  *
- * @param maxOutputBytes — defaults to {@link STREAM_OUTPUT_MAX_BYTES}; tests may pass a lower value.
+ * @param maxOutputBytesOrOpts — max bytes as a number (legacy), or an options
+ *   object with `maxOutputBytes` and/or `logKind` for error-message wording.
  */
 export async function runShellCommandStreaming(
   cmd: string,
   cwd: string,
   timeoutMs: number,
   onChunk?: (chunk: string) => void,
-  maxOutputBytes: number = STREAM_OUTPUT_MAX_BYTES,
+  maxOutputBytesOrOpts: number | RunShellCommandStreamingOptions = STREAM_OUTPUT_MAX_BYTES,
 ): Promise<void> {
+  let maxOutputBytes = STREAM_OUTPUT_MAX_BYTES;
+  let logKind: RunShellCommandLogKind = 'pre_commit';
+  if (typeof maxOutputBytesOrOpts === 'number') {
+    maxOutputBytes = maxOutputBytesOrOpts;
+  } else if (maxOutputBytesOrOpts && typeof maxOutputBytesOrOpts === 'object') {
+    if (maxOutputBytesOrOpts.maxOutputBytes != null)
+      maxOutputBytes = maxOutputBytesOrOpts.maxOutputBytes;
+    if (maxOutputBytesOrOpts.logKind) logKind = maxOutputBytesOrOpts.logKind;
+  }
+  const errPrefix = shellCommandErrorPrefix(logKind);
   const isWin = process.platform === 'win32';
   const spawnEnv = autoGitChildEnv();
   const child = isWin
@@ -150,7 +210,7 @@ export async function runShellCommandStreaming(
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      reject(new Error(`Pre-commit command timed out after ${timeoutMs}ms: ${cmd}`));
+      reject(new Error(`${errPrefix} timed out after ${timeoutMs}ms: ${cmd}`));
     }, timeoutMs);
     child.on('error', (err) => {
       clearTimeout(timer);
@@ -161,7 +221,7 @@ export async function runShellCommandStreaming(
       if (overBudget) {
         reject(
           new Error(
-            `Pre-commit command output exceeded ${maxOutputBytes} bytes: ${cmd}`.substring(0, 5000),
+            `${errPrefix} output exceeded ${maxOutputBytes} bytes: ${cmd}`.substring(0, 5000),
           ),
         );
         return;
@@ -170,7 +230,7 @@ export async function runShellCommandStreaming(
       else
         reject(
           new Error(
-            `Pre-commit command failed (${code ?? signal ?? 'unknown'}): ${cmd}`.substring(0, 5000),
+            `${errPrefix} failed (${code ?? signal ?? 'unknown'}): ${cmd}`.substring(0, 5000),
           ),
         );
     });

@@ -161,6 +161,8 @@ export default function App() {
   const [changesReady, setChangesReady] = useState({});
   // Live git/gh output while POST /create-pr runs (server streams via WebSocket).
   const [createPrLogBySession, setCreatePrLogBySession] = useState({});
+  // Live shell output while verify-before-Done runs (close-card → Done gate).
+  const [doneVerifyLogBySession, setDoneVerifyLogBySession] = useState({});
   // Cursor-style ProgressPanel state — keyed by sessionId.
   // Each value: Array<{ step, status, startedAt, finishedAt? }> in emit order.
   const [sessionProgress, setSessionProgress] = useState({});
@@ -635,6 +637,26 @@ export default function App() {
       // output after commit_failed / push_failed / pr_failed. Cleared on
       // success (auto_pr_created), dismiss, or a new Create attempt.
       case 'create_pr_log_done':
+        break;
+      case 'done_verify_log':
+        if (data.sessionId && typeof data.text === 'string') {
+          const maxChars = 250_000;
+          setDoneVerifyLogBySession((prev) => {
+            const combined = (prev[data.sessionId] || '') + data.text;
+            const tail = combined.length > maxChars ? combined.slice(-maxChars) : combined;
+            return { ...prev, [data.sessionId]: tail };
+          });
+        }
+        break;
+      case 'done_verify_log_done':
+        if (data.sessionId) {
+          setDoneVerifyLogBySession((prev) => {
+            if (!prev[data.sessionId]) return prev;
+            const next = { ...prev };
+            delete next[data.sessionId];
+            return next;
+          });
+        }
         break;
       case 'message_added':
         // A new message (e.g. the system 'PR created' marker persisted by the
@@ -2759,6 +2781,18 @@ export default function App() {
                               sessionDelegations={delegations[activeSessionId]}
                               onOpenSession={handleOpenHandoffSession}
                             />
+                          )}
+                          {doneVerifyLogBySession[activeSessionId] && (
+                            <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">
+                              <div className="rounded-lg border border-amber-600/40 bg-amber-950/25 px-3 py-2">
+                                <div className="text-xs font-semibold text-amber-100/90 mb-1">
+                                  Pre-done verification
+                                </div>
+                                <pre className="text-[11px] text-gray-300 whitespace-pre-wrap font-mono max-h-72 overflow-y-auto leading-relaxed">
+                                  {doneVerifyLogBySession[activeSessionId]}
+                                </pre>
+                              </div>
+                            </div>
                           )}
                           {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
                           {delegations[activeSessionId] &&

@@ -94,6 +94,20 @@ describe('Projects', () => {
 
       expect(res.body.preCommitCommands).toEqual(['npm run lint']);
     });
+
+    it('creates project with verifyBeforeDoneCommands', async () => {
+      const res = await request
+        .post('/api/projects')
+        .send({
+          id: 'proj-verify-done-create',
+          name: 'Verify Project',
+          cwd: '/tmp',
+          verifyBeforeDoneCommands: ['  npm test  ', '', 'npm run lint'],
+        })
+        .expect(201);
+
+      expect(res.body.verifyBeforeDoneCommands).toEqual(['npm test', 'npm run lint']);
+    });
   });
 
   describe('GET /api/projects', () => {
@@ -171,6 +185,21 @@ describe('Projects', () => {
         .send({ preCommitCommands: [] })
         .expect(200);
       expect(cleared.body.preCommitCommands).toBeUndefined();
+    });
+
+    it('updates verifyBeforeDoneCommands and clears when empty array', async () => {
+      const proj = await createProject();
+      const withV = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ verifyBeforeDoneCommands: [' npm run lint ', 'npm test'] })
+        .expect(200);
+      expect(withV.body.verifyBeforeDoneCommands).toEqual(['npm run lint', 'npm test']);
+
+      const cleared = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ verifyBeforeDoneCommands: [] })
+        .expect(200);
+      expect(cleared.body.verifyBeforeDoneCommands).toBeUndefined();
     });
   });
 
