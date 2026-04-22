@@ -241,10 +241,11 @@ export function planAutoContinuationRetry(opts: {
   return { action: 'drop', reason: 'retries-exhausted' };
 }
 
-const AUTO_CONTINUATION_PROMPT =
+export const AUTO_CONTINUATION_PROMPT =
   'Continue your previous answer using the newly loaded skill/wiki/web context from this same turn. ' +
   'Use a think -> act -> observe loop when needed. ' +
-  'When you need tools, emit <agenthub:react>{"actions":[...]}</agenthub:react> with wiki, skill, and/or web actions. ' +
+  'When you need tools, emit <agenthub:react>{"actions":[{"tool":"wiki","query":"kanban api"}]}</agenthub:react> with your own real query strings; add more action objects for skill or web as needed. ' +
+  'The JSON between the tags must parse with JSON.parse (no comments, no trailing commas, no doc placeholders like an actions array written as bracket-dot-dot-dot-bracket). ' +
   'Answer the original user request directly when done.';
 
 /** One-time DB align for legacy hybrid RAG gate rows (`budget_version` 0 + `consumed` ≥ 1). */
@@ -436,6 +437,7 @@ When you need extra context mid-answer, use a host-mediated ReAct action block:
 {"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."}]}
 </agenthub:react>
 \`\`\`
+Replace each string with real values you need (the example must stay valid JSON — never replace the \`actions\` array with bracket-dot-dot-dot-bracket or other non-JSON shorthand).
 Supported tools:
 - \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
 - \`skill\` — load a registered Agent Hub skill (field: \`name\`).

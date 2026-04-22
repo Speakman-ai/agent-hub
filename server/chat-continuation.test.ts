@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   AUTO_CONTINUATION_MAX_RETRIES,
+  AUTO_CONTINUATION_PROMPT,
   clipUtf8StringToMaxBytes,
   detectReActBlock,
   mergePendingContextWithCap,
@@ -10,6 +11,15 @@ import {
   utf8SuffixMaxBytes,
 } from './chat.js';
 import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './wiki-rag.js';
+
+describe('AUTO_CONTINUATION_PROMPT', () => {
+  it('uses a copy-paste-safe ReAct JSON example (no invalid actions:[...] shorthand)', () => {
+    expect(AUTO_CONTINUATION_PROMPT).not.toContain('{"actions":[...]}');
+    expect(AUTO_CONTINUATION_PROMPT).toContain(
+      '{"actions":[{"tool":"wiki","query":"kanban api"}]}',
+    );
+  });
+});
 
 describe('stripAssistantControlBlocks', () => {
   it('removes agenthub skill/wiki blocks from assistant-visible text', () => {
