@@ -30,6 +30,7 @@ import {
   runShellCommandStreaming,
   STREAM_OUTPUT_MAX_BYTES,
 } from './auto-git.js';
+import path from 'path';
 import type { MessageRow } from './types.js';
 
 function makeMsg(role: 'user' | 'assistant', content: string): MessageRow {
@@ -605,6 +606,99 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     expect(hookIdx).toBeGreaterThan(addIndices[0]);
     expect(addIndices[1]).toBeGreaterThan(hookIdx);
     expect(commitIdx).toBeGreaterThan(addIndices[1]);
+  });
+
+  it('passes merged spawn PATH to git commit so hooks inherit developer CLI dirs (Electron GUI)', async () => {
+    vi.stubEnv('PATH', '/ide/electron/minimal');
+    try {
+      const mockCard = {
+        id: 'card-1',
+        title: 'PATH test',
+        description: 'desc',
+        priority: 'medium',
+        autonomous_iterations: 1,
+        dispatched_by_autonomous: 1,
+        epic_id: null,
+      };
+      const mockStmtsWithCard = {
+        getKanbanCardBySession: { get: vi.fn(() => mockCard) },
+        getSession: { get: vi.fn(() => ({ name: 'Test session' })) },
+        updateKanbanCard: { run: vi.fn() },
+      } as Record<string, unknown>;
+
+      initAutoGit({
+        stmts: mockStmtsWithCard as never,
+        broadcast: mockBroadcast,
+        getConfig: vi.fn(() => ({}) as never),
+        DEFAULT_SKILLS_DIR: '/tmp/skills',
+      });
+
+      installExecAndGhMock(
+        (
+          cmd: string,
+          opts: Record<string, unknown>,
+          callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+        ) => {
+          if (cmd === 'git config user.name' && opts?.cwd === '/worktree') {
+            if (callback) callback(new Error('not set'), { stdout: '', stderr: '' });
+            return;
+          }
+          if (cmd === 'git config user.name' && opts?.cwd === '/repo') {
+            if (callback) callback(null, { stdout: 'My Name\n', stderr: '' });
+            return;
+          }
+          if (cmd === 'git config user.email' && opts?.cwd === '/repo') {
+            if (callback) callback(null, { stdout: 'me@example.com\n', stderr: '' });
+            return;
+          }
+          if (cmd.includes('git status --porcelain')) {
+            if (callback) callback(null, { stdout: 'M file.ts\n', stderr: '' });
+            return;
+          }
+          if (cmd.includes('git remote -v')) {
+            if (callback)
+              callback(null, {
+                stdout: 'origin\thttps://github.com/test/repo.git (fetch)\n',
+                stderr: '',
+              });
+            return;
+          }
+          if (cmd.includes('git rev-parse --abbrev-ref HEAD')) {
+            if (callback) callback(null, { stdout: 'feature/path-env\n', stderr: '' });
+            return;
+          }
+          if (cmd.includes('git log')) {
+            if (callback) callback(new Error('no upstream'), { stdout: '', stderr: '' });
+            return;
+          }
+          if (cmd.includes('gh pr view') || cmd.includes('gh pr create')) {
+            if (callback)
+              callback(null, { stdout: 'https://github.com/test/repo/pull/99\n', stderr: '' });
+            return;
+          }
+          if (callback) callback(null, { stdout: '', stderr: '' });
+        },
+      );
+
+      const project = { id: 'test', cwd: '/repo' } as never;
+      const agent = { name: 'test-agent', role: 'dev' } as never;
+
+      await autoCommitAndPR('sess-path-env', 'agent-1', project, agent, '/worktree', '');
+
+      const commitSpawn = (spawn as unknown as Mock).mock.calls.find(
+        (c: unknown[]) => c[0] === 'git' && Array.isArray(c[1]) && c[1][0] === 'commit',
+      );
+      expect(commitSpawn).toBeDefined();
+      const env = (commitSpawn![2] as { env?: NodeJS.ProcessEnv }).env;
+      const p = env?.PATH ?? '';
+      // auto-git uses resolveSpawnPath (same merge as buildSpawnEnv) so Husky / npx
+      // see Node when the parent process is Electron with a stripped PATH.
+      expect(p.startsWith('/ide/electron/minimal')).toBe(true);
+      expect(p.split(path.delimiter).length).toBeGreaterThan(1);
+      expect(p).toMatch(/\/usr\/bin|\/bin/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('broadcasts changes_ready when no PR exists', async () => {

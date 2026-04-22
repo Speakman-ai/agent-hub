@@ -13,9 +13,19 @@ import type {
   MessageRow,
 } from './types.js';
 import { resolveShouldAutoMerge } from './auto-merge.js';
+import { resolveSpawnPath } from './shell-path.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+
+/**
+ * Child env for `git` / shell steps in this module. Uses the same PATH merge as
+ * `buildSpawnEnv` (login shell + fallbacks) without importing `config.ts` — that
+ * module has import-time side effects that break unit tests which mock `fs`.
+ */
+function autoGitChildEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, PATH: resolveSpawnPath(process.env.PATH) };
+}
 
 /** Wall-clock cap per configured pre-commit shell command (lint/test can be slow). */
 const PRECOMMIT_CMD_TIMEOUT_MS = 600_000;
@@ -110,13 +120,14 @@ export async function runShellCommandStreaming(
   maxOutputBytes: number = STREAM_OUTPUT_MAX_BYTES,
 ): Promise<void> {
   const isWin = process.platform === 'win32';
+  const spawnEnv = autoGitChildEnv();
   const child = isWin
     ? spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', cmd], {
         cwd,
-        env: { ...process.env },
+        env: spawnEnv,
         windowsHide: true,
       })
-    : spawn('/bin/sh', ['-c', cmd], { cwd, env: { ...process.env } });
+    : spawn('/bin/sh', ['-c', cmd], { cwd, env: spawnEnv });
 
   let received = 0;
   let overBudget = false;
@@ -177,7 +188,7 @@ async function spawnProcessStreaming(
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, {
       cwd: opts.cwd,
-      env: { ...process.env },
+      env: autoGitChildEnv(),
       windowsHide: true,
     });
     let stdout = '';
