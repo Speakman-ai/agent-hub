@@ -2,7 +2,7 @@
 
 This document defines **outer orchestration** for Agent Hub: a **durable, persisted control loop** (Plan → Act → Verify) that is intentionally **separate from** the existing **inner ReAct** loop (`<agenthub:react>` + auto-continuation budgets in `server/chat.ts`).
 
-**Status:** architecture / roadmap (not yet implemented as first-class session state).
+**Status:** roadmap — **P1 partially shipped:** `sessions.orchestration_phase`, `sessions.orchestration_meta`; `GET /api/sessions/:id` exposes `orchestrationMeta` (parsed); `PUT /api/sessions/:id/orchestration` updates phase/meta; `buildEnrichedPrompt` appends a soft **Outer orchestration** section when set. Automatic host-driven transitions remain future work (P3+).
 
 ## Problem statement
 

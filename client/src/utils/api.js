@@ -116,6 +116,12 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ taskState }),
     }),
+  /** Outer PAV — partial updates: pass only keys you want to change; null clears. */
+  setSessionOrchestration: (sessionId, body) =>
+    fetchJSON(`/sessions/${sessionId}/orchestration`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   forwardSession: (sessionId, { targetAgentId, messageIds, prompt, autoStart } = {}) =>
     fetchJSON(`/sessions/${sessionId}/forward`, {
       method: 'POST',

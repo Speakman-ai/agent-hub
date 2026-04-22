@@ -94,6 +94,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ taskState }),
     }),
+  setSessionOrchestration: (sessionId, body) =>
+    fetchJSON(`/sessions/${sessionId}/orchestration`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   // Forward the entire session transcript to a new session on another agent.
   // Mirrors the web client. Body: { targetAgentId, messageIds?, prompt?, autoStart? }
   // Returns { session, forwardedMessageId }.

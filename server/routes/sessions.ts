@@ -26,6 +26,11 @@ import type {
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { normalizeTaskStateInput, parseSessionTaskStateJson } from '../task-state.js';
+import {
+  normalizeOrchestrationMetaInput,
+  parseOrchestrationMetaJson,
+  parseOrchestrationPhase,
+} from '../orchestration.js';
 
 function safeParse(s: string): Record<string, unknown> {
   try {
@@ -191,6 +196,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json({
       ...session,
       taskState: parseSessionTaskStateJson(session.task_state_json ?? null),
+      orchestrationMeta: parseOrchestrationMetaJson(session.orchestration_meta ?? null),
     });
   });
 
@@ -612,6 +618,52 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json({
       ...updated,
       taskState: parseSessionTaskStateJson(updated.task_state_json ?? null),
+    });
+  });
+
+  router.put('/api/sessions/:sessionId/orchestration', (req: Request, res: Response) => {
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const body = req.body as { phase?: unknown; meta?: unknown };
+    const hasPhase = Object.prototype.hasOwnProperty.call(body, 'phase');
+    const hasMeta = Object.prototype.hasOwnProperty.call(body, 'meta');
+    if (!hasPhase && !hasMeta) {
+      return res.status(400).json({
+        error: 'Provide at least one of: phase, meta (omit a key to leave that field unchanged)',
+      });
+    }
+
+    let nextPhase: string | null = session.orchestration_phase ?? null;
+    let nextMetaJson: string | null = session.orchestration_meta ?? null;
+
+    if (hasPhase) {
+      const pr = parseOrchestrationPhase(body.phase);
+      if (pr === 'invalid') {
+        return res.status(400).json({
+          error: 'phase must be null or one of: planning, acting, verifying, done, escalated',
+        });
+      }
+      nextPhase = pr;
+    }
+
+    if (hasMeta) {
+      const nm = normalizeOrchestrationMetaInput(body.meta);
+      if (!nm.ok) {
+        if (nm.error === 'oversize') {
+          return res.status(413).json({ error: 'meta JSON exceeds maximum size' });
+        }
+        return res.status(400).json({ error: 'meta must be a JSON object or null' });
+      }
+      nextMetaJson = nm.serialized;
+    }
+
+    stmts.updateSessionOrchestration.run(nextPhase, nextMetaJson, req.params.sessionId);
+    const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+    deps.broadcast({ type: 'session-updated', session: updated });
+    res.json({
+      ...updated,
+      taskState: parseSessionTaskStateJson(updated.task_state_json ?? null),
+      orchestrationMeta: parseOrchestrationMetaJson(updated.orchestration_meta ?? null),
     });
   });
 

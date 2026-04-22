@@ -84,6 +84,7 @@ import {
   formatPersistedTaskPlanPromptAppend,
   tryApplyTaskStateBlockFromAssistant,
 } from './task-state.js';
+import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 
 const stmts = _stmts!;
 const DEFAULT_MODEL: string = config.defaultModel;
@@ -127,6 +128,9 @@ interface BuildEnrichedPromptOptions {
   sessionId?: string;
   /** From `sessions.task_state_json` — injected every turn when non-empty. */
   persistedTaskStateJson?: string | null;
+  /** Outer PAV — `sessions.orchestration_phase` / `orchestration_meta`. */
+  orchestrationPhase?: string | null;
+  orchestrationMetaJson?: string | null;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -697,6 +701,12 @@ Rules:
   const taskPlan = formatPersistedTaskPlanPromptAppend(options.persistedTaskStateJson ?? null);
   if (taskPlan) prompt += `\n\n${taskPlan}`;
 
+  const outerOrch = formatOuterOrchestrationPromptAppend(
+    options.orchestrationPhase ?? null,
+    options.orchestrationMetaJson ?? null,
+  );
+  if (outerOrch) prompt += `\n\n${outerOrch}`;
+
   return prompt;
 }
 
@@ -1248,6 +1258,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         isFirstMessage,
         sessionId,
         persistedTaskStateJson: session!.task_state_json ?? null,
+        orchestrationPhase: session!.orchestration_phase ?? null,
+        orchestrationMetaJson: session!.orchestration_meta ?? null,
         _getEnrichedAgent: getEnrichedAgent,
       },
     );

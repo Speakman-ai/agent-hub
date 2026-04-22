@@ -209,6 +209,14 @@ describe('api worktree helpers — URL + method + body parity with web client', 
     expect(JSON.parse(init.body)).toEqual({ taskState: { goal: 'x' } });
   });
 
+  it('setSessionOrchestration(id, body) → PUT /sessions/:id/orchestration', async () => {
+    await api.setSessionOrchestration('sess-o', { phase: 'verifying', meta: { pr: 1 } });
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/sess-o/orchestration');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ phase: 'verifying', meta: { pr: 1 } });
+  });
+
   it('createSession omits ask_mode when not provided', async () => {
     await api.createSession('agent-1', 'My session');
     const [, init] = lastCall();

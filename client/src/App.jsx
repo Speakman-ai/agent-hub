@@ -707,9 +707,11 @@ export default function App() {
           }
           break;
         case 'session-updated':
-          // Server broadcasts a full `getSession` row today; spreading replaces the
-          // prior object so fields like `task_state_json` stay in sync. If the
-          // payload ever becomes partial, merge field-by-field instead of blind spread.
+          // Raw `sessions` table row from `getSession` (same columns as list endpoints).
+          // Unlike `GET /api/sessions/:id`, this payload is not enriched with `taskState`
+          // or `orchestrationMeta` — only snake_case JSON columns (`task_state_json`,
+          // `orchestration_meta`, …). Spreading replaces the prior object so DB fields
+          // stay in sync; if the payload ever becomes partial, merge field-by-field.
           setSessions((prev) =>
             prev.map((s) => (s.id === data.session.id ? { ...s, ...data.session } : s)),
           );
@@ -2822,6 +2824,12 @@ export default function App() {
                       <SessionTaskPlanPanel
                         session={sessions.find((s) => s.id === activeSessionId)}
                         onSave={(taskState) => api.setSessionTaskState(activeSessionId, taskState)}
+                        onOrchestrationSave={async (body) => {
+                          const row = await api.setSessionOrchestration(activeSessionId, body);
+                          setSessions((prev) =>
+                            prev.map((s) => (s.id === activeSessionId ? { ...s, ...row } : s)),
+                          );
+                        }}
                         showToast={showToast}
                       />
                     )}

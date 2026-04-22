@@ -904,6 +904,17 @@ function initDb(dataDir: string): void {
   }
 
   try {
+    db.prepare('SELECT orchestration_phase FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN orchestration_phase TEXT DEFAULT NULL');
+  }
+  try {
+    db.prepare('SELECT orchestration_meta FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN orchestration_meta TEXT DEFAULT NULL');
+  }
+
+  try {
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_deleted_at ON sessions(deleted_at)');
   } catch (_e) {
     /* already exists */
@@ -1486,6 +1497,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionTaskState: db.prepare(
       "UPDATE sessions SET task_state_json = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionOrchestration: db.prepare(
+      "UPDATE sessions SET orchestration_phase = ?, orchestration_meta = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     // Also nulls `stale_pr_notified_at` so a future stale period for the
     // same session re-notifies rather than being permanently suppressed by

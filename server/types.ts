@@ -38,6 +38,10 @@ export interface SessionRow {
   deleted_at: string | null;
   /** JSON blob: goal, checklist[], lastFailure (see `server/task-state.ts`). */
   task_state_json?: string | null;
+  /** Outer PAV phase slug (`planning` | `acting` | `verifying` | `done` | `escalated`) or NULL = legacy/unset. */
+  orchestration_phase?: string | null;
+  /** JSON object — host/operator metadata for outer orchestration (see `server/orchestration.ts`). */
+  orchestration_meta?: string | null;
 }
 
 export interface MessageRow {
@@ -706,6 +710,7 @@ export interface Stmts {
   updateSessionWikiHybridRagBudget: Stmt;
   updateSessionWebSearchCallsUsed: Stmt;
   updateSessionTaskState: Stmt;
+  updateSessionOrchestration: Stmt;
   clearSessionChangesReady: Stmt;
   getStalePendingPrSessions: Stmt;
   markStalePrNotified: Stmt;

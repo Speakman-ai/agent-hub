@@ -1,6 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, ClipboardList, Loader2, Save, Trash2 } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  ClipboardList,
+  Gauge,
+  Loader2,
+  Save,
+  Trash2,
+} from 'lucide-react';
 import { parseTaskStateFromSession, taskStateFormHasContent } from '../utils/sessionTaskState.js';
+import {
+  orchestrationMetaTextFromSession,
+  parseOrchestrationMetaForSave,
+} from '../utils/sessionOrchestration.js';
+
+const ORCH_PHASES = [
+  { value: '', label: '(unset)' },
+  { value: 'planning', label: 'planning' },
+  { value: 'acting', label: 'acting' },
+  { value: 'verifying', label: 'verifying' },
+  { value: 'done', label: 'done' },
+  { value: 'escalated', label: 'escalated' },
+];
 
 function newRowKey() {
   return typeof crypto !== 'undefined' && crypto.randomUUID
@@ -17,7 +38,7 @@ function checklistWithKeys(rows) {
 /**
  * Persisted goal / checklist / last failure for long-running sessions (stored in SQLite).
  */
-export default function SessionTaskPlanPanel({ session, onSave, showToast }) {
+export default function SessionTaskPlanPanel({ session, onSave, onOrchestrationSave, showToast }) {
   const prevSessionIdRef = useRef(session?.id);
   const [dirty, setDirty] = useState(false);
   const [goal, setGoal] = useState('');
@@ -27,6 +48,10 @@ export default function SessionTaskPlanPanel({ session, onSave, showToast }) {
   ]);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [orchPhase, setOrchPhase] = useState('');
+  const [orchMeta, setOrchMeta] = useState('');
+  const [orchDirty, setOrchDirty] = useState(false);
+  const [orchSaving, setOrchSaving] = useState(false);
 
   useEffect(() => {
     const id = session?.id;
@@ -43,7 +68,12 @@ export default function SessionTaskPlanPanel({ session, onSave, showToast }) {
       if (taskStateFormHasContent(next)) setOpen(true);
       if (idChanged) setDirty(false);
     }
-  }, [session, dirty]);
+    if (idChanged || !orchDirty) {
+      setOrchPhase(session?.orchestration_phase || '');
+      setOrchMeta(orchestrationMetaTextFromSession(session));
+      if (idChanged) setOrchDirty(false);
+    }
+  }, [session, dirty, orchDirty]);
 
   const buildPayload = useCallback(() => {
     const items = checklist
@@ -67,6 +97,31 @@ export default function SessionTaskPlanPanel({ session, onSave, showToast }) {
       if (showToast) showToast(e?.message || 'Save failed', 'error', 5000);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveOrchestration = async () => {
+    if (!onOrchestrationSave) return;
+    const parsedMeta = parseOrchestrationMetaForSave(orchMeta);
+    if (!parsedMeta.ok) {
+      const msg =
+        parsedMeta.reason === 'invalid_json'
+          ? 'Orchestration meta must be valid JSON'
+          : 'Orchestration meta must be a JSON object';
+      if (showToast) showToast(msg, 'error', 5000);
+      return;
+    }
+    const metaPayload = parsedMeta.meta;
+    const phasePayload = orchPhase === '' ? null : orchPhase;
+    setOrchSaving(true);
+    try {
+      await onOrchestrationSave({ phase: phasePayload, meta: metaPayload });
+      setOrchDirty(false);
+      if (showToast) showToast('Orchestration saved', 'success', 3000);
+    } catch (e) {
+      if (showToast) showToast(e?.message || 'Orchestration save failed', 'error', 5000);
+    } finally {
+      setOrchSaving(false);
     }
   };
 
@@ -113,6 +168,68 @@ export default function SessionTaskPlanPanel({ session, onSave, showToast }) {
             Shown in the agent system prompt. The model can also set this with a{' '}
             <code className="text-gray-400">&lt;agenthub:task-state&gt;</code> JSON block.
           </p>
+          {onOrchestrationSave ? (
+            <div className="rounded-md border border-gray-700/60 bg-gray-900/30 p-3 space-y-2">
+              <div className="flex items-center gap-2 text-[11px] font-semibold text-gray-300">
+                <Gauge className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                Outer orchestration (PAV)
+              </div>
+              <p className="text-[11px] text-gray-500 leading-relaxed">
+                Host-tracked macro phase + optional JSON metadata — appended to the system prompt.
+                Update via <code className="text-gray-400">PUT /sessions/…/orchestration</code>.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <label className="flex-1 block text-[11px] font-medium text-gray-400 mb-1">
+                  Phase
+                  <select
+                    value={orchPhase}
+                    onChange={(e) => {
+                      setOrchDirty(true);
+                      setOrchPhase(e.target.value);
+                    }}
+                    className="mt-1 w-full text-sm bg-gray-900 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200 focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                  >
+                    {ORCH_PHASES.map((o) => (
+                      <option key={o.value || 'unset'} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-gray-400 mb-1">
+                  Metadata (JSON object)
+                </label>
+                <textarea
+                  value={orchMeta}
+                  onChange={(e) => {
+                    setOrchDirty(true);
+                    setOrchMeta(e.target.value);
+                  }}
+                  rows={3}
+                  spellCheck={false}
+                  className="w-full text-xs font-mono bg-gray-900 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                  placeholder={'{}'}
+                />
+              </div>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void handleSaveOrchestration()}
+                  disabled={orchSaving}
+                  className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-amber-700/90 hover:bg-amber-600 text-white disabled:opacity-50"
+                >
+                  {orchSaving ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Save className="w-3.5 h-3.5" />
+                  )}
+                  Save orchestration
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div>
             <label className="block text-[11px] font-medium text-gray-400 mb-1">Goal</label>
             <textarea
