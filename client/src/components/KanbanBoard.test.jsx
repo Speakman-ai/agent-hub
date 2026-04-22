@@ -174,8 +174,12 @@ describe('KanbanBoard card detail modal', () => {
     expect(modal.className).toMatch(/justify-center/);
     expect(modal.className).not.toMatch(/justify-end/);
 
-    // The description textarea has a larger row count than the old (rows=4).
-    const description = within(modal).getByPlaceholderText(/add a description/i);
+    // Read mode: description is rendered as markdown, not a raw textarea.
+    expect(within(modal).getByTestId('card-description-preview')).toBeInTheDocument();
+    expect(within(modal).queryByTestId('card-description-editor')).not.toBeInTheDocument();
+
+    fireEvent.click(within(modal).getByRole('button', { name: /^Edit$/i }));
+    const description = within(modal).getByTestId('card-description-editor');
     expect(description.tagName).toBe('TEXTAREA');
     expect(Number(description.getAttribute('rows'))).toBeGreaterThanOrEqual(10);
 
@@ -186,6 +190,39 @@ describe('KanbanBoard card detail modal', () => {
     expect(within(modal).getByText(/^Labels$/i)).toBeInTheDocument();
     expect(within(modal).getByText(/GitHub Issue URL/i)).toBeInTheDocument();
     expect(within(modal).getByText(/Pull Request/i)).toBeInTheDocument();
+  });
+
+  it('renders card description as markdown in read mode and updates preview after edit', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-md',
+          title: 'Markdown card',
+          description: '## Problem\n\n- One\n- Two',
+          column_id: 'col-todo',
+          position: 0,
+        },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Markdown card')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Markdown card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+    const preview = within(modal).getByTestId('card-description-preview');
+    expect(preview.querySelector('h2')).not.toBeNull();
+    expect(preview.querySelector('h2')?.textContent).toMatch(/Problem/i);
+    expect(preview.querySelectorAll('li').length).toBeGreaterThanOrEqual(2);
+
+    fireEvent.click(within(modal).getByRole('button', { name: /^Edit$/i }));
+    const editor = within(modal).getByTestId('card-description-editor');
+    fireEvent.change(editor, {
+      target: { value: '## Updated title\n\n[Example](https://example.com/path)' },
+    });
+    fireEvent.click(within(modal).getByRole('button', { name: /^Preview$/i }));
+    const preview2 = within(modal).getByTestId('card-description-preview');
+    expect(preview2.querySelector('h2')?.textContent).toMatch(/Updated title/i);
+    expect(preview2.querySelector('a')?.getAttribute('href')).toBe('https://example.com/path');
   });
 });
 

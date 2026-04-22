@@ -19,6 +19,7 @@ import {
 import { api } from '../utils/api.js';
 import { epicFormToUpdateBody } from '../utils/epics.js';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
+import { MarkdownContent } from './MarkdownRenderer.jsx';
 
 const PRIORITY_STYLES = {
   urgent: 'bg-red-500/20 text-red-400',
@@ -98,6 +99,9 @@ export default function KanbanBoard({
   const [blockerPickerQuery, setBlockerPickerQuery] = useState('');
   const [blockerError, setBlockerError] = useState(null);
   const [pendingMove, setPendingMove] = useState(null); // { card, targetColumn, position }
+
+  /** Card detail: description shown as rendered markdown until user chooses Edit. */
+  const [descriptionEditing, setDescriptionEditing] = useState(false);
 
   /** Engine→valid models map from GET /api/config/models (optional model on card assign + epic autonomous). */
   const [modelConfig, setModelConfig] = useState(null);
@@ -511,6 +515,7 @@ export default function KanbanBoard({
     setShowBlockerPicker(false);
     setBlockerPickerQuery('');
     setBlockerError(null);
+    setDescriptionEditing(false);
   };
 
   // --- Blocker CRUD ---
@@ -1381,18 +1386,53 @@ export default function KanbanBoard({
                   />
 
                   <div>
-                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
-                      Description
-                    </label>
-                    <textarea
-                      value={detailForm.description}
-                      onChange={(e) =>
-                        setDetailForm((f) => ({ ...f, description: e.target.value }))
-                      }
-                      rows={18}
-                      placeholder="Add a description — problem, acceptance criteria, context..."
-                      className="w-full bg-gray-950/60 border border-gray-800 rounded-lg px-4 py-3 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-gray-600 resize-y min-h-[320px] leading-relaxed font-sans"
-                    />
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Description
+                      </label>
+                      {descriptionEditing ? (
+                        <button
+                          type="button"
+                          onClick={() => setDescriptionEditing(false)}
+                          className="shrink-0 text-xs font-medium text-indigo-400 hover:text-indigo-300"
+                        >
+                          Preview
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setDescriptionEditing(true)}
+                          className="shrink-0 text-xs font-medium text-indigo-400 hover:text-indigo-300"
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </div>
+                    {descriptionEditing ? (
+                      <textarea
+                        data-testid="card-description-editor"
+                        value={detailForm.description}
+                        onChange={(e) =>
+                          setDetailForm((f) => ({ ...f, description: e.target.value }))
+                        }
+                        rows={18}
+                        placeholder="Add a description — problem, acceptance criteria, context..."
+                        className="w-full bg-gray-950/60 border border-gray-800 rounded-lg px-4 py-3 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-gray-600 resize-y min-h-[320px] leading-relaxed font-sans"
+                      />
+                    ) : (
+                      <div
+                        data-testid="card-description-preview"
+                        className="w-full min-h-[200px] max-h-[min(480px,55vh)] overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/60 px-4 py-3 text-sm text-gray-200 leading-relaxed"
+                      >
+                        {detailForm.description?.trim() ? (
+                          <div className="markdown-content">
+                            <MarkdownContent content={detailForm.description} />
+                          </div>
+                        ) : (
+                          <p className="text-gray-500 italic">No description yet.</p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 
