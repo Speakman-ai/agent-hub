@@ -1,13 +1,13 @@
 import { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
-import type { SayFn } from '@slack/bolt';
+import type { CodedError, SayFn, SlackEventMiddlewareArgs } from '@slack/bolt';
 import { spawn } from 'child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getMemoryContext, appendDailyNote } from './memory.js';
 import config, { buildSpawnEnv } from './config.js';
-import type { EnrichedAgent, Stmts, AppConfig, SlackMessageRow } from './types.js';
+import type { EnrichedAgent, Stmts, SlackMessageRow } from './types.js';
 
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_BIN: string = config.claudeBin;
@@ -416,13 +416,13 @@ async function startBot(account: SlackAccount, agents: EnrichedAgent[]): Promise
 
     const agent = agents.find((a) => a.id === account.agentId);
 
-    boltApp.message(async (args) => {
+    boltApp.message(async (args: SlackEventMiddlewareArgs<'message'>) => {
       enqueueMessage(account.agentId, () =>
         handleMessage(account, agent, args as unknown as HandleMessageArgs),
       );
     });
 
-    boltApp.error(async (error) => {
+    boltApp.error(async (error: CodedError) => {
       console.error(`Slack bot "${account.name}" error:`, error);
       const botEntry = bots.get(account.name);
       if (botEntry) {

@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Mobile**: `npm run mobile` or `cd mobile && expo start` (Expo dev server)
 
 ### TypeScript (Server)
-- `cd server && npm run typecheck` - Run `tsc --noEmit` to check types
+- `npm run typecheck` (repo root) or `cd server && npm run typecheck` — Run `tsc --noEmit` on the server. Requires `server/node_modules` with devDependencies (use `npm run install:all` or `cd server && npm ci --include=dev`). Running `tsc` without installing `server/` first can make resolution walk up to the root `node_modules` and fail with missing `express` / `uuid` / `@types/*`.
 - `cd server && npx tsc --noEmit` - Same as above, directly
 - The server uses `tsx` for runtime (no build step) and `tsc --noEmit` for type checking only
 

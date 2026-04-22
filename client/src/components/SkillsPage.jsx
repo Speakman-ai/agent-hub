@@ -24,7 +24,6 @@ import {
   Plug,
   Check,
   Shield,
-  RefreshCw,
   Cloud,
 } from 'lucide-react';
 

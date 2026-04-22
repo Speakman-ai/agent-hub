@@ -12,6 +12,21 @@ export function extractText(node) {
   return '';
 }
 
+/**
+ * Whether this `code` element is a fenced block vs inline backticks.
+ * react-markdown 9 + hast-util-to-jsx-runtime often omit `inline` on custom
+ * components (undefined for both), so `!inline` would wrongly treat inline as block.
+ */
+export function markdownCodeIsBlock({ inline, className, children }) {
+  if (inline === true) return false;
+  if (inline === false) return true;
+  const cls = typeof className === 'string' ? className : '';
+  if (/\bhljs\b|language-/.test(cls)) return true;
+  // mdast fenced `code` always appends `\n` to the text; inlineCode collapses newlines to spaces.
+  if (/\n/.test(extractText(children))) return true;
+  return false;
+}
+
 export function CodeBlock({ children, className }) {
   const [copied, setCopied] = useState(false);
   const plainText = extractText(children).replace(/\n$/, '');
@@ -43,11 +58,7 @@ export function CodeBlock({ children, className }) {
 
 export const markdownComponents = {
   code({ node: _node, inline, className, children, ...props }) {
-    // Fenced code blocks are always `inline: false` — use a block <pre> even
-    // when the code is a single line (no `\n` in children). Requiring `\n`
-    // incorrectly rendered one-line fences as bare <code>, breaking diffs and
-    // syntax-highlighted snippets in chat (Electron + web).
-    if (!inline) {
+    if (markdownCodeIsBlock({ inline, className, children })) {
       return <CodeBlock className={className}>{children}</CodeBlock>;
     }
     return (
@@ -77,7 +88,7 @@ export const markdownComponents = {
 // Used by compact views like SessionTail where a full code toolbar is too heavy.
 export const markdownComponentsCompact = {
   code({ inline, className, children, ...props }) {
-    if (!inline) {
+    if (markdownCodeIsBlock({ inline, className, children })) {
       return (
         <pre className="bg-gray-950 rounded p-2 overflow-x-auto text-xs my-2">
           <code className={className}>{children}</code>

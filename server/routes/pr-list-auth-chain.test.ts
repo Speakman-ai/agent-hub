@@ -11,7 +11,7 @@
  * the pure-helper tests in pr-list.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import express from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import request from 'supertest';
 import { tmpdir } from 'os';
 import { mkdtempSync, mkdirSync } from 'fs';
@@ -93,7 +93,7 @@ function buildDeps(project: Record<string, unknown>): RouteDeps {
 function makeApp(deps: RouteDeps, authUserId?: string): express.Express {
   const app = express();
   app.use(express.json());
-  app.use((req, _res, next) => {
+  app.use((req: Request, _res: Response, next: NextFunction) => {
     if (authUserId) (req as { authUserId?: string }).authUserId = authUserId;
     next();
   });

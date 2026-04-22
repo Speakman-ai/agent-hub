@@ -32,7 +32,6 @@ import {
   ChevronUp,
   Cpu,
   RefreshCw,
-  Apple,
 } from 'lucide-react';
 
 // ─── Status Badge ────────────────────────────────────────────────

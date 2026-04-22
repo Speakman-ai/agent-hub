@@ -59,6 +59,9 @@ jobs:
       - name: Check Prettier formatting
         run: npm run format:check
 
+      - name: Check server types
+        run: cd server && npx tsc --noEmit
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -99,9 +102,6 @@ jobs:
             sleep 15
           done
           exit 1
-
-      - name: Check server types
-        run: cd server && npx tsc --noEmit
 
   test:
     name: Test

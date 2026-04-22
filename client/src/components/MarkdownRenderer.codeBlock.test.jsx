@@ -6,6 +6,24 @@ import rehypeHighlight from 'rehype-highlight';
 import { markdownComponents, markdownComponentsCompact } from './MarkdownRenderer.jsx';
 
 describe('MarkdownRenderer fenced code blocks', () => {
+  it('renders inline backticks as inline code, not CodeBlock', () => {
+    const md = 'Use `npm test` here.';
+    const { container } = render(
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={markdownComponents}
+      >
+        {md}
+      </ReactMarkdown>,
+    );
+    expect(container.querySelector('pre')).toBeFalsy();
+    expect(screen.queryByRole('button', { name: /copy/i })).not.toBeInTheDocument();
+    const codes = container.querySelectorAll('code');
+    expect(codes.length).toBe(1);
+    expect(codes[0].textContent).toBe('npm test');
+  });
+
   it('uses CodeBlock (pre + copy) for single-line fenced code — no inner newline', () => {
     const md = '```ts\nconst x = 1\n```';
     const { container } = render(
