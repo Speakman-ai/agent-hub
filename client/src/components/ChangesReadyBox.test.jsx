@@ -122,4 +122,37 @@ describe('ChangesReadyBox auto-merge default', () => {
       expect(screen.getByText(/Git commit failed/)).toBeInTheDocument();
     });
   });
+
+  it('calls onPublishStart before starting the create-PR request', () => {
+    const onPublishStart = vi.fn();
+    render(<ChangesReadyBox {...baseProps} onPublishStart={onPublishStart} />);
+    fireEvent.click(screen.getByRole('button', { name: /create ticket & pr/i }));
+    expect(onPublishStart).toHaveBeenCalledWith('session-1');
+    expect(api.createPrFromSession).toHaveBeenCalled();
+  });
+
+  it('shows the publish log panel while loading and renders streamed livePrLog text', async () => {
+    let resolvePr;
+    api.createPrFromSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvePr = resolve;
+        }),
+    );
+    const { rerender } = render(<ChangesReadyBox {...baseProps} livePrLog="" />);
+    fireEvent.click(screen.getByRole('button', { name: /create ticket & pr/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Publish log')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Starting/)).toBeInTheDocument();
+
+    rerender(<ChangesReadyBox {...baseProps} livePrLog={'$ git commit\nhusky - pre-commit\n'} />);
+    expect(screen.getByText(/husky - pre-commit/)).toBeInTheDocument();
+
+    resolvePr({ prUrl: 'http://pr', cardId: 'c1' });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /create ticket & pr/i })).not.toBeDisabled();
+    });
+  });
 });

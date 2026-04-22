@@ -94,6 +94,8 @@ export function AppProvider({ children }) {
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  // Live git/gh output while POST /create-pr runs (server streams via WebSocket).
+  const [createPrLogBySession, setCreatePrLogBySession] = useState({});
   // Tracks which agenthub:ask prompts the user has already answered in this
   // app instance, so the picker renders as "Submitted" immediately after
   // tapping. This is the optimistic, in-memory half; the authoritative source
@@ -592,6 +594,27 @@ export function AppProvider({ children }) {
           delete next[data.sessionId];
           return next;
         });
+        setCreatePrLogBySession((prev) => {
+          if (!prev[data.sessionId]) return prev;
+          const next = { ...prev };
+          delete next[data.sessionId];
+          return next;
+        });
+        break;
+
+      case 'create_pr_log': {
+        const maxChars = 250_000;
+        if (data.sessionId && typeof data.text === 'string') {
+          setCreatePrLogBySession((prev) => {
+            const combined = (prev[data.sessionId] || '') + data.text;
+            const tail = combined.length > maxChars ? combined.slice(-maxChars) : combined;
+            return { ...prev, [data.sessionId]: tail };
+          });
+        }
+        break;
+      }
+      // Stream finished — keep text for failed paths; see web client.
+      case 'create_pr_log_done':
         break;
 
       // ── Thread events (persistent output logs) ───────────────
@@ -1493,6 +1516,21 @@ export function AppProvider({ children }) {
       delete next[sessionId];
       return next;
     });
+    setCreatePrLogBySession((prev) => {
+      if (!prev[sessionId]) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
+
+  const beginCreatePrPublish = useCallback((sessionId) => {
+    setCreatePrLogBySession((prev) => {
+      if (!prev[sessionId]) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
   }, []);
 
   const isProcessing = thinking || !!streamingContent;
@@ -1567,7 +1605,9 @@ export function AppProvider({ children }) {
     cronSessions,
     kanbanRefreshKey,
     changesReady,
+    createPrLogBySession,
     dismissChangesReady,
+    beginCreatePrPublish,
     // Ask-prompt (`agenthub:ask`) submission state and handler
     askSubmitted,
     handleAskSubmit,

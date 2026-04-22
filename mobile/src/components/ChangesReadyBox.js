@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   Linking,
+  ScrollView,
+  Platform,
 } from 'react-native';
 import { colors } from '../theme/colors';
 import { api } from '../utils/api';
@@ -24,12 +26,16 @@ import { api } from '../utils/api';
  *   defaultAutoMerge  — initial value for the per-PR auto-merge toggle
  *                       (project's `githubWorkflow.autoMerge`)
  *   onCreated(sessionId, { prUrl, cardId }) — success callback
+ *   livePrLog(string)  — streamed git/gh output from the server WebSocket
+ *   onPublishStart(sessionId)  — before a new attempt; parent clears stale log
  *   onDismiss(sessionId)                    — dismiss callback
  */
 export default function ChangesReadyBox({
   sessionId,
   changes,
+  livePrLog = '',
   defaultAutoMerge = false,
+  onPublishStart,
   onCreated,
   onDismiss,
 }) {
@@ -37,9 +43,19 @@ export default function ChangesReadyBox({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const logScrollRef = useRef(null);
+
+  useEffect(() => {
+    if (!livePrLog) return;
+    const t = setTimeout(() => {
+      logScrollRef.current?.scrollToEnd({ animated: true });
+    }, 50);
+    return () => clearTimeout(t);
+  }, [livePrLog]);
 
   const handleCreate = async () => {
     if (loading) return;
+    onPublishStart?.(sessionId);
     setLoading(true);
     setError(null);
     try {
@@ -135,6 +151,21 @@ export default function ChangesReadyBox({
       {error ? (
         <View style={styles.errorBox}>
           <Text style={styles.errorText}>{error}</Text>
+        </View>
+      ) : null}
+
+      {(loading || livePrLog) ? (
+        <View style={styles.logOuter}>
+          <Text style={styles.logHeader}>Publish log</Text>
+          <ScrollView
+            ref={logScrollRef}
+            style={styles.logScroll}
+            nestedScrollEnabled
+          >
+            <Text style={styles.logBody} selectable>
+              {livePrLog || (loading ? 'Starting…\n' : '')}
+            </Text>
+          </ScrollView>
         </View>
       ) : null}
 
@@ -265,6 +296,35 @@ const styles = StyleSheet.create({
     color: colors.purple400,
     fontSize: 13,
     fontWeight: '500',
+  },
+  logOuter: {
+    marginBottom: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(55, 65, 81, 0.8)',
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    overflow: 'hidden',
+  },
+  logHeader: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    fontSize: 10,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: colors.gray500,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(55, 65, 81, 0.6)',
+  },
+  logScroll: {
+    maxHeight: 160,
+  },
+  logBody: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    fontSize: 11,
+    lineHeight: 16,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+    color: colors.gray200,
   },
 });
 

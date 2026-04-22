@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { GitPullRequest, X } from 'lucide-react';
 import { api } from '../utils/api.js';
 
@@ -16,22 +16,35 @@ import { api } from '../utils/api.js';
  *                       from the project's `githubWorkflow.autoMerge` setting
  *                       (Layer 1). The user can still flip it locally before
  *                       creating the PR (Layer 2 overrides Layer 1).
+ *   livePrLog         — streamed git/gh output for this session (WebSocket)
+ *   onPublishStart   — (sessionId) => void, optional; run before a new
+ *                       commit/push/PR attempt so the parent can clear
+ *                       any stale streamed log from a previous attempt
  *   onCreated         — (sessionId, { prUrl, cardId }) => void
  *   onDismiss         — (sessionId) => void
  */
 export default function ChangesReadyBox({
   sessionId,
   changes,
+  livePrLog = '',
   defaultAutoMerge = false,
+  onPublishStart,
   onCreated,
   onDismiss,
 }) {
   const [autoMerge, setAutoMerge] = useState(!!defaultAutoMerge);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const logEndRef = useRef(null);
+
+  useEffect(() => {
+    if (!livePrLog) return;
+    logEndRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'end' });
+  }, [livePrLog]);
 
   const handleCreate = async () => {
     if (loading) return;
+    onPublishStart?.(sessionId);
     setLoading(true);
     setError(null);
     try {
@@ -94,6 +107,22 @@ export default function ChangesReadyBox({
         {/* Error message */}
         {error && (
           <div className="text-xs text-red-400 bg-red-950/30 rounded px-2 py-1">{error}</div>
+        )}
+
+        {/* Live commit / hook output while the server runs git + gh */}
+        {(loading || livePrLog) && (
+          <div className="rounded-lg border border-gray-700/80 bg-black/50 overflow-hidden">
+            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-gray-500 border-b border-gray-700/60">
+              Publish log
+            </div>
+            <pre
+              className="max-h-40 overflow-x-auto overflow-y-auto px-2 py-2 text-[11px] leading-snug font-mono text-gray-200 whitespace-pre-wrap break-words"
+              aria-live="polite"
+            >
+              {livePrLog || (loading ? 'Starting…\n' : '')}
+              <span ref={logEndRef} />
+            </pre>
+          </div>
         )}
 
         {/* Action button */}

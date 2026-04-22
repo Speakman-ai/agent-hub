@@ -155,6 +155,8 @@ export default function App() {
   const [subagents, setSubagents] = useState({});
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState({});
+  // Live git/gh output while POST /create-pr runs (server streams via WebSocket).
+  const [createPrLogBySession, setCreatePrLogBySession] = useState({});
   // Cursor-style ProgressPanel state — keyed by sessionId.
   // Each value: Array<{ step, status, startedAt, finishedAt? }> in emit order.
   const [sessionProgress, setSessionProgress] = useState({});
@@ -611,7 +613,7 @@ export default function App() {
         }
         break;
       }
-      case 'auto_pr_created':
+      case 'auto_pr_created': {
         // Clear changes_ready state when a PR is created (manually or automatically)
         setChangesReady((prev) => {
           if (!prev[data.sessionId]) return prev;
@@ -619,6 +621,28 @@ export default function App() {
           delete next[data.sessionId];
           return next;
         });
+        setCreatePrLogBySession((prev) => {
+          if (!prev[data.sessionId]) return prev;
+          const next = { ...prev };
+          delete next[data.sessionId];
+          return next;
+        });
+        break;
+      }
+      case 'create_pr_log':
+        if (data.sessionId && typeof data.text === 'string') {
+          const maxChars = 250_000;
+          setCreatePrLogBySession((prev) => {
+            const combined = (prev[data.sessionId] || '') + data.text;
+            const tail = combined.length > maxChars ? combined.slice(-maxChars) : combined;
+            return { ...prev, [data.sessionId]: tail };
+          });
+        }
+        break;
+      // Stream finished — keep the accumulated text so the user can read
+      // output after commit_failed / push_failed / pr_failed. Cleared on
+      // success (auto_pr_created), dismiss, or a new Create attempt.
+      case 'create_pr_log_done':
         break;
       case 'message_added':
         // A new message (e.g. the system 'PR created' marker persisted by the
@@ -2755,12 +2779,27 @@ export default function App() {
                           <ChangesReadyBox
                             sessionId={activeSessionId}
                             changes={changesReady[activeSessionId]}
+                            livePrLog={createPrLogBySession[activeSessionId] || ''}
+                            onPublishStart={(sessionId) => {
+                              setCreatePrLogBySession((prev) => {
+                                if (!prev[sessionId]) return prev;
+                                const next = { ...prev };
+                                delete next[sessionId];
+                                return next;
+                              });
+                            }}
                             defaultAutoMerge={
                               projects.find((p) => p.id === activeAgent?.projectId)?.githubWorkflow
                                 ?.autoMerge ?? false
                             }
                             onCreated={(sessionId, result) => {
                               setChangesReady((prev) => {
+                                const next = { ...prev };
+                                delete next[sessionId];
+                                return next;
+                              });
+                              setCreatePrLogBySession((prev) => {
+                                if (!prev[sessionId]) return prev;
                                 const next = { ...prev };
                                 delete next[sessionId];
                                 return next;
@@ -2777,6 +2816,12 @@ export default function App() {
                             }}
                             onDismiss={(sessionId) => {
                               setChangesReady((prev) => {
+                                const next = { ...prev };
+                                delete next[sessionId];
+                                return next;
+                              });
+                              setCreatePrLogBySession((prev) => {
+                                if (!prev[sessionId]) return prev;
                                 const next = { ...prev };
                                 delete next[sessionId];
                                 return next;

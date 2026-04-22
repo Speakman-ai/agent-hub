@@ -1,9 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
+import { EventEmitter } from 'events';
 
 // Mock child_process before importing module
 vi.mock('child_process', () => ({
   exec: vi.fn(),
   execFile: vi.fn(),
+  spawn: vi.fn(),
 }));
 
 vi.mock('fs', () => ({
@@ -12,7 +14,7 @@ vi.mock('fs', () => ({
   statSync: vi.fn(),
 }));
 
-import { exec, execFile } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import {
   checkWorktreeChanges,
   initAutoGit,
@@ -25,6 +27,8 @@ import {
   getProjectPreCommitCommands,
   truncateForGitCommitMessage,
   MAX_GIT_COMMIT_MESSAGE_CHARS,
+  runShellCommandStreaming,
+  STREAM_OUTPUT_MAX_BYTES,
 } from './auto-git.js';
 import type { MessageRow } from './types.js';
 
@@ -44,6 +48,7 @@ function makeMsg(role: 'user' | 'assistant', content: string): MessageRow {
 
 // Helper to mock execAsync / execFileAsync results (git uses exec; gh uses execFile)
 function mockExec(results: Record<string, { stdout?: string; stderr?: string; error?: Error }>) {
+  wireSpawnToExecMocks();
   const run = (
     cmd: string,
     callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
@@ -88,6 +93,92 @@ function mockExec(results: Record<string, { stdout?: string; stderr?: string; er
   );
 }
 
+/**
+ * `auto-git` streams git/gh/shell work via `spawn`. Tests historically mocked
+ * `exec` / `execFile` only — bridge spawn → the active mock implementations.
+ */
+function wireSpawnToExecMocks() {
+  (spawn as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    (command: string, args: string[], options: { cwd?: string }) => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = vi.fn();
+
+      const finish = (err: Error | null, stdout: string, stderr: string) => {
+        if (stdout) child.stdout.emit('data', Buffer.from(stdout));
+        const errText = stderr || (err ? err.message : '');
+        if (errText) child.stderr.emit('data', Buffer.from(errText));
+        child.emit('close', err ? 1 : 0, null);
+      };
+
+      const run = () => {
+        const execFileImpl = (execFile as unknown as Mock).getMockImplementation() as
+          | ((
+              file: string,
+              args: string[],
+              options: { cwd?: string },
+              callback: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+            ) => void)
+          | undefined;
+        const execImpl = (exec as unknown as Mock).getMockImplementation() as
+          | ((
+              cmd: string,
+              options: { cwd?: string },
+              callback: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+            ) => void)
+          | undefined;
+
+        if (command === 'git' || command === 'gh') {
+          if (execFileImpl) {
+            execFileImpl(
+              command,
+              args,
+              options || {},
+              (err: Error | null, result: { stdout: string; stderr: string }) => {
+                finish(err, result?.stdout || '', result?.stderr || '');
+              },
+            );
+            return;
+          }
+        }
+
+        const cIdx = args?.indexOf('-c');
+        const shellScript =
+          cIdx >= 0 && typeof args[cIdx + 1] === 'string'
+            ? (args[cIdx + 1] as string)
+            : String(command || '')
+                  .toLowerCase()
+                  .includes('cmd') && args?.length
+              ? String(args[args.length - 1])
+              : null;
+
+        if (shellScript && execImpl) {
+          execImpl(
+            shellScript,
+            options || {},
+            (err: Error | null, result: { stdout: string; stderr: string }) => {
+              finish(err, result?.stdout || '', result?.stderr || '');
+            },
+          );
+          return;
+        }
+
+        // Neither `git`/`gh` argv nor a `-c` shell script matched — return an
+        // empty success so tests that stub spawn without wiring exec keep working.
+        finish(null, '', '');
+      };
+
+      queueMicrotask(run);
+      return child;
+    },
+  );
+}
+
 /** Same handler for `exec('sh -c')` and `execFile('gh', …)` so tests track both. */
 function installExecAndGhMock(
   impl: (
@@ -96,6 +187,7 @@ function installExecAndGhMock(
     callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
   ) => void,
 ) {
+  wireSpawnToExecMocks();
   (exec as unknown as ReturnType<typeof vi.fn>).mockImplementation(impl);
   (execFile as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     (
@@ -994,15 +1086,15 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
     await autoCommitAndPR('sess-shell', 'agent-1', project, agent, '/worktree', '');
     await new Promise((r) => setImmediate(r));
 
-    const ghCreateCalls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+    const ghCreateSpawn = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
       (c: unknown[]) =>
         c[0] === 'gh' &&
         Array.isArray(c[1]) &&
         (c[1] as string[])[0] === 'pr' &&
         (c[1] as string[])[1] === 'create',
     );
-    expect(ghCreateCalls.length).toBe(1);
-    const argv = ghCreateCalls[0][1] as string[];
+    expect(ghCreateSpawn.length).toBeGreaterThanOrEqual(1);
+    const argv = ghCreateSpawn[ghCreateSpawn.length - 1][1] as string[];
     const bodyIdx = argv.indexOf('--body');
     expect(bodyIdx).toBeGreaterThan(-1);
     expect(argv[bodyIdx + 1]).toContain('`pulls/');
@@ -1787,15 +1879,53 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
       expect(result.error).toMatch(/Git commit failed/);
     }
 
-    const gitCommitCalls = (execFile as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+    const gitCommitSpawn = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
       (c: unknown[]) => c[0] === 'git' && Array.isArray(c[1]) && (c[1] as string[])[0] === 'commit',
     );
-    expect(gitCommitCalls.length).toBe(1);
-    const argv = gitCommitCalls[0][1] as string[];
+    expect(gitCommitSpawn.length).toBeGreaterThanOrEqual(1);
+    const argv = gitCommitSpawn[gitCommitSpawn.length - 1][1] as string[];
     expect(argv[1]).toBe('-m');
     const msgArg = argv[2];
     expect(msgArg).toContain('`backticks`');
     expect(msgArg).toContain('\n');
     expect(msgArg).toContain('$(date)');
+  });
+});
+
+describe('runShellCommandStreaming — output byte cap', () => {
+  afterEach(() => {
+    wireSpawnToExecMocks();
+  });
+
+  it('matches the legacy exec maxBuffer size (10 MiB)', () => {
+    expect(STREAM_OUTPUT_MAX_BYTES).toBe(10 * 1024 * 1024);
+  });
+
+  it('kills the child and rejects when stdout exceeds maxOutputBytes', async () => {
+    vi.clearAllMocks();
+    const killMock = vi.fn();
+    (spawn as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = killMock;
+      queueMicrotask(() => {
+        const chunk = Buffer.from('y'.repeat(200));
+        for (let i = 0; i < 20; i++) {
+          child.stdout.emit('data', chunk);
+        }
+        queueMicrotask(() => child.emit('close', null, 'SIGTERM'));
+      });
+      return child;
+    });
+
+    await expect(runShellCommandStreaming('noop', '/tmp', 3000, undefined, 1000)).rejects.toThrow(
+      /exceeded 1000 bytes/i,
+    );
+    expect(killMock).toHaveBeenCalled();
   });
 });

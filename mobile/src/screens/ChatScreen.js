@@ -48,7 +48,9 @@ export default function ChatScreen() {
     handleEventsLoaded,
     activeSessionId,
     changesReady,
+    createPrLogBySession,
     dismissChangesReady,
+    beginCreatePrPublish,
     projects,
     sessionHandoffs,
     handleOpenHandoffSession,
@@ -185,7 +187,9 @@ export default function ChatScreen() {
           <ChangesReadyBox
             sessionId={activeSessionId}
             changes={item.data}
+            livePrLog={createPrLogBySession[activeSessionId] || ''}
             defaultAutoMerge={resolveAutoMergeDefault(activeProject)}
+            onPublishStart={beginCreatePrPublish}
             onCreated={() => {
               // The server will emit `auto_pr_created` which clears the
               // banner in AppContext. Nothing to do here.

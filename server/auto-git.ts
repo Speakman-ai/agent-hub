@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import path from 'path';
 import { readFileSync, existsSync, statSync } from 'fs';
-import { exec, execFile } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import type {
   Stmts,
@@ -19,6 +19,14 @@ const execFileAsync = promisify(execFile);
 
 /** Wall-clock cap per configured pre-commit shell command (lint/test can be slow). */
 const PRECOMMIT_CMD_TIMEOUT_MS = 600_000;
+
+/**
+ * Max bytes of combined stdout+stderr per spawned child (matches the old
+ * `exec({ maxBuffer: 10MiB })` ceiling for project pre-commit shell commands).
+ * Applied to `git commit` / `git push` / `gh` streaming as well so runaway CLI
+ * output cannot grow without bound or flood WebSocket clients.
+ */
+export const STREAM_OUTPUT_MAX_BYTES = 10 * 1024 * 1024;
 
 /**
  * Cap for `git commit -m <msg>` passed as a single argv element. Kanban cards
@@ -53,6 +61,18 @@ function formatExecFileError(err: unknown): string {
   return msg;
 }
 
+function formatSpawnFailure(
+  file: string,
+  r: { code: number | null; stdout: string; stderr: string },
+): string {
+  const parts: string[] = [`${file} exited with code ${r.code}`];
+  const e = r.stderr.trim();
+  const o = r.stdout.trim();
+  if (e) parts.push(e);
+  if (o && !e.includes(o)) parts.push(o);
+  return parts.join('\n');
+}
+
 export function getProjectPreCommitCommands(project: Project): string[] {
   const raw = (project as Record<string, unknown>).preCommitCommands;
   if (!Array.isArray(raw)) return [];
@@ -62,18 +82,145 @@ export function getProjectPreCommitCommands(project: Project): string[] {
     .filter(Boolean);
 }
 
-async function runProjectPreCommitCommands(project: Project, cwd: string): Promise<void> {
+async function runProjectPreCommitCommands(
+  project: Project,
+  cwd: string,
+  onChunk?: (chunk: string) => void,
+): Promise<void> {
   const cmds = getProjectPreCommitCommands(project);
   if (!cmds.length) return;
   for (const cmd of cmds) {
     console.log(`[auto-commit] Pre-commit (${project.id}): ${cmd}`);
-    await execAsync(cmd, {
-      cwd,
-      timeout: PRECOMMIT_CMD_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env },
-    });
+    if (onChunk) onChunk(`\n$ ${cmd}\n`);
+    await runShellCommandStreaming(cmd, cwd, PRECOMMIT_CMD_TIMEOUT_MS, onChunk);
   }
+}
+
+/**
+ * Run a shell command with live stdout/stderr (used for project pre-commit
+ * hooks configured on the Agent Hub project row).
+ *
+ * @param maxOutputBytes — defaults to {@link STREAM_OUTPUT_MAX_BYTES}; tests may pass a lower value.
+ */
+export async function runShellCommandStreaming(
+  cmd: string,
+  cwd: string,
+  timeoutMs: number,
+  onChunk?: (chunk: string) => void,
+  maxOutputBytes: number = STREAM_OUTPUT_MAX_BYTES,
+): Promise<void> {
+  const isWin = process.platform === 'win32';
+  const child = isWin
+    ? spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', cmd], {
+        cwd,
+        env: { ...process.env },
+        windowsHide: true,
+      })
+    : spawn('/bin/sh', ['-c', cmd], { cwd, env: { ...process.env } });
+
+  let received = 0;
+  let overBudget = false;
+  const onData = (d: string | Buffer) => {
+    if (overBudget) return;
+    const s = typeof d === 'string' ? d : d.toString();
+    const n = Buffer.byteLength(s, 'utf8');
+    if (received + n > maxOutputBytes) {
+      overBudget = true;
+      child.kill('SIGTERM');
+      return;
+    }
+    received += n;
+    onChunk?.(s);
+  };
+
+  child.stdout?.on('data', onData);
+  child.stderr?.on('data', onData);
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`Pre-commit command timed out after ${timeoutMs}ms: ${cmd}`));
+    }, timeoutMs);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (overBudget) {
+        reject(
+          new Error(
+            `Pre-commit command output exceeded ${maxOutputBytes} bytes: ${cmd}`.substring(0, 5000),
+          ),
+        );
+        return;
+      }
+      if (code === 0) resolve();
+      else
+        reject(
+          new Error(
+            `Pre-commit command failed (${code ?? signal ?? 'unknown'}): ${cmd}`.substring(0, 5000),
+          ),
+        );
+    });
+  });
+}
+
+type SpawnChunkHandler = (chunk: string) => void;
+
+async function spawnProcessStreaming(
+  file: string,
+  args: string[],
+  opts: { cwd: string; timeoutMs: number; onChunk?: SpawnChunkHandler; maxOutputBytes?: number },
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const maxOut = opts.maxOutputBytes ?? STREAM_OUTPUT_MAX_BYTES;
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, {
+      cwd: opts.cwd,
+      env: { ...process.env },
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    let received = 0;
+    let overBudget = false;
+    const push = (buf: Buffer, which: 'out' | 'err') => {
+      if (overBudget) return;
+      const s = buf.toString();
+      const n = Buffer.byteLength(s, 'utf8');
+      if (received + n > maxOut) {
+        overBudget = true;
+        child.kill('SIGTERM');
+        return;
+      }
+      received += n;
+      if (which === 'out') stdout += s;
+      else stderr += s;
+      opts.onChunk?.(s);
+    };
+    child.stdout?.on('data', (d: Buffer) => push(d, 'out'));
+    child.stderr?.on('data', (d: Buffer) => push(d, 'err'));
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`timeout ${opts.timeoutMs}ms: ${file} ${args.join(' ')}`));
+    }, opts.timeoutMs);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (overBudget) {
+        reject(
+          new Error(
+            `${file} output exceeded ${maxOut} bytes (argv: ${args.join(' ').substring(0, 200)}…)`,
+          ),
+        );
+        return;
+      }
+      resolve({ code, stdout, stderr });
+    });
+  });
 }
 
 /** Run `gh` without a shell so PR bodies can contain backticks, `$`, `{`, etc. */
@@ -83,6 +230,25 @@ async function runGh(
   timeout?: number,
 ): Promise<{ stdout: string; stderr: string }> {
   return execFileAsync('gh', args, { cwd, timeout });
+}
+
+/** Same argv safety as `runGh`, with optional live stdout/stderr for the UI. */
+async function runGhStreamed(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  onChunk?: SpawnChunkHandler,
+): Promise<{ stdout: string; stderr: string }> {
+  if (!onChunk) {
+    return runGh(args, cwd, timeoutMs);
+  }
+  const r = await spawnProcessStreaming('gh', args, { cwd, timeoutMs, onChunk });
+  if (r.code !== 0) {
+    const err = new Error(formatSpawnFailure('gh', r)) as Error & { stderr?: Buffer };
+    err.stderr = Buffer.from(r.stderr || '');
+    throw err;
+  }
+  return { stdout: r.stdout, stderr: r.stderr };
 }
 
 // ─── Dependency Types ────────────────────────────────────────────────
@@ -600,264 +766,306 @@ async function commitPushAndCreatePR(
     `[auto-commit] Session ${sessionId} — uncommitted: ${changes.hasUncommitted}, unpushed: ${changes.hasUnpushed}`,
   );
 
-  const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
-  const rawTitle = (card?.title ?? session?.name ?? '').trim();
-  const commitTitle = rawTitle || 'Agent task completion';
-
-  if (changes.hasUncommitted) {
-    // Ensure git identity is configured (may be missing in shallow clones)
-    try {
-      await execAsync('git config user.name', { cwd: effectiveCwd });
-    } catch {
-      // Try to copy from the project's main repo, or fall back to defaults
-      try {
-        const { stdout: name } = await execAsync('git config user.name', { cwd: project.cwd });
-        const { stdout: email } = await execAsync('git config user.email', { cwd: project.cwd });
-        if (name.trim())
-          await execAsync(`git config user.name ${JSON.stringify(name.trim())}`, {
-            cwd: effectiveCwd,
-          });
-        if (email.trim())
-          await execAsync(`git config user.email ${JSON.stringify(email.trim())}`, {
-            cwd: effectiveCwd,
-          });
-      } catch {
-        await execAsync('git config user.name "Agent Hub"', { cwd: effectiveCwd });
-        await execAsync('git config user.email "agent@agent-hub.com"', { cwd: effectiveCwd });
-      }
-    }
-
-    const commitBody = [
-      card?.description ? `\n${card.description}` : null,
-      `\nAgent: ${agent.name}`,
-      card?.priority ? `Priority: ${card.priority}` : null,
-      `\nCo-Authored-By: ${agent.name} <noreply@anthropic.com>`,
-    ]
-      .filter((line): line is string => line != null)
-      .join('\n');
-
-    await execAsync('git add -A', { cwd: effectiveCwd });
-    await runProjectPreCommitCommands(project, effectiveCwd);
-    // Pre-commit commands may run formatters / fixers that write the tree; re-stage
-    // so those edits are included in the commit (matches typical hook UX).
-    await execAsync('git add -A', { cwd: effectiveCwd });
-    const fullMessage = truncateForGitCommitMessage(`${commitTitle}\n${commitBody}`);
-    try {
-      // execFile keeps `-m` body off /bin/sh — Codex/card bodies often contain
-      // newlines, backticks, and `$` that would break `exec('git commit -m "…"')`.
-      await execFileAsync('git', ['commit', '-m', fullMessage], { cwd: effectiveCwd });
-      console.log(`[auto-commit] Committed: ${commitTitle}`);
-    } catch (commitErr: unknown) {
-      const msg = formatExecFileError(commitErr);
-      console.error(`[auto-commit] Commit failed: ${msg}`);
-      return { ok: false, error: msg, code: 'commit_failed' };
-    }
-  } else {
-    console.log(`[auto-commit] Agent already committed — skipping commit, will push + PR`);
-  }
-
-  try {
-    await execAsync(`git push -u origin ${JSON.stringify(changes.branch)}`, {
-      cwd: effectiveCwd,
-      timeout: 30000,
-    });
-    console.log(`[auto-commit] Pushed branch ${changes.branch}`);
-  } catch (pushErr: unknown) {
-    const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-    console.error(`[auto-commit] Push failed: ${msg}`);
-    return { ok: false, error: msg, code: 'push_failed' };
-  }
-
-  const config = d.getConfig();
-  const reviewer =
-    agent.reviewer ||
-    ((project as Record<string, unknown>).defaultReviewer as string | undefined) ||
-    config.defaultReviewer;
-  const validReviewer = reviewer && /^[a-zA-Z0-9_-]+$/.test(reviewer) ? reviewer : null;
-  if (reviewer && !validReviewer) {
-    console.warn(
-      `[auto-commit] Invalid reviewer username "${reviewer}" — creating PR without reviewer`,
-    );
-  }
-
-  const prTitle = buildPrTitle(commitTitle);
-  const [commits, diffStat] = await Promise.all([
-    collectCommitSubjects(effectiveCwd),
-    collectDiffStat(effectiveCwd),
-  ]);
-  const prBody = buildPrBody({
-    card,
-    agentName: agent.name,
-    commits,
-    diffStat,
-  });
-
-  const broadcastAndMove = async (prUrl: string) => {
-    d.broadcast({
-      type: 'auto_pr_created',
-      sessionId,
-      agentId,
-      prUrl,
-      cardTitle: card?.title || commitTitle,
-    });
-
-    // Persist a permanent "PR created" marker in the chat timeline as a
-    // system-role message. This gives the user a timestamped receipt of the
-    // action (manual click OR auto-PR at session end). Failure here is
-    // non-fatal — the PR still exists and the auto_pr_created broadcast fires
-    // regardless.
-    try {
-      let commitSha = '';
-      try {
-        const { stdout: shaOut } = await execAsync('git rev-parse HEAD', {
-          cwd: effectiveCwd,
-          timeout: 5000,
-        });
-        commitSha = shaOut.trim().substring(0, 12);
-      } catch {
-        /* commit SHA is best-effort — the marker is still useful without it */
-      }
-      const prNumberMatch = prUrl.match(/\/pull\/(\d+)/);
-      const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
-      const msgId = crypto.randomUUID();
-      const metadata = JSON.stringify({
-        kind: 'pr_created',
-        prUrl,
-        prNumber,
-        commitSha,
-        commitTitle,
-        cardId: card?.id ?? null,
-        cardTitle: card?.title ?? null,
-      });
-      d.stmts.addMessage.run(
-        msgId,
-        sessionId,
-        'system',
-        'PR created from these changes',
-        null,
-        null,
-        null,
-        metadata,
-      );
-      const insertedMessage = (d.stmts.getMessageById?.get(msgId) as MessageRow | undefined) ?? {
-        id: msgId,
-        session_id: sessionId,
-        role: 'system' as const,
-        content: 'PR created from these changes',
-        engine: null,
-        model: null,
-        attachments: null,
-        metadata,
-        created_at: new Date().toISOString(),
-      };
-      d.broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[auto-commit] Failed to persist PR-created marker: ${msg}`);
-    }
-
-    // Reconciliation: ensure card has pr_url linked
-    if (card && !card.pr_url) {
-      try {
-        d.stmts.setCardPrUrl.run(prUrl, card.id);
-        console.log(`[auto-commit] Linked PR URL to card "${card.title}": ${prUrl}`);
-      } catch (_e: unknown) {
-        /* non-critical */
-      }
-    }
-
-    // Move the card to Review for visibility. The Reviewer agent will be
-    // dispatched by the GitHub webhook handler when the PR opens/syncs.
-    if (card) moveCardToReview(card, project, prUrl);
-
-    // Project + dashboard activity feeds (kanban Reviews panel, org dashboard).
-    try {
-      const prNumMatch = prUrl.match(/\/pull\/(\d+)/);
-      const prNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
-      const inserted = d.stmts.createPrCreationLog.run(
-        crypto.randomUUID(),
-        project.id,
-        card?.id ?? null,
-        sessionId,
-        prUrl,
-        prNumber,
-        prTitle,
-        agent.name || 'Agent',
-      );
-      if (inserted.changes > 0) {
-        d.broadcast({ type: 'kanban_update', projectId: project.id });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[auto-commit] Failed to persist PR creation activity log: ${msg}`);
-    }
-
-    // Fire-and-forget: enable GitHub native auto-merge if the project or
-    // per-PR override requests it. Failure here never blocks PR creation.
-    enableAutoMergeIfNeeded(prUrl, project, options?.autoMergeOverride, effectiveCwd).catch(
-      (err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
-      },
-    );
+  let prLogStarted = false;
+  const prLog = (text: string) => {
+    prLogStarted = true;
+    d.broadcast({ type: 'create_pr_log', sessionId, text });
   };
 
   try {
-    const createArgs = [
-      'pr',
-      'create',
-      '--head',
-      changes.branch,
-      '--title',
-      prTitle,
-      '--body',
-      prBody,
-    ];
-    if (validReviewer) {
-      createArgs.push('--reviewer', validReviewer);
-    }
-    const { stdout: prOutput } = await runGh(createArgs, effectiveCwd, 30000);
-    console.log(`[auto-commit] PR created: ${prOutput.trim()}`);
+    prLog('## Publishing to GitHub\n');
 
-    const prUrl = prOutput.match(/https:\/\/github\.com\/.+\/pull\/\d+/)?.[0] || prOutput.trim();
-    await broadcastAndMove(prUrl);
-    return { ok: true, prUrl };
-  } catch (prErr: unknown) {
-    const errMsg = prErr instanceof Error ? prErr.message : String(prErr);
-    const existingMatch = errMsg.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
-    if (existingMatch) {
-      const prUrl = existingMatch[0];
-      console.log(`[auto-commit] PR already exists: ${prUrl} — continuing flow`);
+    const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
+    const rawTitle = (card?.title ?? session?.name ?? '').trim();
+    const commitTitle = rawTitle || 'Agent task completion';
+
+    if (changes.hasUncommitted) {
+      // Ensure git identity is configured (may be missing in shallow clones)
+      try {
+        await execAsync('git config user.name', { cwd: effectiveCwd });
+      } catch {
+        // Try to copy from the project's main repo, or fall back to defaults
+        try {
+          const { stdout: name } = await execAsync('git config user.name', { cwd: project.cwd });
+          const { stdout: email } = await execAsync('git config user.email', { cwd: project.cwd });
+          if (name.trim())
+            await execAsync(`git config user.name ${JSON.stringify(name.trim())}`, {
+              cwd: effectiveCwd,
+            });
+          if (email.trim())
+            await execAsync(`git config user.email ${JSON.stringify(email.trim())}`, {
+              cwd: effectiveCwd,
+            });
+        } catch {
+          await execAsync('git config user.name "Agent Hub"', { cwd: effectiveCwd });
+          await execAsync('git config user.email "agent@agent-hub.com"', { cwd: effectiveCwd });
+        }
+      }
+
+      const commitBody = [
+        card?.description ? `\n${card.description}` : null,
+        `\nAgent: ${agent.name}`,
+        card?.priority ? `Priority: ${card.priority}` : null,
+        `\nCo-Authored-By: ${agent.name} <noreply@anthropic.com>`,
+      ]
+        .filter((line): line is string => line != null)
+        .join('\n');
+
+      prLog('$ git add -A\n');
+      await execAsync('git add -A', { cwd: effectiveCwd });
+      try {
+        await runProjectPreCommitCommands(project, effectiveCwd, prLog);
+      } catch (preErr: unknown) {
+        const msg = preErr instanceof Error ? preErr.message : String(preErr);
+        console.error(`[auto-commit] Pre-commit failed: ${msg}`);
+        return { ok: false, error: msg, code: 'commit_failed' };
+      }
+      // Pre-commit commands may run formatters / fixers that write the tree; re-stage
+      // so those edits are included in the commit (matches typical hook UX).
+      prLog('$ git add -A\n');
+      await execAsync('git add -A', { cwd: effectiveCwd });
+      const fullMessage = truncateForGitCommitMessage(`${commitTitle}\n${commitBody}`);
+      prLog('$ git commit\n');
+      let commitResult: { code: number | null; stdout: string; stderr: string };
+      try {
+        commitResult = await spawnProcessStreaming('git', ['commit', '-m', fullMessage], {
+          cwd: effectiveCwd,
+          timeoutMs: PRECOMMIT_CMD_TIMEOUT_MS,
+          onChunk: prLog,
+        });
+      } catch (spawnErr: unknown) {
+        const msg = spawnErr instanceof Error ? spawnErr.message : String(spawnErr);
+        console.error(`[auto-commit] Commit failed: ${msg}`);
+        return { ok: false, error: msg, code: 'commit_failed' };
+      }
+      if (commitResult.code !== 0) {
+        const msg = formatSpawnFailure('git', commitResult);
+        console.error(`[auto-commit] Commit failed: ${msg}`);
+        return { ok: false, error: msg, code: 'commit_failed' };
+      }
+      console.log(`[auto-commit] Committed: ${commitTitle}`);
+    } else {
+      console.log(`[auto-commit] Agent already committed — skipping commit, will push + PR`);
+    }
+
+    prLog(`\n$ git push -u origin ${changes.branch}\n`);
+    let pushResult: { code: number | null; stdout: string; stderr: string };
+    try {
+      pushResult = await spawnProcessStreaming('git', ['push', '-u', 'origin', changes.branch], {
+        cwd: effectiveCwd,
+        timeoutMs: 300_000,
+        onChunk: prLog,
+      });
+    } catch (pushErr: unknown) {
+      const msg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+      console.error(`[auto-commit] Push failed: ${msg}`);
+      return { ok: false, error: msg, code: 'push_failed' };
+    }
+    if (pushResult.code !== 0) {
+      const msg = formatSpawnFailure('git', pushResult);
+      console.error(`[auto-commit] Push failed: ${msg}`);
+      return { ok: false, error: msg, code: 'push_failed' };
+    }
+    console.log(`[auto-commit] Pushed branch ${changes.branch}`);
+
+    const config = d.getConfig();
+    const reviewer =
+      agent.reviewer ||
+      ((project as Record<string, unknown>).defaultReviewer as string | undefined) ||
+      config.defaultReviewer;
+    const validReviewer = reviewer && /^[a-zA-Z0-9_-]+$/.test(reviewer) ? reviewer : null;
+    if (reviewer && !validReviewer) {
+      console.warn(
+        `[auto-commit] Invalid reviewer username "${reviewer}" — creating PR without reviewer`,
+      );
+    }
+
+    const prTitle = buildPrTitle(commitTitle);
+    const [commits, diffStat] = await Promise.all([
+      collectCommitSubjects(effectiveCwd),
+      collectDiffStat(effectiveCwd),
+    ]);
+    const prBody = buildPrBody({
+      card,
+      agentName: agent.name,
+      commits,
+      diffStat,
+    });
+
+    const broadcastAndMove = async (prUrl: string) => {
+      d.broadcast({
+        type: 'auto_pr_created',
+        sessionId,
+        agentId,
+        prUrl,
+        cardTitle: card?.title || commitTitle,
+      });
+
+      // Persist a permanent "PR created" marker in the chat timeline as a
+      // system-role message. This gives the user a timestamped receipt of the
+      // action (manual click OR auto-PR at session end). Failure here is
+      // non-fatal — the PR still exists and the auto_pr_created broadcast fires
+      // regardless.
+      try {
+        let commitSha = '';
+        try {
+          const { stdout: shaOut } = await execAsync('git rev-parse HEAD', {
+            cwd: effectiveCwd,
+            timeout: 5000,
+          });
+          commitSha = shaOut.trim().substring(0, 12);
+        } catch {
+          /* commit SHA is best-effort — the marker is still useful without it */
+        }
+        const prNumberMatch = prUrl.match(/\/pull\/(\d+)/);
+        const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
+        const msgId = crypto.randomUUID();
+        const metadata = JSON.stringify({
+          kind: 'pr_created',
+          prUrl,
+          prNumber,
+          commitSha,
+          commitTitle,
+          cardId: card?.id ?? null,
+          cardTitle: card?.title ?? null,
+        });
+        d.stmts.addMessage.run(
+          msgId,
+          sessionId,
+          'system',
+          'PR created from these changes',
+          null,
+          null,
+          null,
+          metadata,
+        );
+        const insertedMessage = (d.stmts.getMessageById?.get(msgId) as MessageRow | undefined) ?? {
+          id: msgId,
+          session_id: sessionId,
+          role: 'system' as const,
+          content: 'PR created from these changes',
+          engine: null,
+          model: null,
+          attachments: null,
+          metadata,
+          created_at: new Date().toISOString(),
+        };
+        d.broadcast({ type: 'message_added', sessionId, message: insertedMessage });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[auto-commit] Failed to persist PR-created marker: ${msg}`);
+      }
+
+      // Reconciliation: ensure card has pr_url linked
+      if (card && !card.pr_url) {
+        try {
+          d.stmts.setCardPrUrl.run(prUrl, card.id);
+          console.log(`[auto-commit] Linked PR URL to card "${card.title}": ${prUrl}`);
+        } catch (_e: unknown) {
+          /* non-critical */
+        }
+      }
+
+      // Move the card to Review for visibility. The Reviewer agent will be
+      // dispatched by the GitHub webhook handler when the PR opens/syncs.
+      if (card) moveCardToReview(card, project, prUrl);
+
+      // Project + dashboard activity feeds (kanban Reviews panel, org dashboard).
+      try {
+        const prNumMatch = prUrl.match(/\/pull\/(\d+)/);
+        const prNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
+        const inserted = d.stmts.createPrCreationLog.run(
+          crypto.randomUUID(),
+          project.id,
+          card?.id ?? null,
+          sessionId,
+          prUrl,
+          prNumber,
+          prTitle,
+          agent.name || 'Agent',
+        );
+        if (inserted.changes > 0) {
+          d.broadcast({ type: 'kanban_update', projectId: project.id });
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[auto-commit] Failed to persist PR creation activity log: ${msg}`);
+      }
+
+      // Fire-and-forget: enable GitHub native auto-merge if the project or
+      // per-PR override requests it. Failure here never blocks PR creation.
+      enableAutoMergeIfNeeded(prUrl, project, options?.autoMergeOverride, effectiveCwd).catch(
+        (err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[auto-merge] Unexpected error enabling auto-merge: ${msg}`);
+        },
+      );
+    };
+
+    try {
+      const createArgs = [
+        'pr',
+        'create',
+        '--head',
+        changes.branch,
+        '--title',
+        prTitle,
+        '--body',
+        prBody,
+      ];
+      if (validReviewer) {
+        createArgs.push('--reviewer', validReviewer);
+      }
+      prLog('\n$ gh pr create …\n');
+      const { stdout: prOutput } = await runGhStreamed(createArgs, effectiveCwd, 30000, prLog);
+      console.log(`[auto-commit] PR created: ${prOutput.trim()}`);
+
+      const prUrl = prOutput.match(/https:\/\/github\.com\/.+\/pull\/\d+/)?.[0] || prOutput.trim();
       await broadcastAndMove(prUrl);
       return { ok: true, prUrl };
-    }
-
-    console.error(`[auto-commit] PR creation failed: ${errMsg}`);
-    // Fallback: try to discover PR by branch name
-    try {
-      const { stdout: prDiscovery } = await runGh(
-        [
-          'pr',
-          'view',
-          changes.branch,
-          '--json',
-          'url,state',
-          '--jq',
-          'select(.state == "OPEN") | .url',
-        ],
-        effectiveCwd,
-        15000,
-      );
-      const discoveredUrl = prDiscovery.trim();
-      if (discoveredUrl) {
-        console.log(`[auto-commit] Discovered PR by branch name: ${discoveredUrl}`);
-        await broadcastAndMove(discoveredUrl);
-        return { ok: true, prUrl: discoveredUrl };
+    } catch (prErr: unknown) {
+      const errMsg = prErr instanceof Error ? prErr.message : String(prErr);
+      const existingMatch = errMsg.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
+      if (existingMatch) {
+        const prUrl = existingMatch[0];
+        console.log(`[auto-commit] PR already exists: ${prUrl} — continuing flow`);
+        await broadcastAndMove(prUrl);
+        return { ok: true, prUrl };
       }
-    } catch {
-      // No PR found by branch name either
+
+      console.error(`[auto-commit] PR creation failed: ${errMsg}`);
+      // Fallback: try to discover PR by branch name
+      try {
+        prLog('\n$ gh pr view (discover open PR) …\n');
+        const { stdout: prDiscovery } = await runGhStreamed(
+          [
+            'pr',
+            'view',
+            changes.branch,
+            '--json',
+            'url,state',
+            '--jq',
+            'select(.state == "OPEN") | .url',
+          ],
+          effectiveCwd,
+          15000,
+          prLog,
+        );
+        const discoveredUrl = prDiscovery.trim();
+        if (discoveredUrl) {
+          console.log(`[auto-commit] Discovered PR by branch name: ${discoveredUrl}`);
+          await broadcastAndMove(discoveredUrl);
+          return { ok: true, prUrl: discoveredUrl };
+        }
+      } catch {
+        // No PR found by branch name either
+      }
+      return { ok: false, error: errMsg, code: 'pr_failed' };
     }
-    return { ok: false, error: errMsg, code: 'pr_failed' };
+  } finally {
+    if (prLogStarted) {
+      d.broadcast({ type: 'create_pr_log_done', sessionId });
+    }
   }
 }
 
