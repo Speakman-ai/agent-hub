@@ -79,6 +79,15 @@ describe('epicFormToUpdateBody', () => {
   it('falls back to DEFAULT_EPIC_COLOR when color is missing', () => {
     expect(epicFormToUpdateBody({ name: 'x' }).color).toBe(DEFAULT_EPIC_COLOR);
   });
+
+  it('includes orchestrationBudgets when provided on the form', () => {
+    const body = epicFormToUpdateBody({
+      name: 'x',
+      autonomous: 0,
+      orchestrationBudgets: { maxContinuationDepth: 2 },
+    });
+    expect(body.orchestrationBudgets).toEqual({ maxContinuationDepth: 2 });
+  });
 });
 
 describe('epicFormToCreateBody', () => {

@@ -2570,6 +2570,7 @@ export default function App() {
               project={projects.find((p) => p.id === currentView.split(':')[1])}
               agents={agents}
               refreshKey={kanbanRefreshKey}
+              showToast={showToast}
               onNavigateToSession={(agentId, sessionId) => {
                 pendingSessionIdRef.current = sessionId;
                 setActiveAgentId(agentId);

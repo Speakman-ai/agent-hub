@@ -434,7 +434,13 @@ function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
       return [];
     }
 
-    case 'result':
+    case 'result': {
+      const usage = (raw.usage as Record<string, unknown> | undefined) ?? {};
+      const inputTok =
+        (usage.input_tokens as number | undefined) ?? (usage.prompt_tokens as number | undefined);
+      const outputTok =
+        (usage.output_tokens as number | undefined) ??
+        (usage.completion_tokens as number | undefined);
       // Cost/turns/duration contract — important for downstream aggregation:
       //
       //   • costUsd (= total_cost_usd) is CUMULATIVE. The Anthropic Agent SDK
@@ -461,8 +467,12 @@ function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
           numTurns: (raw.num_turns as number) ?? null,
           isError: raw.is_error === true,
           stopReason: (raw.stop_reason as string) ?? null,
+          inputTokens: typeof inputTok === 'number' && Number.isFinite(inputTok) ? inputTok : null,
+          outputTokens:
+            typeof outputTok === 'number' && Number.isFinite(outputTok) ? outputTok : null,
         },
       ];
+    }
 
     case 'rate_limit_event':
       return [
@@ -630,6 +640,8 @@ function normalizeCursor(
         numTurns: null,
         isError: raw.is_error === true,
         stopReason: null,
+        inputTokens: null,
+        outputTokens: null,
       });
       return out;
     }
@@ -807,6 +819,14 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
           for (const ask of asks) out.push(askEvent(ask));
         }
       }
+      const inTok =
+        (stats.inputTokens as number | undefined) ??
+        (stats.input_token_count as number | undefined) ??
+        (stats.promptTokenCount as number | undefined);
+      const outTok =
+        (stats.outputTokens as number | undefined) ??
+        (stats.output_token_count as number | undefined) ??
+        (stats.candidatesTokenCount as number | undefined);
       out.push({
         type: 'result',
         text: resultText,
@@ -815,6 +835,8 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
         numTurns: (stats.turns as number) ?? (raw.num_turns as number) ?? null,
         isError: raw.error !== undefined || raw.isError === true,
         stopReason: (raw.stopReason as string) ?? null,
+        inputTokens: typeof inTok === 'number' && Number.isFinite(inTok) ? inTok : null,
+        outputTokens: typeof outTok === 'number' && Number.isFinite(outTok) ? outTok : null,
       });
       return out;
     }
@@ -1032,6 +1054,8 @@ function normalizeCodex(
 
     case 'turn.completed': {
       const usage = (raw.usage as Record<string, unknown> | undefined) ?? {};
+      const inTok = usage.input_tokens as number | undefined;
+      const outTok = usage.output_tokens as number | undefined;
       return [
         {
           type: 'result',
@@ -1044,6 +1068,8 @@ function normalizeCodex(
               : null,
           isError: false,
           stopReason: null,
+          inputTokens: typeof inTok === 'number' && Number.isFinite(inTok) ? inTok : null,
+          outputTokens: typeof outTok === 'number' && Number.isFinite(outTok) ? outTok : null,
         },
       ];
     }

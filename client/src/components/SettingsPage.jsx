@@ -1,5 +1,10 @@
 import { useState, useEffect, useRef, useMemo, Component } from 'react';
 import { api } from '../utils/api.js';
+import {
+  buildOrchestrationBudgetsPayload,
+  orchestrationFieldsFromProject,
+  ORCHESTRATION_FIELD_META,
+} from '../utils/orchestrationBudgets.js';
 import { relativeTime, relativeFuture } from '../utils/time.js';
 import {
   parseAllowlist,
@@ -4479,6 +4484,14 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     return map;
   });
 
+  const [projectOrchestrationFields, setProjectOrchestrationFields] = useState(() => {
+    const map = {};
+    projects.forEach((p) => {
+      map[p.id] = orchestrationFieldsFromProject(p.orchestrationBudgets);
+    });
+    return map;
+  });
+
   const preCommitServerSnap = useMemo(
     () =>
       JSON.stringify(Object.fromEntries(projects.map((p) => [p.id, p.preCommitCommands ?? []]))),
@@ -4489,6 +4502,14 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     () =>
       JSON.stringify(
         Object.fromEntries(projects.map((p) => [p.id, p.verifyBeforeDoneCommands ?? []])),
+      ),
+    [projects],
+  );
+
+  const orchestrationServerSnap = useMemo(
+    () =>
+      JSON.stringify(
+        Object.fromEntries(projects.map((p) => [p.id, p.orchestrationBudgets ?? null])),
       ),
     [projects],
   );
@@ -4521,6 +4542,14 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     );
   }, [verifyBeforeDoneServerSnap]);
 
+  useEffect(() => {
+    setProjectOrchestrationFields(() =>
+      Object.fromEntries(
+        projects.map((p) => [p.id, orchestrationFieldsFromProject(p.orchestrationBudgets)]),
+      ),
+    );
+  }, [orchestrationServerSnap]);
+
   const [projectCommandsSaved, setProjectCommandsSaved] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
 
@@ -4535,7 +4564,11 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         .split('\n')
         .map((l) => l.trim())
         .filter(Boolean);
-      await api.updateProject(projectId, {
+      const obFields = projectOrchestrationFields[projectId] || {};
+      const hasObTyping = ORCHESTRATION_FIELD_META.some(
+        ({ key }) => String(obFields[key] ?? '').trim() !== '',
+      );
+      const basePayload = {
         commands: {
           install: cmds.install || null,
           build: cmds.build || null,
@@ -4544,7 +4577,22 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         },
         preCommitCommands: preCommitLines,
         verifyBeforeDoneCommands: verifyBeforeDoneLines,
-      });
+      };
+      let payload = basePayload;
+      if (!hasObTyping) {
+        payload = { ...basePayload, orchestrationBudgets: null };
+      } else {
+        const obParsed = buildOrchestrationBudgetsPayload(obFields);
+        if (obParsed === null) {
+          showToast?.(
+            'Orchestration budgets: values must be whole numbers (e.g. 4, 120000). Budgets were not saved — fix or clear the fields and try again.',
+            'error',
+          );
+          return;
+        }
+        payload = { ...basePayload, orchestrationBudgets: obParsed };
+      }
+      await api.updateProject(projectId, payload);
       setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: true }));
       setTimeout(() => setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
     } catch {}
@@ -4649,6 +4697,41 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                           rows={3}
                           className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
                         />
+                      </div>
+                      <div className="pt-2 border-t border-gray-700/50 space-y-2">
+                        <label className="text-xs text-gray-400 font-semibold">
+                          ReAct / orchestration budgets
+                        </label>
+                        <p className="text-[11px] text-gray-500">
+                          Optional caps for auto-continuation, host ReAct actions, wiki hybrid RAG,
+                          and web search. Leave all empty to clear project-level overrides (server
+                          defaults apply).
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                          {ORCHESTRATION_FIELD_META.map(({ key, label, hint }) => (
+                            <div key={key}>
+                              <label
+                                className="block text-[10px] text-gray-500 mb-0.5"
+                                title={hint}
+                              >
+                                {label}
+                              </label>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={(projectOrchestrationFields[p.id] || {})[key] ?? ''}
+                                onChange={(e) =>
+                                  setProjectOrchestrationFields((prev) => ({
+                                    ...prev,
+                                    [p.id]: { ...(prev[p.id] || {}), [key]: e.target.value },
+                                  }))
+                                }
+                                placeholder="—"
+                                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+                              />
+                            </div>
+                          ))}
+                        </div>
                       </div>
                       <button
                         onClick={() => saveProjectCommands(p.id)}

@@ -179,6 +179,21 @@ describe('createStreamParser — Claude Code', () => {
     expect((events[0] as { stopReason: string }).stopReason).toBe('end_turn');
   });
 
+  it('parses claude result event with usage tokens when present', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'result',
+        result: 'ok',
+        duration_ms: 100,
+        usage: { input_tokens: 10, output_tokens: 20 },
+        is_error: false,
+      }),
+    ]);
+    expect(events[0].type).toBe('result');
+    expect((events[0] as { inputTokens: number | null }).inputTokens).toBe(10);
+    expect((events[0] as { outputTokens: number | null }).outputTokens).toBe(20);
+  });
+
   it('normalizes rate_limit_event', () => {
     const events = parse([
       JSON.stringify({ type: 'rate_limit_event', retry_after_ms: 5000, message: 'Rate limited' }),

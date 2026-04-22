@@ -18,6 +18,11 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { epicFormToUpdateBody } from '../utils/epics.js';
+import {
+  buildOrchestrationBudgetsPayload,
+  orchestrationFieldsFromEpicJson,
+  ORCHESTRATION_FIELD_META,
+} from '../utils/orchestrationBudgets.js';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
 import { MarkdownContent, markdownComponentsKanbanCardSnippet } from './MarkdownRenderer.jsx';
 
@@ -48,6 +53,7 @@ export default function KanbanBoard({
   agents = [],
   refreshKey,
   onNavigateToSession,
+  showToast,
 }) {
   const [_board, setBoard] = useState(null);
   const [columns, setColumns] = useState([]);
@@ -91,7 +97,12 @@ export default function KanbanBoard({
   const [epics, setEpics] = useState([]);
   const [selectedEpicId, setSelectedEpicId] = useState(null);
   const [showEpicForm, setShowEpicForm] = useState(false);
-  const [epicForm, setEpicForm] = useState({ name: '', description: '', color: '#6366F1' });
+  const [epicForm, setEpicForm] = useState({
+    name: '',
+    description: '',
+    color: '#6366F1',
+    obFields: orchestrationFieldsFromEpicJson(null),
+  });
   const [editingEpic, setEditingEpic] = useState(null);
 
   // Blockers
@@ -563,7 +574,12 @@ export default function KanbanBoard({
     if (!epicForm.name.trim()) return;
     try {
       await api.createEpic(projectId, epicForm);
-      setEpicForm({ name: '', description: '', color: '#6366F1' });
+      setEpicForm({
+        name: '',
+        description: '',
+        color: '#6366F1',
+        obFields: orchestrationFieldsFromEpicJson(null),
+      });
       setShowEpicForm(false);
       fetchBoard();
     } catch (err) {
@@ -579,9 +595,36 @@ export default function KanbanBoard({
       // before sending — otherwise autonomous_max_concurrent /
       // autonomous_max_iterations silently fall through to undefined on the
       // server and the old DB values are preserved.
-      await api.updateEpic(projectId, editingEpic.id, epicFormToUpdateBody(epicForm));
+      const obFields = epicForm.obFields || {};
+      const hasObTyping = ORCHESTRATION_FIELD_META.some(
+        ({ key }) => String(obFields[key] ?? '').trim() !== '',
+      );
+      let orchestrationBudgets;
+      if (!hasObTyping) {
+        orchestrationBudgets = null;
+      } else {
+        const obParsed = buildOrchestrationBudgetsPayload(obFields);
+        if (obParsed === null) {
+          showToast?.(
+            'Orchestration budgets: values must be whole numbers. Nothing was saved — fix or clear the fields.',
+            'error',
+          );
+          return;
+        }
+        orchestrationBudgets = obParsed;
+      }
+      await api.updateEpic(
+        projectId,
+        editingEpic.id,
+        epicFormToUpdateBody({ ...epicForm, orchestrationBudgets }),
+      );
       setEditingEpic(null);
-      setEpicForm({ name: '', description: '', color: '#6366F1' });
+      setEpicForm({
+        name: '',
+        description: '',
+        color: '#6366F1',
+        obFields: orchestrationFieldsFromEpicJson(null),
+      });
       fetchBoard();
     } catch (err) {
       console.error('Failed to update epic:', err);
@@ -622,6 +665,7 @@ export default function KanbanBoard({
       autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
       autonomous_max_iterations: epic.autonomous_max_iterations || 3,
       autonomous_model: epic.autonomous_model || '',
+      obFields: orchestrationFieldsFromEpicJson(epic.orchestration_budgets_json),
     });
     setShowEpicForm(false);
   };
@@ -888,7 +932,12 @@ export default function KanbanBoard({
           onClick={() => {
             setShowEpicForm(true);
             setEditingEpic(null);
-            setEpicForm({ name: '', description: '', color: '#6366F1' });
+            setEpicForm({
+              name: '',
+              description: '',
+              color: '#6366F1',
+              obFields: orchestrationFieldsFromEpicJson(null),
+            });
           }}
           className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 whitespace-nowrap transition-colors"
         >
@@ -1035,6 +1084,38 @@ export default function KanbanBoard({
                     </div>
                   </div>
                 )}
+
+                {editingEpic && (
+                  <div className="space-y-2 pt-2 border-t border-gray-700/40">
+                    <p className="text-xs text-gray-500">
+                      ReAct / orchestration overrides for sessions linked to cards in this epic
+                      (merged on top of project defaults). Clear all fields and save to remove
+                      overrides.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                      {ORCHESTRATION_FIELD_META.map(({ key, label, hint }) => (
+                        <div key={key}>
+                          <label className="block text-[10px] text-gray-500 mb-0.5" title={hint}>
+                            {label}
+                          </label>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={(epicForm.obFields || {})[key] ?? ''}
+                            onChange={(e) =>
+                              setEpicForm((f) => ({
+                                ...f,
+                                obFields: { ...(f.obFields || {}), [key]: e.target.value },
+                              }))
+                            }
+                            placeholder="—"
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500 font-mono"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1050,7 +1131,12 @@ export default function KanbanBoard({
                 onClick={() => {
                   setShowEpicForm(false);
                   setEditingEpic(null);
-                  setEpicForm({ name: '', description: '', color: '#6366F1' });
+                  setEpicForm({
+                    name: '',
+                    description: '',
+                    color: '#6366F1',
+                    obFields: orchestrationFieldsFromEpicJson(null),
+                  });
                 }}
                 className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs rounded transition-colors"
               >

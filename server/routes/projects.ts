@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
 import { buildSpawnEnv } from '../config.js';
 import type { RouteDeps, Agent, Project, StreamEvent, GithubWorkflowSettings } from '../types.js';
+import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
 
@@ -480,6 +481,22 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       const v = normalizePreCommitCommands(rawV);
       if (v.length) (project as Record<string, unknown>).verifyBeforeDoneCommands = v;
       else delete (project as Record<string, unknown>).verifyBeforeDoneCommands;
+    }
+    if ((req.body as Record<string, unknown>).orchestrationBudgets !== undefined) {
+      const rawOb = (req.body as Record<string, unknown>).orchestrationBudgets;
+      if (rawOb === null) {
+        delete (project as Record<string, unknown>).orchestrationBudgets;
+      } else if (typeof rawOb === 'object' && rawOb !== null && !Array.isArray(rawOb)) {
+        const sanitized = sanitizeOrchestrationBudgetsPartial(rawOb);
+        if (sanitized && Object.keys(sanitized).length > 0) {
+          (project as Record<string, unknown>).orchestrationBudgets = sanitized as Record<
+            string,
+            unknown
+          >;
+        } else {
+          delete (project as Record<string, unknown>).orchestrationBudgets;
+        }
+      }
     }
     if (
       (req.body as Record<string, unknown>).githubRepo &&

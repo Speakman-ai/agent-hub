@@ -94,7 +94,7 @@ describe('ReAct block parse', () => {
   });
 
   it('rejects actions array longer than host execution cap', () => {
-    const actions = Array.from({ length: 7 }, (_, i) => ({
+    const actions = Array.from({ length: 13 }, (_, i) => ({
       tool: 'wiki',
       query: `q${i}`,
     }));
@@ -102,7 +102,7 @@ describe('ReAct block parse', () => {
     const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
     expect(parsed).toMatchObject({ error: 'malformed' });
     if ('error' in parsed) {
-      expect(parsed.detail).toMatch(/exceeds maximum of 6/);
+      expect(parsed.detail).toMatch(/exceeds maximum of 12/);
     }
   });
 });

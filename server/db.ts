@@ -944,6 +944,12 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_epics ADD COLUMN autonomous_model TEXT DEFAULT NULL');
   }
 
+  try {
+    db.prepare('SELECT orchestration_budgets_json FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_epics ADD COLUMN orchestration_budgets_json TEXT DEFAULT NULL');
+  }
+
   // Per-device push notification preferences. JSON array of enabled event
   // type strings; NULL = all events enabled (legacy default).
   try {
@@ -2072,7 +2078,7 @@ function initDb(dataDir: string): void {
       `INSERT INTO kanban_epics (id, board_id, name, description, color, position) VALUES (?, ?, ?, ?, ?, ?)`,
     ),
     updateKanbanEpic: db.prepare(
-      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_max_iterations = ?, autonomous_model = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_max_iterations = ?, autonomous_model = ?, orchestration_budgets_json = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     deleteKanbanEpic: db.prepare('DELETE FROM kanban_epics WHERE id = ?'),
     getKanbanCardsByEpic: db.prepare(

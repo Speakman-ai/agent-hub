@@ -410,6 +410,8 @@ export interface KanbanEpicRow {
   autonomous_max_iterations: number;
   /** When set and valid for the assignee agent's engine, autonomous dispatch uses this instead of the agent's configured model. */
   autonomous_model: string | null;
+  /** JSON object: optional overrides merged on top of the project's `orchestrationBudgets`. */
+  orchestration_budgets_json?: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -1175,6 +1177,11 @@ export interface Project {
    * absent skips verification.
    */
   verifyBeforeDoneCommands?: string[];
+  /**
+   * Optional ReAct / auto-continuation budgets for sessions in this project.
+   * Shapes match `OrchestrationBudgetsPartial` in `server/orchestration-budgets.ts`.
+   */
+  orchestrationBudgets?: Record<string, unknown>;
   agents: Agent[];
   [key: string]: unknown;
 }
@@ -1301,6 +1308,9 @@ export interface ResultEvent extends BaseStreamEvent {
   numTurns: number | null;
   isError: boolean;
   stopReason?: string | null;
+  /** Present when the upstream engine reports usage on the terminal result. */
+  inputTokens?: number | null;
+  outputTokens?: number | null;
 }
 
 export interface CheckpointEvent extends BaseStreamEvent {

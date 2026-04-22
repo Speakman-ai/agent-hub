@@ -14,6 +14,7 @@ import type {
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
+import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 
 interface BoardData {
   board: KanbanBoardRow;
@@ -611,6 +612,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousMaxConcurrent,
       autonomousMaxIterations,
       autonomousModel,
+      orchestrationBudgets,
     } = req.body as {
       name?: string;
       description?: string | null;
@@ -620,6 +622,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousMaxConcurrent?: number;
       autonomousMaxIterations?: number;
       autonomousModel?: string | null;
+      orchestrationBudgets?: Record<string, unknown> | null;
     };
 
     const nextAutonomousModel =
@@ -628,6 +631,17 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           ? String(autonomousModel).trim()
           : null
         : epic.autonomous_model;
+
+    let nextOrchestrationJson: string | null =
+      (epic as { orchestration_budgets_json?: string | null }).orchestration_budgets_json ?? null;
+    if (orchestrationBudgets !== undefined) {
+      if (orchestrationBudgets === null) {
+        nextOrchestrationJson = null;
+      } else if (typeof orchestrationBudgets === 'object' && orchestrationBudgets !== null) {
+        const sanitized = sanitizeOrchestrationBudgetsPartial(orchestrationBudgets);
+        nextOrchestrationJson = sanitized ? JSON.stringify(sanitized) : null;
+      }
+    }
 
     if (autonomous && !epic.autonomous) {
       const currentAutonomous = stmts.getAutonomousEpic.get(epic.board_id) as
@@ -643,6 +657,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           currentAutonomous.autonomous_max_concurrent,
           currentAutonomous.autonomous_max_iterations,
           currentAutonomous.autonomous_model ?? null,
+          (currentAutonomous as { orchestration_budgets_json?: string | null })
+            .orchestration_budgets_json ?? null,
           currentAutonomous.id,
         );
       }
@@ -669,6 +685,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousMaxConcurrent ?? epic.autonomous_max_concurrent,
       autonomousMaxIterations ?? epic.autonomous_max_iterations,
       nextAutonomousModel,
+      nextOrchestrationJson,
       req.params.epicId,
     );
 

@@ -29,6 +29,9 @@ export function epicFormToUpdateBody(form) {
     autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
     autonomousMaxIterations: form.autonomous_max_iterations || 3,
     autonomousModel,
+    ...(form.orchestrationBudgets !== undefined
+      ? { orchestrationBudgets: form.orchestrationBudgets }
+      : {}),
   };
 }
 

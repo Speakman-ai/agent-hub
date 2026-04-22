@@ -45,7 +45,7 @@ import {
   effectiveWikiHybridRagUsedCount,
   nextWikiHybridRagRowAfterIncrement,
 } from './wiki-rag.js';
-import { runWebSearchForQuery, MAX_WEB_SEARCH_CALLS_PER_SESSION } from './web-search.js';
+import { runWebSearchForQuery } from './web-search.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import { VERIFY_BEFORE_DONE_MSG_MAX_BYTES } from './verify-before-done-constants.js';
 import {
@@ -64,6 +64,7 @@ import type {
   BackgroundTaskRow,
   NoteProcessingRow,
   KanbanCardRow,
+  KanbanEpicRow,
   MessageQueueRow,
   Stmts,
   StreamEvent,
@@ -71,6 +72,13 @@ import type {
   BroadcastFn,
   ChatMessage,
 } from './types.js';
+import {
+  HOST_REACT_ACTIONS_PARSE_CAP,
+  resolveOrchestrationBudgets,
+  evaluateReactContinuationBudgets,
+  addResultEventTokens,
+  isAgentShellToolName,
+} from './orchestration-budgets.js';
 
 const stmts = _stmts!;
 const DEFAULT_MODEL: string = config.defaultModel;
@@ -122,6 +130,14 @@ interface InternalChatMessage extends ChatMessage {
   _continuationDepth?: number;
   /** Retries when a continuation hits a transient active-task collision. */
   _continuationRetry?: number;
+  /** Epoch ms when the current user-turn ReAct chain started (first non-continuation handle). */
+  _chainStartedAtMs?: number;
+  /** Completed CLI spawns in this chain (host-side), excluding the in-flight run until close. */
+  _chainShellSpawns?: number;
+  /** Cumulative agent Bash/shell tool_use events in this chain. */
+  _chainBashTools?: number;
+  /** Cumulative reported input+output tokens in this chain. */
+  _chainTokensUsed?: number;
 }
 
 interface ProjectWithCommands extends Project {
@@ -206,8 +222,6 @@ export interface ChatHandlerResult {
 export type WebSocketLike = { send: (data: string) => void };
 
 const MAX_PENDING_CONTEXT_BYTES = 128 * 1024;
-const MAX_AUTO_CONTINUATION_DEPTH = 4;
-const MAX_REACT_ACTIONS_PER_TURN = 6;
 
 /**
  * Max times an auto-continuation turn will reschedule itself when the
@@ -739,10 +753,10 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
   if (!Array.isArray(obj.actions)) {
     return { error: 'malformed', detail: 'Missing required array field: actions' };
   }
-  if (obj.actions.length > MAX_REACT_ACTIONS_PER_TURN) {
+  if (obj.actions.length > HOST_REACT_ACTIONS_PARSE_CAP) {
     return {
       error: 'malformed',
-      detail: `actions array exceeds maximum of ${MAX_REACT_ACTIONS_PER_TURN} entries`,
+      detail: `actions array exceeds maximum of ${HOST_REACT_ACTIONS_PARSE_CAP} entries`,
     };
   }
   const actions: ReActAction[] = [];
@@ -1231,14 +1245,33 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       (project as ProjectWithCommands & { id?: string }).id ||
       (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
       '';
+
+    let linkedEpicForBudgets: KanbanEpicRow | null = null;
+    try {
+      const cardRow = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
+        | KanbanCardRow
+        | undefined;
+      if (cardRow?.epic_id) {
+        linkedEpicForBudgets =
+          (stmts.getKanbanEpic.get(cardRow.epic_id) as KanbanEpicRow | undefined) ?? null;
+      }
+    } catch {
+      linkedEpicForBudgets = null;
+    }
+    const orchestrationBudgets = resolveOrchestrationBudgets(
+      project as Project,
+      linkedEpicForBudgets,
+    );
+    const maxWikiSession = orchestrationBudgets.maxWikiRagCallsPerSession;
+
     if (projectId && !isAutoContinuation) {
       const wikiRag = await runWikiHybridRagForUserTurn(projectId, content, {
         wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
           session!.wiki_hybrid_rag_consumed,
           session!.wiki_hybrid_rag_budget_version,
-          MAX_WIKI_RAG_CALLS_PER_SESSION,
+          maxWikiSession,
         ),
-        maxCallsPerSession: MAX_WIKI_RAG_CALLS_PER_SESSION,
+        maxCallsPerSession: maxWikiSession,
         slashSkillActive: !!slashResult,
       });
       if (wikiRag.promptSuffix) {
@@ -1252,7 +1285,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           const next = nextWikiHybridRagRowAfterIncrement(
             session!.wiki_hybrid_rag_consumed,
             session!.wiki_hybrid_rag_budget_version,
-            MAX_WIKI_RAG_CALLS_PER_SESSION,
+            maxWikiSession,
           );
           stmts.updateSessionWikiHybridRagBudget.run(next.consumed, next.budgetVersion, sessionId);
           session!.wiki_hybrid_rag_consumed = next.consumed;
@@ -1595,6 +1628,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       return base;
     })();
 
+    const chainStartedAtMs = msg._chainStartedAtMs ?? Date.now();
+    const priorShellCompleted = msg._chainShellSpawns ?? 0;
+    let chainBashTools = msg._chainBashTools ?? 0;
+    let chainTokensUsed = msg._chainTokensUsed ?? 0;
+
     const proc = spawn(bin, args, {
       cwd: effectiveCwd,
       env: spawnEnv,
@@ -1631,6 +1669,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
         } catch {}
         tryKickoffDelegationFromStream(accumulatedForKickoff);
+      }
+
+      if (event.type === 'tool_use' && isAgentShellToolName(event.tool)) {
+        chainBashTools += 1;
+      }
+
+      if (event.type === 'result') {
+        chainTokensUsed = addResultEventTokens(
+          chainTokensUsed,
+          event.inputTokens,
+          event.outputTokens,
+        );
       }
 
       if (event.type === 'system' && event.gitWorktree != null) {
@@ -1893,6 +1943,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           ? parseDelegateBlock(rawFinalContent)
           : null;
       let shouldAutoContinue = false;
+      let budgetResult: { ok: boolean; reasons: string[] } = { ok: false, reasons: [] };
       let continuationContextAdded = false;
       let assistantContextToAppend = '';
       const reactObservations: string[] = [];
@@ -2006,12 +2057,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           }
         }
 
-        if (actions.length > MAX_REACT_ACTIONS_PER_TURN) {
-          reactObservations.push(
-            `- Action list exceeded ${MAX_REACT_ACTIONS_PER_TURN}; truncated to budget.`,
-          );
+        const maxAct = orchestrationBudgets.maxReactActionsPerTurn;
+        if (actions.length > maxAct) {
+          reactObservations.push(`- Action list exceeded ${maxAct}; truncated to budget.`);
         }
-        const boundedActions = actions.slice(0, MAX_REACT_ACTIONS_PER_TURN);
+        const boundedActions = actions.slice(0, maxAct);
         for (const action of boundedActions) {
           if (action.tool === 'skill') {
             const injection = loadSkillByName({
@@ -2032,9 +2082,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           }
 
           if (action.tool === 'web') {
+            const webCap = orchestrationBudgets.maxWebSearchCallsPerSession;
             const webUsed = session!.web_search_calls_used || 0;
-            if (webUsed >= MAX_WEB_SEARCH_CALLS_PER_SESSION) {
-              const err = `## Web Search Error\nSession web search budget exhausted (${webUsed}/${MAX_WEB_SEARCH_CALLS_PER_SESSION}).`;
+            if (webUsed >= webCap) {
+              const err = `## Web Search Error\nSession web search budget exhausted (${webUsed}/${webCap}).`;
               assistantContextToAppend = assistantContextToAppend
                 ? `${assistantContextToAppend}\n\n${err}`
                 : err;
@@ -2086,9 +2137,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
                 session!.wiki_hybrid_rag_consumed,
                 session!.wiki_hybrid_rag_budget_version,
-                MAX_WIKI_RAG_CALLS_PER_SESSION,
+                maxWikiSession,
               ),
-              maxCallsPerSession: MAX_WIKI_RAG_CALLS_PER_SESSION,
+              maxCallsPerSession: maxWikiSession,
             });
             if (wikiRequest.promptSuffix.trim()) {
               const injection = wikiRequest.promptSuffix.trim();
@@ -2108,7 +2159,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 const next = nextWikiHybridRagRowAfterIncrement(
                   session!.wiki_hybrid_rag_consumed,
                   session!.wiki_hybrid_rag_budget_version,
-                  MAX_WIKI_RAG_CALLS_PER_SESSION,
+                  maxWikiSession,
                 );
                 stmts.updateSessionWikiHybridRagBudget.run(
                   next.consumed,
@@ -2158,14 +2209,20 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       const controlFlowPresent =
         !!closeTask || !!handoffDetection?.present || !!handoffDetection?.task || !!delegateTasks;
-      if (
-        reactLoopEnabled &&
-        continuationContextAdded &&
-        !controlFlowPresent &&
-        continuationDepth < MAX_AUTO_CONTINUATION_DEPTH
-      ) {
-        shouldAutoContinue = true;
-      }
+      const completedCliSpawns = priorShellCompleted + 1;
+      budgetResult = evaluateReactContinuationBudgets({
+        reactLoopEnabled,
+        continuationContextAdded,
+        controlFlowPresent,
+        continuationDepth,
+        chainStartedAtMs,
+        nowMs: Date.now(),
+        completedCliSpawns,
+        chainBashTools,
+        chainTokensUsed,
+        budgets: orchestrationBudgets,
+      });
+      shouldAutoContinue = budgetResult.ok;
 
       try {
         S.addMessage.run(
@@ -2250,6 +2307,23 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           created_at: new Date().toISOString(),
         },
       });
+
+      const wouldBaseContinue = reactLoopEnabled && continuationContextAdded && !controlFlowPresent;
+      if (wouldBaseContinue && !budgetResult.ok && budgetResult.reasons.length > 0) {
+        const sysId = uuidv4();
+        const body = `**ReAct chain halted**\n\nContext was loaded for a follow-up model turn, but orchestration budgets blocked auto-continuation:\n- ${budgetResult.reasons.join('\n- ')}`;
+        try {
+          stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
+          stmts.touchSession.run(sessionId);
+          const inserted = stmts.getMessageById.get(sysId) as MessageRow | undefined;
+          if (inserted) {
+            broadcast({ type: 'message', sessionId, message: inserted });
+          }
+        } catch (err: unknown) {
+          const m = err instanceof Error ? err.message : String(err);
+          console.warn(`[react-budget] failed to persist system notice: ${m}`);
+        }
+      }
 
       try {
         const bgTask = S.getBackgroundTaskBySession.get(sessionId) as BackgroundTaskRow | undefined;
@@ -2388,6 +2462,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             content: AUTO_CONTINUATION_PROMPT,
             _autoContinuation: true,
             _continuationDepth: continuationDepth + 1,
+            _chainStartedAtMs: chainStartedAtMs,
+            _chainShellSpawns: priorShellCompleted + 1,
+            _chainBashTools: chainBashTools,
+            _chainTokensUsed: chainTokensUsed,
           } as InternalChatMessage).catch((err: unknown) => {
             const message = err instanceof Error ? err.message : String(err);
             console.error('[auto-continuation] Failed:', message);

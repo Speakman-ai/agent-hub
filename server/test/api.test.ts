@@ -201,6 +201,45 @@ describe('Projects', () => {
         .expect(200);
       expect(cleared.body.verifyBeforeDoneCommands).toBeUndefined();
     });
+
+    it('updates orchestrationBudgets and clears with null', async () => {
+      const proj = await createProject();
+      const withOb = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ orchestrationBudgets: { maxContinuationDepth: 2, maxReactWallClockMs: 5000 } })
+        .expect(200);
+      expect(withOb.body.orchestrationBudgets).toEqual({
+        maxContinuationDepth: 2,
+        maxReactWallClockMs: 5000,
+      });
+
+      const cleared = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ orchestrationBudgets: null })
+        .expect(200);
+      expect(cleared.body.orchestrationBudgets).toBeUndefined();
+    });
+
+    it('sanitizes project orchestrationBudgets (strips unknown keys; empty payload deletes)', async () => {
+      const proj = await createProject();
+      await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ orchestrationBudgets: { maxContinuationDepth: 4 } })
+        .expect(200);
+
+      const unknownOnly = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ orchestrationBudgets: { notARealKey: 1 } })
+        .expect(200);
+      expect(unknownOnly.body.orchestrationBudgets).toBeUndefined();
+
+      await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ orchestrationBudgets: { maxContinuationDepth: 3, junk: 'x' } })
+        .expect(200);
+      const r = await request.get(`/api/projects/${proj.id}`).expect(200);
+      expect(r.body.orchestrationBudgets).toEqual({ maxContinuationDepth: 3 });
+    });
   });
 
   describe('DELETE /api/projects/:projectId', () => {
@@ -696,6 +735,58 @@ describe('Kanban Board', () => {
 
       const listRes = await request.get(`/api/projects/${testProject.id}/board/epics`).expect(200);
       expect(listRes.body.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('persists epic orchestrationBudgets JSON and clears with null', async () => {
+      const epicRes = await request
+        .post(`/api/projects/${testProject.id}/board/epics`)
+        .send({ name: 'Budget Epic', color: '#222222' })
+        .expect(200);
+      const epicId = (epicRes.body as { id: string }).id;
+
+      const withBudgets = await request
+        .put(`/api/projects/${testProject.id}/board/epics/${epicId}`)
+        .send({
+          orchestrationBudgets: { maxContinuationDepth: 2, maxReactWallClockMs: 900 },
+        })
+        .expect(200);
+
+      const rawJson = (withBudgets.body as { orchestration_budgets_json?: string | null })
+        .orchestration_budgets_json;
+      expect(rawJson).toBeTruthy();
+      const stored = JSON.parse(String(rawJson)) as Record<string, number>;
+      expect(stored.maxContinuationDepth).toBe(2);
+      expect(stored.maxReactWallClockMs).toBe(900);
+
+      const cleared = await request
+        .put(`/api/projects/${testProject.id}/board/epics/${epicId}`)
+        .send({ orchestrationBudgets: null })
+        .expect(200);
+
+      const after = (cleared.body as { orchestration_budgets_json?: string | null })
+        .orchestration_budgets_json;
+      expect(after == null || after === '').toBe(true);
+    });
+
+    it('clears epic orchestration_budgets_json when payload has no recognized keys', async () => {
+      const epicRes = await request
+        .post(`/api/projects/${testProject.id}/board/epics`)
+        .send({ name: 'Sanitize Epic', color: '#333333' })
+        .expect(200);
+      const epicId = (epicRes.body as { id: string }).id;
+
+      await request
+        .put(`/api/projects/${testProject.id}/board/epics/${epicId}`)
+        .send({ orchestrationBudgets: { maxReactWallClockMs: 111 } })
+        .expect(200);
+
+      const clearedUnknown = await request
+        .put(`/api/projects/${testProject.id}/board/epics/${epicId}`)
+        .send({ orchestrationBudgets: { totallyUnknown: 99 } })
+        .expect(200);
+      const raw = (clearedUnknown.body as { orchestration_budgets_json?: string | null })
+        .orchestration_budgets_json;
+      expect(raw == null || raw === '').toBe(true);
     });
 
     it('links a card to an epic', async () => {

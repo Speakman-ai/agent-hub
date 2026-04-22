@@ -441,7 +441,7 @@ describe('handleHandoff — end-to-end', () => {
     if (epicId) {
       stmts.createKanbanEpic.run(epicId, boardId, 'Auto Epic', null, '#fff', 0);
       // Flip autonomous on
-      stmts.updateKanbanEpic.run('Auto Epic', null, '#fff', 1, 60, 5, 3, null, epicId);
+      stmts.updateKanbanEpic.run('Auto Epic', null, '#fff', 1, 60, 5, 3, null, null, epicId);
     }
     stmts.createKanbanCard.run(
       cardId,
