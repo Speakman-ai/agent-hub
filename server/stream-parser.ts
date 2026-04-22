@@ -9,6 +9,31 @@ import type {
 
 type NormalizeFn = (raw: Record<string, unknown>) => StreamEvent[];
 
+/** Edit / Write `tool_call.started` sometimes carries `{}` or a placeholder; full `args` arrive on `completed` (see Cursor stream-json docs). */
+function shouldDeferCursorFileToolCall(toolName: string, input: Record<string, unknown>): boolean {
+  if (toolName !== 'Edit' && toolName !== 'Write') return false;
+  if (Object.keys(input).length === 0) return true;
+  if (toolName === 'Write') {
+    if (typeof input.fileText === 'string' && input.fileText.length > 0) return false;
+    if (typeof input.content === 'string' && input.content.length > 0) return false;
+    if (typeof input.contents === 'string' && input.contents.length > 0) return false;
+    return true;
+  }
+  // Edit
+  if (input.strReplace || input.multiStrReplace || input.applyPatch) return false;
+  if (input.changes && Array.isArray(input.changes)) return false;
+  if (typeof input.old_string === 'string' || typeof input.oldString === 'string') return false;
+  if (typeof input.new_string === 'string' || typeof input.newString === 'string') return false;
+  return true;
+}
+
+function mergeCursorFileToolInput(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...a, ...b };
+}
+
 // ─── agenthub:ask fenced-block protocol ────────────────────────────────
 //
 // We teach Claude (via the enriched system prompt) to emit a fenced code
@@ -249,9 +274,17 @@ export function createStreamParser(engine: string): StreamParser {
   // preceding `item.started`). Track ids that already got a tool_use so we
   // don't duplicate when both events appear.
   const codexFileChangeToolUseIssued = new Set<string>();
+  // Cursor Edit/Write: defer `tool_use` until `tool_call.completed` when
+  // `started` has no substantive args, so the client DiffView gets path +
+  // fileText / strReplace (fixes empty diff cards in Electron + web).
+  const cursorDeferredFileToolCalls = new Map<
+    string,
+    { tool: string; args: Record<string, unknown> }
+  >();
+  const cursorFileToolStartedEmitted = new Set<string>();
   const normalize: NormalizeFn =
     engine === 'cursor-agent'
-      ? normalizeCursor
+      ? (raw) => normalizeCursor(raw, cursorDeferredFileToolCalls, cursorFileToolStartedEmitted)
       : engine === 'gemini-cli'
         ? normalizeGemini
         : engine === 'codex-cli'
@@ -272,10 +305,18 @@ export function createStreamParser(engine: string): StreamParser {
     },
 
     flush(): StreamEvent[] {
-      if (!buffer.trim()) return [];
-      const events = parseLine(buffer, normalize);
-      buffer = '';
-      return events;
+      const out: StreamEvent[] = [];
+      if (buffer.trim()) {
+        out.push(...parseLine(buffer, normalize));
+        buffer = '';
+      }
+      if (engine === 'cursor-agent' && cursorDeferredFileToolCalls.size > 0) {
+        for (const [id, { tool, args }] of cursorDeferredFileToolCalls) {
+          out.push({ type: 'tool_use', id, tool, input: args });
+        }
+        cursorDeferredFileToolCalls.clear();
+      }
+      return out;
     },
   };
 }
@@ -439,7 +480,11 @@ function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
 
 // ─── Cursor Agent normalizer ───────────────────────────────────────────
 
-function normalizeCursor(raw: Record<string, unknown>): StreamEvent[] {
+function normalizeCursor(
+  raw: Record<string, unknown>,
+  deferredFileToolCalls: Map<string, { tool: string; args: Record<string, unknown> }>,
+  fileToolStartedEmitted: Set<string>,
+): StreamEvent[] {
   switch (raw.type) {
     case 'system':
       if (raw.subtype === 'init') {
@@ -483,7 +528,7 @@ function normalizeCursor(raw: Record<string, unknown>): StreamEvent[] {
     }
 
     case 'tool_call': {
-      const callId = raw.call_id as string;
+      const callId = String(raw.call_id ?? '');
       const tc = (raw.tool_call ?? {}) as Record<string, Record<string, unknown>>;
       const variant = Object.keys(tc)[0];
       const detail = tc[variant] ?? {};
@@ -491,6 +536,11 @@ function normalizeCursor(raw: Record<string, unknown>): StreamEvent[] {
       const input = (detail.args as Record<string, unknown>) ?? {};
 
       if (raw.subtype === 'started') {
+        if (shouldDeferCursorFileToolCall(toolName, input)) {
+          deferredFileToolCalls.set(callId, { tool: toolName, args: input });
+          return [];
+        }
+        fileToolStartedEmitted.add(callId);
         return [
           {
             type: 'tool_use',
@@ -501,6 +551,23 @@ function normalizeCursor(raw: Record<string, unknown>): StreamEvent[] {
         ];
       }
       if (raw.subtype === 'completed') {
+        const out: StreamEvent[] = [];
+        const completedArgs = (detail.args as Record<string, unknown>) ?? {};
+        const pending = deferredFileToolCalls.get(callId);
+        if (pending) {
+          deferredFileToolCalls.delete(callId);
+          const merged = mergeCursorFileToolInput(pending.args, completedArgs);
+          out.push({ type: 'tool_use', id: callId, tool: pending.tool, input: merged });
+        } else if (
+          (toolName === 'Edit' || toolName === 'Write') &&
+          !fileToolStartedEmitted.has(callId) &&
+          Object.keys(completedArgs).length > 0
+        ) {
+          // `tool_call.started` missing but `completed` has args (CLI edge case)
+          out.push({ type: 'tool_use', id: callId, tool: toolName, input: completedArgs });
+        }
+        fileToolStartedEmitted.delete(callId);
+
         const result = (detail.result ?? {}) as Record<string, unknown>;
         const success = (result.success as Record<string, unknown> | null) ?? null;
         const failure = (result.failure as string | Record<string, unknown> | null) ?? null;
@@ -523,14 +590,13 @@ function normalizeCursor(raw: Record<string, unknown>): StreamEvent[] {
         } else {
           output = JSON.stringify(result, null, 2);
         }
-        return [
-          {
-            type: 'tool_result',
-            toolUseId: callId,
-            output,
-            isError,
-          },
-        ];
+        out.push({
+          type: 'tool_result',
+          toolUseId: callId,
+          output,
+          isError,
+        });
+        return out;
       }
       return [];
     }

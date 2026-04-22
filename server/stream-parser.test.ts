@@ -663,6 +663,36 @@ describe('createStreamParser — Cursor Agent', () => {
     }
   });
 
+  it('merges Write tool args on tool_call completed when started had no fileText (DiffView data)', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'started',
+        call_id: 'w1',
+        tool_call: { writeToolCall: { args: {} } },
+      }),
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'completed',
+        call_id: 'w1',
+        tool_call: {
+          writeToolCall: {
+            args: { path: 'summary.txt', fileText: 'hello' },
+            result: { success: { path: '/p/summary.txt', linesCreated: 1, fileSize: 5 } },
+          },
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(2);
+    const use = events[0] as ToolUseEvent;
+    const res = events[1] as { type: string; isError: boolean; output: string };
+    expect(use.type).toBe('tool_use');
+    expect(use.tool).toBe('Write');
+    expect(use.input).toEqual({ path: 'summary.txt', fileText: 'hello' });
+    expect(res.type).toBe('tool_result');
+    expect(res.isError).toBe(false);
+  });
+
   it('handles unknown tool variants gracefully', () => {
     const events = parse([
       JSON.stringify({
