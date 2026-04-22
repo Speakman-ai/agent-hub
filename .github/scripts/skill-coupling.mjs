@@ -33,7 +33,6 @@ const __dirname = path.dirname(__filename);
  */
 export function parseCouplingYaml(text) {
   const out = {};
-  let currentKey = null;
   let currentList = null;
 
   const lines = text.split(/\r?\n/);
@@ -55,7 +54,6 @@ export function parseCouplingYaml(text) {
     const keyMatch = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)\s*$/);
     if (keyMatch) {
       const [, key, value] = keyMatch;
-      currentKey = key;
       if (value.trim() === '') {
         currentList = [];
         out[key] = currentList;

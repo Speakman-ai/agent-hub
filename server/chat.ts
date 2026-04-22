@@ -500,10 +500,13 @@ The server moves the session's linked card to Done and appends an explanatory co
 
   let isGitHubConnected = false;
   try {
+    // Pipe stderr only (ignore) so prompt tests' temp dirs — not git repos —
+    // do not print "fatal: not a git repository" to the test runner.
     const remoteOutput = execSync('git remote -v', {
       cwd: project.cwd,
       timeout: 5000,
       encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
     isGitHubConnected = remoteOutput.includes('github.com');
   } catch {}

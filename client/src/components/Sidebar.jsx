@@ -17,6 +17,7 @@ import {
   Palette,
   Archive,
   RotateCcw,
+  Loader2,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
@@ -25,6 +26,8 @@ import AgentAvatar from './AgentAvatar.jsx';
 import { daysUntilPurge } from '../utils/time.js';
 
 export default function Sidebar({
+  /** When true, shows a loading overlay on the nav body (org switcher stays usable). */
+  isLoading = false,
   projects = [],
   agents: _agents,
   activeAgentId,
@@ -143,7 +146,18 @@ export default function Sidebar({
       </div>
 
       {/* Projects & Agents */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto min-h-0 relative">
+        {isLoading && (
+          <div
+            className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-gray-900/85 backdrop-blur-[1px] pointer-events-none"
+            data-testid="sidebar-loading"
+            aria-busy="true"
+            aria-label="Loading sidebar"
+          >
+            <Loader2 className="animate-spin text-indigo-400" size={22} />
+            <span className="text-xs text-gray-500">Loading workspace…</span>
+          </div>
+        )}
         <div className="p-3">
           {/* Org-scoped dashboard — sits above the project list because it's
               not tied to any single project. */}

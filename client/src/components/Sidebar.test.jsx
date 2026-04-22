@@ -71,6 +71,18 @@ const buildProps = (overrides = {}) => {
   };
 };
 
+describe('Sidebar — loading overlay', () => {
+  it('renders a loading indicator when isLoading is true', () => {
+    render(<Sidebar {...buildProps({ isLoading: true })} />);
+    expect(screen.getByTestId('sidebar-loading')).toBeInTheDocument();
+  });
+
+  it('does not show the loading overlay when isLoading is false', () => {
+    render(<Sidebar {...buildProps({ isLoading: false })} />);
+    expect(screen.queryByTestId('sidebar-loading')).not.toBeInTheDocument();
+  });
+});
+
 describe('Sidebar — actionable session visibility', () => {
   it('shows all sessions (running, PR-ready, idle) when the agent is expanded', () => {
     render(<Sidebar {...buildProps()} />);

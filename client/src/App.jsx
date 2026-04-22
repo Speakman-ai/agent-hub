@@ -210,8 +210,13 @@ export default function App() {
   // First-run setup
   const [setupStatus, setSetupStatus] = useState(null);
   const [showSetup, setShowSetup] = useState(false);
-  // Loading state — true until org/switch + project load completes
+  // Full-screen "Connecting…" only until org migration + org list + setup probe.
+  // Project/session data loads in the main layout (sidebar shows its own spinner).
   const [initializing, setInitializing] = useState(true);
+  // True after the first successful projects fetch in init (or after it fails).
+  const [projectDataReady, setProjectDataReady] = useState(false);
+  // True while GET /sessions (and session list selection) is in flight for the active agent.
+  const [sessionsListLoading, setSessionsListLoading] = useState(false);
   // Active lead reviews: Map of agentId -> { prUrl, cardTitle, sessionId }
   const [activeReviews, setActiveReviews] = useState({});
   // Toast notifications
@@ -356,1108 +361,6 @@ export default function App() {
     });
   }, [activeSessionId]);
 
-  // WebSocket handler
-  const handleWsMessage = useCallback((data) => {
-    // Is this event for the session the user is currently viewing?
-    const forActiveSession = data.sessionId && data.sessionId === activeSessionIdRef.current;
-    // 'message' events use message.session_id rather than top-level sessionId.
-    const msgForActiveSession = data.message?.session_id === activeSessionIdRef.current;
-
-    switch (data.type) {
-      case 'active-tasks-snapshot': {
-        // Rebuild active-task map from server snapshot.
-        const next = {};
-        for (const t of data.tasks || []) {
-          next[t.sessionId] = {
-            messageId: t.messageId,
-            content: t.content || '',
-            engine: t.engine || null,
-            model: t.model || null,
-          };
-        }
-        setActiveTasks(next);
-        // If the currently viewed session has an in-flight task, restore streaming state.
-        const sid = activeSessionIdRef.current;
-        if (sid && next[sid]) {
-          const t = next[sid];
-          setStreamingMsgId(t.messageId);
-          setStreamingContent(t.content);
-          setStreamingEngine(t.engine);
-          setThinking(!t.content);
-        }
-        break;
-      }
-      case 'message':
-        if (data.message.role === 'user' && msgForActiveSession) {
-          setMessages((prev) => [...prev, data.message]);
-        }
-        break;
-      case 'thinking':
-        // Always track the task; only update the visible indicator if it's our session.
-        setActiveTasks((prev) => ({
-          ...prev,
-          [data.sessionId]: {
-            messageId: data.messageId,
-            content: '',
-            engine: data.engine || null,
-            model: data.model || null,
-          },
-        }));
-        if (forActiveSession) {
-          setThinking(true);
-          setStreamingMsgId(data.messageId);
-          setStreamingEngine(data.engine || null);
-          setStreamingContent('');
-        }
-        break;
-      case 'stream':
-        setActiveTasks((prev) => ({
-          ...prev,
-          [data.sessionId]: {
-            ...(prev[data.sessionId] || {}),
-            messageId: data.messageId,
-            content: data.content,
-            engine: data.engine || null,
-          },
-        }));
-        if (forActiveSession) {
-          setThinking(false);
-          setStreamingContent(data.content);
-          setStreamingEngine(data.engine || null);
-        }
-        break;
-      case 'session-event': {
-        // Append a single event to the message's timeline. Dedup by seq in case
-        // a reconnect causes the server to replay something we already have.
-        // The common case is strictly increasing seq, so fast-path the append.
-        const { messageId, seq, event } = data;
-        if (!messageId) break;
-        setEventsByMessage((prev) => {
-          const existing = prev[messageId] || [];
-          const last = existing[existing.length - 1];
-          if (!last || last.seq < seq) {
-            return { ...prev, [messageId]: [...existing, { seq, event }] };
-          }
-          if (existing.some((e) => e.seq === seq)) return prev;
-          const next = [...existing, { seq, event }].sort((a, b) => a.seq - b.seq);
-          return { ...prev, [messageId]: next };
-        });
-
-        // Track subagent spawns and completions per session
-        if (event?.type === 'tool_use' && (event.tool === 'Task' || event.tool === 'Agent')) {
-          const sid = data.sessionId;
-          setSubagents((prev) => {
-            const entry = prev[sid] || {
-              total: 0,
-              running: 0,
-              done: 0,
-              errored: 0,
-              ids: new Set(),
-            };
-            if (entry.ids.has(event.id)) return prev; // dedup
-            const next = {
-              ...entry,
-              total: entry.total + 1,
-              running: entry.running + 1,
-              ids: new Set(entry.ids),
-            };
-            next.ids.add(event.id);
-            return { ...prev, [sid]: next };
-          });
-        }
-        if (event?.type === 'tool_result') {
-          const sid = data.sessionId;
-          setSubagents((prev) => {
-            const entry = prev[sid];
-            if (!entry || !entry.ids.has(event.toolUseId)) return prev;
-            return {
-              ...prev,
-              [sid]: {
-                ...entry,
-                running: entry.running - 1,
-                ...(event.isError ? { errored: entry.errored + 1 } : { done: entry.done + 1 }),
-              },
-            };
-          });
-        }
-
-        // Track rate-limit throttle state per session
-        if (event?.type === 'rate_limit') {
-          const sid = data.sessionId;
-          const retryMs = event.retryAfterMs || 5000;
-          setThrottle((prev) => ({
-            ...prev,
-            [sid]: { active: true, retryAfterMs: retryMs, ts: Date.now() },
-          }));
-          // Auto-clear throttle indicator after retry period elapses
-          setTimeout(() => {
-            setThrottle((prev) => {
-              const entry = prev[sid];
-              if (!entry || !entry.active) return prev;
-              return { ...prev, [sid]: { ...entry, active: false } };
-            });
-          }, retryMs + 1000);
-        }
-        break;
-      }
-      case 'session-progress': {
-        // Drives the in-Hub ProgressPanel for this session. The server sends
-        // one message per progress_step event; we reduce it into the ordered
-        // list keyed by sessionId.
-        const sid = data.sessionId;
-        if (!sid) break;
-        setSessionProgress((prev) => ({
-          ...prev,
-          [sid]: mergeProgressEvent(prev[sid] || [], {
-            step: data.step,
-            status: data.status,
-            startedAt: data.startedAt,
-            finishedAt: data.finishedAt ?? undefined,
-          }),
-        }));
-        break;
-      }
-      case 'done':
-        setActiveTasks((prev) => {
-          const next = { ...prev };
-          delete next[data.sessionId];
-          return next;
-        });
-        // Clear throttle state for completed session
-        setThrottle((prev) => {
-          if (!prev[data.sessionId]) return prev;
-          const next = { ...prev };
-          delete next[data.sessionId];
-          return next;
-        });
-        // Clear subagent tracking for completed session
-        setSubagents((prev) => {
-          if (!prev[data.sessionId]) return prev;
-          const next = { ...prev };
-          delete next[data.sessionId];
-          return next;
-        });
-        if (forActiveSession) {
-          setThinking(false);
-          setStreamingContent('');
-          setStreamingMsgId(null);
-          setStreamingEngine(null);
-          if (data.message) {
-            setMessages((prev) => [...prev, data.message]);
-          }
-        }
-        // Desktop notification + toast for completed background sessions
-        if (!forActiveSession && data.message) {
-          const session = sessionsRef.current.find((s) => s.id === data.sessionId);
-          const agent = session ? agentsRef.current.find((a) => a.id === session.agent_id) : null;
-          const agentName = agent?.name || 'Agent';
-          const preview =
-            typeof data.message.content === 'string'
-              ? data.message.content.replace(/\n+/g, ' ').trim()
-              : undefined;
-          const { title, body } = sessionCompleteNotification({
-            agentName,
-            sessionName: session?.name,
-            preview,
-          });
-          setToasts((prev) => [
-            ...prev,
-            {
-              id: `session-done-${data.sessionId}-${Date.now()}`,
-              type: 'success',
-              message: session?.name || 'Session completed',
-              duration: 10000,
-              onClick: () => focusAgentSessionRef.current?.(session?.agent_id, data.sessionId),
-            },
-          ]);
-          notify({ title, body, type: 'success' });
-        }
-        break;
-      case 'changes_ready': {
-        const alreadyPrompted = !!changesReadyRef.current[data.sessionId];
-        setChangesReady((prev) => ({
-          ...prev,
-          [data.sessionId]: {
-            agentId: data.agentId,
-            branch: data.branch,
-            hasUncommitted: data.hasUncommitted,
-            hasUnpushed: data.hasUnpushed,
-          },
-        }));
-        // Only notify on a fresh prompt — avoids re-firing on reconnect/replay.
-        if (!alreadyPrompted) {
-          const session = sessionsRef.current.find((s) => s.id === data.sessionId);
-          const agent = agentsRef.current.find((a) => a.id === data.agentId);
-          const { title, body } = prReadyNotification({
-            agentName: agent?.name,
-            sessionName: session?.name,
-            branch: data.branch,
-          });
-          setToasts((prev) => [
-            ...prev,
-            {
-              id: `pr-ready-${data.sessionId}-${Date.now()}`,
-              type: 'info',
-              message: session?.name || 'Changes ready for PR',
-              duration: 10000,
-              onClick: () => focusAgentSessionRef.current?.(data.agentId, data.sessionId),
-            },
-          ]);
-          notify({ title, body, type: 'info' });
-        }
-        break;
-      }
-      case 'auto_pr_created': {
-        // Clear changes_ready state when a PR is created (manually or automatically)
-        setChangesReady((prev) => {
-          if (!prev[data.sessionId]) return prev;
-          const next = { ...prev };
-          delete next[data.sessionId];
-          return next;
-        });
-        setCreatePrLogBySession((prev) => {
-          if (!prev[data.sessionId]) return prev;
-          const next = { ...prev };
-          delete next[data.sessionId];
-          return next;
-        });
-        break;
-      }
-      case 'create_pr_log':
-        if (data.sessionId && typeof data.text === 'string') {
-          const maxChars = 250_000;
-          setCreatePrLogBySession((prev) => {
-            const combined = (prev[data.sessionId] || '') + data.text;
-            const tail = combined.length > maxChars ? combined.slice(-maxChars) : combined;
-            return { ...prev, [data.sessionId]: tail };
-          });
-        }
-        break;
-      // Stream finished — keep the accumulated text so the user can read
-      // output after commit_failed / push_failed / pr_failed. Cleared on
-      // success (auto_pr_created), dismiss, or a new Create attempt.
-      case 'create_pr_log_done':
-        break;
-      case 'done_verify_log':
-        if (data.sessionId && typeof data.text === 'string') {
-          const maxChars = 250_000;
-          setDoneVerifyLogBySession((prev) => {
-            const combined = (prev[data.sessionId] || '') + data.text;
-            const tail = combined.length > maxChars ? combined.slice(-maxChars) : combined;
-            return { ...prev, [data.sessionId]: tail };
-          });
-        }
-        break;
-      case 'done_verify_log_done':
-        if (data.sessionId) {
-          setDoneVerifyLogBySession((prev) => {
-            if (!prev[data.sessionId]) return prev;
-            const next = { ...prev };
-            delete next[data.sessionId];
-            return next;
-          });
-        }
-        break;
-      case 'message_added':
-        // A new message (e.g. the system 'PR created' marker persisted by the
-        // server) was inserted on the backend. If it belongs to the active
-        // session, append it to the timeline — guarded by an id-dedup check
-        // so a double broadcast can never duplicate-render.
-        if (forActiveSession && data.message?.id) {
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === data.message.id)) return prev;
-            return [...prev, data.message];
-          });
-        }
-        break;
-      case 'session-updated':
-        setSessions((prev) =>
-          prev.map((s) => (s.id === data.session.id ? { ...s, name: data.session.name } : s)),
-        );
-        break;
-      case 'session-worktree-detected':
-        // Update the session's git_worktree_detected flag from CLI status line
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === data.sessionId ? { ...s, git_worktree_detected: data.gitWorktree ? 1 : 0 } : s,
-          ),
-        );
-        if (forActiveSession) {
-          setGitWorktreeDetected(data.gitWorktree);
-        }
-        break;
-      case 'error':
-        if (data.sessionId) {
-          setActiveTasks((prev) => {
-            const next = { ...prev };
-            delete next[data.sessionId];
-            return next;
-          });
-        }
-        if (forActiveSession) {
-          setThinking(false);
-          setStreamingContent('');
-          setStreamingMsgId(null);
-          setStreamingEngine(null);
-          if (data.error) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: data.messageId || `err-${Date.now()}`,
-                role: 'assistant',
-                content: `Error: ${data.error}`,
-                created_at: new Date().toISOString(),
-              },
-            ]);
-          }
-        }
-        break;
-      case 'interrupted':
-        if (forActiveSession) {
-          setThinking(false);
-          setStreamingContent('');
-          setStreamingMsgId(null);
-          setStreamingEngine(null);
-        }
-        break;
-
-      // ─── Conference Room events ─────────────────────────────
-      case 'room_message':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomMessages((prev) => [...prev, data.message]);
-        }
-        break;
-      case 'room_round_start':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomProcessing(true);
-        }
-        break;
-      case 'room_thinking':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomStreaming(null);
-          setRoomThinking({
-            agentId: data.agentId,
-            agentName: data.agentName,
-            agentColor: data.agentColor,
-          });
-        }
-        break;
-      case 'room_stream':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomThinking(null);
-          setRoomStreaming({
-            agentId: data.agentId,
-            agentName: data.agentName,
-            agentColor: data.agentColor,
-            messageId: data.messageId,
-            content: data.content,
-          });
-        }
-        break;
-      case 'room_agent_done':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomThinking(null);
-          setRoomStreaming(null);
-          setRoomMessages((prev) => [...prev, data.message]);
-        }
-        break;
-      case 'room_agent_error':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomThinking(null);
-          setRoomStreaming(null);
-          setRoomMessages((prev) => [
-            ...prev,
-            {
-              id: data.messageId || `err-${Date.now()}`,
-              room_id: data.roomId,
-              role: 'assistant',
-              agent_id: data.agentId,
-              agent_name: data.agentName,
-              agent_color: null,
-              content: `Error: ${data.error}`,
-              created_at: new Date().toISOString(),
-            },
-          ]);
-        }
-        break;
-      case 'room_queue_updated':
-        if (data.roomId === activeRoomIdRef.current) {
-          setRoomQueueLength(data.queue?.length || data.queueLength || 0);
-        }
-        break;
-      case 'room_round_done':
-      case 'room_cancelled':
-        if (data.roomId === activeRoomIdRef.current) {
-          // Don't reset roomProcessing if there are queued messages about to drain —
-          // prevents UI flicker between queued message rounds (Bugbot fix)
-          if (!data.queueLength) {
-            setRoomProcessing(false);
-          }
-          setRoomThinking(null);
-          setRoomStreaming(null);
-        }
-        break;
-
-      // ─── Claude Design events ────────────────────────────────
-      case 'design_created':
-        // Broadcast from any client creating a design — refresh list
-        if (data.design) {
-          setDesigns((prev) => {
-            if (prev.some((d) => d.id === data.design.id)) return prev;
-            return [data.design, ...prev];
-          });
-        }
-        break;
-      case 'design_deleted':
-        setDesigns((prev) => prev.filter((d) => d.id !== data.designId));
-        if (activeDesignIdRef.current === data.designId) {
-          setActiveDesignId(null);
-          setDesignMessages([]);
-          setDesignStreaming(null);
-          setDesignThinking(false);
-          setDesignProcessing(false);
-          setCurrentView('designs');
-        }
-        break;
-      case 'design_updated':
-        // Fires once per assistant turn — bump the iframe reload token for
-        // the active design so the canvas re-fetches the new files.
-        if (data.designId === activeDesignIdRef.current) {
-          setDesignReloadToken((t) => t + 1);
-          setDesignStreaming(null);
-          setDesignThinking(false);
-          setDesignProcessing(false);
-        }
-        // Also refresh design row metadata (updated_at) in the list.
-        setDesigns((prev) =>
-          prev.map((d) =>
-            d.id === data.designId ? { ...d, updated_at: new Date().toISOString() } : d,
-          ),
-        );
-        break;
-      case 'design_metadata_updated':
-        if (data.design?.id) {
-          setDesigns((prev) =>
-            prev.map((d) => (d.id === data.design.id ? { ...d, ...data.design } : d)),
-          );
-        }
-        break;
-      case 'design_message_added':
-        if (data.designId === activeDesignIdRef.current && data.message) {
-          // Streaming token deltas arrive as the same messageId with growing content;
-          // the final message also arrives as 'design_message_added'. Treat assistant
-          // deltas by keeping a separate streaming slot and flushing on role=='assistant'
-          // with a final flag (or when the message already exists in the list).
-          const msg = data.message;
-          if (msg.role === 'assistant' && msg.streaming) {
-            setDesignThinking(false);
-            setDesignStreaming({ messageId: msg.id, content: msg.content || '' });
-            setDesignProcessing(true);
-            break;
-          }
-          setDesignStreaming(null);
-          setDesignThinking(false);
-          setDesignMessages((prev) => {
-            if (prev.some((m) => m.id === msg.id)) {
-              return prev.map((m) => (m.id === msg.id ? msg : m));
-            }
-            return [...prev, msg];
-          });
-          // Keep processing=true until design_updated closes the turn; a user
-          // message shouldn't flip processing off.
-          if (msg.role === 'assistant') {
-            setDesignProcessing(false);
-          }
-        }
-        break;
-
-      case 'design_cancelled':
-        if (data.designId === activeDesignIdRef.current) {
-          setDesignStreaming(null);
-          setDesignThinking(false);
-          setDesignProcessing(false);
-        }
-        break;
-      case 'design_thinking':
-        if (data.designId === activeDesignIdRef.current) {
-          setDesignThinking(true);
-          setDesignProcessing(true);
-        }
-        break;
-      case 'design_stream':
-        // Server emits cumulative stdout on every chunk. As soon as any
-        // partial text arrives, we flip from the "thinking…" dot to the
-        // streaming view so the user sees progress. Ignored when the event
-        // is for a design the user has since navigated away from.
-        if (data.designId === activeDesignIdRef.current) {
-          setDesignThinking(false);
-          setDesignProcessing(true);
-          setDesignStreaming({ content: data.content || '' });
-        }
-        break;
-
-      // ─── Delegation events ────────────────────────────────
-      case 'delegation_start':
-        if (data.sessionId === activeSessionIdRef.current) {
-          setDelegations((prev) => ({
-            ...prev,
-            [data.sessionId]: {
-              parentMessageId: data.parentMessageId,
-              tasks: data.tasks.map((t) => ({
-                delegationId: null,
-                agentId: t.agentId,
-                agentName: t.agentId,
-                agentColor: null,
-                task: t.task,
-                status: 'pending',
-                content: '',
-                output: null,
-                error: null,
-              })),
-            },
-          }));
-        }
-        break;
-      case 'delegation_thinking':
-        if (data.sessionId === activeSessionIdRef.current) {
-          setDelegations((prev) => {
-            const existing = prev[data.sessionId];
-            if (!existing) return prev;
-            return {
-              ...prev,
-              [data.sessionId]: {
-                ...existing,
-                tasks: existing.tasks.map((t) =>
-                  t.agentId === data.agentId
-                    ? {
-                        ...t,
-                        delegationId: data.delegationId,
-                        agentName: data.agentName,
-                        agentColor: data.agentColor,
-                        status: 'running',
-                      }
-                    : t,
-                ),
-              },
-            };
-          });
-        }
-        break;
-      case 'delegation_stream':
-        if (data.sessionId === activeSessionIdRef.current) {
-          setDelegations((prev) => {
-            const existing = prev[data.sessionId];
-            if (!existing) return prev;
-            return {
-              ...prev,
-              [data.sessionId]: {
-                ...existing,
-                tasks: existing.tasks.map((t) =>
-                  t.agentId === data.agentId
-                    ? {
-                        ...t,
-                        agentName: data.agentName,
-                        agentColor: data.agentColor,
-                        content: data.content,
-                        status: 'running',
-                      }
-                    : t,
-                ),
-              },
-            };
-          });
-        }
-        break;
-      case 'delegation_agent_done':
-        if (data.sessionId === activeSessionIdRef.current) {
-          setDelegations((prev) => {
-            const existing = prev[data.sessionId];
-            if (!existing) return prev;
-            return {
-              ...prev,
-              [data.sessionId]: {
-                ...existing,
-                tasks: existing.tasks.map((t) =>
-                  t.agentId === data.agentId
-                    ? { ...t, status: 'done', output: data.output, content: '' }
-                    : t,
-                ),
-              },
-            };
-          });
-        }
-        break;
-      case 'delegation_agent_error':
-        if (data.sessionId === activeSessionIdRef.current) {
-          setDelegations((prev) => {
-            const existing = prev[data.sessionId];
-            if (!existing) return prev;
-            return {
-              ...prev,
-              [data.sessionId]: {
-                ...existing,
-                tasks: existing.tasks.map((t) =>
-                  t.agentId === data.agentId ? { ...t, status: 'error', error: data.error } : t,
-                ),
-              },
-            };
-          });
-        }
-        break;
-      case 'delegation_round_done':
-        // Delegation complete — keep the data for display but mark as done
-        break;
-      case 'delegation_cancelled':
-        if (data.sessionId === activeSessionIdRef.current) {
-          setDelegations((prev) => {
-            const existing = prev[data.sessionId];
-            if (!existing) return prev;
-            return {
-              ...prev,
-              [data.sessionId]: {
-                ...existing,
-                tasks: existing.tasks.map((t) =>
-                  t.status === 'running' || t.status === 'pending'
-                    ? { ...t, status: 'cancelled' }
-                    : t,
-                ),
-              },
-            };
-          });
-        }
-        break;
-      case 'delegation_error': {
-        const delegationMsg = `Delegation failed: ${data.error}`;
-        if (data.sessionId === activeSessionIdRef.current) {
-          setToasts((prev) => [
-            ...prev,
-            {
-              id: `delegation-err-${Date.now()}`,
-              type: 'error',
-              message: delegationMsg,
-              duration: 10000,
-            },
-          ]);
-        }
-        notify({ title: 'Delegation Error', body: delegationMsg, type: 'error' });
-        break;
-      }
-
-      case 'sessions_resuming': {
-        const count = data.count || 0;
-        const toast = {
-          id: `sessions-resuming-${Date.now()}`,
-          type: 'info',
-          message: `Resuming ${count} interrupted session${count !== 1 ? 's' : ''} after server restart…`,
-          duration: 10000,
-        };
-        setToasts((prev) => [...prev, toast]);
-        break;
-      }
-      case 'analyze-progress':
-      case 'analyze-complete':
-      case 'analyze-error':
-        window.dispatchEvent(new CustomEvent('analyze-ws', { detail: data }));
-        break;
-      case 'clone-progress':
-      case 'clone-complete':
-      case 'clone-error':
-        window.dispatchEvent(new CustomEvent('clone-ws', { detail: data }));
-        break;
-      case 'task_complete': {
-        const taskStatus = data.status === 'done' ? 'success' : 'error';
-        const taskMsg =
-          data.status === 'done'
-            ? `Background task completed${data.preview ? ': ' + data.preview.substring(0, 80) + '...' : ''}`
-            : 'Background task failed';
-        setToasts((prev) => [
-          ...prev,
-          {
-            id: `task-${data.taskId}-${Date.now()}`,
-            type: taskStatus,
-            message: taskMsg,
-            duration: 10000,
-            onClick: data.sessionId
-              ? () => {
-                  const row = sessionsRef.current.find((s) => s.id === data.sessionId);
-                  focusAgentSessionRef.current?.(row?.agent_id, data.sessionId);
-                }
-              : undefined,
-          },
-        ]);
-        notify({
-          title: data.status === 'done' ? 'Task Complete' : 'Task Failed',
-          body: taskMsg,
-          type: taskStatus,
-        });
-        window.dispatchEvent(new CustomEvent('task-complete', { detail: data }));
-        break;
-      }
-      // ── Message queue events ────────────────────────────────────
-      case 'queue_updated':
-        setMessageQueues((prev) => ({
-          ...prev,
-          [data.sessionId]: data.queue,
-        }));
-        break;
-
-      case 'queue_item_processing':
-        // Mark the queued message as no longer queued (it's being processed now).
-        // The 'thinking' event that follows will handle the processing indicator.
-        setMessageQueues((prev) => {
-          const q = (prev[data.sessionId] || []).filter((m) => m.id !== data.messageId);
-          return { ...prev, [data.sessionId]: q };
-        });
-        break;
-
-      case 'queue_item_edited':
-        // Update the message content in local state to reflect the edit
-        setMessages((prev) =>
-          prev.map((m) => (m.id === data.messageId ? { ...m, content: data.content } : m)),
-        );
-        break;
-
-      case 'cron_session_update':
-        api
-          .getCronSessions()
-          .then(setCronSessions)
-          .catch(() => {});
-        break;
-
-      case 'kanban_update':
-        setKanbanRefreshKey((k) => k + 1);
-        break;
-
-      case 'projects_updated':
-        // Server added/changed an agent or project (e.g. GitHub App auto-setup
-        // seeded a Reviewer agent). Re-fetch so the sidebar reflects it
-        // without requiring a page refresh.
-        refreshAgents();
-        break;
-
-      case 'dispatch_failure': {
-        const dispatchMsg = `Dispatch failed (${data.source}): ${data.cardTitle} — ${data.reason}`;
-        const toast = {
-          id: `dispatch-failure-${Date.now()}`,
-          type: 'error',
-          message: dispatchMsg,
-          duration: 10000,
-        };
-        setToasts((prev) => [...prev, toast]);
-        notify({ title: 'Dispatch Failure', body: dispatchMsg, type: 'error' });
-        // Also refresh kanban to show the new card comment
-        setKanbanRefreshKey((k) => k + 1);
-        break;
-      }
-
-      // ── Ticket lifecycle notifications ─────────────────────────
-      case 'card_moved': {
-        const colLower = (data.columnName || '').toLowerCase();
-        const navigateCardToast = () => {
-          if (data.sessionId && data.agentId) {
-            focusAgentSessionRef.current?.(data.agentId, data.sessionId);
-          } else if (data.projectId) {
-            setCurrentView(`kanban:${data.projectId}`);
-            setSidebarOpen(false);
-          }
-        };
-        const canNavigateCardToast = Boolean((data.sessionId && data.agentId) || data.projectId);
-        if (colLower === 'in progress') {
-          const { title, body } = cardStartedNotification(data);
-          setToasts((prev) => [
-            ...prev,
-            {
-              id: `card-started-${data.cardId}-${Date.now()}`,
-              type: 'info',
-              message: body,
-              duration: 8000,
-              onClick: canNavigateCardToast ? navigateCardToast : undefined,
-            },
-          ]);
-          notify({ title, body, type: 'info' });
-        } else if (colLower === 'review') {
-          const { title, body } = cardReviewNotification(data);
-          setToasts((prev) => [
-            ...prev,
-            {
-              id: `card-review-${data.cardId}-${Date.now()}`,
-              type: 'info',
-              message: body,
-              duration: 8000,
-              onClick: canNavigateCardToast ? navigateCardToast : undefined,
-            },
-          ]);
-          notify({ title, body, type: 'info' });
-        }
-        break;
-      }
-
-      case 'webhook_pr_merged': {
-        const { title, body } = prMergedNotification(data);
-        const navigatePrMergedToast = () => {
-          if (data.sessionId && data.agentId) {
-            focusAgentSessionRef.current?.(data.agentId, data.sessionId);
-          } else if (data.prUrl) {
-            window.open(String(data.prUrl), '_blank', 'noopener,noreferrer');
-          } else if (data.projectId) {
-            setPullsProjectId(data.projectId);
-            setCurrentView('pulls');
-            setSidebarOpen(false);
-          }
-        };
-        const canNavigatePrMerged = Boolean(
-          (data.sessionId && data.agentId) || data.prUrl || data.projectId,
-        );
-        setToasts((prev) => [
-          ...prev,
-          {
-            id: `pr-merged-${data.prNumber}-${Date.now()}`,
-            type: 'success',
-            message: body,
-            duration: 10000,
-            onClick: canNavigatePrMerged ? navigatePrMergedToast : undefined,
-          },
-        ]);
-        notify({ title, body, type: 'success' });
-        setKanbanRefreshKey((k) => k + 1);
-        break;
-      }
-
-      // ── Thread notifications ─────────────────────────────────
-      case 'thread_created': {
-        // Live-update ThreadList if viewing threads for this project
-        if (threadListRef.current && threadsProjectIdRef.current === data.projectId) {
-          threadListRef.current.addThread(data.thread);
-        }
-        const { title, body } = threadCreatedNotification({
-          threadName: data.thread.name,
-          threadType: data.thread.type,
-        });
-        setToasts((prev) => [
-          ...prev,
-          {
-            id: `thread-created-${data.thread.id}-${Date.now()}`,
-            type: 'info',
-            message: body,
-            duration: 6000,
-          },
-        ]);
-        notify({ title, body, type: 'info' });
-        break;
-      }
-
-      case 'thread_entry_created': {
-        const isError = data.entry?.content?.startsWith('ERROR:');
-        // Live-update ThreadView if viewing this thread
-        if (threadViewRef.current && activeThreadIdRef.current === data.threadId) {
-          threadViewRef.current.addEntry(data.entry);
-        } else {
-          // Increment unread count for the project (we need to find it from data)
-          // The broadcast includes threadId — look up the project via thread cache
-          // For simplicity, increment for all projects that have threads view open or track globally
-          setUnreadThreadCounts((prev) => {
-            const pid = data.projectId;
-            if (!pid) return prev;
-            return { ...prev, [pid]: (prev[pid] || 0) + 1 };
-          });
-        }
-        // Build notification — need thread name which the server should include
-        const threadName = data.threadName || 'Thread';
-        const threadType = data.threadType || 'cron';
-        const preview = data.entry?.content?.replace(/\n+/g, ' ').trim();
-        const { title, body } = threadEntryNotification({
-          threadName,
-          threadType,
-          preview,
-          isError,
-        });
-        // Only toast for errors or when not actively viewing the thread
-        if (
-          isError ||
-          activeThreadIdRef.current !== data.threadId ||
-          currentViewRef.current !== 'threads'
-        ) {
-          setToasts((prev) => [
-            ...prev,
-            {
-              id: `thread-entry-${data.entry.id}-${Date.now()}`,
-              type: isError ? 'error' : 'info',
-              message: body,
-              duration: isError ? 10000 : 6000,
-            },
-          ]);
-        }
-        notify({ title, body, type: isError ? 'error' : 'info' });
-        break;
-      }
-
-      case 'thread_deleted': {
-        // Live-update ThreadList
-        if (threadListRef.current && threadsProjectIdRef.current === data.projectId) {
-          threadListRef.current.removeThread(data.threadId);
-        }
-        // If viewing the deleted thread, go back to list
-        if (activeThreadIdRef.current === data.threadId) {
-          setActiveThreadId(null);
-          setActiveThread(null);
-        }
-        break;
-      }
-
-      case 'wiki_update':
-        window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
-        break;
-
-      case 'wiki_delete':
-        window.dispatchEvent(new CustomEvent('wiki_delete', { detail: data }));
-        break;
-
-      case 'lead_review':
-        setActiveReviews((prev) => ({
-          ...prev,
-          [data.reviewerAgent]: {
-            prUrl: data.prUrl,
-            cardTitle: data.cardTitle,
-            sessionId: data.sessionId,
-          },
-        }));
-        break;
-
-      case 'lead_review_complete':
-        setActiveReviews((prev) => {
-          const next = { ...prev };
-          // Remove by matching agentId — the lead_review event uses agent name as key, but we also check by agentId
-          for (const [key, val] of Object.entries(next)) {
-            if (val.sessionId === data.sessionId) delete next[key];
-          }
-          return next;
-        });
-        break;
-
-      case 'session_created': {
-        // Kanban assign, autonomous dispatch, handoff target session, another
-        // browser tab POST /sessions, etc. — splice into the sidebar without
-        // a full refetch when the session belongs to the active agent.
-        const row = data.session;
-        if (row && data.agentId === activeAgentIdRef.current) {
-          setSessions((prev) => {
-            if (prev.some((s) => s.id === row.id)) return prev;
-            return [row, ...prev];
-          });
-        }
-        break;
-      }
-
-      case 'session_deleted':
-        setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
-        if (activeSessionIdRef.current === data.sessionId) {
-          setActiveSessionId(null);
-        }
-        break;
-
-      case 'session_restored': {
-        // Server broadcast after POST /api/sessions/:id/restore. We re-home
-        // the row in the live list without a full refetch and drop it from
-        // the Archived sidebar section. Tolerant of either identifier
-        // shape because the backend payload carries both.
-        const restoredId = data.sessionId || data.session?.id;
-        if (!restoredId) break;
-        setArchivedSessions((prev) => prev.filter((s) => s.id !== restoredId));
-        if (data.session && data.session.agent_id === activeAgentIdRef.current) {
-          setSessions((prev) => {
-            if (prev.some((s) => s.id === restoredId)) return prev;
-            return [data.session, ...prev];
-          });
-        }
-        break;
-      }
-
-      case 'handoff_start': {
-        // Append the just-created handoff row to the source session's list
-        // so the HandoffCard "Open session" link appears without needing a
-        // refresh. Only relevant when the source session is currently open.
-        if (data.sessionId === activeSessionIdRef.current) {
-          setSessionHandoffs((prev) => {
-            if (prev.some((h) => h.id === data.handoffId)) return prev;
-            return [
-              ...prev,
-              {
-                id: data.handoffId,
-                from_session_id: data.sessionId,
-                to_session_id: data.toSessionId,
-                from_agent_id: data.fromAgentId,
-                to_agent_id: data.toAgentId,
-                note: null,
-                status: 'delivered',
-                error: null,
-              },
-            ];
-          });
-        }
-        break;
-      }
-
-      case 'session_forwarded': {
-        // A session was forwarded somewhere — if the new session belongs to
-        // the currently-active agent, splice it into the sidebar list so the
-        // user sees it without a refresh. The initiating client also calls
-        // onForwarded directly for optimistic navigation.
-        const newSession = data.session;
-        if (newSession && newSession.agent_id === activeAgentIdRef.current) {
-          setSessions((prev) => {
-            if (prev.some((s) => s.id === newSession.id)) return prev;
-            return [newSession, ...prev];
-          });
-        }
-        break;
-      }
-
-      case 'handoff_error': {
-        // Surface the failure on the source session's handoff list so the
-        // UI can render a "Failed — <reason>" chip on the card instead of
-        // the usual "Delivering…" placeholder.
-        if (data.sessionId === activeSessionIdRef.current && data.handoffId) {
-          setSessionHandoffs((prev) => {
-            const existing = prev.find((h) => h.id === data.handoffId);
-            if (existing) {
-              return prev.map((h) =>
-                h.id === data.handoffId
-                  ? { ...h, status: 'failed', error: data.error || 'Handoff failed' }
-                  : h,
-              );
-            }
-            return [
-              ...prev,
-              {
-                id: data.handoffId,
-                from_session_id: data.sessionId,
-                to_session_id: null,
-                from_agent_id: null,
-                to_agent_id: null,
-                note: null,
-                status: 'failed',
-                error: data.error || 'Handoff failed',
-              },
-            ];
-          });
-        }
-        break;
-      }
-    }
-  }, []);
-
-  const { send, connected, reconnecting, wsRef } = useWebSocket(handleWsMessage);
-
-  // Called by SessionTail after it lazy-fetches historical events for a
-  // legacy message. Hoists them into the shared map so subsequent renders
-  // don't refetch.
-  const handleEventsLoaded = useCallback((messageId, events) => {
-    setEventsByMessage((prev) => {
-      if (prev[messageId]) return prev; // already populated by live stream
-      return { ...prev, [messageId]: events };
-    });
-  }, []);
-
   const refreshAgents = useCallback(() => {
     api.getProjects().then((data) => {
       setProjects(data);
@@ -1471,6 +374,1102 @@ export default function App() {
         })),
       );
       setAgents(flat);
+    });
+  }, []);
+
+  // WebSocket handler
+  const handleWsMessage = useCallback(
+    (data) => {
+      // Is this event for the session the user is currently viewing?
+      const forActiveSession = data.sessionId && data.sessionId === activeSessionIdRef.current;
+      // 'message' events use message.session_id rather than top-level sessionId.
+      const msgForActiveSession = data.message?.session_id === activeSessionIdRef.current;
+
+      switch (data.type) {
+        case 'active-tasks-snapshot': {
+          // Rebuild active-task map from server snapshot.
+          const next = {};
+          for (const t of data.tasks || []) {
+            next[t.sessionId] = {
+              messageId: t.messageId,
+              content: t.content || '',
+              engine: t.engine || null,
+              model: t.model || null,
+            };
+          }
+          setActiveTasks(next);
+          // If the currently viewed session has an in-flight task, restore streaming state.
+          const sid = activeSessionIdRef.current;
+          if (sid && next[sid]) {
+            const t = next[sid];
+            setStreamingMsgId(t.messageId);
+            setStreamingContent(t.content);
+            setStreamingEngine(t.engine);
+            setThinking(!t.content);
+          }
+          break;
+        }
+        case 'message':
+          if (data.message.role === 'user' && msgForActiveSession) {
+            setMessages((prev) => [...prev, data.message]);
+          }
+          break;
+        case 'thinking':
+          // Always track the task; only update the visible indicator if it's our session.
+          setActiveTasks((prev) => ({
+            ...prev,
+            [data.sessionId]: {
+              messageId: data.messageId,
+              content: '',
+              engine: data.engine || null,
+              model: data.model || null,
+            },
+          }));
+          if (forActiveSession) {
+            setThinking(true);
+            setStreamingMsgId(data.messageId);
+            setStreamingEngine(data.engine || null);
+            setStreamingContent('');
+          }
+          break;
+        case 'stream':
+          setActiveTasks((prev) => ({
+            ...prev,
+            [data.sessionId]: {
+              ...(prev[data.sessionId] || {}),
+              messageId: data.messageId,
+              content: data.content,
+              engine: data.engine || null,
+            },
+          }));
+          if (forActiveSession) {
+            setThinking(false);
+            setStreamingContent(data.content);
+            setStreamingEngine(data.engine || null);
+          }
+          break;
+        case 'session-event': {
+          // Append a single event to the message's timeline. Dedup by seq in case
+          // a reconnect causes the server to replay something we already have.
+          // The common case is strictly increasing seq, so fast-path the append.
+          const { messageId, seq, event } = data;
+          if (!messageId) break;
+          setEventsByMessage((prev) => {
+            const existing = prev[messageId] || [];
+            const last = existing[existing.length - 1];
+            if (!last || last.seq < seq) {
+              return { ...prev, [messageId]: [...existing, { seq, event }] };
+            }
+            if (existing.some((e) => e.seq === seq)) return prev;
+            const next = [...existing, { seq, event }].sort((a, b) => a.seq - b.seq);
+            return { ...prev, [messageId]: next };
+          });
+
+          // Track subagent spawns and completions per session
+          if (event?.type === 'tool_use' && (event.tool === 'Task' || event.tool === 'Agent')) {
+            const sid = data.sessionId;
+            setSubagents((prev) => {
+              const entry = prev[sid] || {
+                total: 0,
+                running: 0,
+                done: 0,
+                errored: 0,
+                ids: new Set(),
+              };
+              if (entry.ids.has(event.id)) return prev; // dedup
+              const next = {
+                ...entry,
+                total: entry.total + 1,
+                running: entry.running + 1,
+                ids: new Set(entry.ids),
+              };
+              next.ids.add(event.id);
+              return { ...prev, [sid]: next };
+            });
+          }
+          if (event?.type === 'tool_result') {
+            const sid = data.sessionId;
+            setSubagents((prev) => {
+              const entry = prev[sid];
+              if (!entry || !entry.ids.has(event.toolUseId)) return prev;
+              return {
+                ...prev,
+                [sid]: {
+                  ...entry,
+                  running: entry.running - 1,
+                  ...(event.isError ? { errored: entry.errored + 1 } : { done: entry.done + 1 }),
+                },
+              };
+            });
+          }
+
+          // Track rate-limit throttle state per session
+          if (event?.type === 'rate_limit') {
+            const sid = data.sessionId;
+            const retryMs = event.retryAfterMs || 5000;
+            setThrottle((prev) => ({
+              ...prev,
+              [sid]: { active: true, retryAfterMs: retryMs, ts: Date.now() },
+            }));
+            // Auto-clear throttle indicator after retry period elapses
+            setTimeout(() => {
+              setThrottle((prev) => {
+                const entry = prev[sid];
+                if (!entry || !entry.active) return prev;
+                return { ...prev, [sid]: { ...entry, active: false } };
+              });
+            }, retryMs + 1000);
+          }
+          break;
+        }
+        case 'session-progress': {
+          // Drives the in-Hub ProgressPanel for this session. The server sends
+          // one message per progress_step event; we reduce it into the ordered
+          // list keyed by sessionId.
+          const sid = data.sessionId;
+          if (!sid) break;
+          setSessionProgress((prev) => ({
+            ...prev,
+            [sid]: mergeProgressEvent(prev[sid] || [], {
+              step: data.step,
+              status: data.status,
+              startedAt: data.startedAt,
+              finishedAt: data.finishedAt ?? undefined,
+            }),
+          }));
+          break;
+        }
+        case 'done':
+          setActiveTasks((prev) => {
+            const next = { ...prev };
+            delete next[data.sessionId];
+            return next;
+          });
+          // Clear throttle state for completed session
+          setThrottle((prev) => {
+            if (!prev[data.sessionId]) return prev;
+            const next = { ...prev };
+            delete next[data.sessionId];
+            return next;
+          });
+          // Clear subagent tracking for completed session
+          setSubagents((prev) => {
+            if (!prev[data.sessionId]) return prev;
+            const next = { ...prev };
+            delete next[data.sessionId];
+            return next;
+          });
+          if (forActiveSession) {
+            setThinking(false);
+            setStreamingContent('');
+            setStreamingMsgId(null);
+            setStreamingEngine(null);
+            if (data.message) {
+              setMessages((prev) => [...prev, data.message]);
+            }
+          }
+          // Desktop notification + toast for completed background sessions
+          if (!forActiveSession && data.message) {
+            const session = sessionsRef.current.find((s) => s.id === data.sessionId);
+            const agent = session ? agentsRef.current.find((a) => a.id === session.agent_id) : null;
+            const agentName = agent?.name || 'Agent';
+            const preview =
+              typeof data.message.content === 'string'
+                ? data.message.content.replace(/\n+/g, ' ').trim()
+                : undefined;
+            const { title, body } = sessionCompleteNotification({
+              agentName,
+              sessionName: session?.name,
+              preview,
+            });
+            setToasts((prev) => [
+              ...prev,
+              {
+                id: `session-done-${data.sessionId}-${Date.now()}`,
+                type: 'success',
+                message: session?.name || 'Session completed',
+                duration: 10000,
+                onClick: () => focusAgentSessionRef.current?.(session?.agent_id, data.sessionId),
+              },
+            ]);
+            notify({ title, body, type: 'success' });
+          }
+          break;
+        case 'changes_ready': {
+          const alreadyPrompted = !!changesReadyRef.current[data.sessionId];
+          setChangesReady((prev) => ({
+            ...prev,
+            [data.sessionId]: {
+              agentId: data.agentId,
+              branch: data.branch,
+              hasUncommitted: data.hasUncommitted,
+              hasUnpushed: data.hasUnpushed,
+            },
+          }));
+          // Only notify on a fresh prompt — avoids re-firing on reconnect/replay.
+          if (!alreadyPrompted) {
+            const session = sessionsRef.current.find((s) => s.id === data.sessionId);
+            const agent = agentsRef.current.find((a) => a.id === data.agentId);
+            const { title, body } = prReadyNotification({
+              agentName: agent?.name,
+              sessionName: session?.name,
+              branch: data.branch,
+            });
+            setToasts((prev) => [
+              ...prev,
+              {
+                id: `pr-ready-${data.sessionId}-${Date.now()}`,
+                type: 'info',
+                message: session?.name || 'Changes ready for PR',
+                duration: 10000,
+                onClick: () => focusAgentSessionRef.current?.(data.agentId, data.sessionId),
+              },
+            ]);
+            notify({ title, body, type: 'info' });
+          }
+          break;
+        }
+        case 'auto_pr_created': {
+          // Clear changes_ready state when a PR is created (manually or automatically)
+          setChangesReady((prev) => {
+            if (!prev[data.sessionId]) return prev;
+            const next = { ...prev };
+            delete next[data.sessionId];
+            return next;
+          });
+          setCreatePrLogBySession((prev) => {
+            if (!prev[data.sessionId]) return prev;
+            const next = { ...prev };
+            delete next[data.sessionId];
+            return next;
+          });
+          break;
+        }
+        case 'create_pr_log':
+          if (data.sessionId && typeof data.text === 'string') {
+            const maxChars = 250_000;
+            setCreatePrLogBySession((prev) => {
+              const combined = (prev[data.sessionId] || '') + data.text;
+              const tail = combined.length > maxChars ? combined.slice(-maxChars) : combined;
+              return { ...prev, [data.sessionId]: tail };
+            });
+          }
+          break;
+        // Stream finished — keep the accumulated text so the user can read
+        // output after commit_failed / push_failed / pr_failed. Cleared on
+        // success (auto_pr_created), dismiss, or a new Create attempt.
+        case 'create_pr_log_done':
+          break;
+        case 'message_added':
+          // A new message (e.g. the system 'PR created' marker persisted by the
+          // server) was inserted on the backend. If it belongs to the active
+          // session, append it to the timeline — guarded by an id-dedup check
+          // so a double broadcast can never duplicate-render.
+          if (forActiveSession && data.message?.id) {
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === data.message.id)) return prev;
+              return [...prev, data.message];
+            });
+          }
+          break;
+        case 'session-updated':
+          setSessions((prev) =>
+            prev.map((s) => (s.id === data.session.id ? { ...s, name: data.session.name } : s)),
+          );
+          break;
+        case 'session-worktree-detected':
+          // Update the session's git_worktree_detected flag from CLI status line
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === data.sessionId
+                ? { ...s, git_worktree_detected: data.gitWorktree ? 1 : 0 }
+                : s,
+            ),
+          );
+          if (forActiveSession) {
+            setGitWorktreeDetected(data.gitWorktree);
+          }
+          break;
+        case 'error':
+          if (data.sessionId) {
+            setActiveTasks((prev) => {
+              const next = { ...prev };
+              delete next[data.sessionId];
+              return next;
+            });
+          }
+          if (forActiveSession) {
+            setThinking(false);
+            setStreamingContent('');
+            setStreamingMsgId(null);
+            setStreamingEngine(null);
+            if (data.error) {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: data.messageId || `err-${Date.now()}`,
+                  role: 'assistant',
+                  content: `Error: ${data.error}`,
+                  created_at: new Date().toISOString(),
+                },
+              ]);
+            }
+          }
+          break;
+        case 'interrupted':
+          if (forActiveSession) {
+            setThinking(false);
+            setStreamingContent('');
+            setStreamingMsgId(null);
+            setStreamingEngine(null);
+          }
+          break;
+
+        // ─── Conference Room events ─────────────────────────────
+        case 'room_message':
+          if (data.roomId === activeRoomIdRef.current) {
+            setRoomMessages((prev) => [...prev, data.message]);
+          }
+          break;
+        case 'room_round_start':
+          if (data.roomId === activeRoomIdRef.current) {
+            setRoomProcessing(true);
+          }
+          break;
+        case 'room_thinking':
+          if (data.roomId === activeRoomIdRef.current) {
+            setRoomStreaming(null);
+            setRoomThinking({
+              agentId: data.agentId,
+              agentName: data.agentName,
+              agentColor: data.agentColor,
+            });
+          }
+          break;
+        case 'room_stream':
+          if (data.roomId === activeRoomIdRef.current) {
+            setRoomThinking(null);
+            setRoomStreaming({
+              agentId: data.agentId,
+              agentName: data.agentName,
+              agentColor: data.agentColor,
+              messageId: data.messageId,
+              content: data.content,
+            });
+          }
+          break;
+        case 'room_agent_done':
+          if (data.roomId === activeRoomIdRef.current) {
+            setRoomThinking(null);
+            setRoomStreaming(null);
+            setRoomMessages((prev) => [...prev, data.message]);
+          }
+          break;
+        case 'room_agent_error':
+          if (data.roomId === activeRoomIdRef.current) {
+            setRoomThinking(null);
+            setRoomStreaming(null);
+            setRoomMessages((prev) => [
+              ...prev,
+              {
+                id: data.messageId || `err-${Date.now()}`,
+                room_id: data.roomId,
+                role: 'assistant',
+                agent_id: data.agentId,
+                agent_name: data.agentName,
+                agent_color: null,
+                content: `Error: ${data.error}`,
+                created_at: new Date().toISOString(),
+              },
+            ]);
+          }
+          break;
+        case 'room_queue_updated':
+          if (data.roomId === activeRoomIdRef.current) {
+            setRoomQueueLength(data.queue?.length || data.queueLength || 0);
+          }
+          break;
+        case 'room_round_done':
+        case 'room_cancelled':
+          if (data.roomId === activeRoomIdRef.current) {
+            // Don't reset roomProcessing if there are queued messages about to drain —
+            // prevents UI flicker between queued message rounds (Bugbot fix)
+            if (!data.queueLength) {
+              setRoomProcessing(false);
+            }
+            setRoomThinking(null);
+            setRoomStreaming(null);
+          }
+          break;
+
+        // ─── Claude Design events ────────────────────────────────
+        case 'design_created':
+          // Broadcast from any client creating a design — refresh list
+          if (data.design) {
+            setDesigns((prev) => {
+              if (prev.some((d) => d.id === data.design.id)) return prev;
+              return [data.design, ...prev];
+            });
+          }
+          break;
+        case 'design_deleted':
+          setDesigns((prev) => prev.filter((d) => d.id !== data.designId));
+          if (activeDesignIdRef.current === data.designId) {
+            setActiveDesignId(null);
+            setDesignMessages([]);
+            setDesignStreaming(null);
+            setDesignThinking(false);
+            setDesignProcessing(false);
+            setCurrentView('designs');
+          }
+          break;
+        case 'design_updated':
+          // Fires once per assistant turn — bump the iframe reload token for
+          // the active design so the canvas re-fetches the new files.
+          if (data.designId === activeDesignIdRef.current) {
+            setDesignReloadToken((t) => t + 1);
+            setDesignStreaming(null);
+            setDesignThinking(false);
+            setDesignProcessing(false);
+          }
+          // Also refresh design row metadata (updated_at) in the list.
+          setDesigns((prev) =>
+            prev.map((d) =>
+              d.id === data.designId ? { ...d, updated_at: new Date().toISOString() } : d,
+            ),
+          );
+          break;
+        case 'design_metadata_updated':
+          if (data.design?.id) {
+            setDesigns((prev) =>
+              prev.map((d) => (d.id === data.design.id ? { ...d, ...data.design } : d)),
+            );
+          }
+          break;
+        case 'design_message_added':
+          if (data.designId === activeDesignIdRef.current && data.message) {
+            // Streaming token deltas arrive as the same messageId with growing content;
+            // the final message also arrives as 'design_message_added'. Treat assistant
+            // deltas by keeping a separate streaming slot and flushing on role=='assistant'
+            // with a final flag (or when the message already exists in the list).
+            const msg = data.message;
+            if (msg.role === 'assistant' && msg.streaming) {
+              setDesignThinking(false);
+              setDesignStreaming({ messageId: msg.id, content: msg.content || '' });
+              setDesignProcessing(true);
+              break;
+            }
+            setDesignStreaming(null);
+            setDesignThinking(false);
+            setDesignMessages((prev) => {
+              if (prev.some((m) => m.id === msg.id)) {
+                return prev.map((m) => (m.id === msg.id ? msg : m));
+              }
+              return [...prev, msg];
+            });
+            // Keep processing=true until design_updated closes the turn; a user
+            // message shouldn't flip processing off.
+            if (msg.role === 'assistant') {
+              setDesignProcessing(false);
+            }
+          }
+          break;
+
+        case 'design_cancelled':
+          if (data.designId === activeDesignIdRef.current) {
+            setDesignStreaming(null);
+            setDesignThinking(false);
+            setDesignProcessing(false);
+          }
+          break;
+        case 'design_thinking':
+          if (data.designId === activeDesignIdRef.current) {
+            setDesignThinking(true);
+            setDesignProcessing(true);
+          }
+          break;
+        case 'design_stream':
+          // Server emits cumulative stdout on every chunk. As soon as any
+          // partial text arrives, we flip from the "thinking…" dot to the
+          // streaming view so the user sees progress. Ignored when the event
+          // is for a design the user has since navigated away from.
+          if (data.designId === activeDesignIdRef.current) {
+            setDesignThinking(false);
+            setDesignProcessing(true);
+            setDesignStreaming({ content: data.content || '' });
+          }
+          break;
+
+        // ─── Delegation events ────────────────────────────────
+        case 'delegation_start':
+          if (data.sessionId === activeSessionIdRef.current) {
+            setDelegations((prev) => ({
+              ...prev,
+              [data.sessionId]: {
+                parentMessageId: data.parentMessageId,
+                tasks: data.tasks.map((t) => ({
+                  delegationId: null,
+                  agentId: t.agentId,
+                  agentName: t.agentId,
+                  agentColor: null,
+                  task: t.task,
+                  status: 'pending',
+                  content: '',
+                  output: null,
+                  error: null,
+                })),
+              },
+            }));
+          }
+          break;
+        case 'delegation_thinking':
+          if (data.sessionId === activeSessionIdRef.current) {
+            setDelegations((prev) => {
+              const existing = prev[data.sessionId];
+              if (!existing) return prev;
+              return {
+                ...prev,
+                [data.sessionId]: {
+                  ...existing,
+                  tasks: existing.tasks.map((t) =>
+                    t.agentId === data.agentId
+                      ? {
+                          ...t,
+                          delegationId: data.delegationId,
+                          agentName: data.agentName,
+                          agentColor: data.agentColor,
+                          status: 'running',
+                        }
+                      : t,
+                  ),
+                },
+              };
+            });
+          }
+          break;
+        case 'delegation_stream':
+          if (data.sessionId === activeSessionIdRef.current) {
+            setDelegations((prev) => {
+              const existing = prev[data.sessionId];
+              if (!existing) return prev;
+              return {
+                ...prev,
+                [data.sessionId]: {
+                  ...existing,
+                  tasks: existing.tasks.map((t) =>
+                    t.agentId === data.agentId
+                      ? {
+                          ...t,
+                          agentName: data.agentName,
+                          agentColor: data.agentColor,
+                          content: data.content,
+                          status: 'running',
+                        }
+                      : t,
+                  ),
+                },
+              };
+            });
+          }
+          break;
+        case 'delegation_agent_done':
+          if (data.sessionId === activeSessionIdRef.current) {
+            setDelegations((prev) => {
+              const existing = prev[data.sessionId];
+              if (!existing) return prev;
+              return {
+                ...prev,
+                [data.sessionId]: {
+                  ...existing,
+                  tasks: existing.tasks.map((t) =>
+                    t.agentId === data.agentId
+                      ? { ...t, status: 'done', output: data.output, content: '' }
+                      : t,
+                  ),
+                },
+              };
+            });
+          }
+          break;
+        case 'delegation_agent_error':
+          if (data.sessionId === activeSessionIdRef.current) {
+            setDelegations((prev) => {
+              const existing = prev[data.sessionId];
+              if (!existing) return prev;
+              return {
+                ...prev,
+                [data.sessionId]: {
+                  ...existing,
+                  tasks: existing.tasks.map((t) =>
+                    t.agentId === data.agentId ? { ...t, status: 'error', error: data.error } : t,
+                  ),
+                },
+              };
+            });
+          }
+          break;
+        case 'delegation_round_done':
+          // Delegation complete — keep the data for display but mark as done
+          break;
+        case 'delegation_cancelled':
+          if (data.sessionId === activeSessionIdRef.current) {
+            setDelegations((prev) => {
+              const existing = prev[data.sessionId];
+              if (!existing) return prev;
+              return {
+                ...prev,
+                [data.sessionId]: {
+                  ...existing,
+                  tasks: existing.tasks.map((t) =>
+                    t.status === 'running' || t.status === 'pending'
+                      ? { ...t, status: 'cancelled' }
+                      : t,
+                  ),
+                },
+              };
+            });
+          }
+          break;
+        case 'delegation_error': {
+          const delegationMsg = `Delegation failed: ${data.error}`;
+          if (data.sessionId === activeSessionIdRef.current) {
+            setToasts((prev) => [
+              ...prev,
+              {
+                id: `delegation-err-${Date.now()}`,
+                type: 'error',
+                message: delegationMsg,
+                duration: 10000,
+              },
+            ]);
+          }
+          notify({ title: 'Delegation Error', body: delegationMsg, type: 'error' });
+          break;
+        }
+
+        case 'sessions_resuming': {
+          const count = data.count || 0;
+          const toast = {
+            id: `sessions-resuming-${Date.now()}`,
+            type: 'info',
+            message: `Resuming ${count} interrupted session${count !== 1 ? 's' : ''} after server restart…`,
+            duration: 10000,
+          };
+          setToasts((prev) => [...prev, toast]);
+          break;
+        }
+        case 'analyze-progress':
+        case 'analyze-complete':
+        case 'analyze-error':
+          window.dispatchEvent(new CustomEvent('analyze-ws', { detail: data }));
+          break;
+        case 'clone-progress':
+        case 'clone-complete':
+        case 'clone-error':
+          window.dispatchEvent(new CustomEvent('clone-ws', { detail: data }));
+          break;
+        case 'task_complete': {
+          const taskStatus = data.status === 'done' ? 'success' : 'error';
+          const taskMsg =
+            data.status === 'done'
+              ? `Background task completed${data.preview ? ': ' + data.preview.substring(0, 80) + '...' : ''}`
+              : 'Background task failed';
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: `task-${data.taskId}-${Date.now()}`,
+              type: taskStatus,
+              message: taskMsg,
+              duration: 10000,
+              onClick: data.sessionId
+                ? () => {
+                    const row = sessionsRef.current.find((s) => s.id === data.sessionId);
+                    focusAgentSessionRef.current?.(row?.agent_id, data.sessionId);
+                  }
+                : undefined,
+            },
+          ]);
+          notify({
+            title: data.status === 'done' ? 'Task Complete' : 'Task Failed',
+            body: taskMsg,
+            type: taskStatus,
+          });
+          window.dispatchEvent(new CustomEvent('task-complete', { detail: data }));
+          break;
+        }
+        // ── Message queue events ────────────────────────────────────
+        case 'queue_updated':
+          setMessageQueues((prev) => ({
+            ...prev,
+            [data.sessionId]: data.queue,
+          }));
+          break;
+
+        case 'queue_item_processing':
+          // Mark the queued message as no longer queued (it's being processed now).
+          // The 'thinking' event that follows will handle the processing indicator.
+          setMessageQueues((prev) => {
+            const q = (prev[data.sessionId] || []).filter((m) => m.id !== data.messageId);
+            return { ...prev, [data.sessionId]: q };
+          });
+          break;
+
+        case 'queue_item_edited':
+          // Update the message content in local state to reflect the edit
+          setMessages((prev) =>
+            prev.map((m) => (m.id === data.messageId ? { ...m, content: data.content } : m)),
+          );
+          break;
+
+        case 'cron_session_update':
+          api
+            .getCronSessions()
+            .then(setCronSessions)
+            .catch(() => {});
+          break;
+
+        case 'kanban_update':
+          setKanbanRefreshKey((k) => k + 1);
+          break;
+
+        case 'projects_updated':
+          // Server added/changed an agent or project (e.g. GitHub App auto-setup
+          // seeded a Reviewer agent). Re-fetch so the sidebar reflects it
+          // without requiring a page refresh.
+          refreshAgents();
+          break;
+
+        case 'dispatch_failure': {
+          const dispatchMsg = `Dispatch failed (${data.source}): ${data.cardTitle} — ${data.reason}`;
+          const toast = {
+            id: `dispatch-failure-${Date.now()}`,
+            type: 'error',
+            message: dispatchMsg,
+            duration: 10000,
+          };
+          setToasts((prev) => [...prev, toast]);
+          notify({ title: 'Dispatch Failure', body: dispatchMsg, type: 'error' });
+          // Also refresh kanban to show the new card comment
+          setKanbanRefreshKey((k) => k + 1);
+          break;
+        }
+
+        // ── Ticket lifecycle notifications ─────────────────────────
+        case 'card_moved': {
+          const colLower = (data.columnName || '').toLowerCase();
+          const navigateCardToast = () => {
+            if (data.sessionId && data.agentId) {
+              focusAgentSessionRef.current?.(data.agentId, data.sessionId);
+            } else if (data.projectId) {
+              setCurrentView(`kanban:${data.projectId}`);
+              setSidebarOpen(false);
+            }
+          };
+          const canNavigateCardToast = Boolean((data.sessionId && data.agentId) || data.projectId);
+          if (colLower === 'in progress') {
+            const { title, body } = cardStartedNotification(data);
+            setToasts((prev) => [
+              ...prev,
+              {
+                id: `card-started-${data.cardId}-${Date.now()}`,
+                type: 'info',
+                message: body,
+                duration: 8000,
+                onClick: canNavigateCardToast ? navigateCardToast : undefined,
+              },
+            ]);
+            notify({ title, body, type: 'info' });
+          } else if (colLower === 'review') {
+            const { title, body } = cardReviewNotification(data);
+            setToasts((prev) => [
+              ...prev,
+              {
+                id: `card-review-${data.cardId}-${Date.now()}`,
+                type: 'info',
+                message: body,
+                duration: 8000,
+                onClick: canNavigateCardToast ? navigateCardToast : undefined,
+              },
+            ]);
+            notify({ title, body, type: 'info' });
+          }
+          break;
+        }
+
+        case 'webhook_pr_merged': {
+          const { title, body } = prMergedNotification(data);
+          const navigatePrMergedToast = () => {
+            if (data.sessionId && data.agentId) {
+              focusAgentSessionRef.current?.(data.agentId, data.sessionId);
+            } else if (data.prUrl) {
+              window.open(String(data.prUrl), '_blank', 'noopener,noreferrer');
+            } else if (data.projectId) {
+              setPullsProjectId(data.projectId);
+              setCurrentView('pulls');
+              setSidebarOpen(false);
+            }
+          };
+          const canNavigatePrMerged = Boolean(
+            (data.sessionId && data.agentId) || data.prUrl || data.projectId,
+          );
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: `pr-merged-${data.prNumber}-${Date.now()}`,
+              type: 'success',
+              message: body,
+              duration: 10000,
+              onClick: canNavigatePrMerged ? navigatePrMergedToast : undefined,
+            },
+          ]);
+          notify({ title, body, type: 'success' });
+          setKanbanRefreshKey((k) => k + 1);
+          break;
+        }
+
+        // ── Thread notifications ─────────────────────────────────
+        case 'thread_created': {
+          // Live-update ThreadList if viewing threads for this project
+          if (threadListRef.current && threadsProjectIdRef.current === data.projectId) {
+            threadListRef.current.addThread(data.thread);
+          }
+          const { title, body } = threadCreatedNotification({
+            threadName: data.thread.name,
+            threadType: data.thread.type,
+          });
+          setToasts((prev) => [
+            ...prev,
+            {
+              id: `thread-created-${data.thread.id}-${Date.now()}`,
+              type: 'info',
+              message: body,
+              duration: 6000,
+            },
+          ]);
+          notify({ title, body, type: 'info' });
+          break;
+        }
+
+        case 'thread_entry_created': {
+          const isError = data.entry?.content?.startsWith('ERROR:');
+          // Live-update ThreadView if viewing this thread
+          if (threadViewRef.current && activeThreadIdRef.current === data.threadId) {
+            threadViewRef.current.addEntry(data.entry);
+          } else {
+            // Increment unread count for the project (we need to find it from data)
+            // The broadcast includes threadId — look up the project via thread cache
+            // For simplicity, increment for all projects that have threads view open or track globally
+            setUnreadThreadCounts((prev) => {
+              const pid = data.projectId;
+              if (!pid) return prev;
+              return { ...prev, [pid]: (prev[pid] || 0) + 1 };
+            });
+          }
+          // Build notification — need thread name which the server should include
+          const threadName = data.threadName || 'Thread';
+          const threadType = data.threadType || 'cron';
+          const preview = data.entry?.content?.replace(/\n+/g, ' ').trim();
+          const { title, body } = threadEntryNotification({
+            threadName,
+            threadType,
+            preview,
+            isError,
+          });
+          // Only toast for errors or when not actively viewing the thread
+          if (
+            isError ||
+            activeThreadIdRef.current !== data.threadId ||
+            currentViewRef.current !== 'threads'
+          ) {
+            setToasts((prev) => [
+              ...prev,
+              {
+                id: `thread-entry-${data.entry.id}-${Date.now()}`,
+                type: isError ? 'error' : 'info',
+                message: body,
+                duration: isError ? 10000 : 6000,
+              },
+            ]);
+          }
+          notify({ title, body, type: isError ? 'error' : 'info' });
+          break;
+        }
+
+        case 'thread_deleted': {
+          // Live-update ThreadList
+          if (threadListRef.current && threadsProjectIdRef.current === data.projectId) {
+            threadListRef.current.removeThread(data.threadId);
+          }
+          // If viewing the deleted thread, go back to list
+          if (activeThreadIdRef.current === data.threadId) {
+            setActiveThreadId(null);
+            setActiveThread(null);
+          }
+          break;
+        }
+
+        case 'wiki_update':
+          window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
+          break;
+
+        case 'wiki_delete':
+          window.dispatchEvent(new CustomEvent('wiki_delete', { detail: data }));
+          break;
+
+        case 'lead_review':
+          setActiveReviews((prev) => ({
+            ...prev,
+            [data.reviewerAgent]: {
+              prUrl: data.prUrl,
+              cardTitle: data.cardTitle,
+              sessionId: data.sessionId,
+            },
+          }));
+          break;
+
+        case 'lead_review_complete':
+          setActiveReviews((prev) => {
+            const next = { ...prev };
+            // Remove by matching agentId — the lead_review event uses agent name as key, but we also check by agentId
+            for (const [key, val] of Object.entries(next)) {
+              if (val.sessionId === data.sessionId) delete next[key];
+            }
+            return next;
+          });
+          break;
+
+        case 'session_created': {
+          // Kanban assign, autonomous dispatch, handoff target session, another
+          // browser tab POST /sessions, etc. — splice into the sidebar without
+          // a full refetch when the session belongs to the active agent.
+          const row = data.session;
+          if (row && data.agentId === activeAgentIdRef.current) {
+            setSessions((prev) => {
+              if (prev.some((s) => s.id === row.id)) return prev;
+              return [row, ...prev];
+            });
+          }
+          break;
+        }
+
+        case 'session_deleted':
+          setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
+          if (activeSessionIdRef.current === data.sessionId) {
+            setActiveSessionId(null);
+          }
+          break;
+
+        case 'session_restored': {
+          // Server broadcast after POST /api/sessions/:id/restore. We re-home
+          // the row in the live list without a full refetch and drop it from
+          // the Archived sidebar section. Tolerant of either identifier
+          // shape because the backend payload carries both.
+          const restoredId = data.sessionId || data.session?.id;
+          if (!restoredId) break;
+          setArchivedSessions((prev) => prev.filter((s) => s.id !== restoredId));
+          if (data.session && data.session.agent_id === activeAgentIdRef.current) {
+            setSessions((prev) => {
+              if (prev.some((s) => s.id === restoredId)) return prev;
+              return [data.session, ...prev];
+            });
+          }
+          break;
+        }
+
+        case 'handoff_start': {
+          // Append the just-created handoff row to the source session's list
+          // so the HandoffCard "Open session" link appears without needing a
+          // refresh. Only relevant when the source session is currently open.
+          if (data.sessionId === activeSessionIdRef.current) {
+            setSessionHandoffs((prev) => {
+              if (prev.some((h) => h.id === data.handoffId)) return prev;
+              return [
+                ...prev,
+                {
+                  id: data.handoffId,
+                  from_session_id: data.sessionId,
+                  to_session_id: data.toSessionId,
+                  from_agent_id: data.fromAgentId,
+                  to_agent_id: data.toAgentId,
+                  note: null,
+                  status: 'delivered',
+                  error: null,
+                },
+              ];
+            });
+          }
+          break;
+        }
+
+        case 'session_forwarded': {
+          // A session was forwarded somewhere — if the new session belongs to
+          // the currently-active agent, splice it into the sidebar list so the
+          // user sees it without a refresh. The initiating client also calls
+          // onForwarded directly for optimistic navigation.
+          const newSession = data.session;
+          if (newSession && newSession.agent_id === activeAgentIdRef.current) {
+            setSessions((prev) => {
+              if (prev.some((s) => s.id === newSession.id)) return prev;
+              return [newSession, ...prev];
+            });
+          }
+          break;
+        }
+
+        case 'handoff_error': {
+          // Surface the failure on the source session's handoff list so the
+          // UI can render a "Failed — <reason>" chip on the card instead of
+          // the usual "Delivering…" placeholder.
+          if (data.sessionId === activeSessionIdRef.current && data.handoffId) {
+            setSessionHandoffs((prev) => {
+              const existing = prev.find((h) => h.id === data.handoffId);
+              if (existing) {
+                return prev.map((h) =>
+                  h.id === data.handoffId
+                    ? { ...h, status: 'failed', error: data.error || 'Handoff failed' }
+                    : h,
+                );
+              }
+              return [
+                ...prev,
+                {
+                  id: data.handoffId,
+                  from_session_id: data.sessionId,
+                  to_session_id: null,
+                  from_agent_id: null,
+                  to_agent_id: null,
+                  note: null,
+                  status: 'failed',
+                  error: data.error || 'Handoff failed',
+                },
+              ];
+            });
+          }
+          break;
+        }
+      }
+    },
+    [notify, refreshAgents],
+  );
+
+  const { send, connected, reconnecting, wsRef } = useWebSocket(handleWsMessage);
+
+  const handleCancel = useCallback(() => {
+    if (activeSessionId) {
+      send({ type: 'cancel', sessionId: activeSessionId });
+      setThinking(false);
+      setStreamingContent('');
+      setStreamingMsgId(null);
+    }
+  }, [activeSessionId, send]);
+
+  // Called by SessionTail after it lazy-fetches historical events for a
+  // legacy message. Hoists them into the shared map so subsequent renders
+  // don't refetch.
+  const handleEventsLoaded = useCallback((messageId, events) => {
+    setEventsByMessage((prev) => {
+      if (prev[messageId]) return prev; // already populated by live stream
+      return { ...prev, [messageId]: events };
     });
   }, []);
 
@@ -1512,6 +1511,11 @@ export default function App() {
         }
       } catch {} // server may not have endpoint yet
 
+      // Main chrome (chat + sidebar frame) can render; sidebar shows loading until
+      // projects and sessions are ready.
+      setInitializing(false);
+      setProjectDataReady(false);
+
       // Step 3: Load projects (after org switch is confirmed)
       try {
         const data = await api.getProjects();
@@ -1536,79 +1540,115 @@ export default function App() {
       } catch (err) {
         console.error('[Init] Failed to load projects:', err);
       } finally {
-        setInitializing(false);
+        setProjectDataReady(true);
       }
     };
 
     init();
+    // Mount-only: org + projects bootstrap. Intentionally not re-running on org helper identities.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Load sessions when agent changes
   useEffect(() => {
-    if (!activeAgentId) return;
+    if (!projectDataReady) {
+      return;
+    }
+    if (!activeAgentId) {
+      setSessionsListLoading(false);
+      return;
+    }
+
+    const agentId = activeAgentId;
     const targetSessionId = pendingSessionIdRef.current;
     pendingSessionIdRef.current = null;
+
+    setSessionsListLoading(true);
+    let cancelled = false;
 
     // Fetch archived (soft-deleted within 7-day window) in parallel so the
     // sidebar "Archived" section is ready as soon as the live list renders.
     api
-      .getArchivedSessions(activeAgentId)
-      .then((rows) => setArchivedSessions(Array.isArray(rows) ? rows : []))
-      .catch(() => setArchivedSessions([]));
+      .getArchivedSessions(agentId)
+      .then((rows) => {
+        if (cancelled) return;
+        setArchivedSessions(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setArchivedSessions([]);
+      });
 
-    api.getSessions(activeAgentId).then((data) => {
-      setSessions(data);
+    api
+      .getSessions(agentId)
+      .then((data) => {
+        if (cancelled) return;
+        setSessions(data);
 
-      // Hydrate changesReady from persisted session data so the PR button
-      // survives page refreshes and WebSocket reconnects.
-      const persisted = {};
-      for (const s of data) {
-        if (s.changes_ready) {
-          try {
-            persisted[s.id] =
-              typeof s.changes_ready === 'string' ? JSON.parse(s.changes_ready) : s.changes_ready;
-          } catch {
-            /* ignore malformed JSON */
+        // Hydrate changesReady from persisted session data so the PR button
+        // survives page refreshes and WebSocket reconnects.
+        const persisted = {};
+        for (const s of data) {
+          if (s.changes_ready) {
+            try {
+              persisted[s.id] =
+                typeof s.changes_ready === 'string' ? JSON.parse(s.changes_ready) : s.changes_ready;
+            } catch {
+              /* ignore malformed JSON */
+            }
           }
         }
-      }
-      if (Object.keys(persisted).length > 0) {
-        setChangesReady((prev) => ({ ...prev, ...persisted }));
-      }
+        if (Object.keys(persisted).length > 0) {
+          setChangesReady((prev) => ({ ...prev, ...persisted }));
+        }
 
-      // If we were explicitly navigated to a specific session (e.g. from kanban
-      // assign), honour that session ID instead of defaulting to the first one.
-      const target = targetSessionId
-        ? data.find((s) => s.id === targetSessionId) || data[0]
-        : data[0];
+        // If we were explicitly navigated to a specific session (e.g. from kanban
+        // assign), honour that session ID instead of defaulting to the first one.
+        const target = targetSessionId
+          ? data.find((s) => s.id === targetSessionId) || data[0]
+          : data[0];
 
-      if (target) {
-        setActiveSessionId(target.id);
-        setSessionEngine(target.engine || activeAgent?.engine || 'claude-code');
-        setSessionModel(
-          target.model ||
-            modelConfig?.engineDefaultModels?.[
-              target.engine || activeAgent?.engine || 'claude-code'
-            ] ||
-            'claude-opus-4-7',
-        );
-        setSessionWorktree(isSessionWorktreeEnabled(target));
-        setGitWorktreeDetected(
-          target.git_worktree_detected != null ? target.git_worktree_detected === 1 : null,
-        );
-        setSessionAskMode(isSessionAskModeEnabled(target));
-      } else {
-        setActiveSessionId(null);
-        setMessages([]);
-        const fallbackEngine = agents.find((a) => a.id === activeAgentId)?.engine || 'claude-code';
-        setSessionEngine(fallbackEngine);
-        setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-7');
-        setSessionWorktree(true);
-        setGitWorktreeDetected(null);
-        setSessionAskMode(false);
-      }
-    });
-  }, [activeAgentId, modelConfig]);
+        if (target) {
+          setActiveSessionId(target.id);
+          const ag = agents.find((a) => a.id === agentId);
+          setSessionEngine(target.engine || ag?.engine || 'claude-code');
+          setSessionModel(
+            target.model ||
+              modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
+              'claude-opus-4-7',
+          );
+          setSessionWorktree(isSessionWorktreeEnabled(target));
+          setGitWorktreeDetected(
+            target.git_worktree_detected != null ? target.git_worktree_detected === 1 : null,
+          );
+          setSessionAskMode(isSessionAskModeEnabled(target));
+        } else {
+          setActiveSessionId(null);
+          setMessages([]);
+          const fallbackEngine = agents.find((a) => a.id === agentId)?.engine || 'claude-code';
+          setSessionEngine(fallbackEngine);
+          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-7');
+          setSessionWorktree(true);
+          setGitWorktreeDetected(null);
+          setSessionAskMode(false);
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('[Sessions] Failed to load sessions:', err);
+        setSessions([]);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSessionsListLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- .then() uses `activeAgent` for defaults; agents[] churn should not re-fetch sessions
+  }, [activeAgentId, modelConfig, projectDataReady]);
 
   // Load skills for slash-command autocomplete when agent changes
   useEffect(() => {
@@ -1616,11 +1656,15 @@ export default function App() {
       setSkills([]);
       return;
     }
+    if (!projectDataReady) {
+      setSkills([]);
+      return;
+    }
     api
       .getSkills(activeAgentId)
       .then(setSkills)
       .catch(() => setSkills([]));
-  }, [activeAgentId]);
+  }, [activeAgentId, projectDataReady]);
 
   // Update session engine/model when session changes
   useEffect(() => {
@@ -1817,6 +1861,7 @@ export default function App() {
       setStreamingMsgId(null);
       setStreamingEngine(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run only on session change; `activeTasks` updates stream case-by-case
   }, [activeSessionId]);
 
   // Keyboard shortcuts
@@ -1838,7 +1883,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showSwitcher, thinking, streamingContent]);
+  }, [showSwitcher, thinking, streamingContent, handleCancel]);
 
   // ─── Room data loading ───────────────────────────────────
   const refreshRooms = useCallback(() => {
@@ -2149,15 +2194,6 @@ export default function App() {
     setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, name: newName } : s)));
   };
 
-  const handleCancel = () => {
-    if (activeSessionId) {
-      send({ type: 'cancel', sessionId: activeSessionId });
-      setThinking(false);
-      setStreamingContent('');
-      setStreamingMsgId(null);
-    }
-  };
-
   const handleDequeue = (messageId) => {
     if (activeSessionId) {
       send({ type: 'dequeue', sessionId: activeSessionId, messageId });
@@ -2341,6 +2377,8 @@ export default function App() {
 
   const isMac = window.electronAPI?.platform === 'darwin';
 
+  const sidebarDataLoading = !projectDataReady || sessionsListLoading;
+
   // Version-check for the "update available" modal. We fetch /api/health once
   // on mount to learn the server's version, then compare against the client
   // bundle's VITE_APP_VERSION inside useVersionCheck. Electron-only; a no-op
@@ -2446,6 +2484,7 @@ export default function App() {
           }`}
         >
           <Sidebar
+            isLoading={sidebarDataLoading}
             projects={projects}
             agents={agents}
             activeAgentId={activeAgentId}
@@ -2716,8 +2755,17 @@ export default function App() {
                     {messages.length === 0 && !thinking && !streamingContent && (
                       <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
                         <MessageCircle size={48} className="mb-4 text-gray-600" />
-                        <p className="text-lg">Start a conversation</p>
-                        {activeAgent && <p className="text-sm mt-1">with {activeAgent.name}</p>}
+                        {sessionsListLoading && projectDataReady && activeAgent ? (
+                          <>
+                            <p className="text-lg">Loading conversation</p>
+                            <p className="text-sm mt-1 text-gray-500">Sessions are syncing…</p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-lg">Start a conversation</p>
+                            {activeAgent && <p className="text-sm mt-1">with {activeAgent.name}</p>}
+                          </>
+                        )}
                         <p className="text-xs text-gray-700 mt-4 hidden sm:block">
                           Ctrl+K to switch agents · Esc to cancel
                         </p>
@@ -2911,7 +2959,7 @@ export default function App() {
                 <MessageInput
                   onSend={handleSend}
                   onCancel={handleCancel}
-                  disabled={!activeAgentId || !connected}
+                  disabled={!activeAgent || !connected}
                   isProcessing={isProcessing}
                   queueLength={(messageQueues[activeSessionId] || []).length}
                   agentColor={activeAgent?.color}

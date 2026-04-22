@@ -406,9 +406,13 @@ describe('buildEnrichedPrompt — server owns PR creation', () => {
     // Create a git repo with a GitHub remote so isGitHubConnected = true
     mkdirSync(gitTmp, { recursive: true });
     const { execSync } = require('child_process');
-    execSync('git init && git remote add origin https://github.com/test/repo.git', {
-      cwd: gitTmp,
-    });
+    execSync(
+      'git init --initial-branch=main && git remote add origin https://github.com/test/repo.git',
+      {
+        cwd: gitTmp,
+        stdio: 'pipe',
+      },
+    );
   });
 
   afterEach(() => {
