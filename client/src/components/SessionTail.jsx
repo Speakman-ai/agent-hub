@@ -619,7 +619,7 @@ export function DiffView({ tool, input }) {
   );
 }
 
-function ToolCard({ use, result, defaultOpen }) {
+export function ToolCard({ use, result, defaultOpen }) {
   const [open, setOpen] = useState(defaultOpen ?? false);
   const style = TOOL_STYLES[use.tool] || {
     color: 'border-gray-700/60 bg-gray-900/40',
@@ -630,11 +630,29 @@ function ToolCard({ use, result, defaultOpen }) {
   const stillRunning = !result;
   const showDiff = isFileModifyingTool(use.tool);
 
-  // File-modifying tools always show compact diff (visible in both compact and verbose mode)
-  if (showDiff && !errored) {
+  // File-modifying tools: always show the diff from the latest tool input. When
+  // the CLI flags `is_error`, we still render the diff (what was attempted)
+  // plus the error body below — the old `!errored` early return hid the diff
+  // entirely, so only the collapsible error card updated (Electron bug report).
+  if (showDiff) {
     return (
-      <div className={`border rounded-lg overflow-hidden ${style.color}`}>
+      <div
+        className={`border rounded-lg overflow-hidden ${style.color} ${errored ? 'border-red-700/80' : ''}`}
+      >
         <DiffView tool={use.tool} input={use.input} />
+        {stillRunning && (
+          <div className="flex items-center gap-2 px-2 py-1 border-t border-black/20 bg-black/10">
+            <span className="text-emerald-400 text-[10px] animate-pulse">running…</span>
+          </div>
+        )}
+        {result && errored && (
+          <div className="border-t border-red-900/50 bg-red-950/25 px-2 py-2">
+            <div className="text-[10px] text-red-400 uppercase tracking-wide mb-1">error</div>
+            <pre className="text-xs text-red-200 bg-red-950/40 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-96">
+              {result.output || '(empty)'}
+            </pre>
+          </div>
+        )}
       </div>
     );
   }

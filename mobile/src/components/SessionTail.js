@@ -245,20 +245,34 @@ function SessionTail({
             const toolColor = TOOL_COLORS[block.tool] || colors.gray400;
             const hasResult = block.result;
             const isError = block.result?.isError;
-            const showDiff = isFileModifyingTool(block.tool) && !isError && block.input;
+            const showDiffLayout = isFileModifyingTool(block.tool) && block.input;
 
             // For Edit/Write: render the diff card inline (always visible),
-            // matching the web behaviour. Collapsed rows are unhelpful when
-            // the whole point of the card is to see the change.
-            if (showDiff) {
+            // matching the web behaviour. Keep the diff visible when the tool
+            // result is an error so the attempted change and the CLI message stay
+            // aligned (same fix as web SessionTail ToolCard).
+            if (showDiffLayout) {
               return (
-                <View key={idx} style={styles.diffWrapper}>
+                <View key={idx} style={[styles.diffWrapper, isError && styles.diffWrapperError]}>
                   <View style={styles.diffHeader}>
                     <View style={[styles.toolStripe, { backgroundColor: toolColor }]} />
                     <Text style={[styles.toolName, { color: toolColor }]}>{block.tool}</Text>
                     {!hasResult && <Text style={styles.runningBadge}>running…</Text>}
+                    {hasResult && isError && <Text style={styles.errorBadge}>error</Text>}
                   </View>
                   <DiffView tool={block.tool} input={block.input} />
+                  {hasResult && isError && block.result?.output ? (
+                    <View style={styles.diffErrorOutput}>
+                      <Text style={styles.codeLabel}>error</Text>
+                      <ScrollView nestedScrollEnabled style={styles.diffErrorScroll}>
+                        <Text style={[styles.codeText, { color: colors.red400 }]}>
+                          {block.result.output.length > 4000
+                            ? `${block.result.output.slice(0, 4000)}…`
+                            : block.result.output}
+                        </Text>
+                      </ScrollView>
+                    </View>
+                  ) : null}
                 </View>
               );
             }
@@ -481,6 +495,20 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.gray800,
     gap: 4,
   },
+  diffWrapperError: {
+    backgroundColor: 'rgba(69, 10, 10, 0.15)',
+    borderLeftWidth: 2,
+    borderLeftColor: colors.red600,
+  },
+  diffErrorOutput: {
+    marginTop: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(220, 38, 38, 0.45)',
+    backgroundColor: 'rgba(69, 10, 10, 0.35)',
+    padding: 8,
+  },
+  diffErrorScroll: { maxHeight: 200 },
   diffHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   checkpointRow: {
     paddingHorizontal: 12,
