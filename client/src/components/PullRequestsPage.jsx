@@ -26,6 +26,7 @@ import {
   mergePipelineListBadge,
   checkRowStyle,
   reviewStateColor,
+  prListRowResolveDisabledHeuristic,
 } from '../utils/prFormatting.js';
 
 // ─── Shared atoms ──────────────────────────────────────────────
@@ -56,7 +57,7 @@ const STATE_TABS = [
   { key: 'all', label: 'All' },
 ];
 
-function PrListItem({ pr, onClick }) {
+function PrListItem({ pr, onOpen, onResolveRow, resolveAgentId, resolvingThisRow, bulkResolving }) {
   const state = prStateBadge(pr);
   const diff = diffSummary(pr);
   const showCi = Array.isArray(pr.check_rollup) && pr.check_rollup.length > 0;
@@ -64,53 +65,87 @@ function PrListItem({ pr, onClick }) {
   const reviewB = reviewDecisionListBadge(pr.review_decision);
   const mBadge = mergeableBadge(pr.mergeable);
   const pipeB = mergePipelineListBadge(pr);
+  const heuristicOff = prListRowResolveDisabledHeuristic(pr);
+  const resolveBusy = bulkResolving || resolvingThisRow;
+  const resolveDisabled = !resolveAgentId || resolveBusy || heuristicOff;
+  const resolveTitle = !resolveAgentId
+    ? 'No agents configured'
+    : bulkResolving
+      ? 'Resolve all in progress…'
+      : resolvingThisRow
+        ? 'Resolving…'
+        : heuristicOff
+          ? 'Nothing to resolve from list metadata (open PR for full detail if needed)'
+          : 'Resolve conflicts, CI failures, or review feedback for this PR';
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="w-full text-left bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors"
-    >
-      <div className="flex items-center gap-2 mb-2">
-        <Badge label={state.label} color={state.color} bg={state.bg} />
-        <span className="text-xs font-medium text-gray-400">#{pr.number}</span>
-        <span className="flex-1" />
-        <span className="text-xs text-gray-500">{relativePrTime(pr.updated_at)}</span>
-      </div>
-      <div className="text-sm font-medium text-white line-clamp-2">{pr.title}</div>
-      <div className="mt-1 text-xs text-gray-400 truncate">
-        {pr.user ? `@${pr.user}` : ''}
-        {pr.head ? ` · ${pr.head} → ${pr.base || 'main'}` : ''}
-      </div>
-      {diff && <div className="mt-1 text-xs text-gray-400 tabular-nums">{diff}</div>}
-      {(ciBadge || reviewB || mBadge.show || pipeB) && (
-        <div className="mt-2 flex flex-wrap gap-1.5 items-center">
-          {ciBadge && <Badge label={ciBadge.label} color={ciBadge.color} bg={ciBadge.bg} />}
-          {reviewB && <Badge label={reviewB.label} color={reviewB.color} bg={reviewB.bg} />}
-          {mBadge.show && (
-            <Badge
-              label={mBadge.label}
-              color={mBadge.good ? 'text-emerald-400' : 'text-red-400'}
-              bg={mBadge.good ? 'bg-emerald-500/10' : 'bg-red-500/10'}
-            />
-          )}
-          {pipeB && (
-            <Badge label={pipeB.label} color={pipeB.color} bg={pipeB.bg} title={pipeB.title} />
-          )}
+    <div className="flex gap-2 w-full bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors items-stretch">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex-1 min-w-0 text-left rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+      >
+        <div className="flex items-center gap-2 mb-2">
+          <Badge label={state.label} color={state.color} bg={state.bg} />
+          <span className="text-xs font-medium text-gray-400">#{pr.number}</span>
+          <span className="flex-1" />
+          <span className="text-xs text-gray-500">{relativePrTime(pr.updated_at)}</span>
         </div>
-      )}
-      {Array.isArray(pr.labels) && pr.labels.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1">
-          {pr.labels.slice(0, 4).map((l) => (
-            <span
-              key={l.name}
-              className="px-1.5 py-0.5 text-[10px] text-gray-300 bg-gray-800 rounded"
-            >
-              {l.name}
-            </span>
-          ))}
+        <div className="text-sm font-medium text-white line-clamp-2">{pr.title}</div>
+        <div className="mt-1 text-xs text-gray-400 truncate">
+          {pr.user ? `@${pr.user}` : ''}
+          {pr.head ? ` · ${pr.head} → ${pr.base || 'main'}` : ''}
         </div>
-      )}
-    </button>
+        {diff && <div className="mt-1 text-xs text-gray-400 tabular-nums">{diff}</div>}
+        {(ciBadge || reviewB || mBadge.show || pipeB) && (
+          <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+            {ciBadge && <Badge label={ciBadge.label} color={ciBadge.color} bg={ciBadge.bg} />}
+            {reviewB && <Badge label={reviewB.label} color={reviewB.color} bg={reviewB.bg} />}
+            {mBadge.show && (
+              <Badge
+                label={mBadge.label}
+                color={mBadge.good ? 'text-emerald-400' : 'text-red-400'}
+                bg={mBadge.good ? 'bg-emerald-500/10' : 'bg-red-500/10'}
+              />
+            )}
+            {pipeB && (
+              <Badge label={pipeB.label} color={pipeB.color} bg={pipeB.bg} title={pipeB.title} />
+            )}
+          </div>
+        )}
+        {Array.isArray(pr.labels) && pr.labels.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {pr.labels.slice(0, 4).map((l) => (
+              <span
+                key={l.name}
+                className="px-1.5 py-0.5 text-[10px] text-gray-300 bg-gray-800 rounded"
+              >
+                {l.name}
+              </span>
+            ))}
+          </div>
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onResolveRow(pr.number);
+        }}
+        disabled={resolveDisabled}
+        title={resolveTitle}
+        aria-label={`Resolve PR #${pr.number}`}
+        className="flex-shrink-0 self-center flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800/80 text-xs font-medium text-gray-200 hover:bg-gray-800 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-w-[5.5rem]"
+      >
+        {resolvingThisRow ? (
+          <Loader2 size={16} className="animate-spin text-gray-400" />
+        ) : (
+          <Wrench size={16} className="text-gray-400" />
+        )}
+        <span>Resolve PR</span>
+      </button>
+    </div>
   );
 }
 
@@ -338,6 +373,8 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState(null);
   const [resolving, setResolving] = useState(false);
+  const [resolvingFromList, setResolvingFromList] = useState(null);
+  const [bulkResolving, setBulkResolving] = useState(false);
 
   const resolveAgentId =
     Array.isArray(project?.agents) && project.agents.length > 0
@@ -411,13 +448,8 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
     }
   };
 
-  const handleResolve = useCallback(async () => {
-    if (!projectId || !selectedNumber || !resolveAgentId || resolving) return;
-    setResolving(true);
-    try {
-      const res = await api.resolvePR(projectId, selectedNumber, {
-        agentId: resolveAgentId,
-      });
+  const applyResolveOutcome = useCallback(
+    (res, prLabel, { legacyDetailCleanCopy = false } = {}) => {
       if (res?.sessionId) {
         if (typeof onOpenSession === 'function') {
           onOpenSession(resolveAgentId, res.sessionId);
@@ -425,16 +457,35 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
         if (typeof onToast === 'function') {
           const kinds = Array.isArray(res.triggered) ? res.triggered.join(', ') : '';
           onToast(
-            kinds ? `Resolving PR — ${kinds}` : 'Resolving PR — agent session started',
+            kinds
+              ? `Resolving ${prLabel} — ${kinds}`
+              : `Resolving ${prLabel} — agent session started`,
             'success',
             5000,
           );
         }
-      } else {
-        if (typeof onToast === 'function') {
-          onToast('Nothing to resolve — PR looks clean.', 'info', 5000);
-        }
+      } else if (typeof onToast === 'function') {
+        onToast(
+          legacyDetailCleanCopy
+            ? 'Nothing to resolve — PR looks clean.'
+            : `Nothing to resolve — ${prLabel} looks clean.`,
+          'info',
+          5000,
+        );
       }
+    },
+    [resolveAgentId, onOpenSession, onToast],
+  );
+
+  const handleResolve = useCallback(async () => {
+    if (!projectId || !selectedNumber || !resolveAgentId || resolving) return;
+    const prLabel = `PR #${selectedNumber}`;
+    setResolving(true);
+    try {
+      const res = await api.resolvePR(projectId, selectedNumber, {
+        agentId: resolveAgentId,
+      });
+      applyResolveOutcome(res, prLabel, { legacyDetailCleanCopy: true });
     } catch (err) {
       const msg = err?.message || 'Failed to resolve PR';
       if (typeof onToast === 'function') {
@@ -445,7 +496,92 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
     } finally {
       setResolving(false);
     }
-  }, [projectId, selectedNumber, resolveAgentId, resolving, onOpenSession, onToast]);
+  }, [projectId, selectedNumber, resolveAgentId, resolving, applyResolveOutcome, onToast]);
+
+  const handleResolveFromList = useCallback(
+    async (prNumber) => {
+      if (!projectId || !resolveAgentId || bulkResolving || resolvingFromList != null) return;
+      const prLabel = `PR #${prNumber}`;
+      setResolvingFromList(prNumber);
+      try {
+        const res = await api.resolvePR(projectId, prNumber, { agentId: resolveAgentId });
+        applyResolveOutcome(res, prLabel);
+      } catch (err) {
+        const msg = err?.message || 'Failed to resolve PR';
+        if (typeof onToast === 'function') {
+          onToast(`Resolve PR failed (${prLabel}): ${msg}`, 'error', 6000);
+        } else {
+          console.warn('Resolve PR failed:', msg);
+        }
+      } finally {
+        setResolvingFromList(null);
+      }
+    },
+    [projectId, resolveAgentId, bulkResolving, resolvingFromList, applyResolveOutcome, onToast],
+  );
+
+  const handleResolveAll = useCallback(async () => {
+    if (
+      !projectId ||
+      !resolveAgentId ||
+      pulls.length === 0 ||
+      bulkResolving ||
+      resolvingFromList != null
+    ) {
+      return;
+    }
+    setBulkResolving(true);
+    let spawned = 0;
+    let clean = 0;
+    let failed = 0;
+    let lastSessionId = null;
+    try {
+      for (const pr of pulls) {
+        try {
+          const res = await api.resolvePR(projectId, pr.number, { agentId: resolveAgentId });
+          if (res?.sessionId) {
+            spawned += 1;
+            lastSessionId = res.sessionId;
+            const kinds = Array.isArray(res.triggered) ? res.triggered.join(', ') : '';
+            if (typeof onToast === 'function') {
+              onToast(
+                kinds
+                  ? `PR #${pr.number}: session started (${kinds})`
+                  : `PR #${pr.number}: agent session started`,
+                'success',
+                4000,
+              );
+            }
+          } else {
+            clean += 1;
+          }
+        } catch (err) {
+          failed += 1;
+          const msg = err?.message || 'error';
+          if (typeof onToast === 'function') {
+            onToast(`PR #${pr.number}: resolve failed — ${msg}`, 'error', 5500);
+          }
+        }
+      }
+      if (lastSessionId && typeof onOpenSession === 'function') {
+        onOpenSession(resolveAgentId, lastSessionId);
+      }
+      if (typeof onToast === 'function') {
+        const parts = [
+          `${spawned} session(s) started`,
+          `${clean} already clean`,
+          failed ? `${failed} failed` : null,
+        ].filter(Boolean);
+        onToast(
+          `Resolve all finished: ${parts.join(', ')}.`,
+          spawned > 0 ? 'success' : 'info',
+          8000,
+        );
+      }
+    } finally {
+      setBulkResolving(false);
+    }
+  }, [projectId, resolveAgentId, pulls, bulkResolving, resolvingFromList, onOpenSession, onToast]);
 
   // ── Detail view ──
   if (selectedNumber) {
@@ -500,7 +636,7 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div>
             <h2 className="text-2xl font-bold text-white flex items-center gap-3">
               <GitPullRequest size={28} />
@@ -508,15 +644,43 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
             </h2>
             {project?.name && <p className="text-sm text-gray-400 mt-1">{project.name}</p>}
           </div>
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={refreshing || loading}
-            className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 disabled:opacity-50 transition-colors"
-          >
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-            Refresh
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              type="button"
+              onClick={handleResolveAll}
+              disabled={
+                !resolveAgentId ||
+                pulls.length === 0 ||
+                bulkResolving ||
+                resolvingFromList != null ||
+                loading
+              }
+              title={
+                !resolveAgentId
+                  ? 'No agents configured'
+                  : pulls.length === 0
+                    ? 'No pull requests to resolve'
+                    : 'Run Resolve PR once for each row in this list (one session per PR)'
+              }
+              className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-800/80 text-gray-200 hover:bg-gray-800 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {bulkResolving ? (
+                <Loader2 size={14} className="animate-spin text-gray-400" />
+              ) : (
+                <Wrench size={14} className="text-gray-400" />
+              )}
+              Resolve all
+            </button>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={refreshing || loading || bulkResolving}
+              className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+              Refresh
+            </button>
+          </div>
         </div>
 
         {/* State tabs */}
@@ -574,7 +738,15 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
         {pulls.length > 0 && (
           <div className="space-y-2">
             {pulls.map((pr) => (
-              <PrListItem key={pr.number} pr={pr} onClick={() => handleSelect(pr)} />
+              <PrListItem
+                key={pr.number}
+                pr={pr}
+                onOpen={() => handleSelect(pr)}
+                onResolveRow={handleResolveFromList}
+                resolveAgentId={resolveAgentId}
+                resolvingThisRow={resolvingFromList === pr.number}
+                bulkResolving={bulkResolving}
+              />
             ))}
           </div>
         )}

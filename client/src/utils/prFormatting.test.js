@@ -13,6 +13,8 @@ import {
   mergePipelineListBadge,
   checkRowStyle,
   reviewStateColor,
+  prListRowSuggestsResolvableWork,
+  prListRowResolveDisabledHeuristic,
 } from './prFormatting.js';
 
 describe('prNumberFromUrl', () => {
@@ -347,6 +349,50 @@ describe('checkRowStyle', () => {
   it('handles null input gracefully', () => {
     const s = checkRowStyle(null);
     expect(s.iconKey).toBe('unknown');
+  });
+});
+
+describe('prListRow resolve heuristics', () => {
+  it('suggests work when merge conflicts', () => {
+    expect(
+      prListRowSuggestsResolvableWork({
+        state: 'open',
+        mergeable: false,
+        mergeable_state: 'dirty',
+      }),
+    ).toBe(true);
+  });
+
+  it('suggests work when checks fail', () => {
+    expect(
+      prListRowSuggestsResolvableWork({
+        state: 'open',
+        mergeable: true,
+        mergeable_state: 'clean',
+        check_rollup: [{ status: 'completed', conclusion: 'failure' }],
+      }),
+    ).toBe(true);
+  });
+
+  it('disables list resolve when mergeable clean and no signals', () => {
+    expect(
+      prListRowResolveDisabledHeuristic({
+        state: 'open',
+        mergeable: true,
+        mergeable_state: 'clean',
+        check_rollup: [],
+      }),
+    ).toBe(true);
+  });
+
+  it('does not disable when mergeability is still unknown', () => {
+    expect(
+      prListRowResolveDisabledHeuristic({
+        state: 'open',
+        mergeable: null,
+        mergeable_state: 'unknown',
+      }),
+    ).toBe(false);
   });
 });
 

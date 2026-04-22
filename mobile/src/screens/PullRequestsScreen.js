@@ -27,6 +27,7 @@ import {
   mergeableBadge,
   reviewDecisionListBadge,
   mergePipelineListBadge,
+  prListRowResolveDisabledHeuristic,
 } from '../utils/prFormatting';
 import PrCapturesSection from '../components/PrCapturesSection';
 import { resolveAgentIdFromProject } from '../utils/projectAgents';
@@ -49,7 +50,14 @@ function Badge({ label, color, bg, title }) {
   );
 }
 
-function PrListItem({ pr, onPress }) {
+function PrListItem({
+  pr,
+  onPress,
+  onResolveRow,
+  resolveAgentId,
+  resolvingThisRow,
+  bulkResolving,
+}) {
   const state = prStateBadge(pr);
   const diff = diffSummary(pr);
   const showCi = Array.isArray(pr.check_rollup) && pr.check_rollup.length > 0;
@@ -57,52 +65,80 @@ function PrListItem({ pr, onPress }) {
   const reviewB = reviewDecisionListBadge(pr.review_decision);
   const mBadge = mergeableBadge(pr.mergeable);
   const pipeB = mergePipelineListBadge(pr);
+  const heuristicOff = prListRowResolveDisabledHeuristic(pr);
+  const resolveBusy = bulkResolving || resolvingThisRow;
+  const resolveDisabled = !resolveAgentId || resolveBusy || heuristicOff;
+
   return (
-    <TouchableOpacity style={styles.listItem} onPress={onPress} activeOpacity={0.7}>
-      <View style={styles.listItemHeader}>
-        <Badge label={state.label} color={state.color} bg={state.bg} />
-        <Text style={styles.prNumber}>#{pr.number}</Text>
-        <View style={{ flex: 1 }} />
-        <Text style={styles.timeText}>{relativePrTime(pr.updated_at)}</Text>
-      </View>
-      <Text style={styles.prTitle} numberOfLines={2}>
-        {pr.title}
-      </Text>
-      <View style={styles.listItemFooter}>
-        <Text style={styles.metaText} numberOfLines={1}>
-          {pr.user ? `@${pr.user}` : ''}
-          {pr.head ? ` · ${pr.head} → ${pr.base || 'main'}` : ''}
+    <View style={styles.listItemRow}>
+      <TouchableOpacity style={styles.listItemMain} onPress={onPress} activeOpacity={0.7}>
+        <View style={styles.listItemHeader}>
+          <Badge label={state.label} color={state.color} bg={state.bg} />
+          <Text style={styles.prNumber}>#{pr.number}</Text>
+          <View style={{ flex: 1 }} />
+          <Text style={styles.timeText}>{relativePrTime(pr.updated_at)}</Text>
+        </View>
+        <Text style={styles.prTitle} numberOfLines={2}>
+          {pr.title}
         </Text>
-      </View>
-      {diff ? <Text style={styles.diffText}>{diff}</Text> : null}
-      {(ciBadge || reviewB || mBadge.show || pipeB) && (
-        <View style={[styles.labelsRow, { marginTop: 8 }]}>
-          {ciBadge ? <Badge label={ciBadge.label} color={ciBadge.color} bg={ciBadge.bg} /> : null}
-          {reviewB ? <Badge label={reviewB.label} color={reviewB.color} bg={reviewB.bg} /> : null}
-          {mBadge.show ? (
-            <Badge
-              label={mBadge.label}
-              color={mBadge.good ? colors.emerald400 : colors.red400}
-              bg={mBadge.good ? colors.emerald900_40 : colors.red900_50}
-            />
-          ) : null}
-          {pipeB ? (
-            <Badge label={pipeB.label} color={pipeB.color} bg={pipeB.bg} title={pipeB.title} />
-          ) : null}
+        <View style={styles.listItemFooter}>
+          <Text style={styles.metaText} numberOfLines={1}>
+            {pr.user ? `@${pr.user}` : ''}
+            {pr.head ? ` · ${pr.head} → ${pr.base || 'main'}` : ''}
+          </Text>
         </View>
-      )}
-      {Array.isArray(pr.labels) && pr.labels.length > 0 && (
-        <View style={styles.labelsRow}>
-          {pr.labels.slice(0, 4).map((l) => (
-            <View key={l.name} style={styles.label}>
-              <Text style={styles.labelText} numberOfLines={1}>
-                {l.name}
-              </Text>
-            </View>
-          ))}
-        </View>
-      )}
-    </TouchableOpacity>
+        {diff ? <Text style={styles.diffText}>{diff}</Text> : null}
+        {(ciBadge || reviewB || mBadge.show || pipeB) && (
+          <View style={[styles.labelsRow, { marginTop: 8 }]}>
+            {ciBadge ? <Badge label={ciBadge.label} color={ciBadge.color} bg={ciBadge.bg} /> : null}
+            {reviewB ? <Badge label={reviewB.label} color={reviewB.color} bg={reviewB.bg} /> : null}
+            {mBadge.show ? (
+              <Badge
+                label={mBadge.label}
+                color={mBadge.good ? colors.emerald400 : colors.red400}
+                bg={mBadge.good ? colors.emerald900_40 : colors.red900_50}
+              />
+            ) : null}
+            {pipeB ? (
+              <Badge label={pipeB.label} color={pipeB.color} bg={pipeB.bg} title={pipeB.title} />
+            ) : null}
+          </View>
+        )}
+        {Array.isArray(pr.labels) && pr.labels.length > 0 && (
+          <View style={styles.labelsRow}>
+            {pr.labels.slice(0, 4).map((l) => (
+              <View key={l.name} style={styles.label}>
+                <Text style={styles.labelText} numberOfLines={1}>
+                  {l.name}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.listRowResolveButton, resolveDisabled && styles.resolveButtonDisabled]}
+        onPress={() => onResolveRow(pr.number)}
+        disabled={resolveDisabled}
+        accessibilityLabel={`Resolve PR #${pr.number}`}
+        accessibilityState={{ disabled: resolveDisabled, busy: resolvingThisRow }}
+      >
+        {resolvingThisRow ? (
+          <ActivityIndicator size="small" color={colors.gray300} />
+        ) : (
+          <Text style={styles.listRowResolveButtonText}>{'\u{1F527}'}</Text>
+        )}
+        <Text
+          style={[
+            styles.listRowResolveButtonCaption,
+            resolveDisabled && styles.resolveButtonTextDisabled,
+          ]}
+          numberOfLines={2}
+        >
+          Resolve PR
+        </Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -328,6 +364,8 @@ export default function PullRequestsScreen({ route, navigation }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState(null);
   const [resolving, setResolving] = useState(false);
+  const [resolvingFromList, setResolvingFromList] = useState(null);
+  const [bulkResolving, setBulkResolving] = useState(false);
 
   const loadList = useCallback(async () => {
     if (!projectId) {
@@ -433,6 +471,102 @@ export default function PullRequestsScreen({ route, navigation }) {
     setActiveSessionId,
   ]);
 
+  const handleResolveFromList = useCallback(
+    async (prNumber) => {
+      if (!projectId || !resolveAgentId || bulkResolving || resolvingFromList != null) return;
+      setResolvingFromList(prNumber);
+      try {
+        const res = await api.resolvePR(projectId, prNumber, { agentId: resolveAgentId });
+        if (res?.sessionId) {
+          setActiveAgentId(resolveAgentId);
+          setActiveSessionId(res.sessionId);
+          const kinds = Array.isArray(res.triggered) ? res.triggered.join(', ') : '';
+          if (navigation?.navigate) {
+            navigation.navigate('Chat');
+          }
+          Alert.alert(
+            'Resolve PR',
+            kinds
+              ? `PR #${prNumber}: session started (${kinds})`
+              : `PR #${prNumber}: agent session started`,
+          );
+        } else {
+          Alert.alert('Resolve PR', `Nothing to resolve — PR #${prNumber} looks clean.`);
+        }
+      } catch (err) {
+        const msg = err?.message || 'Failed to resolve PR';
+        Alert.alert('Resolve PR failed', `PR #${prNumber}: ${msg}`);
+      } finally {
+        setResolvingFromList(null);
+      }
+    },
+    [
+      projectId,
+      resolveAgentId,
+      bulkResolving,
+      resolvingFromList,
+      navigation,
+      setActiveAgentId,
+      setActiveSessionId,
+    ],
+  );
+
+  const handleResolveAll = useCallback(async () => {
+    if (
+      !projectId ||
+      !resolveAgentId ||
+      pulls.length === 0 ||
+      bulkResolving ||
+      resolvingFromList != null
+    ) {
+      return;
+    }
+    setBulkResolving(true);
+    let spawned = 0;
+    let clean = 0;
+    let failed = 0;
+    let lastSessionId = null;
+    try {
+      for (const pr of pulls) {
+        try {
+          const res = await api.resolvePR(projectId, pr.number, { agentId: resolveAgentId });
+          if (res?.sessionId) {
+            spawned += 1;
+            lastSessionId = res.sessionId;
+          } else {
+            clean += 1;
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+      if (lastSessionId) {
+        setActiveAgentId(resolveAgentId);
+        setActiveSessionId(lastSessionId);
+        if (navigation?.navigate) {
+          navigation.navigate('Chat');
+        }
+      }
+      const parts = [
+        `${spawned} session(s) started`,
+        `${clean} already clean`,
+        failed ? `${failed} failed` : null,
+      ].filter(Boolean);
+      Alert.alert('Resolve all', `Finished: ${parts.join(', ')}.`);
+    } finally {
+      setBulkResolving(false);
+    }
+  }, [
+    projectId,
+    resolveAgentId,
+    pulls,
+    bulkResolving,
+    resolvingFromList,
+    navigation,
+    setActiveAgentId,
+    setActiveSessionId,
+  ]);
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* Header */}
@@ -443,6 +577,25 @@ export default function PullRequestsScreen({ route, navigation }) {
         <Text style={styles.headerTitle} numberOfLines={1}>
           {selectedNumber ? `PR #${selectedNumber}` : `${project?.name || 'Project'} · PRs`}
         </Text>
+        {!selectedNumber && pulls.length > 0 ? (
+          <TouchableOpacity
+            style={[styles.headerResolveAll, bulkResolving && styles.resolveButtonDisabled]}
+            onPress={handleResolveAll}
+            disabled={
+              !resolveAgentId ||
+              pulls.length === 0 ||
+              bulkResolving ||
+              resolvingFromList != null ||
+              loading
+            }
+          >
+            {bulkResolving ? (
+              <ActivityIndicator size="small" color={colors.gray300} />
+            ) : (
+              <Text style={styles.headerResolveAllText}>Resolve all</Text>
+            )}
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {/* Detail view */}
@@ -521,7 +674,16 @@ export default function PullRequestsScreen({ route, navigation }) {
           <FlatList
             data={pulls}
             keyExtractor={(item) => String(item.number)}
-            renderItem={({ item }) => <PrListItem pr={item} onPress={() => handleSelect(item)} />}
+            renderItem={({ item }) => (
+              <PrListItem
+                pr={item}
+                onPress={() => handleSelect(item)}
+                onResolveRow={handleResolveFromList}
+                resolveAgentId={resolveAgentId}
+                resolvingThisRow={resolvingFromList === item.number}
+                bulkResolving={bulkResolving}
+              />
+            )}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
@@ -580,15 +742,53 @@ const styles = StyleSheet.create({
   tabText: { color: colors.gray400, fontSize: 13, fontWeight: '500' },
   tabTextActive: { color: colors.white },
 
-  listItem: {
+  listItemRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
     marginHorizontal: 12,
     marginVertical: 5,
-    padding: 12,
+    padding: 10,
     backgroundColor: colors.gray900,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.gray800,
   },
+  listItemMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  listRowResolveButton: {
+    width: 76,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+  },
+  listRowResolveButtonText: { fontSize: 16, textAlign: 'center' },
+  listRowResolveButtonCaption: {
+    color: colors.gray200,
+    fontSize: 10,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  headerResolveAll: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+    minWidth: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerResolveAllText: { color: colors.gray200, fontSize: 12, fontWeight: '600' },
   listItemHeader: {
     flexDirection: 'row',
     alignItems: 'center',

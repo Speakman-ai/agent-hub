@@ -195,3 +195,90 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     expect(api.resolvePR).not.toHaveBeenCalled();
   });
 });
+
+describe('<PullRequestsPage /> — list Resolve PR + Resolve all', () => {
+  beforeEach(() => {
+    api.getProjectPulls.mockReset();
+    api.getProjectPullDetail.mockReset();
+    api.resolvePR.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('list row Resolve PR calls the API without navigating to detail', async () => {
+    api.resolvePR.mockResolvedValue({
+      sessionId: 'sess-list',
+      triggered: ['review'],
+      session: { id: 'sess-list' },
+    });
+    const onOpenSession = vi.fn();
+    const onToast = vi.fn();
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
+
+    render(
+      <PullRequestsPage
+        projectId="proj-1"
+        project={project}
+        onOpenSession={onOpenSession}
+        onToast={onToast}
+      />,
+    );
+
+    const rowResolve = await screen.findByRole('button', { name: /resolve pr #123/i });
+    fireEvent.click(rowResolve);
+
+    await waitFor(() => expect(api.resolvePR).toHaveBeenCalledTimes(1));
+    expect(api.resolvePR).toHaveBeenCalledWith('proj-1', 123, { agentId: 'agent-alpha' });
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'sess-list'));
+    expect(api.getProjectPullDetail).not.toHaveBeenCalled();
+    expect(onToast).toHaveBeenCalledWith(
+      expect.stringMatching(/review/i),
+      'success',
+      expect.any(Number),
+    );
+  });
+
+  it('disables list-row Resolve when list metadata looks clean', async () => {
+    const cleanPr = {
+      ...prSummary,
+      mergeable: true,
+      mergeable_state: 'clean',
+      check_rollup: [],
+    };
+    api.getProjectPulls.mockResolvedValue({ pulls: [cleanPr] });
+
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+
+    const rowResolve = await screen.findByRole('button', { name: /resolve pr #123/i });
+    expect(rowResolve).toBeDisabled();
+  });
+
+  it('Resolve all runs resolve once per listed PR', async () => {
+    const second = { ...prSummary, number: 77, title: 'Other PR' };
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary, second] });
+    api.resolvePR.mockResolvedValue({
+      sessionId: null,
+      triggered: [],
+      reason: 'no-action-needed',
+    });
+    const onToast = vi.fn();
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={onToast} />);
+
+    await screen.findByText('Other PR');
+    fireEvent.click(screen.getByRole('button', { name: /resolve all/i }));
+
+    await waitFor(() => expect(api.resolvePR).toHaveBeenCalledTimes(2));
+    expect(api.resolvePR).toHaveBeenNthCalledWith(1, 'proj-1', 123, { agentId: 'agent-alpha' });
+    expect(api.resolvePR).toHaveBeenNthCalledWith(2, 'proj-1', 77, { agentId: 'agent-alpha' });
+    await waitFor(() =>
+      expect(onToast).toHaveBeenCalledWith(
+        expect.stringMatching(/resolve all finished/i),
+        'info',
+        expect.any(Number),
+      ),
+    );
+  });
+});

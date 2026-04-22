@@ -312,3 +312,44 @@ export function reviewStateColor(state) {
   if (s === 'COMMENTED') return TOKEN.blue.text;
   return TOKEN.gray.text;
 }
+
+/** Aligned with server `pr-resolve` conflict detection (`dirty` / `conflicting`). */
+const LIST_ROW_CONFLICT_MERGE_STATES = new Set(['dirty', 'conflicting']);
+
+/**
+ * True when PR list row fields suggest `POST .../resolve` might spawn a session
+ * (merge conflicts, failing checks, or changes requested). Used for UI hints only.
+ * @param {Record<string, unknown>} pr
+ */
+export function prListRowSuggestsResolvableWork(pr) {
+  if (!pr || String(pr.state || '').toLowerCase() !== 'open') return false;
+  if (pr.mergeable === false) return true;
+  const ms = String(pr.mergeable_state || '').toLowerCase();
+  if (LIST_ROW_CONFLICT_MERGE_STATES.has(ms)) return true;
+  if (ms === 'unstable') return true;
+  const rollup = pr.check_rollup;
+  if (Array.isArray(rollup) && rollup.length > 0) {
+    if (summarizeChecks(rollup).overall === 'failure') return true;
+  }
+  if (String(pr.review_decision || '').toUpperCase() === 'CHANGES_REQUESTED') return true;
+  return false;
+}
+
+/**
+ * When true, the list-row Resolve action is disabled (best-effort: mirrors a
+ * clean `no-action-needed` outcome). Unknown / pending mergeability keeps Resolve enabled.
+ * @param {Record<string, unknown>} pr
+ */
+export function prListRowResolveDisabledHeuristic(pr) {
+  if (!pr || String(pr.state || '').toLowerCase() !== 'open') return true;
+  if (prListRowSuggestsResolvableWork(pr)) return false;
+  if (pr.mergeable !== true && pr.mergeable !== false) return false;
+  const rollup = pr.check_rollup;
+  if (Array.isArray(rollup) && rollup.length > 0) {
+    const s = summarizeChecks(rollup);
+    if (s.overall === 'pending') return false;
+  }
+  const ms = String(pr.mergeable_state || '').toLowerCase();
+  if (!ms || ms === 'unknown') return false;
+  return pr.mergeable === true && ms === 'clean';
+}

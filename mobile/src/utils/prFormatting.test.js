@@ -11,6 +11,8 @@ import {
   mergeableBadge,
   reviewDecisionListBadge,
   mergePipelineListBadge,
+  prListRowSuggestsResolvableWork,
+  prListRowResolveDisabledHeuristic,
 } from './prFormatting';
 
 describe('prNumberFromUrl', () => {
@@ -296,5 +298,29 @@ describe('reviewsBadge', () => {
   it('default', () => {
     expect(reviewsBadge('none').label).toBe('No reviews');
     expect(reviewsBadge(undefined).label).toBe('No reviews');
+  });
+});
+
+describe('prListRow resolve heuristics', () => {
+  it('suggests work when checks fail', () => {
+    expect(
+      prListRowSuggestsResolvableWork({
+        state: 'open',
+        mergeable: true,
+        mergeable_state: 'clean',
+        check_rollup: [{ status: 'completed', conclusion: 'failure' }],
+      }),
+    ).toBe(true);
+  });
+
+  it('disables list resolve when mergeable clean and no signals', () => {
+    expect(
+      prListRowResolveDisabledHeuristic({
+        state: 'open',
+        mergeable: true,
+        mergeable_state: 'clean',
+        check_rollup: [],
+      }),
+    ).toBe(true);
   });
 });
