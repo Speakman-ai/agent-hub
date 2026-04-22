@@ -107,11 +107,43 @@ export const markdownComponentsCompact = {
   },
 };
 
-export function MarkdownContent({ content, components: componentsProp, className }) {
+/**
+ * Board card face: same as `markdownComponentsCompact`, but in-description links
+ * call `stopPropagation` so the parent card row’s `onClick` (open detail) does not
+ * also fire (matches `pr_url` / GitHub link handling on the same row).
+ */
+export const markdownComponentsKanbanCardSnippet = {
+  ...markdownComponentsCompact,
+  a({ href, children, onClick, ...props }) {
+    return (
+      <a
+        href={href ? resolveServerMediaUrl(href) : href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => {
+          onClick?.(e);
+          e.stopPropagation();
+        }}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  },
+};
+
+/** Renders GFM markdown. Default `rehypePlugins` includes syntax highlighting; pass `[]` to skip (e.g. kanban card snippets). */
+export function MarkdownContent({
+  content,
+  components: componentsProp,
+  className,
+  rehypePlugins: rehypePluginsProp,
+}) {
+  const rehypePlugins = rehypePluginsProp !== undefined ? rehypePluginsProp : [rehypeHighlight];
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
+      rehypePlugins={rehypePlugins}
       components={componentsProp || markdownComponents}
       className={className}
     >

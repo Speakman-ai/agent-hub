@@ -3,7 +3,8 @@
  * (/uploads, /design-files) load through the same origin as the UI.
  *
  * - Remote mode: prefix relative `/uploads/...` with `getServerBase()` (matches
- *   MessageAttachments).
+ *   MessageAttachments, chat markdown, and kanban card descriptions — all use
+ *   `MarkdownRenderer`’s `img` / `a` handlers).
  * - Vite dev (UI on :3050, API on VITE_API_PORT): rewrite
  *   `http://localhost:<apiPort>/uploads/...` to a path-only URL so the dev
  *   proxy serves the file (fixes images/links that would otherwise hit the

@@ -55,24 +55,74 @@ pre.whitespace-pre-wrap,
 }
 
 /* Markdown content */
-.markdown-content h1 { @apply text-2xl font-bold mt-4 mb-2; }
-.markdown-content h2 { @apply text-xl font-bold mt-3 mb-2; }
-.markdown-content h3 { @apply text-lg font-semibold mt-3 mb-1; }
-.markdown-content p { @apply my-1.5 leading-relaxed; }
-.markdown-content ul { @apply list-disc pl-6 my-2; }
-.markdown-content ol { @apply list-decimal pl-6 my-2; }
-.markdown-content li { @apply my-0.5; }
-.markdown-content a { @apply text-blue-400 hover:underline; }
-.markdown-content blockquote { @apply border-l-4 border-gray-600 pl-4 italic my-2 text-gray-400; }
-.markdown-content table { @apply border-collapse my-2; }
-.markdown-content th { @apply border border-gray-700 px-3 py-1 bg-gray-800; }
-.markdown-content td { @apply border border-gray-700 px-3 py-1; }
-.markdown-content hr { @apply border-gray-700 my-4; }
+.markdown-content h1 {
+  @apply text-2xl font-bold mt-4 mb-2;
+}
+.markdown-content h2 {
+  @apply text-xl font-bold mt-3 mb-2;
+}
+.markdown-content h3 {
+  @apply text-lg font-semibold mt-3 mb-1;
+}
+.markdown-content p {
+  @apply my-1.5 leading-relaxed;
+}
+.markdown-content ul {
+  @apply list-disc pl-6 my-2;
+}
+.markdown-content ol {
+  @apply list-decimal pl-6 my-2;
+}
+.markdown-content li {
+  @apply my-0.5;
+}
+.markdown-content a {
+  @apply text-blue-400 hover:underline;
+}
+.markdown-content blockquote {
+  @apply border-l-4 border-gray-600 pl-4 italic my-2 text-gray-400;
+}
+.markdown-content table {
+  @apply border-collapse my-2;
+}
+.markdown-content th {
+  @apply border border-gray-700 px-3 py-1 bg-gray-800;
+}
+.markdown-content td {
+  @apply border border-gray-700 px-3 py-1;
+}
+.markdown-content hr {
+  @apply border-gray-700 my-4;
+}
+/* Inline images in markdown (chat, threads, kanban) — same origin + /uploads/ via resolveServerMediaUrl */
+.markdown-content img {
+  @apply max-w-full h-auto rounded-md my-2;
+  display: block;
+  object-fit: contain;
+}
+/* Board card list: keep thumbnails from stretching the column */
+.markdown-content--kanban-snippet img {
+  @apply max-h-20 w-auto mx-auto;
+}
+.markdown-content--kanban-snippet p {
+  @apply my-0.5;
+}
+.markdown-content--kanban-snippet h1,
+.markdown-content--kanban-snippet h2,
+.markdown-content--kanban-snippet h3 {
+  @apply text-sm font-semibold mt-1 mb-0.5;
+}
 
 /* Toast slide-in animation */
 @keyframes slide-in-right {
-  from { transform: translateX(100%); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 .animate-slide-in {
   animation: slide-in-right 0.3s ease-out;
@@ -80,14 +130,24 @@ pre.whitespace-pre-wrap,
 
 /* Thinking animation */
 @keyframes pulse-dot {
-  0%, 80%, 100% { opacity: 0.3; }
-  40% { opacity: 1; }
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+  }
+  40% {
+    opacity: 1;
+  }
 }
 .thinking-dot {
   animation: pulse-dot 1.4s infinite;
 }
-.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
-.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+.thinking-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.thinking-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
 
 /* Electron title bar drag region */
 .electron-drag {
@@ -109,7 +169,9 @@ pre.whitespace-pre-wrap,
 }
 
 /* Touch-friendly targets */
-button, a, [role="button"] {
+button,
+a,
+[role='button'] {
   touch-action: manipulation;
 }
 

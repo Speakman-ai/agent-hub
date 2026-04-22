@@ -224,6 +224,79 @@ describe('KanbanBoard card detail modal', () => {
     expect(preview2.querySelector('h2')?.textContent).toMatch(/Updated title/i);
     expect(preview2.querySelector('a')?.getAttribute('href')).toBe('https://example.com/path');
   });
+
+  it('renders markdown images in the board snippet and in the card detail preview', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-img',
+          title: 'Photo card',
+          description: 'Context\n\n![diagram](https://example.com/diagram.png)',
+          column_id: 'col-todo',
+          position: 0,
+        },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Photo card')).toBeInTheDocument());
+
+    const snippet = screen.getByTestId('card-description-snippet');
+    const imgOnBoard = within(snippet).getByRole('img', { name: 'diagram' });
+    expect(imgOnBoard.getAttribute('src')).toBe('https://example.com/diagram.png');
+
+    fireEvent.click(screen.getByText('Photo card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+    const preview = within(modal).getByTestId('card-description-preview');
+    const imgInModal = within(preview).getByRole('img', { name: 'diagram' });
+    expect(imgInModal.getAttribute('src')).toBe('https://example.com/diagram.png');
+  });
+
+  it('stops click propagation on markdown links in the board snippet so the card modal does not open', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-link',
+          title: 'Link card',
+          description: 'Read the [API docs](https://example.com/api) first.',
+          column_id: 'col-todo',
+          position: 0,
+        },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Link card')).toBeInTheDocument());
+    const snippet = screen.getByTestId('card-description-snippet');
+    fireEvent.click(within(snippet).getByRole('link', { name: 'API docs' }));
+    expect(screen.queryByTestId('card-detail-modal')).not.toBeInTheDocument();
+  });
+
+  it('resolves /uploads/ image paths in card markdown like chat', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-up',
+          title: 'Upload card',
+          description: '![shot](/uploads/abc/photo.png)',
+          column_id: 'col-todo',
+          position: 0,
+        },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Upload card')).toBeInTheDocument());
+    const snippet = screen.getByTestId('card-description-snippet');
+    const shotOnBoard = within(snippet).getByRole('img', { name: 'shot' });
+    expect(shotOnBoard.getAttribute('src')).toBe('/uploads/abc/photo.png');
+
+    fireEvent.click(screen.getByText('Upload card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+    const preview = within(modal).getByTestId('card-description-preview');
+    const img = within(preview).getByRole('img', { name: 'shot' });
+    expect(img.getAttribute('src')).toBe('/uploads/abc/photo.png');
+  });
 });
 
 describe('KanbanBoard reassign active session', () => {

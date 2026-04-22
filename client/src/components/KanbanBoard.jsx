@@ -19,7 +19,7 @@ import {
 import { api } from '../utils/api.js';
 import { epicFormToUpdateBody } from '../utils/epics.js';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
-import { MarkdownContent } from './MarkdownRenderer.jsx';
+import { MarkdownContent, markdownComponentsKanbanCardSnippet } from './MarkdownRenderer.jsx';
 
 const PRIORITY_STYLES = {
   urgent: 'bg-red-500/20 text-red-400',
@@ -1178,10 +1178,19 @@ export default function KanbanBoard({
                                   </span>
                                 )}
                               </div>
-                              {card.description && (
-                                <p className="text-xs text-gray-500 line-clamp-2 mt-1">
-                                  {card.description}
-                                </p>
+                              {card.description?.trim() && (
+                                <div
+                                  data-testid="card-description-snippet"
+                                  className="text-xs text-gray-500 mt-1 min-w-0 max-h-24 overflow-hidden"
+                                >
+                                  <div className="markdown-content markdown-content--kanban-snippet">
+                                    <MarkdownContent
+                                      content={card.description}
+                                      components={markdownComponentsKanbanCardSnippet}
+                                      rehypePlugins={[]}
+                                    />
+                                  </div>
+                                </div>
                               )}
                               <div className="flex items-center gap-2 mt-2 flex-wrap">
                                 {card.pr_url && (
