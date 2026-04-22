@@ -201,6 +201,14 @@ describe('api worktree helpers — URL + method + body parity with web client', 
     expect(JSON.parse(init.body)).toEqual({ enabled: false });
   });
 
+  it('setSessionTaskState(id, payload) → PUT /sessions/:id/task-state', async () => {
+    await api.setSessionTaskState('sess-ts', { goal: 'x' });
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/sess-ts/task-state');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ taskState: { goal: 'x' } });
+  });
+
   it('createSession omits ask_mode when not provided', async () => {
     await api.createSession('agent-1', 'My session');
     const [, init] = lastCall();

@@ -36,6 +36,8 @@ export interface SessionRow {
   updated_at: string;
   /** Soft-delete timestamp. NULL = active; non-NULL = archived (hidden from live list, recoverable for 7 days). */
   deleted_at: string | null;
+  /** JSON blob: goal, checklist[], lastFailure (see `server/task-state.ts`). */
+  task_state_json?: string | null;
 }
 
 export interface MessageRow {
@@ -703,6 +705,7 @@ export interface Stmts {
   updateSessionWikiHybridRagConsumed: Stmt;
   updateSessionWikiHybridRagBudget: Stmt;
   updateSessionWebSearchCallsUsed: Stmt;
+  updateSessionTaskState: Stmt;
   clearSessionChangesReady: Stmt;
   getStalePendingPrSessions: Stmt;
   markStalePrNotified: Stmt;

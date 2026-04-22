@@ -586,6 +586,46 @@ describe('Sessions', () => {
     });
   });
 
+  describe('PUT /api/sessions/:sessionId/task-state', () => {
+    it('persists task state and returns taskState', async () => {
+      const session = await createSession();
+      const res = await request
+        .put(`/api/sessions/${session.id}/task-state`)
+        .send({
+          taskState: {
+            goal: 'Finish API',
+            checklist: [{ text: 'Add tests', done: false }],
+            lastFailure: 'CI red',
+          },
+        })
+        .expect(200);
+
+      expect(res.body.taskState?.goal).toBe('Finish API');
+      expect(res.body.task_state_json).toContain('Finish API');
+      const get = await request.get(`/api/sessions/${session.id}`).expect(200);
+      expect(get.body.taskState?.checklist?.[0]?.text).toBe('Add tests');
+    });
+
+    it('clears task state with null', async () => {
+      const session = await createSession();
+      await request
+        .put(`/api/sessions/${session.id}/task-state`)
+        .send({ taskState: { goal: 'x' } })
+        .expect(200);
+      const cleared = await request
+        .put(`/api/sessions/${session.id}/task-state`)
+        .send({ taskState: null })
+        .expect(200);
+      expect(cleared.body.task_state_json).toBeNull();
+      expect(cleared.body.taskState).toBeNull();
+    });
+
+    it('rejects missing taskState field', async () => {
+      const session = await createSession();
+      await request.put(`/api/sessions/${session.id}/task-state`).send({}).expect(400);
+    });
+  });
+
   describe('PUT /api/sessions/:sessionId/engine', () => {
     it('switches session engine', async () => {
       const session = await createSession();

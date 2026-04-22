@@ -110,6 +110,12 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+  /** @param {Record<string, unknown>|null} taskState — null clears persisted plan */
+  setSessionTaskState: (sessionId, taskState) =>
+    fetchJSON(`/sessions/${sessionId}/task-state`, {
+      method: 'PUT',
+      body: JSON.stringify({ taskState }),
+    }),
   forwardSession: (sessionId, { targetAgentId, messageIds, prompt, autoStart } = {}) =>
     fetchJSON(`/sessions/${sessionId}/forward`, {
       method: 'POST',

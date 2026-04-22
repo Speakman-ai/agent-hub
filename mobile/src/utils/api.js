@@ -89,6 +89,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+  setSessionTaskState: (sessionId, taskState) =>
+    fetchJSON(`/sessions/${sessionId}/task-state`, {
+      method: 'PUT',
+      body: JSON.stringify({ taskState }),
+    }),
   // Forward the entire session transcript to a new session on another agent.
   // Mirrors the web client. Body: { targetAgentId, messageIds?, prompt?, autoStart? }
   // Returns { session, forwardedMessageId }.

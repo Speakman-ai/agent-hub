@@ -1,4 +1,5 @@
 import { searchWiki, type SearchResultRow } from './wiki-embeddings.js';
+import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
 
 const MAX_QUERY_CHARS = 600;
 const MAX_RESULTS = 6;
@@ -8,11 +9,7 @@ const MAX_TOTAL_BLOCK_CHARS = 5000;
 const MIN_QUERY_CHARS_FOR_FIRST_TURN_RAG = 12;
 export const MAX_WIKI_RAG_CALLS_PER_SESSION = 10;
 
-/**
- * Max UTF-8 bytes for the JSON payload inside `<agenthub:wiki>` / `<agenthub:react>`
- * before `JSON.parse` — avoids pathological model output tying up the event loop.
- */
-export const MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES = 64 * 1024;
+export { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES };
 
 /**
  * Legacy sessions used `wiki_hybrid_rag_budget_version = 0` with `wiki_hybrid_rag_consumed`

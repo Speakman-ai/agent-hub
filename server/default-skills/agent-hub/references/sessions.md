@@ -38,6 +38,14 @@ Notable columns: `id`, `agent_id`, `engine` (`claude-code` | `cursor-agent` | `g
 [ReAct loop](#react-loop--host-mediated-skillwikiweb-actions)), `created_at`, `updated_at`, `title`,
 `last_message_at`.
 
+**Persisted task plan:** `task_state_json` holds optional JSON (`goal`, `checklist`, `lastFailure`)
+for long-running work. Update it with `PUT /api/sessions/:id/task-state` and body `{ "taskState": { ... } }`
+(pass `"taskState": null` to clear). When non-empty, the host appends a **Persisted task plan** section
+to every enriched system prompt as **fenced JSON** (so stored text cannot reshape surrounding instructions).
+Assistants can also replace it by ending a turn with a fenced `<agenthub:task-state>...</agenthub:task-state>`
+block (JSON object); the server persists it, broadcasts `session-updated`, and strips the block from the
+visible assistant message.
+
 ## Message row
 
 `messages` holds `id`, `session_id`, `role` (`user` | `assistant` |
@@ -249,6 +257,11 @@ All three constants are overridable per-call via optional
   with `{ agentId, session }` (same payload shape as kanban assign and
   `POST /api/agents/:agentId/sessions`) so web/mobile clients can splice the
   new session into the agent's sidebar list without a manual refresh.
+- **Persisted task plan on handoff**: when the source session has a non-empty
+  `task_state_json`, the server copies that column onto the **new** target
+  session row when the handoff target is created, so the specialist keeps the
+  same structured scratchpad (goal / checklist / last failure) in addition to
+  transcript + `note`.
 
 ### `<agenthub:close-card>` — auto-close duplicate / already-done cards
 

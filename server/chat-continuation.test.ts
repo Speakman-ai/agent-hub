@@ -10,7 +10,7 @@ import {
   stripAssistantControlBlocks,
   utf8SuffixMaxBytes,
 } from './chat.js';
-import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './wiki-rag.js';
+import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
 
 describe('AUTO_CONTINUATION_PROMPT', () => {
   it('uses a copy-paste-safe ReAct JSON example (no invalid actions:[...] shorthand)', () => {
@@ -36,6 +36,17 @@ describe('stripAssistantControlBlocks', () => {
     expect(out).not.toContain('<agenthub:react>');
     expect(out).not.toContain('<agenthub:skill>');
     expect(out).not.toContain('<agenthub:wiki>');
+  });
+
+  it('removes agenthub task-state blocks', () => {
+    const input = `Done.
+
+<agenthub:task-state>
+{"goal":"next"}
+</agenthub:task-state>`;
+    const out = stripAssistantControlBlocks(input);
+    expect(out).toContain('Done.');
+    expect(out).not.toContain('task-state');
   });
 });
 

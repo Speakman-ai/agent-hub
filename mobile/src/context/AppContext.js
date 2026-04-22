@@ -266,10 +266,9 @@ export function AppProvider({ children }) {
         }
         break;
       case 'session-updated':
+        // Matches web: server sends a full session row; spread keeps `task_state_json` etc. fresh.
         setSessions((prev) =>
-          prev.map((s) =>
-            s.id === data.session.id ? { ...s, name: data.session.name } : s
-          )
+          prev.map((s) => (s.id === data.session.id ? { ...s, ...data.session } : s)),
         );
         break;
       case 'session-worktree-detected':

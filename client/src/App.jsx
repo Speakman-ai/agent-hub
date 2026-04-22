@@ -14,6 +14,7 @@ import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
+import SessionTaskPlanPanel from './components/SessionTaskPlanPanel.jsx';
 import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.jsx';
@@ -673,8 +674,11 @@ export default function App() {
           }
           break;
         case 'session-updated':
+          // Server broadcasts a full `getSession` row today; spreading replaces the
+          // prior object so fields like `task_state_json` stay in sync. If the
+          // payload ever becomes partial, merge field-by-field instead of blind spread.
           setSessions((prev) =>
-            prev.map((s) => (s.id === data.session.id ? { ...s, name: data.session.name } : s)),
+            prev.map((s) => (s.id === data.session.id ? { ...s, ...data.session } : s)),
           );
           break;
         case 'session-worktree-detected':
@@ -2751,6 +2755,13 @@ export default function App() {
                           sessionRunning={Boolean(streamingMsgId || activeTasks[activeSessionId])}
                         />
                       </div>
+                    )}
+                    {activeSessionId && (
+                      <SessionTaskPlanPanel
+                        session={sessions.find((s) => s.id === activeSessionId)}
+                        onSave={(taskState) => api.setSessionTaskState(activeSessionId, taskState)}
+                        showToast={showToast}
+                      />
                     )}
                     {messages.length === 0 && !thinking && !streamingContent && (
                       <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">

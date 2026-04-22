@@ -217,6 +217,38 @@ describe('handleHandoff — end-to-end', () => {
     expect(section).toContain('Previous session transcript (2 turns)');
   });
 
+  it('copies task_state_json from the source session onto the handoff target', async () => {
+    const stmts = getStmts();
+    const srcSessionId = `${testPrefix}-src-taskjson`;
+    stmts.createSession.run(
+      srcSessionId,
+      'agent-lead',
+      'src',
+      'claude-code',
+      'claude-opus-4-7',
+      0,
+      0,
+      1,
+    );
+    const taskJson = JSON.stringify({
+      goal: 'Handoff carry',
+      checklist: [{ text: 'Verify copy', done: true }],
+    });
+    stmts.updateSessionTaskState.run(taskJson, srcSessionId);
+
+    const result = await handleHandoff(
+      srcSessionId,
+      'parent-msg-taskjson',
+      { toAgent: 'agent-backend', note: 'Continue with the plan.' },
+      sourceAgent,
+      project,
+    );
+
+    expect(result).not.toBeNull();
+    const target = stmts.getSession.get(result!.toSessionId) as SessionRow;
+    expect(target.task_state_json).toBe(taskJson);
+  });
+
   it('marks the handoff failed and does not create a target session when the target agent is unknown', async () => {
     const stmts = getStmts();
     const srcSessionId = `${testPrefix}-src-unknown`;

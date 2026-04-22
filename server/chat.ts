@@ -79,6 +79,10 @@ import {
   addResultEventTokens,
   isAgentShellToolName,
 } from './orchestration-budgets.js';
+import {
+  formatPersistedTaskPlanPromptAppend,
+  tryApplyTaskStateBlockFromAssistant,
+} from './task-state.js';
 
 const stmts = _stmts!;
 const DEFAULT_MODEL: string = config.defaultModel;
@@ -120,6 +124,8 @@ interface BuildEnrichedPromptOptions {
    * the source session's transcript + handoff note.
    */
   sessionId?: string;
+  /** From `sessions.task_state_json` — injected every turn when non-empty. */
+  persistedTaskStateJson?: string | null;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -685,6 +691,9 @@ Rules:
     }
   }
 
+  const taskPlan = formatPersistedTaskPlanPromptAppend(options.persistedTaskStateJson ?? null);
+  if (taskPlan) prompt += `\n\n${taskPlan}`;
+
   return prompt;
 }
 
@@ -716,6 +725,7 @@ export function stripAssistantControlBlocks(text: string): string {
     .replace(/<agenthub:react>\s*[\s\S]*?\s*<\/agenthub:react>/gi, '')
     .replace(/<agenthub:skill>\s*[\s\S]*?\s*<\/agenthub:skill>/gi, '')
     .replace(/<agenthub:wiki>\s*[\s\S]*?\s*<\/agenthub:wiki>/gi, '')
+    .replace(/<agenthub:task-state>\s*[\s\S]*?\s*<\/agenthub:task-state>/gi, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -1234,6 +1244,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         useWorktree: !!session!.use_worktree,
         isFirstMessage,
         sessionId,
+        persistedTaskStateJson: session!.task_state_json ?? null,
         _getEnrichedAgent: getEnrichedAgent,
       },
     );
@@ -2201,6 +2212,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       } catch (err) {
         console.error('[assistant-context] Unexpected error:', (err as Error).message);
+      }
+
+      const taskStateApply = tryApplyTaskStateBlockFromAssistant(rawFinalContent);
+      if (taskStateApply.kind === 'ok') {
+        try {
+          stmts.updateSessionTaskState.run(taskStateApply.serialized, sessionId);
+          (session as SessionRow).task_state_json = taskStateApply.serialized;
+          const sessRow = stmts.getSession.get(sessionId) as SessionRow;
+          broadcast({ type: 'session-updated', session: sessRow });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error('[chat] task_state from assistant block failed:', msg);
+        }
+      } else if (taskStateApply.kind === 'invalid') {
+        console.warn('[chat] task_state block present but JSON was invalid or oversize');
       }
 
       finalContent = stripAssistantControlBlocks(finalContent);

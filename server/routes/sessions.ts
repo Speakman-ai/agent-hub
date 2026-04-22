@@ -25,6 +25,7 @@ import type {
 } from '../types.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
+import { normalizeTaskStateInput, parseSessionTaskStateJson } from '../task-state.js';
 
 function safeParse(s: string): Record<string, unknown> {
   try {
@@ -187,7 +188,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.get('/api/sessions/:sessionId', (req: Request, res: Response) => {
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
-    res.json(session);
+    res.json({
+      ...session,
+      taskState: parseSessionTaskStateJson(session.task_state_json ?? null),
+    });
   });
 
   router.get('/api/sessions/:sessionId/messages', (req: Request, res: Response) => {
@@ -584,6 +588,31 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     stmts.updateSessionReactLoop.run(enabled ? 1 : 0, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     res.json(updated);
+  });
+
+  router.put('/api/sessions/:sessionId/task-state', (req: Request, res: Response) => {
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const raw = (req.body as { taskState?: unknown }).taskState;
+    if (raw === undefined) {
+      return res.status(400).json({ error: 'taskState is required (pass null to clear)' });
+    }
+    let nextJson: string | null;
+    if (raw === null) {
+      nextJson = null;
+    } else if (typeof raw !== 'object' || Array.isArray(raw)) {
+      return res.status(400).json({ error: 'taskState must be an object or null' });
+    } else {
+      const normalized = normalizeTaskStateInput(raw);
+      nextJson = normalized ? JSON.stringify(normalized) : null;
+    }
+    stmts.updateSessionTaskState.run(nextJson, req.params.sessionId);
+    const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+    deps.broadcast({ type: 'session-updated', session: updated });
+    res.json({
+      ...updated,
+      taskState: parseSessionTaskStateJson(updated.task_state_json ?? null),
+    });
   });
 
   router.get('/api/delegations/:messageId', (req: Request, res: Response) => {

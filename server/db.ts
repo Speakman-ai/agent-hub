@@ -898,6 +898,12 @@ function initDb(dataDir: string): void {
   }
 
   try {
+    db.prepare('SELECT task_state_json FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN task_state_json TEXT DEFAULT NULL');
+  }
+
+  try {
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_deleted_at ON sessions(deleted_at)');
   } catch (_e) {
     /* already exists */
@@ -1477,6 +1483,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionWebSearchCallsUsed: db.prepare(
       "UPDATE sessions SET web_search_calls_used = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionTaskState: db.prepare(
+      "UPDATE sessions SET task_state_json = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     // Also nulls `stale_pr_notified_at` so a future stale period for the
     // same session re-notifies rather than being permanently suppressed by
