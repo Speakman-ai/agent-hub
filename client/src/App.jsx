@@ -33,6 +33,8 @@ import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
 import { useVersionCheck } from './hooks/useVersionCheck.js';
 import { api } from './utils/api.js';
+import { isNearBottom } from './utils/chatScroll.js';
+import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver.js';
 import {
   cardStartedNotification,
   cardReviewNotification,
@@ -222,8 +224,9 @@ export default function App() {
   const activeDesignIdRef = useRef(activeDesignId);
   activeDesignIdRef.current = activeDesignId;
 
-  const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
+  /** Observed for height changes (streaming, images, code blocks) while pinned to bottom. */
+  const messagesColumnRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
   const activeAgentIdRef = useRef(activeAgentId);
@@ -268,10 +271,9 @@ export default function App() {
     };
   }, []);
 
-  // Auto-scroll — instant on initial load, smooth for live updates.
-  // Only auto-scrolls if user is already near the bottom (within threshold).
+  // Auto-scroll — instant snap to the tail while following (streaming uses the same path).
+  // Stops auto-scrolling when the user scrolls away from the bottom past the threshold.
   const initialScrollRef = useRef(true);
-  const scrollRafRef = useRef(null);
   const isNearBottomRef = useRef(true);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
@@ -279,12 +281,7 @@ export default function App() {
   // interpret the resulting scroll events as the user scrolling away.
   const programmaticScrollRef = useRef(false);
 
-  const checkNearBottom = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return true;
-    const threshold = 150;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
-  }, []);
+  const checkNearBottom = useCallback(() => isNearBottom(scrollContainerRef.current), []);
 
   const handleScrollEvent = useCallback(() => {
     // Ignore scroll events caused by our own programmatic scrolling —
@@ -296,58 +293,37 @@ export default function App() {
     setShowScrollBtn(!nearBottom);
   }, [checkNearBottom]);
 
-  const scrollToBottom = useCallback((instant) => {
-    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+  /** Snap to the tail. Always instant — smooth scroll cannot keep up with streaming tokens. */
+  const scrollToBottom = useCallback(() => {
     const el = scrollContainerRef.current;
-    if (instant && el) {
-      // For initial/instant scrolls, set scrollTop directly — more
-      // reliable than scrollIntoView when the DOM is still laying out.
-      programmaticScrollRef.current = true;
-      el.scrollTop = el.scrollHeight;
-      // Clear the flag after the browser has finished processing the scroll,
-      // and mark us as "at the bottom" so auto-follow resumes.
-      requestAnimationFrame(() => {
-        programmaticScrollRef.current = false;
-        isNearBottomRef.current = true;
-        setShowScrollBtn(false);
-      });
-      return;
-    }
-    // For smooth scrolls (live streaming), use scrollIntoView with the
-    // programmatic guard so the animation doesn't break isNearBottomRef.
+    if (!el) return;
     programmaticScrollRef.current = true;
-    scrollRafRef.current = requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      // Smooth scroll takes time; clear after a generous window and
-      // restore near-bottom state so auto-follow continues.
-      setTimeout(() => {
-        programmaticScrollRef.current = false;
-        isNearBottomRef.current = true;
-        setShowScrollBtn(false);
-      }, 200);
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => {
+      programmaticScrollRef.current = false;
+      isNearBottomRef.current = true;
+      setShowScrollBtn(false);
     });
   }, []);
+
+  // Reset follow state when switching sessions (must run before the scroll layout effect below).
+  useLayoutEffect(() => {
+    initialScrollRef.current = true;
+    isNearBottomRef.current = true;
+    setShowScrollBtn(false);
+  }, [activeSessionId]);
 
   // Auto-scroll on new content, but only if user is near the bottom or it's initial load.
   useLayoutEffect(() => {
     if (initialScrollRef.current || isNearBottomRef.current) {
-      scrollToBottom(initialScrollRef.current);
+      scrollToBottom();
     }
     if (initialScrollRef.current) {
       // Schedule a second scroll for content that renders late (images, code
       // blocks, lazy-loaded components). This catches cases where the first
       // scroll fires before the full height is known.
       const timer = setTimeout(() => {
-        const el = scrollContainerRef.current;
-        if (el) {
-          programmaticScrollRef.current = true;
-          el.scrollTop = el.scrollHeight;
-          requestAnimationFrame(() => {
-            programmaticScrollRef.current = false;
-            isNearBottomRef.current = true;
-            setShowScrollBtn(false);
-          });
-        }
+        scrollToBottom();
       }, 100);
       initialScrollRef.current = false;
       return () => clearTimeout(timer);
@@ -355,11 +331,25 @@ export default function App() {
     initialScrollRef.current = false;
   }, [messages, thinking, streamingContent, scrollToBottom]);
 
-  // Reset to instant scroll when switching sessions
-  useLayoutEffect(() => {
-    initialScrollRef.current = true;
-    isNearBottomRef.current = true;
-    setShowScrollBtn(false);
+  // Late layout (images, syntax-highlighted blocks) can grow the column without a
+  // React state change — keep the viewport pinned when the user is following the tail.
+  useEffect(() => {
+    const col = messagesColumnRef.current;
+    const el = scrollContainerRef.current;
+    if (!col || !el) return undefined;
+    return attachTailPinResizeObserver({
+      observedElement: col,
+      shouldPin: () => isNearBottomRef.current,
+      pinScroll: () => {
+        programmaticScrollRef.current = true;
+        el.scrollTop = el.scrollHeight;
+        requestAnimationFrame(() => {
+          programmaticScrollRef.current = false;
+          isNearBottomRef.current = true;
+          setShowScrollBtn(false);
+        });
+      },
+    });
   }, [activeSessionId]);
 
   // WebSocket handler
@@ -2675,7 +2665,7 @@ export default function App() {
                 onScroll={handleScrollEvent}
                 className="flex-1 overflow-y-auto p-3 md:p-6 relative"
               >
-                <div className="mx-auto">
+                <div className="mx-auto" ref={messagesColumnRef}>
                   {/* Cursor-style timed checklist — rendered at top of chat
                       whenever the session has emitted `[[STEP:...]]` markers.
                       Collapses automatically once all steps resolve. */}
@@ -2842,13 +2832,12 @@ export default function App() {
                       </>
                     );
                   })()}
-                  <div ref={messagesEndRef} />
                 </div>
 
                 {/* Scroll to bottom button */}
                 {showScrollBtn && (
                   <button
-                    onClick={() => scrollToBottom(false)}
+                    onClick={() => scrollToBottom()}
                     className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
                     style={{ width: 'fit-content', display: 'flex' }}
                   >
