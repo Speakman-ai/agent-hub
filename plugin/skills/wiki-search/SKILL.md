@@ -21,10 +21,13 @@ When you need to find project-specific knowledge (API docs, conventions, archite
 Use the Agent Hub API to search the wiki:
 
 ```bash
-# Search by keyword
-curl -s "$AGENT_HUB_URL/api/projects/$PROJECT_ID/wiki?q=authentication" | jq
+# Search by keyword (hybrid semantic + FTS)
+curl -s "$AGENT_HUB_URL/api/projects/$PROJECT_ID/wiki/search?q=authentication" | jq
 
-# Get a specific page
+# Force mode (semantic | fts | hybrid)
+curl -s "$AGENT_HUB_URL/api/projects/$PROJECT_ID/wiki/search?q=auth&mode=semantic" | jq
+
+# Get a specific page by slug
 curl -s "$AGENT_HUB_URL/api/projects/$PROJECT_ID/wiki/api-authentication" | jq
 
 # List all pages

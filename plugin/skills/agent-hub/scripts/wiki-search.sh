@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# scripts/wiki-search.sh — FTS5 search against the project wiki.
+# scripts/wiki-search.sh — hybrid semantic + FTS search against the project wiki.
 #
 # Usage:
-#   wiki-search.sh <query>
+#   wiki-search.sh <query> [mode]
 #
 # Environment:
 #   PROJECT_ID  required
+#   python3     required on PATH (JSON is used to encode the query and normalize responses)
 #
 # Exit codes:
 #   0  success; JSON array of matching pages on stdout
@@ -19,12 +20,14 @@ source "$DIR/ah-api.sh"
 
 _usage() {
   cat <<'EOF'
-usage: wiki-search.sh <query>
+usage: wiki-search.sh <query> [mode]
 
-Full-text search the wiki for $PROJECT_ID. Uses the server's FTS5 index.
+Hybrid-search the wiki for $PROJECT_ID.
+Modes: hybrid (default), semantic, fts.
 
 Example:
   PROJECT_ID=agent-hub wiki-search.sh "deployment"
+  PROJECT_ID=agent-hub wiki-search.sh "deployment" semantic
 EOF
 }
 
@@ -37,7 +40,7 @@ case "${1:-}" in
     ;;
 esac
 
-if [[ $# -ne 1 ]]; then
+if [[ $# -lt 1 || $# -gt 2 ]]; then
   _usage >&2
   exit 2
 fi
@@ -48,6 +51,14 @@ if [[ -z "${PROJECT_ID:-}" ]]; then
 fi
 
 query="$1"
+mode="${2:-hybrid}"
+case "$mode" in
+  hybrid|semantic|fts) ;;
+  *)
+    echo "error: mode must be one of: hybrid | semantic | fts" >&2
+    exit 2
+    ;;
+esac
 
 # URL-encode the query (ASCII-safe fallback mirroring wiki.sh's encoder; multi-
 # byte UTF-8 chars may be mangled — wiki titles/queries are ASCII in practice).
@@ -58,4 +69,7 @@ print(urllib.parse.quote(os.environ["AH_Q"], safe=""))
 PY
 )"
 
-ah_api GET "/api/projects/$PROJECT_ID/wiki?q=$encoded"
+resp="$(ah_api GET "/api/projects/$PROJECT_ID/wiki/search?q=$encoded&mode=$mode")"
+
+# Preserve legacy script shape (JSON array) for existing callers.
+printf '%s' "$resp" | python3 -c 'import json,sys; data=json.load(sys.stdin); json.dump(data.get("results", data), sys.stdout); print()'

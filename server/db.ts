@@ -867,6 +867,15 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  // One hybrid wiki embedding (Gemini) per session — tracked separately from
+  // transcript row count so "Forward to agent" / pre-seeded sessions still get
+  // a first-chance RAG on the first eligible long user message.
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN wiki_hybrid_rag_consumed INTEGER NOT NULL DEFAULT 0');
+  } catch (_e) {
+    /* already exists */
+  }
+
   try {
     db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_deleted_at ON sessions(deleted_at)');
   } catch (_e) {
@@ -1429,6 +1438,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionChangesReady: db.prepare(
       "UPDATE sessions SET changes_ready = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionWikiHybridRagConsumed: db.prepare(
+      "UPDATE sessions SET wiki_hybrid_rag_consumed = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     // Also nulls `stale_pr_notified_at` so a future stale period for the
     // same session re-notifies rather than being permanently suppressed by

@@ -32,6 +32,7 @@ import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
 import { allAgents } from './project-model.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
+import { runWikiHybridRagForUserTurn } from './wiki-rag.js';
 import {
   applyAssistantTextChunkForDelegationKickoff,
   planDelegationRoundOnProcClose,
@@ -912,6 +913,31 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     );
     if (pendingSkillSuffix) enrichedPrompt += pendingSkillSuffix;
     if (routedSkillSuffix) enrichedPrompt += routedSkillSuffix;
+
+    const projectId =
+      (project as ProjectWithCommands & { id?: string }).id ||
+      (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
+      '';
+    if (projectId) {
+      const wikiRag = await runWikiHybridRagForUserTurn(projectId, content, {
+        wikiHybridRagConsumed: session!.wiki_hybrid_rag_consumed,
+        slashSkillActive: !!slashResult,
+      });
+      if (wikiRag.promptSuffix) {
+        enrichedPrompt += wikiRag.promptSuffix;
+      }
+      if (wikiRag.logWarning) {
+        console.warn(`[wiki-rag] retrieval failed for session ${sessionId}: ${wikiRag.logWarning}`);
+      }
+      if (wikiRag.shouldMarkWikiHybridRagConsumed) {
+        try {
+          stmts.updateSessionWikiHybridRagConsumed.run(1, sessionId);
+        } catch (err: unknown) {
+          const m = err instanceof Error ? err.message : String(err);
+          console.error(`[wiki-rag] failed to persist consumption flag: ${m}`);
+        }
+      }
+    }
     const assistantMsgId = uuidv4();
 
     let engineSessionId: string | null = session!.engine_session_id || null;

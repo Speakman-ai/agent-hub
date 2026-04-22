@@ -18,6 +18,12 @@ export interface SessionRow {
   stale_pr_notified_at: string | null;
   pending_skill_context?: string | null;
   ask_mode: number;
+  /**
+   * 0 = this session has not run hybrid wiki RAG (embedding) yet; 1 = consumed.
+   * Drives per-session gating so forwarded / seeded transcripts can still do a
+   * first eligible RAG on a later user turn (unlike a naive “row count” check).
+   */
+  wiki_hybrid_rag_consumed?: number | null;
   cron_id: number | null;
   created_at: string;
   updated_at: string;
@@ -684,6 +690,7 @@ export interface Stmts {
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
   updateSessionChangesReady: Stmt;
+  updateSessionWikiHybridRagConsumed: Stmt;
   clearSessionChangesReady: Stmt;
   getStalePendingPrSessions: Stmt;
   markStalePrNotified: Stmt;
