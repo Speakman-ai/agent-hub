@@ -82,6 +82,7 @@ import {
 import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-observability.js';
 import {
   formatPersistedTaskPlanPromptAppend,
+  formatTaskStateAgentGuidancePromptAppend,
   tryApplyTaskStateBlockFromAssistant,
 } from './task-state.js';
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
@@ -697,6 +698,13 @@ Rules:
       prompt += `\n\n## Sub-Agents\n${subAgentDescriptions}\nDelegate via \`<delegate>\` block (not Agent tool).`;
     }
   }
+
+  const taskGuidance = formatTaskStateAgentGuidancePromptAppend({
+    sessionId: options.sessionId,
+    persistedTaskStateJson: options.persistedTaskStateJson,
+    isFirstMessage: options.isFirstMessage !== false,
+  });
+  if (taskGuidance) prompt += `\n\n${taskGuidance}`;
 
   const taskPlan = formatPersistedTaskPlanPromptAppend(options.persistedTaskStateJson ?? null);
   if (taskPlan) prompt += `\n\n${taskPlan}`;

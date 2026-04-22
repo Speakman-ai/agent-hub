@@ -14,7 +14,6 @@ import DesignsList from './components/DesignsList.jsx';
 import DesignView from './components/DesignView.jsx';
 import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
-import SessionTaskPlanPanel from './components/SessionTaskPlanPanel.jsx';
 import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.jsx';
@@ -2555,6 +2554,15 @@ export default function App() {
               setSidebarOpen(false);
             }}
             onFocusSession={focusAgentSession}
+            onOrchestrationSave={async (body) => {
+              if (!activeSessionId) return null;
+              const row = await api.setSessionOrchestration(activeSessionId, body);
+              setSessions((prev) =>
+                prev.map((s) => (s.id === activeSessionId ? { ...s, ...row } : s)),
+              );
+              return row;
+            }}
+            showToast={showToast}
             sessions={sessions}
             activeSessionId={activeSessionId}
             onSelectSession={(id) => {
@@ -2818,19 +2826,6 @@ export default function App() {
                       <ReactLoopObservabilityPanel
                         steps={reactLoopStepsBySession[activeSessionId]}
                         streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                      />
-                    )}
-                    {activeSessionId && (
-                      <SessionTaskPlanPanel
-                        session={sessions.find((s) => s.id === activeSessionId)}
-                        onSave={(taskState) => api.setSessionTaskState(activeSessionId, taskState)}
-                        onOrchestrationSave={async (body) => {
-                          const row = await api.setSessionOrchestration(activeSessionId, body);
-                          setSessions((prev) =>
-                            prev.map((s) => (s.id === activeSessionId ? { ...s, ...row } : s)),
-                          );
-                        }}
-                        showToast={showToast}
                       />
                     )}
                     {messages.length === 0 && !thinking && !streamingContent && (

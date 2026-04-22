@@ -39,12 +39,11 @@ Notable columns: `id`, `agent_id`, `engine` (`claude-code` | `cursor-agent` | `g
 `last_message_at`.
 
 **Persisted task plan:** `task_state_json` holds optional JSON (`goal`, `checklist`, `lastFailure`)
-for long-running work. Update it with `PUT /api/sessions/:id/task-state` and body `{ "taskState": { ... } }`
-(pass `"taskState": null` to clear). When non-empty, the host appends a **Persisted task plan** section
-to every enriched system prompt as **fenced JSON** (so stored text cannot reshape surrounding instructions).
-Assistants can also replace it by ending a turn with a fenced `<agenthub:task-state>...</agenthub:task-state>`
-block (JSON object); the server persists it, broadcasts `session-updated`, and strips the block from the
-visible assistant message.
+for long-running work. **Primary writer:** the assistant, via a **terminal** `<agenthub:task-state>...</agenthub:task-state>`
+block (JSON object) at the end of a turn; the server persists it, broadcasts `session-updated`, and strips the block from the
+visible assistant message. The web client shows it **read-only** in the left sidebar under **Task plan**.
+Support / automation may still use `PUT /api/sessions/:id/task-state` (`{ "taskState": { ... } }`, or `null` to clear).
+When non-empty, the host appends **Persisted task plan** plus **Session task plan** guidance to the enriched system prompt as **fenced JSON** for the snapshot (so stored text cannot reshape surrounding instructions).
 
 ## Message row
 

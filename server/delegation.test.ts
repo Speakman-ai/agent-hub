@@ -809,7 +809,11 @@ describe('synthesizeResults — engine routing', () => {
     expect(buildEnrichedPromptMock).toHaveBeenCalledWith(
       leadAgent,
       undefined,
-      expect.objectContaining({ sessionId: 'syn-session', useWorktree: false }),
+      expect.objectContaining({
+        sessionId: 'syn-session',
+        useWorktree: false,
+        isFirstMessage: false,
+      }),
     );
   });
 
@@ -849,7 +853,11 @@ describe('synthesizeResults — engine routing', () => {
     expect(buildEnrichedPromptMock).toHaveBeenCalledWith(
       leadAgent,
       undefined,
-      expect.objectContaining({ sessionId: 'syn-session', useWorktree: false }),
+      expect.objectContaining({
+        sessionId: 'syn-session',
+        useWorktree: false,
+        isFirstMessage: false,
+      }),
     );
   });
 
@@ -897,7 +905,11 @@ describe('synthesizeResults — engine routing', () => {
     expect(buildEnrichedPromptMock).toHaveBeenCalledWith(
       leadAgent,
       undefined,
-      expect.objectContaining({ sessionId: 'syn-session', useWorktree: false }),
+      expect.objectContaining({
+        sessionId: 'syn-session',
+        useWorktree: false,
+        isFirstMessage: false,
+      }),
     );
   });
 
@@ -941,7 +953,11 @@ describe('synthesizeResults — engine routing', () => {
     expect(buildEnrichedPromptMock).toHaveBeenCalledWith(
       leadAgent,
       undefined,
-      expect.objectContaining({ sessionId: 'syn-session', useWorktree: false }),
+      expect.objectContaining({
+        sessionId: 'syn-session',
+        useWorktree: false,
+        isFirstMessage: false,
+      }),
     );
   });
 });

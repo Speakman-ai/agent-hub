@@ -3,6 +3,8 @@ import {
   normalizeTaskStateInput,
   parseSessionTaskStateJson,
   formatPersistedTaskPlanPromptAppend,
+  formatTaskStateAgentGuidancePromptAppend,
+  sessionTaskStateHasVisibleContent,
   detectLastTaskStateBlock,
   parseTaskStateUpdateBlock,
   serializeTaskState,
@@ -24,6 +26,71 @@ describe('normalizeTaskStateInput', () => {
     expect(o?.goal).toBe('Fix bug');
     expect(o?.checklist).toEqual([{ text: 'a', done: true }, { text: 'b' }]);
     expect(o?.lastFailure).toBe('timeout');
+  });
+});
+
+describe('sessionTaskStateHasVisibleContent', () => {
+  it('is false for empty / null', () => {
+    expect(sessionTaskStateHasVisibleContent(null)).toBe(false);
+    expect(sessionTaskStateHasVisibleContent('{}')).toBe(false);
+  });
+
+  it('is true when goal or checklist or lastFailure present', () => {
+    expect(sessionTaskStateHasVisibleContent(JSON.stringify({ goal: 'x' }))).toBe(true);
+    expect(sessionTaskStateHasVisibleContent(JSON.stringify({ checklist: [{ text: 'a' }] }))).toBe(
+      true,
+    );
+    expect(sessionTaskStateHasVisibleContent(JSON.stringify({ lastFailure: 'e' }))).toBe(true);
+  });
+});
+
+describe('formatTaskStateAgentGuidancePromptAppend', () => {
+  it('returns null without sessionId', () => {
+    expect(
+      formatTaskStateAgentGuidancePromptAppend({
+        persistedTaskStateJson: null,
+        isFirstMessage: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('includes protocol on first message when no persisted state', () => {
+    const s = formatTaskStateAgentGuidancePromptAppend({
+      sessionId: '01900000-0000-7000-8000-000000000001',
+      persistedTaskStateJson: null,
+      isFirstMessage: true,
+    });
+    expect(s).toContain('Session task plan');
+    expect(s).toContain('<agenthub:task-state>');
+  });
+
+  it('short handoff-aware guidance on first message when state already exists', () => {
+    const s = formatTaskStateAgentGuidancePromptAppend({
+      sessionId: '01900000-0000-7000-8000-000000000001',
+      persistedTaskStateJson: JSON.stringify({ goal: 'carry-over' }),
+      isFirstMessage: true,
+    });
+    expect(s).toContain('persisted snapshot is already attached');
+    expect(s).toContain('<agenthub:task-state>');
+  });
+
+  it('returns null on subsequent turns when still empty (avoid per-turn token growth)', () => {
+    const s = formatTaskStateAgentGuidancePromptAppend({
+      sessionId: '01900000-0000-7000-8000-000000000001',
+      persistedTaskStateJson: null,
+      isFirstMessage: false,
+    });
+    expect(s).toBeNull();
+  });
+
+  it('returns null on subsequent turns when snapshot exists', () => {
+    expect(
+      formatTaskStateAgentGuidancePromptAppend({
+        sessionId: '01900000-0000-7000-8000-000000000001',
+        persistedTaskStateJson: JSON.stringify({ goal: 'x' }),
+        isFirstMessage: false,
+      }),
+    ).toBeNull();
   });
 });
 

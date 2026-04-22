@@ -745,6 +745,7 @@ export async function synthesizeResults(
         const enriched = buildEnrichedPrompt(enrichedAgent, undefined, {
           useWorktree: !!sess?.use_worktree,
           sessionId,
+          isFirstMessage: false,
         });
         const combined = `${enriched}\n\n${synthesisPrompt}`;
         // Mirror `server/chat.ts` Gemini branch: `--yolo` only when not in Ask Mode.
@@ -761,6 +762,7 @@ export async function synthesizeResults(
         const enriched = buildEnrichedPrompt(enrichedAgent, undefined, {
           useWorktree: !!sess?.use_worktree,
           sessionId,
+          isFirstMessage: false,
         });
         // Mirror `server/chat.ts` Codex branch: read-only sandbox in Ask Mode.
         args = ['exec'];
