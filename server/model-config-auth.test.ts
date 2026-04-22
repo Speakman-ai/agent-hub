@@ -64,4 +64,25 @@ describe('buildAuthenticatedModelConfig', () => {
     expect(out.engineDefaultModels['gemini-cli']).toBe('');
     expect(out.engineDefaultModels['claude-code']).toBe('claude-opus-4-7');
   });
+
+  it('filters cursor-agent models to the Hub CLI allowlist when authenticated', () => {
+    const cfg = makeConfig();
+    cfg.engineValidModels['cursor-agent'] = [
+      'gpt-5.3-codex-high',
+      'composer-2',
+      'composer-2-fast',
+      'auto',
+    ];
+    cfg.engineDefaultModels['cursor-agent'] = 'gpt-5.3-codex-high';
+
+    const out = buildAuthenticatedModelConfig(cfg, {
+      'claude-code': false,
+      'cursor-agent': true,
+      'gemini-cli': false,
+      'codex-cli': false,
+    });
+
+    expect(out.engineValidModels['cursor-agent']).toEqual(['composer-2']);
+    expect(out.engineDefaultModels['cursor-agent']).toBe('composer-2');
+  });
 });

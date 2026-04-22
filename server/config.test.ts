@@ -129,3 +129,91 @@ describe('config.ts ↔ cursor-agent install parity', () => {
     }
   });
 });
+
+describe('config.ts — cursor-agent model merge (config.json load path)', () => {
+  function writeConfigAndImport(dataDir: string, fileConfig: Record<string, unknown>) {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify(fileConfig), 'utf8');
+  }
+
+  // config.json replaces whole engine* maps (no deep merge) — real files list every engine.
+  const nonCursorValid: Record<string, string[]> = {
+    'claude-code': ['claude-opus-4-7'],
+    'gemini-cli': ['gemini-2.5-pro'],
+    'codex-cli': ['gpt-5.3-codex'],
+  };
+  const nonCursorDefaults: Record<string, string> = {
+    'claude-code': 'claude-opus-4-7',
+    'gemini-cli': 'gemini-2.5-pro',
+    'codex-cli': 'gpt-5.3-codex',
+  };
+
+  it('strips legacy Codex/GPT/auto/composer-2-fast IDs to the Hub allowlist', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dataDir = path.join(
+      os.tmpdir(),
+      `agent-hub-cursor-allowlist-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    process.env.AGENT_HUB_DATA_DIR = dataDir;
+    writeConfigAndImport(dataDir, {
+      engineValidModels: {
+        ...nonCursorValid,
+        'cursor-agent': [
+          'gpt-5.3-codex-high',
+          'gpt-5.3-codex',
+          'auto',
+          'composer-2-fast',
+          'composer-2',
+        ],
+      },
+      engineDefaultModels: { ...nonCursorDefaults, 'cursor-agent': 'composer-2' },
+    });
+
+    const mod = await import('./config.js');
+    expect(mod.default.engineValidModels['claude-code']).toEqual(['claude-opus-4-7']);
+    expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2']);
+  });
+
+  it('coerces a stale engineDefaultModels["cursor-agent"] to a value in the filtered list', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dataDir = path.join(
+      os.tmpdir(),
+      `agent-hub-cursor-default-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    process.env.AGENT_HUB_DATA_DIR = dataDir;
+    writeConfigAndImport(dataDir, {
+      engineValidModels: {
+        ...nonCursorValid,
+        'cursor-agent': ['gpt-5.3-codex-high', 'composer-2', 'auto'],
+      },
+      engineDefaultModels: { ...nonCursorDefaults, 'cursor-agent': 'gpt-5.3-codex-high' },
+    });
+
+    const mod = await import('./config.js');
+    expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2']);
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('composer-2');
+  });
+
+  it('replaces an all-invalid cursor-agent list with the allowlist and fixes the default', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dataDir = path.join(
+      os.tmpdir(),
+      `agent-hub-cursor-fallback-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    process.env.AGENT_HUB_DATA_DIR = dataDir;
+    writeConfigAndImport(dataDir, {
+      engineValidModels: {
+        ...nonCursorValid,
+        'cursor-agent': ['gpt-5.2', 'auto'],
+      },
+      engineDefaultModels: { ...nonCursorDefaults, 'cursor-agent': 'auto' },
+    });
+
+    const mod = await import('./config.js');
+    expect(mod.default.engineValidModels['cursor-agent']).toEqual(['composer-2']);
+    expect(mod.default.engineDefaultModels['cursor-agent']).toBe('composer-2');
+  });
+});

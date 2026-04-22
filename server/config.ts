@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { AppConfig } from './types.js';
+import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 import { resolveSpawnPath, refreshShellPath, getCachedShellPath } from './shell-path.js';
 
 export { refreshShellPath, getCachedShellPath };
@@ -53,6 +54,20 @@ try {
   }
 }
 
+/** Strip legacy Cursor-IDE / Codex IDs from cursor-agent — Hub only spawns composer-2. */
+function normalizeCursorAgentEngineModels(map: Record<string, string[]>): Record<string, string[]> {
+  const next = { ...map };
+  const hub = new Set<string>(CURSOR_AGENT_HUB_MODEL_ALLOWLIST);
+  const cur = next['cursor-agent'];
+  if (!Array.isArray(cur) || cur.length === 0) {
+    next['cursor-agent'] = [...CURSOR_AGENT_HUB_MODEL_ALLOWLIST];
+    return next;
+  }
+  const filtered = cur.filter((id) => hub.has(id));
+  next['cursor-agent'] = filtered.length > 0 ? filtered : [...CURSOR_AGENT_HUB_MODEL_ALLOWLIST];
+  return next;
+}
+
 function resolve(
   envKey: string | null,
   fileKey: string | null,
@@ -84,6 +99,57 @@ if (!existsSync(DEFAULT_PROJECTS_DIR) && existsSync(LEGACY_PROJECTS_DIR)) {
 }
 
 // ─── Exported config object ──────────────────────────────────────
+
+const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
+  'claude-code': ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-6'],
+  // cursor-agent: only IDs the Hub passes through to `agent --model` (see
+  // CURSOR_AGENT_HUB_MODEL_ALLOWLIST). Codex/GPT variants belong on codex-cli.
+  'cursor-agent': [...CURSOR_AGENT_HUB_MODEL_ALLOWLIST],
+  // Gemini model IDs per https://geminicli.com/docs/cli/cli-reference (--model flag).
+  // `auto` lets the CLI pick; other IDs are the first-party Google models the CLI
+  // currently accepts. We only list stable IDs — experimental/preview aliases are
+  // left out of the allowlist so sessions don't stream with an unsupported name.
+  'gemini-cli': ['auto', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+  // Codex model IDs per https://developers.openai.com/codex/models.
+  // IMPORTANT: the list below is the intersection of models accepted under
+  // BOTH auth modes (ChatGPT OAuth and API-key). Under ChatGPT OAuth the
+  // codex backend rejects older/API-only IDs with:
+  //   "The '<model>' model is not supported when using Codex with a
+  //   ChatGPT account." (HTTP 400, surfaced as a `turn.failed` JSONL event).
+  // Empirically (CLI 0.122, April 2026) the following fail under ChatGPT:
+  //   gpt-5, gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max,
+  //   gpt-5.3-codex-spark.
+  // These currently succeed under ChatGPT OAuth and are the only IDs we
+  // allow the UI to select. Keep in sync with client/src/components/TopBar.jsx
+  // and mobile/src/utils/engineOptions.js. Runtime guard in chat.ts will
+  // drop --model when an unsupported/stale ID is still persisted on a
+  // session (so resumes from old DBs don't spin forever).
+  'codex-cli': ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
+};
+
+const mergedEngineValidModelsRaw =
+  (fileConfig.engineValidModels as Record<string, string[]>) || DEFAULT_ENGINE_VALID_MODELS;
+const mergedEngineValidModels = normalizeCursorAgentEngineModels(mergedEngineValidModelsRaw);
+
+const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
+  'claude-code': 'claude-opus-4-7',
+  'cursor-agent': 'composer-2',
+  'gemini-cli': 'gemini-2.5-pro',
+  // Codex: default is gpt-5.3-codex, the current flagship Codex-tuned model
+  // accepted under BOTH auth modes (ChatGPT OAuth and API-key). Older IDs
+  // like gpt-5.2-codex / gpt-5-codex / gpt-5.1-codex-max get rejected with
+  // HTTP 400 under ChatGPT OAuth — see diagnosis in AGENTS' kanban card
+  // "Codex not working (round 2)".
+  'codex-cli': 'gpt-5.3-codex',
+};
+
+const mergedEngineDefaultModelsRaw =
+  (fileConfig.engineDefaultModels as Record<string, string>) || DEFAULT_ENGINE_DEFAULT_MODELS;
+const mergedEngineDefaultModels = { ...mergedEngineDefaultModelsRaw };
+const cursorAllowed = mergedEngineValidModels['cursor-agent'] || [];
+if (!cursorAllowed.includes(mergedEngineDefaultModels['cursor-agent'])) {
+  mergedEngineDefaultModels['cursor-agent'] = cursorAllowed[0] || 'composer-2';
+}
 
 const config: AppConfig = {
   // ── Server ─────────────────────────────────────────────────────
@@ -117,53 +183,9 @@ const config: AppConfig = {
   // ── Models ─────────────────────────────────────────────────────
   defaultModel: resolve(null, 'defaultModel', 'claude-opus-4-7') as string,
 
-  engineDefaultModels: (fileConfig.engineDefaultModels as Record<string, string>) || {
-    'claude-code': 'claude-opus-4-7',
-    'cursor-agent': 'gpt-5.3-codex-high',
-    'gemini-cli': 'gemini-2.5-pro',
-    // Codex: default is gpt-5.3-codex, the current flagship Codex-tuned model
-    // accepted under BOTH auth modes (ChatGPT OAuth and API-key). Older IDs
-    // like gpt-5.2-codex / gpt-5-codex / gpt-5.1-codex-max get rejected with
-    // HTTP 400 under ChatGPT OAuth — see diagnosis in AGENTS' kanban card
-    // "Codex not working (round 2)".
-    'codex-cli': 'gpt-5.3-codex',
-  },
+  engineDefaultModels: mergedEngineDefaultModels,
 
-  engineValidModels: (fileConfig.engineValidModels as Record<string, string[]>) || {
-    'claude-code': ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-6'],
-    'cursor-agent': [
-      'gpt-5.3-codex-high',
-      'gpt-5.3-codex',
-      'gpt-5.3-codex-low',
-      'gpt-5.3-codex-fast',
-      'gpt-5.2-codex-high',
-      'gpt-5.2-codex',
-      'gpt-5.1-codex-max-high',
-      'composer-2',
-      'composer-2-fast',
-      'auto',
-    ],
-    // Gemini model IDs per https://geminicli.com/docs/cli/cli-reference (--model flag).
-    // `auto` lets the CLI pick; other IDs are the first-party Google models the CLI
-    // currently accepts. We only list stable IDs — experimental/preview aliases are
-    // left out of the allowlist so sessions don't stream with an unsupported name.
-    'gemini-cli': ['auto', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-    // Codex model IDs per https://developers.openai.com/codex/models.
-    // IMPORTANT: the list below is the intersection of models accepted under
-    // BOTH auth modes (ChatGPT OAuth and API-key). Under ChatGPT OAuth the
-    // codex backend rejects older/API-only IDs with:
-    //   "The '<model>' model is not supported when using Codex with a
-    //   ChatGPT account." (HTTP 400, surfaced as a `turn.failed` JSONL event).
-    // Empirically (CLI 0.122, April 2026) the following fail under ChatGPT:
-    //   gpt-5, gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max,
-    //   gpt-5.3-codex-spark.
-    // These currently succeed under ChatGPT OAuth and are the only IDs we
-    // allow the UI to select. Keep in sync with client/src/components/TopBar.jsx
-    // and mobile/src/utils/engineOptions.js. Runtime guard in chat.ts will
-    // drop --model when an unsupported/stale ID is still persisted on a
-    // session (so resumes from old DBs don't spin forever).
-    'codex-cli': ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
-  },
+  engineValidModels: mergedEngineValidModels,
 
   // ── Timeouts ───────────────────────────────────────────────────
   defaultTimeoutMs: resolveInt(null, 'defaultTimeoutMs', 15 * 60 * 1000),
