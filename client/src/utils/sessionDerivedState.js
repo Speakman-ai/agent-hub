@@ -15,3 +15,14 @@ export function isSessionAskModeEnabled(session) {
 export function isSessionWorktreeEnabled(session) {
   return Number(session?.use_worktree ?? 1) !== 0;
 }
+
+/**
+ * Prepend a session to the sidebar list unless it is already present.
+ * POST /sessions broadcasts `session_created` before the HTTP body returns;
+ * without this, the REST path and WebSocket both insert the same row.
+ */
+export function prependSessionDeduped(prev, session) {
+  if (!session?.id) return prev;
+  if (prev.some((s) => s.id === session.id)) return prev;
+  return [session, ...prev];
+}

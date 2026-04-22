@@ -1203,7 +1203,9 @@ export function AppProvider({ children }) {
     const session = await api.createSession(activeAgentId, undefined, {
       askMode: sessionAskMode,
     });
-    setSessions((prev) => [session, ...prev]);
+    setSessions((prev) =>
+      prev.some((s) => s.id === session.id) ? prev : [session, ...prev],
+    );
     setActiveSessionId(session.id);
     const agent = agents.find((a) => a.id === activeAgentId);
     setSessionEngine(session.engine || agent?.engine || 'claude-code');
@@ -1414,7 +1416,7 @@ export function AppProvider({ children }) {
           api
             .createSession(activeAgentId, undefined, { askMode: sessionAskMode })
             .then((s) => {
-              setSessions((prev) => [s, ...prev]);
+              setSessions((prev) => (prev.some((x) => x.id === s.id) ? prev : [s, ...prev]));
               setActiveSessionId(s.id);
               activeSessionIdRef.current = s.id;
               return s;

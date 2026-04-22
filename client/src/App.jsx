@@ -76,7 +76,11 @@ import {
   firstEngineWithAuthenticatedModels,
   defaultModelForAuthenticatedEngine,
 } from './utils/authModelEngines.js';
-import { isSessionAskModeEnabled, isSessionWorktreeEnabled } from './utils/sessionDerivedState.js';
+import {
+  isSessionAskModeEnabled,
+  isSessionWorktreeEnabled,
+  prependSessionDeduped,
+} from './utils/sessionDerivedState.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -167,7 +171,7 @@ export default function App() {
   // Live git/gh output while POST /create-pr runs (server streams via WebSocket).
   const [createPrLogBySession, setCreatePrLogBySession] = useState({});
   // Live shell output while verify-before-Done runs (close-card → Done gate).
-  const [doneVerifyLogBySession, setDoneVerifyLogBySession] = useState({});
+  const [doneVerifyLogBySession, _setDoneVerifyLogBySession] = useState({});
   // Cursor-style ProgressPanel state — keyed by sessionId.
   // Each value: Array<{ step, status, startedAt, finishedAt? }> in emit order.
   const [sessionProgress, setSessionProgress] = useState({});
@@ -2062,7 +2066,7 @@ export default function App() {
   const handleNewSession = async () => {
     if (!activeAgentId) return;
     const session = await api.createSession(activeAgentId, undefined, { askMode: sessionAskMode });
-    setSessions((prev) => [session, ...prev]);
+    setSessions((prev) => prependSessionDeduped(prev, session));
     setActiveSessionId(session.id);
     setSessionEngine(session.engine || activeAgent?.engine || 'claude-code');
     setSessionModel(
@@ -2285,7 +2289,7 @@ export default function App() {
       const coalesceKey = `${activeAgentId}:${sessionAskMode ? 'ask' : 'run'}`;
       const session = await coalescePromiseByKey(implicitSessionCreateByKeyRef, coalesceKey, () =>
         api.createSession(activeAgentId, undefined, { askMode: sessionAskMode }).then((s) => {
-          setSessions((prev) => [s, ...prev]);
+          setSessions((prev) => prependSessionDeduped(prev, s));
           setActiveSessionId(s.id);
           activeSessionIdRef.current = s.id;
           return s;

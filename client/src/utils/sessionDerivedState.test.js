@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { isSessionAskModeEnabled, isSessionWorktreeEnabled } from './sessionDerivedState.js';
+import {
+  isSessionAskModeEnabled,
+  isSessionWorktreeEnabled,
+  prependSessionDeduped,
+} from './sessionDerivedState.js';
 
 describe('sessionDerivedState', () => {
   describe('isSessionAskModeEnabled', () => {
@@ -33,6 +37,25 @@ describe('sessionDerivedState', () => {
     it('returns true when use_worktree is 1 or missing on a row object', () => {
       expect(isSessionWorktreeEnabled({ id: 'x', use_worktree: 1 })).toBe(true);
       expect(isSessionWorktreeEnabled({ id: 'x' })).toBe(true);
+    });
+  });
+
+  describe('prependSessionDeduped', () => {
+    const a = { id: 'a', name: 'One' };
+    const b = { id: 'b', name: 'Two' };
+
+    it('prepends when the id is new', () => {
+      expect(prependSessionDeduped([b], a)).toEqual([a, b]);
+    });
+
+    it('returns the same array reference when the id already exists', () => {
+      const prev = [a, b];
+      expect(prependSessionDeduped(prev, { ...a, name: 'Renamed' })).toBe(prev);
+    });
+
+    it('ignores a session without id', () => {
+      const prev = [a];
+      expect(prependSessionDeduped(prev, {})).toBe(prev);
     });
   });
 });
