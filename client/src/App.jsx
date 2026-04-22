@@ -56,8 +56,14 @@ import {
   getActiveOrg,
   getActiveOrgApiId,
   getOrgs,
+  switchOrg,
 } from './utils/orgs.js';
-import { getApiBase, getAuthHeaders, getServerBase } from './utils/connection.js';
+import {
+  getApiBase,
+  getAuthHeaders,
+  getServerBase,
+  reloadForOrgSwitch,
+} from './utils/connection.js';
 import { extractSubmittedAskIds } from './utils/askAnswers.js';
 import { getDefaultShortcuts } from './utils/shortcuts.js';
 import {
@@ -2332,8 +2338,6 @@ export default function App() {
                 <button
                   key={org.id}
                   onClick={async () => {
-                    const { switchOrg } = await import('./utils/orgs.js');
-                    const { reloadForOrgSwitch } = await import('./utils/connection.js');
                     await switchOrg(org.id);
                     reloadForOrgSwitch();
                   }}

@@ -14,7 +14,7 @@
  *   - Agent Hub-<version>-arm64.dmg
  *   - Agent Hub-<version>.dmg   (Intel x64)
  */
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -148,6 +148,96 @@ function run(cmd, args, opts = {}) {
   }
 }
 
+/**
+ * Read `version` from `server/node_modules/@esbuild/<dirName>/package.json`.
+ * @returns {string | null} semver string, or null if missing / invalid shape
+ */
+export function readDarwinEsbuildDirVersion(serverDir, dirName) {
+  if (!dirName) {
+    return null;
+  }
+  const pkgPath = resolve(serverDir, 'node_modules/@esbuild', dirName, 'package.json');
+  if (!existsSync(pkgPath)) {
+    return null;
+  }
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`✗ Could not parse ${pkgPath}: ${msg}`);
+    process.exit(1);
+  }
+  const v = raw && typeof raw.version === 'string' ? raw.version : null;
+  return v;
+}
+
+/**
+ * Version of the installed native darwin @esbuild binary under server/node_modules.
+ * Used to pin the cross-arch binary to the same release as tsx/esbuild.
+ */
+export function readNativeDarwinEsbuildVersion(serverDir) {
+  const nativeDir =
+    process.arch === 'arm64'
+      ? 'darwin-arm64'
+      : process.arch === 'x64'
+        ? 'darwin-x64'
+        : null;
+  return readDarwinEsbuildDirVersion(serverDir, nativeDir);
+}
+
+/**
+ * npm package spec for the non-native macOS esbuild binary (for universal DMG packaging).
+ */
+export function crossDarwinEsbuildPackageSpec(arch = process.arch, nativeVersion) {
+  if (!nativeVersion) {
+    return null;
+  }
+  const other =
+    arch === 'arm64' ? 'darwin-x64' : arch === 'x64' ? 'darwin-arm64' : null;
+  if (!other) {
+    return null;
+  }
+  return `@esbuild/${other}@${nativeVersion}`;
+}
+
+function installCrossPlatformEsbuildForServer() {
+  const serverDir = resolve(ROOT, 'server');
+  const otherDir =
+    process.arch === 'arm64' ? 'darwin-x64' : process.arch === 'x64' ? 'darwin-arm64' : null;
+  if (!otherDir) {
+    console.warn(
+      `\nSkipping cross-arch esbuild install: unexpected process.arch=${process.arch}`
+    );
+    return;
+  }
+  const v = readNativeDarwinEsbuildVersion(serverDir);
+  if (!v) {
+    console.error(
+      '✗ Could not read native @esbuild/darwin-* version under server/node_modules. Run npm ci (or npm install) in server/ first.'
+    );
+    process.exit(1);
+  }
+  const crossV = readDarwinEsbuildDirVersion(serverDir, otherDir);
+  if (crossV === v) {
+    console.log(
+      `\nCross-arch esbuild already satisfies native version (@esbuild/${otherDir}@${crossV}), skipping install.`
+    );
+    return;
+  }
+  if (crossV) {
+    console.log(
+      `\nCross-arch @esbuild/${otherDir}@${crossV} differs from native @${v}; reinstalling to match.`
+    );
+  }
+  const spec = crossDarwinEsbuildPackageSpec(process.arch, v);
+  console.log(
+    '\nInstalling cross-platform esbuild binary for server (other macOS arch for DMG packaging)...'
+  );
+  // npm refuses wrong-CPU optional packages without --force; safe here (official scoped binary only).
+  run('npm', ['install', '--no-save', '--force', spec], { cwd: serverDir });
+}
+
 export async function main() {
   requireMac();
   const version = readVersion();
@@ -161,13 +251,9 @@ export async function main() {
   run('npm', ['run', 'build']);
 
   // 2. Ensure both platform esbuild binaries are present in server/node_modules.
-  //    The build machine is typically arm64, so only @esbuild/darwin-arm64 gets
-  //    installed by `npm install`. The x64 DMG needs @esbuild/darwin-x64 too —
-  //    without it, tsx (which uses esbuild) crashes on Intel Macs.
-  console.log('\nInstalling cross-platform esbuild binaries for server...');
-  run('npm', ['install', '--no-save', '@esbuild/darwin-arm64', '@esbuild/darwin-x64'], {
-    cwd: resolve(ROOT, 'server'),
-  });
+  //    The build machine only gets its native @esbuild/darwin-* from npm ci.
+  //    The other macOS arch is needed so tsx works inside that arch's DMG.
+  installCrossPlatformEsbuildForServer();
 
   // 3. Build both DMGs in one electron-builder invocation
   run('npx', electronBuilderArgs());

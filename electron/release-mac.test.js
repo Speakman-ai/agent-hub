@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { writeFileSync, mkdtempSync } from 'fs';
+import { writeFileSync, mkdtempSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   readVersion,
+  readDarwinEsbuildDirVersion,
+  readNativeDarwinEsbuildVersion,
+  crossDarwinEsbuildPackageSpec,
   dmgFilenames,
   s3Key,
   s3Uri,
@@ -61,6 +64,67 @@ describe('release-mac helpers', () => {
       expect(s3Uri('agent-hub-prod-releases', 'v1.3.1/foo.dmg')).toBe(
         's3://agent-hub-prod-releases/v1.3.1/foo.dmg'
       );
+    });
+  });
+
+  describe('crossDarwinEsbuildPackageSpec', () => {
+    it('targets darwin-x64 when the host is arm64', () => {
+      expect(crossDarwinEsbuildPackageSpec('arm64', '0.27.7')).toBe(
+        '@esbuild/darwin-x64@0.27.7'
+      );
+    });
+
+    it('targets darwin-arm64 when the host is x64', () => {
+      expect(crossDarwinEsbuildPackageSpec('x64', '0.27.7')).toBe(
+        '@esbuild/darwin-arm64@0.27.7'
+      );
+    });
+
+    it('returns null without a version', () => {
+      expect(crossDarwinEsbuildPackageSpec('arm64', null)).toBeNull();
+    });
+
+    it('returns null for unsupported arch', () => {
+      expect(crossDarwinEsbuildPackageSpec('riscv64', '0.27.7')).toBeNull();
+    });
+  });
+
+  describe('readDarwinEsbuildDirVersion', () => {
+    it('reads version from a given @esbuild/<dir>/package.json', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'release-mac-esbuild-dir-'));
+      const pkgDir = join(dir, 'node_modules/@esbuild/darwin-x64');
+      mkdirSync(pkgDir, { recursive: true });
+      writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ version: '1.2.3' }));
+      expect(readDarwinEsbuildDirVersion(dir, 'darwin-x64')).toBe('1.2.3');
+    });
+
+    it('returns null when the package path is missing', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'release-mac-esbuild-missing-'));
+      expect(readDarwinEsbuildDirVersion(dir, 'darwin-x64')).toBeNull();
+    });
+  });
+
+  describe('readNativeDarwinEsbuildVersion', () => {
+    it('reads version from the native darwin esbuild folder for this arch', () => {
+      const native =
+        process.arch === 'arm64'
+          ? 'darwin-arm64'
+          : process.arch === 'x64'
+            ? 'darwin-x64'
+            : null;
+      if (!native) {
+        return;
+      }
+      const dir = mkdtempSync(join(tmpdir(), 'release-mac-esbuild-'));
+      const pkgDir = join(dir, 'node_modules/@esbuild', native);
+      mkdirSync(pkgDir, { recursive: true });
+      writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ version: '9.8.7' }));
+      expect(readNativeDarwinEsbuildVersion(dir)).toBe('9.8.7');
+    });
+
+    it('returns null when the native darwin esbuild package is absent', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'release-mac-no-native-esbuild-'));
+      expect(readNativeDarwinEsbuildVersion(dir)).toBeNull();
     });
   });
 
