@@ -25,6 +25,7 @@ export function resolveProjectPaths(project: Project, agent: Agent): ProjectPath
 
 export const SHARED_CONTEXT_FILES: readonly string[] = [
   'AGENTS.md',
+  'CLAUDE.md',
   'SOUL.md',
   'USER.md',
   'TOOLS.md',

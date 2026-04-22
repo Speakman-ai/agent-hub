@@ -73,10 +73,11 @@ describe('constants', () => {
   it('SHARED_CONTEXT_FILES contains expected files', () => {
     expect(SHARED_CONTEXT_FILES).toContain('SOUL.md');
     expect(SHARED_CONTEXT_FILES).toContain('AGENTS.md');
+    expect(SHARED_CONTEXT_FILES).toContain('CLAUDE.md');
     expect(SHARED_CONTEXT_FILES).toContain('USER.md');
     expect(SHARED_CONTEXT_FILES).toContain('TOOLS.md');
     expect(SHARED_CONTEXT_FILES).toContain('MEMORY.md');
-    expect(SHARED_CONTEXT_FILES).toHaveLength(5);
+    expect(SHARED_CONTEXT_FILES).toHaveLength(6);
   });
 
   it('AGENT_CONTEXT_FILES contains IDENTITY.md', () => {
@@ -84,7 +85,7 @@ describe('constants', () => {
   });
 
   it('ALL_CONTEXT_FILES is union of shared and agent', () => {
-    expect(ALL_CONTEXT_FILES).toHaveLength(6);
+    expect(ALL_CONTEXT_FILES).toHaveLength(7);
     expect(ALL_CONTEXT_FILES).toEqual([...SHARED_CONTEXT_FILES, ...AGENT_CONTEXT_FILES]);
   });
 });

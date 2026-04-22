@@ -263,6 +263,7 @@ describe('buildEnrichedPrompt — first message gating', () => {
 
   it('includes context files on both first and subsequent messages', () => {
     writeFileSync(path.join(tmpBase, 'SOUL.md'), 'This is the soul.');
+    writeFileSync(path.join(tmpBase, 'CLAUDE.md'), 'Repo dev guide body.');
     const first = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: true,
     });
@@ -271,6 +272,9 @@ describe('buildEnrichedPrompt — first message gating', () => {
     });
     expect(first).toContain('This is the soul.');
     expect(subsequent).toContain('This is the soul.');
+    expect(first).toContain('## CLAUDE.md');
+    expect(first).toContain('Repo dev guide body.');
+    expect(subsequent).toContain('## CLAUDE.md');
   });
 
   it('subsequent message prompt is significantly smaller', () => {

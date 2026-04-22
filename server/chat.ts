@@ -400,7 +400,9 @@ export function buildEnrichedPrompt(
 
   const paths = resolveProjectPaths(project as Project, agent as Agent);
 
-  const contextOrder = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md'];
+  // Project workspace docs (ahw). CLAUDE.md: repo dev commands, architecture, testing —
+  // same file Cursor often injects as workspace rules; include here for CLI engines.
+  const contextOrder = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'CLAUDE.md'];
   let agentsMdIncluded = false;
   let identityMdIncluded = false;
   for (const filename of contextOrder) {
