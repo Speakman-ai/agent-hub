@@ -1,7 +1,8 @@
 /**
- * Design chat handler — spawns a Claude Code CLI process whose cwd is a
- * design's artifact directory. Mirrors the room-chat flow structurally but
- * is much simpler: one singleton agent, no @mentions, no per-turn queueing.
+ * Design chat handler — spawns the configured CLI (Claude Code, Cursor Agent,
+ * Gemini CLI, or Codex) with cwd set to a design's artifact directory.
+ * Mirrors the main chat flow at a high level (stream-json + parser) but stays
+ * single-threaded: one turn at a time, no delegation.
  *
  * System prompt composition (see `buildDesignSystemPrompt`):
  *   1. The `design` skill body (singleton identity + rules)
@@ -11,11 +12,22 @@
  * After each assistant turn we persist the message, then broadcast both
  * `design_message_added` (chat pane) and `design_updated` (iframe reload).
  */
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, execFile, type ChildProcess } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
-import { buildSpawnEnv, defaultModelForEngine } from './config.js';
+import { buildSpawnEnv } from './config.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
+import { createStreamParser } from './stream-parser.js';
+import { pickProcessErrorMessage } from './process-error-message.js';
+import {
+  applyAssistantTextChunkForDelegationKickoff,
+  accumulateAssistantStreamForDelegateKickoff,
+} from './delegation-kickoff-buffer.js';
+import {
+  normalizeDesignEngine,
+  resolveDesignModelForEngine,
+  buildDesignSpawnArgs,
+} from './design-multi-engine.js';
 import type {
   Stmts,
   Project,
@@ -23,7 +35,10 @@ import type {
   BroadcastFn,
   DesignWithProjects,
   DesignMessageRow,
+  StreamEvent,
 } from './types.js';
+
+export { resolveDesignStudioModel } from './design-multi-engine.js';
 
 // ─── Dependency injection ────────────────────────────────────────────
 
@@ -31,36 +46,19 @@ interface DesignChatDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
   getClaudeBin: () => string;
+  getCursorBin: () => string;
+  getGeminiBin: () => string;
+  getCodexBin: () => string;
   getConfig: () => AppConfig;
-  /**
-   * Designs are hub-level, so project IDs on the row may not resolve to a
-   * real Project at send-time (project was deleted, or the user switched
-   * orgs). We let callers inject the lookup they already own.
-   */
   getDesign: (id: string) => DesignWithProjects | null;
-  /** Absolute path of the `<dataDir>/designs/` directory. */
   getDesignsRoot: () => string;
-  /**
-   * Path to the default-skills directory so we can read the `design` skill
-   * body at send-time without hard-coding the layout.
-   */
   getDefaultSkillsDir: () => string;
 }
 
 interface DesignState {
   proc: ChildProcess | null;
   cancelled: boolean;
-  /**
-   * Id of the user message that triggered this turn. Exposed through the
-   * status endpoint so a re-entering client knows which message the
-   * "thinking…" indicator should hang below.
-   */
   messageId: string | null;
-  /**
-   * Latest cumulative stdout we've broadcast for this turn. Cached so a
-   * re-entering client can fetch the current partial output from the status
-   * endpoint and skip waiting for the next `design_stream` chunk.
-   */
   lastStream: string;
 }
 
@@ -88,33 +86,26 @@ export function initDesignChat(d: DesignChatDeps): void {
   deps = d;
 }
 
-/**
- * Resolve the Claude Code `--model` for Design Studio. Always uses the
- * `claude-code` allowlist; a null/empty `agent_model` on the design falls back
- * to `defaultModelForEngine('claude-code')`.
- */
-export function resolveDesignStudioModel(
-  agentModel: string | null | undefined,
-  cfg: AppConfig,
-): string {
-  const allowed = cfg.engineValidModels['claude-code'] || [];
-  const configured = typeof agentModel === 'string' ? agentModel.trim() : '';
-  if (configured && allowed.includes(configured)) {
-    return configured;
-  }
-  const fallback = defaultModelForEngine('claude-code');
-  if (allowed.length === 0 || allowed.includes(fallback)) {
-    return fallback;
-  }
-  return allowed[0] ?? fallback;
+function createDesignCursorChat(cwd: string): Promise<string> {
+  const CURSOR_BIN = getDeps().getCursorBin();
+  return new Promise((resolve, reject) => {
+    execFile(CURSOR_BIN, ['create-chat'], { cwd, env: process.env }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(`cursor create-chat failed: ${stderr || err.message}`));
+        return;
+      }
+      const id = (stdout || '').trim().split(/\s+/).pop();
+      if (!id) {
+        reject(new Error('cursor create-chat returned no id'));
+        return;
+      }
+      resolve(id);
+    });
+  });
 }
 
-// ─── Cancel ──────────────────────────────────────────────────────────
+// ─── Cancel ────────────────────────────────────────────────────────────
 
-/**
- * Snapshot of a design's current turn state for the `/status` endpoint.
- * `inFlight: false` is returned with empty fields when no turn is running.
- */
 export interface DesignStatus {
   inFlight: boolean;
   messageId: string | null;
@@ -138,28 +129,18 @@ export function handleDesignCancel(designId: string): void {
   if (state.proc) state.proc.kill('SIGTERM');
 }
 
-// ─── System prompt assembly ──────────────────────────────────────────
+// ─── System prompt assembly ────────────────────────────────────────────
 
-/**
- * Build the system prompt for a design session. Intentionally NOT reusing
- * `buildEnrichedPrompt` from chat.ts — that helper is rooted in the
- * project/agent model (IDENTITY.md, skills dir inside `ahw`, etc.) which
- * doesn't apply to a singleton design agent. We compose the minimal context
- * the agent actually needs here.
- */
 export function buildDesignSystemPrompt(
   design: DesignWithProjects,
   opts: { designsRoot: string; defaultSkillsDir: string },
 ): string {
   const sections: string[] = [];
 
-  // 1. The design skill itself.
   const skillPath = path.join(opts.defaultSkillsDir, 'design', 'SKILL.md');
   if (existsSync(skillPath)) {
     try {
       const raw = readFileSync(skillPath, 'utf-8');
-      // Strip YAML frontmatter if present — the body is the instructional
-      // content, frontmatter is metadata for the skill loader.
       const body = raw.replace(/^---[\s\S]*?---\s*/, '');
       sections.push(body.trim());
     } catch {
@@ -167,7 +148,6 @@ export function buildDesignSystemPrompt(
     }
   }
 
-  // 2. Each linked project's design-system doc (or SOUL.md fallback).
   for (const project of design.linkedProjects) {
     const docs = readProjectDesignDocs(project);
     if (docs) {
@@ -175,7 +155,6 @@ export function buildDesignSystemPrompt(
     }
   }
 
-  // 3. Snapshot of the artifact directory so the agent sees existing files.
   const files = listDesignFiles(opts.designsRoot, design.id);
   if (files.length > 0) {
     sections.push(`\n## Current files in this design\n\n${files.map((f) => `- ${f}`).join('\n')}`);
@@ -191,8 +170,6 @@ export function buildDesignSystemPrompt(
 }
 
 function readProjectDesignDocs(project: Project): string | null {
-  // Prefer an explicit DESIGN_SYSTEM.md; fall back to SOUL.md so every
-  // linked project contributes *something* rather than silently dropping.
   const ahw = project.ahw;
   const candidates = [
     ahw ? path.join(ahw, 'DESIGN_SYSTEM.md') : null,
@@ -210,7 +187,7 @@ function readProjectDesignDocs(project: Project): string | null {
   return null;
 }
 
-// ─── Main handler ────────────────────────────────────────────────────
+// ─── Main handler ──────────────────────────────────────────────────────
 
 export async function handleDesignChat(
   ws: WebSocketLike | null,
@@ -218,7 +195,7 @@ export async function handleDesignChat(
 ): Promise<void> {
   const { designId, content } = msg;
   const d = getDeps();
-  const { broadcast } = d;
+  const { broadcast, stmts } = d;
 
   const design = d.getDesign(designId);
   if (!design) {
@@ -231,7 +208,6 @@ export async function handleDesignChat(
     return;
   }
 
-  // Reject concurrent turns — keep Phase 1 simple; queueing can come later.
   if (activeDesignProcesses.has(designId)) {
     if (ws)
       ws.send(
@@ -243,136 +219,234 @@ export async function handleDesignChat(
     return;
   }
 
-  // Persist + broadcast the user message first so the chat pane renders it
-  // immediately, even before the CLI spawn completes.
-  const userMsg = appendDesignMessage(designId, 'user', content);
-  broadcast({ type: 'design_message_added', designId, message: userMsg });
+  const userMsgRow = appendDesignMessage(designId, 'user', content);
+  broadcast({ type: 'design_message_added', designId, message: userMsgRow });
 
   const state: DesignState = {
     proc: null,
     cancelled: false,
-    messageId: userMsg.id,
+    messageId: userMsgRow.id,
     lastStream: '',
   };
   activeDesignProcesses.set(designId, state);
 
   try {
-    const CLAUDE_BIN = d.getClaudeBin();
     const config = d.getConfig();
-    const cliModel = resolveDesignStudioModel(design.agent_model, config);
+    const engine = normalizeDesignEngine(design.agent_engine);
+    const model = resolveDesignModelForEngine(engine, design.agent_model, config);
+    let engineSessionId = design.engine_session_id ?? null;
+    const startedWithoutSession = !engineSessionId;
+
     const designsRoot = d.getDesignsRoot();
     const defaultSkillsDir = d.getDefaultSkillsDir();
     const designDir = path.join(designsRoot, designId);
-
     const systemPrompt = buildDesignSystemPrompt(design, { designsRoot, defaultSkillsDir });
 
-    // Replay transcript so the agent has context of prior turns. Designs are
-    // low-volume enough that we can ship the full history each turn; if this
-    // gets expensive we can summarize.
+    if (engine === 'cursor-agent' && !engineSessionId) {
+      try {
+        engineSessionId = await createDesignCursorChat(designDir);
+        stmts.updateDesignEngineSessionId.run(engineSessionId, designId);
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        broadcast({ type: 'design_error', designId, error: errMsg });
+        const assistantErr = appendDesignMessage(designId, 'assistant', `[error] ${errMsg}`);
+        broadcast({ type: 'design_message_added', designId, message: assistantErr });
+        return;
+      }
+    }
+
+    const isNewEngineSession = startedWithoutSession;
     const history = listDesignMessages(designId) as DesignMessageRow[];
-    const transcript = history
-      .slice(0, -1) // exclude the user message we just appended — it becomes the prompt
-      .map(
-        (m) =>
-          `[${m.role === 'assistant' ? 'Design Studio' : m.role === 'user' ? 'User' : 'System'}]: ${m.content}`,
-      )
-      .join('\n\n');
-    const userPrompt = transcript
-      ? `${transcript}\n\n[User]: ${content}\n\nRespond as Design Studio.`
-      : content;
+    const priorMessages = history.slice(0, -1);
+
+    let bin: string;
+    let args: string[];
+    try {
+      ({ bin, args } = buildDesignSpawnArgs({
+        engine,
+        model,
+        designId,
+        systemPrompt,
+        cliContent: content.trim(),
+        priorMessages,
+        engineSessionId,
+        isNewEngineSession,
+        bins: {
+          claude: d.getClaudeBin(),
+          cursor: d.getCursorBin(),
+          gemini: d.getGeminiBin(),
+          codex: d.getCodexBin(),
+        },
+      }));
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      broadcast({ type: 'design_error', designId, error: errMsg });
+      const assistantErr = appendDesignMessage(designId, 'assistant', `[error] ${errMsg}`);
+      broadcast({ type: 'design_message_added', designId, message: assistantErr });
+      return;
+    }
 
     broadcast({
       type: 'design_thinking',
       designId,
-      messageId: userMsg.id,
+      messageId: userMsgRow.id,
     });
 
-    let finalText = '';
-    try {
-      const result = await new Promise<string>((resolve, reject) => {
-        const args: string[] = [
-          '--print',
-          '--permission-mode',
-          'bypassPermissions',
-          '--model',
-          cliModel,
-          '--system-prompt',
-          systemPrompt,
-          userPrompt,
-        ];
+    const parser = createStreamParser(engine);
+    let buffers = { finalText: '', partialFallback: '' };
+    let toolResultOutputs = '';
+    let streamErrorMessage = '';
+    let errorOutput = '';
+    let spawnErrored = false;
+    let codexThreadPersisted = !!(engine === 'codex-cli' && design.engine_session_id);
 
-        let output = '';
-        let errorOutput = '';
-        const timeout = config.defaultTimeoutMs;
-        const spawnEnv = buildSpawnEnv(config);
+    const spawnEnv = { ...buildSpawnEnv(config), AGENT_HUB_SESSION_ID: `design:${designId}` };
 
-        const proc = spawn(CLAUDE_BIN, args, {
-          cwd: designDir,
-          env: spawnEnv,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        }) as ChildProcess;
-        state.proc = proc;
+    const finalTextOut = await new Promise<string>((resolve, reject) => {
+      const timeout = config.defaultTimeoutMs;
+      const proc = spawn(bin, args, {
+        cwd: designDir,
+        env: spawnEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }) as ChildProcess;
+      state.proc = proc;
 
-        const timer = setTimeout(() => {
-          proc.kill('SIGTERM');
-          reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
-        }, timeout);
+      const timer = setTimeout(() => {
+        proc.kill('SIGTERM');
+        reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
+      }, timeout);
 
-        proc.stdout!.on('data', (chunk: Buffer) => {
-          output += chunk.toString();
-          state.lastStream = output;
+      const handleEvent = (event: StreamEvent): void => {
+        if (event.type === 'assistant_text') {
+          const text =
+            typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
+          const { next } = applyAssistantTextChunkForDelegationKickoff(
+            buffers,
+            text,
+            !!event.partial,
+          );
+          buffers = next;
+          const visible = accumulateAssistantStreamForDelegateKickoff(
+            buffers.finalText,
+            buffers.partialFallback,
+          );
+          state.lastStream = visible;
           broadcast({
             type: 'design_stream',
             designId,
-            content: output,
+            content: visible,
           });
-        });
+        }
 
-        proc.stderr!.on('data', (chunk: Buffer) => {
-          errorOutput += chunk.toString();
-        });
-
-        proc.on('close', (code: number | null) => {
-          clearTimeout(timer);
-          state.proc = null;
-          if (state.cancelled) {
-            reject(new Error('Cancelled'));
-            return;
+        if (
+          engine === 'codex-cli' &&
+          event.type === 'system' &&
+          event.sessionId &&
+          !codexThreadPersisted
+        ) {
+          codexThreadPersisted = true;
+          try {
+            stmts.updateDesignEngineSessionId.run(event.sessionId, designId);
+          } catch (e: unknown) {
+            const m = e instanceof Error ? e.message : String(e);
+            console.warn('[design] Failed to persist codex engine_session_id:', m);
           }
-          if (code !== 0 && !output) {
-            reject(new Error(errorOutput || `Exited with code ${code}`));
-          } else {
-            resolve(output.trim() || errorOutput.trim() || '(empty response)');
-          }
-        });
+        }
 
-        proc.on('error', (err: Error) => {
-          clearTimeout(timer);
-          state.proc = null;
-          reject(err);
-        });
+        if (event.type === 'tool_result' && event.output) {
+          toolResultOutputs += '\n' + event.output;
+        }
+
+        if (event.type === 'result' && event.isError && event.text) {
+          if (!streamErrorMessage) streamErrorMessage = event.text;
+        }
+        if (
+          event.type === 'unknown' &&
+          typeof event.text === 'string' &&
+          (event.text.startsWith('codex error:') || event.text.startsWith('codex item error:'))
+        ) {
+          if (!streamErrorMessage) streamErrorMessage = event.text;
+        }
+      };
+
+      proc.stdout!.on('data', (chunk: Buffer) => {
+        for (const event of parser.feed(chunk)) handleEvent(event);
       });
 
-      finalText = result;
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (state.cancelled) {
-        broadcast({ type: 'design_cancelled', designId });
-      } else {
-        broadcast({ type: 'design_error', designId, error: errMsg });
-        // Persist the error as an assistant message so it shows up on reload.
-        const assistantErr = appendDesignMessage(designId, 'assistant', `[error] ${errMsg}`);
-        broadcast({ type: 'design_message_added', designId, message: assistantErr });
+      proc.stderr!.on('data', (chunk: Buffer) => {
+        errorOutput += chunk.toString();
+      });
+
+      proc.on('close', (code: number | null) => {
+        clearTimeout(timer);
+        state.proc = null;
+        if (state.cancelled) {
+          reject(new Error('Cancelled'));
+          return;
+        }
+        if (spawnErrored) return;
+
+        for (const event of parser.flush()) handleEvent(event);
+
+        const assembled = (buffers.finalText || buffers.partialFallback).trim() + toolResultOutputs;
+
+        if (code !== 0 && !assembled) {
+          let errorMsg = pickProcessErrorMessage({
+            stderr: errorOutput,
+            streamErrorMessage,
+            engine,
+            exitCode: code,
+          });
+          if (code === -2 || code === -13) {
+            const configKey =
+              engine === 'cursor-agent'
+                ? 'cursorBin'
+                : engine === 'gemini-cli'
+                  ? 'geminiBin'
+                  : engine === 'codex-cli'
+                    ? 'codexBin'
+                    : 'claudeBin';
+            const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
+            errorMsg =
+              `${engine} binary ${reason} at ${bin}. ` +
+              `Update ${configKey} in Settings (or ~/.agent-hub/data/config.json) to the correct path.`;
+          }
+          reject(new Error(errorMsg));
+          return;
+        }
+
+        resolve(assembled.trim() || errorOutput.trim() || '(empty response)');
+      });
+
+      proc.on('error', (err: Error) => {
+        spawnErrored = true;
+        clearTimeout(timer);
+        state.proc = null;
+        reject(err);
+      });
+    });
+
+    if (engine === 'claude-code' && startedWithoutSession) {
+      try {
+        stmts.updateDesignEngineSessionId.run(designId, designId);
+      } catch (e: unknown) {
+        const m = e instanceof Error ? e.message : String(e);
+        console.warn('[design] Failed to persist claude engine_session_id:', m);
       }
-      return;
     }
 
-    // Persist the assistant turn, then tell the world about it: first the
-    // chat pane (`design_message_added`), then the iframe (`design_updated`).
-    const assistantMsg = appendDesignMessage(designId, 'assistant', finalText);
-
+    const assistantMsg = appendDesignMessage(designId, 'assistant', finalTextOut);
     broadcast({ type: 'design_message_added', designId, message: assistantMsg });
     broadcast({ type: 'design_updated', designId });
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (state.cancelled) {
+      broadcast({ type: 'design_cancelled', designId });
+    } else {
+      broadcast({ type: 'design_error', designId, error: errMsg });
+      const assistantErr = appendDesignMessage(designId, 'assistant', `[error] ${errMsg}`);
+      broadcast({ type: 'design_message_added', designId, message: assistantErr });
+    }
   } finally {
     activeDesignProcesses.delete(designId);
   }

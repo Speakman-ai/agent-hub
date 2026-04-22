@@ -103,11 +103,26 @@ export function renameDesign(id: string, name: string): void {
 }
 
 /**
- * Persist which Claude Code `--model` Design Studio uses for this design.
- * Pass `null` to clear and follow the hub default for `claude-code`.
+ * Persist which `--model` Design Studio uses for this design (engine-specific).
+ * Pass `null` to clear and follow the hub default for the active engine.
  */
 export function setDesignAgentModel(designId: string, agentModel: string | null): void {
   getStmts().updateDesignAgentModel.run(agentModel, designId);
+}
+
+/** Atomically update engine, model, and engine resume id (used by PATCH /api/designs/:id). */
+export function patchDesignChatEngineModelSession(
+  designId: string,
+  agent_engine: string | null,
+  agent_model: string | null,
+  engine_session_id: string | null,
+): void {
+  getStmts().updateDesignChatEngineModelSession.run(
+    agent_engine,
+    agent_model,
+    engine_session_id,
+    designId,
+  );
 }
 
 /**

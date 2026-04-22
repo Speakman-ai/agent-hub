@@ -12,12 +12,17 @@ import {
   listDesigns,
   getDesign,
   renameDesign,
-  setDesignAgentModel,
   setLinkedProjects,
   deleteDesign,
   listDesignMessages,
   listDesignFilesRecursive,
+  patchDesignChatEngineModelSession,
 } from '../designs-store.js';
+import {
+  DESIGN_CHAT_ENGINES,
+  isDesignChatEngine,
+  normalizeDesignEngine,
+} from '../design-multi-engine.js';
 import { getDesignStatus } from '../design-chat.js';
 import { getActiveOrgId } from '../orgs.js';
 
@@ -76,13 +81,42 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
     const body = req.body as {
       name?: string;
       linkedProjectIds?: string[];
+      agentEngine?: string | null;
       agentModel?: string | null;
     };
-    const { name, linkedProjectIds, agentModel } = body;
+    const { name, linkedProjectIds, agentEngine, agentModel } = body;
     const rawBody = req.body as Record<string, unknown>;
+
+    let nextEngine: string | null = design.agent_engine ?? null;
+    let nextModel: string | null = design.agent_model ?? null;
+    let nextSession: string | null = design.engine_session_id ?? null;
+
+    if ('agentEngine' in rawBody) {
+      const raw = agentEngine;
+      if (raw === null || raw === undefined) {
+        nextEngine = null;
+      } else if (typeof raw === 'string' && !raw.trim()) {
+        nextEngine = null;
+      } else if (typeof raw !== 'string') {
+        return res.status(400).json({ error: 'agentEngine must be a string or null' });
+      } else {
+        const trimmed = raw.trim();
+        if (!isDesignChatEngine(trimmed)) {
+          return res.status(400).json({
+            error: `Invalid agentEngine. Allowed: ${DESIGN_CHAT_ENGINES.join(', ')}`,
+          });
+        }
+        nextEngine = trimmed;
+      }
+      nextSession = null;
+      if (!('agentModel' in rawBody)) {
+        nextModel = null;
+      }
+    }
 
     if ('agentModel' in rawBody) {
       const raw = agentModel;
+      const prevModelTrim = (design.agent_model || '').trim();
       if (raw !== null && raw !== undefined) {
         if (typeof raw !== 'string') {
           return res.status(400).json({ error: 'agentModel must be a string or null' });
@@ -95,13 +129,23 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
               error: `Invalid model. Must be one of: ${all.join(', ')}`,
             });
           }
-          const allowed = config.engineValidModels['claude-code'] || [];
+          const effEngine = normalizeDesignEngine(nextEngine);
+          const allowed = config.engineValidModels[effEngine] || [];
           if (allowed.length > 0 && !allowed.includes(trimmed)) {
             return res.status(400).json({
-              error: `Model "${trimmed}" is not valid for Design Studio (Claude Code). Allowed: ${allowed.join(', ')}`,
+              error: `Model "${trimmed}" is not valid for Design Studio (${effEngine}). Allowed: ${allowed.join(', ')}`,
             });
           }
+          nextModel = trimmed;
+        } else {
+          nextModel = null;
         }
+      } else {
+        nextModel = null;
+      }
+      const nextModelTrim = (nextModel || '').trim();
+      if (prevModelTrim !== nextModelTrim) {
+        nextSession = null;
       }
     }
 
@@ -115,18 +159,8 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
           linkedProjectIds.filter((x) => typeof x === 'string'),
         );
       }
-      if ('agentModel' in rawBody) {
-        const raw = agentModel;
-        if (raw !== null && raw !== undefined) {
-          const trimmed = (raw as string).trim();
-          if (trimmed.length === 0) {
-            setDesignAgentModel(design.id, null);
-          } else {
-            setDesignAgentModel(design.id, trimmed);
-          }
-        } else {
-          setDesignAgentModel(design.id, null);
-        }
+      if ('agentEngine' in rawBody || 'agentModel' in rawBody) {
+        patchDesignChatEngineModelSession(design.id, nextEngine, nextModel, nextSession);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

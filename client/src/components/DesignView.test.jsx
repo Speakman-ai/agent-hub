@@ -85,9 +85,10 @@ describe('DesignView', () => {
     expect(screen.getByText('Sales dashboard')).toBeInTheDocument();
   });
 
-  it('shows a Claude model selector after model config loads', async () => {
+  it('shows engine and model selectors after model config loads', async () => {
     render(<DesignView {...baseProps} />);
     await waitFor(() => {
+      expect(screen.getByTestId('design-studio-engine')).toBeInTheDocument();
       expect(screen.getByTestId('design-studio-model')).toBeInTheDocument();
     });
   });

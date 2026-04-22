@@ -14,26 +14,57 @@ import { api } from '../utils/api.js';
  * emits a `design_updated` WS event for the active design id, so the agent's
  * file writes show up immediately on the canvas.
  */
+const DESIGN_STUDIO_ENGINES = ['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli'];
+
+const DESIGN_ENGINE_LABELS = {
+  'claude-code': 'Claude',
+  'cursor-agent': 'Cursor',
+  'gemini-cli': 'Gemini',
+  'codex-cli': 'Codex',
+};
+
 /**
- * Claude Code model for Design Studio (`claude --model` on the server).
+ * Engine + model for Design Studio (mirrors session engine/model allowlists from GET /api/config/models).
  */
-function DesignStudioModelSelect({
+function DesignStudioEngineModelSelect({
   design,
   modelConfig,
   disabled,
   showToast,
   onDesignRecordUpdated,
 }) {
-  const allowed = modelConfig?.engineValidModels?.['claude-code'] || [];
-  const hubDefault =
-    modelConfig?.engineDefaultModels?.['claude-code'] || modelConfig?.defaultModel || '';
+  if (!modelConfig?.engineValidModels) return null;
 
-  if (!modelConfig || allowed.length === 0) return null;
+  const engineOptions = DESIGN_STUDIO_ENGINES.filter(
+    (id) => (modelConfig.engineValidModels[id]?.length ?? 0) > 0,
+  );
+  if (engineOptions.length === 0) return null;
+
+  const storedEngine =
+    typeof design?.agent_engine === 'string' && design.agent_engine.trim()
+      ? design.agent_engine.trim()
+      : 'claude-code';
+  const engineValue = engineOptions.includes(storedEngine) ? storedEngine : engineOptions[0];
+
+  const allowed = modelConfig.engineValidModels[engineValue] || [];
+  const hubDefault =
+    modelConfig.engineDefaultModels?.[engineValue] || modelConfig.defaultModel || '';
 
   const configured = typeof design?.agent_model === 'string' ? design.agent_model.trim() : '';
-  const value = configured && allowed.includes(configured) ? configured : '__default__';
+  const modelValue = configured && allowed.includes(configured) ? configured : '__default__';
 
-  const handleChange = async (e) => {
+  const handleEngineChange = async (e) => {
+    const v = e.target.value;
+    try {
+      const updated = await api.updateDesign(design.id, { agentEngine: v, agentModel: null });
+      onDesignRecordUpdated?.(updated);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast?.(msg, 'error');
+    }
+  };
+
+  const handleModelChange = async (e) => {
     const v = e.target.value;
     const payload = v === '__default__' ? { agentModel: null } : { agentModel: v };
     try {
@@ -46,24 +77,43 @@ function DesignStudioModelSelect({
   };
 
   return (
-    <label className="flex items-center gap-2 text-xs text-gray-500">
-      <span className="hidden sm:inline whitespace-nowrap">Model</span>
-      <select
-        value={value}
-        onChange={handleChange}
-        disabled={disabled}
-        data-testid="design-studio-model"
-        className="bg-gray-900 border border-gray-700 text-gray-200 rounded-md px-2 py-1 max-w-[200px] sm:max-w-[240px] truncate text-xs focus:outline-none focus:border-gray-500 disabled:opacity-50"
-        title="Claude model for the Design Studio agent"
-      >
-        <option value="__default__">{`Default (${hubDefault})`}</option>
-        {allowed.map((id) => (
-          <option key={id} value={id}>
-            {id}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+      <label className="flex items-center gap-2 text-xs text-gray-500">
+        <span className="hidden sm:inline whitespace-nowrap">Engine</span>
+        <select
+          value={engineValue}
+          onChange={handleEngineChange}
+          disabled={disabled}
+          data-testid="design-studio-engine"
+          className="bg-gray-900 border border-gray-700 text-gray-200 rounded-md px-2 py-1 max-w-[140px] sm:max-w-[180px] truncate text-xs focus:outline-none focus:border-gray-500 disabled:opacity-50"
+          title="CLI engine for Design Studio"
+        >
+          {engineOptions.map((id) => (
+            <option key={id} value={id}>
+              {DESIGN_ENGINE_LABELS[id] || id}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-2 text-xs text-gray-500">
+        <span className="hidden sm:inline whitespace-nowrap">Model</span>
+        <select
+          value={modelValue}
+          onChange={handleModelChange}
+          disabled={disabled}
+          data-testid="design-studio-model"
+          className="bg-gray-900 border border-gray-700 text-gray-200 rounded-md px-2 py-1 max-w-[200px] sm:max-w-[240px] truncate text-xs focus:outline-none focus:border-gray-500 disabled:opacity-50"
+          title={`Model for ${engineValue}`}
+        >
+          <option value="__default__">{`Default (${hubDefault})`}</option>
+          {allowed.map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
   );
 }
 
@@ -273,7 +323,7 @@ export default function DesignView({
           </div>
         </div>
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 flex-shrink-0">
-          <DesignStudioModelSelect
+          <DesignStudioEngineModelSelect
             design={design}
             modelConfig={modelConfig}
             disabled={processing}

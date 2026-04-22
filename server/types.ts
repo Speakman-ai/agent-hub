@@ -115,8 +115,12 @@ export interface DesignRow {
   id: string;
   name: string;
   org_id: string;
-  /** Claude Code model id for Design Studio; null → hub default for claude-code. */
+  /** CLI engine for Design Studio; null → `claude-code`. */
+  agent_engine: string | null;
+  /** Model id for the chosen engine; null → hub default for that engine. */
   agent_model: string | null;
+  /** Engine-native session id for resume (Claude/Cursor/Codex); null until first successful turn. */
+  engine_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -796,6 +800,8 @@ export interface Stmts {
   createDesign: Stmt;
   updateDesignName: Stmt;
   updateDesignAgentModel: Stmt;
+  updateDesignEngineSessionId: Stmt;
+  updateDesignChatEngineModelSession: Stmt;
   touchDesign: Stmt;
   deleteDesign: Stmt;
   listDesignProjects: Stmt;

@@ -1073,6 +1073,18 @@ function initDb(dataDir: string): void {
     /* column already exists */
   }
 
+  // Migration: Design Studio engine + resume handle (multi-engine).
+  try {
+    db.exec('ALTER TABLE designs ADD COLUMN agent_engine TEXT');
+  } catch (_e) {
+    /* column already exists */
+  }
+  try {
+    db.exec('ALTER TABLE designs ADD COLUMN engine_session_id TEXT');
+  } catch (_e) {
+    /* column already exists */
+  }
+
   // Container pool (PR preview envs + scaffolding). Schema lives in a sibling
   // module so unit tests can apply the identical DDL to an in-memory DB.
   db.exec(POOL_SCHEMA);
@@ -1666,6 +1678,12 @@ function initDb(dataDir: string): void {
     ),
     updateDesignAgentModel: db.prepare(
       "UPDATE designs SET agent_model = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateDesignEngineSessionId: db.prepare(
+      "UPDATE designs SET engine_session_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateDesignChatEngineModelSession: db.prepare(
+      "UPDATE designs SET agent_engine = ?, agent_model = ?, engine_session_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     touchDesign: db.prepare("UPDATE designs SET updated_at = datetime('now') WHERE id = ?"),
     deleteDesign: db.prepare('DELETE FROM designs WHERE id = ?'),
