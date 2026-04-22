@@ -80,4 +80,71 @@ describe('parseDiffLines', () => {
     expect(action).toBe('Update');
     expect(additions[0]).toContain('line-level diff not included');
   });
+
+  it('parses Cursor Agent editToolCall strReplace (nested oldText/newText)', () => {
+    const { filePath, removals, additions } = parseDiffLines('Edit', {
+      path: 'server/design-multi-engine.ts',
+      strReplace: {
+        oldText: 'export const a = 1;',
+        newText: 'export const a = 2;',
+      },
+    });
+    expect(filePath).toBe('server/design-multi-engine.ts');
+    expect(removals).toEqual(['export const a = 1;']);
+    expect(additions).toEqual(['export const a = 2;']);
+  });
+
+  it('parses Cursor applyPatch.patchContent into +/- line bodies', () => {
+    const { removals, additions } = parseDiffLines('Edit', {
+      path: 'foo.ts',
+      applyPatch: {
+        patchContent: '@@ -1,2 +1,2 @@\n-old\n+new',
+      },
+    });
+    expect(removals).toEqual(['old']);
+    expect(additions).toEqual(['new']);
+  });
+
+  it('parses Cursor multiStrReplace edits sequentially', () => {
+    const { removals, additions } = parseDiffLines('Edit', {
+      path: 'x.ts',
+      multiStrReplace: {
+        edits: [
+          { oldText: 'a', newText: 'b' },
+          { oldText: 'c', newText: 'd' },
+        ],
+      },
+    });
+    expect(removals).toEqual(['a', '', 'c']);
+    expect(additions).toEqual(['b', '· · ·', 'd']);
+  });
+
+  it('parses Write when Cursor uses fileText / contents', () => {
+    expect(parseDiffLines('Write', { path: '/p/a.js', fileText: 'one\ntwo' }).additions).toEqual([
+      'one',
+      'two',
+    ]);
+    expect(parseDiffLines('Write', { path: '/p/b.js', contents: 'x' }).additions).toEqual(['x']);
+  });
+
+  it('accepts camelCase oldString/newString as Claude-style fallback', () => {
+    const { removals, additions } = parseDiffLines('Edit', {
+      path: '/z.ts',
+      oldString: 'x',
+      newString: 'y',
+    });
+    expect(removals).toEqual(['x']);
+    expect(additions).toEqual(['y']);
+  });
+
+  it('ignores empty strReplace object and uses Claude-style old_string', () => {
+    const { removals, additions } = parseDiffLines('Edit', {
+      path: '/z.ts',
+      strReplace: {},
+      old_string: 'a',
+      new_string: 'b',
+    });
+    expect(removals).toEqual(['a']);
+    expect(additions).toEqual(['b']);
+  });
 });

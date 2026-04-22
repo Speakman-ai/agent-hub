@@ -43,7 +43,11 @@ export function CodeBlock({ children, className }) {
 
 export const markdownComponents = {
   code({ node: _node, inline, className, children, ...props }) {
-    if (!inline && extractText(children).includes('\n')) {
+    // Fenced code blocks are always `inline: false` — use a block <pre> even
+    // when the code is a single line (no `\n` in children). Requiring `\n`
+    // incorrectly rendered one-line fences as bare <code>, breaking diffs and
+    // syntax-highlighted snippets in chat (Electron + web).
+    if (!inline) {
       return <CodeBlock className={className}>{children}</CodeBlock>;
     }
     return (
@@ -73,7 +77,7 @@ export const markdownComponents = {
 // Used by compact views like SessionTail where a full code toolbar is too heavy.
 export const markdownComponentsCompact = {
   code({ inline, className, children, ...props }) {
-    if (!inline && extractText(children).includes('\n')) {
+    if (!inline) {
       return (
         <pre className="bg-gray-950 rounded p-2 overflow-x-auto text-xs my-2">
           <code className={className}>{children}</code>

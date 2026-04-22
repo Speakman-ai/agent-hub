@@ -66,6 +66,68 @@ function parseCodexFileChanges(changes) {
   };
 }
 
+function parseApplyPatchContent(patch) {
+  if (typeof patch !== 'string' || !patch.trim()) {
+    return { removals: [], additions: [] };
+  }
+  const removals = [];
+  const additions = [];
+  for (const rawLine of patch.split('\n')) {
+    if (rawLine.startsWith('--- ') || rawLine.startsWith('+++ ')) continue;
+    if (rawLine.startsWith('@@')) continue;
+    if (rawLine === '\\ No newline at end of file') continue;
+    if (rawLine.startsWith('-')) {
+      removals.push(rawLine.slice(1));
+    } else if (rawLine.startsWith('+')) {
+      additions.push(rawLine.slice(1));
+    }
+  }
+  if (removals.length === 0 && additions.length === 0) {
+    const raw = patch.trim().split('\n');
+    return { removals: [], additions: raw.length ? raw : ['(empty patch)'] };
+  }
+  return { removals, additions };
+}
+
+function parseCursorEditStrategies(input) {
+  if (!input || typeof input !== 'object') return null;
+
+  const sr = input.strReplace;
+  if (sr && typeof sr === 'object') {
+    const hasStr =
+      typeof sr.oldText === 'string' || typeof sr.newText === 'string';
+    if (hasStr) {
+      const oldT = typeof sr.oldText === 'string' ? sr.oldText : '';
+      const newT = typeof sr.newText === 'string' ? sr.newText : '';
+      return { removals: oldT.split('\n'), additions: newT.split('\n') };
+    }
+  }
+
+  const mr = input.multiStrReplace;
+  if (mr?.edits && Array.isArray(mr.edits) && mr.edits.length > 0) {
+    const removals = [];
+    const additions = [];
+    mr.edits.forEach((ed, i) => {
+      if (i > 0) {
+        removals.push('');
+        additions.push('· · ·');
+      }
+      const o = typeof ed?.oldText === 'string' ? ed.oldText : '';
+      const n = typeof ed?.newText === 'string' ? ed.newText : '';
+      removals.push(...o.split('\n'));
+      additions.push(...n.split('\n'));
+    });
+    return { removals, additions };
+  }
+
+  const ap = input.applyPatch;
+  if (ap && typeof ap === 'object' && typeof ap.patchContent === 'string' && ap.patchContent.trim()) {
+    return parseApplyPatchContent(ap.patchContent);
+  }
+
+  return null;
+}
+
 /**
  * Parse tool input into diff lines for display.
  * Returns { filePath, action, removals, additions }.
@@ -85,13 +147,19 @@ export function parseDiffLines(tool, input) {
   let additions = [];
 
   if (tool === 'Edit') {
-    const old = input?.old_string || '';
-    const replacement = input?.new_string || '';
-    removals = old.split('\n');
-    additions = replacement.split('\n');
+    const cursor = parseCursorEditStrategies(input);
+    if (cursor) {
+      removals = cursor.removals;
+      additions = cursor.additions;
+    } else {
+      const old = input?.old_string ?? input?.oldString ?? '';
+      const replacement = input?.new_string ?? input?.newString ?? '';
+      removals = String(old).split('\n');
+      additions = String(replacement).split('\n');
+    }
   } else if (tool === 'Write') {
-    const content = input?.content || '';
-    const lines = content.split('\n');
+    const content = input?.content ?? input?.fileText ?? input?.contents ?? '';
+    const lines = String(content).split('\n');
     additions = lines.slice(0, 20);
     if (lines.length > 20) {
       additions.push(`… +${lines.length - 20} more lines`);
