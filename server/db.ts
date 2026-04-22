@@ -1561,6 +1561,19 @@ function initDb(dataDir: string): void {
        WHERE parent_kind = ? AND parent_id = ?
        ORDER BY seq ASC`,
     ),
+    getSessionEventsForSession: db.prepare(
+      `SELECT e.event_type, e.payload
+       FROM session_events e
+       INNER JOIN messages m ON m.id = e.parent_id
+       WHERE e.parent_kind = 'message' AND m.session_id = ?
+       ORDER BY m.created_at ASC, e.seq ASC`,
+    ),
+    countSessionEventsForSession: db.prepare(
+      `SELECT COUNT(*) as c
+       FROM session_events e
+       INNER JOIN messages m ON m.id = e.parent_id
+       WHERE e.parent_kind = 'message' AND m.session_id = ?`,
+    ),
     deleteSessionEvents: db.prepare(
       'DELETE FROM session_events WHERE parent_kind = ? AND parent_id = ?',
     ),

@@ -4,6 +4,11 @@ import { Router, Request, Response } from 'express';
 import { defaultModelForEngine, buildSpawnEnv } from '../config.js';
 import { getDb } from '../db.js';
 import { manualCommitAndPR } from '../auto-git.js';
+import {
+  buildSessionRunSnapshot,
+  buildAggregationSkippedRunSnapshot,
+  getSnapshotAggregateLimit,
+} from '../session-run-snapshot.js';
 import type {
   RouteDeps,
   AppConfig,
@@ -15,6 +20,8 @@ import type {
   CheckpointRow,
   AgentLookup,
   EnrichedAgent,
+  KanbanCardRow,
+  SkillInvocationRow,
 } from '../types.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 
@@ -280,6 +287,74 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       finishedAt: r.finished_at ?? undefined,
     }));
     res.json({ sessionId: req.params.sessionId, steps });
+  });
+
+  /**
+   * Rich metadata for the session sidebar: linked kanban card, skill invocations,
+   * and aggregated run snapshot (tools / files / context reads) from all message events.
+   */
+  router.get('/api/sessions/:sessionId/summary', (req: Request, res: Response) => {
+    const id = req.params.sessionId;
+    const session = stmts.getSession.get(id) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    const found = findAgent(session.agent_id);
+    const projectId = found?.project?.id ?? null;
+
+    const card = stmts.getKanbanCardBySession.get(id) as KanbanCardRow | undefined;
+    let linkedCard: {
+      id: string;
+      title: string;
+      pr_url: string | null;
+      review_status: string | null;
+      columnName: string | null;
+    } | null = null;
+    if (card) {
+      const col = stmts.getKanbanColumn.get(card.column_id) as { name: string } | undefined;
+      linkedCard = {
+        id: card.id,
+        title: card.title,
+        pr_url: card.pr_url,
+        review_status: card.review_status,
+        columnName: col?.name ?? null,
+      };
+    }
+
+    const countRow = stmts.countSessionEventsForSession.get(id) as { c: number } | undefined;
+    const eventCount = countRow?.c ?? 0;
+    const runSnapshot =
+      eventCount > getSnapshotAggregateLimit()
+        ? buildAggregationSkippedRunSnapshot(eventCount)
+        : buildSessionRunSnapshot(
+            stmts.getSessionEventsForSession.all(id) as Array<{
+              event_type: string;
+              payload: string;
+            }>,
+          );
+
+    const skillRows = stmts.listSkillInvocationsForSession.all(id) as SkillInvocationRow[];
+    const skills = skillRows.map((s) => ({
+      id: s.id,
+      skillId: s.skill_id,
+      status: s.status,
+      source: s.source,
+      injectedBytes: s.injected_bytes,
+      createdAt: s.created_at,
+    }));
+
+    res.json({
+      session: {
+        id: session.id,
+        name: session.name,
+        engine: session.engine,
+        model: session.model,
+        updatedAt: session.updated_at,
+      },
+      projectId,
+      linkedCard,
+      runSnapshot,
+      skills,
+    });
   });
 
   router.get('/api/messages/:messageId/events', (req: Request, res: Response) => {

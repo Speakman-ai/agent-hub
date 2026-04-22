@@ -743,6 +743,8 @@ export interface Stmts {
   // Session events
   addSessionEvent: Stmt;
   getSessionEvents: Stmt;
+  getSessionEventsForSession: Stmt;
+  countSessionEventsForSession: Stmt;
   deleteSessionEvents: Stmt;
   countSessionEvents: Stmt;
 

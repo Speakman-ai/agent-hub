@@ -1,13 +1,7 @@
 import { memo } from 'react';
 import { Sparkles, CheckCircle, AlertCircle, XCircle } from 'lucide-react';
 import { relativeTime } from '../utils/time.js';
-
-export function formatInjectedBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { formatInjectedBytes } from '../utils/formatBytes.js';
 
 function statusMeta(status) {
   switch (status) {

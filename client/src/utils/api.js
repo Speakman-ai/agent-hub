@@ -62,6 +62,8 @@ export const api = {
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
   getSessionHandoffs: (sessionId) => fetchJSON(`/sessions/${sessionId}/handoffs`),
+  /** Session sidebar: linked kanban card, skills, aggregated run snapshot from message events. */
+  getSessionSummary: (sessionId) => fetchJSON(`/sessions/${sessionId}/summary`),
   getSessionSkillInvocations: (sessionId) => fetchJSON(`/sessions/${sessionId}/skill-invocations`),
   summarizeSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST', timeout: 120000 }),

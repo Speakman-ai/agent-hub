@@ -392,6 +392,65 @@ describe('Sessions', () => {
     });
   });
 
+  describe('GET /api/sessions/:sessionId/summary', () => {
+    it('returns session, project, run snapshot, and skills', async () => {
+      const session = await createSession();
+      const res = await request.get(`/api/sessions/${session.id}/summary`).expect(200);
+      expect(res.body.session.id).toBe(session.id);
+      expect(res.body).toHaveProperty('projectId');
+      expect(res.body).toHaveProperty('linkedCard');
+      expect(res.body).toHaveProperty('runSnapshot');
+      expect(res.body.runSnapshot).toMatchObject({ toolCalls: 0, files: [] });
+      expect(res.body.runSnapshot.aggregationSkipped).toBeFalsy();
+      expect(res.body).toHaveProperty('skills');
+      expect(Array.isArray(res.body.skills)).toBe(true);
+    });
+
+    it('returns 404 for a non-existent session', async () => {
+      await request.get('/api/sessions/00000000-0000-0000-0000-000000000001/summary').expect(404);
+    });
+
+    it('returns aggregation-skipped run snapshot when session event count exceeds cap', async () => {
+      const { setSnapshotAggregateLimitForTests } = await import('../session-run-snapshot.js');
+      const testCap = 12;
+      setSnapshotAggregateLimitForTests(testCap);
+      try {
+        const session = await createSession();
+        const sessionId = session.id as string;
+        const { randomUUID } = await import('node:crypto');
+        const messageId = randomUUID();
+        const { stmts, db } = await import('../db.js');
+        if (!stmts || !db) throw new Error('Database not initialized');
+
+        stmts.addMessage.run(
+          messageId,
+          sessionId,
+          'assistant',
+          '{}',
+          'claude-code',
+          null,
+          null,
+          null,
+        );
+
+        const insertOverCap = db.transaction(() => {
+          for (let seq = 0; seq <= testCap; seq++) {
+            stmts.addSessionEvent.run('message', messageId, seq, 'text', '{}');
+          }
+        });
+        insertOverCap();
+
+        const res = await request.get(`/api/sessions/${sessionId}/summary`).expect(200);
+        expect(res.body.runSnapshot.aggregationSkipped).toBe(true);
+        expect(res.body.runSnapshot.sessionEventCount).toBe(testCap + 1);
+        expect(res.body.runSnapshot.files).toEqual([]);
+        expect(res.body.runSnapshot.toolCalls).toBe(0);
+      } finally {
+        setSnapshotAggregateLimitForTests(null);
+      }
+    });
+  });
+
   describe('PATCH /api/sessions/:sessionId', () => {
     it('renames a session', async () => {
       const session = await createSession();

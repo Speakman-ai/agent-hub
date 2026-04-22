@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import SkillInvocationsPanel, { formatInjectedBytes } from './SkillInvocationsPanel.jsx';
+import SkillInvocationsPanel from './SkillInvocationsPanel.jsx';
 
 describe('SkillInvocationsPanel', () => {
   it('renders empty state', () => {
@@ -83,14 +83,5 @@ describe('SkillInvocationsPanel', () => {
     expect(screen.getByTestId('skill-status-loaded').className).toContain('text-emerald-300');
     expect(screen.getByTestId('skill-status-not-found').className).toContain('text-amber-300');
     expect(screen.getByTestId('skill-status-malformed').className).toContain('text-red-300');
-  });
-});
-
-describe('formatInjectedBytes', () => {
-  it('formats byte sizes', () => {
-    expect(formatInjectedBytes(0)).toBe('');
-    expect(formatInjectedBytes(512)).toBe('512 B');
-    expect(formatInjectedBytes(4096)).toBe('4.0 KB');
-    expect(formatInjectedBytes(2_000_000)).toBe('1.9 MB');
   });
 });
