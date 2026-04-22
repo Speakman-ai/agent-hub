@@ -27,13 +27,13 @@ jobs:
           cache: npm
 
       - name: Install root dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --include=dev
 
       - name: Install server dependencies
-        run: cd server && npm ci
+        run: cd server && npm ci --include=dev
 
       - name: Install client dependencies
-        run: cd client && npm ci
+        run: cd client && npm ci --include=dev
 
       - name: Run ESLint
         run: npm run lint
@@ -53,16 +53,16 @@ jobs:
           cache: npm
 
       - name: Install root dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --include=dev
 
       - name: Install client dependencies
-        run: cd client && npm ci
+        run: cd client && npm ci --include=dev
 
       - name: Build client
         run: npm run build
 
       - name: Install server dependencies
-        run: cd server && npm ci
+        run: cd server && npm ci --include=dev
 
       - name: Check server types
         run: cd server && npx tsc --noEmit
@@ -79,19 +79,19 @@ jobs:
           cache: npm
 
       - name: Install root dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --include=dev
 
       - name: Rebuild native modules
         run: npm rebuild better-sqlite3
 
       - name: Install server dependencies
-        run: cd server && npm ci
+        run: cd server && npm ci --include=dev
 
       - name: Install client dependencies
-        run: cd client && npm ci
+        run: cd client && npm ci --include=dev
 
       - name: Install mobile dependencies
-        run: cd mobile && npm ci
+        run: cd mobile && npm ci --include=dev
 
       - name: Run tests
         run: npm test

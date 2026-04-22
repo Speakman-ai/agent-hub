@@ -10,7 +10,7 @@
     "dev:client": "cd client && npx vite --port 3050",
     "build": "cd client && npx vite build",
     "start": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "install:all": "npm install && cd server && npm install && cd ../client && npm install && cd ../mobile && npm install",
+    "install:all": "npm install --include=dev && cd server && npm install --include=dev && cd ../client && npm install --include=dev && cd ../mobile && npm install --include=dev",
     "test": "npm run test:client && npm run test:server && npm run test:electron && npm run test:mobile",
     "test:client": "cd client && npm test",
     "test:server": "cd server && npm test",

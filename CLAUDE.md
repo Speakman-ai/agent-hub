@@ -174,6 +174,8 @@ The Claude Code CLI binary appends a hidden `<system-reminder>` after every Read
 - `npm run test:client` — Client tests only
 - `cd server && npx vitest --watch` — Watch mode for server
 
+**Vitest missing or `Cannot find package '@vitejs/plugin-react'`:** With `NODE_ENV=production`, npm omits devDependencies unless you pass `--include=dev`. Use `npm run install:all` (includes dev deps), or reinstall per package: `cd client && npm ci --include=dev`, same for `server/` and `mobile/`. CI and deploy workflows use `npm ci --include=dev` for reproducible installs.
+
 ### Where Tests Go
 - **Server**: Co-located as `server/<module>.test.ts` (e.g., `stream-parser.test.ts`) or in `server/test/` for API integration tests
 - **Client**: Co-located as `client/src/**/*.test.js` (e.g., `utils/humanCron.test.js`)

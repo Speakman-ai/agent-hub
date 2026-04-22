@@ -7,9 +7,10 @@
     "dev": "vite --port 3050",
     "build": "vite build",
     "preview": "vite preview",
+    "pretest": "node ./scripts/check-test-deps.mjs",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:watch": "node ./scripts/check-test-deps.mjs && vitest",
+    "test:coverage": "node ./scripts/check-test-deps.mjs && vitest run --coverage"
   },
   "dependencies": {
     "date-fns": "^4.1.0",

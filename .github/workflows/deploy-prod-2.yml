@@ -100,9 +100,9 @@ jobs:
           # Ensure cursor-agent CLI is present for sessions with engine=cursor-agent.
           # Idempotent — no-op when already installed at \$HOME/.local/bin/agent.
           bash scripts/ensure-cursor-agent.sh
-          npm ci
-          (cd server && npm ci)
-          (cd client && npm ci)
+          npm ci --include=dev
+          (cd server && npm ci --include=dev)
+          (cd client && npm ci --include=dev)
           npm run build
           pm2 restart agent-hub
           set -x
