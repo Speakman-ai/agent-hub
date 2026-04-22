@@ -398,7 +398,10 @@ describe('Sessions', () => {
       const res = await request.get(`/api/sessions/${session.id}/summary`).expect(200);
       expect(res.body.session.id).toBe(session.id);
       expect(res.body).toHaveProperty('projectId');
+      expect(res.body).toHaveProperty('projectGithubRepo');
       expect(res.body).toHaveProperty('linkedCard');
+      expect(res.body).toHaveProperty('sessionTitlePrUrl');
+      expect(res.body.sessionTitlePrUrl).toBeNull();
       expect(res.body).toHaveProperty('runSnapshot');
       expect(res.body.runSnapshot).toMatchObject({ toolCalls: 0, files: [] });
       expect(res.body.runSnapshot.aggregationSkipped).toBeFalsy();
@@ -408,6 +411,58 @@ describe('Sessions', () => {
 
     it('returns 404 for a non-existent session', async () => {
       await request.get('/api/sessions/00000000-0000-0000-0000-000000000001/summary').expect(404);
+    });
+
+    it('exposes sessionTitlePrUrl from Resolve/Review-style session name when card has no pr_url', async () => {
+      const project = await createProject();
+      await request
+        .patch(`/api/projects/${project.id as string}`)
+        .send({ githubRepo: 'acme/widgets' })
+        .expect(200);
+      const agent = await createAgent({ projectId: project.id as string });
+      const session = await createSession({
+        agentId: agent.id as string,
+        name: '[Resolve PR #77] Fix flaky test',
+      });
+      const res = await request.get(`/api/sessions/${session.id as string}/summary`).expect(200);
+      expect(res.body.sessionTitlePrUrl).toBe('https://github.com/acme/widgets/pull/77');
+      expect(res.body.projectGithubRepo).toBe('acme/widgets');
+      expect(res.body.linkedCard).toBeNull();
+    });
+
+    it('does not set sessionTitlePrUrl when the linked card already has pr_url', async () => {
+      const project = await createProject();
+      await request
+        .patch(`/api/projects/${project.id as string}`)
+        .send({ githubRepo: 'acme/widgets' })
+        .expect(200);
+      const agent = await createAgent({ projectId: project.id as string });
+      const session = await createSession({
+        agentId: agent.id as string,
+        name: 'Review: PR #99 Should be ignored when card wins',
+      });
+      const sessionId = session.id as string;
+      const boardRes = await request.get(`/api/projects/${project.id as string}/board`).expect(200);
+      const colId = (boardRes.body as { columns: Array<{ id: string }> }).columns[0].id;
+      const cardRes = await request
+        .post(`/api/projects/${project.id as string}/board/cards`)
+        .send({
+          columnId: colId,
+          title: `Linked ${Date.now()}`,
+          description: '',
+          session_id: sessionId,
+        })
+        .expect(200);
+      const cardId = (cardRes.body as { id: string }).id;
+      await request
+        .put(`/api/projects/${project.id as string}/board/cards/${cardId}`)
+        .send({ prUrl: 'https://github.com/other/repo/pull/1' })
+        .expect(200);
+      const res = await request.get(`/api/sessions/${sessionId}/summary`).expect(200);
+      expect(res.body.linkedCard?.pr_url).toBe('https://github.com/other/repo/pull/1');
+      expect(res.body.sessionTitlePrUrl).toBeNull();
+      expect(res.body.projectGithubRepo).toBe('acme/widgets');
+      expect(cardId).toBe(res.body.linkedCard?.id);
     });
 
     it('returns aggregation-skipped run snapshot when session event count exceeds cap', async () => {

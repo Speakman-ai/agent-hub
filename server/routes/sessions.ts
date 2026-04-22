@@ -24,6 +24,7 @@ import type {
   SkillInvocationRow,
 } from '../types.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
+import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 
 function safeParse(s: string): Record<string, unknown> {
   try {
@@ -300,6 +301,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     const found = findAgent(session.agent_id);
     const projectId = found?.project?.id ?? null;
+    const githubRepo =
+      found?.project && typeof found.project.githubRepo === 'string'
+        ? found.project.githubRepo
+        : null;
 
     const card = stmts.getKanbanCardBySession.get(id) as KanbanCardRow | undefined;
     let linkedCard: {
@@ -319,6 +324,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         columnName: col?.name ?? null,
       };
     }
+
+    const linkedCardPrUrl = linkedCard?.pr_url ?? null;
+    const inferredTitlePr = inferPrUrlFromSessionTitle(session.name, githubRepo);
+    const sessionTitlePrUrl = !linkedCardPrUrl && inferredTitlePr ? inferredTitlePr : null;
 
     const countRow = stmts.countSessionEventsForSession.get(id) as { c: number } | undefined;
     const eventCount = countRow?.c ?? 0;
@@ -351,7 +360,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         updatedAt: session.updated_at,
       },
       projectId,
+      projectGithubRepo: githubRepo,
       linkedCard,
+      sessionTitlePrUrl,
       runSnapshot,
       skills,
     });

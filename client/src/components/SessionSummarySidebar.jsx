@@ -15,6 +15,7 @@ import {
   prStateBadge,
   checkRowStyle,
   diffSummary,
+  shouldFetchProjectPullDetail,
 } from '../utils/prFormatting.js';
 import { shortenPath } from '../utils/diff.js';
 import { formatInjectedBytes } from '../utils/formatBytes.js';
@@ -89,15 +90,22 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
     return () => clearInterval(t);
   }, [sessionId, loadSummary]);
 
+  /** Card `pr_url` first; else Resolve/Review-style session title (see server/session-title-pr.ts). */
+  const linkedPrUrl = summary?.linkedCard?.pr_url ?? summary?.sessionTitlePrUrl ?? null;
+
   const prNum = useMemo(() => {
-    const u = summary?.linkedCard?.pr_url;
-    return u ? prNumberFromUrl(u) : null;
-  }, [summary]);
+    return linkedPrUrl ? prNumberFromUrl(linkedPrUrl) : null;
+  }, [linkedPrUrl]);
+
+  const pullDetailRepoAligned = useMemo(
+    () => shouldFetchProjectPullDetail(linkedPrUrl, summary?.projectGithubRepo),
+    [linkedPrUrl, summary?.projectGithubRepo],
+  );
 
   useEffect(() => {
     setPull(null);
     setPullError(false);
-    if (!summary?.projectId || prNum == null) return;
+    if (!summary?.projectId || prNum == null || !pullDetailRepoAligned) return;
     const n = Number.parseInt(String(prNum), 10);
     if (!Number.isFinite(n) || n < 1) return;
     let cancelled = false;
@@ -112,7 +120,7 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
     return () => {
       cancelled = true;
     };
-  }, [summary?.projectId, prNum, summary?.linkedCard?.pr_url]);
+  }, [summary?.projectId, prNum, linkedPrUrl, pullDetailRepoAligned]);
 
   const run = summary?.runSnapshot;
   const files = run?.files || [];
@@ -127,10 +135,9 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
       'Session summary',
       summary.session?.name ? `Name: ${summary.session.name}` : null,
     ];
-    const c = summary.linkedCard;
-    if (c?.pr_url) {
+    if (linkedPrUrl) {
       const st = pull ? prStateBadge(pull) : { label: 'PR' };
-      lines.push(`PR: ${c.pr_url} (${st.label})`);
+      lines.push(`PR: ${linkedPrUrl} (${st.label})`);
     }
     const sk = (summary.skills || []).map((s) => s.skillId);
     if (sk.length) lines.push(`Skills: ${sk.join(', ')}`);
@@ -149,7 +156,7 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
       );
     }
     return lines.filter(Boolean).join('\n');
-  }, [summary, pull, files, run]);
+  }, [summary, pull, files, run, linkedPrUrl]);
 
   const copySummary = async () => {
     if (!copyText) return;
@@ -223,13 +230,15 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
                 </span>
               )}
           </div>
-          {summary?.linkedCard?.pr_url ? (
+          {linkedPrUrl ? (
             <>
               <p
                 className="text-gray-200 font-medium line-clamp-2"
-                title={pull?.title || summary.linkedCard.title}
+                title={
+                  pull?.title || summary.linkedCard?.title || summary.session?.name || undefined
+                }
               >
-                {pull?.title || summary.linkedCard.title}
+                {pull?.title || summary.linkedCard?.title || summary.session?.name || '—'}
               </p>
               {pull?.head && (
                 <p className="text-gray-500 mt-0.5 truncate">
@@ -237,7 +246,7 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
                 </p>
               )}
               <a
-                href={summary.linkedCard.pr_url}
+                href={linkedPrUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="text-sky-400 hover:text-sky-300 mt-1 inline-block"

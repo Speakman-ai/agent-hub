@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   prNumberFromUrl,
+  parseGithubPullFullName,
+  shouldFetchProjectPullDetail,
   relativePrTime,
   diffSummary,
   prStateBadge,
@@ -31,6 +33,41 @@ describe('prNumberFromUrl', () => {
     expect(prNumberFromUrl(null)).toBeNull();
     expect(prNumberFromUrl(undefined)).toBeNull();
     expect(prNumberFromUrl('https://example.com/no-pr')).toBeNull();
+  });
+});
+
+describe('parseGithubPullFullName', () => {
+  it('returns normalized owner/repo for github.com pull URLs', () => {
+    expect(parseGithubPullFullName('https://github.com/Acme/App/pull/12')).toBe('acme/app');
+    expect(parseGithubPullFullName('https://github.com/o/r/pull/3/files')).toBe('o/r');
+  });
+
+  it('returns null when not a github.com pull URL', () => {
+    expect(parseGithubPullFullName('https://gitlab.com/o/r/-/merge_requests/1')).toBeNull();
+    expect(parseGithubPullFullName(null)).toBeNull();
+  });
+});
+
+describe('shouldFetchProjectPullDetail', () => {
+  it('returns false when URL repo differs from project githubRepo', () => {
+    expect(
+      shouldFetchProjectPullDetail('https://github.com/other/repo/pull/99', 'acme/widgets'),
+    ).toBe(false);
+  });
+
+  it('returns true when repos match (case-insensitive)', () => {
+    expect(
+      shouldFetchProjectPullDetail('https://github.com/Acme/Widgets/pull/7', 'acme/widgets'),
+    ).toBe(true);
+  });
+
+  it('returns true for non-github.com URLs (legacy project-scoped fetch)', () => {
+    expect(shouldFetchProjectPullDetail('https://git.example.com/o/r/pull/1', 'o/r')).toBe(true);
+  });
+
+  it('returns false for github.com URL when project has no githubRepo', () => {
+    expect(shouldFetchProjectPullDetail('https://github.com/o/r/pull/1', null)).toBe(false);
+    expect(shouldFetchProjectPullDetail('https://github.com/o/r/pull/1', '')).toBe(false);
   });
 });
 

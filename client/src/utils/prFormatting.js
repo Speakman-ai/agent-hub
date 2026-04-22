@@ -27,6 +27,35 @@ export function prNumberFromUrl(prUrl) {
 }
 
 /**
+ * If `prUrl` is a github.com pull request URL, returns normalized `owner/repo`
+ * (lowercase). Otherwise null — callers fall back to project-scoped PR detail fetch.
+ * @param {string|null|undefined} prUrl
+ * @returns {string|null}
+ */
+export function parseGithubPullFullName(prUrl) {
+  if (!prUrl || typeof prUrl !== 'string') return null;
+  const m = prUrl.match(/https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/i);
+  return m ? `${m[1]}/${m[2]}`.toLowerCase() : null;
+}
+
+/**
+ * True when `GET .../pulls/:n` for this project is expected to describe the same PR as `prUrl`.
+ * Skips when the URL names a different repo than the project (cross-repo links / title inference).
+ * @param {string|null|undefined} prUrl
+ * @param {string|null|undefined} projectGithubRepo `owner/repo` from project settings
+ */
+export function shouldFetchProjectPullDetail(prUrl, projectGithubRepo) {
+  const urlRepo = parseGithubPullFullName(prUrl);
+  if (!urlRepo) return true;
+  const proj =
+    typeof projectGithubRepo === 'string' && projectGithubRepo.includes('/')
+      ? projectGithubRepo.trim().toLowerCase()
+      : null;
+  if (!proj) return false;
+  return urlRepo === proj;
+}
+
+/**
  * Short human-readable relative time, e.g. "2m ago", "3h ago", "4d ago".
  * Falls back to locale date for anything older than ~30 days.
  * @param {string|null|undefined} iso
