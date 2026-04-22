@@ -362,6 +362,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ agentId }),
     }),
+  nudgePrReviewer: (projectId, prNumber) =>
+    fetchJSON(`/projects/${projectId}/pulls/${prNumber}/nudge-reviewer`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
 
   // PR Captures (read-only on mobile) — list project captures and fetch one
   // with its screenshot/video artifacts. Mirrors the web CapturesPage endpoints.

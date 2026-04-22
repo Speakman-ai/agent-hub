@@ -700,6 +700,13 @@ export const api = {
       body: JSON.stringify({ agentId }),
       timeout: 60000,
     }),
+  /** Queue formal reviewer dispatch (same path as GitHub webhooks). */
+  nudgePrReviewer: (projectId, prNumber) =>
+    fetchJSON(`/projects/${projectId}/pulls/${prNumber}/nudge-reviewer`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 60000,
+    }),
 
   // PR Actions
   mergePr: (prUrl, mergeMethod = 'squash') =>

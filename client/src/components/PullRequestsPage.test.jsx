@@ -21,6 +21,7 @@ vi.mock('../utils/api.js', () => ({
     getProjectPulls: vi.fn(),
     getProjectPullDetail: vi.fn(),
     resolvePR: vi.fn(),
+    nudgePrReviewer: vi.fn(),
   },
 }));
 
@@ -50,7 +51,11 @@ const detailResponse = {
 const project = {
   id: 'proj-1',
   name: 'Demo',
-  agents: [{ id: 'agent-alpha', name: 'Alpha', active: true }],
+  githubRepo: 'owner/repo',
+  agents: [
+    { id: 'agent-alpha', name: 'Alpha', role: 'lead', active: true },
+    { id: 'agent-rev', name: 'Reviewer', role: 'reviewer', active: true },
+  ],
 };
 
 async function renderAndOpenDetail(props = {}) {
@@ -72,6 +77,7 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     api.getProjectPulls.mockReset();
     api.getProjectPullDetail.mockReset();
     api.resolvePR.mockReset();
+    api.nudgePrReviewer.mockReset();
   });
 
   afterEach(() => {
@@ -205,11 +211,78 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
   });
 });
 
+describe('<PullRequestsPage /> — Nudge reviewer', () => {
+  beforeEach(() => {
+    api.getProjectPulls.mockReset();
+    api.getProjectPullDetail.mockReset();
+    api.resolvePR.mockReset();
+    api.nudgePrReviewer.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('list row Nudge calls nudgePrReviewer and shows success toast', async () => {
+    api.nudgePrReviewer.mockResolvedValue({ ok: true, scheduled: true });
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
+    const onToast = vi.fn();
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={onToast} />);
+
+    const nudge = await screen.findByRole('button', { name: /nudge reviewer for pr #123/i });
+    fireEvent.click(nudge);
+
+    await waitFor(() => expect(api.nudgePrReviewer).toHaveBeenCalledWith('proj-1', 123));
+    await waitFor(() =>
+      expect(onToast).toHaveBeenCalledWith(
+        expect.stringMatching(/formal review queued/i),
+        'success',
+        expect.any(Number),
+      ),
+    );
+  });
+
+  it('shows error toast when nudge returns 409 conflict', async () => {
+    api.nudgePrReviewer.mockRejectedValue(
+      new Error('409: A reviewer session is still running for this PR.'),
+    );
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
+    const onToast = vi.fn();
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={onToast} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /nudge reviewer for pr #123/i }));
+
+    await waitFor(() =>
+      expect(onToast).toHaveBeenCalledWith(
+        expect.stringMatching(/still running/i),
+        'error',
+        expect.any(Number),
+      ),
+    );
+  });
+
+  it('disables Nudge when project has no reviewer agent', async () => {
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
+    const noRev = {
+      ...project,
+      agents: [{ id: 'agent-alpha', name: 'Alpha', role: 'lead', active: true }],
+    };
+
+    render(<PullRequestsPage projectId="proj-1" project={noRev} />);
+
+    const nudge = await screen.findByRole('button', { name: /nudge reviewer for pr #123/i });
+    expect(nudge).toBeDisabled();
+  });
+});
+
 describe('<PullRequestsPage /> — list Resolve PR + Resolve all', () => {
   beforeEach(() => {
     api.getProjectPulls.mockReset();
     api.getProjectPullDetail.mockReset();
     api.resolvePR.mockReset();
+    api.nudgePrReviewer.mockReset();
   });
 
   afterEach(() => {

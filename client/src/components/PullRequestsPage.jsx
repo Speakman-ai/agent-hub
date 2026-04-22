@@ -11,6 +11,7 @@ import {
   Loader2,
   MessageSquare,
   Wrench,
+  BellRing,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import {
@@ -61,8 +62,11 @@ function PrListItem({
   pr,
   onOpen,
   onResolveRow,
+  onNudgeReviewerRow,
   resolveAgentId,
+  reviewerAgentId,
   resolvingThisRow,
+  nudgingThisRow,
   bulkResolving,
   spawnedSessionId,
   onOpenSession,
@@ -77,6 +81,15 @@ function PrListItem({
   const heuristicOff = prListRowResolveDisabledHeuristic(pr);
   const resolveBusy = bulkResolving || resolvingThisRow;
   const resolveDisabled = !resolveAgentId || resolveBusy || heuristicOff;
+  const nudgeBusy = bulkResolving || nudgingThisRow;
+  const nudgeDisabled = !reviewerAgentId || nudgeBusy;
+  const nudgeTitle = !reviewerAgentId
+    ? 'No reviewer agent on this project'
+    : bulkResolving
+      ? 'Bulk resolve in progress…'
+      : nudgingThisRow
+        ? 'Requesting review…'
+        : 'Request a formal PR review from the reviewer agent';
   const resolveTitle = !resolveAgentId
     ? 'No agents configured'
     : bulkResolving
@@ -135,50 +148,71 @@ function PrListItem({
           </div>
         )}
       </button>
-      {spawnedSessionId ? (
-        <div
-          className="flex-shrink-0 self-center flex flex-col items-center justify-center gap-0.5 px-3 py-2 min-w-[5.5rem]"
-          aria-label={`Session started for PR #${pr.number}`}
-        >
-          <CheckCircle2 size={20} className="text-emerald-400" aria-hidden />
-          <span className="text-[10px] font-medium text-emerald-400/95 text-center leading-tight">
-            Started
-          </span>
-          {typeof onOpenSession === 'function' && resolveAgentId && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onOpenSession(resolveAgentId, spawnedSessionId);
-              }}
-              className="text-[10px] text-blue-400 hover:text-blue-300 hover:underline mt-0.5"
-            >
-              Open chat
-            </button>
-          )}
-        </div>
-      ) : (
+      <div className="flex-shrink-0 self-center flex flex-col gap-2 items-stretch">
         <button
           type="button"
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            onResolveRow(pr.number);
+            onNudgeReviewerRow(pr.number);
           }}
-          disabled={resolveDisabled}
-          title={resolveTitle}
-          aria-label={`Resolve PR #${pr.number}`}
-          className="flex-shrink-0 self-center flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800/80 text-xs font-medium text-gray-200 hover:bg-gray-800 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-w-[5.5rem]"
+          disabled={nudgeDisabled}
+          title={nudgeTitle}
+          aria-label={`Nudge reviewer for PR #${pr.number}`}
+          className="flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-violet-800/80 bg-violet-950/40 text-xs font-medium text-violet-200 hover:bg-violet-950/70 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-w-[5.5rem]"
         >
-          {resolvingThisRow ? (
-            <Loader2 size={16} className="animate-spin text-gray-400" />
+          {nudgingThisRow ? (
+            <Loader2 size={16} className="animate-spin text-violet-300" />
           ) : (
-            <Wrench size={16} className="text-gray-400" />
+            <BellRing size={16} className="text-violet-300" />
           )}
-          <span>Resolve PR</span>
+          <span>Nudge</span>
         </button>
-      )}
+        {spawnedSessionId ? (
+          <div
+            className="flex flex-col items-center justify-center gap-0.5 px-3 py-2 min-w-[5.5rem]"
+            aria-label={`Session started for PR #${pr.number}`}
+          >
+            <CheckCircle2 size={20} className="text-emerald-400" aria-hidden />
+            <span className="text-[10px] font-medium text-emerald-400/95 text-center leading-tight">
+              Started
+            </span>
+            {typeof onOpenSession === 'function' && resolveAgentId && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOpenSession(resolveAgentId, spawnedSessionId);
+                }}
+                className="text-[10px] text-blue-400 hover:text-blue-300 hover:underline mt-0.5"
+              >
+                Open chat
+              </button>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onResolveRow(pr.number);
+            }}
+            disabled={resolveDisabled}
+            title={resolveTitle}
+            aria-label={`Resolve PR #${pr.number}`}
+            className="flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800/80 text-xs font-medium text-gray-200 hover:bg-gray-800 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-w-[5.5rem]"
+          >
+            {resolvingThisRow ? (
+              <Loader2 size={16} className="animate-spin text-gray-400" />
+            ) : (
+              <Wrench size={16} className="text-gray-400" />
+            )}
+            <span>Resolve PR</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -254,7 +288,10 @@ function PrDetail({
   refreshing,
   onResolve,
   resolving,
+  onNudgeReviewer,
+  nudgingReviewer,
   agentId,
+  reviewerAgentId,
   spawnedSessionId,
   onOpenSession,
 }) {
@@ -274,6 +311,13 @@ function PrDetail({
     : resolving
       ? 'Resolving…'
       : 'Spawn an agent session to resolve conflicts, CI failures, or review feedback on this PR';
+
+  const nudgeDisabled = nudgingReviewer || !reviewerAgentId;
+  const nudgeTitle = !reviewerAgentId
+    ? 'No reviewer agent on this project'
+    : nudgingReviewer
+      ? 'Requesting review…'
+      : 'Request a formal PR review from the reviewer agent';
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -314,6 +358,20 @@ function PrDetail({
               Resolve PR
             </button>
           )}
+          <button
+            type="button"
+            onClick={onNudgeReviewer}
+            disabled={nudgeDisabled}
+            title={nudgeTitle}
+            className="flex items-center gap-1.5 text-sm text-violet-300 hover:text-violet-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {nudgingReviewer ? (
+              <Loader2 size={14} className="animate-spin text-violet-300" />
+            ) : (
+              <BellRing size={14} className="text-violet-300" />
+            )}
+            Nudge reviewer
+          </button>
           <button
             type="button"
             onClick={onRefresh}
@@ -434,6 +492,8 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
   const [detailError, setDetailError] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [resolvingFromList, setResolvingFromList] = useState(null);
+  const [nudgingFromList, setNudgingFromList] = useState(null);
+  const [nudgingDetail, setNudgingDetail] = useState(false);
   const [bulkResolving, setBulkResolving] = useState(false);
   /** PR numbers for which a resolve run spawned a session (inline checkmark; no auto navigation). */
   const [sessionSpawnedByPr, setSessionSpawnedByPr] = useState(() => ({}));
@@ -444,6 +504,17 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
         ? project.agents[0]
         : project.agents[0]?.id
       : null;
+
+  const reviewerAgentId = Array.isArray(project?.agents)
+    ? (() => {
+        for (const a of project.agents) {
+          if (typeof a === 'object' && a?.role === 'reviewer' && typeof a.id === 'string') {
+            return a.id;
+          }
+        }
+        return null;
+      })()
+    : null;
 
   const loadList = useCallback(async () => {
     if (!projectId) {
@@ -559,6 +630,57 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
       setResolving(false);
     }
   }, [projectId, selectedNumber, resolveAgentId, resolving, applyResolveOutcome, onToast]);
+
+  const handleNudgeReviewer = useCallback(async () => {
+    if (!projectId || !selectedNumber || !reviewerAgentId || nudgingDetail) return;
+    setNudgingDetail(true);
+    try {
+      await api.nudgePrReviewer(projectId, selectedNumber);
+      if (typeof onToast === 'function') {
+        onToast(
+          'Formal review queued — the reviewer session will appear in the sidebar shortly.',
+          'success',
+          6000,
+        );
+      }
+    } catch (err) {
+      const raw = err?.message || 'Failed to nudge reviewer';
+      if (typeof onToast === 'function') {
+        onToast(raw.replace(/^(\d{3}):\s*/, ''), 'error', 7000);
+      } else {
+        console.warn('Nudge reviewer failed:', raw);
+      }
+    } finally {
+      setNudgingDetail(false);
+    }
+  }, [projectId, selectedNumber, reviewerAgentId, nudgingDetail, onToast]);
+
+  const handleNudgeFromList = useCallback(
+    async (prNumber) => {
+      if (!projectId || !reviewerAgentId || bulkResolving || nudgingFromList != null) return;
+      setNudgingFromList(prNumber);
+      try {
+        await api.nudgePrReviewer(projectId, prNumber);
+        if (typeof onToast === 'function') {
+          onToast(
+            `PR #${prNumber}: formal review queued — check the reviewer agent shortly.`,
+            'success',
+            6000,
+          );
+        }
+      } catch (err) {
+        const raw = err?.message || 'Failed to nudge reviewer';
+        if (typeof onToast === 'function') {
+          onToast(`PR #${prNumber}: ${raw.replace(/^(\d{3}):\s*/, '')}`, 'error', 7000);
+        } else {
+          console.warn('Nudge reviewer failed:', raw);
+        }
+      } finally {
+        setNudgingFromList(null);
+      }
+    },
+    [projectId, reviewerAgentId, bulkResolving, nudgingFromList, onToast],
+  );
 
   const handleResolveFromList = useCallback(
     async (prNumber) => {
@@ -684,7 +806,10 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
           refreshing={refreshing || detailLoading}
           onResolve={handleResolve}
           resolving={resolving}
+          onNudgeReviewer={handleNudgeReviewer}
+          nudgingReviewer={nudgingDetail}
           agentId={resolveAgentId}
+          reviewerAgentId={reviewerAgentId}
           spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
           onOpenSession={onOpenSession}
         />
@@ -803,8 +928,11 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
                 pr={pr}
                 onOpen={() => handleSelect(pr)}
                 onResolveRow={handleResolveFromList}
+                onNudgeReviewerRow={handleNudgeFromList}
                 resolveAgentId={resolveAgentId}
+                reviewerAgentId={reviewerAgentId}
                 resolvingThisRow={resolvingFromList === pr.number}
+                nudgingThisRow={nudgingFromList === pr.number}
                 bulkResolving={bulkResolving}
                 spawnedSessionId={sessionSpawnedByPr[pr.number] || null}
                 onOpenSession={onOpenSession}

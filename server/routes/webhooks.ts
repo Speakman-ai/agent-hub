@@ -715,6 +715,26 @@ export function shouldReviewPrAuthor(
 const REVIEWER_DEBOUNCE_MS = 30_000;
 const reviewerDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/** True while a debounced reviewer dispatch is waiting to fire for this PR. */
+export function isReviewerDispatchPending(projectId: string, prNumber: number): boolean {
+  return reviewerDebounceTimers.has(`${projectId}:${prNumber}`);
+}
+
+function reviewerTriggerDescription(reason: ReviewerDispatchOpts['reason']): string {
+  switch (reason) {
+    case 'opened':
+      return 'PR was just opened';
+    case 'synchronize':
+      return 'New commits were pushed (synchronize)';
+    case 'rerequested':
+      return 'Checks were re-run from GitHub (check run or suite rerequested)';
+    case 'manual-nudge':
+      return 'Manual nudge from Agent Hub (user requested a formal review from the PR list)';
+    default:
+      return String(reason);
+  }
+}
+
 /**
  * Without a fine-grained signal from the reviewer agent, we time-trigger the
  * `context → analyze` phase advance so the live panel actually animates
@@ -728,7 +748,7 @@ interface ReviewerDispatchOpts {
   prNumber: number;
   prTitle: string;
   repoFullName: string;
-  reason: 'opened' | 'synchronize' | 'rerequested';
+  reason: 'opened' | 'synchronize' | 'rerequested' | 'manual-nudge';
   /**
    * Commit SHA of PR head. Required to create a GitHub Check Run (which is
    * commit-scoped, not PR-scoped). Optional for backward-compat with callers
@@ -999,7 +1019,7 @@ You are reviewing pull request **#${opts.prNumber}** in repo \`${opts.repoFullNa
 
 - **PR URL**: ${opts.prUrl}
 - **Title**: ${opts.prTitle}
-- **Trigger**: ${opts.reason === 'opened' ? 'PR was just opened' : 'New commits were pushed (synchronize)'}
+- **Trigger**: ${reviewerTriggerDescription(opts.reason)}
 
 ## Progress markers (drives the in-Hub ProgressPanel + GitHub Check Run)
 

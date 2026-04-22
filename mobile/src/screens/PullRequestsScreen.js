@@ -30,7 +30,7 @@ import {
   prListRowResolveDisabledHeuristic,
 } from '../utils/prFormatting';
 import PrCapturesSection from '../components/PrCapturesSection';
-import { resolveAgentIdFromProject } from '../utils/projectAgents';
+import { resolveAgentIdFromProject, reviewerAgentIdFromProject } from '../utils/projectAgents';
 
 const STATE_TABS = [
   { key: 'open', label: 'Open' },
@@ -54,8 +54,11 @@ function PrListItem({
   pr,
   onPress,
   onResolveRow,
+  onNudgeReviewerRow,
   resolveAgentId,
+  reviewerAgentId,
   resolvingThisRow,
+  nudgingThisRow,
   bulkResolving,
   spawnedSessionId,
   onOpenChat,
@@ -70,6 +73,8 @@ function PrListItem({
   const heuristicOff = prListRowResolveDisabledHeuristic(pr);
   const resolveBusy = bulkResolving || resolvingThisRow;
   const resolveDisabled = !resolveAgentId || resolveBusy || heuristicOff;
+  const nudgeBusy = bulkResolving || nudgingThisRow;
+  const nudgeDisabled = !reviewerAgentId || nudgeBusy;
 
   return (
     <View style={styles.listItemRow}>
@@ -118,46 +123,70 @@ function PrListItem({
           </View>
         )}
       </TouchableOpacity>
-      {spawnedSessionId ? (
-        <View style={styles.listRowStarted} accessibilityLabel={`Session started for PR #${pr.number}`}>
-          <Text style={styles.listRowStartedCheck}>{'\u2713'}</Text>
-          <Text style={styles.listRowStartedCaption} numberOfLines={2}>
-            Started
-          </Text>
-          {typeof onOpenChat === 'function' && resolveAgentId ? (
-            <TouchableOpacity
-              onPress={() => onOpenChat(spawnedSessionId)}
-              accessibilityLabel="Open chat"
-              style={styles.listRowOpenChat}
-            >
-              <Text style={styles.listRowOpenChatText}>Open chat</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      ) : (
+      <View style={styles.listRowActions}>
         <TouchableOpacity
-          style={[styles.listRowResolveButton, resolveDisabled && styles.resolveButtonDisabled]}
-          onPress={() => onResolveRow(pr.number)}
-          disabled={resolveDisabled}
-          accessibilityLabel={`Resolve PR #${pr.number}`}
-          accessibilityState={{ disabled: resolveDisabled, busy: resolvingThisRow }}
+          style={[styles.listRowNudgeButton, nudgeDisabled && styles.resolveButtonDisabled]}
+          onPress={() => onNudgeReviewerRow(pr.number)}
+          disabled={nudgeDisabled}
+          accessibilityLabel={`Nudge reviewer for PR #${pr.number}`}
+          accessibilityState={{ disabled: nudgeDisabled, busy: nudgingThisRow }}
         >
-          {resolvingThisRow ? (
-            <ActivityIndicator size="small" color={colors.gray300} />
+          {nudgingThisRow ? (
+            <ActivityIndicator size="small" color={colors.purple400} />
           ) : (
-            <Text style={styles.listRowResolveButtonText}>{'\u{1F527}'}</Text>
+            <Text style={styles.listRowNudgeIcon}>{'\u{1F514}'}</Text>
           )}
           <Text
             style={[
-              styles.listRowResolveButtonCaption,
-              resolveDisabled && styles.resolveButtonTextDisabled,
+              styles.listRowNudgeCaption,
+              nudgeDisabled && styles.resolveButtonTextDisabled,
             ]}
             numberOfLines={2}
           >
-            Resolve PR
+            Nudge
           </Text>
         </TouchableOpacity>
-      )}
+        {spawnedSessionId ? (
+          <View style={styles.listRowStarted} accessibilityLabel={`Session started for PR #${pr.number}`}>
+            <Text style={styles.listRowStartedCheck}>{'\u2713'}</Text>
+            <Text style={styles.listRowStartedCaption} numberOfLines={2}>
+              Started
+            </Text>
+            {typeof onOpenChat === 'function' && resolveAgentId ? (
+              <TouchableOpacity
+                onPress={() => onOpenChat(spawnedSessionId)}
+                accessibilityLabel="Open chat"
+                style={styles.listRowOpenChat}
+              >
+                <Text style={styles.listRowOpenChatText}>Open chat</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={[styles.listRowResolveButton, resolveDisabled && styles.resolveButtonDisabled]}
+            onPress={() => onResolveRow(pr.number)}
+            disabled={resolveDisabled}
+            accessibilityLabel={`Resolve PR #${pr.number}`}
+            accessibilityState={{ disabled: resolveDisabled, busy: resolvingThisRow }}
+          >
+            {resolvingThisRow ? (
+              <ActivityIndicator size="small" color={colors.gray300} />
+            ) : (
+              <Text style={styles.listRowResolveButtonText}>{'\u{1F527}'}</Text>
+            )}
+            <Text
+              style={[
+                styles.listRowResolveButtonCaption,
+                resolveDisabled && styles.resolveButtonTextDisabled,
+              ]}
+              numberOfLines={2}
+            >
+              Resolve PR
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   );
 }
@@ -170,7 +199,10 @@ function PrDetail({
   refreshing,
   onResolve,
   resolving,
+  onNudgeReviewer,
+  nudgingReviewer,
   canResolve,
+  hasReviewerAgent,
   spawnedSessionId,
   onOpenChat,
 }) {
@@ -184,6 +216,7 @@ function PrDetail({
   const mBadge = mergeableBadge(pr.mergeable);
 
   const resolveDisabled = resolving || !canResolve;
+  const nudgeDisabled = nudgingReviewer || !hasReviewerAgent;
 
   return (
     <ScrollView
@@ -229,6 +262,19 @@ function PrDetail({
             )}
           </TouchableOpacity>
         )}
+        <TouchableOpacity
+          style={[styles.nudgeButton, nudgeDisabled && styles.resolveButtonDisabled]}
+          onPress={onNudgeReviewer}
+          disabled={nudgeDisabled}
+          accessibilityLabel="Nudge reviewer"
+          accessibilityState={{ disabled: nudgeDisabled, busy: nudgingReviewer }}
+        >
+          {nudgingReviewer ? (
+            <ActivityIndicator size="small" color={colors.purple400} />
+          ) : (
+            <Text style={styles.nudgeButtonText}>{'\u{1F514}'} Nudge</Text>
+          )}
+        </TouchableOpacity>
       </View>
 
       <View style={styles.detailHeader}>
@@ -385,6 +431,7 @@ export default function PullRequestsScreen({ route, navigation }) {
   const projectId = route?.params?.projectId || projects?.[0]?.id;
   const project = projects?.find((p) => p.id === projectId);
   const resolveAgentId = resolveAgentIdFromProject(project);
+  const reviewerAgentId = reviewerAgentIdFromProject(project);
 
   const [state, setState] = useState('open');
   const [pulls, setPulls] = useState([]);
@@ -398,6 +445,8 @@ export default function PullRequestsScreen({ route, navigation }) {
   const [detailError, setDetailError] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [resolvingFromList, setResolvingFromList] = useState(null);
+  const [nudgingFromList, setNudgingFromList] = useState(null);
+  const [nudgingDetail, setNudgingDetail] = useState(false);
   const [bulkResolving, setBulkResolving] = useState(false);
   const [sessionSpawnedByPr, setSessionSpawnedByPr] = useState({});
 
@@ -501,6 +550,43 @@ export default function PullRequestsScreen({ route, navigation }) {
       setResolving(false);
     }
   }, [projectId, selectedNumber, resolveAgentId, resolving]);
+
+  const handleNudgeReviewer = useCallback(async () => {
+    if (!projectId || !selectedNumber || !reviewerAgentId || nudgingDetail) return;
+    setNudgingDetail(true);
+    try {
+      await api.nudgePrReviewer(projectId, selectedNumber);
+      Alert.alert(
+        'Nudge reviewer',
+        'Formal review queued — open the reviewer agent to watch the new session.',
+      );
+    } catch (err) {
+      const raw = err?.message || 'Failed to nudge reviewer';
+      Alert.alert('Nudge reviewer', raw.replace(/^(\d{3}):\s*/, ''));
+    } finally {
+      setNudgingDetail(false);
+    }
+  }, [projectId, selectedNumber, reviewerAgentId, nudgingDetail]);
+
+  const handleNudgeFromList = useCallback(
+    async (prNumber) => {
+      if (!projectId || !reviewerAgentId || bulkResolving || nudgingFromList != null) return;
+      setNudgingFromList(prNumber);
+      try {
+        await api.nudgePrReviewer(projectId, prNumber);
+        Alert.alert(
+          'Nudge reviewer',
+          `PR #${prNumber}: formal review queued — check the reviewer agent shortly.`,
+        );
+      } catch (err) {
+        const raw = err?.message || 'Failed to nudge reviewer';
+        Alert.alert('Nudge reviewer', `PR #${prNumber}: ${raw.replace(/^(\d{3}):\s*/, '')}`);
+      } finally {
+        setNudgingFromList(null);
+      }
+    },
+    [projectId, reviewerAgentId, bulkResolving, nudgingFromList],
+  );
 
   const handleResolveFromList = useCallback(
     async (prNumber) => {
@@ -631,7 +717,10 @@ export default function PullRequestsScreen({ route, navigation }) {
               refreshing={refreshing}
               onResolve={handleResolve}
               resolving={resolving}
+              onNudgeReviewer={handleNudgeReviewer}
+              nudgingReviewer={nudgingDetail}
               canResolve={Boolean(resolveAgentId)}
+              hasReviewerAgent={Boolean(reviewerAgentId)}
               spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
               onOpenChat={
                 sessionSpawnedByPr[selectedNumber]
@@ -687,8 +776,11 @@ export default function PullRequestsScreen({ route, navigation }) {
                 pr={item}
                 onPress={() => handleSelect(item)}
                 onResolveRow={handleResolveFromList}
+                onNudgeReviewerRow={handleNudgeFromList}
                 resolveAgentId={resolveAgentId}
+                reviewerAgentId={reviewerAgentId}
                 resolvingThisRow={resolvingFromList === item.number}
+                nudgingThisRow={nudgingFromList === item.number}
                 bulkResolving={bulkResolving}
                 spawnedSessionId={sessionSpawnedByPr[item.number] || null}
                 onOpenChat={openResolverChat}
@@ -767,6 +859,30 @@ const styles = StyleSheet.create({
   listItemMain: {
     flex: 1,
     minWidth: 0,
+  },
+  listRowActions: {
+    flexDirection: 'column',
+    gap: 6,
+    alignItems: 'stretch',
+  },
+  listRowNudgeButton: {
+    width: 76,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.purple500,
+    backgroundColor: colors.purple900_40,
+  },
+  listRowNudgeIcon: { fontSize: 16, textAlign: 'center' },
+  listRowNudgeCaption: {
+    color: colors.purple400,
+    fontSize: 10,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 2,
   },
   listRowResolveButton: {
     width: 76,
@@ -870,6 +986,7 @@ const styles = StyleSheet.create({
   detailTopActions: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 8,
     marginBottom: 4,
   },
@@ -890,6 +1007,19 @@ const styles = StyleSheet.create({
   resolveButtonDisabled: { opacity: 0.5 },
   resolveButtonText: { color: colors.gray200, fontSize: 13, fontWeight: '500' },
   resolveButtonTextDisabled: { color: colors.gray500 },
+  nudgeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minHeight: 32,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.purple500,
+    backgroundColor: colors.purple900_40,
+  },
+  nudgeButtonText: { color: colors.purple400, fontSize: 13, fontWeight: '500' },
   detailSessionStarted: {
     flexDirection: 'row',
     alignItems: 'center',
