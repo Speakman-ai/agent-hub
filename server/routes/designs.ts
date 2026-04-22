@@ -6,6 +6,9 @@
  * link, or delete designs.
  */
 import { Router, Request, Response } from 'express';
+import { readFileSync, realpathSync } from 'fs';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
 import type { RouteDeps, DesignWithProjects } from '../types.js';
 import {
   createDesign,
@@ -18,6 +21,7 @@ import {
   listDesignFilesRecursive,
   patchDesignChatEngineModelSession,
 } from '../designs-store.js';
+import { defaultModelForEngine } from '../config.js';
 import {
   DESIGN_CHAT_ENGINES,
   isDesignChatEngine,
@@ -31,8 +35,43 @@ interface DesignRouteDeps extends RouteDeps {
   getDesignsRoot: () => string;
 }
 
+const MAX_FORWARD_PROMPT_LENGTH = 50_000;
+const MAX_FORWARD_CONTENT_BYTES = 512_000;
+const MAX_FORWARD_DESIGN_MESSAGES = 120;
+const MAX_FORWARD_MESSAGE_CHARS = 2_500;
+const MAX_FORWARD_TEXT_FILES = 12;
+const MAX_FORWARD_FILE_CHARS = 20_000;
+
+const DESIGN_TEXT_FILE_RE = /\.(html?|css|js|jsx|ts|tsx|json|md|txt|svg)$/i;
+
+function truncateChars(input: string, maxChars: number): string {
+  if (input.length <= maxChars) return input;
+  return `${input.slice(0, Math.max(0, maxChars - 24))}\n...[truncated]`;
+}
+
+function languageFromPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.html' || ext === '.htm') return 'html';
+  if (ext === '.css') return 'css';
+  if (ext === '.js' || ext === '.jsx') return 'javascript';
+  if (ext === '.ts' || ext === '.tsx') return 'typescript';
+  if (ext === '.json') return 'json';
+  if (ext === '.md') return 'markdown';
+  if (ext === '.svg') return 'xml';
+  return 'text';
+}
+
+/** After path.resolve, ensure `resolvedFile` is the same as or under `resolvedRoot` (no `..` escape). */
+function isPathStrictlyInsideRoot(resolvedFile: string, resolvedRoot: string): boolean {
+  const rootNorm = path.resolve(resolvedRoot);
+  const fileNorm = path.resolve(resolvedFile);
+  if (fileNorm === rootNorm) return false;
+  const rel = path.relative(rootNorm, fileNorm);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 export default function createDesignRoutes(deps: DesignRouteDeps): Router {
-  const { findProject, broadcast, getDesignsRoot, config } = deps;
+  const { findProject, broadcast, getDesignsRoot, config, stmts, findAgent, handleChat } = deps;
   const router = Router();
 
   function lookup(projectId: string) {
@@ -217,6 +256,207 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
     const design = getDesign(req.params.id as string, lookup, getActiveOrgId());
     if (!design) return res.status(404).json({ error: 'Design not found' });
     res.json(getDesignStatus(design.id));
+  });
+
+  interface ForwardDesignBody {
+    targetAgentId: string;
+    prompt?: string;
+    autoStart?: boolean;
+    includeMessages?: boolean;
+    includeFiles?: boolean;
+    messageCount?: number;
+  }
+
+  router.post('/api/designs/:id/forward', (req: Request, res: Response) => {
+    try {
+      const design = getDesign(req.params.id as string, lookup, getActiveOrgId());
+      if (!design) return res.status(404).json({ error: 'Design not found' });
+
+      const {
+        targetAgentId,
+        prompt,
+        autoStart,
+        includeMessages = true,
+        includeFiles = true,
+        messageCount,
+      } = req.body as ForwardDesignBody;
+
+      if (!targetAgentId || !targetAgentId.trim()) {
+        return res.status(400).json({ error: 'targetAgentId is required' });
+      }
+      if (prompt && prompt.length > MAX_FORWARD_PROMPT_LENGTH) {
+        return res.status(400).json({
+          error: `prompt exceeds maximum length of ${MAX_FORWARD_PROMPT_LENGTH} characters`,
+        });
+      }
+      if (autoStart && !handleChat) {
+        return res.status(503).json({
+          error: 'Auto-start is not available — chat handler is not initialized',
+        });
+      }
+
+      const targetFound = findAgent(targetAgentId);
+      if (!targetFound) {
+        return res.status(404).json({ error: `Target agent not found: ${targetAgentId}` });
+      }
+      const targetAgent = targetFound.agent;
+
+      const parts: string[] = [];
+      if (prompt?.trim()) {
+        parts.push(prompt.trim());
+        parts.push('');
+      }
+
+      parts.push(`--- Forwarded Design Context: ${design.name} (${design.id}) ---`);
+      if (design.linkedProjects?.length) {
+        parts.push(
+          `Linked projects: ${design.linkedProjects.map((p) => `${p.name} (${p.id})`).join(', ')}`,
+        );
+      }
+      parts.push('');
+
+      let forwardedMessageCount = 0;
+      if (includeMessages) {
+        const allMsgs = listDesignMessages(design.id);
+        if (allMsgs.length > 0) {
+          const requestedCount =
+            typeof messageCount === 'number' && Number.isFinite(messageCount)
+              ? Math.trunc(messageCount)
+              : 40;
+          const finalCount = Math.max(1, Math.min(MAX_FORWARD_DESIGN_MESSAGES, requestedCount));
+          const selected = allMsgs.slice(-finalCount);
+          forwardedMessageCount = selected.length;
+
+          parts.push(`## Design Chat Transcript (last ${selected.length} messages)`);
+          parts.push('');
+          for (const m of selected) {
+            const role =
+              m.role === 'assistant' ? 'Assistant' : m.role === 'system' ? 'System' : 'User';
+            parts.push(`[${role}]`);
+            parts.push(truncateChars(m.content || '', MAX_FORWARD_MESSAGE_CHARS));
+            parts.push('');
+          }
+        }
+      }
+
+      let forwardedFileCount = 0;
+      if (includeFiles) {
+        const files = listDesignFilesRecursive(getDesignsRoot(), design.id)
+          .map((f) => f.path)
+          .sort((a, b) => a.localeCompare(b));
+
+        if (files.length > 0) {
+          parts.push('## Design Files');
+          for (const file of files) {
+            parts.push(`- ${file}`);
+          }
+          parts.push('');
+        }
+
+        const textFiles = files
+          .filter((f) => DESIGN_TEXT_FILE_RE.test(f))
+          .slice(0, MAX_FORWARD_TEXT_FILES);
+        if (textFiles.length > 0) {
+          parts.push('## Design File Contents');
+          parts.push('');
+          let designRootReal: string;
+          try {
+            designRootReal = realpathSync(path.join(getDesignsRoot(), design.id));
+          } catch {
+            designRootReal = path.join(getDesignsRoot(), design.id);
+          }
+          for (const relPath of textFiles) {
+            const absCandidate = path.resolve(designRootReal, relPath);
+            if (!isPathStrictlyInsideRoot(absCandidate, designRootReal)) {
+              continue;
+            }
+            let absResolved: string;
+            try {
+              absResolved = realpathSync(absCandidate);
+            } catch {
+              continue;
+            }
+            if (!isPathStrictlyInsideRoot(absResolved, designRootReal)) {
+              continue;
+            }
+            try {
+              const raw = readFileSync(absResolved, 'utf-8');
+              const clipped = truncateChars(raw, MAX_FORWARD_FILE_CHARS);
+              parts.push(`### ${relPath}`);
+              parts.push('```' + languageFromPath(relPath));
+              parts.push(clipped);
+              parts.push('```');
+              parts.push('');
+              forwardedFileCount++;
+            } catch {
+              // best effort; skip unreadable files
+            }
+          }
+        }
+      }
+
+      parts.push('--- End of forwarded design context ---');
+      const forwardedContent = parts.join('\n');
+      const contentBytes = Buffer.byteLength(forwardedContent, 'utf8');
+      if (contentBytes > MAX_FORWARD_CONTENT_BYTES) {
+        return res.status(400).json({
+          error: `Forwarded design context is too large (${contentBytes} bytes, max ${MAX_FORWARD_CONTENT_BYTES} bytes). Reduce messageCount or disable includeFiles/includeMessages.`,
+        });
+      }
+
+      const newSessionId = uuidv4();
+      const sessionName = `[Design Fwd] ${design.name}`.slice(0, 100);
+      const engine = targetAgent.engine || 'claude-code';
+      const model = targetAgent.model || defaultModelForEngine(engine);
+      stmts.createSession.run(newSessionId, targetAgentId, sessionName, engine, model, 1, 0);
+
+      let forwardedMessageId: string | null = null;
+      if (!autoStart) {
+        forwardedMessageId = uuidv4();
+        stmts.addMessage.run(
+          forwardedMessageId,
+          newSessionId,
+          'user',
+          forwardedContent,
+          null,
+          null,
+          null,
+          null,
+        );
+        stmts.touchSession.run(newSessionId);
+      }
+
+      const newSession = stmts.getSession.get(newSessionId);
+      broadcast({
+        type: 'session_forwarded',
+        sourceType: 'design',
+        sourceDesignId: design.id,
+        targetAgentId,
+        session: newSession,
+        forwardedMessageId,
+      });
+
+      if (autoStart && handleChat) {
+        handleChat(null, {
+          type: 'chat',
+          agentId: targetAgentId,
+          sessionId: newSessionId,
+          content: forwardedContent,
+        });
+      }
+
+      return res.status(201).json({
+        session: newSession,
+        forwardedMessageId,
+        included: {
+          messages: forwardedMessageCount,
+          files: forwardedFileCount,
+        },
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ error: message });
+    }
   });
 
   return router;

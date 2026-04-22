@@ -218,6 +218,29 @@ export const api = {
   deleteDesign: (id) => fetchJSON(`/designs/${id}`, { method: 'DELETE' }),
   getDesignMessages: (id) => fetchJSON(`/designs/${id}/messages`),
   getDesignStatus: (id) => fetchJSON(`/designs/${id}/status`),
+  forwardDesign: (
+    id,
+    {
+      targetAgentId,
+      prompt,
+      autoStart,
+      includeMessages = true,
+      includeFiles = true,
+      messageCount,
+    } = {},
+  ) =>
+    fetchJSON(`/designs/${id}/forward`, {
+      method: 'POST',
+      body: JSON.stringify({
+        targetAgentId,
+        ...(prompt ? { prompt } : {}),
+        ...(autoStart != null ? { autoStart: !!autoStart } : {}),
+        includeMessages: includeMessages !== false,
+        includeFiles: includeFiles !== false,
+        ...(Number.isFinite(messageCount) ? { messageCount } : {}),
+      }),
+      timeout: 30000,
+    }),
 
   // Usage
   getUsage: () => fetchJSON('/usage'),

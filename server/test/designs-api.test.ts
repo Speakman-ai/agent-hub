@@ -1,5 +1,5 @@
 import type supertest from 'supertest';
-import { getRequest, createProject } from './helpers.js';
+import { getRequest, createAgent, createProject } from './helpers.js';
 
 let request: supertest.Agent;
 
@@ -286,6 +286,284 @@ describe('Designs API — files listing (agent read-access)', () => {
     getDb().prepare("UPDATE designs SET org_id = 'other-org' WHERE id = ?").run(id);
 
     await request.get(`/api/designs/${id}/files`).expect(404);
+  });
+});
+
+describe('Designs API — forward to agent context', () => {
+  it('POST /api/designs/:id/forward creates a target session with design context', async () => {
+    const project = (await createProject()) as { id: string };
+    const target = (await createAgent({
+      projectId: project.id,
+      id: 'design-fwd-target',
+      name: 'Design Forward Target',
+    })) as { id: string };
+
+    const created = await request
+      .post('/api/designs')
+      .send({ name: 'Forwardable Design', linkedProjectIds: [project.id] })
+      .expect(201);
+    const designId = (created.body as DesignBody).id;
+
+    // Seed design messages + files.
+    const { appendDesignMessage } = await import('../designs-store.js');
+    appendDesignMessage(designId, 'user', 'Need a bold hero and CTA');
+    appendDesignMessage(designId, 'assistant', 'Implemented hero with centered CTA');
+
+    const { writeFileSync } = await import('fs');
+    const path = await import('path');
+    const dataDir = process.env.AGENT_HUB_DATA_DIR as string;
+    const designRoot = path.join(dataDir, 'designs', designId);
+    writeFileSync(path.join(designRoot, 'styles.css'), 'body { background: #111; }', 'utf-8');
+    writeFileSync(path.join(designRoot, 'app.js'), 'console.log("design-ready");', 'utf-8');
+
+    const forward = await request
+      .post(`/api/designs/${designId}/forward`)
+      .send({
+        targetAgentId: target.id,
+        prompt: 'Port this design into the React app.',
+        includeMessages: true,
+        includeFiles: true,
+        messageCount: 10,
+      })
+      .expect(201);
+
+    expect(forward.body.session).toBeTruthy();
+    expect(forward.body.session.agent_id).toBe(target.id);
+    expect(forward.body.forwardedMessageId).toBeTruthy();
+    expect(forward.body.included.messages).toBe(2);
+    expect(forward.body.included.files).toBeGreaterThanOrEqual(1);
+
+    const msgRes = await request
+      .get(`/api/sessions/${forward.body.session.id}/messages`)
+      .expect(200);
+    const content = msgRes.body[0]?.content as string;
+    expect(content).toContain('Forwarded Design Context: Forwardable Design');
+    expect(content).toContain('Port this design into the React app.');
+    expect(content).toContain('Need a bold hero and CTA');
+    expect(content).toContain('styles.css');
+    expect(content).toContain('Design File Contents');
+  });
+
+  it('POST /api/designs/:id/forward validates required targetAgentId', async () => {
+    const created = await request.post('/api/designs').send({ name: 'Missing target' }).expect(201);
+    const designId = (created.body as DesignBody).id;
+    await request.post(`/api/designs/${designId}/forward`).send({}).expect(400);
+  });
+
+  it('POST /api/designs/:id/forward with autoStart:true does not pre-store the user message', async () => {
+    const project = (await createProject()) as { id: string };
+    const target = (await createAgent({
+      projectId: project.id,
+      id: 'design-fwd-autostart',
+      name: 'Design Auto Target',
+    })) as { id: string };
+
+    const created = await request
+      .post('/api/designs')
+      .send({ name: 'Auto Forward Design', linkedProjectIds: [project.id] })
+      .expect(201);
+    const designId = (created.body as DesignBody).id;
+
+    const { appendDesignMessage } = await import('../designs-store.js');
+    appendDesignMessage(designId, 'user', 'Some design chat');
+
+    const res = await request
+      .post(`/api/designs/${designId}/forward`)
+      .send({ targetAgentId: target.id, autoStart: true })
+      .expect(201);
+
+    expect(res.body.forwardedMessageId).toBeNull();
+    expect(res.body.session.agent_id).toBe(target.id);
+
+    const msgRes = await request.get(`/api/sessions/${res.body.session.id}/messages`).expect(200);
+    // handleChat persists the synthesized context; the forward route must not also call addMessage.
+    // The CLI may finish and persist an assistant row before this GET, so only assert on user messages.
+    const userMsgs = (msgRes.body as MessageBody[]).filter((m) => m.role === 'user');
+    expect(userMsgs).toHaveLength(1);
+    expect(userMsgs[0].content as string).toContain(
+      'Forwarded Design Context: Auto Forward Design',
+    );
+    expect(userMsgs[0].content as string).toContain('Some design chat');
+  });
+
+  it('POST /api/designs/:id/forward respects includeMessages:false', async () => {
+    const project = (await createProject()) as { id: string };
+    const target = (await createAgent({
+      projectId: project.id,
+      id: 'design-fwd-no-msgs',
+      name: 'No Msgs Target',
+    })) as { id: string };
+
+    const created = await request
+      .post('/api/designs')
+      .send({ name: 'No transcript', linkedProjectIds: [project.id] })
+      .expect(201);
+    const designId = (created.body as DesignBody).id;
+
+    const { appendDesignMessage } = await import('../designs-store.js');
+    appendDesignMessage(designId, 'user', 'Secret transcript line');
+    appendDesignMessage(designId, 'assistant', 'Secret reply');
+
+    const { writeFileSync } = await import('fs');
+    const path = await import('path');
+    const dataDir = process.env.AGENT_HUB_DATA_DIR as string;
+    const designRoot = path.join(dataDir, 'designs', designId);
+    writeFileSync(path.join(designRoot, 'visible.css'), '/* kept */', 'utf-8');
+
+    const forward = await request
+      .post(`/api/designs/${designId}/forward`)
+      .send({
+        targetAgentId: target.id,
+        includeMessages: false,
+        includeFiles: true,
+      })
+      .expect(201);
+
+    expect(forward.body.included.messages).toBe(0);
+    expect(forward.body.included.files).toBeGreaterThanOrEqual(1);
+
+    const msgRes = await request
+      .get(`/api/sessions/${forward.body.session.id}/messages`)
+      .expect(200);
+    const content = msgRes.body[0]?.content as string;
+    expect(content).not.toContain('Secret transcript line');
+    expect(content).not.toContain('Design Chat Transcript');
+    expect(content).toContain('Forwarded Design Context: No transcript');
+    expect(content).toContain('visible.css');
+  });
+
+  it('POST /api/designs/:id/forward respects includeFiles:false', async () => {
+    const project = (await createProject()) as { id: string };
+    const target = (await createAgent({
+      projectId: project.id,
+      id: 'design-fwd-no-files',
+      name: 'No Files Target',
+    })) as { id: string };
+
+    const created = await request
+      .post('/api/designs')
+      .send({ name: 'No files payload', linkedProjectIds: [project.id] })
+      .expect(201);
+    const designId = (created.body as DesignBody).id;
+
+    const { appendDesignMessage } = await import('../designs-store.js');
+    appendDesignMessage(designId, 'user', 'Keep this line');
+
+    const { writeFileSync } = await import('fs');
+    const path = await import('path');
+    const dataDir = process.env.AGENT_HUB_DATA_DIR as string;
+    const designRoot = path.join(dataDir, 'designs', designId);
+    writeFileSync(path.join(designRoot, 'omit.js'), 'console.log("omit");', 'utf-8');
+
+    const forward = await request
+      .post(`/api/designs/${designId}/forward`)
+      .send({
+        targetAgentId: target.id,
+        includeMessages: true,
+        includeFiles: false,
+      })
+      .expect(201);
+
+    expect(forward.body.included.files).toBe(0);
+
+    const msgRes = await request
+      .get(`/api/sessions/${forward.body.session.id}/messages`)
+      .expect(200);
+    const content = msgRes.body[0]?.content as string;
+    expect(content).toContain('Keep this line');
+    expect(content).not.toContain('## Design Files');
+    expect(content).not.toContain('## Design File Contents');
+    expect(content).not.toContain('omit.js');
+  });
+
+  it('POST /api/designs/:id/forward returns 400 when assembled context exceeds byte cap', async () => {
+    const project = (await createProject()) as { id: string };
+    const target = (await createAgent({
+      projectId: project.id,
+      id: 'design-fwd-oversize',
+      name: 'Oversize Target',
+    })) as { id: string };
+
+    const created = await request
+      .post('/api/designs')
+      .send({ name: 'Huge payload', linkedProjectIds: [project.id] })
+      .expect(201);
+    const designId = (created.body as DesignBody).id;
+
+    const { appendDesignMessage } = await import('../designs-store.js');
+    const chunk = 'x'.repeat(2500);
+    for (let i = 0; i < 120; i++) {
+      appendDesignMessage(designId, 'user', chunk);
+    }
+
+    const { writeFileSync } = await import('fs');
+    const path = await import('path');
+    const dataDir = process.env.AGENT_HUB_DATA_DIR as string;
+    const designRoot = path.join(dataDir, 'designs', designId);
+    const fat = 'y'.repeat(20_000);
+    for (let i = 0; i < 12; i++) {
+      writeFileSync(path.join(designRoot, `pad${i}.txt`), fat, 'utf-8');
+    }
+
+    const res = await request
+      .post(`/api/designs/${designId}/forward`)
+      .send({
+        targetAgentId: target.id,
+        messageCount: 120,
+        includeMessages: true,
+        includeFiles: true,
+      })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/too large/i);
+  });
+
+  it('POST /api/designs/:id/forward does not read file contents through symlinks outside the design root', async () => {
+    const project = (await createProject()) as { id: string };
+    const target = (await createAgent({
+      projectId: project.id,
+      id: 'design-fwd-symlink',
+      name: 'Symlink Target',
+    })) as { id: string };
+
+    const created = await request
+      .post('/api/designs')
+      .send({ name: 'Symlink escape', linkedProjectIds: [project.id] })
+      .expect(201);
+    const designId = (created.body as DesignBody).id;
+
+    const { mkdtempSync, writeFileSync, symlinkSync, rmSync } = await import('fs');
+    const { tmpdir } = await import('os');
+    const pathMod = await import('path');
+    const dataDir = process.env.AGENT_HUB_DATA_DIR as string;
+    const designRoot = pathMod.join(dataDir, 'designs', designId);
+    const outside = mkdtempSync(pathMod.join(tmpdir(), 'ah-symlink-'));
+    const secretFile = pathMod.join(outside, 'secret.txt');
+    const secret = 'SECRET_NOT_FROM_DESIGN_ROOT_9f2a';
+    writeFileSync(secretFile, secret, 'utf-8');
+    try {
+      symlinkSync(secretFile, pathMod.join(designRoot, 'leak.css'));
+    } catch (err) {
+      rmSync(outside, { recursive: true, force: true });
+      throw err;
+    }
+
+    const forward = await request
+      .post(`/api/designs/${designId}/forward`)
+      .send({
+        targetAgentId: target.id,
+        includeFiles: true,
+        includeMessages: false,
+      })
+      .expect(201);
+
+    const msgRes = await request
+      .get(`/api/sessions/${forward.body.session.id}/messages`)
+      .expect(200);
+    const content = msgRes.body[0]?.content as string;
+    expect(content).not.toContain(secret);
+
+    rmSync(outside, { recursive: true, force: true });
   });
 });
 

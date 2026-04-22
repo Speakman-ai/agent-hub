@@ -11,7 +11,7 @@
  * and the filesystem artifact dir lifecycle. Routes + the chat handler call
  * into these helpers.
  */
-import { mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, lstatSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getStmts } from './db.js';
@@ -228,15 +228,15 @@ export function listDesignFilesRecursive(designsRoot: string, designId: string):
     for (const name of entries.sort()) {
       const childAbs = path.join(abs, name);
       const childRel = rel ? `${rel}/${name}` : name;
-      let st: ReturnType<typeof statSync>;
+      let st: ReturnType<typeof lstatSync>;
       try {
-        // lstat-equivalent via statSync + isSymbolicLink check; we use statSync
-        // and skip non-regular entries below. A symlink pointing outside the
-        // artifact root would still be filesystem-served, so the path-traversal
-        // guard on `/design-files/:id/*` is the real safety net; here we just
-        // avoid exposing weird entries in the listing.
-        st = statSync(childAbs);
+        // Do not follow symlinks — keeps listings aligned with the forward
+        // route's realpath containment and avoids surprise entries.
+        st = lstatSync(childAbs);
       } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) {
         continue;
       }
       if (st.isDirectory()) {
