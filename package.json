@@ -26,8 +26,8 @@
     "rebuild:native": "npm rebuild better-sqlite3",
     "postinstall": "npm rebuild better-sqlite3",
     "test:watch": "cd server && npx vitest",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
+    "lint": "node scripts/run-eslint.mjs .",
+    "lint:fix": "node scripts/run-eslint.mjs . --fix",
     "format": "prettier --write 'server/**/*.ts' 'client/src/**/*.{js,jsx}' 'electron/**/*.{js,cjs}'",
     "format:check": "prettier --check 'server/**/*.ts' 'client/src/**/*.{js,jsx}' 'electron/**/*.{js,cjs}'",
     "prepare": "husky",
@@ -85,11 +85,11 @@
   },
   "lint-staged": {
     "server/**/*.ts": [
-      "eslint --fix",
+      "node scripts/run-eslint.mjs --fix",
       "prettier --write"
     ],
     "client/src/**/*.{js,jsx}": [
-      "eslint --fix",
+      "node scripts/run-eslint.mjs --fix",
       "prettier --write"
     ]
   },
