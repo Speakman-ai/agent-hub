@@ -20,6 +20,24 @@ vi.mock('child_process', () => ({
 // buildSpawnEnv pokes a few env-sensitive helpers — stub to a bare object.
 vi.mock('./config.js', () => ({
   buildSpawnEnv: vi.fn(() => ({})),
+  defaultModelForEngine: vi.fn((engine: string) =>
+    engine === 'cursor-agent'
+      ? 'gpt-default'
+      : engine === 'codex-cli'
+        ? 'gpt-5.3-codex'
+        : engine === 'gemini-cli'
+          ? 'gemini-2.5-pro'
+          : 'claude-default',
+  ),
+}));
+
+vi.mock('./codex-auth.js', () => ({
+  detectCodexAuthMode: vi.fn(() => ({
+    mode: 'apikey' as const,
+    path: '/tmp/mock-codex-auth',
+    present: false,
+  })),
+  shouldPassModelFlag: vi.fn(() => true),
 }));
 
 import { spawn } from 'child_process';
@@ -27,9 +45,11 @@ import {
   initDelegation,
   handleDelegation,
   handleDelegationCancel,
+  synthesizeResults,
   buildDelegationSynthesisPrompt,
+  type DelegationDeps,
 } from './delegation.js';
-import type { BroadcastFn, EnrichedAgent, Project, Stmts } from './types.js';
+import type { BroadcastFn, EnrichedAgent, Project, SessionRow, Stmts } from './types.js';
 
 /**
  * Minimal ChildProcess fake: an EventEmitter with .stdout/.stderr streams and
@@ -67,14 +87,21 @@ function makeFakeProc(): {
 
 type FakeProc = ReturnType<typeof makeFakeProc>;
 
-/** Build a stub Stmts with the two delegation statements this path touches. */
+/** Lead session `ask_mode` for `stmts.getSession.get(sessionId)` in delegate tests (0 = off). */
+let delegationLeadAskMode = 0;
+
+/** Build a stub Stmts with delegation statements + session lookup for Ask Mode parity. */
 function makeStmts() {
   const createDelegation = { run: vi.fn() };
   const updateDelegation = { run: vi.fn() };
+  const getSession = {
+    get: vi.fn((_id: string) => ({ ask_mode: delegationLeadAskMode })),
+  };
   return {
-    stmts: { createDelegation, updateDelegation } as unknown as Stmts,
+    stmts: { createDelegation, updateDelegation, getSession } as unknown as Stmts,
     createDelegation,
     updateDelegation,
+    getSession,
   };
 }
 
@@ -102,6 +129,7 @@ describe('handleDelegation — retry logic', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delegationLeadAskMode = 0;
     tmpWorkspace = mkdtempSync(path.join(os.tmpdir(), 'delegation-test-'));
     fakeProcs = [];
     broadcast = vi.fn();
@@ -129,7 +157,7 @@ describe('handleDelegation — retry logic', () => {
       stmts: stmts.stmts,
       broadcast: broadcast as unknown as BroadcastFn,
       getEnrichedAgent: (id) => (id === 'sub-1' ? subAgent : null),
-      buildEnrichedPrompt: () => 'prompt',
+      buildEnrichedPrompt: (() => 'prompt') as DelegationDeps['buildEnrichedPrompt'],
       saveErrorMessage: vi.fn(),
       appendDailyNote: (workspace: string, entry: string) => {
         // Minimal stand-in matching the real appendDailyNote signature —
@@ -142,6 +170,9 @@ describe('handleDelegation — retry logic', () => {
       },
       getActiveProcesses: () => new Map(),
       getClaudeBin: () => '/bin/claude',
+      getCursorBin: () => '/bin/cursor',
+      getGeminiBin: () => '/bin/gemini',
+      getCodexBin: () => '/bin/codex',
       getDefaultModel: () => 'sonnet',
       getConfig: () =>
         ({
@@ -230,6 +261,7 @@ describe('handleDelegation — retry logic', () => {
     expect(results[0].output).toBeNull();
     expect(results[0].error).toMatch(/failed after 3 attempts/);
     expect(results[0].error).toContain('fail-3');
+    expect(results[0].error).toContain('Attempt trace');
 
     // delegation_agent_error broadcast with attempts=3.
     const errEvents = broadcast.mock.calls
@@ -316,6 +348,601 @@ describe('handleDelegation — retry logic', () => {
       .map((c) => c[0])
       .filter((e) => e.type === 'delegation_agent_error');
     expect(agentErrAfterCancel).toHaveLength(0);
+  });
+
+  it('uses Cursor CLI when sub-agent engine is cursor-agent', async () => {
+    subAgent = makeAgent('sub-1', {
+      engine: 'cursor-agent',
+      model: 'gpt-5.3-codex-high',
+    } as Partial<EnrichedAgent>);
+    leadAgent = makeAgent('lead', { subAgents: ['sub-1'] } as Partial<EnrichedAgent>);
+
+    const pending = handleDelegation(
+      'session-cursor',
+      'msg-cursor',
+      [{ agentId: 'sub-1', task: 'inspect api' }],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    await flush();
+    expect(fakeProcs.length).toBe(1);
+    const spawnCalls = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(spawnCalls[0][0]).toBe('/bin/cursor');
+    const argv = spawnCalls[0][1] as string[];
+    expect(argv[0]).toBe('-p');
+    expect(argv.join(' ')).toContain('--force');
+
+    fakeProcs[0].finish(0, { stdout: 'cursor sub output' });
+
+    const results = await pending;
+    expect(results[0].output).toBe('cursor sub output');
+    expect(results[0].error).toBeNull();
+  });
+
+  it('uses Gemini CLI + JSONL stream assembly for gemini-cli sub-agent', async () => {
+    subAgent = makeAgent('sub-1', {
+      engine: 'gemini-cli',
+      model: 'gemini-2.5-pro',
+    } as Partial<EnrichedAgent>);
+    leadAgent = makeAgent('lead', { subAgents: ['sub-1'] } as Partial<EnrichedAgent>);
+
+    const pending = handleDelegation(
+      'session-gemini',
+      'msg-g',
+      [{ agentId: 'sub-1', task: 'audit routes' }],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    await flush();
+    const spawnCalls = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(spawnCalls[0][0]).toBe('/bin/gemini');
+    const argv = spawnCalls[0][1] as string[];
+    expect(argv).toContain('-p');
+    expect(argv).toContain('--yolo');
+    expect(argv).toContain('--output-format');
+    expect(argv).toContain('stream-json');
+    expect(argv.join('\0')).toContain('prompt');
+    expect(argv.join('\0')).toContain('audit routes');
+
+    const geminiLine = JSON.stringify({
+      type: 'message',
+      role: 'assistant',
+      partial: false,
+      content: [{ type: 'text', text: 'Gemini delegate output.' }],
+    });
+    fakeProcs[0].finish(0, { stdout: `${geminiLine}\n` });
+
+    const results = await pending;
+    expect(results[0].output).toContain('Gemini delegate output.');
+    expect(results[0].error).toBeNull();
+  });
+
+  it('uses Codex CLI + JSONL stream assembly for codex-cli sub-agent', async () => {
+    subAgent = makeAgent('sub-1', {
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+    } as Partial<EnrichedAgent>);
+    leadAgent = makeAgent('lead', { subAgents: ['sub-1'] } as Partial<EnrichedAgent>);
+
+    const pending = handleDelegation(
+      'session-codex',
+      'msg-x',
+      [{ agentId: 'sub-1', task: 'scan imports' }],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    await flush();
+    const spawnCalls = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(spawnCalls[0][0]).toBe('/bin/codex');
+    const argv = spawnCalls[0][1] as string[];
+    expect(argv[0]).toBe('exec');
+    expect(argv).toContain('--json');
+    expect(argv).toContain('--full-auto');
+    expect(argv[argv.length - 1]).toContain('scan imports');
+
+    const codexLine = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        id: 'im1',
+        type: 'agent_message',
+        text: 'Codex delegate output.',
+      },
+    });
+    fakeProcs[0].finish(0, { stdout: `${codexLine}\n` });
+
+    const results = await pending;
+    expect(results[0].output).toContain('Codex delegate output.');
+    expect(results[0].error).toBeNull();
+  });
+
+  it('Gemini delegate omits --yolo when lead session is Ask Mode', async () => {
+    delegationLeadAskMode = 1;
+    subAgent = makeAgent('sub-1', {
+      engine: 'gemini-cli',
+      model: 'gemini-2.5-pro',
+    } as Partial<EnrichedAgent>);
+    leadAgent = makeAgent('lead', { subAgents: ['sub-1'] } as Partial<EnrichedAgent>);
+
+    const pending = handleDelegation(
+      'session-g-ask',
+      'msg-g-ask',
+      [{ agentId: 'sub-1', task: 'readonly audit' }],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    await flush();
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv).not.toContain('--yolo');
+
+    fakeProcs[0].finish(0, {
+      stdout:
+        JSON.stringify({
+          type: 'message',
+          role: 'assistant',
+          partial: false,
+          content: [{ type: 'text', text: 'gemini ok' }],
+        }) + '\n',
+    });
+
+    const results = await pending;
+    expect(results[0].output).toContain('gemini ok');
+  });
+
+  it('Codex delegate uses read-only sandbox when lead session is Ask Mode', async () => {
+    delegationLeadAskMode = 1;
+    subAgent = makeAgent('sub-1', {
+      engine: 'codex-cli',
+      model: 'gpt-5.3-codex',
+    } as Partial<EnrichedAgent>);
+    leadAgent = makeAgent('lead', { subAgents: ['sub-1'] } as Partial<EnrichedAgent>);
+
+    const pending = handleDelegation(
+      'session-x-ask',
+      'msg-x-ask',
+      [{ agentId: 'sub-1', task: 'inspect' }],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    await flush();
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv).toContain('--sandbox');
+    expect(argv).toContain('read-only');
+    expect(argv).not.toContain('--full-auto');
+
+    fakeProcs[0].finish(0, {
+      stdout:
+        JSON.stringify({
+          type: 'item.completed',
+          item: { id: 'x', type: 'agent_message', text: 'codex ask ok' },
+        }) + '\n',
+    });
+
+    const results = await pending;
+    expect(results[0].output).toContain('codex ask ok');
+  });
+});
+
+/** Stubs for delegation synthesis tests (session row + message writers). */
+function makeSynthStmts(session: Partial<SessionRow>) {
+  const row: SessionRow = {
+    id: 'syn-session',
+    agent_id: 'lead-1',
+    name: 'Test',
+    engine: session.engine ?? 'claude-code',
+    model: session.model ?? 'opus',
+    engine_session_id:
+      session.engine_session_id !== undefined ? session.engine_session_id : 'eng-cli-sess',
+    use_worktree: session.use_worktree ?? 0,
+    worktree_path: session.worktree_path ?? null,
+    worktree_branch: null,
+    git_worktree_detected: null,
+    changes_ready: null,
+    stale_pr_notified_at: null,
+    pending_skill_context: null,
+    ask_mode: 0,
+    cron_id: null,
+    created_at: '',
+    updated_at: '',
+    deleted_at: null,
+    ...session,
+  };
+  const getSession = { get: vi.fn(() => row) };
+  const addMessage = { run: vi.fn() };
+  const touchSession = { run: vi.fn() };
+  return {
+    stmts: { getSession, addMessage, touchSession } as unknown as Stmts,
+    getSession,
+    addMessage,
+    touchSession,
+    sessionRow: row,
+  };
+}
+
+describe('synthesizeResults — engine routing', () => {
+  let fakeProcs: FakeProc[];
+  let broadcast: ReturnType<typeof vi.fn>;
+  let synthBundle: ReturnType<typeof makeSynthStmts>;
+  let project: Project;
+  let leadAgent: EnrichedAgent;
+  let procMap: Map<string, unknown>;
+  /** Tracks correct (agent, undefined, opts) arity for Gemini/Codex synthesis enrichment. */
+  let buildEnrichedPromptMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fakeProcs = [];
+    broadcast = vi.fn();
+    procMap = new Map();
+    buildEnrichedPromptMock = vi.fn(() => '## enriched system prompt');
+    synthBundle = makeSynthStmts({
+      engine: 'claude-code',
+      model: 'opus',
+      engine_session_id: 'claude-cli-sess',
+    });
+    leadAgent = makeAgent('lead', {});
+    project = {
+      id: 'proj',
+      name: 'Proj',
+      slug: 'proj',
+      cwd: '/tmp/syn',
+      ahw: '',
+      color: '#000',
+      agentIds: ['lead'],
+    } as unknown as Project;
+
+    (spawn as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      const fp = makeFakeProc();
+      fakeProcs.push(fp);
+      return fp.proc;
+    });
+
+    initDelegation({
+      stmts: synthBundle.stmts,
+      broadcast: broadcast as unknown as BroadcastFn,
+      getEnrichedAgent: () => null,
+      buildEnrichedPrompt: buildEnrichedPromptMock as DelegationDeps['buildEnrichedPrompt'],
+      saveErrorMessage: vi.fn(),
+      appendDailyNote: vi.fn(),
+      getActiveProcesses: () => procMap as never,
+      getClaudeBin: () => '/bin/claude',
+      getCursorBin: () => '/bin/cursor',
+      getGeminiBin: () => '/bin/gemini',
+      getCodexBin: () => '/bin/codex',
+      getDefaultModel: () => 'sonnet',
+      getConfig: () =>
+        ({
+          conferenceTimeoutMs: 600000,
+        }) as unknown as import('./types.js').AppConfig,
+    });
+  });
+
+  async function flushSynth() {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  }
+
+  it('spawns Claude with --print and --resume for claude-code session', async () => {
+    const pending = synthesizeResults(
+      'syn-session',
+      'lead-1',
+      leadAgent,
+      project,
+      [
+        {
+          agentId: 'sub-1',
+          agentName: 'Sub',
+          task: 'delegated work',
+          output: 'delegated work',
+          error: null,
+        },
+      ],
+      'user asked for help',
+      '/tmp/syn',
+    );
+
+    await flushSynth();
+    expect(fakeProcs.length).toBe(1);
+    expect((spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('/bin/claude');
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv).toContain('--print');
+    expect(argv).toContain('--resume');
+    expect(argv).toContain('claude-cli-sess');
+    expect(argv).toContain('bypassPermissions');
+
+    fakeProcs[0].finish(0, { stdout: 'Here is the unified summary.' });
+
+    await pending;
+
+    expect(synthBundle.addMessage.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'syn-session',
+      'assistant',
+      'Here is the unified summary.',
+      'claude-code',
+      'opus',
+      null,
+      null,
+    );
+    const doneEv = broadcast.mock.calls.map((c) => c[0]).find((e) => e.type === 'done');
+    expect(doneEv?.message?.content).toContain('Here is the unified summary.');
+  });
+
+  it('uses Claude plan permission mode when lead session is in Ask Mode', async () => {
+    synthBundle.sessionRow.ask_mode = 1;
+
+    const pending = synthesizeResults(
+      'syn-session',
+      'lead-1',
+      leadAgent,
+      project,
+      [{ agentId: 's', agentName: 'S', task: 'subtask', output: 'x', error: null }],
+      'q',
+      '/tmp/syn',
+    );
+
+    await flushSynth();
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv.indexOf('--permission-mode')).toBeGreaterThan(-1);
+    expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('plan');
+
+    fakeProcs[0].finish(0, { stdout: 'answer' });
+    await pending;
+
+    expect(synthBundle.addMessage.run).toHaveBeenCalled();
+  });
+
+  it('spawns Cursor with resume + stream-json and assembles streamed assistant text', async () => {
+    synthBundle.sessionRow.engine = 'cursor-agent';
+    synthBundle.sessionRow.model = 'gpt-5.3-codex-high';
+    synthBundle.sessionRow.engine_session_id = 'cursor-engine-42';
+
+    const pending = synthesizeResults(
+      'syn-session',
+      'lead-1',
+      leadAgent,
+      project,
+      [
+        {
+          agentId: 'sub-1',
+          agentName: 'Sub',
+          task: 'delegate',
+          output: 'done',
+          error: null,
+        },
+      ],
+      'original ask',
+      '/tmp/syn',
+    );
+
+    await flushSynth();
+    expect((spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('/bin/cursor');
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv).toContain('-p');
+    expect(argv).toContain('--resume');
+    expect(argv).toContain('cursor-engine-42');
+    expect(argv).toContain('--output-format');
+    expect(argv).toContain('stream-json');
+
+    const streamLine = JSON.stringify({
+      type: 'assistant',
+      timestamp_ms: 1,
+      message: { content: [{ type: 'text', text: 'Cursor synthesized summary.' }] },
+    });
+    fakeProcs[0].finish(0, { stdout: `${streamLine}\n` });
+
+    await pending;
+
+    expect(synthBundle.addMessage.run).toHaveBeenCalled();
+    const contentArg = synthBundle.addMessage.run.mock.calls[0][3] as string;
+    expect(contentArg).toContain('Cursor synthesized summary.');
+    expect(synthBundle.addMessage.run.mock.calls[0][4]).toBe('cursor-agent');
+  });
+
+  it('surfaces error when Cursor synthesis lacks engine_session_id (no spawn)', async () => {
+    synthBundle.sessionRow.engine = 'cursor-agent';
+    synthBundle.sessionRow.engine_session_id = null;
+
+    await synthesizeResults(
+      'syn-session',
+      'lead-1',
+      leadAgent,
+      project,
+      [{ agentId: 's', agentName: 'S', task: 'subtask', output: 'x', error: null }],
+      'ask',
+      '/tmp/syn',
+    );
+
+    expect((spawn as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+
+    const errCalls = broadcast.mock.calls.map((c) => c[0]).filter((e) => e.type === 'error');
+    expect(errCalls.length).toBeGreaterThan(0);
+    expect(errCalls[0].error).toMatch(/missing Cursor engine session id/i);
+  });
+
+  it('spawns Gemini with enriched prompt + synthesis JSONL stream', async () => {
+    synthBundle.sessionRow.engine = 'gemini-cli';
+    synthBundle.sessionRow.model = 'gemini-2.5-pro';
+    synthBundle.sessionRow.engine_session_id = null;
+
+    const pending = synthesizeResults(
+      'syn-session',
+      'lead-1',
+      leadAgent,
+      project,
+      [{ agentId: 's', agentName: 'S', task: 'subtask', output: 'sub', error: null }],
+      'user question',
+      '/tmp/syn',
+    );
+
+    await flushSynth();
+    expect((spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('/bin/gemini');
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv[0]).toBe('-p');
+    const combined = argv[1];
+    expect(combined).toContain('## enriched system prompt');
+    expect(combined).toContain('user question');
+    expect(argv).toContain('--yolo');
+
+    const geminiLine = JSON.stringify({
+      type: 'message',
+      role: 'assistant',
+      partial: false,
+      content: [{ type: 'text', text: 'Gemini synthesis done.' }],
+    });
+    fakeProcs[0].finish(0, { stdout: `${geminiLine}\n` });
+
+    await pending;
+
+    expect(synthBundle.addMessage.run.mock.calls[0][3]).toContain('Gemini synthesis done.');
+    expect(synthBundle.addMessage.run.mock.calls[0][4]).toBe('gemini-cli');
+    expect(buildEnrichedPromptMock).toHaveBeenCalledWith(
+      leadAgent,
+      undefined,
+      expect.objectContaining({ sessionId: 'syn-session', useWorktree: false }),
+    );
+  });
+
+  it('Gemini synthesis omits --yolo when lead session is in Ask Mode', async () => {
+    synthBundle.sessionRow.engine = 'gemini-cli';
+    synthBundle.sessionRow.model = 'gemini-2.5-pro';
+    synthBundle.sessionRow.engine_session_id = null;
+    synthBundle.sessionRow.ask_mode = 1;
+
+    const pending = synthesizeResults(
+      'syn-session',
+      'lead-1',
+      leadAgent,
+      project,
+      [{ agentId: 's', agentName: 'S', task: 'subtask', output: 'sub', error: null }],
+      'user question',
+      '/tmp/syn',
+    );
+
+    await flushSynth();
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv).not.toContain('--yolo');
+
+    fakeProcs[0].finish(0, {
+      stdout:
+        JSON.stringify({
+          type: 'message',
+          role: 'assistant',
+          partial: false,
+          content: [{ type: 'text', text: 'Ask-mode gemini synth.' }],
+        }) + '\n',
+    });
+
+    await pending;
+
+    expect(synthBundle.addMessage.run.mock.calls[0][3]).toContain('Ask-mode gemini synth.');
+    expect(buildEnrichedPromptMock).toHaveBeenCalledWith(
+      leadAgent,
+      undefined,
+      expect.objectContaining({ sessionId: 'syn-session', useWorktree: false }),
+    );
+  });
+
+  it('spawns Codex exec resume with correct argv order for synthesis', async () => {
+    synthBundle.sessionRow.engine = 'codex-cli';
+    synthBundle.sessionRow.model = 'gpt-5.3-codex';
+    synthBundle.sessionRow.engine_session_id = 'thread-resume-id';
+
+    const pending = synthesizeResults(
+      'syn-session',
+      'lead-1',
+      leadAgent,
+      project,
+      [{ agentId: 's', agentName: 'S', task: 'subtask', output: 'x', error: null }],
+      'original',
+      '/tmp/syn',
+    );
+
+    await flushSynth();
+    expect((spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('/bin/codex');
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv.slice(0, 6)).toEqual([
+      'exec',
+      'resume',
+      'thread-resume-id',
+      '--json',
+      '--skip-git-repo-check',
+      '--full-auto',
+    ]);
+
+    const codexLine = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        id: 'z1',
+        type: 'agent_message',
+        text: 'Codex synthesis output.',
+      },
+    });
+    fakeProcs[0].finish(0, { stdout: `${codexLine}\n` });
+
+    await pending;
+
+    expect(synthBundle.addMessage.run.mock.calls[0][3]).toContain('Codex synthesis output.');
+    expect(synthBundle.addMessage.run.mock.calls[0][4]).toBe('codex-cli');
+    expect(buildEnrichedPromptMock).toHaveBeenCalledWith(
+      leadAgent,
+      undefined,
+      expect.objectContaining({ sessionId: 'syn-session', useWorktree: false }),
+    );
+  });
+
+  it('Codex synthesis uses read-only sandbox in Ask Mode instead of full-auto', async () => {
+    synthBundle.sessionRow.engine = 'codex-cli';
+    synthBundle.sessionRow.model = 'gpt-5.3-codex';
+    synthBundle.sessionRow.engine_session_id = 'thr-ask';
+    synthBundle.sessionRow.ask_mode = 1;
+
+    const pending = synthesizeResults(
+      'syn-session',
+      'lead-1',
+      leadAgent,
+      project,
+      [{ agentId: 's', agentName: 'S', task: 'subtask', output: 'x', error: null }],
+      'original',
+      '/tmp/syn',
+    );
+
+    await flushSynth();
+    const argv = (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(argv).toContain('--sandbox');
+    expect(argv).toContain('read-only');
+    expect(argv).not.toContain('--full-auto');
+
+    fakeProcs[0].finish(0, {
+      stdout:
+        JSON.stringify({
+          type: 'item.completed',
+          item: {
+            id: 'a',
+            type: 'agent_message',
+            text: 'Codex ask synth.',
+          },
+        }) + '\n',
+    });
+
+    await pending;
+
+    expect(synthBundle.addMessage.run.mock.calls[0][3]).toContain('Codex ask synth.');
+    expect(buildEnrichedPromptMock).toHaveBeenCalledWith(
+      leadAgent,
+      undefined,
+      expect.objectContaining({ sessionId: 'syn-session', useWorktree: false }),
+    );
   });
 });
 

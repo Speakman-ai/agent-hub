@@ -380,13 +380,16 @@ initDelegation({
   stmts: stmts!,
   broadcast,
   getEnrichedAgent,
-  buildEnrichedPrompt: buildEnrichedPrompt as (agent: import('./types.js').EnrichedAgent) => string,
+  buildEnrichedPrompt,
   get saveErrorMessage() {
     return saveErrorMessage!;
   },
   appendDailyNote,
   getActiveProcesses: () => activeProcesses,
   getClaudeBin: () => CLAUDE_BIN,
+  getCursorBin: () => CURSOR_BIN,
+  getGeminiBin: () => GEMINI_BIN,
+  getCodexBin: () => CODEX_BIN,
   getDefaultModel: () => DEFAULT_MODEL,
   getConfig: () => config,
 });

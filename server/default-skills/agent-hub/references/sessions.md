@@ -110,6 +110,16 @@ lead stays running.
 
 - **Payload**: JSON array of `{agentId, task}` objects. Both fields
   required, both strings.
+- **CLI engine**: each sub-agent is spawned with the binary that matches its
+  configured `engine` (Claude Code, Cursor Agent, Gemini CLI, or Codex).
+  Prompt shaping (enriched prompt + task) mirrors chat, but **one-shot
+  delegates do not resume a Cursor engine session** — no `--resume` /
+  `stream-json` on that subprocess (interactive Cursor chat does). For
+  **Gemini** and **Codex** delegates, flags such as `--yolo` vs read-only
+  sandbox follow the **lead session’s Ask Mode** (`sessions.ask_mode`), same as
+  interactive chat. Synthesis after delegation uses the **lead session**
+  engine (including Ask Mode for Gemini/Codex/Claude) so privileges match a
+  normal user turn.
 - **Parallelism**: all tasks spawn concurrently via `Promise.all`. No hard
   cap, but keep N small (≤ 4) — every spawn is a real CLI subprocess with
   its own context.
@@ -228,8 +238,8 @@ parked. End your turn with:
 
 ### Choosing between them
 
-| Scenario                                                       | Use                     |
-| -------------------------------------------------------------- | ----------------------- |
-| Two or three short audits you'll synthesize yourself           | `<delegate>`            |
-| Specialist needs to commit / PR / take multiple turns          | `<handoff>`             |
-| Discovered the card you're on is already shipped / a dupe      | `<agenthub:close-card>` |
+| Scenario                                                  | Use                     |
+| --------------------------------------------------------- | ----------------------- |
+| Two or three short audits you'll synthesize yourself      | `<delegate>`            |
+| Specialist needs to commit / PR / take multiple turns     | `<handoff>`             |
+| Discovered the card you're on is already shipped / a dupe | `<agenthub:close-card>` |

@@ -1,6 +1,10 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { buildSpawnEnv } from './config.js';
+import { buildSpawnEnv, defaultModelForEngine } from './config.js';
+import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { createStreamParser } from './stream-parser.js';
+import type { StreamEvent } from './types.js';
+import { pickProcessErrorMessage } from './process-error-message.js';
 import type { EnrichedAgent, Project, Stmts, BroadcastFn, AppConfig, SessionRow } from './types.js';
 import {
   activeDelegationSessions,
@@ -9,15 +13,12 @@ import {
 } from './delegation-state.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 
-interface DelegationDeps {
+export interface DelegationDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;
-  buildEnrichedPrompt: (
-    agent: EnrichedAgent,
-    sessionId: string | null,
-    opts?: { useWorktree?: boolean },
-  ) => string;
+  /** Same function as `buildEnrichedPrompt` in `chat.ts` (3-arg form: agent, null, opts). */
+  buildEnrichedPrompt: typeof import('./chat.js').buildEnrichedPrompt;
   saveErrorMessage: (
     sessionId: string,
     messageId: string,
@@ -28,6 +29,9 @@ interface DelegationDeps {
   appendDailyNote: (workspace: string, content: string) => void;
   getActiveProcesses: () => Map<string, ChildProcess | { kill: () => void }>;
   getClaudeBin: () => string;
+  getCursorBin: () => string;
+  getGeminiBin: () => string;
+  getCodexBin: () => string;
   getDefaultModel: () => string;
   getConfig: () => AppConfig;
 }
@@ -53,6 +57,107 @@ interface DelegateTask {
 interface DelegationState {
   proc: ChildProcess | null;
   cancelled: boolean;
+}
+
+/** One-shot delegate subprocess: correct bin + args per sub-agent engine. */
+interface DelegateCliSpec {
+  bin: string;
+  args: string[];
+  engine: string;
+  /** stdout is JSONL — accumulate `assistant_text` via stream parser. */
+  parseStream: boolean;
+}
+
+function buildDelegateCliSpec(
+  subAgent: EnrichedAgent,
+  subPrompt: string,
+  taskText: string,
+  bins: { claude: string; cursor: string; gemini: string; codex: string },
+  defaultModelStr: string,
+  /** Lead session Ask Mode — mirrors `server/chat.ts` privilege flags on Gemini/Codex. */
+  leadAskMode: boolean,
+): DelegateCliSpec {
+  const engine = subAgent.engine || 'claude-code';
+  const model =
+    (subAgent.model as string | undefined) || defaultModelStr || defaultModelForEngine(engine);
+  const combined = `${subPrompt}\n\n${taskText}`;
+
+  switch (engine) {
+    case 'cursor-agent':
+      return {
+        bin: bins.cursor,
+        args: ['-p', combined, '--force', '--model', model],
+        engine,
+        parseStream: false,
+      };
+    case 'gemini-cli': {
+      const args = ['-p', combined, '--output-format', 'stream-json'];
+      if (model && model !== 'auto') {
+        args.push('--model', model);
+      }
+      if (!leadAskMode) {
+        args.push('--yolo');
+      }
+      return { bin: bins.gemini, args, engine, parseStream: true };
+    }
+    case 'codex-cli': {
+      const codexAuth = detectCodexAuthMode();
+      const args = ['exec', '--json', '--skip-git-repo-check'];
+      if (leadAskMode) {
+        args.push('--sandbox', 'read-only');
+      } else {
+        args.push('--full-auto');
+      }
+      if (model && shouldPassModelFlag(codexAuth.mode, model)) {
+        args.push('--model', model);
+      }
+      args.push(combined);
+      return { bin: bins.codex, args, engine, parseStream: true };
+    }
+    default:
+      return {
+        bin: bins.claude,
+        args: [
+          '--print',
+          '--permission-mode',
+          'bypassPermissions',
+          '--model',
+          model,
+          '--system-prompt',
+          subPrompt,
+          taskText,
+        ],
+        engine: 'claude-code',
+        parseStream: false,
+      };
+  }
+}
+
+function absorbStreamEvents(
+  events: StreamEvent[],
+  sink: {
+    finalText: string;
+    partialFallback: string;
+    streamErrorMessage: string;
+  },
+): void {
+  for (const event of events) {
+    if (event.type === 'assistant_text') {
+      const text = typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
+      if (event.partial) sink.partialFallback += text;
+      else sink.finalText += text;
+    }
+    if (event.type === 'result' && event.isError && event.text && !sink.streamErrorMessage) {
+      sink.streamErrorMessage = event.text;
+    }
+    if (
+      event.type === 'unknown' &&
+      typeof event.text === 'string' &&
+      (event.text.startsWith('codex error:') || event.text.startsWith('codex item error:'))
+    ) {
+      if (!sink.streamErrorMessage) sink.streamErrorMessage = event.text;
+    }
+  }
 }
 
 export interface DelegationResult {
@@ -86,7 +191,10 @@ export function parseDelegateBlock(text: string): DelegateTask[] | null {
     ) as unknown as DelegateTask[];
     return valid.length > 0 ? valid : null;
   } catch {
-    console.error('[Delegation] Failed to parse delegate block JSON');
+    const excerpt = (match[1] || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    console.error(
+      `[Delegation] Failed to parse delegate block JSON (excerpt: ${excerpt || '<empty>'})`,
+    );
     return null;
   }
 }
@@ -124,26 +232,43 @@ export async function handleDelegation(
     buildEnrichedPrompt,
     appendDailyNote,
     getClaudeBin,
+    getCursorBin,
+    getGeminiBin,
+    getCodexBin,
     getDefaultModel,
     getConfig,
   } = deps!;
 
-  const CLAUDE_BIN = getClaudeBin();
+  const cliBins = {
+    claude: getClaudeBin(),
+    cursor: getCursorBin(),
+    gemini: getGeminiBin(),
+    codex: getCodexBin(),
+  };
   const DEFAULT_MODEL = getDefaultModel();
   const cfg = getConfig() as DelegationRetryConfig;
 
   const maxAttempts = Math.max(1, cfg.delegationMaxAttempts ?? DEFAULT_MAX_ATTEMPTS);
   const retryBackoffMs = Math.max(0, cfg.delegationRetryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS);
 
-  const validTasks = delegateTasks.filter((t) => {
+  const validTasks: DelegateTask[] = [];
+  for (const t of delegateTasks) {
     if (!leadAgent.subAgents || !leadAgent.subAgents.includes(t.agentId)) {
-      console.warn(`[Delegation] Agent ${t.agentId} is not a sub-agent of ${leadAgent.id}`);
-      return false;
+      console.warn(
+        `[Delegation] Skip task for ${t.agentId}: not listed as sub-agent of ${leadAgent.id}`,
+      );
+      continue;
     }
-    return getEnrichedAgent(t.agentId) != null;
-  });
+    if (!getEnrichedAgent(t.agentId)) {
+      console.warn(`[Delegation] Skip task for ${t.agentId}: agent not found in project roster`);
+      continue;
+    }
+    validTasks.push(t);
+  }
 
   if (validTasks.length === 0) {
+    const detail = delegateTasks.map((t) => t.agentId).join(', ') || '(none)';
+    console.warn(`[Delegation] No valid tasks after filtering (requested: ${detail})`);
     broadcast({
       type: 'delegation_error',
       sessionId,
@@ -163,6 +288,9 @@ export async function handleDelegation(
     tasks: validTasks.map((t) => ({ agentId: t.agentId, task: t.task })),
   });
   broadcastActiveTasksSnapshot(stmts, broadcast);
+
+  const leadSessionRow = stmts.getSession.get(sessionId) as SessionRow | undefined;
+  const leadAskMode = !!leadSessionRow?.ask_mode;
 
   const results = await Promise.all(
     validTasks.map(async (task): Promise<DelegationResult> => {
@@ -205,26 +333,32 @@ export async function handleDelegation(
        */
       const dispatchOnce = (): Promise<string> =>
         new Promise<string>((resolve, reject) => {
-          const subPrompt = buildEnrichedPrompt(subAgent, null, { useWorktree: true });
-          const args: string[] = [
-            '--print',
-            '--permission-mode',
-            'bypassPermissions',
-            '--model',
-            (subAgent.model as string | undefined) || DEFAULT_MODEL,
-            '--system-prompt',
+          const subPrompt = buildEnrichedPrompt(subAgent, undefined, { useWorktree: true });
+          const spec = buildDelegateCliSpec(
+            subAgent,
             subPrompt,
             task.task,
-          ];
+            cliBins,
+            DEFAULT_MODEL,
+            leadAskMode,
+          );
+          const spawnCwd = leadCwd || subAgent.cwd || project.cwd || process.env.HOME || '/';
+
+          console.warn(
+            `[Delegation] spawn sub=${subAgent.id} engine=${spec.engine} bin=${spec.bin} cwd=${spawnCwd}`,
+          );
 
           let stdout = '';
           let stderr = '';
+          const parser = spec.parseStream ? createStreamParser(spec.engine) : null;
+          const sink = { finalText: '', partialFallback: '', streamErrorMessage: '' };
+
           const timeout = cfg.conferenceTimeoutMs || 600000;
 
           const spawnEnv = buildSpawnEnv(cfg);
 
-          const proc = spawn(CLAUDE_BIN, args, {
-            cwd: leadCwd || subAgent.cwd || project.cwd || process.env.HOME || '/',
+          const proc = spawn(spec.bin, spec.args, {
+            cwd: spawnCwd,
             env: spawnEnv,
             stdio: ['ignore', 'pipe', 'pipe'],
           });
@@ -237,16 +371,30 @@ export async function handleDelegation(
           }, timeout);
 
           proc.stdout?.on('data', (chunk: Buffer) => {
-            stdout += chunk.toString();
-            broadcast({
-              type: 'delegation_stream',
-              sessionId,
-              delegationId,
-              agentId: subAgent.id,
-              agentName: subAgent.name,
-              agentColor: subAgent.color,
-              content: stdout,
-            });
+            if (parser) {
+              absorbStreamEvents(parser.feed(chunk), sink);
+              const live = sink.finalText || sink.partialFallback;
+              broadcast({
+                type: 'delegation_stream',
+                sessionId,
+                delegationId,
+                agentId: subAgent.id,
+                agentName: subAgent.name,
+                agentColor: subAgent.color,
+                content: live,
+              });
+            } else {
+              stdout += chunk.toString();
+              broadcast({
+                type: 'delegation_stream',
+                sessionId,
+                delegationId,
+                agentId: subAgent.id,
+                agentName: subAgent.name,
+                agentColor: subAgent.color,
+                content: stdout,
+              });
+            }
           });
 
           proc.stderr?.on('data', (chunk: Buffer) => {
@@ -260,16 +408,32 @@ export async function handleDelegation(
               reject(new Error('Cancelled'));
               return;
             }
-            if (code !== 0 && !stdout) {
-              reject(new Error(stderr || `Exited with code ${code}`));
+            if (parser) {
+              absorbStreamEvents(parser.flush(), sink);
+            }
+            const assembled = parser
+              ? (sink.finalText || sink.partialFallback).trim()
+              : stdout.trim();
+            const fallbackOut = stderr.trim();
+            if (code !== 0 && !assembled) {
+              const msg = pickProcessErrorMessage({
+                stderr,
+                streamErrorMessage: sink.streamErrorMessage,
+                engine: spec.engine,
+                exitCode: code,
+              });
+              reject(new Error(msg || fallbackOut || `Exited with code ${code}`));
             } else {
-              resolve(stdout.trim() || stderr.trim() || '(empty response)');
+              resolve(assembled || fallbackOut || '(empty response)');
             }
           });
 
           proc.on('error', (err: Error) => {
             clearTimeout(timer);
             delegationState.proc = null;
+            console.error(
+              `[Delegation] spawn failed sub=${subAgent.id} engine=${spec.engine} bin=${spec.bin}: ${err.message}`,
+            );
             reject(err);
           });
         });
@@ -346,11 +510,15 @@ export async function handleDelegation(
       // the synthesis turn can surface it to the lead rather than silently
       // dropping the result.
       const wasCancelled = lastError === 'Cancelled';
+      const retryTrace =
+        attemptsMade > 1 && attemptErrors.length > 0
+          ? ` Attempt trace: ${attemptErrors.join(' | ')}`
+          : '';
       const finalError = wasCancelled
         ? 'Cancelled'
         : `Delegation to ${subAgent.name} failed after ${attemptsMade} attempt${
             attemptsMade === 1 ? '' : 's'
-          }: ${lastError ?? 'unknown error'}`;
+          }: ${lastError ?? 'unknown error'}${retryTrace}`;
 
       try {
         if (wasCancelled) {
@@ -498,19 +666,24 @@ export async function synthesizeResults(
     appendDailyNote,
     getActiveProcesses,
     getClaudeBin,
+    getCursorBin,
+    getGeminiBin,
+    getCodexBin,
     getDefaultModel,
     getConfig,
+    buildEnrichedPrompt,
   } = deps!;
 
   const activeProcesses = getActiveProcesses();
 
-  const CLAUDE_BIN = getClaudeBin();
   const DEFAULT_MODEL = getDefaultModel();
   const cfg = getConfig();
 
   const assistantMsgId = uuidv4();
-  const engine = 'claude-code';
-  const model: string = (enrichedAgent?.model as string | undefined) || DEFAULT_MODEL;
+  const sessRow = stmts.getSession.get(sessionId) as SessionRow | undefined;
+  const sessionEngine = sessRow?.engine || enrichedAgent.engine || 'claude-code';
+  const sessionModel =
+    sessRow?.model || (enrichedAgent?.model as string | undefined) || DEFAULT_MODEL;
 
   const synthesisPrompt = buildDelegationSynthesisPrompt(results, originalUserMessage);
 
@@ -518,23 +691,15 @@ export async function synthesizeResults(
     type: 'thinking',
     messageId: assistantMsgId,
     sessionId,
-    engine,
-    model,
+    engine: sessionEngine,
+    model: sessionModel,
   });
 
   try {
-    const sess = stmts.getSession.get(sessionId) as SessionRow | undefined;
-    const engineSessionId = sess?.engine_session_id || sessionId;
-    const args: string[] = [
-      '--print',
-      '--permission-mode',
-      'bypassPermissions',
-      '--model',
-      model,
-      '--resume',
-      engineSessionId,
-      synthesisPrompt,
-    ];
+    const sess = sessRow ?? (stmts.getSession.get(sessionId) as SessionRow | undefined);
+    const engineSessionId = sess?.engine_session_id;
+    const isAskMode = !!sess?.ask_mode;
+    const cwdSynth = leadCwd || project.cwd || process.env.HOME || '/';
 
     const timeout = cfg.conferenceTimeoutMs || 600000;
     let finalOutput = '';
@@ -548,8 +713,91 @@ export async function synthesizeResults(
 
       const synthEnv = buildSpawnEnv(cfg);
 
-      const proc = spawn(CLAUDE_BIN, args, {
-        cwd: leadCwd || project.cwd || process.env.HOME || '/',
+      let bin = getClaudeBin();
+      let args: string[] = [];
+
+      if (sessionEngine === 'cursor-agent') {
+        if (!engineSessionId) {
+          reject(
+            new Error(
+              'Cannot synthesize delegation results: missing Cursor engine session id (resume id)',
+            ),
+          );
+          return;
+        }
+        bin = getCursorBin();
+        args = [
+          '-p',
+          synthesisPrompt,
+          '--force',
+          '--model',
+          sessionModel,
+          '--resume',
+          engineSessionId,
+          '--output-format',
+          'stream-json',
+          '--stream-partial-output',
+        ];
+      } else if (sessionEngine === 'gemini-cli') {
+        bin = getGeminiBin();
+        // Match delegate path: second arg must be null so the builder treats the first
+        // argument as EnrichedAgent (truthy sessionId wrongly selects project+agent arity).
+        const enriched = buildEnrichedPrompt(enrichedAgent, undefined, {
+          useWorktree: !!sess?.use_worktree,
+          sessionId,
+        });
+        const combined = `${enriched}\n\n${synthesisPrompt}`;
+        // Mirror `server/chat.ts` Gemini branch: `--yolo` only when not in Ask Mode.
+        args = ['-p', combined, '--output-format', 'stream-json'];
+        if (sessionModel && sessionModel !== 'auto') {
+          args.push('--model', sessionModel);
+        }
+        if (!isAskMode) {
+          args.push('--yolo');
+        }
+      } else if (sessionEngine === 'codex-cli') {
+        bin = getCodexBin();
+        const codexAuth = detectCodexAuthMode();
+        const enriched = buildEnrichedPrompt(enrichedAgent, undefined, {
+          useWorktree: !!sess?.use_worktree,
+          sessionId,
+        });
+        // Mirror `server/chat.ts` Codex branch: read-only sandbox in Ask Mode.
+        args = ['exec'];
+        if (engineSessionId) {
+          args.push('resume', engineSessionId);
+        }
+        args.push('--json', '--skip-git-repo-check');
+        if (isAskMode) {
+          args.push('--sandbox', 'read-only');
+        } else {
+          args.push('--full-auto');
+        }
+        if (sessionModel && shouldPassModelFlag(codexAuth.mode, sessionModel)) {
+          args.push('--model', sessionModel);
+        }
+        args.push(engineSessionId ? synthesisPrompt : `${enriched}\n\n${synthesisPrompt}`);
+      } else {
+        args = [
+          '--print',
+          '--permission-mode',
+          isAskMode ? 'plan' : 'bypassPermissions',
+          '--model',
+          sessionModel,
+          '--resume',
+          engineSessionId || sessionId,
+          synthesisPrompt,
+        ];
+      }
+
+      const useParser = sessionEngine !== 'claude-code';
+      const parser = useParser ? createStreamParser(sessionEngine) : null;
+      const sink = { finalText: '', partialFallback: '', streamErrorMessage: '' };
+
+      console.warn(`[Delegation] synthesis engine=${sessionEngine} bin=${bin} cwd=${cwdSynth}`);
+
+      const proc = spawn(bin, args, {
+        cwd: cwdSynth,
         env: synthEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -562,16 +810,29 @@ export async function synthesizeResults(
       }, timeout);
 
       proc.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString();
-        broadcast({
-          type: 'stream',
-          messageId: assistantMsgId,
-          sessionId,
-          chunk: chunk.toString(),
-          content: stdout,
-          engine,
-          model,
-        });
+        if (parser) {
+          absorbStreamEvents(parser.feed(chunk), sink);
+          broadcast({
+            type: 'stream',
+            messageId: assistantMsgId,
+            sessionId,
+            chunk: chunk.toString(),
+            content: sink.finalText || sink.partialFallback,
+            engine: sessionEngine,
+            model: sessionModel,
+          });
+        } else {
+          stdout += chunk.toString();
+          broadcast({
+            type: 'stream',
+            messageId: assistantMsgId,
+            sessionId,
+            chunk: chunk.toString(),
+            content: stdout,
+            engine: sessionEngine,
+            model: sessionModel,
+          });
+        }
       });
 
       proc.stderr.on('data', (chunk: Buffer) => {
@@ -580,10 +841,25 @@ export async function synthesizeResults(
 
       proc.on('close', (code: number | null) => {
         clearTimeout(timer);
-        if (code !== 0 && !stdout) {
-          reject(new Error(stderr || `Synthesis exited with code ${code}`));
+        if (parser) {
+          absorbStreamEvents(parser.flush(), sink);
+        }
+        const assembled = parser ? (sink.finalText || sink.partialFallback).trim() : stdout.trim();
+        if (code !== 0 && !assembled) {
+          reject(
+            new Error(
+              pickProcessErrorMessage({
+                stderr,
+                streamErrorMessage: sink.streamErrorMessage,
+                engine: sessionEngine,
+                exitCode: code,
+              }) ||
+                stderr.trim() ||
+                `Synthesis exited with code ${code}`,
+            ),
+          );
         } else {
-          finalOutput = stdout.trim() || stderr.trim() || '(empty synthesis)';
+          finalOutput = assembled || stderr.trim() || '(empty synthesis)';
           resolve();
         }
       });
@@ -601,8 +877,8 @@ export async function synthesizeResults(
       sessionId,
       'assistant',
       finalOutput,
-      engine,
-      model,
+      sessionEngine,
+      sessionModel,
       null,
       null,
     );
@@ -617,8 +893,8 @@ export async function synthesizeResults(
         session_id: sessionId,
         role: 'assistant',
         content: finalOutput,
-        engine,
-        model,
+        engine: sessionEngine,
+        model: sessionModel,
         created_at: new Date().toISOString(),
       },
     });
@@ -633,7 +909,7 @@ export async function synthesizeResults(
     activeProcesses.delete(sessionId);
     console.error('[Delegation] Synthesis failed:', (err as Error).message);
     const errText = `Delegation synthesis failed: ${(err as Error).message}`;
-    saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+    saveErrorMessage(sessionId, assistantMsgId, sessionEngine, sessionModel, errText);
     broadcast({
       type: 'error',
       messageId: assistantMsgId,
