@@ -18,6 +18,7 @@ import SessionTaskPlanPanel from './components/SessionTaskPlanPanel.jsx';
 import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.jsx';
+import ReactLoopObservabilityPanel from './components/ReactLoopObservabilityPanel.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import KanbanBoard from './components/KanbanBoard.jsx';
@@ -167,6 +168,8 @@ export default function App() {
   // Cursor-style ProgressPanel state — keyed by sessionId.
   // Each value: Array<{ step, status, startedAt, finishedAt? }> in emit order.
   const [sessionProgress, setSessionProgress] = useState({});
+  /** Host ReAct / continuation steps from WebSocket `react_loop_step`, keyed by sessionId. */
+  const [reactLoopStepsBySession, setReactLoopStepsBySession] = useState({});
   // Tracks which agenthub:ask prompts the user has already answered in this
   // tab, so the picker renders as "Submitted" immediately after click. This is
   // the optimistic, in-memory half; the authoritative source is the derived
@@ -416,6 +419,9 @@ export default function App() {
           }
           break;
         case 'thinking':
+          if (data.sessionId) {
+            setReactLoopStepsBySession((prev) => ({ ...prev, [data.sessionId]: [] }));
+          }
           // Always track the task; only update the visible indicator if it's our session.
           setActiveTasks((prev) => ({
             ...prev,
@@ -538,6 +544,24 @@ export default function App() {
               finishedAt: data.finishedAt ?? undefined,
             }),
           }));
+          break;
+        }
+        case 'react_loop_step': {
+          const sid = data.sessionId;
+          if (!sid || !data.stepId) break;
+          const entry = {
+            stepId: data.stepId,
+            phase: data.phase,
+            tool: data.tool,
+            exitCode: data.exitCode,
+            durationMs: data.durationMs,
+            continuationDepth: data.continuationDepth ?? 0,
+            detail: data.detail,
+          };
+          setReactLoopStepsBySession((prev) => {
+            const cur = prev[sid] || [];
+            return { ...prev, [sid]: [...cur, entry].slice(-40) };
+          });
           break;
         }
         case 'done':
@@ -2755,6 +2779,12 @@ export default function App() {
                           sessionRunning={Boolean(streamingMsgId || activeTasks[activeSessionId])}
                         />
                       </div>
+                    )}
+                    {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
+                      <ReactLoopObservabilityPanel
+                        steps={reactLoopStepsBySession[activeSessionId]}
+                        streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                      />
                     )}
                     {activeSessionId && (
                       <SessionTaskPlanPanel

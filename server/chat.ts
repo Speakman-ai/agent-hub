@@ -79,6 +79,7 @@ import {
   addResultEventTokens,
   isAgentShellToolName,
 } from './orchestration-budgets.js';
+import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-observability.js';
 import {
   formatPersistedTaskPlanPromptAppend,
   tryApplyTaskStateBlockFromAssistant,
@@ -1647,6 +1648,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     let chainBashTools = msg._chainBashTools ?? 0;
     let chainTokensUsed = msg._chainTokensUsed ?? 0;
 
+    const cliTurnStartMs = Date.now();
     const proc = spawn(bin, args, {
       cwd: effectiveCwd,
       env: spawnEnv,
@@ -1858,7 +1860,35 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       // If spawn already failed with ENOENT/EACCES/etc, the 'error' listener
       // has already saved a clearer message. Bail out before we clobber it.
-      if (spawnErrored) return;
+      if (spawnErrored) {
+        emitReactLoopStep(broadcast, {
+          sessionId,
+          messageId: assistantMsgId,
+          stepId: `${assistantMsgId}:cli`,
+          phase: 'cli_turn',
+          tool: engine,
+          exitCode: -1,
+          durationMs: Date.now() - cliTurnStartMs,
+          continuationDepth,
+          chainElapsedMs: Date.now() - chainStartedAtMs,
+          detail: 'spawn_errored',
+        });
+        return;
+      }
+
+      const cliDurationMs = Date.now() - cliTurnStartMs;
+      emitReactLoopStep(broadcast, {
+        sessionId,
+        messageId: assistantMsgId,
+        stepId: `${assistantMsgId}:cli`,
+        phase: 'cli_turn',
+        tool: engine,
+        exitCode: code === null ? -1 : code,
+        durationMs: cliDurationMs,
+        continuationDepth,
+        chainElapsedMs: Date.now() - chainStartedAtMs,
+        detail: isAutoContinuation ? 'auto_continuation' : 'user_turn',
+      });
 
       for (const event of parser.flush()) handleEvent(event);
 
@@ -2076,123 +2106,187 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           reactObservations.push(`- Action list exceeded ${maxAct}; truncated to budget.`);
         }
         const boundedActions = actions.slice(0, maxAct);
-        for (const action of boundedActions) {
-          if (action.tool === 'skill') {
-            const injection = loadSkillByName({
-              name: action.name!,
-              reason: 'react-loop',
-              paths: { skillsDir: paths.skillsDir },
+        for (let actionIdx = 0; actionIdx < boundedActions.length; actionIdx++) {
+          const action = boundedActions[actionIdx]!;
+          const hostStepStart = Date.now();
+          let hostExit = 0;
+          let hostDetail: string | undefined;
+          let hostActionThrew = false;
+          let hostActionErr: unknown;
+          try {
+            if (action.tool === 'skill') {
+              const injection = loadSkillByName({
+                name: action.name!,
+                reason: 'react-loop',
+                paths: { skillsDir: paths.skillsDir },
+                sessionId,
+                stmts: stmts as Stmts,
+                broadcast,
+              });
+              if (injection.trim()) {
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${injection}`
+                  : injection;
+                reactObservations.push(`- skill("${action.name}") loaded.`);
+              }
+              if (!injection.trim()) {
+                hostExit = 2;
+                hostDetail = 'empty_injection';
+              } else if (injection.includes('## Skill Load Error')) {
+                hostExit = 1;
+                hostDetail = action.name;
+              } else {
+                hostDetail = action.name || undefined;
+              }
+              continue;
+            }
+
+            if (action.tool === 'web') {
+              const webCap = orchestrationBudgets.maxWebSearchCallsPerSession;
+              const webUsed = session!.web_search_calls_used || 0;
+              if (webUsed >= webCap) {
+                const err = `## Web Search Error\nSession web search budget exhausted (${webUsed}/${webCap}).`;
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${err}`
+                  : err;
+                reactObservations.push(
+                  `- web("${action.query}") skipped: session web search budget exhausted.`,
+                );
+                hostExit = 2;
+                hostDetail = 'web_budget_exhausted';
+                continue;
+              }
+              const webRes = await runWebSearchForQuery(action.query!);
+              if (webRes.markdown.trim()) {
+                const injection = webRes.markdown.trim();
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${injection}`
+                  : injection;
+                reactObservations.push(`- web("${action.query}") returned results.`);
+              }
+              if (webRes.errorMarkdown?.trim()) {
+                const err = webRes.errorMarkdown.trim();
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${err}`
+                  : err;
+                reactObservations.push(
+                  `- web("${action.query}") reported an error or misconfiguration.`,
+                );
+              }
+              if (webRes.consumedCall) {
+                try {
+                  const nextWeb = webUsed + 1;
+                  stmts.updateSessionWebSearchCallsUsed.run(nextWeb, sessionId);
+                  session!.web_search_calls_used = nextWeb;
+                } catch (err: unknown) {
+                  const m = err instanceof Error ? err.message : String(err);
+                  console.error(`[web-search] failed to persist web_search_calls_used: ${m}`);
+                }
+              }
+              if (!webRes.markdown.trim() && webRes.errorMarkdown?.trim()) {
+                hostExit = 1;
+              } else if (!webRes.markdown.trim() && !webRes.errorMarkdown?.trim()) {
+                hostExit = 2;
+                hostDetail = 'empty_web_result';
+              }
+              hostDetail = hostDetail || (action.query ?? '').slice(0, 120) || undefined;
+              continue;
+            }
+
+            if (action.tool === 'wiki') {
+              if (!projectId) {
+                reactObservations.push('- wiki action skipped: missing project id.');
+                hostExit = 2;
+                hostDetail = 'missing_project_id';
+                continue;
+              }
+              const rawWikiBlock =
+                action.query && action.query.startsWith('<agenthub:wiki>')
+                  ? action.query
+                  : `<agenthub:wiki>${JSON.stringify({ query: action.query || '' })}</agenthub:wiki>`;
+              const wikiRequest = await runWikiHybridRagForAssistantRequest(
+                projectId,
+                rawWikiBlock,
+                {
+                  wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
+                    session!.wiki_hybrid_rag_consumed,
+                    session!.wiki_hybrid_rag_budget_version,
+                    maxWikiSession,
+                  ),
+                  maxCallsPerSession: maxWikiSession,
+                },
+              );
+              if (wikiRequest.promptSuffix.trim()) {
+                const injection = wikiRequest.promptSuffix.trim();
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${injection}`
+                  : injection;
+                reactObservations.push(`- wiki("${action.query || ''}") returned context.`);
+              }
+              if (wikiRequest.errorSuffix.trim()) {
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${wikiRequest.errorSuffix.trim()}`
+                  : wikiRequest.errorSuffix.trim();
+                reactObservations.push(`- wiki("${action.query || ''}") returned error.`);
+              }
+              if (wikiRequest.shouldIncrementWikiHybridRagUsage) {
+                try {
+                  const next = nextWikiHybridRagRowAfterIncrement(
+                    session!.wiki_hybrid_rag_consumed,
+                    session!.wiki_hybrid_rag_budget_version,
+                    maxWikiSession,
+                  );
+                  stmts.updateSessionWikiHybridRagBudget.run(
+                    next.consumed,
+                    next.budgetVersion,
+                    sessionId,
+                  );
+                  session!.wiki_hybrid_rag_consumed = next.consumed;
+                  session!.wiki_hybrid_rag_budget_version = next.budgetVersion;
+                } catch (err: unknown) {
+                  const m = err instanceof Error ? err.message : String(err);
+                  console.error(`[wiki-rag] failed to persist assistant usage count: ${m}`);
+                }
+              }
+              if (wikiRequest.logWarning) {
+                console.warn(
+                  `[wiki-rag] assistant retrieval failed for session ${sessionId}: ${wikiRequest.logWarning}`,
+                );
+              }
+              if (!wikiRequest.promptSuffix.trim() && wikiRequest.errorSuffix.trim()) {
+                hostExit = 1;
+              } else if (!wikiRequest.promptSuffix.trim() && !wikiRequest.errorSuffix.trim()) {
+                hostExit = 2;
+                hostDetail = 'empty_wiki_result';
+              }
+              hostDetail = hostDetail || (action.query ?? '').slice(0, 120) || undefined;
+              continue;
+            }
+          } catch (err: unknown) {
+            hostActionThrew = true;
+            hostActionErr = err;
+          } finally {
+            const merged = mergeHostActionExitForEmit({
+              thrown: hostActionThrew,
+              err: hostActionErr,
+              branchExit: hostExit,
+              branchDetail: hostDetail,
+            });
+            emitReactLoopStep(broadcast, {
               sessionId,
-              stmts: stmts as Stmts,
-              broadcast,
+              messageId: assistantMsgId,
+              stepId: `${assistantMsgId}:host:${actionIdx}:${action.tool}`,
+              phase: 'host_action',
+              tool: action.tool,
+              exitCode: merged.exitCode,
+              durationMs: Date.now() - hostStepStart,
+              continuationDepth,
+              chainElapsedMs: Date.now() - chainStartedAtMs,
+              detail: merged.detail,
             });
-            if (injection.trim()) {
-              assistantContextToAppend = assistantContextToAppend
-                ? `${assistantContextToAppend}\n\n${injection}`
-                : injection;
-              reactObservations.push(`- skill("${action.name}") loaded.`);
-            }
-            continue;
           }
-
-          if (action.tool === 'web') {
-            const webCap = orchestrationBudgets.maxWebSearchCallsPerSession;
-            const webUsed = session!.web_search_calls_used || 0;
-            if (webUsed >= webCap) {
-              const err = `## Web Search Error\nSession web search budget exhausted (${webUsed}/${webCap}).`;
-              assistantContextToAppend = assistantContextToAppend
-                ? `${assistantContextToAppend}\n\n${err}`
-                : err;
-              reactObservations.push(
-                `- web("${action.query}") skipped: session web search budget exhausted.`,
-              );
-              continue;
-            }
-            const webRes = await runWebSearchForQuery(action.query!);
-            if (webRes.markdown.trim()) {
-              const injection = webRes.markdown.trim();
-              assistantContextToAppend = assistantContextToAppend
-                ? `${assistantContextToAppend}\n\n${injection}`
-                : injection;
-              reactObservations.push(`- web("${action.query}") returned results.`);
-            }
-            if (webRes.errorMarkdown?.trim()) {
-              const err = webRes.errorMarkdown.trim();
-              assistantContextToAppend = assistantContextToAppend
-                ? `${assistantContextToAppend}\n\n${err}`
-                : err;
-              reactObservations.push(
-                `- web("${action.query}") reported an error or misconfiguration.`,
-              );
-            }
-            if (webRes.consumedCall) {
-              try {
-                const nextWeb = webUsed + 1;
-                stmts.updateSessionWebSearchCallsUsed.run(nextWeb, sessionId);
-                session!.web_search_calls_used = nextWeb;
-              } catch (err: unknown) {
-                const m = err instanceof Error ? err.message : String(err);
-                console.error(`[web-search] failed to persist web_search_calls_used: ${m}`);
-              }
-            }
-            continue;
-          }
-
-          if (action.tool === 'wiki') {
-            if (!projectId) {
-              reactObservations.push('- wiki action skipped: missing project id.');
-              continue;
-            }
-            const rawWikiBlock =
-              action.query && action.query.startsWith('<agenthub:wiki>')
-                ? action.query
-                : `<agenthub:wiki>${JSON.stringify({ query: action.query || '' })}</agenthub:wiki>`;
-            const wikiRequest = await runWikiHybridRagForAssistantRequest(projectId, rawWikiBlock, {
-              wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
-                session!.wiki_hybrid_rag_consumed,
-                session!.wiki_hybrid_rag_budget_version,
-                maxWikiSession,
-              ),
-              maxCallsPerSession: maxWikiSession,
-            });
-            if (wikiRequest.promptSuffix.trim()) {
-              const injection = wikiRequest.promptSuffix.trim();
-              assistantContextToAppend = assistantContextToAppend
-                ? `${assistantContextToAppend}\n\n${injection}`
-                : injection;
-              reactObservations.push(`- wiki("${action.query || ''}") returned context.`);
-            }
-            if (wikiRequest.errorSuffix.trim()) {
-              assistantContextToAppend = assistantContextToAppend
-                ? `${assistantContextToAppend}\n\n${wikiRequest.errorSuffix.trim()}`
-                : wikiRequest.errorSuffix.trim();
-              reactObservations.push(`- wiki("${action.query || ''}") returned error.`);
-            }
-            if (wikiRequest.shouldIncrementWikiHybridRagUsage) {
-              try {
-                const next = nextWikiHybridRagRowAfterIncrement(
-                  session!.wiki_hybrid_rag_consumed,
-                  session!.wiki_hybrid_rag_budget_version,
-                  maxWikiSession,
-                );
-                stmts.updateSessionWikiHybridRagBudget.run(
-                  next.consumed,
-                  next.budgetVersion,
-                  sessionId,
-                );
-                session!.wiki_hybrid_rag_consumed = next.consumed;
-                session!.wiki_hybrid_rag_budget_version = next.budgetVersion;
-              } catch (err: unknown) {
-                const m = err instanceof Error ? err.message : String(err);
-                console.error(`[wiki-rag] failed to persist assistant usage count: ${m}`);
-              }
-            }
-            if (wikiRequest.logWarning) {
-              console.warn(
-                `[wiki-rag] assistant retrieval failed for session ${sessionId}: ${wikiRequest.logWarning}`,
-              );
-            }
-            continue;
+          if (hostActionThrew) {
+            throw hostActionErr;
           }
         }
 
@@ -2252,6 +2346,30 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         budgets: orchestrationBudgets,
       });
       shouldAutoContinue = budgetResult.ok;
+
+      if (
+        continuationDepth > 0 ||
+        isAutoContinuation ||
+        continuationContextAdded ||
+        reactObservations.length > 0
+      ) {
+        emitReactLoopStep(broadcast, {
+          sessionId,
+          messageId: assistantMsgId,
+          stepId: `${assistantMsgId}:chain_gate`,
+          phase: 'chain_gate',
+          tool: 'chain',
+          exitCode: budgetResult.ok ? 0 : 2,
+          durationMs: 0,
+          continuationDepth,
+          chainElapsedMs: Date.now() - chainStartedAtMs,
+          detail: budgetResult.ok
+            ? 'continuation_allowed'
+            : budgetResult.reasons.length
+              ? budgetResult.reasons.join('; ')
+              : 'blocked_or_ineligible',
+        });
+      }
 
       try {
         S.addMessage.run(
