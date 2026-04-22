@@ -612,8 +612,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
   function createCursorChat(cwd: string): Promise<string> {
     const CURSOR_BIN = getCursorBin();
+    // Same env shape as `spawn(..., { env: buildSpawnEnv(config) })` (merged PATH + keys).
+    const env = buildSpawnEnv(config);
     return new Promise((resolve, reject) => {
-      execFile(CURSOR_BIN, ['create-chat'], { cwd, env: process.env }, (err, stdout, stderr) => {
+      execFile(CURSOR_BIN, ['create-chat'], { cwd, env }, (err, stdout, stderr) => {
         if (err) {
           reject(new Error(`cursor create-chat failed: ${stderr || err.message}`));
           return;
@@ -877,9 +879,33 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     let engineSessionId: string | null = session!.engine_session_id || null;
     const isNewEngineSession = !engineSessionId;
 
+    // Same cwd as the later `spawn` (worktree path when isolation is on) so
+    // `cursor-agent create-chat` and `--resume` agree on repo root / `.cursor`.
+    let effectiveCwd: string = project.cwd;
+    if (session!.use_worktree && (session!.worktree_path || isNewEngineSession)) {
+      const priorWorktree = session!.worktree_path;
+      effectiveCwd = ensureWorktree(
+        session!,
+        project.cwd,
+        agentId,
+        (project as ProjectWithCommands).commands?.install || null,
+      );
+      session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+
+      if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
+        console.log(
+          `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
+        );
+      }
+    } else if (!isNewEngineSession && !session!.use_worktree && session!.worktree_path) {
+      console.log(
+        `[chat] Resuming session ${sessionId} in project cwd (worktree disabled, cross-worktree resume)`,
+      );
+    }
+
     if (engine === 'cursor-agent' && !engineSessionId) {
       try {
-        engineSessionId = await createCursorChat(project.cwd);
+        engineSessionId = await createCursorChat(effectiveCwd);
         stmts.updateSessionEngineSessionId.run(engineSessionId, sessionId);
       } catch (err: unknown) {
         const errMessage = err instanceof Error ? err.message : String(err);
@@ -1090,28 +1116,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     //   codex → turn.failed.error.message (HTTP 400 model-not-supported)
     //   codex → unknown `codex error: ...`
     let streamErrorMessage = '';
-
-    let effectiveCwd: string = project.cwd;
-    if (session!.use_worktree && (session!.worktree_path || isNewEngineSession)) {
-      const priorWorktree = session!.worktree_path;
-      effectiveCwd = ensureWorktree(
-        session!,
-        project.cwd,
-        agentId,
-        (project as ProjectWithCommands).commands?.install || null,
-      );
-      session = stmts.getSession.get(sessionId) as SessionRow | undefined;
-
-      if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
-        console.log(
-          `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
-        );
-      }
-    } else if (!isNewEngineSession && !session!.use_worktree && session!.worktree_path) {
-      console.log(
-        `[chat] Resuming session ${sessionId} in project cwd (worktree disabled, cross-worktree resume)`,
-      );
-    }
 
     /** Set once we have a complete `<delegate>...</delegate>` block in the stream — workers may start before the lead CLI exits. Synthesis still runs after close (see `synthesizeResults`). */
     let delegationWorkPromise: Promise<DelegationResult[]> | null = null;
