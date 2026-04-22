@@ -156,8 +156,7 @@ export function summarizeTranscript(
 }
 
 export default function createSessionRoutes(deps: RouteDeps): Router {
-  const { stmts, findAgent, getEnrichedAgent, handleChat, config, activeProcesses, broadcast } =
-    deps;
+  const { stmts, findAgent, getEnrichedAgent, handleChat, config, activeProcesses } = deps;
 
   const router = Router();
 
@@ -176,6 +175,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const askMode = req.body.ask_mode ? 1 : 0;
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode);
     const session = stmts.getSession.get(id) as SessionRow;
+    deps.broadcast({ type: 'session_created', agentId: req.params.agentId, session });
     res.json(session);
   });
 
@@ -397,7 +397,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
-        broadcast({ type: 'session_deleted', sessionId: session.id });
+        deps.broadcast({ type: 'session_deleted', sessionId: session.id });
       } catch {
         /* best-effort */
       }
@@ -415,7 +415,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
-        broadcast({ type: 'session_deleted', sessionId: session.id });
+        deps.broadcast({ type: 'session_deleted', sessionId: session.id });
       } catch {
         /* best-effort */
       }
@@ -453,7 +453,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     // Broadcast `session_deleted` for cross-tab sync — the client treats
     // archive identically to a hard delete on the live list.
     try {
-      broadcast({ type: 'session_deleted', sessionId });
+      deps.broadcast({ type: 'session_deleted', sessionId });
     } catch {
       /* best-effort */
     }
@@ -483,7 +483,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const restored = stmts.getSession.get(sessionId) as SessionRow;
 
     try {
-      broadcast({ type: 'session_restored', sessionId, session: restored });
+      deps.broadcast({ type: 'session_restored', sessionId, session: restored });
     } catch {
       /* best-effort */
     }
@@ -746,7 +746,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         if (code !== 0 && !output.trim()) {
           console.error(`[rewind] claude exited code=${code}, stderr: ${errorOutput.trim()}`);
         }
-        broadcast({
+        deps.broadcast({
           type: 'rewind-complete',
           sessionId: req.params.sessionId,
           uuid,
@@ -757,7 +757,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       proc.on('error', (err: Error) => {
         clearTimeout(killTimer);
         console.error(`[rewind] Failed to spawn claude:`, err.message);
-        broadcast({
+        deps.broadcast({
           type: 'rewind-complete',
           sessionId: req.params.sessionId,
           uuid,
@@ -950,7 +950,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       const newSession = stmts.getSession.get(newSessionId) as SessionRow;
 
       // Broadcast so all clients know a new forwarded session was created
-      broadcast({
+      deps.broadcast({
         type: 'session_forwarded',
         sourceSessionId: req.params.sessionId,
         targetAgentId,

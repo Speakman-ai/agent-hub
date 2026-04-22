@@ -204,18 +204,13 @@ situation doesn't fit the happy path.
 | Desktop    | Electron wrapper (`electron/main.js`)     | `electron/`  |
 | Deployment | Self-hosted Node.js behind a TLS proxy    | operator     |
 
-**DB tables:** `sessions`, `messages`, `heartbeat_logs`, `crons`,
-`wiki_pages`, `kanban_boards`, `kanban_columns`, `kanban_cards`,
-`kanban_epics`, `kanban_card_blockers`, `skill_registry`,
-`webhook_configs`, `device_tokens`, `delegations`, `handoffs`.
+**DB tables:** `sessions`, `messages`, `heartbeat_logs`, `crons`, `wiki_pages`, `kanban_boards`, `kanban_columns`, `kanban_cards`, `kanban_epics`, `kanban_card_blockers`, `skill_registry`, `webhook_configs`, `device_tokens`, `delegations`, `handoffs`.
 
-**Real-time:** WebSocket on the same port as HTTP. Events include
-`message`, `session_created`, `kanban_update`, `wiki_update`,
-`cron_session_update`, `auto_pr_created`.
+**Real-time:** WebSocket on the same port as HTTP. Events include `message`,
+`session_created`, `kanban_update`, `wiki_update`, `cron_session_update`,
+`auto_pr_created`. The `session_created` event carries `{ agentId, session }`
+for any new row (kanban assign, `POST /api/agents/:id/sessions`, delivered
+`<handoff>`, autonomous/reviewer dispatch, …) so sidebars stay live without a
+full refetch.
 
-**Electron desktop shell:** wraps the same Express server; Electron and
-mobile requests send no Origin header and bypass CORS by design.
-Packaged builds resolve data paths under `app.getPath('userData')`
-instead of the repo — check which build a user is on before chasing
-"missing config" reports. Releases are out-of-band: agents propose PRs;
-humans run the release pipeline.
+**Electron desktop shell:** wraps the same Express server; Electron and mobile bypass CORS (no `Origin`). Packaged installs store configs under `app.getPath('userData')` — confirm build mode when debugging missing files. Releases are out-of-band (agents propose PRs; humans publish installers).

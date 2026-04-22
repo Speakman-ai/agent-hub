@@ -197,6 +197,13 @@ describe('handleHandoff — end-to-end', () => {
     expect(starts[0].toAgentId).toBe('agent-backend');
     expect(starts[0].fromAgentName).toBe('Lead');
 
+    // Target session is announced for sidebar live-sync (same payload shape as
+    // kanban assign + POST /api/agents/:id/sessions).
+    const created = broadcasts.filter((b) => b.type === 'session_created');
+    expect(created).toHaveLength(1);
+    expect(created[0].agentId).toBe('agent-backend');
+    expect((created[0].session as SessionRow).id).toBe(toSessionId);
+
     // Prompt builder pulls the transcript and note for the target session.
     const section = buildHandoffPromptSection(toSessionId, {
       stmts,

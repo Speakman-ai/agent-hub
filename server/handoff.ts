@@ -12,6 +12,7 @@ import type {
   KanbanCardRow,
   KanbanEpicRow,
   MessageRow,
+  SessionRow,
 } from './types.js';
 import { buildPrTitle } from './auto-git.js';
 
@@ -731,6 +732,13 @@ export async function handleHandoff(
   }
 
   activeHandoffSessions.add(toSessionId);
+
+  {
+    const row = stmts.getSession.get(toSessionId) as SessionRow | undefined;
+    if (row) {
+      broadcast({ type: 'session_created', agentId: targetAgent.id, session: row });
+    }
+  }
 
   // Forward board/epic/autonomous context: if the source session owns a kanban
   // card, re-point the card to the new target session and update the assignee

@@ -28,15 +28,43 @@ function makeProject(reviewerRole: 'reviewer' | 'lead' | null = 'reviewer'): Pro
 }
 
 interface DepsShape {
-  stmts: { createSession: { run: ReturnType<typeof vi.fn> } };
+  stmts: {
+    createSession: { run: ReturnType<typeof vi.fn> };
+    getSession: { get: ReturnType<typeof vi.fn> };
+  };
   handleChat: ReturnType<typeof vi.fn>;
   broadcast: ReturnType<typeof vi.fn>;
   findAgent: ReturnType<typeof vi.fn>;
 }
 
 function makeDeps(): DepsShape {
+  const createSessionRun = vi.fn();
+  const getSessionGet = vi.fn((sessionId: string) => {
+    const call = createSessionRun.mock.calls.find((c: unknown[]) => c[0] === sessionId);
+    if (!call) return undefined;
+    return {
+      id: sessionId,
+      agent_id: call[1],
+      name: call[2],
+      engine: call[3],
+      model: call[4],
+      engine_session_id: null,
+      use_worktree: 1,
+      worktree_path: null,
+      worktree_branch: null,
+      git_worktree_detected: null,
+      changes_ready: null,
+      stale_pr_notified_at: null,
+      ask_mode: 0,
+      wiki_hybrid_rag_consumed: 0,
+      cron_id: null,
+      created_at: '2020-01-01T00:00:00.000Z',
+      updated_at: '2020-01-01T00:00:00.000Z',
+      deleted_at: null,
+    };
+  });
   return {
-    stmts: { createSession: { run: vi.fn() } },
+    stmts: { createSession: { run: createSessionRun }, getSession: { get: getSessionGet } },
     handleChat: vi.fn(() => Promise.resolve()),
     broadcast: vi.fn(),
     findAgent: vi.fn(() => null),
@@ -97,6 +125,13 @@ describe('dispatchReviewerForPR — gating', () => {
     vi.runAllTimers();
     expect(deps.handleChat).toHaveBeenCalledTimes(1);
     expect(deps.stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(deps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session_created',
+        agentId: 'reviewer-1',
+        session: expect.objectContaining({ agent_id: 'reviewer-1' }),
+      }),
+    );
   });
 });
 

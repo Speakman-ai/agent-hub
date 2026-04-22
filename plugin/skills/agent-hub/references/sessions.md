@@ -201,7 +201,11 @@ All three constants are overridable per-call via optional
   prompt gets a `## Forwarded Context` block naming the card + (if the
   epic is autonomous) a reminder to commit + push rather than pause for
   human review. `handoff_start` broadcasts carry `cardId`, `cardTitle`,
-  `epicId`, and `epicAutonomous` for UI / dispatch observers.
+  `epicId`, and `epicAutonomous` for UI / dispatch observers. Once the
+  target `sessions` row exists, the server also emits **`session_created`**
+  with `{ agentId, session }` (same payload shape as kanban assign and
+  `POST /api/agents/:agentId/sessions`) so web/mobile clients can splice the
+  new session into the agent's sidebar list without a manual refresh.
 
 ### `<agenthub:close-card>` — auto-close duplicate / already-done cards
 

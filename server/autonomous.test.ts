@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import type { Project, KanbanCardRow, KanbanEpicRow } from './types.js';
+import type { Project, KanbanCardRow, KanbanEpicRow, SessionRow } from './types.js';
 
 // ─── Module mocks (hoisted before imports) ────────────────────────────────
 
@@ -220,6 +220,30 @@ describe('runAutonomousLoop — dispatch', () => {
       getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
       getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
     });
+    stmts.getSession.get.mockImplementation((sessionId: string) => {
+      const call = stmts.createSession.run.mock.calls.find((c) => c[0] === sessionId);
+      if (!call) return undefined;
+      return {
+        id: sessionId,
+        agent_id: call[1] as string,
+        name: call[2] as string,
+        engine: call[3] as string,
+        model: call[4] as string,
+        engine_session_id: null,
+        use_worktree: 1,
+        worktree_path: null,
+        worktree_branch: null,
+        git_worktree_detected: null,
+        changes_ready: null,
+        stale_pr_notified_at: null,
+        ask_mode: 0,
+        wiki_hybrid_rag_consumed: 0,
+        cron_id: null,
+        created_at: '2020-01-01T00:00:00.000Z',
+        updated_at: '2020-01-01T00:00:00.000Z',
+        deleted_at: null,
+      } as SessionRow;
+    });
     const deps = makeDeps(stmts);
     deps.findProject.mockReturnValue(makeProject());
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
@@ -233,6 +257,11 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(deps.handleChat).toHaveBeenCalledTimes(1);
     const callArgs = deps.handleChat.mock.calls[0][1] as { content: string };
     expect(callArgs.content).toContain('Build feature');
+    const sessionCreated = deps.broadcast.mock.calls
+      .map((c) => c[0] as { type?: string })
+      .filter((p) => p.type === 'session_created');
+    expect(sessionCreated).toHaveLength(1);
+    expect(sessionCreated[0]).toMatchObject({ type: 'session_created', agentId: 'dev-1' });
   });
 
   it('uses epic autonomous_model when it is valid for the assignee engine', async () => {

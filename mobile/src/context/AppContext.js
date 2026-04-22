@@ -541,6 +541,17 @@ export function AppProvider({ children }) {
         setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
         break;
 
+      case 'session_created': {
+        const row = data.session;
+        if (row && data.agentId === activeAgentIdRef.current) {
+          setSessions((prev) => {
+            if (prev.some((s) => s.id === row.id)) return prev;
+            return [row, ...prev];
+          });
+        }
+        break;
+      }
+
       case 'session_restored': {
         // Server broadcast after POST /api/sessions/:id/restore. Re-home
         // the row in the live list without a full refetch and drop it

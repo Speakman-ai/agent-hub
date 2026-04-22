@@ -542,7 +542,7 @@ export function dispatchReviewFeedback(
   project: Project,
   feedbackContent: string,
 ): string | null {
-  const { stmts, findAgent, handleChat } = deps;
+  const { stmts, findAgent, handleChat, broadcast } = deps;
   try {
     if (card.session_id) {
       const existingSession = stmts.getSession.get(card.session_id) as SessionRow | undefined;
@@ -597,6 +597,12 @@ export function dispatchReviewFeedback(
       1,
       0,
     );
+    {
+      const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (row) {
+        broadcast({ type: 'session_created', agentId: agent.id, session: row });
+      }
+    }
 
     stmts.updateKanbanCard.run(
       card.title,
@@ -934,7 +940,7 @@ async function runReviewerDispatch(
   reviewer: Agent,
   opts: ReviewerDispatchOpts,
 ): Promise<void> {
-  const { stmts, handleChat } = deps;
+  const { stmts, handleChat, broadcast } = deps;
 
   // Advance the Check Run to in_progress as soon as the debounce fires and the
   // reviewer session actually starts — this is what makes the panel animate
@@ -978,6 +984,12 @@ async function runReviewerDispatch(
     1,
     0,
   );
+  {
+    const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (row) {
+      broadcast({ type: 'session_created', agentId: reviewer.id, session: row });
+    }
+  }
 
   const prompt = `# PR Review Request (${opts.reason})
 

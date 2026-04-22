@@ -505,7 +505,8 @@ if (existsSync(CLIENT_DIST) && existsSync(path.join(CLIENT_DIST, 'index.html')))
 
 const activeProcesses = new Map<string, ChildProcess>();
 
-const routeDeps: RouteDeps = {
+/** Full route wiring; exported so integration tests can `vi.spyOn(routeDeps, 'broadcast')`. */
+export const routeDeps: RouteDeps = {
   stmts: stmts!,
   broadcast,
   findProject,

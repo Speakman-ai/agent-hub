@@ -17,6 +17,7 @@ import type {
   AppConfig,
   BroadcastFn,
   ChatMessage,
+  SessionRow,
 } from './types.js';
 
 const execFileAsync = promisify(execFile);
@@ -279,6 +280,12 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
         model = sessionModelForAutonomousDispatch(epic, agent, engineValidModels);
       }
       d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, 1, 0);
+      {
+        const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (row) {
+          d.broadcast({ type: 'session_created', agentId: agent.id, session: row });
+        }
+      }
 
       d.stmts.updateKanbanCard.run(
         card.title,

@@ -1312,6 +1312,20 @@ export default function App() {
         });
         break;
 
+      case 'session_created': {
+        // Kanban assign, autonomous dispatch, handoff target session, another
+        // browser tab POST /sessions, etc. — splice into the sidebar without
+        // a full refetch when the session belongs to the active agent.
+        const row = data.session;
+        if (row && data.agentId === activeAgentIdRef.current) {
+          setSessions((prev) => {
+            if (prev.some((s) => s.id === row.id)) return prev;
+            return [row, ...prev];
+          });
+        }
+        break;
+      }
+
       case 'session_deleted':
         setSessions((prev) => prev.filter((s) => s.id !== data.sessionId));
         if (activeSessionIdRef.current === data.sessionId) {
