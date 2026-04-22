@@ -21,7 +21,12 @@ import {
   buildHandoffPromptSection,
 } from './handoff.js';
 import { parseCloseCardBlock, handleCardAutoClose } from './card-auto-close.js';
-import { detectSkillBlock as detectSkillInvokeBlock, handleSkillInvoke } from './skill-invoke.js';
+import {
+  detectSkillBlock as detectSkillInvokeBlock,
+  handleSkillInvoke,
+  loadSkillByName,
+} from './skill-invoke.js';
+import { routeSkillFromMessage } from './skill-router.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
@@ -208,6 +213,31 @@ function peersOnProject(projectId: string, excludeAgentId: string): ProjectAgent
     }));
 }
 
+function applyAgentSkillOverrides(agentId: string, skills: SkillInfo[]): SkillInfo[] {
+  let filtered = skills;
+  try {
+    const overrides = stmts.getAgentSkillOverrides.all(agentId) as Array<{
+      skill_id: string;
+      enabled: number;
+    }>;
+    const disabledSet = new Set(overrides.filter((o) => !o.enabled).map((o) => o.skill_id));
+    if (disabledSet.size > 0) {
+      filtered = skills.filter((s) => !disabledSet.has(s.id));
+    }
+  } catch {
+    /* ignore if table doesn't exist yet */
+  }
+  return filtered;
+}
+
+function listEnabledSkills(agentId: string, skillsDir: string): SkillInfo[] {
+  const projectSkills: SkillInfo[] = collectSkillsFromDir(skillsDir);
+  const defaultSkills: SkillInfo[] = collectSkillsFromDir(DEFAULT_SKILLS_DIR);
+  const projectIds = new Set(projectSkills.map((s) => s.id));
+  const merged = [...projectSkills, ...defaultSkills.filter((s) => !projectIds.has(s.id))];
+  return applyAgentSkillOverrides(agentId, merged);
+}
+
 // ─── buildEnrichedPrompt ───────────────────────────────────────────
 
 export function buildEnrichedPrompt(
@@ -283,24 +313,7 @@ export function buildEnrichedPrompt(
   }
 
   {
-    const projectSkills: SkillInfo[] = collectSkillsFromDir(paths.skillsDir);
-    const defaultSkills: SkillInfo[] = collectSkillsFromDir(DEFAULT_SKILLS_DIR);
-    const projectIds = new Set(projectSkills.map((s) => s.id));
-    let allSkills = [...projectSkills, ...defaultSkills.filter((s) => !projectIds.has(s.id))];
-
-    try {
-      const overrides = stmts.getAgentSkillOverrides.all(agent.id) as Array<{
-        skill_id: string;
-        enabled: number;
-      }>;
-      const disabledSet = new Set(overrides.filter((o) => !o.enabled).map((o) => o.skill_id));
-      if (disabledSet.size > 0) {
-        allSkills = allSkills.filter((s) => !disabledSet.has(s.id));
-      }
-    } catch {
-      /* ignore if table doesn't exist yet */
-    }
-
+    const allSkills = listEnabledSkills(agent.id, paths.skillsDir);
     if (allSkills.length > 0) {
       const skillsList = allSkills.map((s) => `- **${s.name}**: ${s.description}`);
       prompt += `\n\n## Available Skills
@@ -859,6 +872,30 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
     const engine: string = session!.engine || 'claude-code';
     const model: string = session!.model || DEFAULT_MODEL;
+    const paths = resolveProjectPaths(project as Project, agent as Agent);
+    let routedSkillSuffix = '';
+    if (!slashResult) {
+      const availableSkills = listEnabledSkills(agent.id, paths.skillsDir);
+      const routed = routeSkillFromMessage({
+        message: content,
+        skills: availableSkills,
+        agentId: agent.id,
+        agentSystemPrompt: agent.systemPrompt || '',
+        cwd: session!.worktree_path || project.cwd,
+      });
+      if (routed) {
+        const injection = loadSkillByName({
+          name: routed.skillId,
+          reason: `auto-route: ${routed.reason}`,
+          paths: { skillsDir: paths.skillsDir },
+          sessionId,
+          stmts: stmts as Stmts,
+          broadcast,
+        });
+        routedSkillSuffix = `\n\n${injection}`;
+      }
+    }
+
     let enrichedPrompt = buildEnrichedPrompt(
       project as ProjectWithCommands,
       agent as AgentWithModel,
@@ -874,6 +911,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       () => stmts.updateSessionPendingSkillContext.run(null, sessionId),
     );
     if (pendingSkillSuffix) enrichedPrompt += pendingSkillSuffix;
+    if (routedSkillSuffix) enrichedPrompt += routedSkillSuffix;
     const assistantMsgId = uuidv4();
 
     let engineSessionId: string | null = session!.engine_session_id || null;
@@ -1679,7 +1717,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       try {
         const rawSkillBlock = detectSkillInvokeBlock(finalContent);
         if (rawSkillBlock) {
-          const paths = resolveProjectPaths(project as Project, agent as Agent);
           const injection = handleSkillInvoke({
             rawBlock: rawSkillBlock,
             paths: { skillsDir: paths.skillsDir },

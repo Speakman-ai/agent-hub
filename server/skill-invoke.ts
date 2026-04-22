@@ -66,6 +66,15 @@ interface HandleSkillInvokeArgs {
   broadcast: BroadcastFn;
 }
 
+interface LoadSkillByNameArgs {
+  name: string;
+  reason?: string;
+  paths: SkillInvokePaths;
+  sessionId: string;
+  stmts: Stmts;
+  broadcast: BroadcastFn;
+}
+
 function collectReferenceFiles(dir: string, root = dir): string[] {
   if (!existsSync(dir)) return [];
   const out: string[] = [];
@@ -283,23 +292,36 @@ export function handleSkillInvoke(args: HandleSkillInvokeArgs): string {
     return injection;
   }
 
-  const loaded = loadSkillBody(parsed.name, paths);
+  return loadSkillByName({
+    name: parsed.name,
+    reason: parsed.reason,
+    paths,
+    sessionId,
+    stmts,
+    broadcast,
+  });
+}
+
+export function loadSkillByName(args: LoadSkillByNameArgs): string {
+  const { name, reason, paths, sessionId, stmts, broadcast } = args;
+
+  const loaded = loadSkillBody(name, paths);
   if (!loaded) {
-    const injection = `## Skill Load Error\nSkill \`${parsed.name}\` was not found in project/default skill directories.`;
+    const injection = `## Skill Load Error\nSkill \`${name}\` was not found in project/default skill directories.`;
     try {
       stmts.insertSkillInvocation.run(
         uuidv4(),
         sessionId,
-        parsed.name,
+        name,
         null,
-        parsed.reason || null,
+        reason || null,
         'not-found',
         Buffer.byteLength(injection, 'utf-8'),
       );
       broadcast({
         type: 'skill_invocation',
         sessionId,
-        skill_id: parsed.name,
+        skill_id: name,
         status: 'not-found',
       });
     } catch (err) {
@@ -313,18 +335,18 @@ export function handleSkillInvoke(args: HandleSkillInvokeArgs): string {
     stmts.insertSkillInvocation.run(
       uuidv4(),
       sessionId,
-      parsed.name,
+      name,
       loaded.source,
-      parsed.reason || null,
+      reason || null,
       'loaded',
       Buffer.byteLength(injection, 'utf-8'),
     );
     broadcast({
       type: 'skill_invocation',
       sessionId,
-      skill_id: parsed.name,
+      skill_id: name,
       source: loaded.source,
-      reason: parsed.reason || null,
+      reason: reason || null,
       status: 'loaded',
       injected_bytes: Buffer.byteLength(injection, 'utf-8'),
     });
@@ -332,6 +354,6 @@ export function handleSkillInvoke(args: HandleSkillInvokeArgs): string {
     console.log('[skill-invoke] failed to record loaded invocation:', (err as Error).message);
   }
 
-  console.log(`[skill-invoke] loaded skill "${parsed.name}" for session ${sessionId}`);
+  console.log(`[skill-invoke] loaded skill "${name}" for session ${sessionId}`);
   return injection;
 }
