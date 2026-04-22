@@ -133,6 +133,15 @@ describe('GeneralSection — CLI binary paths', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    delete window.electronAPI;
+  });
+
+  it('shows desktop PATH hint when running inside Electron', async () => {
+    window.electronAPI = { isElectron: true };
+    const { getByText } = render(<GeneralSection />);
+    await waitFor(() => {
+      expect(getByText(/Desktop app:/)).toBeTruthy();
+    });
   });
 
   it('renders a cursorBin input pre-populated from config', async () => {

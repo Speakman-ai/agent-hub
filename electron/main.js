@@ -21,6 +21,7 @@ import {
 } from 'fs';
 import { createNotificationHandlers } from './notifications.js';
 import { saveDesignPdfWithDialog } from './save-design-pdf-dialog.js';
+import { mergeElectronServerPath } from './merge-server-path.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -181,21 +182,10 @@ function startServer() {
     logStream.write(`\n----- ${new Date().toISOString()} server starting -----\n`);
     console.log('[server] Logging to', logPath);
 
-    // When launched from Finder, Electron's PATH is minimal and lacks
-    // Homebrew / user-local bin dirs. The `claude` CLI uses
-    // `#!/usr/bin/env node`, so without these on PATH it fails with
-    // "env: node: No such file or directory". Prepend the common dirs.
-    const extraPaths = [
-      '/opt/homebrew/bin',
-      '/opt/homebrew/sbin',
-      '/usr/local/bin',
-      '/usr/local/sbin',
-      path.join(process.env.HOME || '', '.local/bin'),
-      path.join(process.env.HOME || '', '.nvm/versions/node/current/bin'),
-    ].filter(Boolean);
-    const mergedPath = [...extraPaths, process.env.PATH || '']
-      .filter(Boolean)
-      .join(':');
+    // When launched from Finder / the Windows shell, Electron's PATH is minimal.
+    // Prepend common install locations for node-based CLIs, git, and gh — and use
+    // the platform path delimiter (Windows needs `;`, not `:`). See merge-server-path.js.
+    const mergedPath = mergeElectronServerPath(process.env.PATH);
 
     // Set env so the server knows to serve the built client
     const env = {

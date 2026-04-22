@@ -110,6 +110,7 @@ import {
   FileText,
   UserCircle,
   AlertTriangle,
+  Info,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -1848,6 +1849,19 @@ export function GeneralSection() {
           CLI binary paths are saved to <code className="text-gray-400">server/config.json</code>.
           Changes take effect for new agent spawns immediately (no restart needed).
         </p>
+        {typeof window !== 'undefined' && window.electronAPI?.isElectron && (
+          <div className="flex gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90 mb-4">
+            <Info className="shrink-0 mt-0.5" size={16} aria-hidden />
+            <p>
+              <span className="font-medium text-amber-50">Desktop app:</span> the embedded server
+              prepends common install locations for Git and GitHub CLI to <code>PATH</code> (and
+              uses the correct separator on Windows). If Codex or PR features still cannot find{' '}
+              <code>git</code>/<code>gh</code>, install them from git-scm.com or cli.github.com,
+              then fully quit and reopen Agent Hub. Read-only checkouts or offline networks can
+              still block git and API access.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
