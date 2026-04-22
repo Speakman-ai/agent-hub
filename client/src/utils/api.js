@@ -4,8 +4,9 @@ import { getToken as getJwt, clearToken } from './auth.js';
 async function fetchJSON(url, options = {}) {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
-  const timeout = options.timeout || 15000;
-  const { timeout: _t, ...fetchOpts } = options;
+  const { timeout: timeoutOption, ...fetchOpts } = options;
+  const timeoutMs =
+    timeoutOption === null ? null : !timeoutOption || timeoutOption <= 0 ? 15000 : timeoutOption;
   const res = await fetch(`${base}${url}`, {
     ...fetchOpts,
     headers: {
@@ -13,7 +14,7 @@ async function fetchJSON(url, options = {}) {
       ...authHeaders,
       ...fetchOpts.headers,
     },
-    signal: fetchOpts.signal || AbortSignal.timeout(timeout),
+    signal: fetchOpts.signal || (timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)),
   });
   if (!res.ok) {
     // If a JWT-authenticated request is rejected, the token is stale — drop
@@ -93,11 +94,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+  // No client fetch timeout: commit/push/gh + hooks can exceed a minute while
+  // the server streams progress over the WebSocket; aborting early produced
+  // false "timed out" errors even when the PR succeeded.
   createPrFromSession: (sessionId, { autoMerge = false, title } = {}) =>
     fetchJSON(`/sessions/${sessionId}/create-pr`, {
       method: 'POST',
       body: JSON.stringify({ autoMerge, title }),
-      timeout: 60000,
+      timeout: null,
     }),
   setSessionAskMode: (sessionId, enabled) =>
     fetchJSON(`/sessions/${sessionId}/ask-mode`, {
