@@ -19,6 +19,7 @@ import { registerForPushNotifications, presentLocalNotification } from '../utils
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
 import { routeNotificationTap } from '../utils/notificationRouting';
 import { uploadAttachments } from '../utils/uploadAttachments';
+import { coalescePromiseByKey } from '../utils/coalesceInFlight';
 import { createReloadMessages } from '../utils/sessionReload';
 import {
   firstEngineWithAuthenticatedModels,
@@ -132,6 +133,8 @@ export function AppProvider({ children }) {
   };
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  /** One in-flight implicit `createSession` per agent + ask-mode (send with no session). */
+  const implicitSessionCreateByKeyRef = useRef(new Map());
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const activeRoomIdRef = useRef(activeRoomId);
@@ -1403,9 +1406,20 @@ export function AppProvider({ children }) {
   const handleSend = useCallback(async (content, images = []) => {
     let sessionId = activeSessionIdRef.current;
     if (!sessionId) {
-      const session = await api.createSession(activeAgentId);
-      setSessions((prev) => [session, ...prev]);
-      setActiveSessionId(session.id);
+      const coalesceKey = `${activeAgentId}:${sessionAskMode ? 'ask' : 'run'}`;
+      const session = await coalescePromiseByKey(
+        implicitSessionCreateByKeyRef,
+        coalesceKey,
+        () =>
+          api
+            .createSession(activeAgentId, undefined, { askMode: sessionAskMode })
+            .then((s) => {
+              setSessions((prev) => [s, ...prev]);
+              setActiveSessionId(s.id);
+              activeSessionIdRef.current = s.id;
+              return s;
+            }),
+      );
       sessionId = session.id;
     }
 
@@ -1428,7 +1442,7 @@ export function AppProvider({ children }) {
       content,
       ...(uploadedImages.length > 0 ? { images: uploadedImages } : {}),
     });
-  }, [activeAgentId, send]);
+  }, [activeAgentId, sessionAskMode, send]);
 
   // Handle submission from an <AskUserQuestion> picker. We dispatch the
   // pre-formatted chat message (which already contains the

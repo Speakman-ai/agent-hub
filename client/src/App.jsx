@@ -36,6 +36,7 @@ import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
 import { useVersionCheck } from './hooks/useVersionCheck.js';
 import { api } from './utils/api.js';
+import { coalescePromiseByKey } from './utils/coalesceInFlight.js';
 import { isNearBottom } from './utils/chatScroll.js';
 import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver.js';
 import {
@@ -242,6 +243,8 @@ export default function App() {
   const messagesColumnRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  /** One in-flight implicit `createSession` per agent + ask-mode (send with no session). */
+  const implicitSessionCreateByKeyRef = useRef(new Map());
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const sessionsRef = useRef(sessions);
@@ -2256,13 +2259,17 @@ export default function App() {
   };
 
   const handleSend = async (content, images = [], { interrupt = false } = {}) => {
-    let sessionId = activeSessionId;
+    let sessionId = activeSessionIdRef.current;
     if (!sessionId) {
-      const session = await api.createSession(activeAgentId, undefined, {
-        askMode: sessionAskMode,
-      });
-      setSessions((prev) => [session, ...prev]);
-      setActiveSessionId(session.id);
+      const coalesceKey = `${activeAgentId}:${sessionAskMode ? 'ask' : 'run'}`;
+      const session = await coalescePromiseByKey(implicitSessionCreateByKeyRef, coalesceKey, () =>
+        api.createSession(activeAgentId, undefined, { askMode: sessionAskMode }).then((s) => {
+          setSessions((prev) => [s, ...prev]);
+          setActiveSessionId(s.id);
+          activeSessionIdRef.current = s.id;
+          return s;
+        }),
+      );
       sessionId = session.id;
     }
 
