@@ -54,7 +54,10 @@ pre.whitespace-pre-wrap,
   -moz-tab-size: 2;
 }
 
-/* Markdown content */
+/* Markdown content — min-w-0 lets fenced code / diffs scroll inside flex chat columns */
+.markdown-content {
+  min-width: 0;
+}
 .markdown-content h1 {
   @apply text-2xl font-bold mt-4 mb-2;
 }

@@ -9,12 +9,13 @@
  * stays in sync. See the web file for the long-form rationale.
  */
 
-const HANDOFF_RE = /<handoff>\s*([\s\S]*?)\s*<\/handoff>/;
-const DELEGATE_RE = /<delegate>\s*([\s\S]*?)\s*<\/delegate>/;
+/** Suffix-only: real protocol blocks are terminal; avoids stripping fenced examples. */
+const HANDOFF_TAIL_RE = /<handoff>\s*([\s\S]*?)\s*<\/handoff>\s*$/;
+const DELEGATE_TAIL_RE = /<delegate>\s*([\s\S]*?)\s*<\/delegate>\s*$/;
 
 export function parseHandoffBlock(text) {
   if (typeof text !== 'string' || !text.includes('<handoff>')) return null;
-  const match = text.match(HANDOFF_RE);
+  const match = text.trimEnd().match(HANDOFF_TAIL_RE);
   if (!match) return null;
   let parsed;
   try {
@@ -31,7 +32,7 @@ export function parseHandoffBlock(text) {
 
 export function parseDelegateBlock(text) {
   if (typeof text !== 'string' || !text.includes('<delegate>')) return null;
-  const match = text.match(DELEGATE_RE);
+  const match = text.trimEnd().match(DELEGATE_TAIL_RE);
   if (!match) return null;
   let parsed;
   try {
@@ -64,11 +65,41 @@ export function extractCoordinationBlocks(text) {
   if (typeof text !== 'string' || text.length === 0) {
     return { stripped: text ?? '', handoff: null, delegate: null };
   }
-  const handoff = parseHandoffBlock(text);
-  const delegate = parseDelegateBlock(text);
-  let stripped = text;
-  if (handoff) stripped = stripped.replace(HANDOFF_RE, '').trimEnd();
-  if (delegate) stripped = stripped.replace(DELEGATE_RE, '').trimEnd();
+
+  let handoff = null;
+  let delegate = null;
+  let working = text;
+
+  // Same peel order as web `client/src/utils/coordinationBlocks.js`: try a
+  // trailing delegate first, then a trailing handoff, and loop so
+  // `…</delegate>\n<handoff>…</handoff>` peels handoff then delegate. Only
+  // strips when JSON parses (mobile leaves malformed suffix blocks untouched).
+  for (let i = 0; i < 8; i++) {
+    const trimmed = working.trimEnd();
+    const dm = trimmed.match(DELEGATE_TAIL_RE);
+    if (dm) {
+      const del = parseDelegateBlock(trimmed);
+      if (del) {
+        delegate = del;
+        working = trimmed.slice(0, dm.index).trimEnd();
+        continue;
+      }
+      break;
+    }
+    const hm = trimmed.match(HANDOFF_TAIL_RE);
+    if (hm) {
+      const ho = parseHandoffBlock(trimmed);
+      if (ho) {
+        handoff = ho;
+        working = trimmed.slice(0, hm.index).trimEnd();
+        continue;
+      }
+      break;
+    }
+    break;
+  }
+
+  let stripped = working;
   stripped = stripped.replace(/\n{3,}/g, '\n\n').trim();
   return { stripped, handoff, delegate };
 }

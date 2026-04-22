@@ -33,8 +33,9 @@
  * input so a partially-streamed block never crashes the chat.
  */
 
-const HANDOFF_RE = /<handoff>\s*([\s\S]*?)\s*<\/handoff>/;
-const DELEGATE_RE = /<delegate>\s*([\s\S]*?)\s*<\/delegate>/;
+/** Terminal coordination blocks only (mirrors server: blocks are suffix of the turn). */
+const HANDOFF_TAIL_RE = /<handoff>\s*([\s\S]*?)\s*<\/handoff>\s*$/;
+const DELEGATE_TAIL_RE = /<delegate>\s*([\s\S]*?)\s*<\/delegate>\s*$/;
 
 /**
  * Detect a `<handoff>` block in `text` and return a tagged result:
@@ -44,6 +45,9 @@ const DELEGATE_RE = /<delegate>\s*([\s\S]*?)\s*<\/delegate>/;
  * `server/handoff.ts#detectHandoffBlock` so the web UI can distinguish
  * "no block" from "malformed block" and still render a failed-state
  * HandoffCard instead of silently dropping the handoff.
+ *
+ * Only a **suffix** `<handoff>...</handoff>` is recognised so examples inside
+ * fenced markdown cannot be stripped (which would break code fences and diffs).
  *
  * Reason codes:
  *   'invalid-json' — body is not valid JSON
@@ -56,7 +60,8 @@ export function detectHandoffBlock(text) {
   if (typeof text !== 'string' || !text.includes('<handoff>')) {
     return { present: false, task: null, reason: null, rawBody: null };
   }
-  const match = text.match(HANDOFF_RE);
+  const trimmed = text.trimEnd();
+  const match = trimmed.match(HANDOFF_TAIL_RE);
   if (!match) {
     return { present: false, task: null, reason: null, rawBody: null };
   }
@@ -124,6 +129,9 @@ export function parseHandoffBlock(text) {
  * cause of the "delegate sometimes doesn't show up" bug when WebSocket
  * events for successful dispatches were delayed or dropped.
  *
+ * Only a **suffix** `<delegate>...</delegate>` is recognised (same rationale as
+ * handoff): examples inside fenced markdown must not be stripped.
+ *
  * Reason codes:
  *   'invalid-json'       — body is not valid JSON
  *   'not-object'         — body parsed but is neither object nor array
@@ -134,7 +142,8 @@ export function detectDelegateBlock(text) {
   if (typeof text !== 'string' || !text.includes('<delegate>')) {
     return { present: false, tasks: null, reason: null, rawBody: null };
   }
-  const match = text.match(DELEGATE_RE);
+  const trimmed = text.trimEnd();
+  const match = trimmed.match(DELEGATE_TAIL_RE);
   if (!match) {
     return { present: false, tasks: null, reason: null, rawBody: null };
   }
@@ -218,31 +227,48 @@ export function extractCoordinationBlocks(text) {
     };
   }
 
-  const handoffDetection = detectHandoffBlock(text);
-  const handoff = handoffDetection.task;
-  const handoffMalformed =
-    handoffDetection.present && !handoffDetection.task
-      ? { reason: handoffDetection.reason, rawBody: handoffDetection.rawBody ?? '' }
-      : null;
+  let handoff = null;
+  let delegate = null;
+  let handoffMalformed = null;
+  let delegateMalformed = null;
+  let working = text;
 
-  const delegateDetection = detectDelegateBlock(text);
-  const delegate = delegateDetection.tasks;
-  const delegateMalformed =
-    delegateDetection.present && !delegateDetection.tasks
-      ? { reason: delegateDetection.reason, rawBody: delegateDetection.rawBody ?? '' }
-      : null;
+  // Peel trailing blocks one at a time (delegate may follow handoff, or the
+  // reverse). Suffix-only detection avoids stripping examples inside ``` fences.
+  for (let i = 0; i < 8; i++) {
+    const trimmed = working.trimEnd();
+    const delegateDetection = detectDelegateBlock(trimmed);
+    if (delegateDetection.present) {
+      const m = trimmed.match(DELEGATE_TAIL_RE);
+      if (!m) break;
+      if (delegateDetection.tasks) delegate = delegateDetection.tasks;
+      else
+        delegateMalformed = {
+          reason: delegateDetection.reason,
+          rawBody: delegateDetection.rawBody ?? '',
+        };
+      working = trimmed.slice(0, m.index).trimEnd();
+      continue;
+    }
 
-  let stripped = text;
-  // Strip both successful *and* malformed coordination blocks so the raw
-  // JSON never leaks into the prose — the malformed signal is surfaced as
-  // a failed HandoffCard / DelegateCard instead, giving the user real
-  // feedback instead of a wall of broken JSON. Stripping malformed
-  // delegate blocks is the fix for the "delegate doesn't show up" bug
-  // where a bad block silently leaked into the message and the side panel
-  // never populated.
-  if (handoff || handoffMalformed) stripped = stripped.replace(HANDOFF_RE, '').trimEnd();
-  if (delegate || delegateMalformed) stripped = stripped.replace(DELEGATE_RE, '').trimEnd();
+    const handoffDetection = detectHandoffBlock(trimmed);
+    if (handoffDetection.present) {
+      const m = trimmed.match(HANDOFF_TAIL_RE);
+      if (!m) break;
+      if (handoffDetection.task) handoff = handoffDetection.task;
+      else
+        handoffMalformed = {
+          reason: handoffDetection.reason,
+          rawBody: handoffDetection.rawBody ?? '',
+        };
+      working = trimmed.slice(0, m.index).trimEnd();
+      continue;
+    }
 
+    break;
+  }
+
+  let stripped = working;
   // Collapse runs of 3+ blank lines that the strip can leave behind.
   stripped = stripped.replace(/\n{3,}/g, '\n\n').trim();
 

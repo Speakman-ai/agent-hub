@@ -456,7 +456,7 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
                 rehypePlugins={[rehypeHighlight]}
                 components={components}
               >
-                {message.content}
+                {displayContent}
               </ReactMarkdown>
             )}
           </div>

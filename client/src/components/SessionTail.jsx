@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
-import { markdownComponentsCompact } from './MarkdownRenderer.jsx';
+import { markdownComponents } from './MarkdownRenderer.jsx';
 import { isFileModifyingTool, shortenPath, parseDiffLines } from '../utils/diff.js';
 import {
   extractCoordinationBlocks,
@@ -147,8 +147,8 @@ function SessionTail({
   // ask fences stripped — a failed fetch used to cache [] and trap us there.
   if (timelineFetchPending) {
     return (
-      <div className="flex justify-start mb-4">
-        <div className="max-w-[95%] sm:max-w-[90%] w-full bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
+      <div className="flex justify-start mb-4 min-w-0">
+        <div className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
           <Header
             agentColor={agentColor}
             engine={message?.engine}
@@ -171,8 +171,8 @@ function SessionTail({
 
   if (timelineFetchFailed) {
     return (
-      <div className="flex justify-start mb-4">
-        <div className="max-w-[95%] sm:max-w-[90%] w-full bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
+      <div className="flex justify-start mb-4 min-w-0">
+        <div className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
           <Header
             agentColor={agentColor}
             engine={message?.engine}
@@ -226,8 +226,8 @@ function SessionTail({
   }
 
   return (
-    <div className="flex justify-start mb-4">
-      <div className="max-w-[95%] sm:max-w-[90%] w-full bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
+    <div className="flex justify-start mb-4 min-w-0">
+      <div className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
         <Header
           agentColor={agentColor}
           engine={message?.engine}
@@ -445,7 +445,8 @@ const ENGINE_BADGES = {
   },
 };
 
-const MARKDOWN_COMPONENTS = markdownComponentsCompact;
+/** Full markdown + CodeBlock stack — same as ChatMessage for readable diffs / fences. */
+const MARKDOWN_COMPONENTS = markdownComponents;
 
 function truncateStatusDetail(s, max) {
   if (!s) return '';
@@ -1175,8 +1176,8 @@ function LegacyAssistantBubble({
     messageContent: message.content,
   });
   return (
-    <div className="flex justify-start mb-4">
-      <div className="max-w-[95%] sm:max-w-[90%] bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
+    <div className="flex justify-start mb-4 min-w-0">
+      <div className="max-w-[95%] sm:max-w-[90%] min-w-0 bg-gray-800 rounded-2xl rounded-bl-md px-4 py-3">
         <Header
           agentColor={agentColor}
           engine={message.engine}

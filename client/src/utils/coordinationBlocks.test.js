@@ -128,6 +128,34 @@ describe('extractCoordinationBlocks', () => {
     expect(out.delegate).toEqual([{ agentId: 'c', task: 'd' }]);
   });
 
+  it('does not strip a <handoff> example inside fenced markdown (suffix-only detection)', () => {
+    const text = `# Protocol
+
+Example:
+
+\`\`\`json
+<handoff>
+{"toAgent":"hub-backend","note":"documentation only"}
+</handoff>
+\`\`\`
+
+That is the wire format.
+`;
+    const out = extractCoordinationBlocks(text);
+    expect(out.handoff).toBeNull();
+    expect(out.handoffMalformed).toBeNull();
+    expect(out.delegate).toBeNull();
+    expect(out.stripped).toContain('<handoff>');
+    expect(out.stripped).toContain('documentation only');
+  });
+
+  it('ignores a well-formed handoff that is not a message suffix', () => {
+    const text = `Intro\n<handoff>{"toAgent":"a","note":"b"}</handoff>\nMore prose after.`;
+    const out = extractCoordinationBlocks(text);
+    expect(out.handoff).toBeNull();
+    expect(out.stripped).toBe(text.trim());
+  });
+
   it('strips a malformed block and surfaces handoffMalformed so the UI can render a failed card', () => {
     // Regression: previously extractCoordinationBlocks preserved the raw
     // `<handoff>...</handoff>` JSON as prose when parse failed, producing the

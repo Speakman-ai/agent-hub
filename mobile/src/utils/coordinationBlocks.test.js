@@ -128,6 +128,30 @@ describe('extractCoordinationBlocks', () => {
     expect(out.delegate).toEqual([{ agentId: 'c', task: 'd' }]);
   });
 
+  it('peels delegate after handoff when delegate is inner suffix (matches web loop)', () => {
+    const text = `Prose.\n<delegate>[{"agentId":"c","task":"d"}]</delegate>\n<handoff>{"toAgent":"a","note":"b"}</handoff>`;
+    const out = extractCoordinationBlocks(text);
+    expect(out.stripped).toBe('Prose.');
+    expect(out.handoff).toEqual({ toAgent: 'a', note: 'b' });
+    expect(out.delegate).toEqual([{ agentId: 'c', task: 'd' }]);
+    expect(out.stripped).not.toMatch(/<delegate>|<handoff>/);
+  });
+
+  it('does not treat a fenced <handoff> example as a protocol block', () => {
+    const text = `# Doc
+
+\`\`\`json
+<handoff>
+{"toAgent":"hub-backend","note":"example"}
+</handoff>
+\`\`\`
+`;
+    const out = extractCoordinationBlocks(text);
+    expect(out.handoff).toBeNull();
+    expect(out.delegate).toBeNull();
+    expect(out.stripped).toContain('<handoff>');
+  });
+
   it('leaves a malformed block in place but returns null for the parsed value', () => {
     const text = `Prose.\n<handoff>not json</handoff>`;
     const out = extractCoordinationBlocks(text);
