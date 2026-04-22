@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, waitFor, screen } from '@testing-library/react';
 import SessionSummarySidebar from './SessionSummarySidebar.jsx';
 import { api } from '../utils/api.js';
 
@@ -61,6 +61,33 @@ describe('<SessionSummarySidebar /> — project PR detail fetch', () => {
 
     await waitFor(() => expect(api.getSessionSummary).toHaveBeenCalled());
     expect(api.getProjectPullDetail).not.toHaveBeenCalled();
+  });
+
+  it('shows a loading placeholder until the first summary fetch resolves', async () => {
+    let resolveSummary;
+    const summaryPromise = new Promise((resolve) => {
+      resolveSummary = resolve;
+    });
+    api.getSessionSummary.mockReturnValue(summaryPromise);
+
+    render(<SessionSummarySidebar sessionId="sess-pending" isLive={false} />);
+
+    expect(screen.getByTestId('session-summary-loading')).toBeInTheDocument();
+
+    resolveSummary({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: null,
+      sessionTitlePrUrl: null,
+      session: { id: 's1', name: 'Loaded' },
+      runSnapshot: emptyRun,
+      skills: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('session-summary-loading')).not.toBeInTheDocument();
+    });
+    expect(await screen.findByText('Loaded')).toBeInTheDocument();
   });
 
   it('calls getProjectPullDetail when PR URL matches projectGithubRepo', async () => {

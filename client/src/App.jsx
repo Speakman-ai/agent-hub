@@ -96,6 +96,8 @@ export default function App() {
   const [restoringSessionIds, setRestoringSessionIds] = useState(new Set());
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
+  /** True while GET /api/sessions/:id/messages is in flight after a session switch. */
+  const [sessionMessagesLoading, setSessionMessagesLoading] = useState(false);
   // Handoffs (rows from GET /api/sessions/:id/handoffs) for the active
   // source session — used by HandoffCard to render an "Open session" link.
   const [sessionHandoffs, setSessionHandoffs] = useState([]);
@@ -1753,13 +1755,32 @@ export default function App() {
     };
   }, [modelConfig, activeSessionId, sessionEngine, sessions]);
 
-  // Load messages when session changes
+  // Load messages when session changes — clear immediately so the chat column
+  // never briefly shows the previous session's transcript on the new id.
   useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);
+      setSessionMessagesLoading(false);
       return;
     }
-    api.getMessages(activeSessionId).then(setMessages);
+    setMessages([]);
+    setSessionMessagesLoading(true);
+    let cancelled = false;
+    api
+      .getMessages(activeSessionId)
+      .then((rows) => {
+        if (cancelled) return;
+        setMessages(Array.isArray(rows) ? rows : []);
+        setSessionMessagesLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMessages([]);
+        setSessionMessagesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [activeSessionId]);
 
   // Load any handoffs emitted from this session so HandoffCard can resolve
@@ -2801,17 +2822,34 @@ export default function App() {
                       />
                     )}
                     {messages.length === 0 && !thinking && !streamingContent && (
-                      <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
-                        <MessageCircle size={48} className="mb-4 text-gray-600" />
-                        {sessionsListLoading && projectDataReady && activeAgent ? (
+                      <div
+                        className="flex flex-col items-center justify-center h-full text-gray-600 py-20"
+                        data-testid={
+                          sessionMessagesLoading ? 'chat-messages-loading' : 'chat-empty-state'
+                        }
+                      >
+                        {sessionMessagesLoading ? (
                           <>
+                            <Loader2 size={40} className="mb-4 text-gray-500 animate-spin" />
                             <p className="text-lg">Loading conversation</p>
-                            <p className="text-sm mt-1 text-gray-500">Sessions are syncing…</p>
+                            <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
                           </>
                         ) : (
                           <>
-                            <p className="text-lg">Start a conversation</p>
-                            {activeAgent && <p className="text-sm mt-1">with {activeAgent.name}</p>}
+                            <MessageCircle size={48} className="mb-4 text-gray-600" />
+                            {sessionsListLoading && projectDataReady && activeAgent ? (
+                              <>
+                                <p className="text-lg">Loading conversation</p>
+                                <p className="text-sm mt-1 text-gray-500">Sessions are syncing…</p>
+                              </>
+                            ) : (
+                              <>
+                                <p className="text-lg">Start a conversation</p>
+                                {activeAgent && (
+                                  <p className="text-sm mt-1">with {activeAgent.name}</p>
+                                )}
+                              </>
+                            )}
                           </>
                         )}
                         <p className="text-xs text-gray-700 mt-4 hidden sm:block">
