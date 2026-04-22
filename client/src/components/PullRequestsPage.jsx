@@ -57,7 +57,16 @@ const STATE_TABS = [
   { key: 'all', label: 'All' },
 ];
 
-function PrListItem({ pr, onOpen, onResolveRow, resolveAgentId, resolvingThisRow, bulkResolving }) {
+function PrListItem({
+  pr,
+  onOpen,
+  onResolveRow,
+  resolveAgentId,
+  resolvingThisRow,
+  bulkResolving,
+  spawnedSessionId,
+  onOpenSession,
+}) {
   const state = prStateBadge(pr);
   const diff = diffSummary(pr);
   const showCi = Array.isArray(pr.check_rollup) && pr.check_rollup.length > 0;
@@ -126,25 +135,50 @@ function PrListItem({ pr, onOpen, onResolveRow, resolveAgentId, resolvingThisRow
           </div>
         )}
       </button>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onResolveRow(pr.number);
-        }}
-        disabled={resolveDisabled}
-        title={resolveTitle}
-        aria-label={`Resolve PR #${pr.number}`}
-        className="flex-shrink-0 self-center flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800/80 text-xs font-medium text-gray-200 hover:bg-gray-800 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-w-[5.5rem]"
-      >
-        {resolvingThisRow ? (
-          <Loader2 size={16} className="animate-spin text-gray-400" />
-        ) : (
-          <Wrench size={16} className="text-gray-400" />
-        )}
-        <span>Resolve PR</span>
-      </button>
+      {spawnedSessionId ? (
+        <div
+          className="flex-shrink-0 self-center flex flex-col items-center justify-center gap-0.5 px-3 py-2 min-w-[5.5rem]"
+          aria-label={`Session started for PR #${pr.number}`}
+        >
+          <CheckCircle2 size={20} className="text-emerald-400" aria-hidden />
+          <span className="text-[10px] font-medium text-emerald-400/95 text-center leading-tight">
+            Started
+          </span>
+          {typeof onOpenSession === 'function' && resolveAgentId && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onOpenSession(resolveAgentId, spawnedSessionId);
+              }}
+              className="text-[10px] text-blue-400 hover:text-blue-300 hover:underline mt-0.5"
+            >
+              Open chat
+            </button>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onResolveRow(pr.number);
+          }}
+          disabled={resolveDisabled}
+          title={resolveTitle}
+          aria-label={`Resolve PR #${pr.number}`}
+          className="flex-shrink-0 self-center flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800/80 text-xs font-medium text-gray-200 hover:bg-gray-800 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-w-[5.5rem]"
+        >
+          {resolvingThisRow ? (
+            <Loader2 size={16} className="animate-spin text-gray-400" />
+          ) : (
+            <Wrench size={16} className="text-gray-400" />
+          )}
+          <span>Resolve PR</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -213,7 +247,17 @@ function CommentBlock({ comment }) {
   );
 }
 
-function PrDetail({ detail, onBack, onRefresh, refreshing, onResolve, resolving, agentId }) {
+function PrDetail({
+  detail,
+  onBack,
+  onRefresh,
+  refreshing,
+  onResolve,
+  resolving,
+  agentId,
+  spawnedSessionId,
+  onOpenSession,
+}) {
   const pr = detail?.pr;
   if (!pr) return null;
 
@@ -244,16 +288,32 @@ function PrDetail({ detail, onBack, onRefresh, refreshing, onResolve, resolving,
             Back to list
           </button>
           <span className="flex-1" />
-          <button
-            type="button"
-            onClick={onResolve}
-            disabled={resolveDisabled}
-            title={resolveTitle}
-            className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {resolving ? <Loader2 size={14} className="animate-spin" /> : <Wrench size={14} />}
-            Resolve PR
-          </button>
+          {spawnedSessionId ? (
+            <div className="flex items-center gap-2 text-sm text-emerald-400/95">
+              <CheckCircle2 size={16} className="flex-shrink-0" aria-hidden />
+              <span>Session started</span>
+              {typeof onOpenSession === 'function' && agentId && (
+                <button
+                  type="button"
+                  onClick={() => onOpenSession(agentId, spawnedSessionId)}
+                  className="text-blue-400 hover:text-blue-300 hover:underline"
+                >
+                  Open chat
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onResolve}
+              disabled={resolveDisabled}
+              title={resolveTitle}
+              className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {resolving ? <Loader2 size={14} className="animate-spin" /> : <Wrench size={14} />}
+              Resolve PR
+            </button>
+          )}
           <button
             type="button"
             onClick={onRefresh}
@@ -375,6 +435,8 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
   const [resolving, setResolving] = useState(false);
   const [resolvingFromList, setResolvingFromList] = useState(null);
   const [bulkResolving, setBulkResolving] = useState(false);
+  /** PR numbers for which a resolve run spawned a session (inline checkmark; no auto navigation). */
+  const [sessionSpawnedByPr, setSessionSpawnedByPr] = useState(() => ({}));
 
   const resolveAgentId =
     Array.isArray(project?.agents) && project.agents.length > 0
@@ -449,10 +511,10 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
   };
 
   const applyResolveOutcome = useCallback(
-    (res, prLabel, { legacyDetailCleanCopy = false } = {}) => {
+    (res, prLabel, prNumber, { legacyDetailCleanCopy = false } = {}) => {
       if (res?.sessionId) {
-        if (typeof onOpenSession === 'function') {
-          onOpenSession(resolveAgentId, res.sessionId);
+        if (prNumber != null) {
+          setSessionSpawnedByPr((prev) => ({ ...prev, [prNumber]: res.sessionId }));
         }
         if (typeof onToast === 'function') {
           const kinds = Array.isArray(res.triggered) ? res.triggered.join(', ') : '';
@@ -474,7 +536,7 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
         );
       }
     },
-    [resolveAgentId, onOpenSession, onToast],
+    [onToast],
   );
 
   const handleResolve = useCallback(async () => {
@@ -485,7 +547,7 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
       const res = await api.resolvePR(projectId, selectedNumber, {
         agentId: resolveAgentId,
       });
-      applyResolveOutcome(res, prLabel, { legacyDetailCleanCopy: true });
+      applyResolveOutcome(res, prLabel, selectedNumber, { legacyDetailCleanCopy: true });
     } catch (err) {
       const msg = err?.message || 'Failed to resolve PR';
       if (typeof onToast === 'function') {
@@ -505,7 +567,7 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
       setResolvingFromList(prNumber);
       try {
         const res = await api.resolvePR(projectId, prNumber, { agentId: resolveAgentId });
-        applyResolveOutcome(res, prLabel);
+        applyResolveOutcome(res, prLabel, prNumber);
       } catch (err) {
         const msg = err?.message || 'Failed to resolve PR';
         if (typeof onToast === 'function') {
@@ -534,14 +596,13 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
     let spawned = 0;
     let clean = 0;
     let failed = 0;
-    let lastSessionId = null;
     try {
       for (const pr of pulls) {
         try {
           const res = await api.resolvePR(projectId, pr.number, { agentId: resolveAgentId });
           if (res?.sessionId) {
             spawned += 1;
-            lastSessionId = res.sessionId;
+            setSessionSpawnedByPr((prev) => ({ ...prev, [pr.number]: res.sessionId }));
             const kinds = Array.isArray(res.triggered) ? res.triggered.join(', ') : '';
             if (typeof onToast === 'function') {
               onToast(
@@ -563,9 +624,6 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
           }
         }
       }
-      if (lastSessionId && typeof onOpenSession === 'function') {
-        onOpenSession(resolveAgentId, lastSessionId);
-      }
       if (typeof onToast === 'function') {
         const parts = [
           `${spawned} session(s) started`,
@@ -581,7 +639,7 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
     } finally {
       setBulkResolving(false);
     }
-  }, [projectId, resolveAgentId, pulls, bulkResolving, resolvingFromList, onOpenSession, onToast]);
+  }, [projectId, resolveAgentId, pulls, bulkResolving, resolvingFromList, onToast]);
 
   // ── Detail view ──
   if (selectedNumber) {
@@ -627,6 +685,8 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
           onResolve={handleResolve}
           resolving={resolving}
           agentId={resolveAgentId}
+          spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
+          onOpenSession={onOpenSession}
         />
       );
     }
@@ -746,6 +806,8 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
                 resolveAgentId={resolveAgentId}
                 resolvingThisRow={resolvingFromList === pr.number}
                 bulkResolving={bulkResolving}
+                spawnedSessionId={sessionSpawnedByPr[pr.number] || null}
+                onOpenSession={onOpenSession}
               />
             ))}
           </div>

@@ -57,6 +57,8 @@ function PrListItem({
   resolveAgentId,
   resolvingThisRow,
   bulkResolving,
+  spawnedSessionId,
+  onOpenChat,
 }) {
   const state = prStateBadge(pr);
   const diff = diffSummary(pr);
@@ -116,28 +118,46 @@ function PrListItem({
           </View>
         )}
       </TouchableOpacity>
-      <TouchableOpacity
-        style={[styles.listRowResolveButton, resolveDisabled && styles.resolveButtonDisabled]}
-        onPress={() => onResolveRow(pr.number)}
-        disabled={resolveDisabled}
-        accessibilityLabel={`Resolve PR #${pr.number}`}
-        accessibilityState={{ disabled: resolveDisabled, busy: resolvingThisRow }}
-      >
-        {resolvingThisRow ? (
-          <ActivityIndicator size="small" color={colors.gray300} />
-        ) : (
-          <Text style={styles.listRowResolveButtonText}>{'\u{1F527}'}</Text>
-        )}
-        <Text
-          style={[
-            styles.listRowResolveButtonCaption,
-            resolveDisabled && styles.resolveButtonTextDisabled,
-          ]}
-          numberOfLines={2}
+      {spawnedSessionId ? (
+        <View style={styles.listRowStarted} accessibilityLabel={`Session started for PR #${pr.number}`}>
+          <Text style={styles.listRowStartedCheck}>{'\u2713'}</Text>
+          <Text style={styles.listRowStartedCaption} numberOfLines={2}>
+            Started
+          </Text>
+          {typeof onOpenChat === 'function' && resolveAgentId ? (
+            <TouchableOpacity
+              onPress={() => onOpenChat(spawnedSessionId)}
+              accessibilityLabel="Open chat"
+              style={styles.listRowOpenChat}
+            >
+              <Text style={styles.listRowOpenChatText}>Open chat</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : (
+        <TouchableOpacity
+          style={[styles.listRowResolveButton, resolveDisabled && styles.resolveButtonDisabled]}
+          onPress={() => onResolveRow(pr.number)}
+          disabled={resolveDisabled}
+          accessibilityLabel={`Resolve PR #${pr.number}`}
+          accessibilityState={{ disabled: resolveDisabled, busy: resolvingThisRow }}
         >
-          Resolve PR
-        </Text>
-      </TouchableOpacity>
+          {resolvingThisRow ? (
+            <ActivityIndicator size="small" color={colors.gray300} />
+          ) : (
+            <Text style={styles.listRowResolveButtonText}>{'\u{1F527}'}</Text>
+          )}
+          <Text
+            style={[
+              styles.listRowResolveButtonCaption,
+              resolveDisabled && styles.resolveButtonTextDisabled,
+            ]}
+            numberOfLines={2}
+          >
+            Resolve PR
+          </Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -151,6 +171,8 @@ function PrDetail({
   onResolve,
   resolving,
   canResolve,
+  spawnedSessionId,
+  onOpenChat,
 }) {
   const pr = detail?.pr;
   if (!pr) return null;
@@ -176,26 +198,37 @@ function PrDetail({
           <Text style={styles.backButtonText}>{'\u2190'} Back to list</Text>
         </TouchableOpacity>
         <View style={{ flex: 1 }} />
-        <TouchableOpacity
-          style={[styles.resolveButton, resolveDisabled && styles.resolveButtonDisabled]}
-          onPress={onResolve}
-          disabled={resolveDisabled}
-          accessibilityLabel="Resolve PR"
-          accessibilityState={{ disabled: resolveDisabled, busy: resolving }}
-        >
-          {resolving ? (
-            <ActivityIndicator size="small" color={colors.gray300} />
-          ) : (
-            <Text
-              style={[
-                styles.resolveButtonText,
-                resolveDisabled && styles.resolveButtonTextDisabled,
-              ]}
-            >
-              {'\u{1F527}'} Resolve PR
-            </Text>
-          )}
-        </TouchableOpacity>
+        {spawnedSessionId ? (
+          <View style={styles.detailSessionStarted}>
+            <Text style={styles.detailSessionStartedText}>{'\u2713'} Session started</Text>
+            {typeof onOpenChat === 'function' ? (
+              <TouchableOpacity onPress={onOpenChat} accessibilityLabel="Open chat">
+                <Text style={styles.detailOpenChatText}>Open chat</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={[styles.resolveButton, resolveDisabled && styles.resolveButtonDisabled]}
+            onPress={onResolve}
+            disabled={resolveDisabled}
+            accessibilityLabel="Resolve PR"
+            accessibilityState={{ disabled: resolveDisabled, busy: resolving }}
+          >
+            {resolving ? (
+              <ActivityIndicator size="small" color={colors.gray300} />
+            ) : (
+              <Text
+                style={[
+                  styles.resolveButtonText,
+                  resolveDisabled && styles.resolveButtonTextDisabled,
+                ]}
+              >
+                {'\u{1F527}'} Resolve PR
+              </Text>
+            )}
+          </TouchableOpacity>
+        )}
       </View>
 
       <View style={styles.detailHeader}>
@@ -366,6 +399,17 @@ export default function PullRequestsScreen({ route, navigation }) {
   const [resolving, setResolving] = useState(false);
   const [resolvingFromList, setResolvingFromList] = useState(null);
   const [bulkResolving, setBulkResolving] = useState(false);
+  const [sessionSpawnedByPr, setSessionSpawnedByPr] = useState({});
+
+  const openResolverChat = useCallback(
+    (sessionId) => {
+      if (!sessionId || !resolveAgentId) return;
+      setActiveAgentId(resolveAgentId);
+      setActiveSessionId(sessionId);
+      navigation?.navigate?.('Chat');
+    },
+    [resolveAgentId, setActiveAgentId, setActiveSessionId, navigation],
+  );
 
   const loadList = useCallback(async () => {
     if (!projectId) {
@@ -441,13 +485,8 @@ export default function PullRequestsScreen({ route, navigation }) {
     try {
       const res = await api.resolvePR(projectId, selectedNumber, { agentId: resolveAgentId });
       if (res?.sessionId) {
-        // Jump into the resolver session in the Chat screen.
-        setActiveAgentId(resolveAgentId);
-        setActiveSessionId(res.sessionId);
+        setSessionSpawnedByPr((prev) => ({ ...prev, [selectedNumber]: res.sessionId }));
         const kinds = Array.isArray(res.triggered) ? res.triggered.join(', ') : '';
-        if (navigation?.navigate) {
-          navigation.navigate('Chat');
-        }
         Alert.alert(
           'Resolve PR',
           kinds ? `Resolving PR — ${kinds}` : 'Resolving PR — agent session started',
@@ -461,15 +500,7 @@ export default function PullRequestsScreen({ route, navigation }) {
     } finally {
       setResolving(false);
     }
-  }, [
-    projectId,
-    selectedNumber,
-    resolveAgentId,
-    resolving,
-    navigation,
-    setActiveAgentId,
-    setActiveSessionId,
-  ]);
+  }, [projectId, selectedNumber, resolveAgentId, resolving]);
 
   const handleResolveFromList = useCallback(
     async (prNumber) => {
@@ -478,12 +509,8 @@ export default function PullRequestsScreen({ route, navigation }) {
       try {
         const res = await api.resolvePR(projectId, prNumber, { agentId: resolveAgentId });
         if (res?.sessionId) {
-          setActiveAgentId(resolveAgentId);
-          setActiveSessionId(res.sessionId);
+          setSessionSpawnedByPr((prev) => ({ ...prev, [prNumber]: res.sessionId }));
           const kinds = Array.isArray(res.triggered) ? res.triggered.join(', ') : '';
-          if (navigation?.navigate) {
-            navigation.navigate('Chat');
-          }
           Alert.alert(
             'Resolve PR',
             kinds
@@ -500,15 +527,7 @@ export default function PullRequestsScreen({ route, navigation }) {
         setResolvingFromList(null);
       }
     },
-    [
-      projectId,
-      resolveAgentId,
-      bulkResolving,
-      resolvingFromList,
-      navigation,
-      setActiveAgentId,
-      setActiveSessionId,
-    ],
+    [projectId, resolveAgentId, bulkResolving, resolvingFromList],
   );
 
   const handleResolveAll = useCallback(async () => {
@@ -525,26 +544,18 @@ export default function PullRequestsScreen({ route, navigation }) {
     let spawned = 0;
     let clean = 0;
     let failed = 0;
-    let lastSessionId = null;
     try {
       for (const pr of pulls) {
         try {
           const res = await api.resolvePR(projectId, pr.number, { agentId: resolveAgentId });
           if (res?.sessionId) {
             spawned += 1;
-            lastSessionId = res.sessionId;
+            setSessionSpawnedByPr((prev) => ({ ...prev, [pr.number]: res.sessionId }));
           } else {
             clean += 1;
           }
         } catch {
           failed += 1;
-        }
-      }
-      if (lastSessionId) {
-        setActiveAgentId(resolveAgentId);
-        setActiveSessionId(lastSessionId);
-        if (navigation?.navigate) {
-          navigation.navigate('Chat');
         }
       }
       const parts = [
@@ -556,16 +567,7 @@ export default function PullRequestsScreen({ route, navigation }) {
     } finally {
       setBulkResolving(false);
     }
-  }, [
-    projectId,
-    resolveAgentId,
-    pulls,
-    bulkResolving,
-    resolvingFromList,
-    navigation,
-    setActiveAgentId,
-    setActiveSessionId,
-  ]);
+  }, [projectId, resolveAgentId, pulls, bulkResolving, resolvingFromList]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
@@ -630,6 +632,12 @@ export default function PullRequestsScreen({ route, navigation }) {
               onResolve={handleResolve}
               resolving={resolving}
               canResolve={Boolean(resolveAgentId)}
+              spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
+              onOpenChat={
+                sessionSpawnedByPr[selectedNumber]
+                  ? () => openResolverChat(sessionSpawnedByPr[selectedNumber])
+                  : undefined
+              }
             />
           )}
         </>
@@ -682,6 +690,8 @@ export default function PullRequestsScreen({ route, navigation }) {
                 resolveAgentId={resolveAgentId}
                 resolvingThisRow={resolvingFromList === item.number}
                 bulkResolving={bulkResolving}
+                spawnedSessionId={sessionSpawnedByPr[item.number] || null}
+                onOpenChat={openResolverChat}
               />
             )}
             refreshControl={
@@ -777,6 +787,27 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 2,
   },
+  listRowStarted: {
+    width: 76,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  listRowStartedCheck: {
+    color: colors.emerald400,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  listRowStartedCaption: {
+    color: colors.emerald400,
+    fontSize: 10,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  listRowOpenChat: { marginTop: 4, paddingVertical: 2 },
+  listRowOpenChatText: { color: colors.blue400, fontSize: 10, fontWeight: '600' },
   headerResolveAll: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -859,6 +890,16 @@ const styles = StyleSheet.create({
   resolveButtonDisabled: { opacity: 0.5 },
   resolveButtonText: { color: colors.gray200, fontSize: 13, fontWeight: '500' },
   resolveButtonTextDisabled: { color: colors.gray500 },
+  detailSessionStarted: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    justifyContent: 'flex-end',
+    maxWidth: 200,
+  },
+  detailSessionStartedText: { color: colors.emerald400, fontSize: 13, fontWeight: '600' },
+  detailOpenChatText: { color: colors.blue400, fontSize: 13, fontWeight: '500' },
 
   detailScroll: { flex: 1 },
   detailContent: { padding: 16 },

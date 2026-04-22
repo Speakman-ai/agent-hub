@@ -7,7 +7,8 @@ import { api } from '../utils/api.js';
  * Component test for the Resolve PR button in <PullRequestsPage />.
  *
  * Covers the three response branches from `POST /api/projects/:projectId/pulls/:number/resolve`:
- *   - 201 with `sessionId` → calls `onOpenSession(agentId, sessionId)` + success toast
+ *   - 201 with `sessionId` → success toast + inline "Session started" (does not auto-navigate;
+ *     optional "Open chat" calls `onOpenSession` when clicked)
  *   - 200 with `sessionId: null, triggered: []` → info toast "Nothing to resolve — PR looks clean."
  *   - rejected promise → error toast with the message
  *
@@ -94,13 +95,18 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
       agentId: 'agent-alpha',
     });
 
-    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'sess-99'));
+    expect(onOpenSession).not.toHaveBeenCalled();
     // Success toast mentions the triggered kinds
-    expect(onToast).toHaveBeenCalledWith(
-      expect.stringMatching(/ci/i),
-      'success',
-      expect.any(Number),
+    await waitFor(() =>
+      expect(onToast).toHaveBeenCalledWith(
+        expect.stringMatching(/ci/i),
+        'success',
+        expect.any(Number),
+      ),
     );
+    const openChat = await screen.findByRole('button', { name: /open chat/i });
+    fireEvent.click(openChat);
+    expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'sess-99');
   });
 
   it('disables the button while the request is in flight', async () => {
@@ -123,11 +129,14 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     fireEvent.click(btn);
     expect(api.resolvePR).toHaveBeenCalledTimes(1);
 
-    // Resolve the request and verify the button re-enables.
+    // Complete the request — success UI replaces the Resolve control (no stale handle).
     await act(async () => {
       resolveFn({ sessionId: 's', triggered: [], session: { id: 's' } });
     });
-    await waitFor(() => expect(btn).not.toBeDisabled());
+    await waitFor(() => {
+      expect(screen.getByText('Session started')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /resolve pr/i })).not.toBeInTheDocument();
+    });
   });
 
   it('shows an info toast and does NOT navigate when the PR is clean', async () => {
@@ -231,13 +240,18 @@ describe('<PullRequestsPage /> — list Resolve PR + Resolve all', () => {
 
     await waitFor(() => expect(api.resolvePR).toHaveBeenCalledTimes(1));
     expect(api.resolvePR).toHaveBeenCalledWith('proj-1', 123, { agentId: 'agent-alpha' });
-    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'sess-list'));
+    expect(onOpenSession).not.toHaveBeenCalled();
     expect(api.getProjectPullDetail).not.toHaveBeenCalled();
-    expect(onToast).toHaveBeenCalledWith(
-      expect.stringMatching(/review/i),
-      'success',
-      expect.any(Number),
+    await waitFor(() =>
+      expect(onToast).toHaveBeenCalledWith(
+        expect.stringMatching(/review/i),
+        'success',
+        expect.any(Number),
+      ),
     );
+    const openChat = await screen.findByRole('button', { name: /open chat/i });
+    fireEvent.click(openChat);
+    expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'sess-list');
   });
 
   it('disables list-row Resolve when list metadata looks clean', async () => {
