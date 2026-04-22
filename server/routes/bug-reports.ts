@@ -324,7 +324,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         const model = (agent.model as string) || deps.DEFAULT_MODEL;
         const sessionName = `[Bug] ${title.substring(0, 80)}`;
 
-        stmts.createSession.run(sessionId, INTAKE_AGENT_ID, sessionName, engine, model, 1, 0);
+        stmts.createSession.run(sessionId, INTAKE_AGENT_ID, sessionName, engine, model, 1, 0, 1);
 
         const taskId = uuidv4();
         stmts.insertBackgroundTask.run(taskId, sessionId, INTAKE_AGENT_ID, prompt);

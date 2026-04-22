@@ -715,6 +715,7 @@ export async function handleHandoff(
       model,
       1, // use_worktree — default to isolated
       0, // ask_mode — default off
+      1,
     );
     stmts.setHandoffToSession.run(toSessionId, handoffId);
     // Mark delivered BEFORE triggering the first chat turn so that the

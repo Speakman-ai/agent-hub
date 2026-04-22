@@ -17,6 +17,7 @@ Back to [SKILL.md](../SKILL.md).
   - [What changes in ask mode](#what-changes-in-ask-mode)
   - [Detecting ask_mode from inside a session](#detecting-ask_mode-from-inside-a-session)
   - [Flipping ask mode programmatically](#flipping-ask-mode-programmatically)
+- [ReAct loop — host-mediated skill/wiki/web actions](#react-loop--host-mediated-skillwikiweb-actions)
 - [Delegation to sub-agents](#delegation-to-sub-agents)
   - [`<delegate>` — parallel one-shot sub-agents](#delegate--parallel-one-shot-sub-agents)
   - [`<handoff>` — ownership transfer to one specialist](#handoff--ownership-transfer-to-one-specialist)
@@ -33,7 +34,8 @@ scripts/sessions.sh messages <sessionId>     # full message history
 ## Session row
 
 Notable columns: `id`, `agent_id`, `engine` (`claude-code` | `cursor-agent` | `gemini-cli` | `codex-cli`), `model`,
-`ask_mode` (0/1 — see below), `created_at`, `updated_at`, `title`,
+`ask_mode` (0/1 — see below), `react_loop_enabled` (0/1 — see
+[ReAct loop](#react-loop--host-mediated-skillwikiweb-actions)), `created_at`, `updated_at`, `title`,
 `last_message_at`.
 
 ## Message row
@@ -82,6 +84,37 @@ contract of the in-flight session:
 scripts/sessions.sh ask-mode <sessionId> true    # enter plan mode
 scripts/sessions.sh ask-mode <sessionId> false   # resume normal permissions
 ```
+
+## ReAct loop — host-mediated skill/wiki/web actions
+
+Sessions also carry a `react_loop_enabled` flag (`sessions.react_loop_enabled`
+column, default `1`, toggled via `PUT /api/sessions/:id/react-loop` with
+`{enabled: boolean}`). When enabled, the host parses a terminal
+`<agenthub:react>` block from the assistant's last turn and executes the
+listed actions (`wiki` hybrid retrieval, `skill` loading, `web` search via
+Serper) before optionally **auto-continuing** the same turn with the new
+context appended to `pending_skill_context`.
+
+Auto-continuation is bounded by three budgets so a runaway agent can't
+consume the session:
+
+- `MAX_AUTO_CONTINUATION_DEPTH` — hard cap on how many synthetic
+  continuation turns we'll string together (prevents infinite tool →
+  continue → tool loops).
+- `AUTO_CONTINUATION_MAX_RETRIES` — when a continuation is scheduled but
+  the session still has an active task or in-flight delegation round, the
+  handler reschedules itself up to this many times (500ms each) before
+  dropping the continuation. The pure planner `planAutoContinuationRetry`
+  in `server/chat.ts` encodes this decision so the cap is covered by unit
+  tests rather than wall-clock `setTimeout` behavior.
+- `MAX_REACT_ACTIONS_PER_TURN` — ReAct blocks with too many actions are
+  rejected at parse time; even if one slips through, the executor slices
+  the action list to this bound.
+
+When `react_loop_enabled=0` the host falls back to the legacy
+`<agenthub:skill>` and `<agenthub:wiki>` single-action paths and never
+auto-continues. Per-session web-search and wiki-hybrid-RAG budgets are
+enforced independently of this flag.
 
 ## Delegation to sub-agents
 

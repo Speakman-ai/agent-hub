@@ -500,6 +500,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
           'claude-opus-4-7',
           0,
           0,
+          1,
         );
         stmts.updateSessionCronId.run(cronJob.id, sessionId);
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;

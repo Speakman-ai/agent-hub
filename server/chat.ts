@@ -25,6 +25,7 @@ import {
   detectSkillBlock as detectSkillInvokeBlock,
   handleSkillInvoke,
   loadSkillByName,
+  parseSkillBlock,
 } from './skill-invoke.js';
 import { routeSkillFromMessage } from './skill-router.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
@@ -32,7 +33,18 @@ import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
 import { allAgents } from './project-model.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
-import { runWikiHybridRagForUserTurn } from './wiki-rag.js';
+import {
+  detectWikiRequestBlock,
+  parseWikiRequestBlock,
+  runWikiHybridRagForAssistantRequest,
+  runWikiHybridRagForUserTurn,
+  MAX_WIKI_RAG_CALLS_PER_SESSION,
+  MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES,
+  effectiveWikiHybridRagUsedCount,
+  nextWikiHybridRagRowAfterIncrement,
+} from './wiki-rag.js';
+import { runWebSearchForQuery, MAX_WEB_SEARCH_CALLS_PER_SESSION } from './web-search.js';
+import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import {
   applyAssistantTextChunkForDelegationKickoff,
   planDelegationRoundOnProcClose,
@@ -103,6 +115,10 @@ interface BuildEnrichedPromptOptions {
 interface InternalChatMessage extends ChatMessage {
   interrupt?: boolean;
   hookSpecificOutput?: { sessionTitle?: string; [key: string]: unknown };
+  _autoContinuation?: boolean;
+  _continuationDepth?: number;
+  /** Retries when a continuation hits a transient active-task collision. */
+  _continuationRetry?: number;
 }
 
 interface ProjectWithCommands extends Project {
@@ -185,6 +201,84 @@ export interface ChatHandlerResult {
 
 /** Minimal socket shape used by chat handlers (matches `ws` from the `ws` package). */
 export type WebSocketLike = { send: (data: string) => void };
+
+const MAX_PENDING_CONTEXT_BYTES = 128 * 1024;
+const MAX_AUTO_CONTINUATION_DEPTH = 4;
+const MAX_REACT_ACTIONS_PER_TURN = 6;
+
+/**
+ * Max times an auto-continuation turn will reschedule itself when the
+ * session already has an active task or an in-flight delegation round.
+ * Pure constant so callers (and tests) can reason about the cap
+ * independently of the `setTimeout`-based scheduler.
+ */
+export const AUTO_CONTINUATION_MAX_RETRIES = 12;
+
+/**
+ * Decision returned by {@link planAutoContinuationRetry} describing whether
+ * a blocked auto-continuation turn should be rescheduled (`retry`) or
+ * silently dropped (`drop`) once the retry budget is exhausted.
+ */
+export type AutoContinuationRetryPlan =
+  | { action: 'retry'; nextRetry: number }
+  | { action: 'drop'; reason: 'retries-exhausted' };
+
+/**
+ * Pure planner for the auto-continuation retry loop. Given the current
+ * retry count, decide whether we should schedule another attempt or give
+ * up. Kept as a small exported helper so the "12-retry cap" semantics are
+ * unit-testable without spinning up a real chat session.
+ */
+export function planAutoContinuationRetry(opts: {
+  retries: number;
+  maxRetries?: number;
+}): AutoContinuationRetryPlan {
+  const max = opts.maxRetries ?? AUTO_CONTINUATION_MAX_RETRIES;
+  const retries = Number.isFinite(opts.retries) && opts.retries >= 0 ? opts.retries : 0;
+  if (retries < max) {
+    return { action: 'retry', nextRetry: retries + 1 };
+  }
+  return { action: 'drop', reason: 'retries-exhausted' };
+}
+
+const AUTO_CONTINUATION_PROMPT =
+  'Continue your previous answer using the newly loaded skill/wiki/web context from this same turn. ' +
+  'Use a think -> act -> observe loop when needed. ' +
+  'When you need tools, emit <agenthub:react>{"actions":[...]}</agenthub:react> with wiki, skill, and/or web actions. ' +
+  'Answer the original user request directly when done.';
+
+/** One-time DB align for legacy hybrid RAG gate rows (`budget_version` 0 + `consumed` ≥ 1). */
+function persistLegacyWikiHybridGateIfNeeded(session: SessionRow, sessionId: string): void {
+  const bv = session.wiki_hybrid_rag_budget_version ?? 0;
+  const c = session.wiki_hybrid_rag_consumed ?? 0;
+  if (bv === 0 && c >= 1) {
+    try {
+      stmts.updateSessionWikiHybridRagBudget.run(MAX_WIKI_RAG_CALLS_PER_SESSION, 1, sessionId);
+      session.wiki_hybrid_rag_consumed = MAX_WIKI_RAG_CALLS_PER_SESSION;
+      session.wiki_hybrid_rag_budget_version = 1;
+    } catch (err: unknown) {
+      const m = err instanceof Error ? err.message : String(err);
+      console.error(`[wiki-rag] failed to migrate legacy hybrid RAG gate: ${m}`);
+    }
+  }
+}
+
+type ReActTool = 'wiki' | 'skill' | 'web';
+
+interface ReActAction {
+  tool: ReActTool;
+  query?: string;
+  name?: string;
+}
+
+interface ParsedReAct {
+  actions: ReActAction[];
+}
+
+interface ParsedReActMalformed {
+  error: 'malformed';
+  detail: string;
+}
 
 // ─── Project agent roster (same project) ───────────────────────────
 
@@ -333,6 +427,21 @@ ${skillsList.join('\n')}`;
   }
 
   const isFirstMessage = options.isFirstMessage !== false; // default true for backward compat
+
+  if (isFirstMessage) {
+    prompt += `\n\n## ReAct Loop
+When you need extra context mid-answer, use a host-mediated ReAct action block:
+\`\`\`
+<agenthub:react>
+{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."}]}
+</agenthub:react>
+\`\`\`
+Supported tools:
+- \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
+- \`skill\` — load a registered Agent Hub skill (field: \`name\`).
+- \`web\` — live web search via Serper (field: \`query\`). Only works when the server has \`SERPER_API_KEY\` or \`WEB_SEARCH_API_KEY\` set; otherwise the host returns a clear configuration error.
+The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
+  }
 
   {
     if (projectId) {
@@ -579,6 +688,130 @@ export function consumePendingSkillInjection(
   }
 }
 
+export function stripAssistantControlBlocks(text: string): string {
+  if (typeof text !== 'string' || !text) return text;
+  return text
+    .replace(/<agenthub:react>\s*[\s\S]*?\s*<\/agenthub:react>/gi, '')
+    .replace(/<agenthub:skill>\s*[\s\S]*?\s*<\/agenthub:skill>/gi, '')
+    .replace(/<agenthub:wiki>\s*[\s\S]*?\s*<\/agenthub:wiki>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+export function detectReActBlock(text: string): string | null {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  const re = /<agenthub:react>\s*[\s\S]*?\s*<\/agenthub:react>/gi;
+  let match: RegExpExecArray | null;
+  let last: string | null = null;
+  while ((match = re.exec(text)) !== null) {
+    last = match[0];
+  }
+  return last;
+}
+
+export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { error: 'malformed', detail: 'Empty react block payload' };
+  }
+  const tagMatch = raw.match(/<agenthub:react>\s*([\s\S]*?)\s*<\/agenthub:react>/i);
+  const payload = (tagMatch ? tagMatch[1] : raw).trim();
+  if (Buffer.byteLength(payload, 'utf-8') > MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES) {
+    return {
+      error: 'malformed',
+      detail: `ReAct block JSON exceeds ${MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES} byte cap`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch (err) {
+    return { error: 'malformed', detail: `Invalid JSON: ${(err as Error).message}` };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { error: 'malformed', detail: 'ReAct block payload must be a JSON object' };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (!Array.isArray(obj.actions)) {
+    return { error: 'malformed', detail: 'Missing required array field: actions' };
+  }
+  if (obj.actions.length > MAX_REACT_ACTIONS_PER_TURN) {
+    return {
+      error: 'malformed',
+      detail: `actions array exceeds maximum of ${MAX_REACT_ACTIONS_PER_TURN} entries`,
+    };
+  }
+  const actions: ReActAction[] = [];
+  for (const item of obj.actions) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return { error: 'malformed', detail: 'Each action must be an object' };
+    }
+    const a = item as Record<string, unknown>;
+    if (a.tool === 'wiki') {
+      const query = typeof a.query === 'string' ? a.query.trim() : '';
+      if (!query) return { error: 'malformed', detail: 'wiki action requires non-empty query' };
+      actions.push({ tool: 'wiki', query });
+      continue;
+    }
+    if (a.tool === 'skill') {
+      const name = typeof a.name === 'string' ? a.name.trim() : '';
+      if (!name) return { error: 'malformed', detail: 'skill action requires non-empty name' };
+      actions.push({ tool: 'skill', name });
+      continue;
+    }
+    if (a.tool === 'web') {
+      const query = typeof a.query === 'string' ? a.query.trim() : '';
+      if (!query) return { error: 'malformed', detail: 'web action requires non-empty query' };
+      actions.push({ tool: 'web', query });
+      continue;
+    }
+    return {
+      error: 'malformed',
+      detail: 'Unsupported action.tool; expected "wiki", "skill", or "web"',
+    };
+  }
+  return { actions };
+}
+
+export { clipUtf8StringToMaxBytes };
+
+/** Last `maxSuffixBytes` UTF-8 bytes of `s`, aligned to a character boundary. */
+export function utf8SuffixMaxBytes(s: string, maxSuffixBytes: number): string {
+  const buf = Buffer.from(s, 'utf-8');
+  if (buf.length <= maxSuffixBytes) return s;
+  let start = buf.length - maxSuffixBytes;
+  while (start < buf.length && start > 0 && (buf[start] & 0xc0) === 0x80) {
+    start += 1;
+  }
+  return buf.subarray(start).toString('utf-8');
+}
+
+export function mergePendingContextWithCap(
+  existingRaw: string,
+  additionRaw: string,
+  maxBytes = MAX_PENDING_CONTEXT_BYTES,
+): string {
+  const existing = existingRaw.trim();
+  const addition = additionRaw.trim();
+  if (!addition) return existing;
+  const combined = existing ? `${existing}\n\n${addition}` : addition;
+  if (Buffer.byteLength(combined, 'utf-8') <= maxBytes) return combined;
+
+  const truncatedMarker = '\n\n[Truncated: pending context byte cap reached]';
+  const markerBytes = Buffer.byteLength(truncatedMarker, 'utf-8');
+  const maxBodyBytes = Math.max(0, maxBytes - markerBytes);
+
+  const additionBytes = Buffer.byteLength(addition, 'utf-8');
+  if (additionBytes >= maxBodyBytes) {
+    const clipped = clipUtf8StringToMaxBytes(addition, maxBodyBytes);
+    return `${clipped}${truncatedMarker}`.trim();
+  }
+
+  const remainingForExisting = maxBodyBytes - additionBytes - Buffer.byteLength('\n\n', 'utf-8');
+  const existingTail = utf8SuffixMaxBytes(existing, Math.max(0, remainingForExisting)).trim();
+  const body = existingTail ? `${existingTail}\n\n${addition}` : addition;
+  return `${body}${truncatedMarker}`.trim();
+}
+
 // ─── createChatHandler (factory) ───────────────────────────────────
 
 export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerResult {
@@ -646,6 +879,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
   async function handleChat(ws: WebSocketLike | null, msg: InternalChatMessage): Promise<void> {
     const { agentId, sessionId, content, images, hookSpecificOutput } = msg;
+    const isAutoContinuation = msg._autoContinuation === true;
+    const continuationDepth = msg._continuationDepth || 0;
     const attachments: string | null = images && images.length > 0 ? JSON.stringify(images) : null;
 
     const found = findAgent(agentId);
@@ -683,6 +918,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           intakeModel,
           1,
           0,
+          1,
         );
         const taskId = uuidv4();
         stmts.insertBackgroundTask.run(taskId, intakeSessionId, intakeTarget.id, content);
@@ -763,14 +999,40 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         (agent as AgentWithModel).model || defaultModelForEngine(initialEngine),
         1,
         0,
+        1,
       );
       session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    }
+
+    if (session) {
+      persistLegacyWikiHybridGateIfNeeded(session, sessionId);
     }
 
     const existingTask = stmts.getActiveTask.get(sessionId) as ActiveTaskRow | undefined;
     const isDelegating = activeDelegationSessions.has(sessionId);
 
     if ((existingTask || isDelegating) && !msg._fromQueue) {
+      if (isAutoContinuation) {
+        const retries = msg._continuationRetry ?? 0;
+        const plan = planAutoContinuationRetry({ retries });
+        if (plan.action === 'retry') {
+          console.warn(
+            `[auto-continuation] session ${sessionId}: active task or delegation present; ` +
+              `scheduling retry ${plan.nextRetry}/${AUTO_CONTINUATION_MAX_RETRIES}`,
+          );
+          setTimeout(() => {
+            void handleChat(null, {
+              ...msg,
+              _continuationRetry: plan.nextRetry,
+            } as InternalChatMessage);
+          }, 500);
+        } else {
+          console.error(
+            `[auto-continuation] session ${sessionId}: exhausted ${AUTO_CONTINUATION_MAX_RETRIES} retries; dropping continuation.`,
+          );
+        }
+        return;
+      }
       const isInterrupt = msg.interrupt === true;
 
       if (!isInterrupt) {
@@ -844,11 +1106,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       return;
     }
 
-    let userMsgId: string;
+    let userMsgId: string | null = null;
     if (msg._fromQueue) {
       userMsgId = msg._existingMsgId!;
       broadcast({ type: 'queue_item_processing', sessionId, messageId: userMsgId });
-    } else {
+    } else if (!isAutoContinuation) {
       userMsgId = uuidv4();
       stmts.addMessage.run(userMsgId, sessionId, 'user', content, null, null, attachments, null);
       stmts.touchSession.run(sessionId);
@@ -866,8 +1128,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       });
     }
 
-    const priorMessages = (stmts.getMessages.all(sessionId) as MessageRow[]).filter(
-      (m) => m.id !== userMsgId,
+    const priorMessages = (stmts.getMessages.all(sessionId) as MessageRow[]).filter((m) =>
+      userMsgId ? m.id !== userMsgId : true,
     );
     const isFirstMessage = priorMessages.length === 0;
 
@@ -875,7 +1137,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const model: string = session!.model || DEFAULT_MODEL;
     const paths = resolveProjectPaths(project as Project, agent as Agent);
     let routedSkillSuffix = '';
-    if (!slashResult) {
+    if (!slashResult && !isAutoContinuation) {
       const availableSkills = listEnabledSkills(agent.id, paths.skillsDir);
       const routed = routeSkillFromMessage({
         message: content,
@@ -918,9 +1180,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       (project as ProjectWithCommands & { id?: string }).id ||
       (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
       '';
-    if (projectId) {
+    if (projectId && !isAutoContinuation) {
       const wikiRag = await runWikiHybridRagForUserTurn(projectId, content, {
-        wikiHybridRagConsumed: session!.wiki_hybrid_rag_consumed,
+        wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
+          session!.wiki_hybrid_rag_consumed,
+          session!.wiki_hybrid_rag_budget_version,
+          MAX_WIKI_RAG_CALLS_PER_SESSION,
+        ),
+        maxCallsPerSession: MAX_WIKI_RAG_CALLS_PER_SESSION,
         slashSkillActive: !!slashResult,
       });
       if (wikiRag.promptSuffix) {
@@ -929,9 +1196,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (wikiRag.logWarning) {
         console.warn(`[wiki-rag] retrieval failed for session ${sessionId}: ${wikiRag.logWarning}`);
       }
-      if (wikiRag.shouldMarkWikiHybridRagConsumed) {
+      if (wikiRag.shouldIncrementWikiHybridRagUsage) {
         try {
-          stmts.updateSessionWikiHybridRagConsumed.run(1, sessionId);
+          const next = nextWikiHybridRagRowAfterIncrement(
+            session!.wiki_hybrid_rag_consumed,
+            session!.wiki_hybrid_rag_budget_version,
+            MAX_WIKI_RAG_CALLS_PER_SESSION,
+          );
+          stmts.updateSessionWikiHybridRagBudget.run(next.consumed, next.budgetVersion, sessionId);
+          session!.wiki_hybrid_rag_consumed = next.consumed;
+          session!.wiki_hybrid_rag_budget_version = next.budgetVersion;
         } catch (err: unknown) {
           const m = err instanceof Error ? err.message : String(err);
           console.error(`[wiki-rag] failed to persist consumption flag: ${m}`);
@@ -955,6 +1229,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         (project as ProjectWithCommands).commands?.install || null,
       );
       session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (session) {
+        persistLegacyWikiHybridGateIfNeeded(session, sessionId);
+      }
 
       if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
         console.log(
@@ -1170,7 +1447,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const parser = createStreamParser(engine);
     let finalText = '';
     let partialFallback = '';
-    let toolResultOutputs = '';
     let seq = 0;
     let errorOutput = '';
     // Accumulates error payloads that arrive on *stdout* (as JSONL for Codex /
@@ -1347,10 +1623,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           turnIndex: event.turnIndex,
           messageId: assistantMsgId,
         });
-      }
-
-      if (event.type === 'tool_result' && event.output) {
-        toolResultOutputs += '\n' + event.output;
       }
 
       // Capture upstream engine errors that arrive on stdout so the close
@@ -1561,7 +1833,288 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         return;
       }
 
-      const finalContent = assembled || errorOutput.trim() || '(empty response)';
+      const rawFinalContent = assembled || errorOutput.trim() || '(empty response)';
+      let finalContent = rawFinalContent;
+      const closeTask = parseCloseCardBlock(rawFinalContent);
+      const handoffDetection = enrichedAgent ? detectHandoffBlock(rawFinalContent) : null;
+      const delegateTasks =
+        agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0
+          ? parseDelegateBlock(rawFinalContent)
+          : null;
+      let shouldAutoContinue = false;
+      let continuationContextAdded = false;
+      let assistantContextToAppend = '';
+      const reactObservations: string[] = [];
+      const reactLoopEnabled = (session!.react_loop_enabled ?? 1) !== 0;
+
+      try {
+        const actions: ReActAction[] = [];
+        if (!reactLoopEnabled) {
+          const rawSkillBlock = detectSkillInvokeBlock(rawFinalContent);
+          if (rawSkillBlock) {
+            const injection = handleSkillInvoke({
+              rawBlock: rawSkillBlock,
+              paths: { skillsDir: paths.skillsDir },
+              sessionId,
+              stmts: stmts as Stmts,
+              broadcast,
+            });
+            if (injection.trim()) {
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${injection}`
+                : injection;
+              reactObservations.push('- Loaded skill context (legacy skill block).');
+            }
+          }
+          // Standalone <agenthub:wiki> (no <agenthub:react>): must run the same
+          // hybrid RAG path as the react-on / no-react-block branch, via `actions`
+          // + the shared executor loop below.
+          const rawWikiBlockLegacy = detectWikiRequestBlock(rawFinalContent);
+          if (rawWikiBlockLegacy) {
+            const parsedWiki = parseWikiRequestBlock(rawWikiBlockLegacy);
+            if ('error' in parsedWiki) {
+              reactObservations.push(`- Legacy wiki block malformed: ${parsedWiki.detail}`);
+            } else {
+              actions.push({ tool: 'wiki', query: parsedWiki.query });
+            }
+          }
+        } else {
+          const rawReactBlock = detectReActBlock(rawFinalContent);
+          if (rawReactBlock) {
+            const parsedReact = parseReActBlock(rawReactBlock);
+            if ('error' in parsedReact) {
+              reactObservations.push(`- ReAct block malformed: ${parsedReact.detail}`);
+            } else {
+              actions.push(...parsedReact.actions);
+              // Same assistant message may also include legacy blocks; merge so
+              // they are not dropped when a ReAct block is present.
+              const legacySkillRaw = detectSkillInvokeBlock(rawFinalContent);
+              if (legacySkillRaw) {
+                const pst = parseSkillBlock(legacySkillRaw);
+                if ('error' in pst) {
+                  reactObservations.push(`- Legacy <agenthub:skill> malformed: ${pst.detail}`);
+                } else {
+                  const dup = actions.some((a) => a.tool === 'skill' && a.name === pst.name);
+                  if (dup) {
+                    reactObservations.push(
+                      `- Legacy <agenthub:skill> skipped (same skill already in the merged action list).`,
+                    );
+                  } else {
+                    actions.push({ tool: 'skill', name: pst.name });
+                    reactObservations.push(
+                      `- Legacy <agenthub:skill> merged into ReAct queue as skill("${pst.name}").`,
+                    );
+                  }
+                }
+              }
+              const legacyWikiRaw = detectWikiRequestBlock(rawFinalContent);
+              if (legacyWikiRaw) {
+                const pWiki = parseWikiRequestBlock(legacyWikiRaw);
+                if ('error' in pWiki) {
+                  reactObservations.push(`- Legacy <agenthub:wiki> malformed: ${pWiki.detail}`);
+                } else {
+                  const dup = actions.some((a) => a.tool === 'wiki' && a.query === pWiki.query);
+                  if (dup) {
+                    reactObservations.push(
+                      `- Legacy <agenthub:wiki> skipped (same query already in the merged action list).`,
+                    );
+                  } else {
+                    actions.push({ tool: 'wiki', query: pWiki.query });
+                    reactObservations.push(`- Legacy <agenthub:wiki> merged into ReAct queue.`);
+                  }
+                }
+              }
+            }
+          } else {
+            const rawSkillBlock = detectSkillInvokeBlock(rawFinalContent);
+            if (rawSkillBlock) {
+              const injection = handleSkillInvoke({
+                rawBlock: rawSkillBlock,
+                paths: { skillsDir: paths.skillsDir },
+                sessionId,
+                stmts: stmts as Stmts,
+                broadcast,
+              });
+              if (injection.trim()) {
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${injection}`
+                  : injection;
+                reactObservations.push('- Loaded skill context (legacy skill block).');
+              }
+            }
+
+            const rawWikiBlock = detectWikiRequestBlock(rawFinalContent);
+            if (rawWikiBlock) {
+              const parsedWiki = parseWikiRequestBlock(rawWikiBlock);
+              if ('error' in parsedWiki) {
+                reactObservations.push(`- Legacy wiki block malformed: ${parsedWiki.detail}`);
+              } else {
+                actions.push({ tool: 'wiki', query: parsedWiki.query });
+              }
+            }
+          }
+        }
+
+        if (actions.length > MAX_REACT_ACTIONS_PER_TURN) {
+          reactObservations.push(
+            `- Action list exceeded ${MAX_REACT_ACTIONS_PER_TURN}; truncated to budget.`,
+          );
+        }
+        const boundedActions = actions.slice(0, MAX_REACT_ACTIONS_PER_TURN);
+        for (const action of boundedActions) {
+          if (action.tool === 'skill') {
+            const injection = loadSkillByName({
+              name: action.name!,
+              reason: 'react-loop',
+              paths: { skillsDir: paths.skillsDir },
+              sessionId,
+              stmts: stmts as Stmts,
+              broadcast,
+            });
+            if (injection.trim()) {
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${injection}`
+                : injection;
+              reactObservations.push(`- skill("${action.name}") loaded.`);
+            }
+            continue;
+          }
+
+          if (action.tool === 'web') {
+            const webUsed = session!.web_search_calls_used || 0;
+            if (webUsed >= MAX_WEB_SEARCH_CALLS_PER_SESSION) {
+              const err = `## Web Search Error\nSession web search budget exhausted (${webUsed}/${MAX_WEB_SEARCH_CALLS_PER_SESSION}).`;
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${err}`
+                : err;
+              reactObservations.push(
+                `- web("${action.query}") skipped: session web search budget exhausted.`,
+              );
+              continue;
+            }
+            const webRes = await runWebSearchForQuery(action.query!);
+            if (webRes.markdown.trim()) {
+              const injection = webRes.markdown.trim();
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${injection}`
+                : injection;
+              reactObservations.push(`- web("${action.query}") returned results.`);
+            }
+            if (webRes.errorMarkdown?.trim()) {
+              const err = webRes.errorMarkdown.trim();
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${err}`
+                : err;
+              reactObservations.push(
+                `- web("${action.query}") reported an error or misconfiguration.`,
+              );
+            }
+            if (webRes.consumedCall) {
+              try {
+                const nextWeb = webUsed + 1;
+                stmts.updateSessionWebSearchCallsUsed.run(nextWeb, sessionId);
+                session!.web_search_calls_used = nextWeb;
+              } catch (err: unknown) {
+                const m = err instanceof Error ? err.message : String(err);
+                console.error(`[web-search] failed to persist web_search_calls_used: ${m}`);
+              }
+            }
+            continue;
+          }
+
+          if (action.tool === 'wiki') {
+            if (!projectId) {
+              reactObservations.push('- wiki action skipped: missing project id.');
+              continue;
+            }
+            const rawWikiBlock =
+              action.query && action.query.startsWith('<agenthub:wiki>')
+                ? action.query
+                : `<agenthub:wiki>${JSON.stringify({ query: action.query || '' })}</agenthub:wiki>`;
+            const wikiRequest = await runWikiHybridRagForAssistantRequest(projectId, rawWikiBlock, {
+              wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
+                session!.wiki_hybrid_rag_consumed,
+                session!.wiki_hybrid_rag_budget_version,
+                MAX_WIKI_RAG_CALLS_PER_SESSION,
+              ),
+              maxCallsPerSession: MAX_WIKI_RAG_CALLS_PER_SESSION,
+            });
+            if (wikiRequest.promptSuffix.trim()) {
+              const injection = wikiRequest.promptSuffix.trim();
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${injection}`
+                : injection;
+              reactObservations.push(`- wiki("${action.query || ''}") returned context.`);
+            }
+            if (wikiRequest.errorSuffix.trim()) {
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${wikiRequest.errorSuffix.trim()}`
+                : wikiRequest.errorSuffix.trim();
+              reactObservations.push(`- wiki("${action.query || ''}") returned error.`);
+            }
+            if (wikiRequest.shouldIncrementWikiHybridRagUsage) {
+              try {
+                const next = nextWikiHybridRagRowAfterIncrement(
+                  session!.wiki_hybrid_rag_consumed,
+                  session!.wiki_hybrid_rag_budget_version,
+                  MAX_WIKI_RAG_CALLS_PER_SESSION,
+                );
+                stmts.updateSessionWikiHybridRagBudget.run(
+                  next.consumed,
+                  next.budgetVersion,
+                  sessionId,
+                );
+                session!.wiki_hybrid_rag_consumed = next.consumed;
+                session!.wiki_hybrid_rag_budget_version = next.budgetVersion;
+              } catch (err: unknown) {
+                const m = err instanceof Error ? err.message : String(err);
+                console.error(`[wiki-rag] failed to persist assistant usage count: ${m}`);
+              }
+            }
+            if (wikiRequest.logWarning) {
+              console.warn(
+                `[wiki-rag] assistant retrieval failed for session ${sessionId}: ${wikiRequest.logWarning}`,
+              );
+            }
+            continue;
+          }
+        }
+
+        if (reactObservations.length > 0) {
+          const observationBlock = `## ReAct Observation\n${reactObservations.join('\n')}`;
+          assistantContextToAppend = assistantContextToAppend
+            ? `${assistantContextToAppend}\n\n${observationBlock}`
+            : observationBlock;
+        }
+
+        if (assistantContextToAppend.trim()) {
+          const latest = stmts.getSession.get(sessionId) as SessionRow | undefined;
+          const existing = latest?.pending_skill_context?.trim() || '';
+          const merged = mergePendingContextWithCap(existing, assistantContextToAppend);
+          stmts.updateSessionPendingSkillContext.run(merged || null, sessionId);
+          continuationContextAdded = !!merged;
+        }
+      } catch (err) {
+        console.error('[assistant-context] Unexpected error:', (err as Error).message);
+      }
+
+      finalContent = stripAssistantControlBlocks(finalContent);
+      if (!finalContent.trim()) {
+        finalContent = continuationContextAdded
+          ? 'Loaded requested context for continuation.'
+          : '(empty response)';
+      }
+
+      const controlFlowPresent =
+        !!closeTask || !!handoffDetection?.present || !!handoffDetection?.task || !!delegateTasks;
+      if (
+        reactLoopEnabled &&
+        continuationContextAdded &&
+        !controlFlowPresent &&
+        continuationDepth < MAX_AUTO_CONTINUATION_DEPTH
+      ) {
+        shouldAutoContinue = true;
+      }
 
       try {
         S.addMessage.run(
@@ -1671,7 +2224,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       } catch {}
 
-      if (project.ahw) {
+      if (project.ahw && !isAutoContinuation) {
         const briefEntry = `**Chat** — User: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}\nAssistant: ${finalContent.substring(0, 200)}${finalContent.length > 200 ? '...' : ''}`;
         appendDailyNote(project.ahw, briefEntry);
 
@@ -1719,9 +2272,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // delegation. Runs before handoff/delegate because it's a pure
       // side-effect on the kanban board (the two flows are not mutually
       // exclusive, though in practice an agent emits one or the other).
-      try {
-        const closeTask = parseCloseCardBlock(finalContent);
-        if (closeTask) {
+      if (closeTask) {
+        try {
           const projectId =
             (project as Project & { id?: string }).id ||
             (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
@@ -1732,31 +2284,45 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             projectId,
             author: agent.id,
           });
+        } catch (err) {
+          console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
         }
-      } catch (err) {
-        console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
       }
 
-      // Skill gateway: detect a terminal <agenthub:skill> block, resolve the
-      // requested skill body, and stash the resulting injection string so the
-      // next user turn includes it in the system prompt.
-      try {
-        const rawSkillBlock = detectSkillInvokeBlock(finalContent);
-        if (rawSkillBlock) {
-          const injection = handleSkillInvoke({
-            rawBlock: rawSkillBlock,
-            paths: { skillsDir: paths.skillsDir },
-            sessionId,
-            stmts: stmts as Stmts,
-            broadcast,
-          });
-          const latest = stmts.getSession.get(sessionId) as SessionRow | undefined;
-          const existing = latest?.pending_skill_context?.trim() || '';
-          const nextContext = existing ? `${existing}\n\n${injection}` : injection;
-          stmts.updateSessionPendingSkillContext.run(nextContext, sessionId);
+      const runWorktreeAutoCommitAndDrainTail = async (): Promise<void> => {
+        const worktreeClaude = engine === 'claude-code' && effectiveCwd !== project.cwd;
+        if (worktreeClaude) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 1200));
         }
-      } catch (err) {
-        console.error('[skill-invoke] Unexpected error:', (err as Error).message);
+        await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent).catch(
+          (err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error('[auto-commit] Unexpected error:', message);
+          },
+        );
+        if (autonomousProjects.size > 0) {
+          setTimeout(() => tryAutonomousDispatch(), 2000);
+        }
+        drainQueue(sessionId);
+      };
+
+      if (shouldAutoContinue) {
+        await runWorktreeAutoCommitAndDrainTail();
+        setImmediate(() => {
+          handleChat(null, {
+            type: 'chat',
+            agentId,
+            sessionId,
+            content: AUTO_CONTINUATION_PROMPT,
+            _autoContinuation: true,
+            _continuationDepth: continuationDepth + 1,
+          } as InternalChatMessage).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error('[auto-continuation] Failed:', message);
+            drainQueue(sessionId);
+          });
+        });
+        return;
       }
 
       // Handoff takes precedence over delegate — if the agent emitted a
@@ -1764,13 +2330,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // not run the delegate/synthesize flow for this turn. Per design,
       // <handoff> is terminal: any prose after the closing tag is dropped.
       if (enrichedAgent) {
-        const detection = detectHandoffBlock(finalContent);
+        const detection = handoffDetection || detectHandoffBlock(rawFinalContent);
         if (detection.task) {
           if (delegationWorkPromise) {
             handleDelegationCancel(sessionId);
             delegationWorkPromise = null;
           }
-          if (handoffHasTrailingContent(finalContent)) {
+          if (handoffHasTrailingContent(rawFinalContent)) {
             console.warn(
               `[Handoff] Trailing content after </handoff> in session ${sessionId} — dropped (handoff is terminal).`,
             );
@@ -1817,14 +2383,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
 
       if (agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0) {
-        const delegateTasks = parseDelegateBlock(finalContent);
+        const parsedDelegateTasks = delegateTasks;
         const closePlan = planDelegationRoundOnProcClose({
-          delegateTasks,
+          delegateTasks: parsedDelegateTasks,
           hadEarlyDelegationPromise: delegationWorkPromise != null,
         });
         if (closePlan.mode === 'delegate') {
           if (closePlan.startIfNeeded) {
-            startDelegationOnce(delegateTasks!);
+            startDelegationOnce(parsedDelegateTasks!);
           }
 
           if (delegationWorkPromise) {
@@ -1864,22 +2430,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // from the HTTP stop hook immediately; if git still looked clean, the hook
       // path marked the session "handled" and proc skipped — no `changes_ready`
       // / Create PR banner even with Isolated ON.
-      const worktreeClaude = engine === 'claude-code' && effectiveCwd !== project.cwd;
-      if (worktreeClaude) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 1200));
-      }
-      await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent).catch(
-        (err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error('[auto-commit] Unexpected error:', message);
-        },
-      );
-
-      if (autonomousProjects.size > 0) {
-        setTimeout(() => tryAutonomousDispatch(), 2000);
-      }
-
-      drainQueue(sessionId);
+      await runWorktreeAutoCommitAndDrainTail();
     });
 
     proc.on('error', (err: Error) => {

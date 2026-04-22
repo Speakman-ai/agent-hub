@@ -294,6 +294,7 @@ describe('runAutonomousLoop — dispatch', () => {
       'claude-sonnet-4-6',
       1,
       0,
+      1,
     );
   });
 
@@ -327,6 +328,7 @@ describe('runAutonomousLoop — dispatch', () => {
       'mock-model',
       1,
       0,
+      1,
     );
   });
 });

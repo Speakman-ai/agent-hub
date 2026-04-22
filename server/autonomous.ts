@@ -279,7 +279,7 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
       } else {
         model = sessionModelForAutonomousDispatch(epic, agent, engineValidModels);
       }
-      d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, 1, 0);
+      d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, 1, 0, 1);
       {
         const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
         if (row) {

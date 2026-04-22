@@ -329,6 +329,11 @@ describe('Designs API — forward to agent context', () => {
 
     expect(forward.body.session).toBeTruthy();
     expect(forward.body.session.agent_id).toBe(target.id);
+    // Must stay in sync with stmts.createSession bindings (incl. wiki_hybrid_rag_budget_version)
+    expect(
+      (forward.body.session as { wiki_hybrid_rag_budget_version?: number })
+        .wiki_hybrid_rag_budget_version,
+    ).toBe(1);
     expect(forward.body.forwardedMessageId).toBeTruthy();
     expect(forward.body.included.messages).toBe(2);
     expect(forward.body.included.files).toBeGreaterThanOrEqual(1);

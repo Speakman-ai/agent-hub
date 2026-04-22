@@ -332,7 +332,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         if (!v.ok) return res.status(400).json({ error: v.error });
       }
       const resolvedModel = trimmedOverride ?? (agent.model || defaultModelForEngine(engine));
-      stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, 1, 0);
+      stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, 1, 0, 1);
 
       const board = stmts.getKanbanBoard.get(req.params.projectId) as KanbanBoardRow | undefined;
       let inProgressColumnId = card.column_id;

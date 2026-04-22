@@ -1,11 +1,51 @@
 import { searchWiki, type SearchResultRow } from './wiki-embeddings.js';
 
 const MAX_QUERY_CHARS = 600;
-const MAX_RESULTS = 4;
+const MAX_RESULTS = 6;
 const MAX_EXCERPT_CHARS = 420;
-const MAX_TOTAL_BLOCK_CHARS = 3200;
-/** Hybrid wiki search costs an embedding call — only use on eligible first turns. */
+const MAX_TOTAL_BLOCK_CHARS = 5000;
+/** Hybrid wiki search costs an embedding call — only use on eligible turns with budget left. */
 const MIN_QUERY_CHARS_FOR_FIRST_TURN_RAG = 12;
+export const MAX_WIKI_RAG_CALLS_PER_SESSION = 10;
+
+/**
+ * Max UTF-8 bytes for the JSON payload inside `<agenthub:wiki>` / `<agenthub:react>`
+ * before `JSON.parse` — avoids pathological model output tying up the event loop.
+ */
+export const MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES = 64 * 1024;
+
+/**
+ * Legacy sessions used `wiki_hybrid_rag_budget_version = 0` with `wiki_hybrid_rag_consumed`
+ * as a 0/1 gate (1 = hybrid already ran, no more). New sessions use `budget_version = 1` and
+ * a monotonic call counter. Map legacy "exhausted" to `maxCalls` so installs do not get
+ * extra hybrid retrievals after upgrade.
+ */
+export function effectiveWikiHybridRagUsedCount(
+  stored: number | null | undefined,
+  budgetVersion: number | null | undefined,
+  maxCalls: number,
+): number {
+  const raw = stored ?? 0;
+  const ver = budgetVersion ?? 0;
+  if (ver === 0) {
+    return raw >= 1 ? maxCalls : 0;
+  }
+  return Math.min(Math.max(0, raw), maxCalls);
+}
+
+/** DB row after one successful hybrid retrieval increment. */
+export function nextWikiHybridRagRowAfterIncrement(
+  stored: number | null | undefined,
+  budgetVersion: number | null | undefined,
+  maxCalls: number,
+): { consumed: number; budgetVersion: number } {
+  const s = stored ?? 0;
+  const bv = budgetVersion ?? 0;
+  if (bv === 0 && s === 0) {
+    return { consumed: 1, budgetVersion: 1 };
+  }
+  return { consumed: Math.min(s + 1, maxCalls), budgetVersion: 1 };
+}
 
 function cleanText(input: string): string {
   return input
@@ -28,6 +68,60 @@ function toExcerpt(row: SearchResultRow): string {
 
 export function normalizeRagQuery(raw: string): string {
   return clip(cleanText(raw || ''), MAX_QUERY_CHARS);
+}
+
+export interface AssistantWikiRequest {
+  query: string;
+}
+
+export interface AssistantWikiRequestMalformed {
+  error: 'malformed';
+  detail: string;
+}
+
+export function detectWikiRequestBlock(text: string): string | null {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  const re = /<agenthub:wiki>\s*[\s\S]*?\s*<\/agenthub:wiki>/gi;
+  let match: RegExpExecArray | null;
+  let last: string | null = null;
+  while ((match = re.exec(text)) !== null) {
+    last = match[0];
+  }
+  return last;
+}
+
+export function parseWikiRequestBlock(
+  raw: string,
+): AssistantWikiRequest | AssistantWikiRequestMalformed {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return { error: 'malformed', detail: 'Empty wiki block payload' };
+  }
+  const tagMatch = raw.match(/<agenthub:wiki>\s*([\s\S]*?)\s*<\/agenthub:wiki>/i);
+  const payload = (tagMatch ? tagMatch[1] : raw).trim();
+  if (Buffer.byteLength(payload, 'utf-8') > MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES) {
+    return {
+      error: 'malformed',
+      detail: `Wiki block JSON exceeds ${MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES} byte cap`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch (err) {
+    return { error: 'malformed', detail: `Invalid JSON: ${(err as Error).message}` };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { error: 'malformed', detail: 'Wiki block payload must be a JSON object' };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.query !== 'string') {
+    return { error: 'malformed', detail: 'Missing required string field: query' };
+  }
+  const query = normalizeRagQuery(obj.query);
+  if (!query) {
+    return { error: 'malformed', detail: 'Field "query" cannot be empty' };
+  }
+  return { query };
 }
 
 export function formatWikiRagContext(query: string, rows: SearchResultRow[]): string {
@@ -60,6 +154,14 @@ export async function buildWikiRagContext(projectId: string, userMessage: string
   const query = normalizeRagQuery(userMessage);
   if (!projectId || !query) return '';
 
+  return buildWikiRagContextFromQuery(projectId, query);
+}
+
+export async function buildWikiRagContextFromQuery(
+  projectId: string,
+  query: string,
+): Promise<string> {
+  if (!projectId || !query) return '';
   const rows = await searchWiki(projectId, query, {
     mode: 'hybrid',
     limit: MAX_RESULTS,
@@ -69,16 +171,23 @@ export async function buildWikiRagContext(projectId: string, userMessage: string
 
 /**
  * Whether to run hybrid wiki retrieval for this turn. Limits embedding/API use
- * to at most one hybrid pass per session (see `wiki_hybrid_rag_consumed`), and
+ * to a bounded number of passes per session (see `wiki_hybrid_rag_consumed`), and
  * skips slash-skill turns.
  */
 export function shouldAttachWikiRag(input: {
-  /** False once this session has completed a hybrid wiki retrieval (or no budget left). */
-  hybridRagNotYetConsumed: boolean;
+  /** Number of completed hybrid retrieval calls in this session. */
+  wikiHybridRagUsedCount: number;
+  /** Maximum hybrid retrieval calls allowed for this session. */
+  maxCallsPerSession?: number;
   userMessage: string;
   slashSkillActive: boolean;
 }): boolean {
-  if (!input.hybridRagNotYetConsumed || input.slashSkillActive) return false;
+  const used = Number.isFinite(input.wikiHybridRagUsedCount) ? input.wikiHybridRagUsedCount : 0;
+  const maxCalls =
+    input.maxCallsPerSession && input.maxCallsPerSession > 0
+      ? input.maxCallsPerSession
+      : MAX_WIKI_RAG_CALLS_PER_SESSION;
+  if (used >= maxCalls || input.slashSkillActive) return false;
   const q = normalizeRagQuery(input.userMessage);
   return q.length >= MIN_QUERY_CHARS_FOR_FIRST_TURN_RAG;
 }
@@ -87,11 +196,11 @@ export interface WikiHybridRagUserTurnResult {
   /** Suffix to append to the system prompt (empty when skipped or no block). */
   promptSuffix: string;
   /**
-   * When true, persist `wiki_hybrid_rag_consumed = 1` for the session. Set
+   * When true, increment `wiki_hybrid_rag_consumed` for the session. Set
    * after `buildWikiRagContext` resolves (including empty result). Not set on
    * throw so a later turn can retry after transient failures.
    */
-  shouldMarkWikiHybridRagConsumed: boolean;
+  shouldIncrementWikiHybridRagUsage: boolean;
   /** Non-null when retrieval threw; caller should log. */
   logWarning: string | null;
 }
@@ -105,29 +214,86 @@ export async function runWikiHybridRagForUserTurn(
   projectId: string,
   userMessage: string,
   options: {
-    wikiHybridRagConsumed: number | null | undefined;
+    wikiHybridRagUsedCount: number | null | undefined;
+    maxCallsPerSession?: number;
     slashSkillActive: boolean;
   },
 ): Promise<WikiHybridRagUserTurnResult> {
-  const hybridRagNotYetConsumed = !options.wikiHybridRagConsumed;
   if (
     !shouldAttachWikiRag({
-      hybridRagNotYetConsumed,
+      wikiHybridRagUsedCount: options.wikiHybridRagUsedCount ?? 0,
+      maxCallsPerSession: options.maxCallsPerSession,
       userMessage,
       slashSkillActive: options.slashSkillActive,
     })
   ) {
-    return { promptSuffix: '', shouldMarkWikiHybridRagConsumed: false, logWarning: null };
+    return { promptSuffix: '', shouldIncrementWikiHybridRagUsage: false, logWarning: null };
   }
   try {
     const ragContext = await buildWikiRagContext(projectId, userMessage);
     return {
       promptSuffix: ragContext ? `\n\n${ragContext}` : '',
-      shouldMarkWikiHybridRagConsumed: true,
+      shouldIncrementWikiHybridRagUsage: true,
       logWarning: null,
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return { promptSuffix: '', shouldMarkWikiHybridRagConsumed: false, logWarning: message };
+    return { promptSuffix: '', shouldIncrementWikiHybridRagUsage: false, logWarning: message };
+  }
+}
+
+export interface WikiHybridRagAssistantResult {
+  promptSuffix: string;
+  shouldIncrementWikiHybridRagUsage: boolean;
+  logWarning: string | null;
+  errorSuffix: string;
+}
+
+export async function runWikiHybridRagForAssistantRequest(
+  projectId: string,
+  rawBlock: string,
+  options: {
+    wikiHybridRagUsedCount: number | null | undefined;
+    maxCallsPerSession?: number;
+  },
+): Promise<WikiHybridRagAssistantResult> {
+  const parsed = parseWikiRequestBlock(rawBlock);
+  if ('error' in parsed) {
+    return {
+      promptSuffix: '',
+      shouldIncrementWikiHybridRagUsage: false,
+      logWarning: null,
+      errorSuffix: `## Wiki Load Error\nMalformed <agenthub:wiki> block: ${parsed.detail}`,
+    };
+  }
+  const used = options.wikiHybridRagUsedCount ?? 0;
+  const maxCalls =
+    options.maxCallsPerSession && options.maxCallsPerSession > 0
+      ? options.maxCallsPerSession
+      : MAX_WIKI_RAG_CALLS_PER_SESSION;
+  if (used >= maxCalls) {
+    return {
+      promptSuffix: '',
+      shouldIncrementWikiHybridRagUsage: false,
+      logWarning: null,
+      errorSuffix: `## Wiki Load Error\nSession wiki retrieval budget exhausted (${used}/${maxCalls}).`,
+    };
+  }
+  try {
+    const ragContext = await buildWikiRagContextFromQuery(projectId, parsed.query);
+    return {
+      promptSuffix: ragContext ? `\n\n${ragContext}` : '',
+      shouldIncrementWikiHybridRagUsage: true,
+      logWarning: null,
+      errorSuffix: '',
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      promptSuffix: '',
+      shouldIncrementWikiHybridRagUsage: false,
+      logWarning: message,
+      errorSuffix: '## Wiki Load Error\nFailed to retrieve wiki context for this request.',
+    };
   }
 }

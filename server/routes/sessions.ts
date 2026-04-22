@@ -173,7 +173,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const model = req.body.model || found?.agent?.model || defaultModelForEngine(engine);
     const useWorktree = req.body.use_worktree !== undefined ? (req.body.use_worktree ? 1 : 0) : 1;
     const askMode = req.body.ask_mode ? 1 : 0;
-    stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode);
+    stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode, 1);
     const session = stmts.getSession.get(id) as SessionRow;
     deps.broadcast({ type: 'session_created', agentId: req.params.agentId, session });
     res.json(session);
@@ -210,7 +210,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const engine = found.agent.engine || 'claude-code';
     const model = found.agent.model || defaultModelForEngine(engine);
     const sessionName = `[BG] ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`;
-    stmts.createSession.run(sessionId, agentId, sessionName, engine, model, 1, 0);
+    stmts.createSession.run(sessionId, agentId, sessionName, engine, model, 1, 0, 1);
 
     stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
 
@@ -574,6 +574,18 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(updated);
   });
 
+  router.put('/api/sessions/:sessionId/react-loop', (req: Request, res: Response) => {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be a boolean' });
+    }
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    stmts.updateSessionReactLoop.run(enabled ? 1 : 0, req.params.sessionId);
+    const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+    res.json(updated);
+  });
+
   router.get('/api/delegations/:messageId', (req: Request, res: Response) => {
     try {
       const delegations = stmts.getDelegations.all(req.params.messageId);
@@ -927,7 +939,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       );
       const engine = targetAgent.engine || 'claude-code';
       const model = targetAgent.model || defaultModelForEngine(engine);
-      stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, 1, 0);
+      stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, 1, 0, 1);
 
       // When autoStart is true, handleChat will store the user message itself,
       // so we only pre-store it when NOT auto-starting (to avoid duplicates).

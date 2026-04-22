@@ -18,12 +18,19 @@ export interface SessionRow {
   stale_pr_notified_at: string | null;
   pending_skill_context?: string | null;
   ask_mode: number;
+  react_loop_enabled?: number;
   /**
-   * 0 = this session has not run hybrid wiki RAG (embedding) yet; 1 = consumed.
-   * Drives per-session gating so forwarded / seeded transcripts can still do a
-   * first eligible RAG on a later user turn (unlike a naive “row count” check).
+   * Number of hybrid wiki RAG retrieval calls consumed in this session.
+   * Used as a hard budget counter to cap embedding/query cost per session.
    */
   wiki_hybrid_rag_consumed?: number | null;
+  /**
+   * `0` = legacy rows where `wiki_hybrid_rag_consumed` was a 0/1 gate (≥1 meant exhausted).
+   * `1` = monotonic call counter semantics (paired with `wiki_hybrid_rag_consumed` 0…max).
+   */
+  wiki_hybrid_rag_budget_version?: number | null;
+  /** Host ReAct `web` tool: number of Serper calls consumed this session. */
+  web_search_calls_used?: number | null;
   cron_id: number | null;
   created_at: string;
   updated_at: string;
@@ -689,8 +696,11 @@ export interface Stmts {
   updateSessionWorktreePath: Stmt;
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
+  updateSessionReactLoop: Stmt;
   updateSessionChangesReady: Stmt;
   updateSessionWikiHybridRagConsumed: Stmt;
+  updateSessionWikiHybridRagBudget: Stmt;
+  updateSessionWebSearchCallsUsed: Stmt;
   clearSessionChangesReady: Stmt;
   getStalePendingPrSessions: Stmt;
   markStalePrNotified: Stmt;

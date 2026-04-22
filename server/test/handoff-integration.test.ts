@@ -134,6 +134,7 @@ describe('handleHandoff — end-to-end', () => {
       'claude-opus-4-7',
       0,
       0,
+      1,
     );
     stmts.addMessage.run(
       randomUUID(),
@@ -227,6 +228,7 @@ describe('handleHandoff — end-to-end', () => {
       'claude-opus-4-7',
       0,
       0,
+      1,
     );
 
     const result = await handleHandoff(
@@ -278,6 +280,7 @@ describe('handleHandoff — end-to-end', () => {
       'claude-opus-4-7',
       0,
       0,
+      1,
     );
 
     // Simulate the source project exposing both agents so the resolver
@@ -326,6 +329,7 @@ describe('handleHandoff — end-to-end', () => {
       'claude-opus-4-7',
       0,
       0,
+      1,
     );
 
     const raw = '{"toAgent":"hub-backend","note":"oops" INVALID}';
@@ -372,6 +376,7 @@ describe('handleHandoff — end-to-end', () => {
       'claude-opus-4-7',
       0,
       0,
+      1,
     );
     stmts.createSession.run(
       toSessionId,
@@ -381,6 +386,7 @@ describe('handleHandoff — end-to-end', () => {
       'claude-opus-4-7',
       0,
       0,
+      1,
     );
     const handoffId = randomUUID();
     stmts.createHandoff.run(
@@ -469,6 +475,7 @@ describe('handleHandoff — end-to-end', () => {
       'claude-opus-4-7',
       0,
       0,
+      1,
     );
     const { cardId } = seedBoardWithCard({
       prefix: `${testPrefix}-fwd`,
@@ -530,6 +537,7 @@ describe('handleHandoff — end-to-end', () => {
       'claude-opus-4-7',
       0,
       0,
+      1,
     );
     const { cardId, epicId } = seedBoardWithCard({
       prefix: `${testPrefix}-auto`,
@@ -575,6 +583,7 @@ describe('handleHandoff — end-to-end', () => {
       'claude-opus-4-7',
       0,
       0,
+      1,
     );
 
     const result = await handleHandoff(

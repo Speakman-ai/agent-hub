@@ -596,6 +596,7 @@ export function dispatchReviewFeedback(
       resolvedModel,
       1,
       0,
+      1,
     );
     {
       const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
@@ -983,6 +984,7 @@ async function runReviewerDispatch(
     sessionModel,
     1,
     0,
+    1,
   );
   {
     const row = stmts.getSession.get(sessionId) as SessionRow | undefined;

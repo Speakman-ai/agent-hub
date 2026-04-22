@@ -408,7 +408,7 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
       const sessionName = `[Design Fwd] ${design.name}`.slice(0, 100);
       const engine = targetAgent.engine || 'claude-code';
       const model = targetAgent.model || defaultModelForEngine(engine);
-      stmts.createSession.run(newSessionId, targetAgentId, sessionName, engine, model, 1, 0);
+      stmts.createSession.run(newSessionId, targetAgentId, sessionName, engine, model, 1, 0, 1);
 
       let forwardedMessageId: string | null = null;
       if (!autoStart) {

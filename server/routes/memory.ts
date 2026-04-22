@@ -146,7 +146,7 @@ export default function createMemoryRoutes(routeDeps: RouteDeps = {} as RouteDep
     const model = docsAgent.model || defaultModelForEngine(engine);
     const sessionName = `[Note] ${date} → ${target}`;
 
-    stmts!.createSession.run(sessionId, docsAgent.id, sessionName, engine, model, 1, 0);
+    stmts!.createSession.run(sessionId, docsAgent.id, sessionName, engine, model, 1, 0, 1);
 
     const taskId = uuidv4();
     stmts!.insertBackgroundTask.run(taskId, sessionId, docsAgent.id, prompt);

@@ -235,7 +235,7 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       const title = typeof pr.title === 'string' ? pr.title : '';
       const sessionName = `[Resolve PR #${num}] ${title}`.slice(0, 100);
 
-      stmts.createSession.run(sessionId, agentId, sessionName, engine, model, 1, 0);
+      stmts.createSession.run(sessionId, agentId, sessionName, engine, model, 1, 0, 1);
       stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
 
       handleChat(null, {

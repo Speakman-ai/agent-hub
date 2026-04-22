@@ -32,6 +32,7 @@ describe('handoffs — create, link, deliver, fail', () => {
         'claude-opus-4-7',
         0,
         0,
+        1,
       );
     } catch {
       // Already exists from a previous test in the same file — ignore.

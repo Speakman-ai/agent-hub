@@ -853,6 +853,12 @@ function initDb(dataDir: string): void {
   }
 
   try {
+    db.exec('ALTER TABLE sessions ADD COLUMN react_loop_enabled INTEGER NOT NULL DEFAULT 1');
+  } catch (_e) {
+    /* already exists */
+  }
+
+  try {
     db.prepare('SELECT pending_skill_context FROM sessions LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE sessions ADD COLUMN pending_skill_context TEXT DEFAULT NULL');
@@ -874,6 +880,21 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN wiki_hybrid_rag_consumed INTEGER NOT NULL DEFAULT 0');
   } catch (_e) {
     /* already exists */
+  }
+
+  try {
+    db.prepare('SELECT web_search_calls_used FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN web_search_calls_used INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // 0 = legacy wiki hybrid gate (consumed was 0/1); 1 = monotonic call counter per session.
+  try {
+    db.prepare('SELECT wiki_hybrid_rag_budget_version FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec(
+      'ALTER TABLE sessions ADD COLUMN wiki_hybrid_rag_budget_version INTEGER NOT NULL DEFAULT 0',
+    );
   }
 
   try {
@@ -1369,7 +1390,7 @@ function initDb(dataDir: string): void {
   stmts = {
     // Sessions
     createSession: db.prepare(
-      'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode, wiki_hybrid_rag_budget_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     // Live list excludes soft-deleted rows. Callers that need archived rows
     // use `getArchivedSessionsByAgent`. `getSession` stays loose — many code
@@ -1436,11 +1457,20 @@ function initDb(dataDir: string): void {
     updateSessionAskMode: db.prepare(
       "UPDATE sessions SET ask_mode = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    updateSessionReactLoop: db.prepare(
+      "UPDATE sessions SET react_loop_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
     updateSessionChangesReady: db.prepare(
       "UPDATE sessions SET changes_ready = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionWikiHybridRagConsumed: db.prepare(
       "UPDATE sessions SET wiki_hybrid_rag_consumed = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionWikiHybridRagBudget: db.prepare(
+      "UPDATE sessions SET wiki_hybrid_rag_consumed = ?, wiki_hybrid_rag_budget_version = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionWebSearchCallsUsed: db.prepare(
+      "UPDATE sessions SET web_search_calls_used = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     // Also nulls `stale_pr_notified_at` so a future stale period for the
     // same session re-notifies rather than being permanently suppressed by
