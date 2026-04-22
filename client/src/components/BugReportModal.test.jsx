@@ -91,6 +91,35 @@ describe('BugReportModal', () => {
     expect(onToast).toHaveBeenCalledWith(expect.stringContaining('Bug reported'), 'info');
   });
 
+  it('includes the selected severity in FormData', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ sessionId: 's1', status: 'dispatched' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <BugReportModal
+        isOpen
+        onClose={() => {}}
+        initialScreenshotBlob={makeBlob()}
+        projectId="p"
+        agentId="a"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Crash on launch' } });
+    fireEvent.change(screen.getByLabelText(/^severity$/i), { target: { value: 'critical' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /submit bug report/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const fd = fetchMock.mock.calls[0][1].body;
+    expect(fd.get('severity')).toBe('critical');
+  });
+
   it('renders nothing when closed', () => {
     const { container } = render(
       <BugReportModal isOpen={false} onClose={() => {}} initialScreenshotBlob={null} />,

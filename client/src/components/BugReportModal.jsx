@@ -105,8 +105,7 @@ export default function BugReportModal({
     return null;
   }
 
-  const titleTooLong = title.length > 200;
-  const canSubmit = !!title.trim() && !titleTooLong && !submitting;
+  const canSubmit = !!title.trim() && !submitting;
 
   return (
     <div
@@ -142,18 +141,11 @@ export default function BugReportModal({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Short summary of the issue"
-              maxLength={220}
+              maxLength={200}
               required
               className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:border-blue-500 focus:outline-none"
             />
-            <div className="flex justify-between mt-1">
-              <span className="text-xs text-gray-500">
-                {titleTooLong ? 'Title must be 200 characters or fewer' : ''}
-              </span>
-              <span className={`text-xs ${titleTooLong ? 'text-rose-400' : 'text-gray-500'}`}>
-                {title.length}/200
-              </span>
-            </div>
+            <p className="text-xs text-gray-500 mt-1 text-right">{title.length}/200</p>
           </div>
 
           <div>
@@ -168,6 +160,9 @@ export default function BugReportModal({
               placeholder="Steps to reproduce, expected vs. actual behavior, context…"
               className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:border-blue-500 focus:outline-none resize-y"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              Optional. Included in the report body sent to intake.
+            </p>
           </div>
 
           <div>
@@ -186,6 +181,10 @@ export default function BugReportModal({
                 </option>
               ))}
             </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Submitted with your report; the intake workflow maps this to the new card&apos;s
+              priority.
+            </p>
           </div>
 
           <div>
@@ -211,7 +210,8 @@ export default function BugReportModal({
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-gray-700 bg-gray-950/60 px-3 py-6 text-center text-xs text-gray-500">
-                No screenshot attached. Use "Retake screenshot" to try again.
+                No screenshot yet. Use &quot;Retake screenshot&quot; to capture the window; it is
+                attached when you submit.
               </div>
             )}
           </div>
