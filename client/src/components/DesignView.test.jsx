@@ -20,9 +20,13 @@ vi.mock('../utils/api.js', () => ({
       }),
     ),
     updateDesign: vi.fn(() => Promise.resolve({})),
+    forwardDesign: vi.fn(() =>
+      Promise.resolve({ session: { id: 'sess-fwd', agent_id: 'agent-b', name: '[Design Fwd] X' } }),
+    ),
   },
 }));
 import { exportDesignPdf } from '../utils/exportDesignPdf.js';
+import { api } from '../utils/api.js';
 
 /**
  * DesignView — split-pane behavior.
@@ -78,6 +82,17 @@ describe('DesignView', () => {
     send: () => {},
     onBack: () => {},
     onManualReload: () => {},
+    agents: [
+      {
+        id: 'a1',
+        name: 'Lead',
+        engine: 'claude-code',
+        projectId: 'p1',
+        projectName: 'Hub',
+        color: '#3b82f6',
+        active: true,
+      },
+    ],
   };
 
   it('renders the design name in the header', () => {
@@ -399,6 +414,33 @@ describe('DesignView', () => {
       const btn = screen.getByLabelText(/download design as pdf/i);
       fireEvent.click(btn);
       expect(exportDesignPdf).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Forward to agent', () => {
+    beforeEach(() => {
+      api.forwardDesign.mockClear();
+    });
+
+    it('renders Forward control in the header', () => {
+      render(<DesignView {...baseProps} />);
+      expect(screen.getByTestId('design-forward-open')).toBeInTheDocument();
+    });
+
+    it('opens the modal and calls forwardDesign when an agent is chosen and submitted', async () => {
+      const onDesignForwarded = vi.fn();
+      render(<DesignView {...baseProps} onDesignForwarded={onDesignForwarded} />);
+      fireEvent.click(screen.getByTestId('design-forward-open'));
+      expect(await screen.findByTestId('forward-design-modal-backdrop')).toBeInTheDocument();
+      fireEvent.click(screen.getByText('Lead'));
+      fireEvent.click(screen.getByRole('button', { name: 'Forward' }));
+      await waitFor(() => {
+        expect(api.forwardDesign).toHaveBeenCalledWith(
+          'd-1',
+          expect.objectContaining({ targetAgentId: 'a1' }),
+        );
+        expect(onDesignForwarded).toHaveBeenCalled();
+      });
     });
   });
 });

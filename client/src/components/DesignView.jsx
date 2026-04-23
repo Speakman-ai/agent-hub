@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
-import { Palette, ArrowLeft, RefreshCw, Download } from 'lucide-react';
+import { Palette, ArrowLeft, RefreshCw, Download, ArrowLeftRight } from 'lucide-react';
+import ForwardDesignModal from './ForwardDesignModal.jsx';
 import { relativeTime } from '../utils/time.js';
 import { getServerBase } from '../utils/connection.js';
 import { exportDesignPdf } from '../utils/exportDesignPdf.js';
@@ -156,6 +157,8 @@ export default function DesignView({
   onManualReload,
   showToast,
   onDesignRecordUpdated,
+  agents = [],
+  onDesignForwarded,
 }) {
   const splitContainerRef = useRef(null);
   const [splitPct, setSplitPct] = useState(readStoredSplitPct);
@@ -252,6 +255,7 @@ export default function DesignView({
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState(null);
   const [modelConfig, setModelConfig] = useState(null);
+  const [showForwardDesign, setShowForwardDesign] = useState(false);
   const base = getServerBase();
 
   useEffect(() => {
@@ -336,6 +340,22 @@ export default function DesignView({
             </span>
           )}
           <button
+            type="button"
+            onClick={() => setShowForwardDesign(true)}
+            disabled={processing || !!streaming}
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-100 disabled:opacity-40 disabled:cursor-not-allowed border border-gray-700 hover:border-gray-500 rounded-md px-2 py-1 transition-colors"
+            title={
+              processing || streaming
+                ? 'Wait for Design Studio to finish before forwarding'
+                : 'Open a chat session on another agent with this design as context'
+            }
+            aria-label="Forward design to agent"
+            data-testid="design-forward-open"
+          >
+            <ArrowLeftRight size={14} />
+            <span className="hidden sm:inline">Forward</span>
+          </button>
+          <button
             onClick={handleDownloadPdf}
             disabled={exporting || processing || !!streaming}
             className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-100 disabled:opacity-40 disabled:cursor-not-allowed border border-gray-700 hover:border-gray-500 rounded-md px-2 py-1 transition-colors"
@@ -351,6 +371,17 @@ export default function DesignView({
           </button>
         </div>
       </div>
+
+      {showForwardDesign && (
+        <ForwardDesignModal
+          design={design}
+          agents={agents}
+          onClose={() => setShowForwardDesign(false)}
+          onForward={(body) => api.forwardDesign(design.id, body)}
+          onForwarded={onDesignForwarded}
+          onError={(msg) => showToast?.(`Forward failed: ${msg}`, 'error', 6000)}
+        />
+      )}
 
       {/* Body — split pane (stacked on mobile, horizontally resizable on md+) */}
       <div

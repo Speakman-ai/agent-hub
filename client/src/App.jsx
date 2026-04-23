@@ -2900,6 +2900,16 @@ export default function App() {
               onDesignRecordUpdated={(d) =>
                 setDesigns((prev) => prev.map((x) => (x.id === d.id ? { ...x, ...d } : x)))
               }
+              agents={agents}
+              onDesignForwarded={(result) => {
+                const session = result?.session;
+                if (!session) return;
+                pendingSessionIdRef.current = session.id;
+                setActiveAgentId(session.agent_id);
+                setActiveSessionId(session.id);
+                setCurrentView('chat');
+                showToast(`Design forwarded — ${session.name || 'new session'}`, 'success', 4000);
+              }}
             />
           ) : (
             <div className="flex-1 flex flex-col lg:flex-row min-h-0 min-w-0 overflow-hidden">
