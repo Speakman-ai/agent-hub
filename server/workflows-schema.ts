@@ -1,0 +1,72 @@
+/**
+ * SQLite DDL for Hub workflow builder (MVP).
+ *
+ * `parallel_group` is reserved for future parallel steps; the engine ignores it in MVP.
+ * `condition_expr` is a nullable stub for future conditional branching.
+ *
+ * Imported by `db.ts` at boot and by `workflows-schema.test.ts` for hermetic checks.
+ */
+
+export const WORKFLOWS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS workflows (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    -- MVP: only manual triggers; additional trigger types can be added later without a CHECK migration.
+    trigger_type TEXT NOT NULL DEFAULT 'manual',
+    default_payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_workflows_project ON workflows(project_id);
+
+  CREATE TABLE IF NOT EXISTS workflow_steps (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    role_prompt TEXT NOT NULL,
+    step_order INTEGER NOT NULL,
+    timeout_ms INTEGER,
+    on_failure TEXT NOT NULL DEFAULT 'abort'
+      CHECK(on_failure IN ('abort', 'continue', 'retry')),
+    condition_expr TEXT,
+    parallel_group INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow ON workflow_steps(workflow_id);
+  CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow_order ON workflow_steps(workflow_id, step_order ASC);
+
+  CREATE TABLE IF NOT EXISTS workflow_runs (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+      CHECK(status IN ('pending', 'running', 'success', 'error', 'cancelled')),
+    run_payload TEXT,
+    error TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);
+  CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(workflow_id, status);
+
+  CREATE TABLE IF NOT EXISTS workflow_step_runs (
+    id TEXT PRIMARY KEY,
+    workflow_run_id TEXT NOT NULL,
+    workflow_step_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+      CHECK(status IN ('pending', 'running', 'success', 'error', 'skipped', 'cancelled')),
+    output TEXT,
+    error TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    FOREIGN KEY (workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (workflow_step_id) REFERENCES workflow_steps(id) ON DELETE CASCADE,
+    UNIQUE(workflow_run_id, workflow_step_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_workflow_step_runs_run ON workflow_step_runs(workflow_run_id);
+  CREATE INDEX IF NOT EXISTS idx_workflow_step_runs_step ON workflow_step_runs(workflow_step_id);
+`;

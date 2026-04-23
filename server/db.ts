@@ -5,6 +5,7 @@ import { POOL_SCHEMA } from './container-pool/schema.js';
 import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
 import { PREVIEW_AUTH_SCHEMA } from './container-pool/preview-auth-schema.js';
 import { PR_ENV_CONFIG_SCHEMA } from './pr-env-schema.js';
+import { WORKFLOWS_SCHEMA } from './workflows-schema.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -1272,6 +1273,10 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS idx_wiki_embeddings_project ON wiki_embeddings(project_id);
   `);
+
+  // Workflow builder (MVP): definitions, steps, and execution rows. DDL is
+  // shared with workflows-schema.test.ts via workflows-schema.ts.
+  db.exec(WORKFLOWS_SCHEMA);
 
   const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get() as { count: number };
   if (cronCount.count === 0) {
