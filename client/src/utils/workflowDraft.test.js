@@ -22,6 +22,48 @@ describe('workflowDraft', () => {
     expect(d.steps[1].step_order).toBe(1);
   });
 
+  it('workflowFromApi maps step_project_id for cross-project steps', () => {
+    const d = workflowFromApi({
+      id: 'w1',
+      name: 'Pipe',
+      trigger_type: 'manual',
+      default_payload: {},
+      steps: [
+        {
+          id: 's1',
+          agent_id: 'ag',
+          step_project_id: 'other-proj',
+          title: 'Remote',
+          role_prompt: 'go',
+          step_order: 0,
+        },
+      ],
+    });
+    expect(d.steps[0].step_project_id).toBe('other-proj');
+  });
+
+  it('draftToPutBody sends stepProjectId when a step targets another project', () => {
+    const body = draftToPutBody({
+      name: 'P',
+      trigger_type: 'manual',
+      default_payload_str: '{}',
+      kanban_trigger_column_id: '',
+      steps: [
+        {
+          id: 's1',
+          agent_id: 'ag1',
+          step_project_id: 'proj-b',
+          title: 'Step',
+          role_prompt: 'Hi',
+          step_order: 0,
+          timeout_ms: null,
+          on_failure: 'abort',
+        },
+      ],
+    });
+    expect(body.steps[0].stepProjectId).toBe('proj-b');
+  });
+
   it('workflowDraftSnapshot is stable for reorder-independent step_order', () => {
     const a = {
       name: 'X',

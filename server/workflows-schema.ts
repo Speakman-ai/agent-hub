@@ -3,6 +3,8 @@
  *
  * `parallel_group` is reserved for future parallel steps; the engine ignores it in MVP.
  * `condition_expr` is a nullable stub for future conditional branching.
+ * `step_project_id` is nullable: when set, the step runs in that project's workspace context
+ *   and the `agent_id` must belong to that project (cross-project pipeline / Phase 3).
  *
  * Imported by `db.ts` at boot and by `workflows-schema.test.ts` for hermetic checks.
  */
@@ -42,6 +44,7 @@ export const WORKFLOWS_SCHEMA = `
       CHECK(on_failure IN ('abort', 'continue', 'retry')),
     condition_expr TEXT,
     parallel_group INTEGER,
+    step_project_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
   );

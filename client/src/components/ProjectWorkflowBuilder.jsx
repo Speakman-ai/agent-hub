@@ -46,6 +46,7 @@ function newStepRow(agentId) {
   return {
     id: crypto.randomUUID(),
     agent_id: agentId || '',
+    step_project_id: '',
     title: 'Step',
     role_prompt:
       'Describe what this agent should do. Use {{trigger.payload}} and prior {{steps.<id>.output}} as needed.',
@@ -55,10 +56,18 @@ function newStepRow(agentId) {
   };
 }
 
+function agentsInProject(agentsList, projectKey) {
+  const pid = String(projectKey || '');
+  return (Array.isArray(agentsList) ? agentsList : []).filter(
+    (a) => a && a.projectId === pid && a.active !== false,
+  );
+}
+
 export default function ProjectWorkflowBuilder({
   projectId,
   workflowId,
   project,
+  projects = [],
   agents,
   onNavigate,
   showToast,
@@ -83,12 +92,20 @@ export default function ProjectWorkflowBuilder({
     workflowDraftSnapshot(draft) !== workflowDraftSnapshot(baselineDraft);
   dirtyRef.current = dirty;
 
-  const projectAgents = useMemo(() => {
-    const list = Array.isArray(agents) ? agents : [];
-    return list.filter((a) => a && a.projectId === projectId && a.active !== false);
-  }, [agents, projectId]);
+  const projectAgents = useMemo(() => agentsInProject(agents, projectId), [agents, projectId]);
 
   const defaultAgentId = projectAgents[0]?.id || '';
+
+  const otherProjectsSorted = useMemo(() => {
+    const list = Array.isArray(projects)
+      ? projects.filter((p) => p && p.id && p.id !== projectId)
+      : [];
+    return [...list].sort((a, b) =>
+      String(a.name || a.id).localeCompare(String(b.name || b.id), undefined, {
+        sensitivity: 'base',
+      }),
+    );
+  }, [projects, projectId]);
 
   const applyLoaded = useCallback((apiRow) => {
     const w = workflowFromApi(apiRow);
@@ -391,6 +408,7 @@ export default function ProjectWorkflowBuilder({
     const lines = [
       '{{trigger.payload}} — merged default + per-run payload (JSON object).',
       '{{trigger.payload.someKey}} — dot path into the merged object.',
+      'The workspace selector above each step chooses which project’s AGENTS.md / skills context the runner loads (Phase 3 pipeline).',
     ];
     const steps = draft?.steps || [];
     for (const s of steps) {
@@ -706,6 +724,13 @@ export default function ProjectWorkflowBuilder({
 
               {tab === 'steps' && (
                 <div className="space-y-4">
+                  {otherProjectsSorted.length > 0 && (
+                    <p className="text-xs text-gray-500 max-w-3xl">
+                      Pipeline mode: pick another workspace per step to run that step’s agent with
+                      the target project’s context files and cwd (agents must belong to the selected
+                      project).
+                    </p>
+                  )}
                   <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-4">
                     <div className="flex items-center gap-2 text-violet-200 text-sm font-medium mb-2">
                       <BookOpen size={16} />
@@ -724,126 +749,171 @@ export default function ProjectWorkflowBuilder({
                     </div>
                   ) : (
                     <ul className="space-y-3">
-                      {draft.steps.map((step, index) => (
-                        <li
-                          key={step.id || `idx-${index}`}
-                          className="rounded-xl border border-gray-800 bg-gray-900/50 p-4 space-y-3"
-                        >
-                          <div className="flex flex-wrap items-center gap-2 justify-between">
-                            <span className="text-xs text-gray-500 font-mono">
-                              Step {index + 1}
-                              {step.id ? ` · id ${step.id}` : ''}
-                            </span>
-                            <div className="flex items-center gap-1">
-                              <button
-                                type="button"
-                                title="Move up"
-                                disabled={index === 0}
-                                onClick={() => moveStep(index, -1)}
-                                className="p-1.5 rounded-md border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-30"
-                              >
-                                <ChevronUp size={16} />
-                              </button>
-                              <button
-                                type="button"
-                                title="Move down"
-                                disabled={index === draft.steps.length - 1}
-                                onClick={() => moveStep(index, 1)}
-                                className="p-1.5 rounded-md border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-30"
-                              >
-                                <ChevronDown size={16} />
-                              </button>
-                              <button
-                                type="button"
-                                title="Remove step"
-                                onClick={() => removeStep(index)}
-                                className="p-1.5 rounded-md border border-red-900/50 text-red-300 hover:bg-red-950/40"
-                              >
-                                <Trash2 size={16} />
-                              </button>
+                      {draft.steps.map((step, index) => {
+                        const stepPid =
+                          step.step_project_id && String(step.step_project_id).trim()
+                            ? String(step.step_project_id).trim()
+                            : projectId;
+                        const stepAgents = agentsInProject(agents, stepPid);
+                        return (
+                          <li
+                            key={step.id || `idx-${index}`}
+                            className="rounded-xl border border-gray-800 bg-gray-900/50 p-4 space-y-3"
+                          >
+                            <div className="flex flex-wrap items-center gap-2 justify-between">
+                              <span className="text-xs text-gray-500 font-mono">
+                                Step {index + 1}
+                                {step.id ? ` · id ${step.id}` : ''}
+                              </span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  title="Move up"
+                                  disabled={index === 0}
+                                  onClick={() => moveStep(index, -1)}
+                                  className="p-1.5 rounded-md border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-30"
+                                >
+                                  <ChevronUp size={16} />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Move down"
+                                  disabled={index === draft.steps.length - 1}
+                                  onClick={() => moveStep(index, 1)}
+                                  className="p-1.5 rounded-md border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-30"
+                                >
+                                  <ChevronDown size={16} />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Remove step"
+                                  onClick={() => removeStep(index)}
+                                  className="p-1.5 rounded-md border border-red-900/50 text-red-300 hover:bg-red-950/40"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
                             </div>
-                          </div>
 
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            <div className="sm:col-span-2">
-                              <label className="block text-xs font-medium text-gray-400 mb-1">
-                                Agent
-                              </label>
-                              <select
-                                value={step.agent_id}
-                                onChange={(e) => updateStep(index, { agent_id: e.target.value })}
-                                className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
-                              >
-                                <option value="">Select agent…</option>
-                                {projectAgents.map((a) => (
-                                  <option key={a.id} value={a.id}>
-                                    {a.name || a.id}
-                                  </option>
-                                ))}
-                              </select>
-                              {projectAgents.length === 0 && (
-                                <p className="text-xs text-amber-400 mt-1">
-                                  No active agents in this project. Add an agent in Settings first.
-                                </p>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              {otherProjectsSorted.length > 0 && (
+                                <div className="sm:col-span-2">
+                                  <label className="block text-xs font-medium text-gray-400 mb-1">
+                                    Workspace project
+                                  </label>
+                                  <select
+                                    value={step.step_project_id || ''}
+                                    onChange={(e) => {
+                                      const v = e.target.value;
+                                      const pool = agentsInProject(agents, v || projectId);
+                                      const nextAgent =
+                                        pool.find((a) => a.id === step.agent_id)?.id ||
+                                        pool[0]?.id ||
+                                        '';
+                                      updateStep(index, {
+                                        step_project_id: v,
+                                        agent_id: nextAgent,
+                                      });
+                                    }}
+                                    className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
+                                  >
+                                    <option value="">
+                                      This workflow’s project ({project?.name || projectId})
+                                    </option>
+                                    {otherProjectsSorted.map((p) => (
+                                      <option key={p.id} value={p.id}>
+                                        {p.name || p.id}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
                               )}
+                              <div className="sm:col-span-2">
+                                <label className="block text-xs font-medium text-gray-400 mb-1">
+                                  Agent
+                                </label>
+                                <select
+                                  value={step.agent_id}
+                                  onChange={(e) => updateStep(index, { agent_id: e.target.value })}
+                                  className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
+                                >
+                                  <option value="">Select agent…</option>
+                                  {stepAgents.map((a) => (
+                                    <option key={a.id} value={a.id}>
+                                      {a.name || a.id}
+                                    </option>
+                                  ))}
+                                </select>
+                                {stepAgents.length === 0 && (
+                                  <p className="text-xs text-amber-400 mt-1">
+                                    No active agents in the selected workspace project. Add an agent
+                                    in Settings first.
+                                  </p>
+                                )}
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className="block text-xs font-medium text-gray-400 mb-1">
+                                  Step title
+                                </label>
+                                <input
+                                  type="text"
+                                  value={step.title}
+                                  onChange={(e) => updateStep(index, { title: e.target.value })}
+                                  className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
+                                />
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className="block text-xs font-medium text-gray-400 mb-1">
+                                  Role prompt
+                                </label>
+                                <textarea
+                                  value={step.role_prompt}
+                                  onChange={(e) =>
+                                    updateStep(index, { role_prompt: e.target.value })
+                                  }
+                                  rows={5}
+                                  className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-400 mb-1">
+                                  Timeout (ms)
+                                </label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={step.timeout_ms == null ? '' : String(step.timeout_ms)}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    updateStep(index, {
+                                      timeout_ms:
+                                        v === '' ? null : Math.max(0, parseInt(v, 10) || 0),
+                                    });
+                                  }}
+                                  placeholder="Default engine timeout"
+                                  className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-gray-400 mb-1">
+                                  On failure
+                                </label>
+                                <select
+                                  value={step.on_failure || 'abort'}
+                                  onChange={(e) =>
+                                    updateStep(index, { on_failure: e.target.value })
+                                  }
+                                  className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
+                                >
+                                  <option value="abort">Abort workflow</option>
+                                  <option value="continue">Continue to next step</option>
+                                  <option value="retry">Retry step</option>
+                                </select>
+                              </div>
                             </div>
-                            <div className="sm:col-span-2">
-                              <label className="block text-xs font-medium text-gray-400 mb-1">
-                                Step title
-                              </label>
-                              <input
-                                type="text"
-                                value={step.title}
-                                onChange={(e) => updateStep(index, { title: e.target.value })}
-                                className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
-                              />
-                            </div>
-                            <div className="sm:col-span-2">
-                              <label className="block text-xs font-medium text-gray-400 mb-1">
-                                Role prompt
-                              </label>
-                              <textarea
-                                value={step.role_prompt}
-                                onChange={(e) => updateStep(index, { role_prompt: e.target.value })}
-                                rows={5}
-                                className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-400 mb-1">
-                                Timeout (ms)
-                              </label>
-                              <input
-                                type="number"
-                                min={0}
-                                value={step.timeout_ms == null ? '' : String(step.timeout_ms)}
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  updateStep(index, {
-                                    timeout_ms: v === '' ? null : Math.max(0, parseInt(v, 10) || 0),
-                                  });
-                                }}
-                                placeholder="Default engine timeout"
-                                className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-400 mb-1">
-                                On failure
-                              </label>
-                              <select
-                                value={step.on_failure || 'abort'}
-                                onChange={(e) => updateStep(index, { on_failure: e.target.value })}
-                                className="w-full rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
-                              >
-                                <option value="abort">Abort workflow</option>
-                                <option value="continue">Continue to next step</option>
-                                <option value="retry">Retry step</option>
-                              </select>
-                            </div>
-                          </div>
-                        </li>
-                      ))}
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
 

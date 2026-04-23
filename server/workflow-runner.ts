@@ -53,6 +53,7 @@ type WorkflowStepRow = {
   step_order: number;
   timeout_ms: number | null;
   on_failure: string;
+  step_project_id?: string | null;
 };
 
 /**
@@ -174,8 +175,6 @@ export async function runWorkflowSequential(
       return;
     }
 
-    const useWtForPrompt = getProjectMode(project) !== 'workflow';
-
     for (const step of steps) {
       if (workflowRunCancelRequested.has(runId)) {
         stmts.updateWorkflowRunTerminal.run('cancelled', 'Cancelled by user', runId);
@@ -190,6 +189,29 @@ export async function runWorkflowSequential(
         return;
       }
       const of = (step.on_failure as string) || 'abort';
+      const stepPidRaw = step.step_project_id;
+      const stepProjectOverride =
+        stepPidRaw != null && String(stepPidRaw).trim() ? String(stepPidRaw).trim() : null;
+      const stepProjectId = stepProjectOverride || projectId;
+      const stepProject = findProject(stepProjectId);
+      if (!stepProject) {
+        stmts.updateWorkflowRunTerminal.run(
+          'error',
+          `Step project not found: ${stepProjectId}`,
+          runId,
+        );
+        broadcast({
+          type: 'workflow_run_status',
+          projectId,
+          workflowId,
+          runId,
+          status: 'error',
+          error: `Step project not found: ${stepProjectId}`,
+        });
+        return;
+      }
+      const useWtForPrompt = getProjectMode(stepProject) !== 'workflow';
+
       const ctx = { triggerPayload, stepOutputs };
       const title = substituteWorkflowTemplate(step.title, ctx);
       const body = substituteWorkflowTemplate(step.role_prompt, ctx);
@@ -216,8 +238,8 @@ export async function runWorkflowSequential(
           stmts.resetWorkflowStepRunForRetry.run(stepRunId);
         }
         const enriched = getEnrichedAgent(step.agent_id);
-        if (!enriched || enriched.projectId !== projectId) {
-          lastErr = 'Agent not found in project';
+        if (!enriched || enriched.projectId !== stepProjectId) {
+          lastErr = 'Agent not found in step project';
           stmts.updateWorkflowStepRunComplete.run('error', null, lastErr, stepRunId);
           if (of === 'continue') {
             stepOutputs.set(step.id, '');
@@ -235,7 +257,7 @@ export async function runWorkflowSequential(
           }
           break;
         }
-        const systemPrompt = buildEnrichedPrompt(project, enriched, {
+        const systemPrompt = buildEnrichedPrompt(stepProject, enriched, {
           useWorktree: useWtForPrompt,
         });
         const workDir = getOrCreateProcessWorktree(

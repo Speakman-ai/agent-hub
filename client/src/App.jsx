@@ -2844,6 +2844,7 @@ export default function App() {
               projectId={workflowEditRoute.projectId}
               workflowId={workflowEditRoute.workflowId}
               project={projects.find((p) => p.id === workflowEditRoute.projectId)}
+              projects={projects}
               agents={agents}
               onNavigate={navigateFromProjectWorkflows}
               showToast={showToast}

@@ -97,6 +97,52 @@ describe('Workflows API', () => {
     expect(String(res.body.error)).toMatch(/agent not found|project/i);
   });
 
+  it('accepts stepProjectId so an agent from another project can run in that workspace', async () => {
+    const home = await createProject();
+    const other = await createProject();
+    const homeId = home.id as string;
+    const otherId = other.id as string;
+    const agentOther = await createAgent({ projectId: otherId, name: 'Remote bot' });
+    const agentOtherId = agentOther.id as string;
+
+    const res = await request
+      .post(`/api/projects/${homeId}/workflows`)
+      .send({
+        name: 'Cross-project pipeline',
+        steps: [
+          {
+            agentId: agentOtherId,
+            title: 'Act in other repo',
+            rolePrompt: 'Use the other workspace context.',
+            stepProjectId: otherId,
+          },
+        ],
+      })
+      .expect(201);
+    expect(res.body.steps).toHaveLength(1);
+    expect(res.body.steps[0].step_project_id).toBe(otherId);
+    expect(res.body.steps[0].agent_id).toBe(agentOtherId);
+  });
+
+  it('rejects stepProjectId when the project does not exist', async () => {
+    const home = await createProject();
+    const homeId = home.id as string;
+    const ag = await createAgent({ projectId: homeId });
+    const res = await request.post(`/api/projects/${homeId}/workflows`).send({
+      name: 'Bad ref',
+      steps: [
+        {
+          agentId: ag.id,
+          title: 'x',
+          rolePrompt: 'y',
+          stepProjectId: 'no-such-project-id-xyz',
+        },
+      ],
+    });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/project not found/i);
+  });
+
   it('replaces steps on put and deletes workflow', async () => {
     const project = await createProject();
     const projectId = project.id as string;

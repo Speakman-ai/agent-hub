@@ -57,6 +57,7 @@ describe('workflow runner', () => {
       'abort',
       null,
       null,
+      null,
     );
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', '{"a":1}');
 
@@ -80,7 +81,19 @@ describe('workflow runner', () => {
     const stepId = uuidv4();
     const runId = uuidv4();
     stmts!.createWorkflow.run(wfId, projectId, 'R', 'manual', '{}', null, null, null, null);
-    stmts!.createWorkflowStep.run(stepId, wfId, agentId, 'R', 'x', 0, null, 'retry', null, null);
+    stmts!.createWorkflowStep.run(
+      stepId,
+      wfId,
+      agentId,
+      'R',
+      'x',
+      0,
+      null,
+      'retry',
+      null,
+      null,
+      null,
+    );
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
 
     await runWorkflowSequential(baseDeps(), { projectId, workflowId: wfId, runId });
@@ -109,6 +122,7 @@ describe('workflow runner', () => {
       'continue',
       null,
       null,
+      null,
     );
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
 
@@ -129,7 +143,19 @@ describe('workflow runner', () => {
     const step2 = uuidv4();
     const runId = uuidv4();
     stmts!.createWorkflow.run(wfId, projectId, 'C', 'manual', '{}', null, null, null, null);
-    stmts!.createWorkflowStep.run(step1, wfId, agentId, 'A', 'a1', 0, null, 'continue', null, null);
+    stmts!.createWorkflowStep.run(
+      step1,
+      wfId,
+      agentId,
+      'A',
+      'a1',
+      0,
+      null,
+      'continue',
+      null,
+      null,
+      null,
+    );
     stmts!.createWorkflowStep.run(
       step2,
       wfId,
@@ -139,6 +165,7 @@ describe('workflow runner', () => {
       1,
       null,
       'abort',
+      null,
       null,
       null,
     );
@@ -161,7 +188,19 @@ describe('workflow runner', () => {
     const stepId = uuidv4();
     const runId = uuidv4();
     stmts!.createWorkflow.run(wfId, projectId, 'A', 'manual', '{}', null, null, null, null);
-    stmts!.createWorkflowStep.run(stepId, wfId, agentId, 'A', 'p', 0, null, 'abort', null, null);
+    stmts!.createWorkflowStep.run(
+      stepId,
+      wfId,
+      agentId,
+      'A',
+      'p',
+      0,
+      null,
+      'abort',
+      null,
+      null,
+      null,
+    );
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
 
     await runWorkflowSequential(baseDeps(), { projectId, workflowId: wfId, runId });
@@ -193,6 +232,7 @@ describe('workflow runner', () => {
       'abort',
       null,
       null,
+      null,
     );
     stmts!.createWorkflowStep.run(
       step2,
@@ -203,6 +243,7 @@ describe('workflow runner', () => {
       1,
       null,
       'abort',
+      null,
       null,
       null,
     );
@@ -223,7 +264,19 @@ describe('workflow runner', () => {
     const stepId = uuidv4();
     const runId = uuidv4();
     stmts!.createWorkflow.run(wfId, projectId, 'C', 'manual', '{}', null, null, null, null);
-    stmts!.createWorkflowStep.run(stepId, wfId, agentId, 'S', 'p', 0, null, 'abort', null, null);
+    stmts!.createWorkflowStep.run(
+      stepId,
+      wfId,
+      agentId,
+      'S',
+      'p',
+      0,
+      null,
+      'abort',
+      null,
+      null,
+      null,
+    );
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
     requestWorkflowRunCancel(runId);
 
@@ -242,8 +295,32 @@ describe('workflow runner', () => {
     const step2 = uuidv4();
     const runId = uuidv4();
     stmts!.createWorkflow.run(wfId, projectId, 'Two', 'manual', '{}', null, null, null, null);
-    stmts!.createWorkflowStep.run(step1, wfId, agentId, 'A', 'a', 0, null, 'abort', null, null);
-    stmts!.createWorkflowStep.run(step2, wfId, agentId, 'B', 'b', 1, null, 'abort', null, null);
+    stmts!.createWorkflowStep.run(
+      step1,
+      wfId,
+      agentId,
+      'A',
+      'a',
+      0,
+      null,
+      'abort',
+      null,
+      null,
+      null,
+    );
+    stmts!.createWorkflowStep.run(
+      step2,
+      wfId,
+      agentId,
+      'B',
+      'b',
+      1,
+      null,
+      'abort',
+      null,
+      null,
+      null,
+    );
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
     let n = 0;
     vi.mocked(runClaude).mockImplementation(async () => {
@@ -270,7 +347,19 @@ describe('workflow runner', () => {
     const runId = uuidv4();
     const stepRunId = uuidv4();
     stmts!.createWorkflow.run(wfId, projectId, 'S', 'manual', '{}', null, null, null, null);
-    stmts!.createWorkflowStep.run(stepId, wfId, agentId, 'S', 'p', 0, null, 'abort', null, null);
+    stmts!.createWorkflowStep.run(
+      stepId,
+      wfId,
+      agentId,
+      'S',
+      'p',
+      0,
+      null,
+      'abort',
+      null,
+      null,
+      null,
+    );
     stmts!.createWorkflowRun.run(runId, wfId, 'running', null);
     stmts!.createWorkflowStepRunStart.run(stepRunId, runId, stepId);
 
@@ -284,5 +373,39 @@ describe('workflow runner', () => {
     };
     expect(sr.status).toBe('error');
     expect(String(sr.error)).toMatch(/interrupted/i);
+  });
+
+  it('uses step_project_id for agent resolution and enriched prompt project', async () => {
+    vi.mocked(runClaude).mockResolvedValue('from-other' as never);
+    const home = await createProject();
+    const other = await createProject();
+    const homeId = home.id as string;
+    const otherId = other.id as string;
+    const { id: otherAgentId } = (await createAgent({ projectId: otherId, name: 'Other wf' })) as {
+      id: string;
+    };
+    const wfId = uuidv4();
+    const stepId = uuidv4();
+    const runId = uuidv4();
+    stmts!.createWorkflow.run(wfId, homeId, 'Cross', 'manual', '{}', null, null, null, null);
+    stmts!.createWorkflowStep.run(
+      stepId,
+      wfId,
+      otherAgentId,
+      'Cross step',
+      'Hello',
+      0,
+      null,
+      'abort',
+      null,
+      null,
+      otherId,
+    );
+    stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
+
+    await runWorkflowSequential(baseDeps(), { projectId: homeId, workflowId: wfId, runId });
+    const row = stmts!.getWorkflowRun.get(runId) as { status: string };
+    expect(row.status).toBe('success');
+    expect(vi.mocked(runClaude).mock.calls.length).toBe(1);
   });
 });

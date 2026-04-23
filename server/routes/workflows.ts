@@ -34,6 +34,8 @@ type StepInput = {
   role_prompt?: string;
   stepOrder?: number;
   step_order?: number;
+  stepProjectId?: string | null;
+  step_project_id?: string | null;
   timeoutMs?: number | null;
   timeout_ms?: number | null;
   onFailure?: string;
@@ -86,6 +88,7 @@ function readStep(
   title: string;
   rolePrompt: string;
   stepOrder: number;
+  stepProjectId: string | null;
   timeoutMs: number | null;
   onFailure: string;
   conditionExpr: string | null;
@@ -125,12 +128,22 @@ function readStep(
         : (() => {
             throw new WorkflowValidationError('parallelGroup must be a number or null');
           })();
+  const spRaw = input.stepProjectId ?? input.step_project_id;
+  let stepProjectId: string | null = null;
+  if (spRaw != null && spRaw !== '') {
+    if (typeof spRaw !== 'string') {
+      throw new WorkflowValidationError('stepProjectId must be a string or null');
+    }
+    const t = spRaw.trim();
+    stepProjectId = t.length ? t : null;
+  }
   return {
     id: typeof input.id === 'string' && input.id ? input.id : uuidv4(),
     agentId,
     title: title.trim(),
     rolePrompt: String(rolePrompt),
     stepOrder: order,
+    stepProjectId,
     timeoutMs: timeout,
     onFailure: ofRaw,
     conditionExpr,
@@ -146,6 +159,18 @@ function assertAgentInProject(
   const found = findAgent(agentId);
   if (!found || found.project.id !== projectId) {
     throw new WorkflowValidationError('agent not found in this project');
+  }
+}
+
+/** When null/empty, the step uses the workflow's owning project. */
+function effectiveStepProjectId(workflowProjectId: string, stepProjectId: string | null): string {
+  if (stepProjectId == null || stepProjectId === '') return workflowProjectId;
+  return stepProjectId;
+}
+
+function assertStepProjectExists(findProject: RouteDeps['findProject'], projectId: string): void {
+  if (!findProject(projectId)) {
+    throw new WorkflowValidationError('stepProjectId: project not found');
   }
 }
 
@@ -263,6 +288,7 @@ function toStepResponse(row: Record<string, unknown>) {
     title: row.title,
     role_prompt: row.role_prompt,
     step_order: row.step_order,
+    step_project_id: row.step_project_id ?? null,
     timeout_ms: row.timeout_ms,
     on_failure: row.on_failure,
     condition_expr: row.condition_expr,
@@ -355,6 +381,7 @@ function isWorkflowStepUniqueConstraintError(e: unknown): boolean {
 function insertSteps(
   stmts: Stmts,
   findAgent: RouteDeps['findAgent'],
+  findProject: RouteDeps['findProject'],
   projectId: string,
   workflowId: string,
   stepInputs: StepInput[],
@@ -372,7 +399,13 @@ function insertSteps(
     seen.add(s.id);
   }
   for (const s of resolved) {
-    assertAgentInProject(findAgent, projectId, s.agentId);
+    const eff = effectiveStepProjectId(projectId, s.stepProjectId);
+    if (eff !== projectId) {
+      assertStepProjectExists(findProject, eff);
+    }
+    assertAgentInProject(findAgent, eff, s.agentId);
+    const stepPidStored =
+      s.stepProjectId != null && s.stepProjectId !== '' && eff !== projectId ? eff : null;
     stmts.createWorkflowStep.run(
       s.id,
       workflowId,
@@ -384,6 +417,7 @@ function insertSteps(
       s.onFailure,
       s.conditionExpr,
       s.parallelGroup,
+      stepPidStored,
     );
   }
 }
@@ -489,7 +523,7 @@ export default function createWorkflowRoutes({
           wh.secret,
           triggerColumnId,
         );
-        insertSteps(stmts, findAgent, projectId, id, stepList);
+        insertSteps(stmts, findAgent, findProject, projectId, id, stepList);
       })();
     } catch (e) {
       if (e instanceof WorkflowValidationError) {
@@ -615,7 +649,14 @@ export default function createWorkflowRoutes({
         if (hasSteps) {
           const stepList = Array.isArray(body.steps) ? (body.steps as StepInput[]) : [];
           stmts.deleteWorkflowStepsByWorkflow.run(req.params.workflowId);
-          insertSteps(stmts, findAgent, projectId, req.params.workflowId as string, stepList);
+          insertSteps(
+            stmts,
+            findAgent,
+            findProject,
+            projectId,
+            req.params.workflowId as string,
+            stepList,
+          );
         }
       })();
     } catch (e) {

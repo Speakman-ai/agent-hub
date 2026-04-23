@@ -47,6 +47,7 @@ export function workflowDraftSnapshot(d) {
   const steps = (d.steps || []).map((s) => ({
     id: String(s.id || ''),
     agent_id: String(s.agent_id || ''),
+    step_project_id: String(s.step_project_id || ''),
     title: String(s.title || ''),
     role_prompt: String(s.role_prompt || ''),
     step_order: Number(s.step_order) || 0,
@@ -87,6 +88,10 @@ export function workflowFromApi(apiWorkflow) {
     .map((s, idx) => ({
       id: String(s.id || ''),
       agent_id: String(s.agent_id || ''),
+      step_project_id:
+        s.step_project_id != null && String(s.step_project_id).trim()
+          ? String(s.step_project_id).trim()
+          : '',
       title: String(s.title || ''),
       role_prompt: String(s.role_prompt || ''),
       step_order: idx,
@@ -121,6 +126,12 @@ export function draftToPutBody(draft) {
   const steps = (draft.steps || []).map((s, i) => ({
     id: s.id || undefined,
     agentId: s.agent_id,
+    stepProjectId: (() => {
+      const raw = s.step_project_id;
+      if (raw == null || raw === '') return null;
+      const t = String(raw).trim();
+      return t.length ? t : null;
+    })(),
     title: s.title,
     rolePrompt: s.role_prompt,
     stepOrder: i,

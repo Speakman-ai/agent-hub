@@ -72,6 +72,7 @@ describe('workflows schema', () => {
     expect(byName.timeout_ms?.notnull).toBe(0);
     expect(byName.condition_expr?.notnull).toBe(0);
     expect(byName.parallel_group?.notnull).toBe(0);
+    expect(byName.step_project_id?.notnull).toBe(0);
     expect(byName.on_failure?.dflt_value?.toLowerCase()).toContain('abort');
     expect(namedIdx(db, 'workflow_steps')).toEqual(
       ['idx_workflow_steps_workflow', 'idx_workflow_steps_workflow_order'].sort(),

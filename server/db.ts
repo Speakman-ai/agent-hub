@@ -1306,6 +1306,15 @@ function initDb(dataDir: string): void {
     }
   }
 
+  {
+    const stepCols = (db.pragma('table_info(workflow_steps)') as { name: string }[]).map(
+      (c) => c.name,
+    );
+    if (stepCols.length > 0 && !stepCols.includes('step_project_id')) {
+      db.exec('ALTER TABLE workflow_steps ADD COLUMN step_project_id TEXT');
+    }
+  }
+
   const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get() as { count: number };
   if (cronCount.count === 0) {
     const insertCron = db.prepare(
@@ -2389,8 +2398,8 @@ function initDb(dataDir: string): void {
     deleteWorkflowStepsByWorkflow: db.prepare('DELETE FROM workflow_steps WHERE workflow_id = ?'),
     createWorkflowStep: db.prepare(
       `INSERT INTO workflow_steps
-        (id, workflow_id, agent_id, title, role_prompt, step_order, timeout_ms, on_failure, condition_expr, parallel_group)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, workflow_id, agent_id, title, role_prompt, step_order, timeout_ms, on_failure, condition_expr, parallel_group, step_project_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     createWorkflowRun: db.prepare(
       `INSERT INTO workflow_runs (id, workflow_id, status, run_payload) VALUES (?, ?, ?, ?)`,

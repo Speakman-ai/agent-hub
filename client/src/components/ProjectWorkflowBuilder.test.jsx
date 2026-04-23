@@ -119,6 +119,42 @@ describe('ProjectWorkflowBuilder', () => {
     expect(screen.queryByDisplayValue('Stale')).not.toBeInTheDocument();
   });
 
+  it('shows workspace project picker when another project exists', async () => {
+    api.getProjectWorkflow.mockResolvedValue({
+      id: 'wf-1',
+      name: 'W',
+      trigger_type: 'manual',
+      default_payload: {},
+      steps: [
+        {
+          id: 's1',
+          agent_id: 'a1',
+          step_project_id: '',
+          title: 'S',
+          role_prompt: 'r',
+          step_order: 0,
+        },
+      ],
+    });
+
+    render(
+      <ProjectWorkflowBuilder
+        projectId="p1"
+        workflowId="wf-1"
+        project={{ id: 'p1', name: 'Home' }}
+        projects={[
+          { id: 'p1', name: 'Home' },
+          { id: 'p2', name: 'Other' },
+        ]}
+        agents={[{ id: 'a1', projectId: 'p1', name: 'Bot', active: true }]}
+        onNavigate={vi.fn()}
+        showToast={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/Workspace project/i)).toBeInTheDocument();
+  });
+
   it('new workflow saves via POST and navigates', async () => {
     api.createProjectWorkflow.mockResolvedValue({
       id: 'new-wf',
