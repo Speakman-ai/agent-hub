@@ -29,8 +29,9 @@ export const WORKFLOWS_SCHEMA = `
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_workflows_project ON workflows(project_id);
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_webhook_token ON workflows(webhook_path_token)
-    WHERE webhook_path_token IS NOT NULL;
+  /* Partial unique index on webhook_path_token is created in db.initDb *after* ALTERs
+   * that add the column to legacy DBs — do not put it in this string or boot fails with
+   * "no such column" when the workflows table pre-dates the webhook columns. */
 
   CREATE TABLE IF NOT EXISTS workflow_steps (
     id TEXT PRIMARY KEY,
@@ -83,3 +84,7 @@ export const WORKFLOWS_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_workflow_step_runs_run ON workflow_step_runs(workflow_run_id);
   CREATE INDEX IF NOT EXISTS idx_workflow_step_runs_step ON workflow_step_runs(workflow_step_id);
 `;
+
+/** Applied in db.initDb only after column migrations; also used in workflows-schema tests. */
+export const WORKFLOWS_WEBHOOK_PATH_INDEX_SQL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_webhook_token ON workflows(webhook_path_token)
+  WHERE webhook_path_token IS NOT NULL`;

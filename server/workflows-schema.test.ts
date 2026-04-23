@@ -4,7 +4,7 @@
 
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeEach } from 'vitest';
-import { WORKFLOWS_SCHEMA } from './workflows-schema.js';
+import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 
 type TableInfoRow = {
   name: string;
@@ -18,6 +18,7 @@ function freshDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(WORKFLOWS_SCHEMA);
+  db.exec(WORKFLOWS_WEBHOOK_PATH_INDEX_SQL);
   return db;
 }
 
@@ -61,8 +62,31 @@ describe('workflows schema', () => {
     expect(trig?.dflt_value).toMatch(/manual/i);
   });
 
-  it('indexes workflows.project_id', () => {
+  it('indexes workflows.project_id and per-webhook path token (after table DDL)', () => {
     expect(indexNames(db, 'workflows')).toContain('idx_workflows_project');
+    expect(namedIdx(db, 'workflows').sort()).toEqual(
+      ['idx_workflows_project', 'idx_workflows_webhook_token'].sort(),
+    );
+  });
+
+  it('regression: legacy workflows row without webhook columns can accept ALTER + webhook index (matches EC2 pre-V1.1 DBs)', () => {
+    const leg = new Database(':memory:');
+    leg.pragma('foreign_keys = ON');
+    leg.exec(`
+      CREATE TABLE workflows (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        trigger_type TEXT NOT NULL DEFAULT 'manual',
+        default_payload TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_workflows_project ON workflows(project_id);
+    `);
+    leg.exec('ALTER TABLE workflows ADD COLUMN webhook_path_token TEXT');
+    expect(() => leg.exec(WORKFLOWS_WEBHOOK_PATH_INDEX_SQL)).not.toThrow();
+    expect(namedIdx(leg, 'workflows').sort()).toContain('idx_workflows_webhook_token');
   });
 
   it('defines workflow_steps with order, timeout, on_failure, condition stub, parallel_group', () => {

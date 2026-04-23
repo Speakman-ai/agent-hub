@@ -5,7 +5,7 @@ import { POOL_SCHEMA } from './container-pool/schema.js';
 import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
 import { PREVIEW_AUTH_SCHEMA } from './container-pool/preview-auth-schema.js';
 import { PR_ENV_CONFIG_SCHEMA } from './pr-env-schema.js';
-import { WORKFLOWS_SCHEMA } from './workflows-schema.js';
+import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -1298,9 +1298,7 @@ function initDb(dataDir: string): void {
       }
     }
     try {
-      db.exec(
-        'CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_webhook_token ON workflows(webhook_path_token) WHERE webhook_path_token IS NOT NULL',
-      );
+      db.exec(WORKFLOWS_WEBHOOK_PATH_INDEX_SQL);
     } catch (e) {
       console.warn('[db] idx_workflows_webhook_token migration:', (e as Error).message);
     }
