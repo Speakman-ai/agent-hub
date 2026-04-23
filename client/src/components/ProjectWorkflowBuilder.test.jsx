@@ -53,6 +53,7 @@ describe('ProjectWorkflowBuilder', () => {
       steps: [],
     });
 
+    const showToast = vi.fn();
     render(
       <ProjectWorkflowBuilder
         projectId="p1"
@@ -60,7 +61,7 @@ describe('ProjectWorkflowBuilder', () => {
         project={{ id: 'p1', name: 'Proj' }}
         agents={[]}
         onNavigate={vi.fn()}
-        showToast={vi.fn()}
+        showToast={showToast}
       />,
     );
 
@@ -71,6 +72,7 @@ describe('ProjectWorkflowBuilder', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Discard$/i }));
     expect(screen.getByDisplayValue('One')).toBeInTheDocument();
     expect(screen.queryByText(/Unsaved changes/i)).not.toBeInTheDocument();
+    expect(showToast).toHaveBeenCalledWith('Restored last saved version.', 'success', 2500);
   });
 
   it('ignores stale getProjectWorkflow after workflowId changes', async () => {
@@ -179,5 +181,77 @@ describe('ProjectWorkflowBuilder', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
     await waitFor(() => expect(api.createProjectWorkflow).toHaveBeenCalled());
     expect(onNavigate).toHaveBeenCalledWith('workflow-edit:p1/new-wf');
+  });
+
+  it('new workflow shows template library and applies Dev Review seed', async () => {
+    const showToast = vi.fn();
+    render(
+      <ProjectWorkflowBuilder
+        projectId="p1"
+        workflowId="new"
+        project={{ id: 'p1', name: 'Proj' }}
+        agents={[{ id: 'a1', projectId: 'p1', name: 'Bot', active: true }]}
+        onNavigate={vi.fn()}
+        showToast={showToast}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText(/Template library/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Dev Review$/i }));
+    await waitFor(() => expect(screen.getByDisplayValue('Dev Review')).toBeInTheDocument());
+    expect(await screen.findByText(/Unsaved changes/i)).toBeInTheDocument();
+    expect(screen.getByText(/Step 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Step 3/i)).toBeInTheDocument();
+    expect(showToast).toHaveBeenCalledWith(
+      'Template applied — review agents and save.',
+      'success',
+      3500,
+    );
+  });
+
+  it('disables seeded template buttons when the project has no active agents', async () => {
+    render(
+      <ProjectWorkflowBuilder
+        projectId="p1"
+        workflowId="new"
+        project={{ id: 'p1', name: 'Proj' }}
+        agents={[]}
+        onNavigate={vi.fn()}
+        showToast={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText(/Template library/i)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /^Blank$/i })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Dev Review$/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Content$/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Onboarding$/i })).toBeDisabled();
+  });
+
+  it('new workflow discard after template uses local-baseline toast copy', async () => {
+    const showToast = vi.fn();
+    render(
+      <ProjectWorkflowBuilder
+        projectId="p1"
+        workflowId="new"
+        project={{ id: 'p1', name: 'Proj' }}
+        agents={[{ id: 'a1', projectId: 'p1', name: 'Bot', active: true }]}
+        onNavigate={vi.fn()}
+        showToast={showToast}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText(/Template library/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Content$/i }));
+    await waitFor(() => expect(screen.getByDisplayValue('Content pipeline')).toBeInTheDocument());
+    vi.clearAllMocks();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Discard$/i }));
+    await waitFor(() => expect(screen.getByDisplayValue('New workflow')).toBeInTheDocument());
+    expect(showToast).toHaveBeenCalledWith(
+      'Discarded edits — restored your local baseline.',
+      'success',
+      2500,
+    );
   });
 });

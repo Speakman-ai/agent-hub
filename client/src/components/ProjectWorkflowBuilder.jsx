@@ -11,6 +11,7 @@ import {
   ListOrdered,
   BookOpen,
   Copy,
+  Library,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { toWorkflowEditView } from '../utils/workflowEditView.js';
@@ -21,22 +22,14 @@ import {
   WORKFLOW_CRON_PRESET_LABELS,
   WORKFLOW_CRON_MODES_ORDER,
 } from '../utils/workflowDraft.js';
+import {
+  blankWorkflowDraft,
+  instantiateWorkflowTemplate,
+  getWorkflowTemplateMetaList,
+} from '../utils/workflowTemplateLibrary.js';
 
 const WORKFLOW_WS = 'agenthub-workflow-ws';
 const WORKFLOW_WS_DEBOUNCE_MS = 450;
-
-function emptyDraft() {
-  return {
-    name: 'New workflow',
-    trigger_type: 'manual',
-    default_payload_str: '{\n  \n}',
-    steps: [],
-    cron_mode: 'off',
-    cron_expr: '',
-    webhook_enabled: false,
-    kanban_trigger_column_id: '',
-  };
-}
 
 function cloneDraft(d) {
   return JSON.parse(JSON.stringify(d));
@@ -95,6 +88,7 @@ export default function ProjectWorkflowBuilder({
   const projectAgents = useMemo(() => agentsInProject(agents, projectId), [agents, projectId]);
 
   const defaultAgentId = projectAgents[0]?.id || '';
+  const templateSeedsEnabled = Boolean(defaultAgentId);
 
   const otherProjectsSorted = useMemo(() => {
     const list = Array.isArray(projects)
@@ -131,7 +125,7 @@ export default function ProjectWorkflowBuilder({
     const myGen = ++loadGenRef.current;
     if (!projectId) return;
     if (isNew) {
-      const w = emptyDraft();
+      const w = blankWorkflowDraft();
       if (myGen !== loadGenRef.current) return;
       setDraft(w);
       setBaselineDraft(cloneDraft(w));
@@ -240,6 +234,39 @@ export default function ProjectWorkflowBuilder({
     onNavigate(`workflows:${projectId}`);
   };
 
+  const applyWorkflowTemplate = (templateId) => {
+    if (!isNew) return;
+    const blankSnap = workflowDraftSnapshot(blankWorkflowDraft());
+    if (templateId === 'blank') {
+      if (!dirty && draft != null && workflowDraftSnapshot(draft) === blankSnap) return;
+      if (dirty) {
+        const ok = window.confirm('Reset to a blank workflow? Unsaved edits will be lost.');
+        if (!ok) return;
+      }
+      const next = cloneDraft(blankWorkflowDraft());
+      setDraft(next);
+      setBaselineDraft(cloneDraft(next));
+      if (showToast) showToast('Reset to a blank workflow.', 'info', 2500);
+      return;
+    }
+    if (dirty) {
+      const ok = window.confirm(
+        'Replace the current draft with this template? Unsaved edits will be lost.',
+      );
+      if (!ok) return;
+    }
+    try {
+      const next = cloneDraft(instantiateWorkflowTemplate(templateId, defaultAgentId));
+      setDraft(next);
+      setBaselineDraft(cloneDraft(blankWorkflowDraft()));
+      if (showToast) showToast('Template applied — review agents and save.', 'success', 3500);
+    } catch (e) {
+      const msg = String(e.message || e);
+      setError(msg);
+      if (showToast) showToast(msg, 'error', 5000);
+    }
+  };
+
   const copyToClipboard = async (text, label) => {
     if (!text) return;
     try {
@@ -277,7 +304,12 @@ export default function ProjectWorkflowBuilder({
       return;
     }
     setDraft(cloneDraft(baselineDraft));
-    if (showToast) showToast('Restored last saved version.', 'success', 2500);
+    if (showToast) {
+      const msg = isNew
+        ? 'Discarded edits — restored your local baseline.'
+        : 'Restored last saved version.';
+      showToast(msg, 'success', 2500);
+    }
   };
 
   const updateStep = (index, patch) => {
@@ -506,6 +538,55 @@ export default function ProjectWorkflowBuilder({
             </div>
           ) : (
             <>
+              {isNew && (
+                <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-4 space-y-3">
+                  <div className="flex items-center gap-2 text-sm font-medium text-gray-200">
+                    <Library size={16} className="text-violet-400 flex-shrink-0" />
+                    Template library
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    {templateSeedsEnabled ? (
+                      <>
+                        Prefill steps and default JSON. Each step uses the first active agent in
+                        this project until you change it.
+                      </>
+                    ) : (
+                      <>
+                        Seeded templates need at least one active agent in this project (so every
+                        step has a valid <span className="text-gray-400">agentId</span> for save).
+                        You can still start from <strong className="text-gray-300">Blank</strong>{' '}
+                        and add steps after agents exist.
+                      </>
+                    )}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => applyWorkflowTemplate('blank')}
+                      className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-gray-700 bg-gray-950 text-gray-200 hover:border-gray-500 hover:bg-gray-900"
+                    >
+                      Blank
+                    </button>
+                    {getWorkflowTemplateMetaList().map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        title={
+                          templateSeedsEnabled
+                            ? t.description
+                            : 'Add an active agent to this project before using seeded templates.'
+                        }
+                        disabled={!templateSeedsEnabled}
+                        onClick={() => applyWorkflowTemplate(t.id)}
+                        className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border border-violet-800/60 bg-violet-950/40 text-violet-100 hover:bg-violet-900/50 hover:border-violet-600/60 disabled:opacity-40 disabled:pointer-events-none disabled:hover:bg-violet-950/40"
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-4">
                 <label className="block text-xs font-medium text-gray-400 mb-1">
                   Workflow name
