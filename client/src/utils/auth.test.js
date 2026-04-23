@@ -134,6 +134,23 @@ describe('auth network helpers', () => {
     expect(await getAuthStatus('/api')).toEqual(body);
   });
 
+  it('getAuthStatus rejects when the request is aborted (timeout)', async () => {
+    globalThis.fetch = vi.fn((_url, opts) => {
+      return new Promise((_, reject) => {
+        if (opts?.signal) {
+          opts.signal.addEventListener('abort', () => {
+            const e = new Error('Aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        }
+      });
+    });
+    await expect(getAuthStatus('/api', { timeoutMs: 30 })).rejects.toThrow(
+      'Auth status request timed out',
+    );
+  });
+
   it('getAuthStatus passes through activeOrgIsLocal for local-mode orgs', async () => {
     const body = {
       authConfigured: true,

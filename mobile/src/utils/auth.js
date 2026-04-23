@@ -108,11 +108,28 @@ export async function setup({ baseUrl, username, password }) {
   return data;
 }
 
-/** GET /api/auth/status — public probe. */
-export async function getAuthStatus(baseUrl) {
-  const res = await fetch(`${baseUrl}/auth/status`);
-  if (!res.ok) throw new Error(`Auth status failed: ${res.status}`);
-  return res.json();
+/** GET /api/auth/status — public probe. Pass `timeoutMs: 0` to disable the default 15s cap. */
+export async function getAuthStatus(baseUrl, { timeoutMs = 15_000 } = {}) {
+  const useTimeout = timeoutMs > 0;
+  const controller = useTimeout ? new AbortController() : null;
+  const timer =
+    useTimeout && controller
+      ? setTimeout(() => controller.abort(), timeoutMs)
+      : null;
+  try {
+    const res = await fetch(`${baseUrl}/auth/status`, {
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!res.ok) throw new Error(`Auth status failed: ${res.status}`);
+    return res.json();
+  } catch (err) {
+    if (controller && err?.name === 'AbortError') {
+      throw new Error('Auth status request timed out');
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** POST /api/auth/logout — clears local token (stateless server). */

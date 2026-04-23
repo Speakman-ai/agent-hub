@@ -10,7 +10,9 @@ import { dirname, join } from 'path';
 // future edit can't silently reintroduce known-bad patterns.
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKFLOW_PATH = join(__dirname, '..', '.github', 'workflows', 'deploy-dev.yml');
+const REPO_ROOT = join(__dirname, '..');
+const WORKFLOW_PATH = join(REPO_ROOT, '.github', 'workflows', 'deploy-dev.yml');
+const PM2_RELOAD_SCRIPT = join(REPO_ROOT, 'scripts', 'pm2-reload-and-wait.sh');
 
 describe('deploy-dev.yml', () => {
   const yaml = readFileSync(WORKFLOW_PATH, 'utf8');
@@ -39,12 +41,16 @@ describe('deploy-dev.yml', () => {
     expect(executable).toContain('nvm.sh');
   });
 
-  it('disables errexit immediately before the explicit exit 0', () => {
-    // The ordering matters: `set +e` must appear before `exit 0` inside
-    // the health-check success branch so shell bookkeeping cannot
-    // retroactively flip the exit code.
-    const successBlock = executable.match(/echo\s+["']health ok on attempt[\s\S]{0,200}?exit 0/);
-    expect(successBlock, 'health-success block not found').toBeTruthy();
+  it('delegates post-build PM2 + health check to pm2-reload-and-wait.sh', () => {
+    expect(executable).toMatch(/bash\s+scripts\/pm2-reload-and-wait\.sh/);
+  });
+
+  it('disables errexit immediately before the explicit exit 0 (in PM2 script)', () => {
+    // Health success branch moved out of deploy-dev.yml into scripts/pm2-reload-and-wait.sh
+    // so `pm2 reload` uses ecosystem.config.cjs. Same hypothesis-5 ordering guard.
+    const sh = readFileSync(PM2_RELOAD_SCRIPT, 'utf8');
+    const successBlock = sh.match(/echo\s+["']health ok on attempt[\s\S]{0,200}?exit 0/);
+    expect(successBlock, 'health-success block not found in pm2-reload-and-wait.sh').toBeTruthy();
     expect(successBlock![0]).toContain('set +e');
   });
 

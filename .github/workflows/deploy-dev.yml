@@ -127,22 +127,8 @@ jobs:
           (cd server && npm ci --include=dev)
           (cd client && npm ci --include=dev)
           npm run build
-          pm2 restart agent-hub
-          # Health check: 12 attempts × 5s = 60s ceiling. Matches prod so a
-          # slow cold-restart (sqlite open, route mounting) doesn't false-fail.
-          set -x
-          for i in \$(seq 1 12); do
-            if curl -fsS http://localhost:3051/api/health >/dev/null; then
-              echo "health ok on attempt \$i"
-              # Disable errexit before explicit exit so no shell bookkeeping
-              # (trap, pipefail on last pipeline, etc.) can flip 0 to 1.
-              set +e
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "health check FAILED after 12 attempts" >&2
-          exit 1
+          # PM2: reload/start from repo ecosystem (see scripts/pm2-reload-and-wait.sh)
+          bash scripts/pm2-reload-and-wait.sh
           INNER
           )
           # base64 -w0 keeps the blob on one line so the outer heredoc
