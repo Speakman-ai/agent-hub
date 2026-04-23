@@ -95,20 +95,6 @@ describe('Projects', () => {
       expect(res.body.preCommitCommands).toEqual(['npm run lint']);
     });
 
-    it('creates project with verifyBeforeDoneCommands', async () => {
-      const res = await request
-        .post('/api/projects')
-        .send({
-          id: 'proj-verify-done-create',
-          name: 'Verify Project',
-          cwd: '/tmp',
-          verifyBeforeDoneCommands: ['  npm test  ', '', 'npm run lint'],
-        })
-        .expect(201);
-
-      expect(res.body.verifyBeforeDoneCommands).toEqual(['npm test', 'npm run lint']);
-    });
-
     it('creates project with checkHealCommands and checkHealMaxRounds', async () => {
       const res = await request
         .post('/api/projects')
@@ -214,21 +200,6 @@ describe('Projects', () => {
         .send({ preCommitCommands: [] })
         .expect(200);
       expect(cleared.body.preCommitCommands).toBeUndefined();
-    });
-
-    it('updates verifyBeforeDoneCommands and clears when empty array', async () => {
-      const proj = await createProject();
-      const withV = await request
-        .patch(`/api/projects/${proj.id}`)
-        .send({ verifyBeforeDoneCommands: [' npm run lint ', 'npm test'] })
-        .expect(200);
-      expect(withV.body.verifyBeforeDoneCommands).toEqual(['npm run lint', 'npm test']);
-
-      const cleared = await request
-        .patch(`/api/projects/${proj.id}`)
-        .send({ verifyBeforeDoneCommands: [] })
-        .expect(200);
-      expect(cleared.body.verifyBeforeDoneCommands).toBeUndefined();
     });
 
     it('updates checkHealCommands / checkHealMaxRounds and clears heal list with empty array', async () => {
@@ -654,10 +625,10 @@ describe('Sessions', () => {
     });
   });
 
-  describe('PUT /api/sessions/:sessionId/task-state', () => {
-    it('persists task state and returns taskState', async () => {
+  describe('PUT /api/sessions/:sessionId/task-state (removed)', () => {
+    it('returns 404 for all bodies — REST task-state was removed with the task-plan revert', async () => {
       const session = await createSession();
-      const res = await request
+      await request
         .put(`/api/sessions/${session.id}/task-state`)
         .send({
           taskState: {
@@ -666,31 +637,16 @@ describe('Sessions', () => {
             lastFailure: 'CI red',
           },
         })
-        .expect(200);
-
-      expect(res.body.taskState?.goal).toBe('Finish API');
-      expect(res.body.task_state_json).toContain('Finish API');
-      const get = await request.get(`/api/sessions/${session.id}`).expect(200);
-      expect(get.body.taskState?.checklist?.[0]?.text).toBe('Add tests');
-    });
-
-    it('clears task state with null', async () => {
-      const session = await createSession();
+        .expect(404);
       await request
         .put(`/api/sessions/${session.id}/task-state`)
         .send({ taskState: { goal: 'x' } })
-        .expect(200);
-      const cleared = await request
+        .expect(404);
+      await request
         .put(`/api/sessions/${session.id}/task-state`)
         .send({ taskState: null })
-        .expect(200);
-      expect(cleared.body.task_state_json).toBeNull();
-      expect(cleared.body.taskState).toBeNull();
-    });
-
-    it('rejects missing taskState field', async () => {
-      const session = await createSession();
-      await request.put(`/api/sessions/${session.id}/task-state`).send({}).expect(400);
+        .expect(404);
+      await request.put(`/api/sessions/${session.id}/task-state`).send({}).expect(404);
     });
   });
 

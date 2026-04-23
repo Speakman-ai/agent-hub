@@ -1,10 +1,9 @@
 /**
  * Unified ReAct / auto-continuation budgets (project defaults + epic overrides).
  *
- * Token chain caps (`maxReactChainTokens`) only accrue when the active engine’s
- * JSONL stream includes usage on terminal `result` events (Claude / Codex /
- * Gemini paths today). Cursor Agent’s `result` shape does not carry token
- * counts, so that cap is effectively inactive there until the CLI exposes them.
+ * Host-side caps are limited to what we can observe at the auto-continuation
+ * boundary (depth, wall clock, model turns). Per-CLI-spawn / per-tool / token
+ * tallies are not enforced — the harness governs those internally.
  */
 
 import { MAX_WIKI_RAG_CALLS_PER_SESSION } from './wiki-rag.js';
@@ -20,16 +19,6 @@ export interface OrchestrationBudgetsPartial {
   maxReactWallClockMs?: number;
   /** Max model invocations (CLI rounds) in one chain. 0 = unlimited (depth cap still applies). */
   maxReactModelTurns?: number;
-  /** Max host CLI spawns in one chain. 0 = unlimited. */
-  maxReactChainCliSpawns?: number;
-  /** Max agent Bash/shell tool_use events summed across the chain. 0 = unlimited. */
-  maxReactChainAgentBashTools?: number;
-  /**
-   * Max input+output tokens summed across the chain when the engine reports
-   * usage on `result` events (see module note — Cursor often omits these).
-   * 0 = unlimited.
-   */
-  maxReactChainTokens?: number;
   maxReactActionsPerTurn?: number;
   maxWikiRagCallsPerSession?: number;
   maxWebSearchCallsPerSession?: number;
@@ -39,9 +28,6 @@ export interface ResolvedOrchestrationBudgets {
   maxContinuationDepth: number;
   maxReactWallClockMs: number;
   maxReactModelTurns: number;
-  maxReactChainCliSpawns: number;
-  maxReactChainAgentBashTools: number;
-  maxReactChainTokens: number;
   maxReactActionsPerTurn: number;
   maxWikiRagCallsPerSession: number;
   maxWebSearchCallsPerSession: number;
@@ -51,9 +37,6 @@ export const DEFAULT_ORCHESTRATION_BUDGETS: ResolvedOrchestrationBudgets = {
   maxContinuationDepth: 4,
   maxReactWallClockMs: 0,
   maxReactModelTurns: 0,
-  maxReactChainCliSpawns: 0,
-  maxReactChainAgentBashTools: 0,
-  maxReactChainTokens: 0,
   maxReactActionsPerTurn: 6,
   maxWikiRagCallsPerSession: MAX_WIKI_RAG_CALLS_PER_SESSION,
   maxWebSearchCallsPerSession: MAX_WEB_SEARCH_CALLS_PER_SESSION,
@@ -85,12 +68,6 @@ export function sanitizeOrchestrationBudgetsPartial(
   if (w !== undefined) out.maxReactWallClockMs = w;
   const mt = numOptional(o.maxReactModelTurns, 0, 256);
   if (mt !== undefined) out.maxReactModelTurns = mt;
-  const sp = numOptional(o.maxReactChainCliSpawns, 0, 256);
-  if (sp !== undefined) out.maxReactChainCliSpawns = sp;
-  const ba = numOptional(o.maxReactChainAgentBashTools, 0, 10_000);
-  if (ba !== undefined) out.maxReactChainAgentBashTools = ba;
-  const tk = numOptional(o.maxReactChainTokens, 0, 100_000_000);
-  if (tk !== undefined) out.maxReactChainTokens = tk;
   const ac = numOptional(o.maxReactActionsPerTurn, 1, HOST_REACT_ACTIONS_PARSE_CAP);
   if (ac !== undefined) out.maxReactActionsPerTurn = ac;
   const wiki = numOptional(o.maxWikiRagCallsPerSession, 0, 10_000);
@@ -121,10 +98,6 @@ export function mergeOrchestrationBudgets(
     maxContinuationDepth: patch.maxContinuationDepth ?? base.maxContinuationDepth,
     maxReactWallClockMs: patch.maxReactWallClockMs ?? base.maxReactWallClockMs,
     maxReactModelTurns: patch.maxReactModelTurns ?? base.maxReactModelTurns,
-    maxReactChainCliSpawns: patch.maxReactChainCliSpawns ?? base.maxReactChainCliSpawns,
-    maxReactChainAgentBashTools:
-      patch.maxReactChainAgentBashTools ?? base.maxReactChainAgentBashTools,
-    maxReactChainTokens: patch.maxReactChainTokens ?? base.maxReactChainTokens,
     maxReactActionsPerTurn: patch.maxReactActionsPerTurn ?? base.maxReactActionsPerTurn,
     maxWikiRagCallsPerSession: patch.maxWikiRagCallsPerSession ?? base.maxWikiRagCallsPerSession,
     maxWebSearchCallsPerSession:
@@ -144,9 +117,6 @@ export function finalizeResolvedBudgets(
     ),
     maxReactWallClockMs: num(b.maxReactWallClockMs, 0, 86_400_000, 0),
     maxReactModelTurns: num(b.maxReactModelTurns, 0, 256, 0),
-    maxReactChainCliSpawns: num(b.maxReactChainCliSpawns, 0, 256, 0),
-    maxReactChainAgentBashTools: num(b.maxReactChainAgentBashTools, 0, 10_000, 0),
-    maxReactChainTokens: num(b.maxReactChainTokens, 0, 100_000_000, 0),
     maxReactActionsPerTurn: Math.min(
       HOST_REACT_ACTIONS_PARSE_CAP,
       Math.max(1, num(b.maxReactActionsPerTurn, 1, HOST_REACT_ACTIONS_PARSE_CAP, 6)),
@@ -196,9 +166,6 @@ export interface ReactContinuationBudgetInput {
   continuationDepth: number;
   chainStartedAtMs: number;
   nowMs: number;
-  completedCliSpawns: number;
-  chainBashTools: number;
-  chainTokensUsed: number;
   budgets: ResolvedOrchestrationBudgets;
 }
 
@@ -209,8 +176,7 @@ export interface ReactContinuationBudgetResult {
 
 /**
  * Decide whether the host may schedule another auto-continuation turn after
- * injecting ReAct context. All checks are inclusive of the just-finished CLI
- * round (`completedCliSpawns`, token/bash tallies, etc.).
+ * injecting ReAct context.
  */
 export function evaluateReactContinuationBudgets(
   input: ReactContinuationBudgetInput,
@@ -223,9 +189,6 @@ export function evaluateReactContinuationBudgets(
     continuationDepth,
     chainStartedAtMs,
     nowMs,
-    completedCliSpawns,
-    chainBashTools,
-    chainTokensUsed,
     budgets,
   } = input;
 
@@ -249,37 +212,5 @@ export function evaluateReactContinuationBudgets(
     }
   }
 
-  if (budgets.maxReactChainCliSpawns > 0 && completedCliSpawns >= budgets.maxReactChainCliSpawns) {
-    reasons.push(`CLI spawns ${completedCliSpawns} >= max ${budgets.maxReactChainCliSpawns}`);
-  }
-
-  if (
-    budgets.maxReactChainAgentBashTools > 0 &&
-    chainBashTools >= budgets.maxReactChainAgentBashTools
-  ) {
-    reasons.push(
-      `agent Bash tool calls ${chainBashTools} >= max ${budgets.maxReactChainAgentBashTools}`,
-    );
-  }
-
-  if (budgets.maxReactChainTokens > 0 && chainTokensUsed >= budgets.maxReactChainTokens) {
-    reasons.push(`chain tokens ${chainTokensUsed} >= max ${budgets.maxReactChainTokens}`);
-  }
-
   return { ok: reasons.length === 0, reasons };
-}
-
-export function isAgentShellToolName(tool: string): boolean {
-  const t = (tool || '').trim().toLowerCase();
-  return t === 'bash' || t === 'shell' || t === 'command_execution';
-}
-
-export function addResultEventTokens(
-  prev: number,
-  inputTok: number | null | undefined,
-  outputTok: number | null | undefined,
-): number {
-  const a = typeof inputTok === 'number' && Number.isFinite(inputTok) ? inputTok : 0;
-  const b = typeof outputTok === 'number' && Number.isFinite(outputTok) ? outputTok : 0;
-  return prev + Math.max(0, a) + Math.max(0, b);
 }

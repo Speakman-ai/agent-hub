@@ -110,12 +110,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
-  /** @param {Record<string, unknown>|null} taskState — null clears persisted plan */
-  setSessionTaskState: (sessionId, taskState) =>
-    fetchJSON(`/sessions/${sessionId}/task-state`, {
-      method: 'PUT',
-      body: JSON.stringify({ taskState }),
-    }),
   /** Outer PAV — partial updates: pass only keys you want to change; null clears. */
   setSessionOrchestration: (sessionId, body) =>
     fetchJSON(`/sessions/${sessionId}/orchestration`, {

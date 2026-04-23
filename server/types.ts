@@ -36,7 +36,10 @@ export interface SessionRow {
   updated_at: string;
   /** Soft-delete timestamp. NULL = active; non-NULL = archived (hidden from live list, recoverable for 7 days). */
   deleted_at: string | null;
-  /** JSON blob: goal, checklist[], lastFailure (see `server/task-state.ts`). */
+  /**
+   * Optional legacy SQLite column on upgraded databases from the removed persisted task-plan
+   * feature. Fresh installs no longer create it; reads/writes are gone from the server.
+   */
   task_state_json?: string | null;
   /** Outer PAV phase slug (`planning` | `acting` | `verifying` | `done` | `escalated`) or NULL = legacy/unset. */
   orchestration_phase?: string | null;
@@ -1179,16 +1182,9 @@ export interface Project {
    */
   preCommitCommands?: string[];
   /**
-   * Shell commands run in the session worktree before the server moves a
-   * linked kanban card to **Done** in response to `<agenthub:close-card>`.
-   * On failure the card stays put and a system message is inserted. Empty or
-   * absent skips verification.
-   */
-  verifyBeforeDoneCommands?: string[];
-  /**
-   * When non-empty, a non-zero exit from `preCommitCommands` or
-   * `verifyBeforeDoneCommands` may run these fixers (e.g. `npm run lint:fix`,
-   * `npm run format`) and re-run the failed check suite, capped by `checkHealMaxRounds`.
+   * When non-empty, a non-zero exit from `preCommitCommands` may run these
+   * fixers (e.g. `npm run lint:fix`, `npm run format`) and re-run the failed
+   * check suite, capped by `checkHealMaxRounds`.
    * Timeouts and output-cap failures never trigger heal.
    * Web client: Settings → Project Settings. Mobile does not expose project hook
    * fields yet — add these when mobile project settings reach parity with web.

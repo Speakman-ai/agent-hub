@@ -24,7 +24,7 @@ import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
 import AgentAvatar from './AgentAvatar.jsx';
 import { daysUntilPurge } from '../utils/time.js';
-import SidebarSessionTaskPlan from './SidebarSessionTaskPlan.jsx';
+import SidebarSessionOrchestration from './SidebarSessionOrchestration.jsx';
 
 export default function Sidebar({
   /** When true, shows a loading overlay on the nav body (org switcher stays usable). */
@@ -70,7 +70,7 @@ export default function Sidebar({
   archivedSessions = [],
   onRestoreSession,
   restoringSessionIds = new Set(),
-  /** Persisted task plan + optional PAV controls for the active chat session (left sidebar). */
+  /** Optional PAV controls for the active chat session (left sidebar). */
   onOrchestrationSave,
   showToast,
 }) {
@@ -142,7 +142,7 @@ export default function Sidebar({
   const isSessionActionable = (session) =>
     !!activeTaskSessionIds[session.id] || !!changesReadyBySession[session.id];
 
-  const taskPlanSession =
+  const orchestrationSession =
     currentView === 'chat' && activeSessionId
       ? (sessions.find((s) => s.id === activeSessionId) ?? null)
       : null;
@@ -965,9 +965,9 @@ export default function Sidebar({
             ))}
           </div>
 
-          {taskPlanSession ? (
-            <SidebarSessionTaskPlan
-              session={taskPlanSession}
+          {orchestrationSession && onOrchestrationSave ? (
+            <SidebarSessionOrchestration
+              session={orchestrationSession}
               onOrchestrationSave={onOrchestrationSave}
               showToast={showToast}
             />

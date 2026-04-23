@@ -8,8 +8,6 @@ import {
   projectOrchestrationDefaults,
   resolveOrchestrationBudgets,
   sanitizeOrchestrationBudgetsPartial,
-  addResultEventTokens,
-  isAgentShellToolName,
 } from './orchestration-budgets.js';
 import type { KanbanEpicRow, Project } from './types.js';
 
@@ -86,9 +84,6 @@ describe('evaluateReactContinuationBudgets', () => {
       continuationDepth: 0,
       chainStartedAtMs: 0,
       nowMs: 10_000,
-      completedCliSpawns: 1,
-      chainBashTools: 0,
-      chainTokensUsed: 0,
       budgets,
     });
     expect(r.ok).toBe(false);
@@ -103,9 +98,6 @@ describe('evaluateReactContinuationBudgets', () => {
       continuationDepth: 4,
       chainStartedAtMs: 0,
       nowMs: 100,
-      completedCliSpawns: 5,
-      chainBashTools: 0,
-      chainTokensUsed: 0,
       budgets,
     });
     expect(r.ok).toBe(false);
@@ -120,9 +112,6 @@ describe('evaluateReactContinuationBudgets', () => {
       continuationDepth: 0,
       chainStartedAtMs: 0,
       nowMs: 2000,
-      completedCliSpawns: 1,
-      chainBashTools: 0,
-      chainTokensUsed: 0,
       budgets: { ...budgets, maxReactWallClockMs: 1000 },
     });
     expect(r.ok).toBe(false);
@@ -137,9 +126,6 @@ describe('evaluateReactContinuationBudgets', () => {
       continuationDepth: 1,
       chainStartedAtMs: 0,
       nowMs: 500,
-      completedCliSpawns: 2,
-      chainBashTools: 1,
-      chainTokensUsed: 50,
       budgets,
     });
     expect(r.ok).toBe(true);
@@ -156,17 +142,5 @@ describe('projectOrchestrationDefaults', () => {
   it('uses defaults when project has no budgets', () => {
     const p = { id: 'x', name: 'n', cwd: '/', ahw: '/', agents: [] } as unknown as Project;
     expect(projectOrchestrationDefaults(p).maxContinuationDepth).toBe(4);
-  });
-});
-
-describe('token + shell helpers', () => {
-  it('addResultEventTokens sums non-finite as zero', () => {
-    expect(addResultEventTokens(10, 3, 5)).toBe(18);
-    expect(addResultEventTokens(10, null, null)).toBe(10);
-  });
-
-  it('isAgentShellToolName matches common shells', () => {
-    expect(isAgentShellToolName('Bash')).toBe(true);
-    expect(isAgentShellToolName('Edit')).toBe(false);
   });
 });

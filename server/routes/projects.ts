@@ -125,7 +125,6 @@ interface OnboardBody {
     color?: string;
     githubRepo?: { owner: string; repo: string };
     preCommitCommands?: unknown;
-    verifyBeforeDoneCommands?: unknown;
     checkHealCommands?: unknown;
     checkHealMaxRounds?: unknown;
   };
@@ -388,7 +387,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       color,
       commands,
       preCommitCommands,
-      verifyBeforeDoneCommands,
       checkHealCommands,
       checkHealMaxRounds,
     } = req.body as {
@@ -398,7 +396,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       color?: string;
       commands?: ProjectCommands;
       preCommitCommands?: unknown;
-      verifyBeforeDoneCommands?: unknown;
       checkHealCommands?: unknown;
       checkHealMaxRounds?: unknown;
     };
@@ -427,10 +424,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     }
     const pcCreate = normalizePreCommitCommands(preCommitCommands);
     if (pcCreate.length) (project as Record<string, unknown>).preCommitCommands = pcCreate;
-    // Same shape as pre-commit: arbitrary shell strings executed server-side in
-    // the session worktree when closing a card (trust model identical to preCommitCommands).
-    const vbdCreate = normalizePreCommitCommands(verifyBeforeDoneCommands);
-    if (vbdCreate.length) (project as Record<string, unknown>).verifyBeforeDoneCommands = vbdCreate;
     const healCreate = normalizePreCommitCommands(checkHealCommands);
     if (healCreate.length) (project as Record<string, unknown>).checkHealCommands = healCreate;
     if ((req.body as Record<string, unknown>).checkHealMaxRounds !== undefined) {
@@ -515,12 +508,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       const pc = normalizePreCommitCommands(rawPc);
       if (pc.length) (project as Record<string, unknown>).preCommitCommands = pc;
       else delete (project as Record<string, unknown>).preCommitCommands;
-    }
-    if ((req.body as Record<string, unknown>).verifyBeforeDoneCommands !== undefined) {
-      const rawV = (req.body as Record<string, unknown>).verifyBeforeDoneCommands;
-      const v = normalizePreCommitCommands(rawV);
-      if (v.length) (project as Record<string, unknown>).verifyBeforeDoneCommands = v;
-      else delete (project as Record<string, unknown>).verifyBeforeDoneCommands;
     }
     if ((req.body as Record<string, unknown>).checkHealCommands !== undefined) {
       const rawH = (req.body as Record<string, unknown>).checkHealCommands;
@@ -828,9 +815,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     }
     const pcOnboard = normalizePreCommitCommands(projectData.preCommitCommands);
     if (pcOnboard.length) (project as Record<string, unknown>).preCommitCommands = pcOnboard;
-    const vbdOnboard = normalizePreCommitCommands(projectData.verifyBeforeDoneCommands);
-    if (vbdOnboard.length)
-      (project as Record<string, unknown>).verifyBeforeDoneCommands = vbdOnboard;
     const healOnboard = normalizePreCommitCommands(projectData.checkHealCommands);
     if (healOnboard.length) (project as Record<string, unknown>).checkHealCommands = healOnboard;
     if (projectData.checkHealMaxRounds !== undefined) {

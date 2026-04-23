@@ -7,13 +7,6 @@ export const ORCHESTRATION_FIELD_META = [
   { key: 'maxContinuationDepth', label: 'Max continuation depth', hint: 'Default 4' },
   { key: 'maxReactWallClockMs', label: 'Max chain wall clock (ms)', hint: '0 = unlimited' },
   { key: 'maxReactModelTurns', label: 'Max model turns / chain', hint: '0 = depth only' },
-  { key: 'maxReactChainCliSpawns', label: 'Max CLI spawns / chain', hint: '0 = unlimited' },
-  { key: 'maxReactChainAgentBashTools', label: 'Max Bash tools / chain', hint: '0 = unlimited' },
-  {
-    key: 'maxReactChainTokens',
-    label: 'Max tokens / chain',
-    hint: '0 = unlimited. Needs engine usage on result events (often N/A for Cursor).',
-  },
   { key: 'maxReactActionsPerTurn', label: 'Max ReAct actions / turn', hint: 'Default 6, max 12' },
   { key: 'maxWikiRagCallsPerSession', label: 'Wiki hybrid calls / session', hint: 'Default 10' },
   { key: 'maxWebSearchCallsPerSession', label: 'Web search calls / session', hint: 'Default 8' },

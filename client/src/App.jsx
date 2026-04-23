@@ -797,10 +797,10 @@ export default function App() {
           break;
         case 'session-updated':
           // Raw `sessions` table row from `getSession` (same columns as list endpoints).
-          // Unlike `GET /api/sessions/:id`, this payload is not enriched with `taskState`
-          // or `orchestrationMeta` — only snake_case JSON columns (`task_state_json`,
-          // `orchestration_meta`, …). Spreading replaces the prior object so DB fields
-          // stay in sync; if the payload ever becomes partial, merge field-by-field.
+          // Unlike `GET /api/sessions/:id`, this payload is not enriched with
+          // `orchestrationMeta` — use snake_case `orchestration_meta` on the row. Spreading
+          // replaces the prior object so DB fields stay in sync; if the payload ever becomes
+          // partial, merge field-by-field.
           setSessions((prev) =>
             prev.map((s) => (s.id === data.session.id ? { ...s, ...data.session } : s)),
           );

@@ -38,12 +38,7 @@ Notable columns: `id`, `agent_id`, `engine` (`claude-code` | `cursor-agent` | `g
 [ReAct loop](#react-loop--host-mediated-skillwikiweb-actions)), `created_at`, `updated_at`, `title`,
 `last_message_at`.
 
-**Persisted task plan:** `task_state_json` holds optional JSON (`goal`, `checklist`, `lastFailure`)
-for long-running work. **Primary writer:** the assistant, via a **terminal** `<agenthub:task-state>...</agenthub:task-state>`
-block (JSON object) at the end of a turn; the server persists it, broadcasts `session-updated`, and strips the block from the
-visible assistant message. The web client shows it **read-only** in the left sidebar under **Task plan**.
-Support / automation may still use `PUT /api/sessions/:id/task-state` (`{ "taskState": { ... } }`, or `null` to clear).
-When non-empty, the host appends **Persisted task plan** plus **Session task plan** guidance to the enriched system prompt as **fenced JSON** for the snapshot (so stored text cannot reshape surrounding instructions).
+Task planning within a turn is owned by the engine’s native todo / scratch flow — Agent Hub does not persist a parallel task-state column or sidebar panel.
 
 ## Message row
 
@@ -255,12 +250,6 @@ All three constants are overridable per-call via optional
   with `{ agentId, session }` (same payload shape as kanban assign and
   `POST /api/agents/:agentId/sessions`) so web/mobile clients can splice the
   new session into the agent's sidebar list without a manual refresh.
-- **Persisted task plan on handoff**: when the source session has a non-empty
-  `task_state_json`, the server copies that column onto the **new** target
-  session row when the handoff target is created, so the specialist keeps the
-  same structured scratchpad (goal / checklist / last failure) in addition to
-  transcript + `note`.
-
 ### `<agenthub:close-card>` — auto-close duplicate / already-done cards
 
 If you pick up a kanban card and discover the work is redundant
@@ -277,24 +266,10 @@ parked. End your turn with:
   `note` (required, non-empty, one-line shown in the auto-close comment),
   `duplicateOfCardId` (optional canonical card id).
 - **Server behavior**: finds the card linked to the current session via
-  `kanban_cards.session_id`. If the project row defines
-  **`verifyBeforeDoneCommands`** (shell commands, one per line — same UI bucket
-  as **Project Settings → Verify before Done** next to pre-commit hooks), the
-  host runs them **sequentially in the session worktree** before moving the card
-  to **Done**. Output streams to clients as WebSocket **`done_verify_log`** chunks
-  (buffer cleared with **`done_verify_log_done`**). If a command exits non-zero
-  or times out, the card **is not moved** and a **system** message records the
-  failure (command output is indented markdown, not triple-backtick fenced). If
-  verify commands succeed and the close completes, the persisted **system** message
-  includes **bounded** verify command output (same indented style) plus
-  **`meta.cardClose`:** **`moved`** when a column move ran, or **`already_in_done`**
-  when the card was already in Done (audit comment is best-effort; no `moveKanbanCard`).
-  If verification succeeds but the board move cannot complete (no Done column,
-  move SQL error, no linked card, etc.), the system message names the specific
-  failure — it is **not** collapsed into a generic “no card” case. When
-  `verifyBeforeDoneCommands` is **empty or absent**, the legacy path applies:
-  move to Done + comment best-effort; missing card / column / DB issues are
-  silent no-ops for the main chat turn.
+  `kanban_cards.session_id`, then moves it to the board’s **Done** column and
+  appends an audit comment (best effort). In-repo verification is expected from
+  **CI, pre-commit hooks, and human review** — the host does not run a separate
+  in-session “verify before Done” command pipeline.
 - **Requires**: the session must be linked to a card (it is whenever the
   sidebar was auto-renamed to the card title, i.e. when the card was
   created with `session_id: $AGENT_HUB_SESSION_ID`).

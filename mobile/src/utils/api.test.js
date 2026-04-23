@@ -201,14 +201,6 @@ describe('api worktree helpers — URL + method + body parity with web client', 
     expect(JSON.parse(init.body)).toEqual({ enabled: false });
   });
 
-  it('setSessionTaskState(id, payload) → PUT /sessions/:id/task-state', async () => {
-    await api.setSessionTaskState('sess-ts', { goal: 'x' });
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/sessions/sess-ts/task-state');
-    expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body)).toEqual({ taskState: { goal: 'x' } });
-  });
-
   it('setSessionOrchestration(id, body) → PUT /sessions/:id/orchestration', async () => {
     await api.setSessionOrchestration('sess-o', { phase: 'verifying', meta: { pr: 1 } });
     const [url, init] = lastCall();

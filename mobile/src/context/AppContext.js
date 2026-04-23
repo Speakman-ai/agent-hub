@@ -97,7 +97,6 @@ export function AppProvider({ children }) {
   const [changesReady, setChangesReady] = useState({});
   // Live git/gh output while POST /create-pr runs (server streams via WebSocket).
   const [createPrLogBySession, setCreatePrLogBySession] = useState({});
-  const [doneVerifyLogBySession, setDoneVerifyLogBySession] = useState({});
   // Tracks which agenthub:ask prompts the user has already answered in this
   // app instance, so the picker renders as "Submitted" immediately after
   // tapping. This is the optimistic, in-memory half; the authoritative source
@@ -269,7 +268,7 @@ export function AppProvider({ children }) {
         }
         break;
       case 'session-updated':
-        // Matches web: server sends a full session row; spread keeps `task_state_json` etc. fresh.
+        // Matches web: server sends a full session row; spread keeps fields fresh.
         setSessions((prev) =>
           prev.map((s) => (s.id === data.session.id ? { ...s, ...data.session } : s)),
         );
@@ -629,28 +628,6 @@ export function AppProvider({ children }) {
       }
       // Stream finished — keep text for failed paths; see web client.
       case 'create_pr_log_done':
-        break;
-
-      case 'done_verify_log': {
-        const maxV = 250_000;
-        if (data.sessionId && typeof data.text === 'string') {
-          setDoneVerifyLogBySession((prev) => {
-            const combined = (prev[data.sessionId] || '') + data.text;
-            const tail = combined.length > maxV ? combined.slice(-maxV) : combined;
-            return { ...prev, [data.sessionId]: tail };
-          });
-        }
-        break;
-      }
-      case 'done_verify_log_done':
-        if (data.sessionId) {
-          setDoneVerifyLogBySession((prev) => {
-            if (!prev[data.sessionId]) return prev;
-            const next = { ...prev };
-            delete next[data.sessionId];
-            return next;
-          });
-        }
         break;
 
       // ── Thread events (persistent output logs) ───────────────
@@ -1659,7 +1636,6 @@ export function AppProvider({ children }) {
     kanbanRefreshKey,
     changesReady,
     createPrLogBySession,
-    doneVerifyLogBySession,
     dismissChangesReady,
     beginCreatePrPublish,
     // Ask-prompt (`agenthub:ask`) submission state and handler

@@ -898,12 +898,6 @@ function initDb(dataDir: string): void {
   }
 
   try {
-    db.prepare('SELECT task_state_json FROM sessions LIMIT 1').get();
-  } catch {
-    db.exec('ALTER TABLE sessions ADD COLUMN task_state_json TEXT DEFAULT NULL');
-  }
-
-  try {
     db.prepare('SELECT orchestration_phase FROM sessions LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE sessions ADD COLUMN orchestration_phase TEXT DEFAULT NULL');
@@ -1494,9 +1488,6 @@ function initDb(dataDir: string): void {
     ),
     updateSessionWebSearchCallsUsed: db.prepare(
       "UPDATE sessions SET web_search_calls_used = ?, updated_at = datetime('now') WHERE id = ?",
-    ),
-    updateSessionTaskState: db.prepare(
-      "UPDATE sessions SET task_state_json = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionOrchestration: db.prepare(
       "UPDATE sessions SET orchestration_phase = ?, orchestration_meta = ?, updated_at = datetime('now') WHERE id = ?",

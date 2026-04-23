@@ -7,14 +7,23 @@ import {
 
 describe('buildOrchestrationBudgetsPayload', () => {
   it('returns null when no numeric fields are set', () => {
-    expect(buildOrchestrationBudgetsPayload({ maxContinuationDepth: '' })).toBeNull();
+    expect(
+      buildOrchestrationBudgetsPayload({
+        maxContinuationDepth: '',
+        maxReactWallClockMs: '',
+        maxReactModelTurns: '',
+        maxReactActionsPerTurn: '',
+        maxWikiRagCallsPerSession: '',
+        maxWebSearchCallsPerSession: '',
+      }),
+    ).toBeNull();
   });
 
   it('builds a partial object from filled fields', () => {
     const p = buildOrchestrationBudgetsPayload({
       maxContinuationDepth: '3',
       maxReactWallClockMs: '1000',
-      maxReactChainTokens: '',
+      maxReactModelTurns: '',
     });
     expect(p).toEqual({
       maxContinuationDepth: 3,

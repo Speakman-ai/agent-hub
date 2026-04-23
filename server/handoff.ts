@@ -722,15 +722,6 @@ export async function handleHandoff(
     // target's enriched-prompt builder can find the handoff row via
     // `getHandoffByToSession` (which filters on status='delivered').
     stmts.markHandoffDelivered.run(handoffId);
-    try {
-      const fromRow = stmts.getSession.get(srcSessionId) as SessionRow | undefined;
-      const ts = fromRow?.task_state_json?.trim();
-      if (ts) {
-        stmts.updateSessionTaskState.run(ts, toSessionId);
-      }
-    } catch (e) {
-      console.error('[Handoff] Failed to copy task_state_json:', (e as Error).message);
-    }
   } catch (err) {
     const reason = `Failed to create target session: ${(err as Error).message}`;
     console.error('[Handoff]', reason);

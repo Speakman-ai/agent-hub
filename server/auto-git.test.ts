@@ -25,13 +25,11 @@ import {
   buildPrBody,
   isGarbageTitle,
   getProjectPreCommitCommands,
-  getProjectVerifyBeforeDoneCommands,
   getProjectCheckHealCommands,
   getProjectCheckHealMaxRounds,
   isEligibleCheckFailureForAutoHeal,
   CheckCommandFailedError,
   CHECK_COMMAND_NONZERO_EXIT_CODE,
-  runProjectVerifyBeforeDoneCommands,
   truncateForGitCommitMessage,
   MAX_GIT_COMMIT_MESSAGE_CHARS,
   runShellCommandStreaming,
@@ -250,142 +248,6 @@ describe('getProjectPreCommitCommands', () => {
   });
 });
 
-describe('getProjectVerifyBeforeDoneCommands', () => {
-  it('returns trimmed non-empty strings from project.verifyBeforeDoneCommands', () => {
-    const project = {
-      id: 'p1',
-      verifyBeforeDoneCommands: ['  npm test  ', '', 'npm run lint', false],
-    } as never;
-    expect(getProjectVerifyBeforeDoneCommands(project)).toEqual(['npm test', 'npm run lint']);
-  });
-
-  it('returns empty array when missing or invalid', () => {
-    expect(getProjectVerifyBeforeDoneCommands({ id: 'p' } as never)).toEqual([]);
-    expect(
-      getProjectVerifyBeforeDoneCommands({ id: 'p', verifyBeforeDoneCommands: 'x' } as never),
-    ).toEqual([]);
-  });
-});
-
-describe('runProjectVerifyBeforeDoneCommands', () => {
-  it('is a no-op when no commands are configured', async () => {
-    await expect(
-      runProjectVerifyBeforeDoneCommands({ id: 'p' } as never, '/tmp'),
-    ).resolves.toBeUndefined();
-  });
-
-  it('runs a successful shell command', async () => {
-    const spawnMock = spawn as unknown as Mock;
-    spawnMock.mockImplementation(() => {
-      const ee = new EventEmitter() as EventEmitter & {
-        stdout: EventEmitter;
-        stderr: EventEmitter;
-      };
-      ee.stdout = new EventEmitter();
-      ee.stderr = new EventEmitter();
-      queueMicrotask(() => {
-        ee.stdout.emit('data', Buffer.from('ok\n'));
-        ee.emit('close', 0, null);
-      });
-      return ee;
-    });
-    const chunks: string[] = [];
-    await runProjectVerifyBeforeDoneCommands(
-      { id: 'p', verifyBeforeDoneCommands: ['echo hi'] } as never,
-      '/tmp',
-      (c) => chunks.push(c),
-    );
-    expect(chunks.join('')).toContain('$ echo hi');
-    expect(chunks.join('')).toContain('ok');
-  });
-
-  it('rejects when the command exits non-zero', async () => {
-    const spawnMock = spawn as unknown as Mock;
-    spawnMock.mockImplementation(() => {
-      const ee = new EventEmitter() as EventEmitter & {
-        stdout: EventEmitter;
-        stderr: EventEmitter;
-      };
-      ee.stdout = new EventEmitter();
-      ee.stderr = new EventEmitter();
-      queueMicrotask(() => {
-        ee.emit('close', 1, null);
-      });
-      return ee;
-    });
-    await expect(
-      runProjectVerifyBeforeDoneCommands(
-        { id: 'p', verifyBeforeDoneCommands: ['false'] } as never,
-        '/tmp',
-      ),
-    ).rejects.toThrow(/failed/);
-  });
-
-  it('runs heal commands and retries verify when the first check pass fails', async () => {
-    let verifyRuns = 0;
-    installExecAndGhMock((cmd, _opts, callback) => {
-      if (cmd.includes('npm run verify-step')) {
-        verifyRuns += 1;
-        if (verifyRuns === 1) {
-          if (callback) callback(new Error('lint failed'), { stdout: '', stderr: 'err' });
-          return;
-        }
-        if (callback) callback(null, { stdout: '', stderr: '' });
-        return;
-      }
-      if (cmd.includes('npm run heal-step')) {
-        if (callback) callback(null, { stdout: 'fixed\n', stderr: '' });
-        return;
-      }
-      if (callback) callback(null, { stdout: '', stderr: '' });
-    });
-
-    const chunks: string[] = [];
-    await runProjectVerifyBeforeDoneCommands(
-      {
-        id: 'p',
-        verifyBeforeDoneCommands: ['npm run verify-step'],
-        checkHealCommands: ['npm run heal-step'],
-        checkHealMaxRounds: 2,
-      } as never,
-      '/tmp',
-      (c) => chunks.push(c),
-    );
-
-    expect(verifyRuns).toBe(2);
-    const joined = chunks.join('');
-    expect(joined).toContain('Auto-heal');
-    expect(joined).toContain('npm run heal-step');
-    expect(joined).toMatch(/Check round 1\/2[\s\S]*Check round 2\/2/);
-  });
-
-  it('stops after max rounds when checks keep failing', async () => {
-    installExecAndGhMock((cmd, _opts, callback) => {
-      if (cmd.includes('npm run always-bad')) {
-        if (callback) callback(new Error('bad'), { stdout: '', stderr: '' });
-        return;
-      }
-      if (cmd.includes('npm run noop-heal')) {
-        if (callback) callback(null, { stdout: '', stderr: '' });
-        return;
-      }
-      if (callback) callback(null, { stdout: '', stderr: '' });
-    });
-
-    await expect(
-      runProjectVerifyBeforeDoneCommands(
-        {
-          id: 'p',
-          verifyBeforeDoneCommands: ['npm run always-bad'],
-          checkHealCommands: ['npm run noop-heal'],
-          checkHealMaxRounds: 2,
-        } as never,
-        '/tmp',
-      ),
-    ).rejects.toThrow(/Exhausted 2 check round/);
-  });
-});
-
 describe('check auto-heal project fields', () => {
   it('getProjectCheckHealCommands trims and drops non-strings', () => {
     expect(
@@ -414,24 +276,11 @@ describe('check auto-heal project fields', () => {
     ).toBe(true);
     expect(
       isEligibleCheckFailureForAutoHeal(
-        new CheckCommandFailedError('Pre-done verification command failed (2): npm test', {
-          exitCode: 2,
-          logKind: 'verify_before_done',
-        }),
-      ),
-    ).toBe(true);
-    expect(
-      isEligibleCheckFailureForAutoHeal(
         new CheckCommandFailedError('edge', { exitCode: 0, logKind: 'pre_commit' }),
       ),
     ).toBe(false);
     expect(
       isEligibleCheckFailureForAutoHeal(new Error('Pre-commit command failed (1): npm run lint')),
-    ).toBe(true);
-    expect(
-      isEligibleCheckFailureForAutoHeal(
-        new Error('Pre-done verification command failed (2): npm test'),
-      ),
     ).toBe(true);
     expect(
       isEligibleCheckFailureForAutoHeal(new Error('Pre-commit command timed out after 9ms: x')),
@@ -2236,7 +2085,7 @@ describe('runShellCommandStreaming — output byte cap', () => {
     expect(killMock).toHaveBeenCalled();
   });
 
-  it('uses Pre-done verification wording when logKind is verify_before_done', async () => {
+  it('uses Check heal wording for check_heal failures and does not throw CheckCommandFailedError', async () => {
     vi.clearAllMocks();
     (spawn as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
       const ee = new EventEmitter() as EventEmitter & {
@@ -2248,10 +2097,16 @@ describe('runShellCommandStreaming — output byte cap', () => {
       queueMicrotask(() => ee.emit('close', 1, null));
       return ee;
     });
-    await expect(
-      runShellCommandStreaming('false', '/tmp', 3000, undefined, {
-        logKind: 'verify_before_done',
-      }),
-    ).rejects.toThrow(/Pre-done verification command/i);
+    let caught: unknown;
+    try {
+      await runShellCommandStreaming('false', '/tmp', 3000, undefined, {
+        logKind: 'check_heal',
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/Check heal command failed/i);
+    expect(caught).not.toBeInstanceOf(CheckCommandFailedError);
   });
 });

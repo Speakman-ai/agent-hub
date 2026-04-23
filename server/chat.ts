@@ -21,8 +21,6 @@ import {
   buildHandoffPromptSection,
 } from './handoff.js';
 import { parseCloseCardBlock, handleCardAutoClose } from './card-auto-close.js';
-import { getProjectVerifyBeforeDoneCommands } from './auto-git.js';
-import { runVerifiedCloseCardFlow } from './verify-before-done-close-card.js';
 import {
   detectSkillBlock as detectSkillInvokeBlock,
   handleSkillInvoke,
@@ -47,7 +45,6 @@ import {
 } from './wiki-rag.js';
 import { runWebSearchForQuery } from './web-search.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
-import { VERIFY_BEFORE_DONE_MSG_MAX_BYTES } from './verify-before-done-constants.js';
 import {
   applyAssistantTextChunkForDelegationKickoff,
   planDelegationRoundOnProcClose,
@@ -76,15 +73,8 @@ import {
   HOST_REACT_ACTIONS_PARSE_CAP,
   resolveOrchestrationBudgets,
   evaluateReactContinuationBudgets,
-  addResultEventTokens,
-  isAgentShellToolName,
 } from './orchestration-budgets.js';
 import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-observability.js';
-import {
-  formatPersistedTaskPlanPromptAppend,
-  formatTaskStateAgentGuidancePromptAppend,
-  tryApplyTaskStateBlockFromAssistant,
-} from './task-state.js';
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 
 const stmts = _stmts!;
@@ -127,8 +117,6 @@ interface BuildEnrichedPromptOptions {
    * the source session's transcript + handoff note.
    */
   sessionId?: string;
-  /** From `sessions.task_state_json` — injected every turn when non-empty. */
-  persistedTaskStateJson?: string | null;
   /** Outer PAV — `sessions.orchestration_phase` / `orchestration_meta`. */
   orchestrationPhase?: string | null;
   orchestrationMetaJson?: string | null;
@@ -144,12 +132,6 @@ interface InternalChatMessage extends ChatMessage {
   _continuationRetry?: number;
   /** Epoch ms when the current user-turn ReAct chain started (first non-continuation handle). */
   _chainStartedAtMs?: number;
-  /** Completed CLI spawns in this chain (host-side), excluding the in-flight run until close. */
-  _chainShellSpawns?: number;
-  /** Cumulative agent Bash/shell tool_use events in this chain. */
-  _chainBashTools?: number;
-  /** Cumulative reported input+output tokens in this chain. */
-  _chainTokensUsed?: number;
 }
 
 interface ProjectWithCommands extends Project {
@@ -699,16 +681,6 @@ Rules:
     }
   }
 
-  const taskGuidance = formatTaskStateAgentGuidancePromptAppend({
-    sessionId: options.sessionId,
-    persistedTaskStateJson: options.persistedTaskStateJson,
-    isFirstMessage: options.isFirstMessage !== false,
-  });
-  if (taskGuidance) prompt += `\n\n${taskGuidance}`;
-
-  const taskPlan = formatPersistedTaskPlanPromptAppend(options.persistedTaskStateJson ?? null);
-  if (taskPlan) prompt += `\n\n${taskPlan}`;
-
   const outerOrch = formatOuterOrchestrationPromptAppend(
     options.orchestrationPhase ?? null,
     options.orchestrationMetaJson ?? null,
@@ -908,52 +880,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       console.error('Failed to persist error message:', message);
     }
     return content;
-  }
-
-  function persistVerifyBeforeDoneSystemMessage(
-    sessionId: string,
-    content: string,
-    meta: Record<string, unknown>,
-  ): void {
-    let clipped = content;
-    if (Buffer.byteLength(clipped, 'utf8') > VERIFY_BEFORE_DONE_MSG_MAX_BYTES) {
-      clipped =
-        clipUtf8StringToMaxBytes(clipped, VERIFY_BEFORE_DONE_MSG_MAX_BYTES) + '\n\n… (truncated)';
-    }
-    const msgId = uuidv4();
-    const metadata = JSON.stringify(meta);
-    try {
-      stmts.addMessage.run(msgId, sessionId, 'system', clipped, null, null, null, metadata);
-      stmts.touchSession.run(sessionId);
-      const insertedMessage = (stmts.getMessageById.get(msgId) as MessageRow | undefined) ?? {
-        id: msgId,
-        session_id: sessionId,
-        role: 'system' as const,
-        content: clipped,
-        engine: null,
-        model: null,
-        attachments: null,
-        metadata,
-        created_at: new Date().toISOString(),
-      };
-      broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error('[verify-before-done] Failed to persist system message:', message);
-      // Live clients still get a receipt; reload may not show it (not in DB).
-      const fallback: MessageRow = {
-        id: msgId,
-        session_id: sessionId,
-        role: 'system',
-        content: clipped,
-        engine: null,
-        model: null,
-        attachments: null,
-        metadata,
-        created_at: new Date().toISOString(),
-      };
-      broadcast({ type: 'message_added', sessionId, message: fallback });
-    }
   }
 
   function createCursorChat(cwd: string): Promise<string> {
@@ -1265,7 +1191,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         useWorktree: !!session!.use_worktree,
         isFirstMessage,
         sessionId,
-        persistedTaskStateJson: session!.task_state_json ?? null,
         orchestrationPhase: session!.orchestration_phase ?? null,
         orchestrationMetaJson: session!.orchestration_meta ?? null,
         _getEnrichedAgent: getEnrichedAgent,
@@ -1666,9 +1591,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     })();
 
     const chainStartedAtMs = msg._chainStartedAtMs ?? Date.now();
-    const priorShellCompleted = msg._chainShellSpawns ?? 0;
-    let chainBashTools = msg._chainBashTools ?? 0;
-    let chainTokensUsed = msg._chainTokensUsed ?? 0;
 
     const cliTurnStartMs = Date.now();
     const proc = spawn(bin, args, {
@@ -1708,18 +1630,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
         } catch {}
         tryKickoffDelegationFromStream(accumulatedForKickoff);
-      }
-
-      if (event.type === 'tool_use' && isAgentShellToolName(event.tool)) {
-        chainBashTools += 1;
-      }
-
-      if (event.type === 'result') {
-        chainTokensUsed = addResultEventTokens(
-          chainTokensUsed,
-          event.inputTokens,
-          event.outputTokens,
-        );
       }
 
       if (event.type === 'system' && event.gitWorktree != null) {
@@ -2331,21 +2241,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         console.error('[assistant-context] Unexpected error:', (err as Error).message);
       }
 
-      const taskStateApply = tryApplyTaskStateBlockFromAssistant(rawFinalContent);
-      if (taskStateApply.kind === 'ok') {
-        try {
-          stmts.updateSessionTaskState.run(taskStateApply.serialized, sessionId);
-          (session as SessionRow).task_state_json = taskStateApply.serialized;
-          const sessRow = stmts.getSession.get(sessionId) as SessionRow;
-          broadcast({ type: 'session-updated', session: sessRow });
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          console.error('[chat] task_state from assistant block failed:', msg);
-        }
-      } else if (taskStateApply.kind === 'invalid') {
-        console.warn('[chat] task_state block present but JSON was invalid or oversize');
-      }
-
       finalContent = stripAssistantControlBlocks(finalContent);
       if (!finalContent.trim()) {
         finalContent = continuationContextAdded
@@ -2355,7 +2250,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       const controlFlowPresent =
         !!closeTask || !!handoffDetection?.present || !!handoffDetection?.task || !!delegateTasks;
-      const completedCliSpawns = priorShellCompleted + 1;
       budgetResult = evaluateReactContinuationBudgets({
         reactLoopEnabled,
         continuationContextAdded,
@@ -2363,9 +2257,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         continuationDepth,
         chainStartedAtMs,
         nowMs: Date.now(),
-        completedCliSpawns,
-        chainBashTools,
-        chainTokensUsed,
         budgets: orchestrationBudgets,
       });
       shouldAutoContinue = budgetResult.ok;
@@ -2563,43 +2454,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       // Auto-close the linked kanban card when the agent reports the work
       // is a duplicate or already done via an `<agenthub:close-card>` block.
-      // Optional `verifyBeforeDoneCommands` on the project runs in the session
-      // worktree first; output streams via `done_verify_log` WebSocket events.
-      // On failure the card is not moved and a system message records why.
-      // Runs before handoff/delegate (same ordering as before).
       if (closeTask) {
         try {
           const projectId =
             (project as Project & { id?: string }).id ||
             (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
             '';
-          const verifyCmds = getProjectVerifyBeforeDoneCommands(project);
-          if (!verifyCmds.length) {
-            handleCardAutoClose(sessionId, closeTask, {
-              stmts: stmts as Stmts,
-              broadcast,
-              projectId,
-              author: agent.id,
-            });
-          } else if (!existsSync(effectiveCwd)) {
-            persistVerifyBeforeDoneSystemMessage(
-              sessionId,
-              `**Pre-done verification could not run:** the session worktree path does not exist or is unreachable:\n\`${effectiveCwd}\`\n\nThe linked kanban card was **not** moved to Done.`,
-              { kind: 'verify_before_done', outcome: 'cwd_missing', cwd: effectiveCwd },
-            );
-          } else {
-            await runVerifiedCloseCardFlow({
-              sessionId,
-              closeTask,
-              project,
-              effectiveCwd,
-              projectId,
-              author: agent.id,
-              stmts: stmts as Stmts,
-              broadcast,
-              persistSystemMessage: persistVerifyBeforeDoneSystemMessage,
-            });
-          }
+          handleCardAutoClose(sessionId, closeTask, {
+            stmts: stmts as Stmts,
+            broadcast,
+            projectId,
+            author: agent.id,
+          });
         } catch (err) {
           console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
         }
@@ -2633,9 +2499,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             _autoContinuation: true,
             _continuationDepth: continuationDepth + 1,
             _chainStartedAtMs: chainStartedAtMs,
-            _chainShellSpawns: priorShellCompleted + 1,
-            _chainBashTools: chainBashTools,
-            _chainTokensUsed: chainTokensUsed,
           } as InternalChatMessage).catch((err: unknown) => {
             const message = err instanceof Error ? err.message : String(err);
             console.error('[auto-continuation] Failed:', message);

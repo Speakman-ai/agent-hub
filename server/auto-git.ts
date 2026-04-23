@@ -23,7 +23,7 @@ const CHECK_HEAL_BACKOFF_MS = 250;
 
 /**
  * Machine-readable reason for `CheckCommandFailedError` — non-zero exit from a
- * project-configured check command (`pre_commit` / `verify_before_done` only).
+ * project-configured pre-commit check command only.
  */
 export const CHECK_COMMAND_NONZERO_EXIT_CODE = 'check_exit_nonzero' as const;
 
@@ -31,12 +31,9 @@ export const CHECK_COMMAND_NONZERO_EXIT_CODE = 'check_exit_nonzero' as const;
 export class CheckCommandFailedError extends Error {
   readonly agentHubErrorCode: typeof CHECK_COMMAND_NONZERO_EXIT_CODE;
   readonly exitCode: number;
-  readonly logKind: 'pre_commit' | 'verify_before_done';
+  readonly logKind: 'pre_commit';
 
-  constructor(
-    message: string,
-    opts: { exitCode: number; logKind: 'pre_commit' | 'verify_before_done' },
-  ) {
+  constructor(message: string, opts: { exitCode: number; logKind: 'pre_commit' }) {
     super(message);
     this.name = 'CheckCommandFailedError';
     this.agentHubErrorCode = CHECK_COMMAND_NONZERO_EXIT_CODE;
@@ -123,24 +120,9 @@ export function getProjectPreCommitCommands(project: Project): string[] {
 }
 
 /**
- * Shell commands run in the session worktree when an agent emits
- * `<agenthub:close-card>` and the host is about to move the linked card to
- * **Done**. If any command exits non-zero, the card is not moved and a system
- * message records the failure. Empty or absent skips verification.
- */
-export function getProjectVerifyBeforeDoneCommands(project: Project): string[] {
-  const raw = (project as Record<string, unknown>).verifyBeforeDoneCommands;
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((c): c is string => typeof c === 'string')
-    .map((c) => c.trim())
-    .filter(Boolean);
-}
-
-/**
  * Optional shell commands (lint:fix, format, etc.) run after a **check** command
- * from {@link getProjectPreCommitCommands} or {@link getProjectVerifyBeforeDoneCommands}
- * exits non-zero. Only “safe” failures trigger heal — see `isEligibleCheckFailureForAutoHeal`.
+ * from {@link getProjectPreCommitCommands} exits non-zero. Only “safe” failures
+ * trigger heal — see `isEligibleCheckFailureForAutoHeal`.
  */
 export function getProjectCheckHealCommands(project: Project): string[] {
   const raw = (project as Record<string, unknown>).checkHealCommands;
@@ -189,42 +171,10 @@ export function isEligibleCheckFailureForAutoHeal(err: Error): boolean {
   if (m.includes('timed out after')) return false;
   if (m.includes('output exceeded')) return false;
   if (m.includes('Check heal command')) return false;
-  const isCheckFailure =
-    m.includes('Pre-commit command failed (') ||
-    m.includes('Pre-done verification command failed (');
+  const isCheckFailure = m.includes('Pre-commit command failed (');
   if (!isCheckFailure) return false;
   if (/failed \(null\):/.test(m)) return false;
   return true;
-}
-
-/** Same wall-clock cap as pre-commit hooks — lint/test suites can be slow. */
-const VERIFY_BEFORE_DONE_CMD_TIMEOUT_MS = PRECOMMIT_CMD_TIMEOUT_MS;
-
-/**
- * Run {@link getProjectVerifyBeforeDoneCommands} sequentially in `cwd`.
- * Streams stdout/stderr through `onChunk` when provided.
- */
-export async function runProjectVerifyBeforeDoneCommands(
-  project: Project,
-  cwd: string,
-  onChunk?: (chunk: string) => void,
-): Promise<void> {
-  const cmds = getProjectVerifyBeforeDoneCommands(project);
-  if (!cmds.length) return;
-  const heal = getProjectCheckHealCommands(project);
-  const maxRounds = getProjectCheckHealMaxRounds(project);
-  await runConfiguredShellChecksWithHeal({
-    checkCommands: cmds,
-    healCommands: heal,
-    maxRounds,
-    cwd,
-    timeoutMs: VERIFY_BEFORE_DONE_CMD_TIMEOUT_MS,
-    onChunk,
-    logKind: 'verify_before_done',
-    stageAfterHeal: heal.length > 0,
-    logLabel: '[verify-before-done]',
-    projectId: project.id,
-  });
 }
 
 async function runProjectPreCommitCommands(
@@ -250,7 +200,7 @@ async function runProjectPreCommitCommands(
   });
 }
 
-export type RunShellCommandLogKind = 'pre_commit' | 'verify_before_done' | 'check_heal';
+export type RunShellCommandLogKind = 'pre_commit' | 'check_heal';
 
 export type RunShellCommandStreamingOptions = {
   maxOutputBytes?: number;
@@ -258,7 +208,6 @@ export type RunShellCommandStreamingOptions = {
 };
 
 function shellCommandErrorPrefix(kind: RunShellCommandLogKind): string {
-  if (kind === 'verify_before_done') return 'Pre-done verification command';
   if (kind === 'check_heal') return 'Check heal command';
   return 'Pre-commit command';
 }
@@ -431,15 +380,11 @@ export async function runShellCommandStreaming(
           0,
           5000,
         );
-        if (
-          (logKind === 'pre_commit' || logKind === 'verify_before_done') &&
-          typeof code === 'number' &&
-          code !== 0
-        ) {
+        if (logKind === 'pre_commit' && typeof code === 'number' && code !== 0) {
           reject(
             new CheckCommandFailedError(msg, {
               exitCode: code,
-              logKind,
+              logKind: 'pre_commit',
             }),
           );
           return;

@@ -89,11 +89,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
-  setSessionTaskState: (sessionId, taskState) =>
-    fetchJSON(`/sessions/${sessionId}/task-state`, {
-      method: 'PUT',
-      body: JSON.stringify({ taskState }),
-    }),
   setSessionOrchestration: (sessionId, body) =>
     fetchJSON(`/sessions/${sessionId}/orchestration`, {
       method: 'PUT',

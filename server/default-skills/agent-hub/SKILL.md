@@ -103,8 +103,8 @@ Sessions hold message history and the `ask_mode` flag (read-only / plan
 mode). Coordination with sub-agents also lives here: `<delegate>` spawns
 parallel sub-agents, `<handoff>` transfers ownership, and
 `<agenthub:close-card>` auto-closes a duplicate / already-done card linked to
-your session; projects may define **`verifyBeforeDoneCommands`** so tests/lint
-run in the worktree **before** the Done move (see **references/sessions.md**).
+your session (Done move + audit comment; rely on **CI and pre-commit hooks** for
+verification — see **references/sessions.md**).
 All three are fenced JSON blocks emitted at the end of a turn —
 see the reference for exact shape and lifecycle states.
 

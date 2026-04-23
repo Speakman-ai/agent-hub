@@ -4487,17 +4487,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     return map;
   });
 
-  const [projectVerifyBeforeDoneInput, setProjectVerifyBeforeDoneInput] = useState(() => {
-    const map = {};
-    projects.forEach((p) => {
-      map[p.id] =
-        Array.isArray(p.verifyBeforeDoneCommands) && p.verifyBeforeDoneCommands.length
-          ? p.verifyBeforeDoneCommands.join('\n')
-          : '';
-    });
-    return map;
-  });
-
   const [projectCheckHealInput, setProjectCheckHealInput] = useState(() => {
     const map = {};
     projects.forEach((p) => {
@@ -4529,14 +4518,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   const preCommitServerSnap = useMemo(
     () =>
       JSON.stringify(Object.fromEntries(projects.map((p) => [p.id, p.preCommitCommands ?? []]))),
-    [projects],
-  );
-
-  const verifyBeforeDoneServerSnap = useMemo(
-    () =>
-      JSON.stringify(
-        Object.fromEntries(projects.map((p) => [p.id, p.verifyBeforeDoneCommands ?? []])),
-      ),
     [projects],
   );
 
@@ -4574,20 +4555,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
       ),
     );
   }, [preCommitServerSnap]);
-
-  useEffect(() => {
-    setProjectVerifyBeforeDoneInput(() =>
-      Object.fromEntries(
-        projects.map((p) => {
-          const fromServer =
-            Array.isArray(p.verifyBeforeDoneCommands) && p.verifyBeforeDoneCommands.length
-              ? p.verifyBeforeDoneCommands.join('\n')
-              : '';
-          return [p.id, fromServer];
-        }),
-      ),
-    );
-  }, [verifyBeforeDoneServerSnap]);
 
   useEffect(() => {
     setProjectCheckHealInput(() =>
@@ -4629,10 +4596,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         .split('\n')
         .map((l) => l.trim())
         .filter(Boolean);
-      const verifyBeforeDoneLines = (projectVerifyBeforeDoneInput[projectId] || '')
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean);
       const checkHealLines = (projectCheckHealInput[projectId] || '')
         .split('\n')
         .map((l) => l.trim())
@@ -4653,7 +4616,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
           lint: cmds.lint || null,
         },
         preCommitCommands: preCommitLines,
-        verifyBeforeDoneCommands: verifyBeforeDoneLines,
         checkHealCommands: checkHealLines,
         checkHealMaxRounds: checkHealLines.length ? checkHealMaxRounds : null,
       };
@@ -4755,14 +4717,14 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                       </div>
                       <div className="pt-1">
                         <label className="text-xs text-gray-400 font-semibold">
-                          Check auto-heal (after failed pre-commit / verify)
+                          Check auto-heal (after failed pre-commit)
                         </label>
                         <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
                           One shell command per line (e.g.{' '}
                           <code className="text-gray-400">npm run lint:fix</code>,{' '}
                           <code className="text-gray-400">npm run format</code>). When a configured
-                          pre-commit or verify-before-Done command exits non-zero, the server runs
-                          these fixers, optionally re-stages with{' '}
+                          pre-commit command exits non-zero, the server runs these fixers,
+                          optionally re-stages with{' '}
                           <code className="text-gray-400">git add -A</code>, waits briefly, then
                           re-runs <strong>all</strong> check commands. Timeouts and output-cap
                           failures are never auto-healed. Leave empty to keep the legacy fail-fast
@@ -4798,30 +4760,6 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                             className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
                           />
                         </div>
-                      </div>
-                      <div className="pt-1">
-                        <label className="text-xs text-gray-400 font-semibold">
-                          Verify before Done (close-card)
-                        </label>
-                        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
-                          One shell command per line, run in the agent worktree when an assistant
-                          emits <code className="text-gray-400">&lt;agenthub:close-card&gt;</code>{' '}
-                          and the server is about to move the linked card to <strong>Done</strong>.
-                          If any command fails, the card stays put and a system message explains
-                          why. Leave empty to skip.
-                        </p>
-                        <textarea
-                          value={projectVerifyBeforeDoneInput[p.id] ?? ''}
-                          onChange={(e) =>
-                            setProjectVerifyBeforeDoneInput((prev) => ({
-                              ...prev,
-                              [p.id]: e.target.value,
-                            }))
-                          }
-                          placeholder={'npm test\nnpm run lint'}
-                          rows={3}
-                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-                        />
                       </div>
                       <div className="pt-2 border-t border-gray-700/50 space-y-2">
                         <label className="text-xs text-gray-400 font-semibold">
