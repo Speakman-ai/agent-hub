@@ -294,6 +294,9 @@ describe('dispatchReviewerForPR — prompt content', () => {
     const msg = deps.handleChat.mock.calls[0]?.[1] as { content: string };
     expect(msg.content).toContain('PR Review Request (synchronize)');
     expect(msg.content).toContain('New commits were pushed');
+    // After a push, prior APPROVE may be stale; COMMENT + "approved" prose does not unblock merge.
+    expect(msg.content).toMatch(/dismiss stale|stale reviews/i);
+    expect(msg.content).toMatch(/COMMENT[\s\S]{0,200}never/i);
   });
 });
 

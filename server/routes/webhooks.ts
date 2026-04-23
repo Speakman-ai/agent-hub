@@ -1076,6 +1076,20 @@ Walk this in order and pick the **first** match — do not hedge:
 **Hard rule (don't over-correct):** Non-blocking feedback does NOT require \`COMMENT\`. If nothing you wrote blocks merge, use \`APPROVE\` with your notes attached. \`COMMENT\` is for deliberate fence-sitting, not for "I had some suggestions." Defaulting every substantive-but-non-blocking review to COMMENT destroys the APPROVE signal just as badly as rubber-stamping everything to APPROVE did.
 
 **Hard rule (don't rubber-stamp):** Conversely, if there's a real blocker, use \`REQUEST_CHANGES\` — do NOT bury a blocker in an APPROVE body. The event is the signal; the body is the detail.
+${
+  opts.reason === 'synchronize'
+    ? `
+
+## Re-approval after new commits (this run is a synchronize)
+
+**The PR head SHA changed** since the last push. Many repos enable **"dismiss stale reviews"** — an older **APPROVE** no longer counts toward required reviews even if GitHub still shows it in the timeline ("previously approved…").
+
+- A formal review whose JSON \`event\` is **\`COMMENT\`** is **never** an approving review for merge, even if the markdown body says "Approved for merge" or "LGTM."
+- If every finding scores **≤ 3** (nothing blocking merge), you **must** submit **\`APPROVE\`**, not \`COMMENT\`, so GitHub records a fresh approval on the **current** head.
+- Reserve \`COMMENT\` for the rare "genuinely cannot decide" case from the decision tree — not for "re-confirming" after a merge-conflict or autofix commit.
+`
+    : ''
+}
 
 ## Submitting the review
 
