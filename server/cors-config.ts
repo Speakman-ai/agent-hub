@@ -17,24 +17,39 @@
  * The env var is read at request time (not at module load) so tests can
  * manipulate `process.env.ALLOWED_ORIGINS` between assertions.
  *
- * If the variable is unset, a dev-only fallback of `http://localhost:3050`
- * (the Vite dev server origin) is used. In production, `ecosystem.config.cjs`
- * sets an explicit value.
+ * If the variable is unset, a dev-only fallback of the Vite dev server
+ * origins is used. In production, `ecosystem.config.cjs` sets an explicit
+ * value.
+ *
+ * When the variable **is** set (e.g. `https://app.example.com` on EC2), the
+ * local Vite origins below are **always unioned in** so developers can run
+ * `npm run dev:client` and point the UI at a remote API IP without adding
+ * `http://localhost:3050` to `ALLOWED_ORIGINS` on the server. Other browser
+ * origins are still blocked unless listed.
  */
 
 import type { CorsOptions } from 'cors';
 
-const DEV_FALLBACK_ORIGINS = ['http://localhost:3050'];
+/** Standard Vite dev server origins; always allowed alongside `ALLOWED_ORIGINS` when that env is non-empty. */
+const VITE_DEV_ORIGINS = ['http://localhost:3050', 'http://127.0.0.1:3050'] as const;
+
+function mergeViteDevtoolOrigins(fromEnv: string[]): string[] {
+  return [...new Set([...fromEnv, ...VITE_DEV_ORIGINS])];
+}
 
 export function getAllowedOrigins(): string[] {
   const raw = process.env.ALLOWED_ORIGINS;
   if (raw === undefined) {
-    return [...DEV_FALLBACK_ORIGINS];
+    return [...VITE_DEV_ORIGINS];
   }
-  return raw
+  if (raw === '') {
+    return [];
+  }
+  const fromEnv = raw
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  return mergeViteDevtoolOrigins(fromEnv);
 }
 
 export const corsOptions: CorsOptions = {

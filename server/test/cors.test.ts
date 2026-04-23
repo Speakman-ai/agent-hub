@@ -22,16 +22,20 @@ describe('getAllowedOrigins()', () => {
     delete process.env.ALLOWED_ORIGINS;
   });
 
-  it('parses a comma-separated list', async () => {
+  it('parses a comma-separated list and unions local Vite dev origins', async () => {
     const { getAllowedOrigins } = await import('../cors-config.js');
     process.env.ALLOWED_ORIGINS = 'https://a.com,https://b.com';
-    expect(getAllowedOrigins()).toEqual(['https://a.com', 'https://b.com']);
+    expect(getAllowedOrigins().sort()).toEqual(
+      ['https://a.com', 'https://b.com', 'http://127.0.0.1:3050', 'http://localhost:3050'].sort(),
+    );
   });
 
   it('trims whitespace and drops empty entries', async () => {
     const { getAllowedOrigins } = await import('../cors-config.js');
     process.env.ALLOWED_ORIGINS = '  https://a.com , https://b.com , , ';
-    expect(getAllowedOrigins()).toEqual(['https://a.com', 'https://b.com']);
+    expect(getAllowedOrigins().sort()).toEqual(
+      ['https://a.com', 'https://b.com', 'http://127.0.0.1:3050', 'http://localhost:3050'].sort(),
+    );
   });
 
   it('returns an empty list when env is set to the empty string', async () => {
@@ -40,10 +44,12 @@ describe('getAllowedOrigins()', () => {
     expect(getAllowedOrigins()).toEqual([]);
   });
 
-  it('falls back to localhost:3050 when env is unset', async () => {
+  it('falls back to Vite dev origins when env is unset', async () => {
     const { getAllowedOrigins } = await import('../cors-config.js');
     delete process.env.ALLOWED_ORIGINS;
-    expect(getAllowedOrigins()).toEqual(['http://localhost:3050']);
+    expect(getAllowedOrigins().sort()).toEqual(
+      ['http://127.0.0.1:3050', 'http://localhost:3050'].sort(),
+    );
   });
 });
 
@@ -64,6 +70,13 @@ describe('CORS allowlist middleware', () => {
     // Body still returns normally — the browser's SOP is what blocks delivery
     // to the caller. Server-to-server consumers are unaffected.
     expect(res.body.status).toBe('ok');
+  });
+
+  it('allows CORS for local Vite when only production origin is in ALLOWED_ORIGINS (e.g. laptop → EC2)', async () => {
+    // Same shape as PM2 on EC2: one public app origin, no need to add localhost:3050 on the server.
+    process.env.ALLOWED_ORIGINS = 'https://hub.example.com';
+    const res = await request.get('/api/health').set('Origin', 'http://localhost:3050').expect(200);
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:3050');
   });
 
   it('never emits the wildcard Access-Control-Allow-Origin: *', async () => {
