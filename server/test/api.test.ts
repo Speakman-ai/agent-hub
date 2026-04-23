@@ -108,6 +108,35 @@ describe('Projects', () => {
 
       expect(res.body.verifyBeforeDoneCommands).toEqual(['npm test', 'npm run lint']);
     });
+
+    it('creates project with checkHealCommands and checkHealMaxRounds', async () => {
+      const res = await request
+        .post('/api/projects')
+        .send({
+          id: 'proj-check-heal-create',
+          name: 'Heal Project',
+          cwd: '/tmp',
+          checkHealCommands: ['  npm run lint:fix  ', ''],
+          checkHealMaxRounds: 4,
+        })
+        .expect(201);
+
+      expect(res.body.checkHealCommands).toEqual(['npm run lint:fix']);
+      expect(res.body.checkHealMaxRounds).toBe(4);
+    });
+
+    it('rejects POST when checkHealMaxRounds is present but out of range', async () => {
+      const res = await request
+        .post('/api/projects')
+        .send({
+          id: 'proj-heal-rounds-bad-post',
+          name: 'Bad rounds',
+          cwd: '/tmp',
+          checkHealMaxRounds: 0,
+        })
+        .expect(400);
+      expect(String(res.body.error)).toMatch(/checkHealMaxRounds/i);
+    });
   });
 
   describe('GET /api/projects', () => {
@@ -200,6 +229,45 @@ describe('Projects', () => {
         .send({ verifyBeforeDoneCommands: [] })
         .expect(200);
       expect(cleared.body.verifyBeforeDoneCommands).toBeUndefined();
+    });
+
+    it('updates checkHealCommands / checkHealMaxRounds and clears heal list with empty array', async () => {
+      const proj = await createProject();
+      const withHeal = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({
+          checkHealCommands: [' npm run format ', 'npm run lint:fix'],
+          checkHealMaxRounds: 3,
+        })
+        .expect(200);
+      expect(withHeal.body.checkHealCommands).toEqual(['npm run format', 'npm run lint:fix']);
+      expect(withHeal.body.checkHealMaxRounds).toBe(3);
+
+      const clearedHeal = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ checkHealCommands: [] })
+        .expect(200);
+      expect(clearedHeal.body.checkHealCommands).toBeUndefined();
+
+      const clearedRounds = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ checkHealMaxRounds: null })
+        .expect(200);
+      expect(clearedRounds.body.checkHealMaxRounds).toBeUndefined();
+    });
+
+    it('rejects PATCH with invalid checkHealMaxRounds and leaves the stored value unchanged', async () => {
+      const proj = await createProject();
+      await request.patch(`/api/projects/${proj.id}`).send({ checkHealMaxRounds: 2 }).expect(200);
+
+      const bad = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ checkHealMaxRounds: 99 })
+        .expect(400);
+      expect(String(bad.body.error)).toMatch(/checkHealMaxRounds/i);
+
+      const roundTrip = await request.get(`/api/projects/${proj.id}`).expect(200);
+      expect(roundTrip.body.checkHealMaxRounds).toBe(2);
     });
 
     it('updates orchestrationBudgets and clears with null', async () => {

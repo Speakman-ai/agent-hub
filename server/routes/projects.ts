@@ -126,6 +126,8 @@ interface OnboardBody {
     githubRepo?: { owner: string; repo: string };
     preCommitCommands?: unknown;
     verifyBeforeDoneCommands?: unknown;
+    checkHealCommands?: unknown;
+    checkHealMaxRounds?: unknown;
   };
   agents?: Array<{
     id: string;
@@ -161,6 +163,24 @@ function normalizePreCommitCommands(value: unknown): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
+
+/** Persisted 1–5; invalid values yield `undefined` (caller returns 400 when the field was explicit). */
+function normalizeCheckHealMaxRounds(value: unknown): number | undefined {
+  if (value == null || value === '') return undefined;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const n = Math.floor(value);
+    if (n >= 1 && n <= 5) return n;
+    return undefined;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const n = parseInt(value.trim(), 10);
+    if (n >= 1 && n <= 5) return n;
+  }
+  return undefined;
+}
+
+const CHECK_HEAL_MAX_ROUNDS_INVALID =
+  'checkHealMaxRounds must be an integer between 1 and 5 (inclusive), or null or empty string to clear';
 
 export default function createProjectRoutes(deps: RouteDeps): Router {
   const {
@@ -361,16 +381,27 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
 
   router.post('/api/projects', (req: Request, res: Response) => {
     const projects = getProjects();
-    const { id, name, cwd, color, commands, preCommitCommands, verifyBeforeDoneCommands } =
-      req.body as {
-        id?: string;
-        name?: string;
-        cwd?: string;
-        color?: string;
-        commands?: ProjectCommands;
-        preCommitCommands?: unknown;
-        verifyBeforeDoneCommands?: unknown;
-      };
+    const {
+      id,
+      name,
+      cwd,
+      color,
+      commands,
+      preCommitCommands,
+      verifyBeforeDoneCommands,
+      checkHealCommands,
+      checkHealMaxRounds,
+    } = req.body as {
+      id?: string;
+      name?: string;
+      cwd?: string;
+      color?: string;
+      commands?: ProjectCommands;
+      preCommitCommands?: unknown;
+      verifyBeforeDoneCommands?: unknown;
+      checkHealCommands?: unknown;
+      checkHealMaxRounds?: unknown;
+    };
     if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) {
       return res.status(400).json({ error: 'id is required and must be alphanumeric+hyphens' });
     }
@@ -400,6 +431,15 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // the session worktree when closing a card (trust model identical to preCommitCommands).
     const vbdCreate = normalizePreCommitCommands(verifyBeforeDoneCommands);
     if (vbdCreate.length) (project as Record<string, unknown>).verifyBeforeDoneCommands = vbdCreate;
+    const healCreate = normalizePreCommitCommands(checkHealCommands);
+    if (healCreate.length) (project as Record<string, unknown>).checkHealCommands = healCreate;
+    if ((req.body as Record<string, unknown>).checkHealMaxRounds !== undefined) {
+      const healRoundsCreate = normalizeCheckHealMaxRounds(checkHealMaxRounds);
+      if (healRoundsCreate == null) {
+        return res.status(400).json({ error: CHECK_HEAL_MAX_ROUNDS_INVALID });
+      }
+      (project as Record<string, unknown>).checkHealMaxRounds = healRoundsCreate;
+    }
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(path.join(dataDir, 'agents'), { recursive: true });
     mkdirSync(path.join(dataDir, 'skills'), { recursive: true });
@@ -481,6 +521,24 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       const v = normalizePreCommitCommands(rawV);
       if (v.length) (project as Record<string, unknown>).verifyBeforeDoneCommands = v;
       else delete (project as Record<string, unknown>).verifyBeforeDoneCommands;
+    }
+    if ((req.body as Record<string, unknown>).checkHealCommands !== undefined) {
+      const rawH = (req.body as Record<string, unknown>).checkHealCommands;
+      const h = normalizePreCommitCommands(rawH);
+      if (h.length) (project as Record<string, unknown>).checkHealCommands = h;
+      else delete (project as Record<string, unknown>).checkHealCommands;
+    }
+    if ((req.body as Record<string, unknown>).checkHealMaxRounds !== undefined) {
+      const rawR = (req.body as Record<string, unknown>).checkHealMaxRounds;
+      if (rawR === null || rawR === '') {
+        delete (project as Record<string, unknown>).checkHealMaxRounds;
+      } else {
+        const n = normalizeCheckHealMaxRounds(rawR);
+        if (n == null) {
+          return res.status(400).json({ error: CHECK_HEAL_MAX_ROUNDS_INVALID });
+        }
+        (project as Record<string, unknown>).checkHealMaxRounds = n;
+      }
     }
     if ((req.body as Record<string, unknown>).orchestrationBudgets !== undefined) {
       const rawOb = (req.body as Record<string, unknown>).orchestrationBudgets;
@@ -773,6 +831,15 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const vbdOnboard = normalizePreCommitCommands(projectData.verifyBeforeDoneCommands);
     if (vbdOnboard.length)
       (project as Record<string, unknown>).verifyBeforeDoneCommands = vbdOnboard;
+    const healOnboard = normalizePreCommitCommands(projectData.checkHealCommands);
+    if (healOnboard.length) (project as Record<string, unknown>).checkHealCommands = healOnboard;
+    if (projectData.checkHealMaxRounds !== undefined) {
+      const healRoundsOnboard = normalizeCheckHealMaxRounds(projectData.checkHealMaxRounds);
+      if (healRoundsOnboard == null) {
+        return res.status(400).json({ error: CHECK_HEAL_MAX_ROUNDS_INVALID });
+      }
+      (project as Record<string, unknown>).checkHealMaxRounds = healRoundsOnboard;
+    }
 
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(path.join(dataDir, 'agents'), { recursive: true });

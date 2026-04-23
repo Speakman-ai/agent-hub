@@ -26,6 +26,11 @@ import {
   isGarbageTitle,
   getProjectPreCommitCommands,
   getProjectVerifyBeforeDoneCommands,
+  getProjectCheckHealCommands,
+  getProjectCheckHealMaxRounds,
+  isEligibleCheckFailureForAutoHeal,
+  CheckCommandFailedError,
+  CHECK_COMMAND_NONZERO_EXIT_CODE,
   runProjectVerifyBeforeDoneCommands,
   truncateForGitCommitMessage,
   MAX_GIT_COMMIT_MESSAGE_CHARS,
@@ -314,6 +319,140 @@ describe('runProjectVerifyBeforeDoneCommands', () => {
         '/tmp',
       ),
     ).rejects.toThrow(/failed/);
+  });
+
+  it('runs heal commands and retries verify when the first check pass fails', async () => {
+    let verifyRuns = 0;
+    installExecAndGhMock((cmd, _opts, callback) => {
+      if (cmd.includes('npm run verify-step')) {
+        verifyRuns += 1;
+        if (verifyRuns === 1) {
+          if (callback) callback(new Error('lint failed'), { stdout: '', stderr: 'err' });
+          return;
+        }
+        if (callback) callback(null, { stdout: '', stderr: '' });
+        return;
+      }
+      if (cmd.includes('npm run heal-step')) {
+        if (callback) callback(null, { stdout: 'fixed\n', stderr: '' });
+        return;
+      }
+      if (callback) callback(null, { stdout: '', stderr: '' });
+    });
+
+    const chunks: string[] = [];
+    await runProjectVerifyBeforeDoneCommands(
+      {
+        id: 'p',
+        verifyBeforeDoneCommands: ['npm run verify-step'],
+        checkHealCommands: ['npm run heal-step'],
+        checkHealMaxRounds: 2,
+      } as never,
+      '/tmp',
+      (c) => chunks.push(c),
+    );
+
+    expect(verifyRuns).toBe(2);
+    const joined = chunks.join('');
+    expect(joined).toContain('Auto-heal');
+    expect(joined).toContain('npm run heal-step');
+    expect(joined).toMatch(/Check round 1\/2[\s\S]*Check round 2\/2/);
+  });
+
+  it('stops after max rounds when checks keep failing', async () => {
+    installExecAndGhMock((cmd, _opts, callback) => {
+      if (cmd.includes('npm run always-bad')) {
+        if (callback) callback(new Error('bad'), { stdout: '', stderr: '' });
+        return;
+      }
+      if (cmd.includes('npm run noop-heal')) {
+        if (callback) callback(null, { stdout: '', stderr: '' });
+        return;
+      }
+      if (callback) callback(null, { stdout: '', stderr: '' });
+    });
+
+    await expect(
+      runProjectVerifyBeforeDoneCommands(
+        {
+          id: 'p',
+          verifyBeforeDoneCommands: ['npm run always-bad'],
+          checkHealCommands: ['npm run noop-heal'],
+          checkHealMaxRounds: 2,
+        } as never,
+        '/tmp',
+      ),
+    ).rejects.toThrow(/Exhausted 2 check round/);
+  });
+});
+
+describe('check auto-heal project fields', () => {
+  it('getProjectCheckHealCommands trims and drops non-strings', () => {
+    expect(
+      getProjectCheckHealCommands({
+        id: 'p',
+        checkHealCommands: ['  npm run lint:fix  ', '', 'npm run format', 3],
+      } as never),
+    ).toEqual(['npm run lint:fix', 'npm run format']);
+  });
+
+  it('getProjectCheckHealMaxRounds clamps to 1–5 and defaults to 2', () => {
+    expect(getProjectCheckHealMaxRounds({ id: 'p' } as never)).toBe(2);
+    expect(getProjectCheckHealMaxRounds({ id: 'p', checkHealMaxRounds: 99 } as never)).toBe(5);
+    expect(getProjectCheckHealMaxRounds({ id: 'p', checkHealMaxRounds: 1 } as never)).toBe(1);
+    expect(getProjectCheckHealMaxRounds({ id: 'p', checkHealMaxRounds: '4' } as never)).toBe(4);
+  });
+
+  it('isEligibleCheckFailureForAutoHeal only treats normal non-zero check exits as fixable', () => {
+    expect(
+      isEligibleCheckFailureForAutoHeal(
+        new CheckCommandFailedError('Pre-commit command failed (1): npm run lint', {
+          exitCode: 1,
+          logKind: 'pre_commit',
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isEligibleCheckFailureForAutoHeal(
+        new CheckCommandFailedError('Pre-done verification command failed (2): npm test', {
+          exitCode: 2,
+          logKind: 'verify_before_done',
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isEligibleCheckFailureForAutoHeal(
+        new CheckCommandFailedError('edge', { exitCode: 0, logKind: 'pre_commit' }),
+      ),
+    ).toBe(false);
+    expect(
+      isEligibleCheckFailureForAutoHeal(new Error('Pre-commit command failed (1): npm run lint')),
+    ).toBe(true);
+    expect(
+      isEligibleCheckFailureForAutoHeal(
+        new Error('Pre-done verification command failed (2): npm test'),
+      ),
+    ).toBe(true);
+    expect(
+      isEligibleCheckFailureForAutoHeal(new Error('Pre-commit command timed out after 9ms: x')),
+    ).toBe(false);
+    expect(
+      isEligibleCheckFailureForAutoHeal(
+        new Error('Pre-commit command output exceeded 100 bytes: x'),
+      ),
+    ).toBe(false);
+    expect(isEligibleCheckFailureForAutoHeal(new Error('Check heal command failed (1): x'))).toBe(
+      false,
+    );
+    expect(
+      isEligibleCheckFailureForAutoHeal(new Error('Pre-commit command failed (null): SIGTERM: x')),
+    ).toBe(false);
+  });
+
+  it('CheckCommandFailedError carries a stable machine-readable code', () => {
+    const err = new CheckCommandFailedError('msg', { exitCode: 7, logKind: 'pre_commit' });
+    expect(err.agentHubErrorCode).toBe(CHECK_COMMAND_NONZERO_EXIT_CODE);
+    expect(err.exitCode).toBe(7);
   });
 });
 

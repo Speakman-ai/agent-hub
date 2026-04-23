@@ -15,6 +15,36 @@ import type {
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
 
+/** Max full check passes (initial + post-heal retries). */
+const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
+const ABSOLUTE_MAX_CHECK_HEAL_ROUNDS = 5;
+/** Brief pause after heal + staging before re-running checks (reduces flaky tool races). */
+const CHECK_HEAL_BACKOFF_MS = 250;
+
+/**
+ * Machine-readable reason for `CheckCommandFailedError` — non-zero exit from a
+ * project-configured check command (`pre_commit` / `verify_before_done` only).
+ */
+export const CHECK_COMMAND_NONZERO_EXIT_CODE = 'check_exit_nonzero' as const;
+
+/** Thrown from `runShellCommandStreaming` when a check command exits with a non-zero numeric code. */
+export class CheckCommandFailedError extends Error {
+  readonly agentHubErrorCode: typeof CHECK_COMMAND_NONZERO_EXIT_CODE;
+  readonly exitCode: number;
+  readonly logKind: 'pre_commit' | 'verify_before_done';
+
+  constructor(
+    message: string,
+    opts: { exitCode: number; logKind: 'pre_commit' | 'verify_before_done' },
+  ) {
+    super(message);
+    this.name = 'CheckCommandFailedError';
+    this.agentHubErrorCode = CHECK_COMMAND_NONZERO_EXIT_CODE;
+    this.exitCode = opts.exitCode;
+    this.logKind = opts.logKind;
+  }
+}
+
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
@@ -107,6 +137,66 @@ export function getProjectVerifyBeforeDoneCommands(project: Project): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Optional shell commands (lint:fix, format, etc.) run after a **check** command
+ * from {@link getProjectPreCommitCommands} or {@link getProjectVerifyBeforeDoneCommands}
+ * exits non-zero. Only “safe” failures trigger heal — see `isEligibleCheckFailureForAutoHeal`.
+ */
+export function getProjectCheckHealCommands(project: Project): string[] {
+  const raw = (project as Record<string, unknown>).checkHealCommands;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((c): c is string => typeof c === 'string')
+    .map((c) => c.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Max number of full check passes (first run + retries after heal). Clamped to
+ * [1, ABSOLUTE_MAX_CHECK_HEAL_ROUNDS]. Ignored when `getProjectCheckHealCommands` is empty.
+ */
+export function getProjectCheckHealMaxRounds(project: Project): number {
+  const raw = (project as Record<string, unknown>).checkHealMaxRounds;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return Math.min(ABSOLUTE_MAX_CHECK_HEAL_ROUNDS, Math.max(1, Math.floor(raw)));
+  }
+  if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+    return Math.min(ABSOLUTE_MAX_CHECK_HEAL_ROUNDS, Math.max(1, parseInt(raw.trim(), 10)));
+  }
+  return DEFAULT_CHECK_HEAL_MAX_ROUNDS;
+}
+
+/**
+ * Whether a thrown error from {@link runShellCommandStreaming} for a check command
+ * is in the **auto-healable** class: a normal non-zero exit. Never heal timeouts,
+ * output caps, signal kills, spawn failures, or heal-step errors.
+ *
+ * Prefers `CheckCommandFailedError` / `CHECK_COMMAND_NONZERO_EXIT_CODE` from the throw
+ * site; falls back to message shape for older errors or out-of-band callers.
+ */
+export function isEligibleCheckFailureForAutoHeal(err: Error): boolean {
+  if (
+    err instanceof CheckCommandFailedError &&
+    err.agentHubErrorCode === CHECK_COMMAND_NONZERO_EXIT_CODE &&
+    Number.isFinite(err.exitCode) &&
+    err.exitCode !== 0
+  ) {
+    return true;
+  }
+
+  const m = err.message;
+  if (!m) return false;
+  if (m.includes('timed out after')) return false;
+  if (m.includes('output exceeded')) return false;
+  if (m.includes('Check heal command')) return false;
+  const isCheckFailure =
+    m.includes('Pre-commit command failed (') ||
+    m.includes('Pre-done verification command failed (');
+  if (!isCheckFailure) return false;
+  if (/failed \(null\):/.test(m)) return false;
+  return true;
+}
+
 /** Same wall-clock cap as pre-commit hooks — lint/test suites can be slow. */
 const VERIFY_BEFORE_DONE_CMD_TIMEOUT_MS = PRECOMMIT_CMD_TIMEOUT_MS;
 
@@ -121,13 +211,20 @@ export async function runProjectVerifyBeforeDoneCommands(
 ): Promise<void> {
   const cmds = getProjectVerifyBeforeDoneCommands(project);
   if (!cmds.length) return;
-  for (const cmd of cmds) {
-    console.log(`[verify-before-done] (${project.id}): ${cmd}`);
-    if (onChunk) onChunk(`\n$ ${cmd}\n`);
-    await runShellCommandStreaming(cmd, cwd, VERIFY_BEFORE_DONE_CMD_TIMEOUT_MS, onChunk, {
-      logKind: 'verify_before_done',
-    });
-  }
+  const heal = getProjectCheckHealCommands(project);
+  const maxRounds = getProjectCheckHealMaxRounds(project);
+  await runConfiguredShellChecksWithHeal({
+    checkCommands: cmds,
+    healCommands: heal,
+    maxRounds,
+    cwd,
+    timeoutMs: VERIFY_BEFORE_DONE_CMD_TIMEOUT_MS,
+    onChunk,
+    logKind: 'verify_before_done',
+    stageAfterHeal: heal.length > 0,
+    logLabel: '[verify-before-done]',
+    projectId: project.id,
+  });
 }
 
 async function runProjectPreCommitCommands(
@@ -137,14 +234,23 @@ async function runProjectPreCommitCommands(
 ): Promise<void> {
   const cmds = getProjectPreCommitCommands(project);
   if (!cmds.length) return;
-  for (const cmd of cmds) {
-    console.log(`[auto-commit] Pre-commit (${project.id}): ${cmd}`);
-    if (onChunk) onChunk(`\n$ ${cmd}\n`);
-    await runShellCommandStreaming(cmd, cwd, PRECOMMIT_CMD_TIMEOUT_MS, onChunk);
-  }
+  const heal = getProjectCheckHealCommands(project);
+  const maxRounds = getProjectCheckHealMaxRounds(project);
+  await runConfiguredShellChecksWithHeal({
+    checkCommands: cmds,
+    healCommands: heal,
+    maxRounds,
+    cwd,
+    timeoutMs: PRECOMMIT_CMD_TIMEOUT_MS,
+    onChunk,
+    logKind: 'pre_commit',
+    stageAfterHeal: heal.length > 0,
+    logLabel: '[auto-commit]',
+    projectId: project.id,
+  });
 }
 
-export type RunShellCommandLogKind = 'pre_commit' | 'verify_before_done';
+export type RunShellCommandLogKind = 'pre_commit' | 'verify_before_done' | 'check_heal';
 
 export type RunShellCommandStreamingOptions = {
   maxOutputBytes?: number;
@@ -152,7 +258,100 @@ export type RunShellCommandStreamingOptions = {
 };
 
 function shellCommandErrorPrefix(kind: RunShellCommandLogKind): string {
-  return kind === 'verify_before_done' ? 'Pre-done verification command' : 'Pre-commit command';
+  if (kind === 'verify_before_done') return 'Pre-done verification command';
+  if (kind === 'check_heal') return 'Check heal command';
+  return 'Pre-commit command';
+}
+
+/**
+ * Runs `checkCommands` in order, optionally running `healCommands` + optional
+ * `git add -A` between full passes when a failure is eligible for auto-heal.
+ */
+async function runConfiguredShellChecksWithHeal(opts: {
+  checkCommands: string[];
+  healCommands: string[];
+  maxRounds: number;
+  cwd: string;
+  timeoutMs: number;
+  onChunk?: (chunk: string) => void;
+  logKind: RunShellCommandLogKind;
+  stageAfterHeal: boolean;
+  logLabel: string;
+  projectId: string;
+}): Promise<void> {
+  const {
+    checkCommands,
+    healCommands,
+    maxRounds,
+    cwd,
+    timeoutMs,
+    onChunk,
+    logKind,
+    stageAfterHeal,
+    logLabel,
+    projectId,
+  } = opts;
+
+  const cappedRounds =
+    healCommands.length === 0
+      ? 1
+      : Math.min(ABSOLUTE_MAX_CHECK_HEAL_ROUNDS, Math.max(1, maxRounds));
+
+  for (let round = 1; round <= cappedRounds; round++) {
+    try {
+      onChunk?.(`\n## Check round ${round}/${cappedRounds}\n`);
+      for (const cmd of checkCommands) {
+        console.log(`${logLabel} (${projectId}) round ${round}/${cappedRounds}: ${cmd}`);
+        onChunk?.(`\n$ ${cmd}\n`);
+        await runShellCommandStreaming(cmd, cwd, timeoutMs, onChunk, { logKind });
+      }
+      return;
+    } catch (e) {
+      const lastErr = e instanceof Error ? e : new Error(String(e));
+      const triesLeft = cappedRounds - round;
+      const canHeal =
+        triesLeft > 0 && healCommands.length > 0 && isEligibleCheckFailureForAutoHeal(lastErr);
+
+      if (!canHeal) {
+        let hint = '';
+        if (!healCommands.length) {
+          hint =
+            '\n\n[auto-heal] No `checkHealCommands` configured — add lint/format fixers under Project Settings to retry automatically after fixable failures.';
+        } else if (!isEligibleCheckFailureForAutoHeal(lastErr)) {
+          hint =
+            '\n\n[auto-heal] This failure is not auto-healed (only non-zero exits from check commands; timeouts, output caps, and signal kills are excluded).';
+        } else if (triesLeft <= 0) {
+          hint = `\n\n[auto-heal] Exhausted ${cappedRounds} check round(s). See the log above for each attempt.`;
+        }
+        throw new Error(lastErr.message + hint);
+      }
+
+      onChunk?.(
+        `\n### Auto-heal (round ${round})\n\nCheck failed with a fixable exit code. Running ${healCommands.length} heal command(s)${stageAfterHeal ? ', then `git add -A`' : ''}, then retrying all checks.\n`,
+      );
+
+      for (const h of healCommands) {
+        console.log(`${logLabel} heal (${projectId}): ${h}`);
+        onChunk?.(`\n$ ${h}\n`);
+        await runShellCommandStreaming(h, cwd, timeoutMs, onChunk, { logKind: 'check_heal' });
+      }
+
+      if (stageAfterHeal) {
+        try {
+          onChunk?.(`\n$ git add -A\n`);
+          await execAsync('git add -A', { cwd });
+        } catch (addErr: unknown) {
+          const msg = addErr instanceof Error ? addErr.message : String(addErr);
+          console.warn(`${logLabel} git add -A after heal failed (non-fatal): ${msg}`);
+          onChunk?.(`\n(warning: git add -A failed: ${msg})\n`);
+        }
+      }
+
+      if (CHECK_HEAL_BACKOFF_MS > 0) {
+        await new Promise<void>((r) => setTimeout(r, CHECK_HEAL_BACKOFF_MS));
+      }
+    }
+  }
 }
 
 /**
@@ -227,12 +426,26 @@ export async function runShellCommandStreaming(
         return;
       }
       if (code === 0) resolve();
-      else
-        reject(
-          new Error(
-            `${errPrefix} failed (${code ?? signal ?? 'unknown'}): ${cmd}`.substring(0, 5000),
-          ),
+      else {
+        const msg = `${errPrefix} failed (${code ?? signal ?? 'unknown'}): ${cmd}`.substring(
+          0,
+          5000,
         );
+        if (
+          (logKind === 'pre_commit' || logKind === 'verify_before_done') &&
+          typeof code === 'number' &&
+          code !== 0
+        ) {
+          reject(
+            new CheckCommandFailedError(msg, {
+              exitCode: code,
+              logKind,
+            }),
+          );
+          return;
+        }
+        reject(new Error(msg));
+      }
     });
   });
 }

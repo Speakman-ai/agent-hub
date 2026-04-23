@@ -4498,6 +4498,26 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     return map;
   });
 
+  const [projectCheckHealInput, setProjectCheckHealInput] = useState(() => {
+    const map = {};
+    projects.forEach((p) => {
+      map[p.id] =
+        Array.isArray(p.checkHealCommands) && p.checkHealCommands.length
+          ? p.checkHealCommands.join('\n')
+          : '';
+    });
+    return map;
+  });
+
+  const [projectCheckHealMaxRounds, setProjectCheckHealMaxRounds] = useState(() => {
+    const map = {};
+    projects.forEach((p) => {
+      const n = p.checkHealMaxRounds;
+      map[p.id] = typeof n === 'number' && n >= 1 && n <= 5 ? String(n) : '2';
+    });
+    return map;
+  });
+
   const [projectOrchestrationFields, setProjectOrchestrationFields] = useState(() => {
     const map = {};
     projects.forEach((p) => {
@@ -4516,6 +4536,19 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     () =>
       JSON.stringify(
         Object.fromEntries(projects.map((p) => [p.id, p.verifyBeforeDoneCommands ?? []])),
+      ),
+    [projects],
+  );
+
+  const checkHealServerSnap = useMemo(
+    () =>
+      JSON.stringify(
+        Object.fromEntries(
+          projects.map((p) => [
+            p.id,
+            { h: p.checkHealCommands ?? [], r: p.checkHealMaxRounds ?? null },
+          ]),
+        ),
       ),
     [projects],
   );
@@ -4557,6 +4590,28 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
   }, [verifyBeforeDoneServerSnap]);
 
   useEffect(() => {
+    setProjectCheckHealInput(() =>
+      Object.fromEntries(
+        projects.map((p) => {
+          const fromServer =
+            Array.isArray(p.checkHealCommands) && p.checkHealCommands.length
+              ? p.checkHealCommands.join('\n')
+              : '';
+          return [p.id, fromServer];
+        }),
+      ),
+    );
+    setProjectCheckHealMaxRounds(() =>
+      Object.fromEntries(
+        projects.map((p) => {
+          const n = p.checkHealMaxRounds;
+          return [p.id, typeof n === 'number' && n >= 1 && n <= 5 ? String(n) : '2'];
+        }),
+      ),
+    );
+  }, [checkHealServerSnap]);
+
+  useEffect(() => {
     setProjectOrchestrationFields(() =>
       Object.fromEntries(
         projects.map((p) => [p.id, orchestrationFieldsFromProject(p.orchestrationBudgets)]),
@@ -4578,6 +4633,14 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         .split('\n')
         .map((l) => l.trim())
         .filter(Boolean);
+      const checkHealLines = (projectCheckHealInput[projectId] || '')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const roundsRaw = String(projectCheckHealMaxRounds[projectId] ?? '2').trim();
+      const roundsParsed = parseInt(roundsRaw, 10);
+      const checkHealMaxRounds =
+        Number.isFinite(roundsParsed) && roundsParsed >= 1 && roundsParsed <= 5 ? roundsParsed : 2;
       const obFields = projectOrchestrationFields[projectId] || {};
       const hasObTyping = ORCHESTRATION_FIELD_META.some(
         ({ key }) => String(obFields[key] ?? '').trim() !== '',
@@ -4591,6 +4654,8 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         },
         preCommitCommands: preCommitLines,
         verifyBeforeDoneCommands: verifyBeforeDoneLines,
+        checkHealCommands: checkHealLines,
+        checkHealMaxRounds: checkHealLines.length ? checkHealMaxRounds : null,
       };
       let payload = basePayload;
       if (!hasObTyping) {
@@ -4687,6 +4752,52 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                           rows={4}
                           className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
                         />
+                      </div>
+                      <div className="pt-1">
+                        <label className="text-xs text-gray-400 font-semibold">
+                          Check auto-heal (after failed pre-commit / verify)
+                        </label>
+                        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
+                          One shell command per line (e.g.{' '}
+                          <code className="text-gray-400">npm run lint:fix</code>,{' '}
+                          <code className="text-gray-400">npm run format</code>). When a configured
+                          pre-commit or verify-before-Done command exits non-zero, the server runs
+                          these fixers, optionally re-stages with{' '}
+                          <code className="text-gray-400">git add -A</code>, waits briefly, then
+                          re-runs <strong>all</strong> check commands. Timeouts and output-cap
+                          failures are never auto-healed. Leave empty to keep the legacy fail-fast
+                          behavior.
+                        </p>
+                        <textarea
+                          value={projectCheckHealInput[p.id] ?? ''}
+                          onChange={(e) =>
+                            setProjectCheckHealInput((prev) => ({
+                              ...prev,
+                              [p.id]: e.target.value,
+                            }))
+                          }
+                          placeholder={'npm run lint:fix\nnpm run format'}
+                          rows={3}
+                          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+                        />
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <label className="text-[11px] text-gray-500 whitespace-nowrap">
+                            Max check rounds (1–5, default 2)
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={5}
+                            value={projectCheckHealMaxRounds[p.id] ?? '2'}
+                            onChange={(e) =>
+                              setProjectCheckHealMaxRounds((prev) => ({
+                                ...prev,
+                                [p.id]: e.target.value,
+                              }))
+                            }
+                            className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+                          />
+                        </div>
                       </div>
                       <div className="pt-1">
                         <label className="text-xs text-gray-400 font-semibold">

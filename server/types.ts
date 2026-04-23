@@ -1186,6 +1186,20 @@ export interface Project {
    */
   verifyBeforeDoneCommands?: string[];
   /**
+   * When non-empty, a non-zero exit from `preCommitCommands` or
+   * `verifyBeforeDoneCommands` may run these fixers (e.g. `npm run lint:fix`,
+   * `npm run format`) and re-run the failed check suite, capped by `checkHealMaxRounds`.
+   * Timeouts and output-cap failures never trigger heal.
+   * Web client: Settings → Project Settings. Mobile does not expose project hook
+   * fields yet — add these when mobile project settings reach parity with web.
+   */
+  checkHealCommands?: string[];
+  /**
+   * Max full check passes when `checkHealCommands` is set (default 2, max 5).
+   * Ignored when `checkHealCommands` is empty.
+   */
+  checkHealMaxRounds?: number;
+  /**
    * Optional ReAct / auto-continuation budgets for sessions in this project.
    * Shapes match `OrchestrationBudgetsPartial` in `server/orchestration-budgets.ts`.
    */
