@@ -1032,6 +1032,7 @@ export interface Stmts {
   deleteWikiEmbeddingsByProject: Stmt;
   deleteWebhookConfigsByProject: Stmt;
   deleteBoardsByProject: Stmt;
+  deleteWorkflowsByProject: Stmt;
   deleteThreadsByProject: Stmt;
   deleteRoomsByProject: Stmt;
   deleteCronsByProject: Stmt;
@@ -1106,6 +1107,20 @@ export interface Stmts {
   createNote: Stmt;
   updateNote: Stmt;
   deleteNote: Stmt;
+
+  // Workflows (Hub workflow builder — see workflows-schema.ts)
+  getWorkflowsByProject: Stmt;
+  getWorkflow: Stmt;
+  createWorkflow: Stmt;
+  updateWorkflow: Stmt;
+  deleteWorkflow: Stmt;
+  getWorkflowSteps: Stmt;
+  getWorkflowStepsByProject: Stmt;
+  deleteWorkflowStepsByWorkflow: Stmt;
+  createWorkflowStep: Stmt;
+  createWorkflowRun: Stmt;
+  getWorkflowRun: Stmt;
+  getWorkflowRunsLimited: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────

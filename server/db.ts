@@ -2320,6 +2320,43 @@ function initDb(dataDir: string): void {
     deleteEscalation: db.prepare('DELETE FROM escalations WHERE id = ?'),
     deleteEscalationsByProject: db.prepare('DELETE FROM escalations WHERE project_id = ?'),
 
+    // Workflows
+    getWorkflowsByProject: db.prepare(
+      'SELECT * FROM workflows WHERE project_id = ? ORDER BY name ASC, created_at ASC',
+    ),
+    getWorkflow: db.prepare('SELECT * FROM workflows WHERE id = ?'),
+    createWorkflow: db.prepare(
+      `INSERT INTO workflows (id, project_id, name, trigger_type, default_payload)
+       VALUES (?, ?, ?, ?, ?)`,
+    ),
+    updateWorkflow: db.prepare(
+      `UPDATE workflows SET name = ?, trigger_type = ?, default_payload = ?, updated_at = datetime('now')
+       WHERE id = ? AND project_id = ?`,
+    ),
+    deleteWorkflow: db.prepare('DELETE FROM workflows WHERE id = ? AND project_id = ?'),
+    getWorkflowSteps: db.prepare(
+      'SELECT * FROM workflow_steps WHERE workflow_id = ? ORDER BY step_order ASC, id ASC',
+    ),
+    getWorkflowStepsByProject: db.prepare(
+      `SELECT s.* FROM workflow_steps s
+       INNER JOIN workflows w ON s.workflow_id = w.id
+       WHERE w.project_id = ?
+       ORDER BY s.workflow_id, s.step_order ASC, s.id ASC`,
+    ),
+    deleteWorkflowStepsByWorkflow: db.prepare('DELETE FROM workflow_steps WHERE workflow_id = ?'),
+    createWorkflowStep: db.prepare(
+      `INSERT INTO workflow_steps
+        (id, workflow_id, agent_id, title, role_prompt, step_order, timeout_ms, on_failure, condition_expr, parallel_group)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    createWorkflowRun: db.prepare(
+      `INSERT INTO workflow_runs (id, workflow_id, status, run_payload) VALUES (?, ?, ?, ?)`,
+    ),
+    getWorkflowRun: db.prepare('SELECT * FROM workflow_runs WHERE id = ?'),
+    getWorkflowRunsLimited: db.prepare(
+      'SELECT * FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT ?',
+    ),
+
     // Notes
     getNotes: db.prepare(
       'SELECT id, project_id, title, created_at, updated_at FROM notes WHERE project_id = ? ORDER BY updated_at DESC',
@@ -2339,6 +2376,7 @@ function initDb(dataDir: string): void {
     deleteWikiEmbeddingsByProject: db.prepare('DELETE FROM wiki_embeddings WHERE project_id = ?'),
     deleteWebhookConfigsByProject: db.prepare('DELETE FROM webhook_configs WHERE project_id = ?'),
     deleteBoardsByProject: db.prepare('DELETE FROM kanban_boards WHERE project_id = ?'),
+    deleteWorkflowsByProject: db.prepare('DELETE FROM workflows WHERE project_id = ?'),
     deleteThreadsByProject: db.prepare('DELETE FROM threads WHERE project_id = ?'),
     deleteRoomsByProject: db.prepare('DELETE FROM rooms WHERE project_id = ?'),
     deleteCronsByProject: db.prepare('DELETE FROM crons WHERE project_id = ?'),

@@ -87,6 +87,7 @@ import createGeminiAuthRoutes from './routes/gemini-auth.js';
 import createCodexAuthRoutes from './routes/codex-auth.js';
 import createCursorAuthRoutes from './routes/cursor-auth.js';
 import createThreadRoutes from './routes/threads.js';
+import createWorkflowRoutes from './routes/workflows.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createCaptureRoutes, { createCaptureGlobalRoutes } from './routes/captures.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
@@ -595,6 +596,7 @@ app.use(createGeminiAuthRoutes(routeDeps));
 app.use(createCursorAuthRoutes(routeDeps));
 app.use(createCodexAuthRoutes(routeDeps));
 app.use(createThreadRoutes(routeDeps));
+app.use(createWorkflowRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
 // `/api/captures/status` is the only non-project-scoped endpoint — everything
 // else must know which project it belongs to. Keeping these on separate routers

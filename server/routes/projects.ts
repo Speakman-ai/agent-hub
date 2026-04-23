@@ -608,6 +608,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     stmts.deleteWikiPagesByProject.run(project.id);
     stmts.deleteWebhookConfigsByProject.run(project.id);
     stmts.deleteBoardsByProject.run(project.id);
+    stmts.deleteWorkflowsByProject.run(project.id);
     stmts.deleteThreadsByProject.run(project.id);
     stmts.deleteRoomsByProject.run(project.id);
     stmts.deleteCronsByProject.run(project.id);
