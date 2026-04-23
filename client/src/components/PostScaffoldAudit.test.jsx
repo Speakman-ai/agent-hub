@@ -141,9 +141,16 @@ describe('PostScaffoldAudit', () => {
     expect(deps.saveRoster).toHaveBeenCalledWith('p1', {
       tracks: [{ id: 'architect', label: 'Architect', agentId: 'hub-lead', custom: false }],
     });
-    expect(onConfirmed).toHaveBeenCalledWith({
-      tracks: [{ id: 'architect', agentId: 'hub-lead', custom: false }],
-    });
+    // onConfirmed now receives the saved roster as the first arg and an
+    // `{report, agents, roster}` context object as the second — the
+    // downstream landing view uses these to render without refetching.
+    expect(onConfirmed).toHaveBeenCalledWith(
+      { tracks: [{ id: 'architect', agentId: 'hub-lead', custom: false }] },
+      expect.objectContaining({
+        agents: expect.any(Array),
+        roster: expect.any(Array),
+      }),
+    );
   });
 
   it('surfaces save errors without invoking onConfirmed', async () => {

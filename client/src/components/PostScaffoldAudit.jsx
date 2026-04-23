@@ -135,14 +135,17 @@ export default function PostScaffoldAudit({
       const payload = rosterToPayload(roster);
       const saved = await saveRoster(projectId, payload);
       if (mountedRef.current) {
-        onConfirmed?.(saved);
+        // Surface the rendered audit report + agent list alongside the
+        // persisted roster so the downstream landing view can render
+        // summary chips and per-row "Chat" actions without an extra fetch.
+        onConfirmed?.(saved, { report, agents, roster });
       }
     } catch (err) {
       if (mountedRef.current) setSaveError(err?.message || String(err));
     } finally {
       if (mountedRef.current) setSaving(false);
     }
-  }, [roster, saving, saveRoster, projectId, onConfirmed]);
+  }, [roster, saving, saveRoster, projectId, onConfirmed, report, agents]);
 
   const canConfirm = useMemo(() => hasAnyAssignment(roster) && !saving, [roster, saving]);
 

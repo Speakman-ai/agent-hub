@@ -1,7 +1,34 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import NewProjectAdaptiveFlow, { inferWithGithub } from './NewProjectAdaptiveFlow.jsx';
 import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY } from '../utils/adaptiveQuestionnaire.js';
+
+// Mock the audit transport layer so the flow test can drive Act IV and
+// transition into Act V (landing) without needing a live server.
+vi.mock('../utils/auditClient.js', () => ({
+  fetchAuditReport: vi.fn(async () => ({
+    projectId: 'proj-1',
+    score: 88,
+    categories: [{ id: 'lint', status: 'ok' }],
+    findings: [{ id: 'f1', severity: 'warn', message: 'Needs test for auth' }],
+    gaps: [],
+  })),
+  refreshAuditReport: vi.fn(async () => ({})),
+  fetchRosterSuggestions: vi.fn(async () => ({
+    tracks: [
+      { id: 'architect', label: 'Architect', suggestedAgentId: 'hub-lead' },
+      { id: 'frontend', label: 'Frontend', suggestedAgentId: 'hub-frontend' },
+    ],
+  })),
+  saveRoster: vi.fn(async () => ({
+    tracks: [{ id: 'architect', agentId: 'hub-lead', custom: false }],
+    updatedAt: '2026-04-23T21:00:00Z',
+  })),
+  fetchAgents: vi.fn(async () => [
+    { id: 'hub-lead', name: 'Hub Lead' },
+    { id: 'hub-frontend', name: 'Hub Frontend' },
+  ]),
+}));
 
 describe('inferWithGithub', () => {
   it('returns true when integrations is the idk sentinel', () => {
@@ -55,6 +82,7 @@ describe('NewProjectAdaptiveFlow', () => {
         onProjectCreated={onProjectCreated}
         provision={provision}
         subscribe={subscribe}
+        {...(opts.extraProps || {})}
       />,
     );
     // step 1 — description
@@ -166,6 +194,73 @@ describe('NewProjectAdaptiveFlow', () => {
     // Without github in integrations the gh-* phases should be absent
     expect(screen.queryByTestId('ps-phase-gh-create')).not.toBeInTheDocument();
     expect(screen.queryByTestId('ps-phase-gh-push')).not.toBeInTheDocument();
+  });
+
+  it('advances from audit to the Act V landing after a successful roster save', async () => {
+    const { onProjectCreated, onClose } = await runThroughQuestionnaire();
+    // Finish provisioning with a repoUrl so the landing can display it.
+    act(() => {
+      subscribeHandlers.onEvent({
+        type: 'done',
+        repoUrl: 'https://github.com/acme/my-proj',
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('ps-success-close'));
+    });
+    // Wait for the audit to finish its initial load (so the roster picker
+    // has pre-selected agents and the confirm button is enabled).
+    await waitFor(() => {
+      expect(screen.getByTestId('roster-agent-architect')).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('psa-confirm')).not.toBeDisabled();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('psa-confirm'));
+    });
+    // Landing rendered.
+    await waitFor(() => {
+      expect(screen.getByTestId('project-landing')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('pl-repo-link')).toHaveAttribute(
+      'href',
+      'https://github.com/acme/my-proj',
+    );
+    // onProjectCreated / onClose are NOT fired yet — the user has to click
+    // a next-step CTA to leave the landing.
+    expect(onProjectCreated).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Clicking the primary "Brief lead" CTA routes through onProjectCreated
+    // with `action: 'chat'` + the assigned agent id, and closes the wizard.
+    fireEvent.click(screen.getByTestId('pl-next-chat-lead'));
+    expect(onProjectCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: 'proj-1', agentId: 'hub-lead', action: 'chat' }),
+    );
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('audit-skip bypasses the landing and closes the wizard', async () => {
+    const { onProjectCreated, onClose } = await runThroughQuestionnaire();
+    act(() => {
+      subscribeHandlers.onEvent({
+        type: 'done',
+        repoUrl: 'https://github.com/acme/my-proj',
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('ps-success-close'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('psa-skip')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('psa-skip'));
+    expect(screen.queryByTestId('project-landing')).not.toBeInTheDocument();
+    expect(onClose).toHaveBeenCalled();
+    expect(onProjectCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: 'proj-1', skipped: true }),
+    );
   });
 
   it('retry re-invokes provision and wipes previous events', async () => {
