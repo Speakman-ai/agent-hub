@@ -28,6 +28,7 @@ import ThreadView from './components/ThreadView.jsx';
 import NotesEditor from './components/NotesEditor.jsx';
 import CapturesPage from './components/CapturesPage.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
+import ProjectWorkflowsPage from './components/ProjectWorkflowsPage.jsx';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal.jsx';
 import UpdateAvailableModal from './components/UpdateAvailableModal.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
@@ -205,6 +206,10 @@ export default function App() {
   const [pullsProjectId, setPullsProjectId] = useState(null);
   /** Bumped when the server signals PR/board activity for the open Pulls view — keeps GitHub list live without reload. */
   const [pullsListRefreshNonce, setPullsListRefreshNonce] = useState(0);
+  /** Cleared when user opens the Workflows view — set by workflow WebSocket activity. */
+  const [workflowSidebarBadgeByProject, setWorkflowSidebarBadgeByProject] = useState({});
+  /** Deep-link from Workflows → Settings → GitHub: expand this project row (cleared when leaving Settings). */
+  const [settingsGithubExpandProjectId, setSettingsGithubExpandProjectId] = useState(null);
   // Threads state
   const [threadsProjectId, setThreadsProjectId] = useState(null);
   const [activeThreadId, setActiveThreadId] = useState(null);
@@ -283,6 +288,31 @@ export default function App() {
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   const chatProjectIsWorkflow =
     projects.find((p) => p.id === activeAgent?.projectId)?.mode === 'workflow';
+
+  useEffect(() => {
+    if (!currentView.startsWith('workflows:')) return;
+    const projectId = currentView.slice('workflows:'.length);
+    if (!projectId) return;
+    setWorkflowSidebarBadgeByProject((prev) => {
+      if (!prev[projectId]) return prev;
+      const next = { ...prev };
+      delete next[projectId];
+      return next;
+    });
+  }, [currentView]);
+
+  useEffect(() => {
+    if (!currentView.startsWith('settings')) {
+      setSettingsGithubExpandProjectId(null);
+    }
+  }, [currentView]);
+
+  const navigateFromProjectWorkflows = useCallback((view, extra) => {
+    if (typeof view === 'string' && view.startsWith('settings') && extra?.expandProjectId) {
+      setSettingsGithubExpandProjectId(extra.expandProjectId);
+    }
+    setCurrentView(view);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1202,6 +1232,7 @@ export default function App() {
         case 'workflow_run_status':
         case 'workflow_update':
           if (data.projectId) {
+            setWorkflowSidebarBadgeByProject((prev) => ({ ...prev, [data.projectId]: true }));
             window.dispatchEvent(new CustomEvent('agenthub-workflow-ws', { detail: data }));
           }
           break;
@@ -2455,6 +2486,7 @@ export default function App() {
   // project owning the active agent, then the first project.
   const currentProjectId = useMemo(() => {
     if (currentView.startsWith('kanban:')) return currentView.split(':')[1];
+    if (currentView.startsWith('workflows:')) return currentView.slice('workflows:'.length);
     if (currentView === 'wiki' && wikiProjectId) return wikiProjectId;
     if (currentView === 'notes' && notesProjectId) return notesProjectId;
     if (currentView === 'captures' && capturesProjectId) return capturesProjectId;
@@ -2735,6 +2767,7 @@ export default function App() {
             threadsProjectId={threadsProjectId}
             capturesProjectId={capturesProjectId}
             pullsProjectId={pullsProjectId}
+            workflowBadgeByProject={workflowSidebarBadgeByProject}
             unreadThreadCounts={unreadThreadCounts}
             activeReviews={activeReviews}
             designs={designs}
@@ -2774,7 +2807,9 @@ export default function App() {
             projectId={
               currentView.startsWith('kanban:')
                 ? currentView.split(':')[1]
-                : projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
+                : currentView.startsWith('workflows:')
+                  ? currentView.slice('workflows:'.length)
+                  : projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
             }
             showToast={showToast}
             onOpenForward={() => setShowForward(true)}
@@ -2796,12 +2831,21 @@ export default function App() {
                 setCurrentView('chat');
               }}
             />
+          ) : currentView.startsWith('workflows:') ? (
+            <ProjectWorkflowsPage
+              projectId={currentView.slice('workflows:'.length)}
+              project={projects.find((p) => p.id === currentView.slice('workflows:'.length))}
+              onNavigate={navigateFromProjectWorkflows}
+              onSelectAgent={setActiveAgentId}
+              showToast={showToast}
+            />
           ) : currentView.startsWith('settings') ? (
             <SettingsPage
               projects={projects}
               agents={agents}
               onAgentsChange={refreshAgents}
               initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined}
+              initialGithubExpandedProjectId={settingsGithubExpandProjectId}
               onNavigate={(view, extra) => {
                 setCurrentView(view);
                 if (view === 'threads' && extra) {

@@ -1958,7 +1958,13 @@ export function GeneralSection() {
   );
 }
 
-export function GitHubSection({ projects = [], onProjectsChange, showToast }) {
+export function GitHubSection({
+  projects = [],
+  onProjectsChange,
+  showToast,
+  /** When set (e.g. deep-link from Workflows page), expand this project card on load. */
+  initialExpandedProjectId = null,
+}) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -1984,6 +1990,19 @@ export function GitHubSection({ projects = [], onProjectsChange, showToast }) {
   const [repoSaveStatus, setRepoSaveStatus] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
   const [detecting, setDetecting] = useState({});
+  /** One-shot deep-link expand — do not re-expand on `projects` identity churn after manual collapse. */
+  const lastDeepLinkExpandIdRef = useRef(null);
+
+  useEffect(() => {
+    if (!initialExpandedProjectId) {
+      lastDeepLinkExpandIdRef.current = null;
+      return;
+    }
+    if (!projects.some((p) => p.id === initialExpandedProjectId)) return;
+    if (lastDeepLinkExpandIdRef.current === initialExpandedProjectId) return;
+    setExpandedProject(initialExpandedProjectId);
+    lastDeepLinkExpandIdRef.current = initialExpandedProjectId;
+  }, [initialExpandedProjectId, projects]);
 
   // Per-project repo test
   const [repoTesting, setRepoTesting] = useState({});
@@ -6184,6 +6203,8 @@ export default function SettingsPage({
   agents,
   onAgentsChange,
   initialTab,
+  /** When opening Settings → GitHub from Workflows, expand this project's card. */
+  initialGithubExpandedProjectId = null,
   onNavigate,
   showToast,
   wsRef,
@@ -6259,6 +6280,7 @@ export default function SettingsPage({
               projects={projects}
               onProjectsChange={onAgentsChange}
               showToast={showToast}
+              initialExpandedProjectId={initialGithubExpandedProjectId}
             />
           )}
           {tab === 'orgs' && <OrganizationsSection />}

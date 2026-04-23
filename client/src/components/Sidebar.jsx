@@ -11,6 +11,7 @@ import {
   GitFork,
   GitPullRequest,
   List,
+  ListOrdered,
   AlertTriangle,
   Container,
   BarChart3,
@@ -58,6 +59,7 @@ export default function Sidebar({
   threadsProjectId,
   capturesProjectId,
   pullsProjectId,
+  workflowBadgeByProject = {},
   unreadThreadCounts = {},
   activeReviews = {},
   designs = [],
@@ -718,6 +720,24 @@ export default function Sidebar({
                     >
                       <FileText size={14} className="flex-shrink-0" />
                       <span className="truncate">Wiki</span>
+                    </button>
+
+                    <button
+                      onClick={() => onNavigate(`workflows:${project.id}`)}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                        currentView === `workflows:${project.id}`
+                          ? 'bg-gray-800 text-white'
+                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                      }`}
+                    >
+                      <ListOrdered size={14} className="flex-shrink-0" />
+                      <span className="truncate">Workflows</span>
+                      {workflowBadgeByProject[project.id] && (
+                        <span
+                          className="ml-auto flex-shrink-0 w-2 h-2 rounded-full bg-violet-500"
+                          title="Workflow activity"
+                        />
+                      )}
                     </button>
 
                     {/* Project notes */}

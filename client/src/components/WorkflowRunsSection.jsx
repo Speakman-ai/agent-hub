@@ -8,10 +8,11 @@ function isActiveRunStatus(s) {
   return s === 'pending' || s === 'running';
 }
 
-export default function WorkflowRunsSection({ projectId }) {
-  const [open, setOpen] = useState(false);
+export default function WorkflowRunsSection({ projectId, embedWorkflowId = null }) {
+  const isEmbed = Boolean(embedWorkflowId);
+  const [open, setOpen] = useState(isEmbed);
   const [workflows, setWorkflows] = useState([]);
-  const [wfId, setWfId] = useState('');
+  const [wfId, setWfId] = useState(embedWorkflowId || '');
   const [runs, setRuns] = useState([]);
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -40,31 +41,39 @@ export default function WorkflowRunsSection({ projectId }) {
   );
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (embedWorkflowId) {
+      setOpen(true);
+      setWfId(embedWorkflowId);
+    }
+  }, [embedWorkflowId]);
+
+  useEffect(() => {
+    if (!open && !isEmbed) return undefined;
     setError('');
     loadWorkflows()
       .then((list) => {
         const arr = Array.isArray(list) ? list : [];
         setWfId((cur) => {
+          if (embedWorkflowId) return embedWorkflowId;
           if (cur && arr.some((w) => w.id === cur)) return cur;
           return arr[0]?.id || '';
         });
       })
       .catch((e) => setError(String(e.message || e)));
     return undefined;
-  }, [open, loadWorkflows]);
+  }, [open, loadWorkflows, embedWorkflowId, isEmbed]);
 
   useEffect(() => {
-    if (!open || !wfId) return undefined;
+    if ((!open && !isEmbed) || !wfId) return undefined;
     loadRuns().catch((e) => setError(String(e.message || e)));
     const id = setInterval(() => {
       loadRuns().catch(() => {});
     }, 5000);
     return () => clearInterval(id);
-  }, [open, wfId, loadRuns]);
+  }, [open, wfId, loadRuns, isEmbed]);
 
   useEffect(() => {
-    if (!selectedRunId || !open || !wfId) {
+    if (!selectedRunId || (!open && !isEmbed) || !wfId) {
       setDetail(null);
       return undefined;
     }
@@ -73,10 +82,10 @@ export default function WorkflowRunsSection({ projectId }) {
       loadDetail(selectedRunId).catch(() => {});
     }, 4000);
     return () => clearInterval(id);
-  }, [selectedRunId, open, wfId, loadDetail]);
+  }, [selectedRunId, open, wfId, loadDetail, isEmbed]);
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open && !isEmbed) return undefined;
     const fn = (ev) => {
       const d = ev.detail;
       if (!d || d.projectId !== projectId) return;
@@ -88,7 +97,7 @@ export default function WorkflowRunsSection({ projectId }) {
     };
     window.addEventListener(WORKFLOW_WS, fn);
     return () => window.removeEventListener(WORKFLOW_WS, fn);
-  }, [open, projectId, wfId, selectedRunId, loadRuns, loadDetail]);
+  }, [open, isEmbed, projectId, wfId, selectedRunId, loadRuns, loadDetail]);
 
   const startRun = async () => {
     if (!wfId) return;
@@ -123,17 +132,19 @@ export default function WorkflowRunsSection({ projectId }) {
     'w-full max-w-md bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100';
 
   return (
-    <div className="pt-2 border-t border-gray-800 space-y-2">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 text-sm text-gray-200 hover:text-white"
-      >
-        {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-        Hub workflow runs (manual)
-      </button>
-      {open && (
-        <div className="space-y-3 pl-1">
+    <div className={isEmbed ? 'space-y-3' : 'pt-2 border-t border-gray-800 space-y-2'}>
+      {!isEmbed && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-2 text-sm text-gray-200 hover:text-white"
+        >
+          {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          Hub workflow runs (manual)
+        </button>
+      )}
+      {(open || isEmbed) && (
+        <div className={`space-y-3 ${isEmbed ? '' : 'pl-1'}`}>
           {error && <p className="text-xs text-red-400">{error}</p>}
           {workflows.length === 0 ? (
             <p className="text-xs text-gray-500">
@@ -141,23 +152,25 @@ export default function WorkflowRunsSection({ projectId }) {
             </p>
           ) : (
             <>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-gray-400">Workflow</label>
-                <select
-                  value={wfId}
-                  onChange={(e) => {
-                    setWfId(e.target.value);
-                    setSelectedRunId(null);
-                  }}
-                  className={inputClass}
-                >
-                  {workflows.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {!isEmbed && (
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-gray-400">Workflow</label>
+                  <select
+                    value={wfId}
+                    onChange={(e) => {
+                      setWfId(e.target.value);
+                      setSelectedRunId(null);
+                    }}
+                    className={inputClass}
+                  >
+                    {workflows.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
