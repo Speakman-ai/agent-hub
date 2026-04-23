@@ -101,6 +101,12 @@ export default function App() {
   // Server filters to 7-day window + newest-first; client just renders.
   const [archivedSessions, setArchivedSessions] = useState([]);
   const [restoringSessionIds, setRestoringSessionIds] = useState(new Set());
+  // activeSessionId is persisted per-agent in localStorage under
+  // `activeSessionId:<agentId>` so an Electron reload / app restart returns
+  // the user to the same session instead of silently defaulting to whichever
+  // row happens to have the newest `updated_at` (which may be a cron/heartbeat
+  // session the user wasn't working on). See the session-restore test + the
+  // "Session recovery" troubleshooting wiki page.
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
   /** True while GET /api/sessions/:id/messages is in flight after a session switch. */
@@ -258,6 +264,25 @@ export default function App() {
   const messagesColumnRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  // Persist the active session per-agent so a reload / Electron restart
+  // restores the same session. Intentionally scoped by agent because sessions
+  // belong to agents; a remembered id for the wrong agent would be invalid.
+  //
+  // Only WRITE on a truthy session id — never clear the key. The initial mount
+  // fires this effect with `activeSessionId=null` (useState default) before
+  // the session-load effect has had a chance to hydrate from localStorage; if
+  // we cleared here, we'd race-condition ourselves and wipe the remembered
+  // value every reload. Stale ids are handled on the read side instead
+  // (`data.find(s => s.id === stored)` gracefully falls through to `data[0]`).
+  useEffect(() => {
+    if (!activeAgentId || !activeSessionId) return;
+    const key = `activeSessionId:${activeAgentId}`;
+    try {
+      localStorage.setItem(key, activeSessionId);
+    } catch {
+      /* quota / disabled storage — non-fatal */
+    }
+  }, [activeAgentId, activeSessionId]);
   /** One in-flight implicit `createSession` per agent + ask-mode (send with no session). */
   const implicitSessionCreateByKeyRef = useRef(new Map());
   const activeAgentIdRef = useRef(activeAgentId);
@@ -1785,10 +1810,23 @@ export default function App() {
         }
 
         // If we were explicitly navigated to a specific session (e.g. from kanban
-        // assign), honour that session ID instead of defaulting to the first one.
+        // assign), honour that session ID. Otherwise try to restore the last
+        // session the user had open for this agent (persisted in localStorage on
+        // every `activeSessionId` change). Fall back to `data[0]` (newest by
+        // `updated_at`) only when neither is available — this is what used to
+        // surface as "Claude lost my session" after an Electron reload, because
+        // `data[0]` could be an unrelated cron/heartbeat row.
+        let remembered = null;
+        try {
+          const key = `activeSessionId:${agentId}`;
+          const stored = localStorage.getItem(key);
+          if (stored) remembered = data.find((s) => s.id === stored) || null;
+        } catch {
+          /* storage disabled — ignore */
+        }
         const target = targetSessionId
-          ? data.find((s) => s.id === targetSessionId) || data[0]
-          : data[0];
+          ? data.find((s) => s.id === targetSessionId) || remembered || data[0]
+          : remembered || data[0];
 
         if (target) {
           setActiveSessionId(target.id);

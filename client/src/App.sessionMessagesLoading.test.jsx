@@ -183,7 +183,10 @@ describe('App — session switch + getMessages loading', () => {
     ctl.resetMessages();
     ctl.resolveProjects = null;
     ctl.resolveSessionsByAgent = {};
-    localStorage.removeItem('activeAgentId');
+    // Clear everything — previous tests now write per-agent `activeSessionId`
+    // keys that would otherwise cause the next test's auto-select to restore
+    // the wrong session instead of defaulting to `data[0]`.
+    localStorage.clear();
     globalThis.window.electronAPI = undefined;
     mockFetch();
     delete globalThis.__ahTestSelectAgent;

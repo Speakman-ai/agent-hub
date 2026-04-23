@@ -144,7 +144,9 @@ describe('App — sidebar loading vs projects/sessions', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    localStorage.removeItem('activeAgentId');
+    // Clear everything so per-agent `activeSessionId` keys written by earlier
+    // tests don't leak into later ones and hijack session auto-select.
+    localStorage.clear();
     globalThis.window.electronAPI = undefined;
     mockFetch();
     ctl.resolveProjects = null;
