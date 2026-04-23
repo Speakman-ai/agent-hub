@@ -88,6 +88,7 @@ import createCodexAuthRoutes from './routes/codex-auth.js';
 import createCursorAuthRoutes from './routes/cursor-auth.js';
 import createThreadRoutes from './routes/threads.js';
 import createWorkflowRoutes from './routes/workflows.js';
+import { failStuckWorkflowRunsOnBoot } from './workflow-runner.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createCaptureRoutes, { createCaptureGlobalRoutes } from './routes/captures.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
@@ -958,6 +959,12 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     } catch {}
 
     scheduleAll(allAgents());
+
+    try {
+      failStuckWorkflowRunsOnBoot(stmts!);
+    } catch (e) {
+      console.error('[workflow] failStuckWorkflowRunsOnBoot', (e as Error).message);
+    }
 
     restoreAutonomousCrons();
 

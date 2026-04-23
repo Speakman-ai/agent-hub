@@ -1,6 +1,10 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { vi, describe, it, expect, beforeAll } from 'vitest';
 import type supertest from 'supertest';
 import { getRequest, createProject, createAgent } from '../test/helpers.js';
+
+vi.mock('../workflow-runner.js', () => ({
+  startWorkflowRun: vi.fn(),
+}));
 
 let request: supertest.Agent;
 

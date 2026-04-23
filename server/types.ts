@@ -1121,6 +1121,14 @@ export interface Stmts {
   createWorkflowRun: Stmt;
   getWorkflowRun: Stmt;
   getWorkflowRunsLimited: Stmt;
+  updateWorkflowRunToRunning: Stmt;
+  updateWorkflowRunTerminal: Stmt;
+  createWorkflowStepRunStart: Stmt;
+  updateWorkflowStepRunComplete: Stmt;
+  resetWorkflowStepRunForRetry: Stmt;
+  failStuckRunningWorkflowRuns: Stmt;
+  failStuckRunningWorkflowStepRuns: Stmt;
+  getWorkflowStepRun: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────

@@ -2356,6 +2356,38 @@ function initDb(dataDir: string): void {
     getWorkflowRunsLimited: db.prepare(
       'SELECT * FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT ?',
     ),
+    updateWorkflowRunToRunning: db.prepare(
+      `UPDATE workflow_runs SET status = 'running', updated_at = datetime('now') WHERE id = ?`,
+    ),
+    updateWorkflowRunTerminal: db.prepare(
+      `UPDATE workflow_runs SET status = ?, error = ?, completed_at = datetime('now'),
+       updated_at = datetime('now') WHERE id = ?`,
+    ),
+    createWorkflowStepRunStart: db.prepare(
+      `INSERT INTO workflow_step_runs (id, workflow_run_id, workflow_step_id, status, started_at)
+       VALUES (?, ?, ?, 'running', datetime('now'))`,
+    ),
+    updateWorkflowStepRunComplete: db.prepare(
+      `UPDATE workflow_step_runs SET status = ?, output = ?, error = ?,
+        completed_at = datetime('now') WHERE id = ?`,
+    ),
+    resetWorkflowStepRunForRetry: db.prepare(
+      `UPDATE workflow_step_runs SET status = 'running', output = NULL, error = NULL,
+        started_at = datetime('now'), completed_at = NULL WHERE id = ?`,
+    ),
+    failStuckRunningWorkflowRuns: db.prepare(
+      `UPDATE workflow_runs
+       SET status = 'error', error = 'Workflow run interrupted (server restart or crash)',
+           completed_at = datetime('now'), updated_at = datetime('now')
+       WHERE status = 'running'`,
+    ),
+    failStuckRunningWorkflowStepRuns: db.prepare(
+      `UPDATE workflow_step_runs
+       SET status = 'error', error = 'Step run interrupted (server restart or crash)',
+           completed_at = datetime('now')
+       WHERE status = 'running'`,
+    ),
+    getWorkflowStepRun: db.prepare('SELECT * FROM workflow_step_runs WHERE id = ?'),
 
     // Notes
     getNotes: db.prepare(

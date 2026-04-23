@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.js';
+import { startWorkflowRun } from '../workflow-runner.js';
 import type { RouteDeps, Stmts } from '../types.js';
 
 const ALLOWED_TRIGGER = new Set(['manual']);
@@ -268,6 +269,7 @@ function insertSteps(
 export default function createWorkflowRoutes({
   findProject,
   findAgent,
+  getEnrichedAgent,
   stmts,
   broadcast,
 }: RouteDeps): Router {
@@ -475,6 +477,10 @@ export default function createWorkflowRoutes({
     stmts.createWorkflowRun.run(id, req.params.workflowId, 'pending', runPayload);
     const run = stmts.getWorkflowRun.get(id) as Record<string, unknown> | undefined;
     broadcast({ type: 'workflow_run', projectId, workflowId: req.params.workflowId, runId: id });
+    startWorkflowRun(
+      { stmts, broadcast, getEnrichedAgent, findProject },
+      { projectId, workflowId: req.params.workflowId as string, runId: id },
+    );
     if (!run) {
       return res.status(201).json({ id, workflow_id: req.params.workflowId, status: 'pending' });
     }
