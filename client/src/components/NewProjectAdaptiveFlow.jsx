@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AdaptiveQuestionnaire from './AdaptiveQuestionnaire.jsx';
 import ProvisioningStatus from './ProvisioningStatus.jsx';
+import PostScaffoldAudit from './PostScaffoldAudit.jsx';
 import {
   provisionProject as defaultProvision,
   subscribeProvisioningEvents as defaultSubscribe,
@@ -8,14 +9,18 @@ import {
 
 /**
  * NewProjectAdaptiveFlow — stitches the questionnaire to the live
- * provisioning status view.
+ * provisioning status view and the post-scaffold audit.
  *
- * Two sub-views driven by local state:
+ * Three sub-views driven by local state:
  *   1. `questionnaire` — render <AdaptiveQuestionnaire />. On submit we
  *      POST the payload to the provisioning endpoint, open the event
  *      stream, and transition to...
  *   2. `provisioning` — render <ProvisioningStatus /> with the event
- *      buffer reduced in real time.
+ *      buffer reduced in real time. When a terminal success event lands
+ *      and the user clicks "Continue", we transition to...
+ *   3. `audit` — render <PostScaffoldAudit /> (Act IV): readiness score,
+ *      findings, gaps, plus an agent-roster picker the user confirms to
+ *      persist tracks on the new project record.
  *
  * The `provision` and `subscribe` deps are injectable so tests can
  * drive the flow without a real server.
@@ -37,6 +42,7 @@ export default function NewProjectAdaptiveFlow({
   const [events, setEvents] = useState([]);
   const [withGithub, setWithGithub] = useState(true);
   const [launchError, setLaunchError] = useState(null);
+  const [createdProjectId, setCreatedProjectId] = useState(null);
   const streamHandleRef = useRef(null);
   const currentPayloadRef = useRef(null);
 
@@ -51,11 +57,13 @@ export default function NewProjectAdaptiveFlow({
     async (payload) => {
       setLaunchError(null);
       setEvents([]);
+      setCreatedProjectId(null);
       setWithGithub(inferWithGithub(payload));
       setView('provisioning');
       currentPayloadRef.current = payload;
       try {
-        const { wsUrl } = await provision(payload);
+        const { wsUrl, projectId } = await provision(payload);
+        if (projectId) setCreatedProjectId(projectId);
         const handle = subscribe(wsUrl, {
           onEvent: (ev) => setEvents((prev) => [...prev, ev]),
           onClose: () => {
@@ -102,13 +110,54 @@ export default function NewProjectAdaptiveFlow({
 
   const handleOpenRepo = useCallback(
     (repoUrl) => {
-      onProjectCreated?.({ repoUrl });
+      onProjectCreated?.({ repoUrl, projectId: createdProjectId });
     },
-    [onProjectCreated],
+    [onProjectCreated, createdProjectId],
   );
+
+  // After a successful provisioning run, the success card's primary action
+  // transitions the flow into Act IV (audit + roster). We extract the
+  // terminal `done` event so we only advance on clean completion — the
+  // partial / failed paths keep the user on the provisioning view with
+  // their respective recovery affordances.
+  const terminalDone = useMemo(() => events.find((e) => e && e.type === 'done'), [events]);
+  const provisioningSucceeded = terminalDone && !terminalDone.error;
+
+  const handleContinueToAudit = useCallback(() => {
+    // The provisioning socket has already emitted its terminal `done`
+    // event — tear it down eagerly so Act IV doesn't inherit an open
+    // socket the server will reap anyway.
+    streamHandleRef.current?.close?.();
+    setView('audit');
+  }, []);
+
+  const handleAuditConfirmed = useCallback(
+    (saved) => {
+      onProjectCreated?.({
+        projectId: createdProjectId,
+        roster: saved?.tracks || [],
+      });
+      onClose?.();
+    },
+    [onProjectCreated, onClose, createdProjectId],
+  );
+
+  const handleAuditSkip = useCallback(() => {
+    onClose?.();
+  }, [onClose]);
 
   if (view === 'questionnaire') {
     return <AdaptiveQuestionnaire onSubmit={start} onClose={onClose} />;
+  }
+
+  if (view === 'audit') {
+    return (
+      <PostScaffoldAudit
+        projectId={createdProjectId}
+        onConfirmed={handleAuditConfirmed}
+        onSkip={handleAuditSkip}
+      />
+    );
   }
 
   return (
@@ -126,7 +175,7 @@ export default function NewProjectAdaptiveFlow({
           events={events}
           withGithub={withGithub}
           onRetry={handleRetry}
-          onClose={handleClose}
+          onClose={provisioningSucceeded ? handleContinueToAudit : handleClose}
           onOpenRepo={handleOpenRepo}
         />
       </div>

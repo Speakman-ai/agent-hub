@@ -34,7 +34,7 @@ describe('NewProjectAdaptiveFlow', () => {
     sessionStorage.removeItem(ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY);
     subscribeHandlers = null;
     streamClose = vi.fn();
-    provision = vi.fn().mockResolvedValue({ jobId: 'job-1', wsUrl: 'ws://x' });
+    provision = vi.fn().mockResolvedValue({ jobId: 'job-1', wsUrl: 'ws://x', projectId: 'proj-1' });
     subscribe = vi.fn().mockImplementation((wsUrl, handlers) => {
       subscribeHandlers = handlers;
       return { close: streamClose };
@@ -116,7 +116,10 @@ describe('NewProjectAdaptiveFlow', () => {
     });
     expect(screen.getByTestId('ps-overall')).toHaveTextContent(/Project ready/);
     fireEvent.click(screen.getByTestId('ps-repo-link'));
-    expect(onProjectCreated).toHaveBeenCalledWith({ repoUrl: 'https://github.com/acme/my-proj' });
+    expect(onProjectCreated).toHaveBeenCalledWith({
+      repoUrl: 'https://github.com/acme/my-proj',
+      projectId: 'proj-1',
+    });
   });
 
   it('surfaces provision() rejection as a failure-card synthesized event', async () => {
@@ -126,7 +129,7 @@ describe('NewProjectAdaptiveFlow', () => {
     expect(screen.getByTestId('ps-failure')).toHaveTextContent(/401 unauthorized/);
   });
 
-  it('closes the event stream when the user hits the close button on success', async () => {
+  it('transitions to the post-scaffold audit view after a successful provisioning run', async () => {
     const { onClose } = await runThroughQuestionnaire();
     act(() => {
       subscribeHandlers.onEvent({
@@ -134,7 +137,26 @@ describe('NewProjectAdaptiveFlow', () => {
         repoUrl: 'https://github.com/acme/my-proj',
       });
     });
-    fireEvent.click(screen.getByTestId('ps-success-close'));
+    // The success "Done" button now advances into Act IV (audit) rather
+    // than closing the wizard outright. The provisioning socket is torn
+    // down eagerly since its terminal event has already landed.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('ps-success-close'));
+    });
+    expect(screen.getByTestId('post-scaffold-audit')).toBeInTheDocument();
+    expect(streamClose).toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('still routes the close button to onClose when provisioning failed', async () => {
+    const { onClose } = await runThroughQuestionnaire();
+    act(() => {
+      subscribeHandlers.onEvent({
+        type: 'done',
+        error: { code: 5, message: 'gh push failed' },
+      });
+    });
+    fireEvent.click(screen.getByTestId('ps-failure-close'));
     expect(streamClose).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
