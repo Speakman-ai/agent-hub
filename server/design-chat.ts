@@ -324,6 +324,7 @@ export async function handleDesignChat(
             buffers,
             text,
             !!event.partial,
+            event.replacesAssistantBuffer ? { replace: true } : undefined,
           );
           buffers = next;
           const visible = accumulateAssistantStreamForDelegateKickoff(

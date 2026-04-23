@@ -1700,6 +1700,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           { finalText, partialFallback },
           text,
           event.partial,
+          event.replacesAssistantBuffer ? { replace: true } : undefined,
         );
         finalText = next.finalText;
         partialFallback = next.partialFallback;

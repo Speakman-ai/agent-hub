@@ -785,11 +785,14 @@ describe('createStreamParser — Cursor Agent', () => {
       }),
     ]);
 
-    expect(events).toHaveLength(1);
-    expect(events[0].type).toBe('result');
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('assistant_text');
     expect((events[0] as { text: string }).text).toBe('Finished');
-    expect((events[0] as { costUsd: number | null }).costUsd).toBeNull();
-    expect((events[0] as { numTurns: number | null }).numTurns).toBeNull();
+    expect((events[0] as { replacesAssistantBuffer?: boolean }).replacesAssistantBuffer).toBe(true);
+    expect(events[1].type).toBe('result');
+    expect((events[1] as { text: string }).text).toBe('Finished');
+    expect((events[1] as { costUsd: number | null }).costUsd).toBeNull();
+    expect((events[1] as { numTurns: number | null }).numTurns).toBeNull();
   });
 
   it('extracts ask blocks from the final result text (Cursor has no finalized assistant_text)', () => {
@@ -803,6 +806,7 @@ describe('createStreamParser — Cursor Agent', () => {
     expect(events[0].type).toBe('assistant_text');
     expect((events[0] as { text: string }).text).toBe('Pick one:\n\nDone.');
     expect((events[0] as { partial: boolean }).partial).toBe(false);
+    expect((events[0] as { replacesAssistantBuffer?: boolean }).replacesAssistantBuffer).toBe(true);
     expect(events[1].type).toBe('ask_user_question');
     const ask = events[1] as AskUserQuestionEvent;
     expect(ask.askId).toMatch(/^ask-/);
@@ -813,12 +817,55 @@ describe('createStreamParser — Cursor Agent', () => {
     expect((events[2] as { text: string }).text).toBe(resultText);
   });
 
-  it('does not synthesize an extra assistant_text from result when no ask block is present', () => {
+  it('synthesizes authoritative assistant_text from result when no ask block (handoff/delegate)', () => {
     const events = parse([
       JSON.stringify({ type: 'result', result: 'Plain final text', is_error: false }),
     ]);
-    expect(events).toHaveLength(1);
-    expect(events[0].type).toBe('result');
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('assistant_text');
+    expect((events[0] as { text: string }).text).toBe('Plain final text');
+    expect((events[0] as { replacesAssistantBuffer?: boolean }).replacesAssistantBuffer).toBe(true);
+    expect(events[1].type).toBe('result');
+  });
+
+  it('includes <handoff> payload from Cursor result for post-close parsing', () => {
+    const handoffBody = '{"toAgent":"hub-backend","note":"Please fix."}';
+    const resultStr = `Here is the transfer.\n\n<handoff>\n${handoffBody}\n</handoff>\n`;
+    const events = parse([
+      JSON.stringify({ type: 'result', result: resultStr, duration_ms: 1, is_error: false }),
+    ]);
+    const assistant = events.find((e) => e.type === 'assistant_text') as { text: string };
+    expect(assistant).toBeDefined();
+    expect(assistant.text).toContain('<handoff>');
+    expect(assistant.text).toContain(handoffBody);
+  });
+
+  it('does not emit replacing assistant_text when result is ask-only (empty stripped prose)', () => {
+    const askOnly = `\`\`\`agenthub:ask\n[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]\n\`\`\``;
+    const events = parse([
+      JSON.stringify({ type: 'result', result: askOnly, duration_ms: 1, is_error: false }),
+    ]);
+    const replaceFinals = events.filter(
+      (e) =>
+        e.type === 'assistant_text' &&
+        (e as { replacesAssistantBuffer?: boolean }).replacesAssistantBuffer,
+    );
+    expect(replaceFinals).toHaveLength(0);
+    expect(events.some((e) => e.type === 'ask_user_question')).toBe(true);
+    expect(events.some((e) => e.type === 'result')).toBe(true);
+  });
+
+  it('does not emit replacing assistant_text when result is step-markers only', () => {
+    const stepOnly = '[[STEP:started:Sole marker]]';
+    const events = parse([JSON.stringify({ type: 'result', result: stepOnly, is_error: false })]);
+    const replaceFinals = events.filter(
+      (e) =>
+        e.type === 'assistant_text' &&
+        (e as { replacesAssistantBuffer?: boolean }).replacesAssistantBuffer,
+    );
+    expect(replaceFinals).toHaveLength(0);
+    expect(events.filter((e) => e.type === 'progress_step')).toHaveLength(1);
+    expect(events.some((e) => e.type === 'result')).toBe(true);
   });
 });
 
@@ -946,6 +993,12 @@ describe('extractStepMarkers — [[STEP:...]] progress protocol', () => {
       is_error: false,
     });
     events.push(...parser.feed(resultLine + '\n'));
+
+    const assistant = events.find((e) => e.type === 'assistant_text') as { text: string };
+    expect(assistant).toBeDefined();
+    expect(assistant.text).toContain('prose');
+    expect(assistant.text).toContain('more prose');
+    expect(assistant.text).not.toContain('[[STEP:');
 
     const progress = events.filter((e) => e.type === 'progress_step') as ProgressStepEvent[];
     expect(progress).toHaveLength(1);

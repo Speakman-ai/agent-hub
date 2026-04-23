@@ -1287,6 +1287,13 @@ export interface AssistantTextEvent extends BaseStreamEvent {
   type: 'assistant_text';
   text: string;
   partial: boolean;
+  /**
+   * When true (Cursor `result` → canonical body), `chat.ts` replaces the
+   * streaming accumulation instead of appending — avoids losing tail content
+   * that only appears on `result.result` and prevents doubling when the
+   * streamed deltas already matched the final string.
+   */
+  replacesAssistantBuffer?: boolean;
 }
 
 export interface ThinkingEvent extends BaseStreamEvent {

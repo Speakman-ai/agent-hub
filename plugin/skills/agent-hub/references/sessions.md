@@ -150,6 +150,15 @@ lead stays running.
 
 - **Payload**: JSON array of `{agentId, task}` objects. Both fields
   required, both strings.
+- **JSONL stream folding (Cursor + synthesis)**: engines that emit
+  `stream-json` partial `assistant_text` plus a terminal `result` line also
+  emit a final `assistant_text` with `replacesAssistantBuffer` when there is
+  canonical prose left after stripping `agenthub:ask` / `[[STEP:…]]` payloads
+  (otherwise the replace would clear streamed deltas for ask-only or
+  step-marker-only result lines). Both `server/chat.ts` and delegation output
+  collection in `server/delegation.ts` (`absorbStreamEvents`) fold through the
+  same buffer helper so the canonical `result` body **replaces** streamed
+  deltas instead of appending a duplicate.
 - **Parallelism**: all tasks spawn concurrently via `Promise.all`. No hard
   cap, but keep N small (≤ 4) — every spawn is a real CLI subprocess with
   its own context.

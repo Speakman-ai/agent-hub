@@ -106,6 +106,35 @@ describe('applyAssistantTextChunkForDelegationKickoff (chat.ts handleEvent slice
       state = step.next;
     }
   });
+
+  it('replace option overwrites buffers so Cursor result tail can complete delegate blocks', () => {
+    let state = { finalText: '', partialFallback: 'partial-only' };
+    const delegateClose = '<delegate>[{"agentId":"sub-1","task":"x"}]</delegate>';
+    const step = applyAssistantTextChunkForDelegationKickoff(
+      state,
+      `Intro\n${delegateClose}`,
+      false,
+      { replace: true },
+    );
+    expect(step.next).toEqual({ finalText: `Intro\n${delegateClose}`, partialFallback: '' });
+    expect(bufferWouldKickoffDelegation(step.accumulatedForKickoff)).toBe(true);
+  });
+
+  it('matches delegation absorbStreamEvents: partial deltas then Cursor canonical replace', () => {
+    let state = { finalText: '', partialFallback: '' };
+    state = applyAssistantTextChunkForDelegationKickoff(state, 'stream', true).next;
+    state = applyAssistantTextChunkForDelegationKickoff(state, 'ed', true).next;
+    const canonical = 'streamed\n\n<delegate>[{"agentId":"a","task":"t"}]</delegate>';
+    state = applyAssistantTextChunkForDelegationKickoff(state, canonical, false, {
+      replace: true,
+    }).next;
+    expect(state).toEqual({ finalText: canonical, partialFallback: '' });
+    expect(
+      bufferWouldKickoffDelegation(
+        accumulateAssistantStreamForDelegateKickoff(state.finalText, state.partialFallback),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('planDelegationRoundOnProcClose (chat.ts proc close delegation branch)', () => {

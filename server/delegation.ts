@@ -12,6 +12,7 @@ import {
   clearDelegationUiMeta,
 } from './delegation-state.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
+import { applyAssistantTextChunkForDelegationKickoff } from './delegation-kickoff-buffer.js';
 
 export interface DelegationDeps {
   stmts: Stmts;
@@ -141,11 +142,16 @@ function absorbStreamEvents(
     streamErrorMessage: string;
   },
 ): void {
+  let buffers = { finalText: sink.finalText, partialFallback: sink.partialFallback };
   for (const event of events) {
     if (event.type === 'assistant_text') {
       const text = typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-      if (event.partial) sink.partialFallback += text;
-      else sink.finalText += text;
+      buffers = applyAssistantTextChunkForDelegationKickoff(
+        buffers,
+        text,
+        event.partial,
+        event.replacesAssistantBuffer ? { replace: true } : undefined,
+      ).next;
     }
     if (event.type === 'result' && event.isError && event.text && !sink.streamErrorMessage) {
       sink.streamErrorMessage = event.text;
@@ -158,6 +164,8 @@ function absorbStreamEvents(
       if (!sink.streamErrorMessage) sink.streamErrorMessage = event.text;
     }
   }
+  sink.finalText = buffers.finalText;
+  sink.partialFallback = buffers.partialFallback;
 }
 
 export interface DelegationResult {

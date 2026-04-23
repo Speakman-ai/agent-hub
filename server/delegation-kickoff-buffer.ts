@@ -38,8 +38,11 @@ export function applyAssistantTextChunkForDelegationKickoff(
   state: AssistantStreamBuffers,
   chunk: string,
   partial: boolean,
+  opts?: { replace?: boolean },
 ): { next: AssistantStreamBuffers; accumulatedForKickoff: string } {
-  const next = foldAssistantTextChunk(state, chunk, partial);
+  const next = opts?.replace
+    ? { finalText: chunk, partialFallback: '' }
+    : foldAssistantTextChunk(state, chunk, partial);
   const accumulatedForKickoff = accumulateAssistantStreamForDelegateKickoff(
     next.finalText,
     next.partialFallback,

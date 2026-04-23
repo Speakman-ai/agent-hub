@@ -726,25 +726,34 @@ function normalizeCursor(
     }
 
     case 'result': {
-      // Cursor Agent only streams partials during the turn (no finalized
-      // assistant_text event). The full assistant message lands on `raw.result`.
-      // If it contains any agenthub:ask fenced blocks, extract them here so the
-      // picker renders in Cursor sessions too — mirroring the Claude path.
+      // Cursor Agent only streams partials during the turn; the terminal
+      // `assistant` snapshot (no `timestamp_ms`) is skipped to avoid doubling
+      // streamed deltas. The canonical full turn text lives on `raw.result`.
+      //
+      // Emit one finalized `assistant_text` with `replacesAssistantBuffer` so
+      // `chat.ts` sees `<handoff>`, `<delegate>`, `<agenthub:task-state>`, etc.
+      // that may exist only on the result line (regression: handoffs/delegations
+      // silently missing).
+      //
+      // When ask/step extraction consumes the entire body (`afterSteps` empty
+      // but asks or steps non-empty), skip this push — an empty replace would
+      // wipe streamed partial deltas while side events still fire.
       const resultText = typeof raw.result === 'string' ? raw.result : '';
       const out: StreamEvent[] = [];
       if (resultText) {
         const { strippedText: afterAsk, asks } = extractAskBlocks(resultText);
         const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
-        if (asks.length > 0 || steps.length > 0) {
-          // Emit a finalized assistant_text with the stripped text so chat.ts
-          // sets `finalText`, which replaces the raw-fence partialFallback on
-          // both the persisted message and the broadcasted stream content.
-          if (afterSteps) {
-            out.push({ type: 'assistant_text', text: afterSteps, partial: false });
-          }
-          for (const s of steps) out.push(stepEvent(s));
-          for (const ask of asks) out.push(askEvent(ask));
+        const hasSideExtracts = asks.length > 0 || steps.length > 0;
+        if (!hasSideExtracts || afterSteps) {
+          out.push({
+            type: 'assistant_text',
+            text: afterSteps,
+            partial: false,
+            replacesAssistantBuffer: true,
+          });
         }
+        for (const s of steps) out.push(stepEvent(s));
+        for (const ask of asks) out.push(askEvent(ask));
       }
       out.push({
         type: 'result',
