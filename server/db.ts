@@ -1278,6 +1278,31 @@ function initDb(dataDir: string): void {
   // shared with workflows-schema.test.ts via workflows-schema.ts.
   db.exec(WORKFLOWS_SCHEMA);
 
+  {
+    const wfCols = (db.pragma('table_info(workflows)') as { name: string }[]).map((c) => c.name);
+    if (wfCols.length > 0) {
+      if (!wfCols.includes('cron_expr')) {
+        db.exec('ALTER TABLE workflows ADD COLUMN cron_expr TEXT');
+      }
+      if (!wfCols.includes('cron_next_run_at')) {
+        db.exec('ALTER TABLE workflows ADD COLUMN cron_next_run_at TEXT');
+      }
+      if (!wfCols.includes('webhook_path_token')) {
+        db.exec('ALTER TABLE workflows ADD COLUMN webhook_path_token TEXT');
+      }
+      if (!wfCols.includes('webhook_signing_secret')) {
+        db.exec('ALTER TABLE workflows ADD COLUMN webhook_signing_secret TEXT');
+      }
+    }
+    try {
+      db.exec(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_webhook_token ON workflows(webhook_path_token) WHERE webhook_path_token IS NOT NULL',
+      );
+    } catch (e) {
+      console.warn('[db] idx_workflows_webhook_token migration:', (e as Error).message);
+    }
+  }
+
   const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get() as { count: number };
   if (cronCount.count === 0) {
     const insertCron = db.prepare(
@@ -2326,12 +2351,24 @@ function initDb(dataDir: string): void {
     ),
     getWorkflow: db.prepare('SELECT * FROM workflows WHERE id = ?'),
     createWorkflow: db.prepare(
-      `INSERT INTO workflows (id, project_id, name, trigger_type, default_payload)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO workflows (id, project_id, name, trigger_type, default_payload, cron_expr, cron_next_run_at, webhook_path_token, webhook_signing_secret)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
     ),
     updateWorkflow: db.prepare(
-      `UPDATE workflows SET name = ?, trigger_type = ?, default_payload = ?, updated_at = datetime('now')
+      `UPDATE workflows SET name = ?, trigger_type = ?, default_payload = ?, cron_expr = ?, webhook_path_token = ?, webhook_signing_secret = ?, updated_at = datetime('now')
        WHERE id = ? AND project_id = ?`,
+    ),
+    updateWorkflowCronNextRun: db.prepare(
+      `UPDATE workflows SET cron_next_run_at = ? WHERE id = ? AND project_id = ?`,
+    ),
+    updateWorkflowWebhookSecret: db.prepare(
+      `UPDATE workflows SET webhook_signing_secret = ?, updated_at = datetime('now') WHERE id = ? AND project_id = ?`,
+    ),
+    getWorkflowByWebhookToken: db.prepare(
+      'SELECT * FROM workflows WHERE webhook_path_token = ? LIMIT 1',
+    ),
+    getWorkflowsWithCronExpr: db.prepare(
+      `SELECT * FROM workflows WHERE cron_expr IS NOT NULL AND length(trim(cron_expr)) > 0`,
     ),
     deleteWorkflow: db.prepare('DELETE FROM workflows WHERE id = ? AND project_id = ?'),
     getWorkflowSteps: db.prepare(

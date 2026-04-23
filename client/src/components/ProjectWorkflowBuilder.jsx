@@ -10,10 +10,17 @@ import {
   RotateCcw,
   ListOrdered,
   BookOpen,
+  Copy,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { toWorkflowEditView } from '../utils/workflowEditView.js';
-import { workflowFromApi, workflowDraftSnapshot, draftToPutBody } from '../utils/workflowDraft.js';
+import {
+  workflowFromApi,
+  workflowDraftSnapshot,
+  draftToPutBody,
+  WORKFLOW_CRON_PRESET_LABELS,
+  WORKFLOW_CRON_MODES_ORDER,
+} from '../utils/workflowDraft.js';
 
 const WORKFLOW_WS = 'agenthub-workflow-ws';
 const WORKFLOW_WS_DEBOUNCE_MS = 450;
@@ -24,6 +31,9 @@ function emptyDraft() {
     trigger_type: 'manual',
     default_payload_str: '{\n  \n}',
     steps: [],
+    cron_mode: 'off',
+    cron_expr: '',
+    webhook_enabled: false,
   };
 }
 
@@ -60,6 +70,8 @@ export default function ProjectWorkflowBuilder({
   const [draft, setDraft] = useState(null);
   const [baselineDraft, setBaselineDraft] = useState(null);
   const [serverWorkflowId, setServerWorkflowId] = useState(isNew ? null : workflowId);
+  const [webhookSecretFlash, setWebhookSecretFlash] = useState('');
+  const [wfMeta, setWfMeta] = useState(null);
 
   const dirtyRef = useRef(false);
   const dirty =
@@ -80,6 +92,12 @@ export default function ProjectWorkflowBuilder({
     setDraft(w);
     setBaselineDraft(cloneDraft(w));
     setServerWorkflowId(String(apiRow.id));
+    setWfMeta({
+      webhook_url: apiRow.webhook_url || null,
+      cron_next_run_preview: apiRow.cron_next_run_preview || null,
+      cron_next_run_at: apiRow.cron_next_run_at || null,
+      cron_valid: apiRow.cron_valid !== false,
+    });
   }, []);
 
   useEffect(() => {
@@ -97,6 +115,7 @@ export default function ProjectWorkflowBuilder({
       if (myGen !== loadGenRef.current) return;
       setDraft(w);
       setBaselineDraft(cloneDraft(w));
+      setWfMeta(null);
       setError('');
       setLoading(false);
       return;
@@ -106,7 +125,16 @@ export default function ProjectWorkflowBuilder({
     try {
       const row = await api.getProjectWorkflow(projectId, workflowId);
       if (myGen !== loadGenRef.current) return;
+      let whFlash = '';
+      try {
+        const k = `ah_wf_wh_${row.id}`;
+        whFlash = sessionStorage.getItem(k) || '';
+        if (whFlash) sessionStorage.removeItem(k);
+      } catch (_) {
+        /* ignore */
+      }
       applyLoaded(row);
+      if (whFlash) setWebhookSecretFlash(whFlash);
     } catch (e) {
       if (myGen !== loadGenRef.current) return;
       setError(String(e.message || e));
@@ -165,6 +193,36 @@ export default function ProjectWorkflowBuilder({
       if (!ok) return;
     }
     onNavigate(`workflows:${projectId}`);
+  };
+
+  const copyToClipboard = async (text, label) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      if (showToast) showToast(`${label} copied.`, 'success', 2000);
+    } catch {
+      if (showToast) showToast('Copy failed — select and copy manually.', 'error', 3000);
+    }
+  };
+
+  const rotateWebhookSecret = async () => {
+    if (!serverWorkflowId) return;
+    setError('');
+    try {
+      const r = await api.rotateWorkflowWebhookSecret(projectId, serverWorkflowId);
+      if (r?.webhook_signing_secret) {
+        setWebhookSecretFlash(String(r.webhook_signing_secret));
+      }
+      if (showToast) {
+        showToast(
+          'New signing secret issued — copy it now. It is not shown again.',
+          'success',
+          5000,
+        );
+      }
+    } catch (e) {
+      setError(String(e.message || e));
+    }
   };
 
   const handleDiscard = () => {
@@ -264,14 +322,29 @@ export default function ProjectWorkflowBuilder({
     const body = draftToPutBody(draft);
     setSaving(true);
     setError('');
+    setWebhookSecretFlash('');
     try {
       if (isNew || !serverWorkflowId) {
         const created = await api.createProjectWorkflow(projectId, body);
+        if (created?.webhook_signing_secret) {
+          try {
+            // Ephemeral bridge across client navigation; XSS on this origin could read it until load clears the key.
+            sessionStorage.setItem(
+              `ah_wf_wh_${created.id}`,
+              String(created.webhook_signing_secret),
+            );
+          } catch (_) {
+            /* ignore */
+          }
+        }
         if (showToast) showToast('Workflow created.', 'success', 3000);
         onNavigate(toWorkflowEditView(projectId, String(created.id)));
         return;
       }
       const updated = await api.updateProjectWorkflow(projectId, serverWorkflowId, body);
+      if (updated?.webhook_signing_secret) {
+        setWebhookSecretFlash(String(updated.webhook_signing_secret));
+      }
       applyLoaded(updated);
       if (showToast) showToast('Workflow saved.', 'success', 3000);
     } catch (e) {
@@ -404,15 +477,10 @@ export default function ProjectWorkflowBuilder({
                 <div className="space-y-4">
                   <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-4 space-y-3">
                     <div>
-                      <div className="text-xs font-medium text-gray-400 mb-1">
-                        Trigger type (MVP)
-                      </div>
-                      <div className="text-sm text-gray-200">
-                        Manual — runs when you start a run from the UI.
-                      </div>
-                      <p className="text-xs text-gray-500 mt-2">
-                        Additional trigger types (schedule, webhook, etc.) are planned for a later
-                        release.
+                      <div className="text-xs font-medium text-gray-400 mb-1">Manual runs</div>
+                      <p className="text-sm text-gray-300">
+                        You can always start a run from the Workflows list or run history. The
+                        default JSON below is merged with any per-run or automated payload.
                       </p>
                     </div>
                     <div>
@@ -420,8 +488,7 @@ export default function ProjectWorkflowBuilder({
                         Default JSON payload
                       </label>
                       <p className="text-xs text-gray-500 mb-2">
-                        Merged with any per-run payload when a workflow starts. Must be a JSON
-                        object.
+                        Merged with per-run and trigger payloads. Must be a JSON object.
                       </p>
                       <textarea
                         value={draft.default_payload_str}
@@ -429,10 +496,145 @@ export default function ProjectWorkflowBuilder({
                           setDraft((p) => ({ ...p, default_payload_str: e.target.value }))
                         }
                         spellCheck={false}
-                        rows={12}
+                        rows={8}
                         className="w-full font-mono text-xs rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-gray-100 focus:outline-none focus:ring-1 focus:ring-violet-500"
                       />
                     </div>
+                  </div>
+
+                  <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-4 space-y-3">
+                    <div className="text-xs font-medium text-amber-200/90">
+                      Schedule (cron · UTC)
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Uses the same <code className="text-gray-400">node-cron</code> engine as
+                      heartbeats. Leave off and rely on manual runs only, or pick a preset / custom
+                      5-field expression.
+                    </p>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-400 mb-1">Preset</label>
+                      <select
+                        value={draft.cron_mode === 'custom' ? 'custom' : draft.cron_mode}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v === 'custom') {
+                            setDraft((p) => ({ ...p, cron_mode: 'custom' }));
+                            return;
+                          }
+                          setDraft((p) => ({ ...p, cron_mode: v, cron_expr: '' }));
+                        }}
+                        className="w-full max-w-md rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
+                      >
+                        {WORKFLOW_CRON_MODES_ORDER.map((k) => (
+                          <option key={k} value={k}>
+                            {WORKFLOW_CRON_PRESET_LABELS[k]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {draft.cron_mode === 'custom' && (
+                      <div>
+                        <label className="block text-xs font-medium text-gray-400 mb-1">
+                          Cron expression
+                        </label>
+                        <input
+                          type="text"
+                          value={draft.cron_expr}
+                          onChange={(e) => setDraft((p) => ({ ...p, cron_expr: e.target.value }))}
+                          placeholder="0 * * * *"
+                          className="w-full max-w-md font-mono text-sm rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          Five fields: minute hour day month weekday
+                        </p>
+                      </div>
+                    )}
+                    {wfMeta && draft.cron_mode !== 'off' && (
+                      <div className="text-xs text-gray-400 space-y-1">
+                        {wfMeta.cron_valid === false && (
+                          <p className="text-amber-400">
+                            Current expression is invalid on the server.
+                          </p>
+                        )}
+                        {(wfMeta.cron_next_run_at || wfMeta.cron_next_run_preview) && (
+                          <p>
+                            Next run (server):{' '}
+                            <span className="text-gray-200 font-mono">
+                              {wfMeta.cron_next_run_at || wfMeta.cron_next_run_preview}
+                            </span>
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-4 space-y-3">
+                    <div className="text-xs font-medium text-sky-200/90">HTTP webhook</div>
+                    <p className="text-xs text-gray-500">
+                      <code className="text-gray-400">POST</code> with JSON body. The body is merged
+                      into <code className="text-gray-400">trigger.payload</code> (with{' '}
+                      <code className="text-gray-400">source: &quot;webhook&quot;</code>). Sign with
+                      HMAC-SHA256 using your signing secret; send header{' '}
+                      <code className="text-gray-400">
+                        X-Agent-Hub-Signature: sha256=&lt;hex&gt;
+                      </code>
+                      (hex of HMAC over the raw request body).
+                    </p>
+                    <label className="flex items-center gap-2 text-sm text-gray-200">
+                      <input
+                        type="checkbox"
+                        className="rounded border-gray-600"
+                        checked={!!draft.webhook_enabled}
+                        onChange={(e) =>
+                          setDraft((p) => ({ ...p, webhook_enabled: e.target.checked }))
+                        }
+                      />
+                      Enable signed webhook
+                    </label>
+                    {wfMeta?.webhook_url && (
+                      <div>
+                        <div className="text-xs text-gray-400 mb-1">Endpoint URL</div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <code className="text-xs text-gray-200 break-all font-mono bg-gray-950/80 border border-gray-800 rounded px-2 py-1.5 flex-1 min-w-0">
+                            {wfMeta.webhook_url}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(wfMeta.webhook_url, 'URL')}
+                            className="inline-flex items-center gap-1 text-xs text-sky-300 border border-sky-800/60 rounded-lg px-2 py-1.5 hover:bg-sky-500/10"
+                          >
+                            <Copy size={14} />
+                            Copy
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {webhookSecretFlash && (
+                      <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                        <div className="font-medium text-amber-200 mb-1">
+                          Signing secret (copy now)
+                        </div>
+                        <code className="block break-all font-mono text-amber-50/95">
+                          {webhookSecretFlash}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(webhookSecretFlash, 'Secret')}
+                          className="mt-2 text-sky-300 hover:text-sky-200"
+                        >
+                          Copy secret
+                        </button>
+                      </div>
+                    )}
+                    {serverWorkflowId && !isNew && draft.webhook_enabled && (
+                      <button
+                        type="button"
+                        onClick={rotateWebhookSecret}
+                        className="text-xs text-gray-300 border border-gray-600 rounded-lg px-3 py-1.5 hover:bg-gray-800"
+                      >
+                        Rotate signing secret
+                      </button>
+                    )}
                   </div>
                 </div>
               )}

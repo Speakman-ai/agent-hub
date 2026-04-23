@@ -1113,6 +1113,10 @@ export interface Stmts {
   getWorkflow: Stmt;
   createWorkflow: Stmt;
   updateWorkflow: Stmt;
+  updateWorkflowCronNextRun: Stmt;
+  updateWorkflowWebhookSecret: Stmt;
+  getWorkflowByWebhookToken: Stmt;
+  getWorkflowsWithCronExpr: Stmt;
   deleteWorkflow: Stmt;
   getWorkflowSteps: Stmt;
   getWorkflowStepsByProject: Stmt;

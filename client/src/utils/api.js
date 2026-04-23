@@ -83,6 +83,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  rotateWorkflowWebhookSecret: (projectId, workflowId) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}/webhook/rotate`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
 
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),

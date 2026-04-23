@@ -89,6 +89,7 @@ import createCursorAuthRoutes from './routes/cursor-auth.js';
 import createThreadRoutes from './routes/threads.js';
 import createWorkflowRoutes from './routes/workflows.js';
 import { failStuckWorkflowRunsOnBoot } from './workflow-runner.js';
+import { createWorkflowIncomingRouter, refreshWorkflowCronSchedules } from './workflow-triggers.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createCaptureRoutes, { createCaptureGlobalRoutes } from './routes/captures.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
@@ -464,6 +465,14 @@ initAutonomous({
 } as Parameters<typeof initAutonomous>[0]);
 
 app.use(createGithubWebhookHandler(webhookHandlerDeps));
+app.use(
+  createWorkflowIncomingRouter({
+    stmts: stmts!,
+    broadcast,
+    getEnrichedAgent,
+    findProject,
+  }),
+);
 
 // (Preview proxy removed — replaced by lightweight Playwright captures)
 
@@ -964,6 +973,15 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       failStuckWorkflowRunsOnBoot(stmts!);
     } catch (e) {
       console.error('[workflow] failStuckWorkflowRunsOnBoot', (e as Error).message);
+    }
+
+    try {
+      refreshWorkflowCronSchedules(
+        { stmts: stmts!, broadcast, getEnrichedAgent, findProject },
+        null,
+      );
+    } catch (e) {
+      console.error('[workflow-cron] refresh on boot', (e as Error).message);
     }
 
     restoreAutonomousCrons();

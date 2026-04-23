@@ -1,7 +1,48 @@
 /**
  * Normalized draft snapshot for dirty detection (Hub workflow builder).
- * @param {{ name: string, trigger_type: string, default_payload_str: string, steps: object[] }} d
+ * @param {{ name: string, trigger_type: string, default_payload_str: string, steps: object[], cron_mode: string, cron_expr: string, webhook_enabled: boolean }} d
  */
+export const WORKFLOW_CRON_PRESET_LABELS = {
+  off: 'Off (manual runs only)',
+  every_15_min: 'Every 15 minutes (UTC)',
+  every_hour: 'Every hour (UTC)',
+  daily_midnight_utc: 'Daily at 00:00 UTC',
+  weekdays_9am_utc: 'Weekdays at 09:00 UTC',
+  custom: 'Custom expression…',
+};
+
+/** Option order in the Triggers &gt; Schedule dropdown. */
+export const WORKFLOW_CRON_MODES_ORDER = [
+  'off',
+  'every_15_min',
+  'every_hour',
+  'daily_midnight_utc',
+  'weekdays_9am_utc',
+  'custom',
+];
+
+/** Preset id → node-cron expression (must match server `CRON_PRESETS`). */
+const PRESET_TO_EXPR = {
+  every_15_min: '*/15 * * * *',
+  every_hour: '0 * * * *',
+  daily_midnight_utc: '0 0 * * *',
+  weekdays_9am_utc: '0 9 * * 1-5',
+};
+
+function inferCronFromApi(row) {
+  const ex =
+    row?.cron_expr != null && String(row.cron_expr).trim() ? String(row.cron_expr).trim() : '';
+  if (!ex) {
+    return { cron_mode: 'off', cron_expr: '' };
+  }
+  for (const [k, v] of Object.entries(PRESET_TO_EXPR)) {
+    if (v === ex) {
+      return { cron_mode: k, cron_expr: ex };
+    }
+  }
+  return { cron_mode: 'custom', cron_expr: ex };
+}
+
 export function workflowDraftSnapshot(d) {
   const steps = (d.steps || []).map((s) => ({
     id: String(s.id || ''),
@@ -18,6 +59,9 @@ export function workflowDraftSnapshot(d) {
     trigger_type: String(d.trigger_type || 'manual'),
     default_payload_str: String(d.default_payload_str ?? '{}'),
     steps,
+    cron_mode: String(d.cron_mode || 'off'),
+    cron_expr: String(d.cron_expr || ''),
+    webhook_enabled: Boolean(d.webhook_enabled),
   });
 }
 
@@ -48,17 +92,21 @@ export function workflowFromApi(apiWorkflow) {
       timeout_ms: s.timeout_ms == null ? null : Number(s.timeout_ms),
       on_failure: String(s.on_failure || 'abort'),
     }));
+  const { cron_mode, cron_expr } = inferCronFromApi(apiWorkflow);
   return {
     name: String(apiWorkflow?.name || '').trim() || 'Untitled workflow',
     trigger_type: String(apiWorkflow?.trigger_type || 'manual'),
     default_payload_str,
     steps,
+    cron_mode,
+    cron_expr,
+    webhook_enabled: Boolean(apiWorkflow?.webhook_path_token && apiWorkflow?.webhook_secret_set),
   };
 }
 
 /**
- * @param {{ name: string, trigger_type: string, default_payload_str: string, steps: object[] }} draft
- * @returns {{ name: string, triggerType: string, defaultPayload: unknown, steps: object[] }}
+ * @param {{ name: string, trigger_type: string, default_payload_str: string, steps: object[], cron_mode: string, cron_expr: string, webhook_enabled: boolean }} draft
+ * @returns {object} API body for PUT/POST
  */
 export function draftToPutBody(draft) {
   let defaultPayload;
@@ -80,10 +128,26 @@ export function draftToPutBody(draft) {
     })(),
     onFailure: s.on_failure || 'abort',
   }));
+
+  const mode = String(draft.cron_mode || 'off');
+  let cronExpr;
+  let cronPreset;
+  if (mode === 'off') {
+    cronExpr = null;
+  } else if (mode === 'custom') {
+    const t = String(draft.cron_expr || '').trim();
+    cronExpr = t.length ? t : null;
+  } else {
+    cronPreset = mode;
+  }
+
   return {
     name: draft.name.trim(),
     triggerType: draft.trigger_type || 'manual',
     defaultPayload,
     steps,
+    cronExpr,
+    cronPreset,
+    webhookEnabled: Boolean(draft.webhook_enabled),
   };
 }

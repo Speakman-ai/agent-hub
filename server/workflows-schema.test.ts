@@ -44,12 +44,16 @@ describe('workflows schema', () => {
     expect(names).toEqual(
       [
         'created_at',
+        'cron_expr',
+        'cron_next_run_at',
         'default_payload',
         'id',
         'name',
         'project_id',
         'trigger_type',
         'updated_at',
+        'webhook_path_token',
+        'webhook_signing_secret',
       ].sort(),
     );
     const trig = cols.find((c) => c.name === 'trigger_type');

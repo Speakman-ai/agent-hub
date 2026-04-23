@@ -45,7 +45,7 @@ describe('workflow runner', () => {
     const wfId = uuidv4();
     const stepId = uuidv4();
     const runId = uuidv4();
-    stmts!.createWorkflow.run(wfId, projectId, 'Flow', 'manual', '{"a":0}');
+    stmts!.createWorkflow.run(wfId, projectId, 'Flow', 'manual', '{"a":0}', null, null, null);
     stmts!.createWorkflowStep.run(
       stepId,
       wfId,
@@ -79,7 +79,7 @@ describe('workflow runner', () => {
     const wfId = uuidv4();
     const stepId = uuidv4();
     const runId = uuidv4();
-    stmts!.createWorkflow.run(wfId, projectId, 'R', 'manual', '{}');
+    stmts!.createWorkflow.run(wfId, projectId, 'R', 'manual', '{}', null, null, null);
     stmts!.createWorkflowStep.run(stepId, wfId, agentId, 'R', 'x', 0, null, 'retry', null, null);
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
 
@@ -97,7 +97,7 @@ describe('workflow runner', () => {
     const wfId = uuidv4();
     const stepId = uuidv4();
     const runId = uuidv4();
-    stmts!.createWorkflow.run(wfId, projectId, 'Continue', 'manual', '{}');
+    stmts!.createWorkflow.run(wfId, projectId, 'Continue', 'manual', '{}', null, null, null);
     stmts!.createWorkflowStep.run(
       stepId,
       wfId,
@@ -128,7 +128,7 @@ describe('workflow runner', () => {
     const step1 = uuidv4();
     const step2 = uuidv4();
     const runId = uuidv4();
-    stmts!.createWorkflow.run(wfId, projectId, 'C', 'manual', '{}');
+    stmts!.createWorkflow.run(wfId, projectId, 'C', 'manual', '{}', null, null, null);
     stmts!.createWorkflowStep.run(step1, wfId, agentId, 'A', 'a1', 0, null, 'continue', null, null);
     stmts!.createWorkflowStep.run(
       step2,
@@ -160,7 +160,7 @@ describe('workflow runner', () => {
     const wfId = uuidv4();
     const stepId = uuidv4();
     const runId = uuidv4();
-    stmts!.createWorkflow.run(wfId, projectId, 'A', 'manual', '{}');
+    stmts!.createWorkflow.run(wfId, projectId, 'A', 'manual', '{}', null, null, null);
     stmts!.createWorkflowStep.run(stepId, wfId, agentId, 'A', 'p', 0, null, 'abort', null, null);
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
 
@@ -181,7 +181,7 @@ describe('workflow runner', () => {
     const step1 = uuidv4();
     const step2 = uuidv4();
     const runId = uuidv4();
-    stmts!.createWorkflow.run(wfId, projectId, 'Two', 'manual', '{}');
+    stmts!.createWorkflow.run(wfId, projectId, 'Two', 'manual', '{}', null, null, null);
     stmts!.createWorkflowStep.run(
       step1,
       wfId,
@@ -222,7 +222,7 @@ describe('workflow runner', () => {
     const wfId = uuidv4();
     const stepId = uuidv4();
     const runId = uuidv4();
-    stmts!.createWorkflow.run(wfId, projectId, 'C', 'manual', '{}');
+    stmts!.createWorkflow.run(wfId, projectId, 'C', 'manual', '{}', null, null, null);
     stmts!.createWorkflowStep.run(stepId, wfId, agentId, 'S', 'p', 0, null, 'abort', null, null);
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
     requestWorkflowRunCancel(runId);
@@ -241,7 +241,7 @@ describe('workflow runner', () => {
     const step1 = uuidv4();
     const step2 = uuidv4();
     const runId = uuidv4();
-    stmts!.createWorkflow.run(wfId, projectId, 'Two', 'manual', '{}');
+    stmts!.createWorkflow.run(wfId, projectId, 'Two', 'manual', '{}', null, null, null);
     stmts!.createWorkflowStep.run(step1, wfId, agentId, 'A', 'a', 0, null, 'abort', null, null);
     stmts!.createWorkflowStep.run(step2, wfId, agentId, 'B', 'b', 1, null, 'abort', null, null);
     stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
@@ -269,7 +269,7 @@ describe('workflow runner', () => {
     const stepId = uuidv4();
     const runId = uuidv4();
     const stepRunId = uuidv4();
-    stmts!.createWorkflow.run(wfId, projectId, 'S', 'manual', '{}');
+    stmts!.createWorkflow.run(wfId, projectId, 'S', 'manual', '{}', null, null, null);
     stmts!.createWorkflowStep.run(stepId, wfId, agentId, 'S', 'p', 0, null, 'abort', null, null);
     stmts!.createWorkflowRun.run(runId, wfId, 'running', null);
     stmts!.createWorkflowStepRunStart.run(stepRunId, runId, stepId);

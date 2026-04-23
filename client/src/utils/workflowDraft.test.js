@@ -72,6 +72,31 @@ describe('workflowDraft', () => {
     expect(body.steps[0].timeoutMs).toBe(null);
   });
 
+  it('draftToPutBody includes cron and webhook for automation', () => {
+    const body = draftToPutBody({
+      name: 'A',
+      trigger_type: 'manual',
+      default_payload_str: '{}',
+      cron_mode: 'every_hour',
+      cron_expr: '',
+      webhook_enabled: true,
+      steps: [
+        {
+          id: 's1',
+          agent_id: 'ag',
+          title: 'S',
+          role_prompt: 'r',
+          step_order: 0,
+          timeout_ms: null,
+          on_failure: 'abort',
+        },
+      ],
+    });
+    expect(body.cronPreset).toBe('every_hour');
+    expect(body.cronExpr).toBeUndefined();
+    expect(body.webhookEnabled).toBe(true);
+  });
+
   it('draftToPutBody emits camelCase for API', () => {
     const body = draftToPutBody({
       name: ' N ',

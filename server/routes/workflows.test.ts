@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { vi, describe, it, expect, beforeAll } from 'vitest';
 import type supertest from 'supertest';
 import { getRequest, createProject, createAgent } from '../test/helpers.js';
@@ -316,5 +317,56 @@ describe('Workflows API', () => {
       .expect(201);
     const wid = c.body.id as string;
     await request.get(`/api/projects/${p2.id as string}/workflows/${wid}`).expect(404);
+  });
+
+  it('rejects an invalid cron expression on create', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+    const res = await request.post(`/api/projects/${projectId}/workflows`).send({
+      name: 'Bad cron',
+      steps: [{ agentId, title: 'S', rolePrompt: 'P' }],
+      cronExpr: 'not a cron',
+    });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/cron/i);
+  });
+
+  it('stores schedule + webhook config and accepts a signed webhook POST', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+    const c = await request
+      .post(`/api/projects/${projectId}/workflows`)
+      .send({
+        name: 'Hooked',
+        steps: [{ agentId, title: 'S', rolePrompt: 'P' }],
+        cronExpr: '0 * * * *',
+        webhookEnabled: true,
+      })
+      .expect(201);
+    expect(c.body.cron_valid).toBe(true);
+    expect(c.body.cron_next_run_at).toBeTruthy();
+    expect(c.body.cron_next_run_preview).toBeTruthy();
+    expect(c.body.webhook_url).toMatch(/\/api\/workflow-webhook\//);
+    expect(c.body.webhook_signing_secret).toBeTruthy();
+    const url = c.body.webhook_url as string;
+    const token = url.split('/api/workflow-webhook/')[1];
+    const secret = c.body.webhook_signing_secret as string;
+    const bodyStr = '{"source":"manual","ship":true}';
+    const raw = Buffer.from(bodyStr, 'utf8');
+    const sig = `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
+    const wh = await request
+      .post(`/api/workflow-webhook/${token}`)
+      .set('X-Agent-Hub-Signature', sig)
+      .set('Content-Type', 'application/json')
+      .send(bodyStr);
+    expect(wh.status).toBe(201);
+    expect(wh.body.run_id).toBeTruthy();
+    const runId = wh.body.run_id as string;
+    const runRow = stmts!.getWorkflowRun.get(runId) as { run_payload: string | null };
+    const parsed = JSON.parse(runRow.run_payload || '{}') as { source?: string; ship?: boolean };
+    expect(parsed.source).toBe('webhook');
+    expect(parsed.ship).toBe(true);
   });
 });

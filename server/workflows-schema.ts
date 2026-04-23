@@ -15,10 +15,18 @@ export const WORKFLOWS_SCHEMA = `
     -- MVP: only manual triggers; additional trigger types can be added later without a CHECK migration.
     trigger_type TEXT NOT NULL DEFAULT 'manual',
     default_payload TEXT NOT NULL DEFAULT '{}',
+    -- V1.1: optional node-cron expression; when set, server registers a schedule (see workflow-triggers.ts).
+    cron_expr TEXT,
+    cron_next_run_at TEXT,
+    -- Per-workflow webhook: opaque URL token + HMAC signing secret (plain at rest; rotate from UI).
+    webhook_path_token TEXT,
+    webhook_signing_secret TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_workflows_project ON workflows(project_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_webhook_token ON workflows(webhook_path_token)
+    WHERE webhook_path_token IS NOT NULL;
 
   CREATE TABLE IF NOT EXISTS workflow_steps (
     id TEXT PRIMARY KEY,

@@ -1,7 +1,17 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import cron from 'node-cron';
 import { getDb } from '../db.js';
 import { startWorkflowRun, requestWorkflowRunCancel } from '../workflow-runner.js';
+import {
+  buildWorkflowWebhookUrl,
+  discardWorkflowTriggerCron,
+  generateWebhookSigningSecret,
+  getCronNextRunPreview,
+  CRON_PRESETS,
+  refreshWorkflowCronSchedules,
+  resolveCronExpr,
+} from '../workflow-triggers.js';
 import type { RouteDeps, Stmts } from '../types.js';
 
 const ALLOWED_TRIGGER = new Set(['manual']);
@@ -151,6 +161,8 @@ function toWorkflowResponse(
   row: Record<string, unknown> & { project_id?: string },
   steps: Record<string, unknown>[],
 ) {
+  const cexpr = row.cron_expr == null ? null : String(row.cron_expr);
+  const trimmed = cexpr && cexpr.trim() ? cexpr.trim() : null;
   return {
     id: row.id,
     project_id: row.project_id,
@@ -159,9 +171,88 @@ function toWorkflowResponse(
     default_payload: tryParseJson((row.default_payload as string) ?? '{}'),
     created_at: row.created_at,
     updated_at: row.updated_at,
+    cron_expr: cexpr,
+    cron_next_run_at: row.cron_next_run_at ?? null,
+    cron_next_run_preview: getCronNextRunPreview(cexpr),
+    cron_valid: Boolean(trimmed && cron.validate(trimmed)),
+    cron_presets: { ...CRON_PRESETS },
+    webhook_url: buildWorkflowWebhookUrl((row.webhook_path_token as string) ?? null),
+    webhook_secret_set: Boolean(row.webhook_signing_secret),
     steps: steps.map(toStepResponse),
   };
 }
+
+function hasOwnKey(o: object, k: string): boolean {
+  return Object.prototype.hasOwnProperty.call(o, k);
+}
+
+function readCronExprFromBody(
+  body: Record<string, unknown>,
+  cur: Record<string, unknown>,
+): string | null {
+  if (
+    hasOwnKey(body, 'cronExpr') ||
+    hasOwnKey(body, 'cron_expr') ||
+    hasOwnKey(body, 'cronPreset') ||
+    hasOwnKey(body, 'cron_preset')
+  ) {
+    return resolveCronExpr(
+      (body.cronPreset ?? body.cron_preset) as string | undefined,
+      (body.cronExpr ?? body.cron_expr) as string | null | undefined,
+    );
+  }
+  const c = cur.cron_expr;
+  if (c == null) return null;
+  const s = String(c).trim();
+  return s.length ? s : null;
+}
+
+type WebhookMerge = {
+  path: string | null;
+  secret: string | null;
+  revealedSecret: string | null;
+};
+
+function readWebhookFromBody(
+  body: Record<string, unknown>,
+  cur: Record<string, unknown> | null,
+): WebhookMerge {
+  const w = body.webhookEnabled ?? body.webhook_enabled;
+  if (typeof w === 'boolean') {
+    if (!w) {
+      return { path: null, secret: null, revealedSecret: null };
+    }
+    const c = cur || {};
+    let path = (c.webhook_path_token as string | null) ?? null;
+    let secret = (c.webhook_signing_secret as string | null) ?? null;
+    let revealedSecret: string | null = null;
+    if (!path) path = uuidv4();
+    if (!secret) {
+      const gen = generateWebhookSigningSecret();
+      secret = gen;
+      revealedSecret = gen;
+    }
+    return { path, secret, revealedSecret };
+  }
+  const c = cur || {};
+  return {
+    path: (c.webhook_path_token as string | null) ?? null,
+    secret: (c.webhook_signing_secret as string | null) ?? null,
+    revealedSecret: null,
+  };
+}
+
+const triggerCtx = (deps: {
+  stmts: Stmts;
+  broadcast: RouteDeps['broadcast'];
+  getEnrichedAgent: RouteDeps['getEnrichedAgent'];
+  findProject: RouteDeps['findProject'];
+}) => ({
+  stmts: deps.stmts,
+  broadcast: deps.broadcast,
+  getEnrichedAgent: deps.getEnrichedAgent,
+  findProject: deps.findProject,
+});
 
 function toStepResponse(row: Record<string, unknown>) {
   return {
@@ -342,9 +433,24 @@ export default function createWorkflowRoutes({
 
     const id = uuidv4();
     const stepList = Array.isArray(body.steps) ? body.steps : [];
+    const bodyRec = body as Record<string, unknown>;
+    const cronE = readCronExprFromBody(bodyRec, {});
+    const wh = readWebhookFromBody(bodyRec, null);
+    if (cronE && !cron.validate(cronE)) {
+      return res.status(400).json({ error: 'cronExpr is not a valid cron expression' });
+    }
     try {
       getDb().transaction(() => {
-        stmts.createWorkflow.run(id, projectId, name.trim(), trigger, defaultPayload);
+        stmts.createWorkflow.run(
+          id,
+          projectId,
+          name.trim(),
+          trigger,
+          defaultPayload,
+          cronE,
+          wh.path,
+          wh.secret,
+        );
         insertSteps(stmts, findAgent, projectId, id, stepList);
       })();
     } catch (e) {
@@ -357,10 +463,16 @@ export default function createWorkflowRoutes({
       console.error('[workflows] POST /workflows transaction', e);
       return res.status(500).json({ error: 'Internal server error' });
     }
+    broadcast({ type: 'workflow_update', projectId, workflowId: id, action: 'create' });
+    refreshWorkflowCronSchedules(
+      triggerCtx({ stmts, broadcast, getEnrichedAgent, findProject }),
+      id,
+    );
     const row = loadWorkflowForProject(stmts, projectId, id)!;
     const stepRows = stmts.getWorkflowSteps.all(id) as Record<string, unknown>[];
-    broadcast({ type: 'workflow_update', projectId, workflowId: id, action: 'create' });
-    return res.status(201).json(toWorkflowResponse(row, stepRows));
+    const created = toWorkflowResponse(row, stepRows) as Record<string, unknown>;
+    if (wh.revealedSecret) created.webhook_signing_secret = wh.revealedSecret;
+    return res.status(201).json(created);
   };
 
   const getOne = (req: Request, res: Response) => {
@@ -422,12 +534,21 @@ export default function createWorkflowRoutes({
     }
 
     const hasSteps = Object.prototype.hasOwnProperty.call(req.body, 'steps');
+    const bodyRec = req.body as Record<string, unknown>;
+    const cronE = readCronExprFromBody(bodyRec, cur);
+    const wh = readWebhookFromBody(bodyRec, cur);
+    if (cronE && !cron.validate(cronE)) {
+      return res.status(400).json({ error: 'cronExpr is not a valid cron expression' });
+    }
     try {
       getDb().transaction(() => {
         stmts.updateWorkflow.run(
           nextName,
           trigger,
           defaultPayload,
+          cronE,
+          wh.path,
+          wh.secret,
           req.params.workflowId,
           projectId,
         );
@@ -447,10 +568,21 @@ export default function createWorkflowRoutes({
       console.error('[workflows] PUT /workflows transaction', e);
       return res.status(500).json({ error: 'Internal server error' });
     }
+    broadcast({
+      type: 'workflow_update',
+      projectId,
+      workflowId: req.params.workflowId,
+      action: 'update',
+    });
+    refreshWorkflowCronSchedules(
+      triggerCtx({ stmts, broadcast, getEnrichedAgent, findProject }),
+      req.params.workflowId as string,
+    );
     const row = loadWorkflowForProject(stmts, projectId, req.params.workflowId as string)!;
     const stepRows = stmts.getWorkflowSteps.all(req.params.workflowId) as Record<string, unknown>[];
-    broadcast({ type: 'workflow_update', projectId, workflowId: row.id, action: 'update' });
-    return res.json(toWorkflowResponse(row, stepRows));
+    const out = toWorkflowResponse(row, stepRows) as Record<string, unknown>;
+    if (wh.revealedSecret) out.webhook_signing_secret = wh.revealedSecret;
+    return res.json(out);
   };
 
   const del = (req: Request, res: Response) => {
@@ -458,6 +590,7 @@ export default function createWorkflowRoutes({
     if (!findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
     const w = loadWorkflowForProject(stmts, projectId, req.params.workflowId as string);
     if (!w) return res.status(404).json({ error: 'Workflow not found' });
+    discardWorkflowTriggerCron(req.params.workflowId as string);
     stmts.deleteWorkflow.run(req.params.workflowId, projectId);
     broadcast({
       type: 'workflow_update',
@@ -466,6 +599,21 @@ export default function createWorkflowRoutes({
       action: 'delete',
     });
     return res.json({ ok: true });
+  };
+
+  const postRotateWebhook = (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    if (!findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+    const workflowId = req.params.workflowId as string;
+    const cur = loadWorkflowForProject(stmts, projectId, workflowId);
+    if (!cur) return res.status(404).json({ error: 'Workflow not found' });
+    if (!String(cur.webhook_path_token || '').trim()) {
+      return res.status(400).json({ error: 'Enable the webhook before rotating the secret' });
+    }
+    const newSecret = generateWebhookSigningSecret();
+    stmts.updateWorkflowWebhookSecret.run(newSecret, workflowId, projectId);
+    broadcast({ type: 'workflow_update', projectId, workflowId, action: 'update' });
+    return res.json({ webhook_signing_secret: newSecret });
   };
 
   const postRun = (req: Request, res: Response) => {
@@ -583,6 +731,7 @@ export default function createWorkflowRoutes({
   router.get('/api/projects/:projectId/workflows/:workflowId', getOne);
   router.put('/api/projects/:projectId/workflows/:workflowId', put);
   router.delete('/api/projects/:projectId/workflows/:workflowId', del);
+  router.post('/api/projects/:projectId/workflows/:workflowId/webhook/rotate', postRotateWebhook);
   router.get('/api/projects/:projectId/workflows/:workflowId/runs', listRuns);
   router.post('/api/projects/:projectId/workflows/:workflowId/runs', postRun);
   router.get('/api/projects/:projectId/workflows/:workflowId/runs/:runId', getRun);
