@@ -1,0 +1,161 @@
+#!/bin/bash
+set -e
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Three bootstrap paths, selected by Terraform at plan time:
+#   1. ECR pull   (use_ecr_pull=true)          — docker pull + run, no source
+#                                                 clone. Assumes Docker + ECR
+#                                                 creds helper preinstalled
+#                                                 (ECS-optimized AL2023 AMI).
+#   2. Docker     (use_docker_bootstrap=true)  — install Docker, git clone,
+#                                                 docker build + run. Ubuntu.
+#   3. PM2        (use_pm2_bootstrap=true)     — Node + PM2 on host. Ubuntu.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Detect package manager (AL2023 = dnf, Ubuntu = apt-get). Keeps the template
+# portable across both AMI families.
+if command -v dnf >/dev/null 2>&1; then
+  PKG_INSTALL="dnf install -y"
+  PKG_UPDATE="dnf -y makecache"
+else
+  export DEBIAN_FRONTEND=noninteractive
+  PKG_UPDATE="apt-get update -y"
+  PKG_INSTALL="apt-get install -y"
+fi
+
+$PKG_UPDATE
+$PKG_INSTALL ca-certificates git curl
+
+%{ if use_ecr_pull }
+# ── ECR pull path ───────────────────────────────────────────────────────────
+# Docker is preinstalled on the ECS-optimized AL2023 AMI. Just make sure it's
+# running. (Harmless on Ubuntu too if someone pins that AMI.)
+systemctl enable --now docker || true
+%{ endif }
+
+%{ if use_docker_bootstrap }
+$PKG_INSTALL docker.io docker-compose-plugin 2>/dev/null \
+  || $PKG_INSTALL docker docker-compose-plugin
+systemctl enable --now docker
+%{ endif }
+
+%{ if use_pm2_bootstrap }
+$PKG_INSTALL build-essential python3 2>/dev/null \
+  || $PKG_INSTALL gcc-c++ make python3
+# Node + PM2 + Nginx (only when not using Docker)
+curl -fsSL https://deb.nodesource.com/setup_${node_major}.x | bash -
+$PKG_INSTALL nodejs
+npm install -g pm2
+$PKG_INSTALL nginx
+systemctl enable nginx
+%{ endif }
+
+# App user + docker group
+id -u ${app_user} &>/dev/null || useradd -m -s /bin/bash ${app_user}
+mkdir -p /home/${app_user}/app
+chown ${app_user}:${app_user} /home/${app_user}/app
+%{ if use_docker_bootstrap || use_ecr_pull }
+# Add app user to the docker group so interactive SSM sessions can run docker
+# commands without sudo. Root always can regardless.
+usermod -aG docker ${app_user} || true
+%{ endif }
+
+# cursor-agent (optional; host).
+sudo -H -u ${app_user} bash -c 'curl -fsSL https://cursor.com/install | bash' \
+  || echo "cursor-agent host install failed (server still works in container)" >&2
+
+# SSM agent safety net (preinstalled on AL2023-ECS and Ubuntu EC2 already).
+if [ ! -x /usr/bin/amazon-ssm-agent ] && [ ! -x /snap/bin/amazon-ssm-agent ] && [ ! -d /usr/lib/ssh/ssm ]; then
+  curl -fSsL "${ssm_deb_url}" -o /tmp/ssm.deb 2>/dev/null \
+    && (dpkg -i /tmp/ssm.deb 2>/dev/null || (apt-get update && apt-get install -f -y && dpkg -i /tmp/ssm.deb)) \
+    || true
+fi
+if systemctl list-units 'amazon-ssm-agent.service' 2>/dev/null | grep -q amazon-ssm-agent; then
+  systemctl enable --now amazon-ssm-agent
+else
+  command -v snap >/dev/null && snap start amazon-ssm-agent || true
+fi
+
+%{ if bootstrap ~}
+REPO_DIR="${repo_dir}"
+DATA_ROOT="${data_root_for_docker}"
+
+%{ if use_ecr_pull ~}
+# ── ECR pull branch ─────────────────────────────────────────────────────────
+# No git clone, no docker build. Just pull the tagged image and run it.
+IMAGE_URI="${image_uri}"
+
+install -d -m 0755 -o root -g root "$DATA_ROOT/data" "$DATA_ROOT/uploads"
+
+# Write the .env file — same contract as the docker-build path, same server
+# reads it, so switching bootstrap modes is transparent to the app.
+install -d -m 0755 -o ${app_user} -g ${app_user} "$REPO_DIR"
+if [ -n "${docker_env_b64}" ]; then
+  umask 077
+  printf '%s' "${docker_env_b64}" | base64 -d > "$REPO_DIR/.env"
+  chown ${app_user}:${app_user} "$REPO_DIR/.env"
+  chmod 600 "$REPO_DIR/.env"
+fi
+
+# Anonymous pull from ECR Public — no docker login needed. Retry a couple
+# times in case the image was just pushed and the CDN is still warming.
+for i in 1 2 3; do
+  docker pull "$IMAGE_URI" && break
+  echo "docker pull failed (attempt $i); retrying in 10s..." >&2
+  sleep 10
+done
+
+docker rm -f agenthub-server 2>/dev/null || true
+docker run -d --name agenthub-server --restart unless-stopped \
+  -p ${app_port}:3051 \
+  -v "$DATA_ROOT/data:/data" -v "$DATA_ROOT/uploads:/app/uploads" \
+  --env-file "$REPO_DIR/.env" \
+  "$IMAGE_URI"
+
+# Surface the running image + tag for debugging.
+docker ps --filter name=agenthub-server --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+%{ else ~}
+# ── Legacy clone+build branch (requires TF_VAR_github_token_for_git_clone) ──
+sudo -H -u ${app_user} bash -c "mkdir -p \$(dirname \"${repo_dir}\")"
+if [ -d "$REPO_DIR/.git" ]; then
+  sudo -H -u ${app_user} bash -c "set -e; export GIT_TERMINAL_PROMPT=0; cd $REPO_DIR; git remote update; git fetch origin; git checkout ${git_ref}; git pull --ff-only origin ${git_ref} || true"
+else
+  sudo -H -u ${app_user} bash -c "set -euo pipefail; export GIT_TERMINAL_PROMPT=0; git clone --depth 1 --branch ${git_ref} '${git_url}' $REPO_DIR" \
+    || { echo "ERROR: git clone failed. If the repo is private, set TF_VAR_github_token_for_git_clone, then re-apply. See variables-bootstrap.tf. Or switch to the ECR-pull path by setting agent_hub_image_uri." >&2; exit 1; }
+fi
+
+%{ if use_docker_bootstrap ~}
+install -d -m 0755 -o root -g root "$DATA_ROOT/data" "$DATA_ROOT/uploads"
+if [ -n "${docker_env_b64}" ]; then
+  umask 077
+  printf '%s' "${docker_env_b64}" | base64 -d > $REPO_DIR/.env
+  chown ${app_user}:${app_user} $REPO_DIR/.env
+  chmod 600 $REPO_DIR/.env
+fi
+docker rm -f agenthub-server 2>/dev/null || true
+cd "$REPO_DIR" && DOCKER_BUILDKIT=1 docker build -t agenthub:local -f server/Dockerfile .
+cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped \
+  -p ${app_port}:3051 \
+  -v "$DATA_ROOT/data:/data" -v "$DATA_ROOT/uploads:/app/uploads" \
+  --env-file "$REPO_DIR/.env" \
+  agenthub:local
+%{ endif ~}
+
+%{ if use_pm2_bootstrap ~}
+sudo -H -u ${app_user} bash -c "set -e; cd $REPO_DIR; if [ -x scripts/ensure-cursor-agent.sh ]; then bash scripts/ensure-cursor-agent.sh; fi"
+sudo -H -u ${app_user} bash -c "set -e; cd $REPO_DIR; npm install --include=dev; (cd server && npm install --include=dev); (cd client && npm install --include=dev && npm run build)"
+mkdir -p /home/${app_user}/.pm2
+chown -R ${app_user}:${app_user} /home/${app_user}/.pm2
+sudo -H -u ${app_user} bash -c "mkdir -p $REPO_DIR/ops"
+if [ -n "${env_b64}" ]; then
+  printf '%s' "${env_b64}" | base64 -d > $REPO_DIR/ops/.bootstrap-runtime.env
+  chmod 600 $REPO_DIR/ops/.bootstrap-runtime.env
+  chown ${app_user}:${app_user} $REPO_DIR/ops/.bootstrap-runtime.env
+fi
+sudo -H -u ${app_user} bash -lc "set -e; cd $REPO_DIR; if [ -f ops/.bootstrap-runtime.env ]; then set -a; . ./ops/.bootstrap-runtime.env; set +a; fi; pm2 delete agent-hub 2>/dev/null || true; pm2 start ecosystem.config.cjs; pm2 save"
+if [ -x /usr/bin/pm2 ]; then
+  ( sudo -H -u ${app_user} bash -lc "pm2 save; pm2 startup" 2>&1 | grep "sudo" | head -1 | sh ) 2>/dev/null || true
+fi
+%{ endif ~}
+%{ endif ~}
+%{ endif ~}

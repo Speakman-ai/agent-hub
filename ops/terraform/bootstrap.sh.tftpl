@@ -1,0 +1,93 @@
+#!/bin/bash
+# Rendered from Terraform. Installs system deps, Docker, and ${docker_app_path}/.env
+# for Agent Hub (docker compose). IMDS resolves public http:// IP when not overridden.
+set -e
+
+export DEBIAN_FRONTEND=noninteractive
+APP_USER=${app_user}
+DOCKER_DIR='${docker_app_path}'
+WEB_PORT='${web_port}'
+
+# --- base system (Node/PM2/Nginx still useful for non-Docker or debugging) ---
+
+apt-get update -y
+apt-get upgrade -y
+
+curl -fsSL https://deb.nodesource.com/setup_${node_major_version}.x | bash -
+apt-get install -y nodejs
+
+npm install -g pm2
+apt-get install -y nginx
+systemctl enable nginx
+
+apt-get install -y docker.io docker-compose-plugin
+systemctl enable --now docker
+
+if ! id -u "$${APP_USER}" >/dev/null 2>&1; then
+  useradd -m -s /bin/bash "$${APP_USER}"
+fi
+usermod -aG docker "$${APP_USER}"
+
+mkdir -p "$${DOCKER_DIR}"
+chown -R "$${APP_USER}:$${APP_USER}" "$${DOCKER_DIR}"
+
+get_pub_ip() {
+  local t
+  t=$$(curl -s -S -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null) || return 1
+  if [ -n "$${t}" ]; then
+    curl -s -S -H "X-aws-ec2-metadata-token: $${t}" \
+      "http://169.254.169.254/latest/meta-data/public-ipv4" 2>/dev/null && return
+  fi
+  curl -s -S "http://169.254.169.254/latest/meta-data/public-ipv4" 2>/dev/null
+}
+
+PUB_IP=$$(get_pub_ip || true)
+if [ -z "$${PUB_IP}" ]; then
+  echo "warn: IMDS public IP unavailable; using 127.0.0.1" >&2
+  PUB_IP=127.0.0.1
+fi
+BASE_URL="http://$${PUB_IP}"
+
+# Decode values from Terraform (base64) — empty b64 => empty string
+ALW_B64='${allowed_b64}'
+PUB_B64='${public_b64}'
+
+b64d() { printf %s "$$1" | base64 -d 2>/dev/null || true; }
+
+ALLOWED_EXPL=$$(b64d "$ALW_B64")
+PUBLIC_EXPL=$$(b64d "$PUB_B64")
+USE_IMDS_PUB='${use_imds_for_public}'
+
+if [ -n "$${ALLOWED_EXPL}" ]; then
+  ALLOWED_VAL="$${ALLOWED_EXPL}"
+else
+  ALLOWED_VAL="$${BASE_URL}"
+fi
+
+if [ "$${USE_IMDS_PUB}" = "true" ]; then
+  PUBLIC_VAL="$${BASE_URL}"
+else
+  PUBLIC_VAL="$${PUBLIC_EXPL}"
+fi
+
+AGENT_HUB_KEY=$$(b64d '${agent_hub_api_key_b64}')
+
+# --- write .env for docker compose (sync/clone the repo into DOCKER_DIR, then: docker compose up -d) ---
+
+cat <<ENVEOF >"$${DOCKER_DIR}/.env"
+NODE_ENV=production
+AGENT_HUB_API_KEY="$$AGENT_HUB_KEY"
+ALLOWED_ORIGINS="$$ALLOWED_VAL"
+AGENT_HUB_PUBLIC_URL="$$PUBLIC_VAL"
+AGENT_HUB_WEB_PORT=$$WEB_PORT
+ENVEOF
+
+chown "$${APP_USER}:$${APP_USER}" "$${DOCKER_DIR}/.env"
+chmod 600 "$${DOCKER_DIR}/.env"
+cp -a "$${DOCKER_DIR}/.env" /root/.agent-hub-bootstrap.env
+chmod 600 /root/.agent-hub-bootstrap.env
+
+# Install cursor-agent for engine=cursor-agent
+sudo -H -u "$${APP_USER}" bash -c 'curl -fsSL https://cursor.com/install | bash' \
+  || echo "cursor-agent install failed" >&2

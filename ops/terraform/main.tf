@@ -1,3 +1,19 @@
+# State migration: key / local_file resources now use [0] when using count
+moved {
+  from = tls_private_key.instance
+  to   = tls_private_key.instance[0]
+}
+
+moved {
+  from = aws_key_pair.instance
+  to   = aws_key_pair.instance[0]
+}
+
+moved {
+  from = local_file.private_key
+  to   = local_file.private_key[0]
+}
+
 terraform {
   required_version = ">= 1.5"
 
@@ -14,11 +30,46 @@ terraform {
       source  = "hashicorp/local"
       version = "~> 2.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 
 provider "aws" {
   region = var.aws_region
+}
+
+# Resolve the latest ECS-optimized Amazon Linux 2023 AMI from SSM. This AMI has
+# Docker + SSM agent + the ECR credential helper preinstalled, which is what the
+# ECR-pull bootstrap path needs. AWS publishes the same parameter in every
+# region; TF will pick up new AL2023 releases automatically on re-apply.
+data "aws_ssm_parameter" "ecs_optimized_al2023" {
+  count = var.use_ecs_optimized_ami && var.ami_id == null ? 1 : 0
+
+  name = "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended"
+}
+
+locals {
+  # The SSM parameter returns a JSON blob — extract image_id.
+  ecs_optimized_ami_id = (
+    length(data.aws_ssm_parameter.ecs_optimized_al2023) > 0
+    ? jsondecode(data.aws_ssm_parameter.ecs_optimized_al2023[0].value).image_id
+    : null
+  )
+  effective_ami_id = coalesce(
+    var.ami_id,
+    local.ecs_optimized_ami_id,
+    # Final fallback so plan doesn't hit `null` if neither source is configured.
+    "ami-03f272c8e6091aa73", # AL2023 ECS-optimized in us-east-2 on 2026-04-23
+  )
+  # Legacy bootstrap.sh.tftpl: IMDS for ALLOWED_ORIGINS and public URL
+  use_imds_for_allowed = (var.allowed_origins == "" || var.allowed_origins == "AUTO")
+  allowed_from_tf      = local.use_imds_for_allowed ? "" : var.allowed_origins
+  allowed_b64          = base64encode(local.allowed_from_tf)
+  public_b64           = base64encode(var.agent_hub_public_url)
+  use_imds_for_public  = tostring(var.agent_hub_public_url == "")
 }
 
 # --- VPC ---
@@ -70,19 +121,46 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+# Second public subnet in another AZ — required for an application load balancer (2 AZs minimum).
+resource "aws_subnet" "public_b" {
+  count = var.enable_dedicated_alb ? 1 : 0
+
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = var.second_public_subnet_cidr_block
+  availability_zone       = "${var.aws_region}${var.alb_availability_zone_suffix_b}"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.project_name}-public-b"
+  }
+}
+
+resource "aws_route_table_association" "public_b" {
+  count = var.enable_dedicated_alb ? 1 : 0
+
+  subnet_id      = aws_subnet.public_b[0].id
+  route_table_id = aws_route_table.public.id
+}
+
 # --- Security Group ---
 
 resource "aws_security_group" "instance" {
-  name        = "${var.project_name}-sg"
-  description = "Allow SSH, HTTP, HTTPS inbound"
+  # name_prefix (not a fixed `name`) allows create_before_destroy: create the replacement
+  # first, move the instance to it, then remove the old SG. A fixed name would block
+  # replacement with DependencyViolation.
+  name_prefix = "${var.project_name}-sg-"
+  description = "SSM, optional SSH, web for local nginx; app port for ALB"
   vpc_id      = aws_vpc.main.id
 
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = var.ssh_cidr_blocks
+  dynamic "ingress" {
+    for_each = var.enable_ssh_ingress && length(var.ssh_cidr_blocks) > 0 ? [1] : []
+    content {
+      description = "SSH (optional; prefer SSM if disabled)"
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = var.ssh_cidr_blocks
+    }
   }
 
   ingress {
@@ -111,21 +189,31 @@ resource "aws_security_group" "instance" {
   tags = {
     Name = "${var.project_name}-sg"
   }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
-# --- Key Pair ---
+# --- Key Pair (optional; SSM is preferred) ---
 
 resource "tls_private_key" "instance" {
+  count = var.create_ssh_key ? 1 : 0
+
   algorithm = "ED25519"
 }
 
 resource "aws_key_pair" "instance" {
+  count = var.create_ssh_key ? 1 : 0
+
   key_name   = "${var.project_name}-key"
-  public_key = tls_private_key.instance.public_key_openssh
+  public_key = tls_private_key.instance[0].public_key_openssh
 }
 
 resource "local_file" "private_key" {
-  content         = tls_private_key.instance.private_key_openssh
+  count = var.create_ssh_key ? 1 : 0
+
+  content         = tls_private_key.instance[0].private_key_openssh
   filename        = "${path.module}/${var.project_name}-key.pem"
   file_permission = "0600"
 }
@@ -133,60 +221,34 @@ resource "local_file" "private_key" {
 # --- EC2 Instance ---
 
 resource "aws_instance" "app" {
-  ami                    = var.ami_id
+  ami                    = local.effective_ami_id
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.instance.id]
-  key_name               = aws_key_pair.instance.key_name
+  key_name               = var.create_ssh_key ? aws_key_pair.instance[0].key_name : null
+  iam_instance_profile   = var.enable_instance_ssm ? aws_iam_instance_profile.ec2_ssm[0].id : null
 
   root_block_device {
     volume_size = var.root_volume_size
     volume_type = var.root_volume_type
   }
 
-  user_data = <<-EOF
-    #!/bin/bash
-    set -e
+  user_data = var.bootstrap_agent_hub ? local.user_data_templated : (
+    var.docker_bootstrap ? templatefile("${path.module}/bootstrap.sh.tftpl", {
+      app_user              = var.app_user
+      node_major_version    = var.node_major_version
+      docker_app_path       = var.docker_app_path
+      web_port              = tostring(var.agent_hub_web_port)
+      agent_hub_api_key_b64 = base64encode(nonsensitive(local.effective_agent_hub_api_key))
+      allowed_b64           = local.allowed_b64
+      public_b64            = local.public_b64
+      use_imds_for_public   = local.use_imds_for_public
+      }) : templatefile("${path.module}/bootstrap-minimal.sh.tftpl", {
+      app_user           = var.app_user
+      node_major_version = var.node_major_version
+  }))
 
-    # System updates
-    apt-get update && apt-get upgrade -y
-
-    # Install Node.js ${var.node_major_version}
-    curl -fsSL https://deb.nodesource.com/setup_${var.node_major_version}.x | bash -
-    apt-get install -y nodejs
-
-    # Install PM2 globally
-    npm install -g pm2
-
-    # Install Nginx
-    apt-get install -y nginx
-    systemctl enable nginx
-
-    # Create app user
-    useradd -m -s /bin/bash ${var.app_user}
-    mkdir -p /home/${var.app_user}/app
-    chown ${var.app_user}:${var.app_user} /home/${var.app_user}/app
-
-    # Install cursor-agent CLI (used by sessions with engine=cursor-agent).
-    # The official installer (https://cursor.com/install) is per-user and
-    # hardcodes the install path to $HOME/.local/share/cursor-agent/versions
-    # with a symlink at $HOME/.local/bin/agent. The server's cursorBin default
-    # in server/config.ts is $HOME/.local/bin/agent — no /usr/local/bin symlink
-    # required.
-    #
-    # IMPORTANT: `sudo -u` alone preserves $HOME from the caller (root), so
-    # the installer would write to /root/.local/... instead of the app user's
-    # home. We pass `-H` so sudo remaps $HOME to /home/${var.app_user}.
-    #
-    # On every subsequent deploy the same logic runs via
-    # scripts/ensure-cursor-agent.sh (invoked from the deploy workflows),
-    # which is the source of truth for the install. This inline step is only
-    # needed at bootstrap because the repo isn't cloned yet.
-    #
-    # Verified against https://cursor.com/docs/cli/installation on 2026-04-21.
-    sudo -H -u ${var.app_user} bash -c 'curl -fsSL https://cursor.com/install | bash' \
-      || echo "cursor-agent install failed; sessions with engine=cursor-agent will ENOENT until next deploy re-runs scripts/ensure-cursor-agent.sh" >&2
-  EOF
+  user_data_replace_on_change = var.user_data_replace_on_change
 
   tags = {
     Name = "${var.project_name}-sandbox"

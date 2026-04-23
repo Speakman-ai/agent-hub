@@ -79,12 +79,18 @@ describe('config.ts ↔ cursor-agent install parity', () => {
   //
   // Covers three rollout paths:
   //   1. scripts/ensure-cursor-agent.sh — invoked on every deploy
-  //   2. ops/terraform/main.tf user_data — one-time bootstrap
+  //   2. ops/terraform/bootstrap*.sh.tftpl — EC2 user_data (templatefile)
   //   3. The three deploy workflows that call the script
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const repoRoot = path.resolve(__dirname, '..');
-  const terraformMain = path.join(repoRoot, 'ops', 'terraform', 'main.tf');
+  const terraformBootstrapDocker = path.join(repoRoot, 'ops', 'terraform', 'bootstrap.sh.tftpl');
+  const terraformBootstrapMinimal = path.join(
+    repoRoot,
+    'ops',
+    'terraform',
+    'bootstrap-minimal.sh.tftpl',
+  );
   const installScript = path.join(repoRoot, 'scripts', 'ensure-cursor-agent.sh');
 
   it('cursorBin default tracks the installer-managed path ($HOME/.local/bin/agent)', async () => {
@@ -111,8 +117,11 @@ describe('config.ts ↔ cursor-agent install parity', () => {
   });
 
   it('Terraform user_data bootstraps cursor-agent via the official installer', () => {
-    const tf = fs.readFileSync(terraformMain, 'utf8');
-    expect(tf).toMatch(/https:\/\/cursor\.com\/install/);
+    const dockerTpl = fs.readFileSync(terraformBootstrapDocker, 'utf8');
+    const minimalTpl = fs.readFileSync(terraformBootstrapMinimal, 'utf8');
+    const installerRe = /https:\/\/cursor\.com\/install/;
+    expect(dockerTpl).toMatch(installerRe);
+    expect(minimalTpl).toMatch(installerRe);
   });
 
   it('all three deploy workflows invoke scripts/ensure-cursor-agent.sh', () => {

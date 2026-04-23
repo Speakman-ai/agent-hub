@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars and adjust. Do not commit terraform.tfvars.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#   terraform plan
+
+aws_region  = "us-east-2"
+project_name = "ryan-remote-server"
+
+# Required — e.g. your public IP/32, or 0.0.0.0/0 in a throwaway lab (not for production)
+ssh_cidr_blocks = ["203.0.113.10/32"]
+
+# Optional: pin API key. Leave empty to auto-generate; read from output agent_hub_api_key
+# after apply (also written on the host at /root/.agent-hub-bootstrap.env).
+# agent_hub_api_key = "hex-or-string"
+
+# CORS: empty or "AUTO" uses http://<this instance public IP> (IMDS) at first boot
+allowed_origins = "AUTO"
+
+# If you set a custom domain, set the full origin(s) and public URL, e.g.:
+# allowed_origins    = "https://hub.example.com"
+# agent_hub_public_url = "https://hub.example.com"
+
+# docker_bootstrap = true   # default: Docker + .env under docker_app_path (default /home/agenthub/agent-hub)
+#
+# When docker_bootstrap is false, minimal user_data only prepares /home/<app_user>/app (no Docker, no .env here).

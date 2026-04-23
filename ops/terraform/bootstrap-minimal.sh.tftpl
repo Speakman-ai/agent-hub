@@ -1,0 +1,22 @@
+#!/bin/bash
+# Minimal bootstrap: Node, PM2, Nginx, app user, optional cursor-agent (no Docker).
+set -e
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -y
+apt-get upgrade -y
+
+curl -fsSL https://deb.nodesource.com/setup_${node_major_version}.x | bash -
+apt-get install -y nodejs
+npm install -g pm2
+apt-get install -y nginx
+systemctl enable nginx
+
+if ! id -u ${app_user} >/dev/null 2>&1; then
+  useradd -m -s /bin/bash ${app_user}
+fi
+mkdir -p /home/${app_user}/app
+chown ${app_user}:${app_user} /home/${app_user}/app
+
+sudo -H -u ${app_user} bash -c 'curl -fsSL https://cursor.com/install | bash' \
+  || echo "cursor-agent install failed" >&2

@@ -27,6 +27,9 @@ module.exports = {
       max_memory_restart: '800M',
       env: {
         NODE_ENV: 'production',
+        AGENT_HUB_PORT: process.env.AGENT_HUB_PORT || '3051',
+        // TRUST_PROXY=1 (or N) when behind a single (or N-hop) load balancer. Empty => loopback only.
+        TRUST_PROXY: process.env.TRUST_PROXY || '',
         // Comma-separated list of origins allowed to call the API from a
         // browser. Browsers whose Origin is NOT on this list will not
         // receive CORS headers and will be blocked by the same-origin
