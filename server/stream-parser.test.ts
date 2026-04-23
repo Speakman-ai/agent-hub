@@ -371,6 +371,23 @@ Second:
     expect(asks[0].questions[0].options[1].description).toBe('B');
   });
 
+  it('defaults a missing or blank header from the question (models often omit the chip text)', () => {
+    const text = `\`\`\`agenthub:ask
+[{"question":"Which way should we go?","header":"","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]
+\`\`\``;
+    const { asks, strippedText } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(asks[0].questions[0].header).toBe('Which way sh');
+    expect(strippedText).not.toContain('agenthub:ask');
+
+    const noHeaderKey = `\`\`\`agenthub:ask
+[{"question":"Plain question?","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]
+\`\`\``;
+    const b = extractAskBlocks(noHeaderKey);
+    expect(b.asks).toHaveLength(1);
+    expect(b.asks[0].questions[0].header).toBe('Plain questi');
+  });
+
   it('still rejects options with missing label (label remains required)', () => {
     const text = `\`\`\`agenthub:ask
 [{"question":"Q?","header":"H","multiSelect":false,"options":[{"description":"no label"},{"label":"b","description":"B"}]}]

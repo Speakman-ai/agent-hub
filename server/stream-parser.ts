@@ -249,11 +249,17 @@ function parseAskPayload(raw: string): AskUserQuestionItem[] | null {
     const q = item as Record<string, unknown>;
 
     const question = typeof q.question === 'string' ? q.question : null;
-    const header = typeof q.header === 'string' ? q.header : null;
+    if (!question) return null;
+    // `header` is a short chip in the UI (≤12 chars). Models sometimes omit it or
+    // send a blank string; default from the question so we still extract a picker.
+    const headerRaw = typeof q.header === 'string' ? q.header.trim() : '';
+    const header = (
+      headerRaw ? headerRaw : question.replace(/\s+/g, ' ').trim() || 'Question'
+    ).slice(0, 12);
     const multiSelect = q.multiSelect === true;
     const options = Array.isArray(q.options) ? q.options : null;
 
-    if (!question || !header || !options || options.length < 2 || options.length > 4) return null;
+    if (!options || options.length < 2 || options.length > 4) return null;
 
     const validOptions: AskUserQuestionItem['options'] = [];
     for (const opt of options) {

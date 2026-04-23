@@ -1603,7 +1603,9 @@ export default function App() {
   // don't refetch.
   const handleEventsLoaded = useCallback((messageId, events) => {
     setEventsByMessage((prev) => {
-      if (prev[messageId]) return prev; // already populated by live stream
+      const existing = prev[messageId];
+      // Re-fetch if we only have a cached [] (e.g. race) or if live WS never arrived.
+      if (Array.isArray(existing) && existing.length > 0) return prev;
       return { ...prev, [messageId]: events };
     });
   }, []);

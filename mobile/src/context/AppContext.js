@@ -1528,7 +1528,11 @@ export function AppProvider({ children }) {
   }, [send]);
 
   const handleEventsLoaded = useCallback((messageId, events) => {
-    setEventsByMessage((prev) => ({ ...prev, [messageId]: events }));
+    setEventsByMessage((prev) => {
+      const existing = prev[messageId];
+      if (Array.isArray(existing) && existing.length > 0) return prev;
+      return { ...prev, [messageId]: events };
+    });
   }, []);
 
   /**
