@@ -279,16 +279,18 @@ function ChatMessage({ message, agentColor, onDequeue, onEditQueued }) {
   const editRef = React.useRef(null);
 
   // Don't show "(image attached)" as text if it was auto-generated and there are actual attachments.
-  // Also strip any `agenthub:ask:answer` fenced blocks — the picker UI already
-  // shows "Answers submitted" so the raw JSON payload in the transcript is noise.
+  // For user messages only, strip `agenthub:ask:answer` fences (picker UI already shows submission).
   const displayContent = useMemo(() => {
     if (
       (message.content === '(image attached)' || message.content === '(media attached)') &&
       message.attachments
     )
       return '';
-    return stripAskAnswerBlocks(message.content);
-  }, [message.content, message.attachments]);
+    // Only user bubbles carry `agenthub:ask:answer` payloads; stripping from
+    // assistant text used to delete documented fenced examples and break MD.
+    if (message.role === 'user') return stripAskAnswerBlocks(message.content);
+    return typeof message.content === 'string' ? message.content : message.content;
+  }, [message.content, message.attachments, message.role]);
 
   if (isSystem) {
     return <SystemPrCreatedMessage message={message} />;

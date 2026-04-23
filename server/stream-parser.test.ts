@@ -378,6 +378,44 @@ Second:
     const { asks } = extractAskBlocks(text);
     expect(asks).toEqual([]);
   });
+
+  it('does not strip agenthub:ask syntax shown inside another fenced block (doc example)', () => {
+    const inner = [
+      '```agenthub:ask',
+      '[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]',
+      '```',
+    ].join('\n');
+    const text = ['Docs:', '', '```text', inner, '```', '', 'Done.'].join('\n');
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toEqual([]);
+    expect(strippedText).toBe(text);
+  });
+
+  it('still extracts a real top-level ask after an unrelated fenced code section', () => {
+    const askFence = [
+      '```agenthub:ask',
+      '[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]',
+      '```',
+    ].join('\n');
+    const text = [
+      'Example:',
+      '',
+      '```js',
+      'const x = 1;',
+      '```',
+      '',
+      'Pick:',
+      '',
+      askFence,
+      '',
+      'End.',
+    ].join('\n');
+    const { strippedText, asks } = extractAskBlocks(text);
+    expect(asks).toHaveLength(1);
+    expect(strippedText).toContain('const x = 1');
+    expect(strippedText).not.toContain('agenthub:ask');
+    expect(strippedText).toContain('End.');
+  });
 });
 
 describe('createStreamParser — ask_user_question integration', () => {

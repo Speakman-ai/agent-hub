@@ -61,6 +61,107 @@ function mergeCursorFileToolInput(
 
 const ASK_FENCE_RE = /```agenthub:ask\s*\n([\s\S]*?)\n?```/g;
 
+/** Fence opener / closer line (CommonMark-style: ≤3 spaces indent, 3+ ` or ~). */
+function parseFenceLine(line: string): { fence: string; rest: string } | null {
+  const m = line.match(/^([ \t]{0,3})([`~]{3,})(.*)$/);
+  if (!m || m[1].length > 3) return null;
+  return { fence: m[2], rest: m[3] ?? '' };
+}
+
+function isClosingFenceLine(
+  fi: { fence: string; rest: string },
+  fenceChar: '`' | '~',
+  openLen: number,
+): boolean {
+  if (fi.fence[0] !== fenceChar) return false;
+  if (fi.fence.length < openLen) return false;
+  return /^[ \t]*$/.test(fi.rest);
+}
+
+function isAgenthubAskFenceInfo(rest: string): boolean {
+  const t = rest
+    .replace(/^[ \t]+/, '')
+    .replace(/[ \t]+$/, '')
+    .toLowerCase();
+  return t === 'agenthub:ask' || t.startsWith('agenthub:ask ') || t.startsWith('agenthub:ask\t');
+}
+
+/**
+ * Half-open character ranges `[start, end)` covering the *body* of fenced
+ * code blocks whose info string is not `agenthub:ask`. Used so
+ * `extractAskBlocks` does not strip documented examples that appear inside
+ * ` ```typescript` / ` ```text` / etc., which used to corrupt markdown and
+ * break backtick pairing in chat.
+ */
+export function computeLockedNonAskFenceBodyRanges(
+  text: string,
+): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  const lines = text.split('\n');
+  const n = lines.length;
+
+  type Mode =
+    | { k: 'out' }
+    | { k: 'locked'; ch: '`' | '~'; openLen: number; contentStart: number }
+    | { k: 'ask'; ch: '`' | '~'; openLen: number };
+
+  let mode: Mode = { k: 'out' };
+  let offset = 0;
+
+  for (let i = 0; i < n; i++) {
+    const line = lines[i];
+    const lineStart = offset;
+    offset += line.length;
+    if (i < n - 1) offset += 1;
+
+    const fi = parseFenceLine(line);
+    if (!fi) continue;
+
+    const ch = fi.fence[0] as '`' | '~';
+    const openLen = fi.fence.length;
+
+    if (mode.k === 'locked') {
+      if (isClosingFenceLine(fi, mode.ch, mode.openLen)) {
+        ranges.push({ start: mode.contentStart, end: lineStart });
+        mode = { k: 'out' };
+      }
+      continue;
+    }
+
+    if (mode.k === 'ask') {
+      if (isClosingFenceLine(fi, ch, mode.openLen)) {
+        mode = { k: 'out' };
+      }
+      continue;
+    }
+
+    // Outside any fence — a fence line opens `agenthub:ask` or a generic block.
+    if (isAgenthubAskFenceInfo(fi.rest)) {
+      mode = { k: 'ask', ch, openLen };
+    } else {
+      const contentStart = lineStart + line.length + (i < n - 1 ? 1 : 0);
+      mode = { k: 'locked', ch, openLen, contentStart };
+    }
+  }
+
+  if (mode.k === 'locked') {
+    ranges.push({ start: mode.contentStart, end: text.length });
+  }
+
+  return ranges;
+}
+
+function askMatchOverlapsLockedBody(
+  start: number,
+  end: number,
+  locked: ReadonlyArray<{ start: number; end: number }>,
+): boolean {
+  for (const r of locked) {
+    if (start < r.end && end > r.start) return true;
+  }
+  return false;
+}
+
 export interface ExtractedAsk {
   askId: string;
   questions: AskUserQuestionItem[];
@@ -84,6 +185,7 @@ export function extractAskBlocks(text: string): AskExtractionResult {
     return { strippedText: text, asks: [] };
   }
 
+  const lockedBodies = computeLockedNonAskFenceBodyRanges(text);
   const asks: ExtractedAsk[] = [];
   let strippedText = text;
 
@@ -97,11 +199,17 @@ export function extractAskBlocks(text: string): AskExtractionResult {
     const questions = parseAskPayload(payload);
     if (!questions) continue; // malformed — leave in place
 
+    const start = match.index;
+    const end = start + match[0].length;
+    if (askMatchOverlapsLockedBody(start, end, lockedBodies)) {
+      continue;
+    }
+
     // Stable-ish id: hash-lite of the payload. Not cryptographic — only used
     // for React keys and dedup across re-parses of the same message.
     const askId = 'ask-' + simpleHash(payload);
     asks.push({ askId, questions });
-    replacements.push({ start: match.index, end: match.index + match[0].length });
+    replacements.push({ start, end });
   }
 
   if (replacements.length === 0) {

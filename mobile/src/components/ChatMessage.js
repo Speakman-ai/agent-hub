@@ -462,11 +462,10 @@ function ChatMessage({
 
   const displayContent = useMemo(() => {
     if (message.content === '(image attached)' && message.attachments) return '';
-    // Strip any `agenthub:ask:answer` fenced blocks — the picker UI already
-    // shows "Answers submitted" so the raw JSON payload in the transcript
-    // would just be noise. Mirrors client/src/components/ChatMessage.jsx.
-    return stripAskAnswerBlocks(message.content);
-  }, [message.content, message.attachments]);
+    // Only user bubbles carry `agenthub:ask:answer` payloads (mirrors web).
+    if (isUser) return stripAskAnswerBlocks(message.content);
+    return typeof message.content === 'string' ? message.content : message.content;
+  }, [message.content, message.attachments, isUser]);
 
   // For assistant messages, extract any `<handoff>` block so the JSON wall
   // doesn't render as raw text. The block is shown as a HandoffCard instead.
