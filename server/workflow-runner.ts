@@ -11,6 +11,18 @@ const MAX_RETRIES = 3;
 
 const runningWorkflowSets = new Set<string>();
 
+/** In-flight cancel for runs already in `running` (takes effect at step boundaries). */
+const workflowRunCancelRequested = new Set<string>();
+
+export function requestWorkflowRunCancel(runId: string): void {
+  workflowRunCancelRequested.add(runId);
+}
+
+/** @internal */
+export function __clearWorkflowRunCancelRequestsForTest(): void {
+  workflowRunCancelRequested.clear();
+}
+
 type RunnerDeps = {
   stmts: Stmts;
   broadcast: BroadcastFn;
@@ -127,19 +139,56 @@ export async function runWorkflowSequential(
       status: 'running',
     });
 
+    if (workflowRunCancelRequested.has(runId)) {
+      stmts.updateWorkflowRunTerminal.run('cancelled', 'Cancelled by user', runId);
+      workflowRunCancelRequested.delete(runId);
+      broadcast({
+        type: 'workflow_run_status',
+        projectId,
+        workflowId,
+        runId,
+        status: 'cancelled',
+      });
+      return;
+    }
+
     const steps = stmts.getWorkflowSteps.all(workflowId) as WorkflowStepRow[];
     const triggerPayload = mergeWorkflowTriggerPayload(wf.default_payload, runRow.run_payload);
     const stepOutputs = new Map<string, string>();
 
     if (steps.length === 0) {
-      stmts.updateWorkflowRunTerminal.run('success', null, runId);
-      broadcast({ type: 'workflow_run_status', projectId, workflowId, runId, status: 'success' });
+      if (workflowRunCancelRequested.has(runId)) {
+        stmts.updateWorkflowRunTerminal.run('cancelled', 'Cancelled by user', runId);
+        workflowRunCancelRequested.delete(runId);
+        broadcast({
+          type: 'workflow_run_status',
+          projectId,
+          workflowId,
+          runId,
+          status: 'cancelled',
+        });
+      } else {
+        stmts.updateWorkflowRunTerminal.run('success', null, runId);
+        broadcast({ type: 'workflow_run_status', projectId, workflowId, runId, status: 'success' });
+      }
       return;
     }
 
     const useWtForPrompt = getProjectMode(project) !== 'workflow';
 
     for (const step of steps) {
+      if (workflowRunCancelRequested.has(runId)) {
+        stmts.updateWorkflowRunTerminal.run('cancelled', 'Cancelled by user', runId);
+        workflowRunCancelRequested.delete(runId);
+        broadcast({
+          type: 'workflow_run_status',
+          projectId,
+          workflowId,
+          runId,
+          status: 'cancelled',
+        });
+        return;
+      }
       const of = (step.on_failure as string) || 'abort';
       const ctx = { triggerPayload, stepOutputs };
       const title = substituteWorkflowTemplate(step.title, ctx);
@@ -148,6 +197,16 @@ export async function runWorkflowSequential(
 
       const stepRunId = uuidv4();
       stmts.createWorkflowStepRunStart.run(stepRunId, runId, step.id);
+      broadcast({
+        type: 'workflow_run_status',
+        projectId,
+        workflowId,
+        runId,
+        status: 'running',
+        stepId: step.id,
+        stepRunId,
+        stepStatus: 'running',
+      });
 
       let lastErr = 'Step failed';
       let stepOK = false;
@@ -192,6 +251,27 @@ export async function runWorkflowSequential(
           const out = (await runClaude(userContent, workDir, systemPrompt, {
             timeoutMs,
           })) as string;
+          if (workflowRunCancelRequested.has(runId)) {
+            stmts.updateWorkflowStepRunComplete.run(
+              'cancelled',
+              out,
+              'Cancelled by user',
+              stepRunId,
+            );
+            stmts.updateWorkflowRunTerminal.run('cancelled', 'Cancelled by user', runId);
+            workflowRunCancelRequested.delete(runId);
+            broadcast({
+              type: 'workflow_run_status',
+              projectId,
+              workflowId,
+              runId,
+              status: 'cancelled',
+              stepId: step.id,
+              stepRunId,
+              stepStatus: 'cancelled',
+            });
+            return;
+          }
           stmts.updateWorkflowStepRunComplete.run('success', out, null, stepRunId);
           stepOutputs.set(step.id, out);
           stepOK = true;
@@ -202,6 +282,7 @@ export async function runWorkflowSequential(
             runId,
             status: 'running',
             stepId: step.id,
+            stepRunId,
             stepStatus: 'success',
           });
           lastErr = '';
@@ -265,6 +346,7 @@ export async function runWorkflowSequential(
       // Best-effort — broadcast should not create an unhandled rejection
     }
   } finally {
+    workflowRunCancelRequested.delete(runId);
     runningWorkflowSets.delete(runId);
   }
 }

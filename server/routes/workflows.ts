@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.js';
-import { startWorkflowRun } from '../workflow-runner.js';
+import { startWorkflowRun, requestWorkflowRunCancel } from '../workflow-runner.js';
 import type { RouteDeps, Stmts } from '../types.js';
 
 const ALLOWED_TRIGGER = new Set(['manual']);
@@ -190,6 +190,21 @@ function toRunResponse(row: Record<string, unknown>) {
     started_at: row.started_at,
     completed_at: row.completed_at,
     updated_at: row.updated_at,
+  };
+}
+
+function toStepRunDetailRow(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    workflow_run_id: row.workflow_run_id,
+    workflow_step_id: row.workflow_step_id,
+    status: row.status,
+    output: row.output,
+    error: row.error,
+    started_at: row.started_at,
+    completed_at: row.completed_at,
+    step_title: row.step_title ?? null,
+    step_order: row.step_def_order ?? null,
   };
 }
 
@@ -501,6 +516,68 @@ export default function createWorkflowRoutes({
     return res.json(runs.map(toRunResponse));
   };
 
+  const getRun = (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    if (!findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+    const workflowId = req.params.workflowId as string;
+    if (!loadWorkflowForProject(stmts, projectId, workflowId)) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
+    const runId = req.params.runId as string;
+    const scoped = stmts.getWorkflowRunScoped.get(projectId, runId, workflowId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!scoped) return res.status(404).json({ error: 'Run not found' });
+    const stepRows = stmts.getWorkflowStepRunsForRun.all(runId) as Record<string, unknown>[];
+    return res.json({
+      run: toRunResponse(scoped),
+      step_runs: stepRows.map(toStepRunDetailRow),
+    });
+  };
+
+  const postCancelRun = (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    if (!findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+    const workflowId = req.params.workflowId as string;
+    if (!loadWorkflowForProject(stmts, projectId, workflowId)) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
+    const runId = req.params.runId as string;
+    const scoped = stmts.getWorkflowRunScoped.get(projectId, runId, workflowId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!scoped) return res.status(404).json({ error: 'Run not found' });
+    const status = String(scoped.status);
+    if (status === 'success' || status === 'error' || status === 'cancelled') {
+      return res.status(409).json({ error: 'Run has already finished' });
+    }
+    if (status === 'pending') {
+      const w = stmts.cancelWorkflowRunIfPending.run('Cancelled by user', runId, workflowId) as {
+        changes: number;
+      };
+      if (w.changes > 0) {
+        broadcast({
+          type: 'workflow_run_status',
+          projectId,
+          workflowId,
+          runId,
+          status: 'cancelled',
+        });
+        return res.json({ ok: true, cancelled: true, mode: 'pending' });
+      }
+    }
+    requestWorkflowRunCancel(runId);
+    broadcast({
+      type: 'workflow_run_status',
+      projectId,
+      workflowId,
+      runId,
+      status,
+      cancelRequested: true,
+    });
+    return res.json({ ok: true, cancelRequested: true, mode: 'running' });
+  };
+
   router.get('/api/projects/:projectId/workflows', list);
   router.post('/api/projects/:projectId/workflows', post);
   router.get('/api/projects/:projectId/workflows/:workflowId', getOne);
@@ -508,6 +585,8 @@ export default function createWorkflowRoutes({
   router.delete('/api/projects/:projectId/workflows/:workflowId', del);
   router.get('/api/projects/:projectId/workflows/:workflowId/runs', listRuns);
   router.post('/api/projects/:projectId/workflows/:workflowId/runs', postRun);
+  router.get('/api/projects/:projectId/workflows/:workflowId/runs/:runId', getRun);
+  router.post('/api/projects/:projectId/workflows/:workflowId/runs/:runId/cancel', postCancelRun);
 
   return router;
 }

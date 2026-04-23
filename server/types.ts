@@ -1129,6 +1129,9 @@ export interface Stmts {
   failStuckRunningWorkflowRuns: Stmt;
   failStuckRunningWorkflowStepRuns: Stmt;
   getWorkflowStepRun: Stmt;
+  getWorkflowRunScoped: Stmt;
+  cancelWorkflowRunIfPending: Stmt;
+  getWorkflowStepRunsForRun: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────

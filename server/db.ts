@@ -2388,6 +2388,23 @@ function initDb(dataDir: string): void {
        WHERE status = 'running'`,
     ),
     getWorkflowStepRun: db.prepare('SELECT * FROM workflow_step_runs WHERE id = ?'),
+    getWorkflowRunScoped: db.prepare(
+      `SELECT r.* FROM workflow_runs r
+       INNER JOIN workflows w ON w.id = r.workflow_id AND w.project_id = ?
+       WHERE r.id = ? AND r.workflow_id = ?`,
+    ),
+    cancelWorkflowRunIfPending: db.prepare(
+      `UPDATE workflow_runs
+       SET status = 'cancelled', error = ?, completed_at = datetime('now'), updated_at = datetime('now')
+       WHERE id = ? AND workflow_id = ? AND status = 'pending'`,
+    ),
+    getWorkflowStepRunsForRun: db.prepare(
+      `SELECT sr.*, st.title AS step_title, st.step_order AS step_def_order
+       FROM workflow_step_runs sr
+       LEFT JOIN workflow_steps st ON st.id = sr.workflow_step_id
+       WHERE sr.workflow_run_id = ?
+       ORDER BY COALESCE(st.step_order, 999999) ASC, sr.id ASC`,
+    ),
 
     // Notes
     getNotes: db.prepare(

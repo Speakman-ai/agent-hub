@@ -1,9 +1,11 @@
 import { vi, describe, it, expect, beforeAll } from 'vitest';
 import type supertest from 'supertest';
 import { getRequest, createProject, createAgent } from '../test/helpers.js';
+import { stmts } from '../db.js';
 
 vi.mock('../workflow-runner.js', () => ({
   startWorkflowRun: vi.fn(),
+  requestWorkflowRunCancel: vi.fn(),
 }));
 
 let request: supertest.Agent;
@@ -225,6 +227,82 @@ describe('Workflows API', () => {
       .get(`/api/projects/${projectId}/workflows/${wfId}/runs?limit=notnum`)
       .expect(200);
     expect(withBad.body.length).toBe(3);
+  });
+
+  it('GET run detail and POST cancel for a pending run', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+    const c = await request
+      .post(`/api/projects/${projectId}/workflows`)
+      .send({ name: 'Detail', steps: [{ agentId, title: 's', rolePrompt: 'p' }] })
+      .expect(201);
+    const wfId = c.body.id as string;
+    const runRes = await request
+      .post(`/api/projects/${projectId}/workflows/${wfId}/runs`)
+      .send({ payload: { k: 1 } })
+      .expect(201);
+    const runId = runRes.body.id as string;
+
+    const detail = await request
+      .get(`/api/projects/${projectId}/workflows/${wfId}/runs/${runId}`)
+      .expect(200);
+    expect(detail.body.run.id).toBe(runId);
+    expect(detail.body.run.status).toBe('pending');
+    expect(Array.isArray(detail.body.step_runs)).toBe(true);
+
+    const cancel = await request
+      .post(`/api/projects/${projectId}/workflows/${wfId}/runs/${runId}/cancel`)
+      .expect(200);
+    expect(cancel.body.ok).toBe(true);
+    expect(cancel.body.cancelled).toBe(true);
+
+    const after = await request
+      .get(`/api/projects/${projectId}/workflows/${wfId}/runs/${runId}`)
+      .expect(200);
+    expect(after.body.run.status).toBe('cancelled');
+
+    const again = await request
+      .post(`/api/projects/${projectId}/workflows/${wfId}/runs/${runId}/cancel`)
+      .expect(409);
+    expect(String(again.body.error)).toMatch(/finished/i);
+  });
+
+  it('returns 404 for run detail when runId is unknown', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+    const c = await request
+      .post(`/api/projects/${projectId}/workflows`)
+      .send({ name: 'X', steps: [{ agentId, title: 's', rolePrompt: 'p' }] })
+      .expect(201);
+    const wfId = c.body.id as string;
+    await request
+      .get(`/api/projects/${projectId}/workflows/${wfId}/runs/00000000-0000-4000-8000-000000000099`)
+      .expect(404);
+  });
+
+  it('POST cancel on a running run requests in-flight cancel', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+    const c = await request
+      .post(`/api/projects/${projectId}/workflows`)
+      .send({ name: 'Run', steps: [{ agentId, title: 's', rolePrompt: 'p' }] })
+      .expect(201);
+    const wfId = c.body.id as string;
+    const runRes = await request
+      .post(`/api/projects/${projectId}/workflows/${wfId}/runs`)
+      .send({})
+      .expect(201);
+    const runId = runRes.body.id as string;
+    stmts!.updateWorkflowRunToRunning.run(runId);
+
+    const cancel = await request
+      .post(`/api/projects/${projectId}/workflows/${wfId}/runs/${runId}/cancel`)
+      .expect(200);
+    expect(cancel.body.cancelRequested).toBe(true);
+    expect(cancel.body.mode).toBe('running');
   });
 
   it('returns 404 for another projects workflow id', async () => {

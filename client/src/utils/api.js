@@ -52,6 +52,28 @@ export const api = {
       return null;
     }),
 
+  // Hub workflows (manual runs — MVP)
+  getProjectWorkflows: (projectId) => fetchJSON(`/projects/${projectId}/workflows`),
+  getProjectWorkflow: (projectId, workflowId) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}`),
+  startWorkflowRun: (projectId, workflowId, runPayload) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs`, {
+      method: 'POST',
+      body: JSON.stringify(runPayload === undefined ? {} : { payload: runPayload }),
+      timeout: null,
+    }),
+  getWorkflowRuns: (projectId, workflowId, { limit } = {}) => {
+    const q = limit != null ? `?limit=${encodeURIComponent(String(limit))}` : '';
+    return fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs${q}`);
+  },
+  getWorkflowRunDetail: (projectId, workflowId, runId) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs/${runId}`),
+  cancelWorkflowRun: (projectId, workflowId, runId) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs/${runId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`),

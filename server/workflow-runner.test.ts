@@ -6,6 +6,8 @@ import { findProject, getEnrichedAgent } from './project-model.js';
 import {
   runWorkflowSequential,
   __clearWorkflowRunInFlightSetForTest,
+  __clearWorkflowRunCancelRequestsForTest,
+  requestWorkflowRunCancel,
   failStuckWorkflowRunsOnBoot,
 } from './workflow-runner.js';
 import { runClaude } from './heartbeat.js';
@@ -30,6 +32,7 @@ describe('workflow runner', () => {
 
   beforeEach(() => {
     __clearWorkflowRunInFlightSetForTest();
+    __clearWorkflowRunCancelRequestsForTest();
     vi.mocked(runClaude).mockReset();
     vi.mocked(runClaude).mockResolvedValue('mocked-cli' as never);
   });
@@ -210,6 +213,52 @@ describe('workflow runner', () => {
     expect(row.status).toBe('success');
     const second = vi.mocked(runClaude).mock.calls[1][0] as string;
     expect(second).toContain('use=out-from-1 end');
+  });
+
+  it('cancels before any step when cancel is requested right after entering running', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+    const wfId = uuidv4();
+    const stepId = uuidv4();
+    const runId = uuidv4();
+    stmts!.createWorkflow.run(wfId, projectId, 'C', 'manual', '{}');
+    stmts!.createWorkflowStep.run(stepId, wfId, agentId, 'S', 'p', 0, null, 'abort', null, null);
+    stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
+    requestWorkflowRunCancel(runId);
+
+    await runWorkflowSequential(baseDeps(), { projectId, workflowId: wfId, runId });
+    const row = stmts!.getWorkflowRun.get(runId) as { status: string };
+    expect(row.status).toBe('cancelled');
+    expect(vi.mocked(runClaude).mock.calls.length).toBe(0);
+  });
+
+  it('stops after the first step when cancel is requested synchronously before step 2', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+    const wfId = uuidv4();
+    const step1 = uuidv4();
+    const step2 = uuidv4();
+    const runId = uuidv4();
+    stmts!.createWorkflow.run(wfId, projectId, 'Two', 'manual', '{}');
+    stmts!.createWorkflowStep.run(step1, wfId, agentId, 'A', 'a', 0, null, 'abort', null, null);
+    stmts!.createWorkflowStep.run(step2, wfId, agentId, 'B', 'b', 1, null, 'abort', null, null);
+    stmts!.createWorkflowRun.run(runId, wfId, 'pending', null);
+    let n = 0;
+    vi.mocked(runClaude).mockImplementation(async () => {
+      n += 1;
+      if (n === 1) {
+        requestWorkflowRunCancel(runId);
+        return 'first';
+      }
+      return 'second';
+    });
+
+    await runWorkflowSequential(baseDeps(), { projectId, workflowId: wfId, runId });
+    const row = stmts!.getWorkflowRun.get(runId) as { status: string };
+    expect(row.status).toBe('cancelled');
+    expect(n).toBe(1);
   });
 
   it('marks stuck running runs and step runs on failStuckWorkflowRunsOnBoot', async () => {

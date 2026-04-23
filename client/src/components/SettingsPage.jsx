@@ -19,6 +19,7 @@ import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
 import PoolSection from './PoolSection.jsx';
 import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
+import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
 import * as LucideIcons from 'lucide-react';
@@ -2655,6 +2656,10 @@ export function GitHubSection({ projects = [], onProjectsChange, showToast }) {
                         <option value="workflow">Workflow</option>
                       </select>
                     </div>
+
+                    <SettingsErrorBoundary>
+                      <WorkflowRunsSection projectId={p.id} />
+                    </SettingsErrorBoundary>
 
                     {/* Workflow Toggles */}
                     {!isWorkflowProject(p) &&

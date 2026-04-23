@@ -1198,6 +1198,13 @@ export default function App() {
         case 'clone-error':
           window.dispatchEvent(new CustomEvent('clone-ws', { detail: data }));
           break;
+        case 'workflow_run':
+        case 'workflow_run_status':
+        case 'workflow_update':
+          if (data.projectId) {
+            window.dispatchEvent(new CustomEvent('agenthub-workflow-ws', { detail: data }));
+          }
+          break;
         case 'task_complete': {
           const taskStatus = data.status === 'done' ? 'success' : 'error';
           const taskMsg =
