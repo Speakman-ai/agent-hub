@@ -202,6 +202,8 @@ export default function App() {
   const [capturesProjectId, setCapturesProjectId] = useState(null);
   // Pull Requests state
   const [pullsProjectId, setPullsProjectId] = useState(null);
+  /** Bumped when the server signals PR/board activity for the open Pulls view — keeps GitHub list live without reload. */
+  const [pullsListRefreshNonce, setPullsListRefreshNonce] = useState(0);
   // Threads state
   const [threadsProjectId, setThreadsProjectId] = useState(null);
   const [activeThreadId, setActiveThreadId] = useState(null);
@@ -274,6 +276,8 @@ export default function App() {
   activeThreadIdRef.current = activeThreadId;
   const currentViewRef = useRef(currentView);
   currentViewRef.current = currentView;
+  const pullsProjectIdRef = useRef(pullsProjectId);
+  pullsProjectIdRef.current = pullsProjectId;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
 
@@ -676,6 +680,9 @@ export default function App() {
             delete next[data.sessionId];
             return next;
           });
+          if (currentViewRef.current === 'pulls') {
+            setPullsListRefreshNonce((n) => n + 1);
+          }
           break;
         }
         case 'create_pr_log':
@@ -1168,6 +1175,13 @@ export default function App() {
 
         case 'kanban_update':
           setKanbanRefreshKey((k) => k + 1);
+          if (
+            data.projectId &&
+            pullsProjectIdRef.current === data.projectId &&
+            currentViewRef.current === 'pulls'
+          ) {
+            setPullsListRefreshNonce((n) => n + 1);
+          }
           break;
 
         case 'projects_updated':
@@ -2741,6 +2755,7 @@ export default function App() {
             <PullRequestsPage
               projectId={pullsProjectId}
               project={projects.find((p) => p.id === pullsProjectId)}
+              listRefreshNonce={pullsListRefreshNonce}
               onOpenSession={handleOpenHandoffSession}
               onToast={showToast}
             />

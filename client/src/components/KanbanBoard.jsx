@@ -118,6 +118,21 @@ export default function KanbanBoard({
   const [modelConfig, setModelConfig] = useState(null);
 
   const addTitleRef = useRef(null);
+  const reviewFetchGenRef = useRef(0);
+
+  const fetchReviewLogs = useCallback(() => {
+    if (!projectId) return;
+    const gen = ++reviewFetchGenRef.current;
+    api
+      .get(`/projects/${projectId}/reviews?limit=20`)
+      .then((rows) => {
+        if (gen !== reviewFetchGenRef.current) return;
+        setReviewLogs(rows);
+      })
+      .catch(() => {
+        if (gen !== reviewFetchGenRef.current) return;
+      });
+  }, [projectId]);
 
   useEffect(() => {
     if (typeof api.getModelConfig !== 'function') return;
@@ -150,14 +165,16 @@ export default function KanbanBoard({
   useEffect(() => {
     setLoading(true);
     fetchBoard();
-    // Fetch review logs for the project
-    if (projectId) {
-      api
-        .get(`/projects/${projectId}/reviews?limit=20`)
-        .then(setReviewLogs)
-        .catch(() => {});
-    }
-  }, [fetchBoard, projectId]);
+    fetchReviewLogs();
+  }, [fetchBoard, projectId, fetchReviewLogs]);
+
+  // Opening the PR & reviews strip should always hit the server — the initial
+  // fetch can fail silently (e.g. first paint before auth) and left the panel
+  // empty until a full reload or unrelated kanban_refresh.
+  useEffect(() => {
+    if (!showReviewPanel) return;
+    fetchReviewLogs();
+  }, [showReviewPanel, fetchReviewLogs]);
 
   // Background refresh triggered by WebSocket events (card moves, updates,
   // comments, etc). Deliberately does NOT toggle `loading`, so the UI updates
@@ -171,11 +188,8 @@ export default function KanbanBoard({
     }
     if (!projectId) return;
     fetchBoard();
-    api
-      .get(`/projects/${projectId}/reviews?limit=20`)
-      .then(setReviewLogs)
-      .catch(() => {});
-  }, [refreshKey, projectId, fetchBoard]);
+    fetchReviewLogs();
+  }, [refreshKey, projectId, fetchBoard, fetchReviewLogs]);
 
   // Focus title input when add form opens
   useEffect(() => {

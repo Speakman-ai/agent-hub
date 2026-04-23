@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   GitPullRequest,
   CheckCircle2,
@@ -479,7 +479,14 @@ function PrDetail({
 
 // ─── Main page ─────────────────────────────────────────────────
 
-export default function PullRequestsPage({ projectId, project, onOpenSession, onToast }) {
+export default function PullRequestsPage({
+  projectId,
+  project,
+  onOpenSession,
+  onToast,
+  /** Bumped from App when GitHub/kanban activity should re-sync the open PR list. */
+  listRefreshNonce = 0,
+}) {
   const [state, setState] = useState('open');
   const [pulls, setPulls] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -516,45 +523,72 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
       })()
     : null;
 
-  const loadList = useCallback(async () => {
-    if (!projectId) {
-      setError('No project selected.');
-      setLoading(false);
-      return;
-    }
-    try {
+  /** Monotonic counter so an older in-flight list fetch cannot clobber newer results (Strict Mode / rapid tab switches). */
+  const listFetchGenRef = useRef(0);
+  const detailFetchGenRef = useRef(0);
+
+  const loadList = useCallback(
+    async ({ soft = false } = {}) => {
+      if (!projectId) {
+        setError('No project selected.');
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+      const gen = ++listFetchGenRef.current;
       setError(null);
-      const data = await api.getProjectPulls(projectId, { state, limit: 50 });
-      setPulls(data.pulls || []);
-    } catch (err) {
-      console.warn('Failed to load PRs:', err?.message || err);
-      setError(err?.message || 'Failed to load PRs');
-      setPulls([]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [projectId, state]);
+      if (soft) setRefreshing(true);
+      else setLoading(true);
+      try {
+        const data = await api.getProjectPulls(projectId, { state, limit: 50 });
+        if (gen !== listFetchGenRef.current) return;
+        setPulls(data.pulls || []);
+      } catch (err) {
+        if (gen !== listFetchGenRef.current) return;
+        console.warn('Failed to load PRs:', err?.message || err);
+        setError(err?.message || 'Failed to load PRs');
+        setPulls([]);
+      } finally {
+        if (gen === listFetchGenRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    [projectId, state],
+  );
+
+  const loadListRef = useRef(loadList);
+  loadListRef.current = loadList;
 
   useEffect(() => {
-    setLoading(true);
-    loadList();
+    loadList({ soft: false });
   }, [loadList]);
+
+  useEffect(() => {
+    if (!listRefreshNonce) return;
+    loadListRef.current({ soft: true });
+  }, [listRefreshNonce]);
 
   const loadDetail = useCallback(
     async (number) => {
       if (!projectId || !number) return;
+      const gen = ++detailFetchGenRef.current;
       setDetailLoading(true);
       setDetailError(null);
       try {
         const data = await api.getProjectPullDetail(projectId, number);
+        if (gen !== detailFetchGenRef.current) return;
         setDetail(data);
       } catch (err) {
+        if (gen !== detailFetchGenRef.current) return;
         console.warn('Failed to load PR detail:', err?.message || err);
         setDetailError(err?.message || 'Failed to load PR');
         setDetail(null);
       } finally {
-        setDetailLoading(false);
+        if (gen === detailFetchGenRef.current) {
+          setDetailLoading(false);
+        }
       }
     },
     [projectId],
@@ -577,7 +611,7 @@ export default function PullRequestsPage({ projectId, project, onOpenSession, on
     if (selectedNumber) {
       loadDetail(selectedNumber).finally(() => setRefreshing(false));
     } else {
-      loadList();
+      loadList({ soft: true });
     }
   };
 

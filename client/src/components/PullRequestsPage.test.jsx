@@ -369,3 +369,20 @@ describe('<PullRequestsPage /> — list Resolve PR + Resolve all', () => {
     );
   });
 });
+
+describe('<PullRequestsPage /> — listRefreshNonce (live sync from App)', () => {
+  beforeEach(() => {
+    api.getProjectPulls.mockReset();
+  });
+
+  it('refetches when listRefreshNonce bumps after initial load', async () => {
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
+    const { rerender } = render(
+      <PullRequestsPage projectId="proj-1" project={project} listRefreshNonce={0} />,
+    );
+    await waitFor(() => expect(api.getProjectPulls).toHaveBeenCalledTimes(1));
+
+    rerender(<PullRequestsPage projectId="proj-1" project={project} listRefreshNonce={1} />);
+    await waitFor(() => expect(api.getProjectPulls).toHaveBeenCalledTimes(2));
+  });
+});
