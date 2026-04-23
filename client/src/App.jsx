@@ -31,6 +31,7 @@ import PullRequestsPage from './components/PullRequestsPage.jsx';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal.jsx';
 import UpdateAvailableModal from './components/UpdateAvailableModal.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
+import { useVisibleIntervalRefresh } from './hooks/useVisibleIntervalRefresh.js';
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
 import { useVersionCheck } from './hooks/useVersionCheck.js';
@@ -392,6 +393,88 @@ export default function App() {
       setAgents(flat);
     });
   }, []);
+
+  const projectDataReadyRef = useRef(projectDataReady);
+  projectDataReadyRef.current = projectDataReady;
+  const sessionListRefreshInFlight = useRef(false);
+
+  /** Re-fetch session + archived lists without toggling `sessionsListLoading` or resetting the active session. */
+  const silentRefreshSessions = useCallback(async () => {
+    const agentId = activeAgentIdRef.current;
+    if (!agentId || !projectDataReadyRef.current) return;
+    if (sessionListRefreshInFlight.current) return;
+    sessionListRefreshInFlight.current = true;
+    try {
+      const [data, archivedRows] = await Promise.all([
+        api.getSessions(agentId),
+        api.getArchivedSessions(agentId).catch(() => []),
+      ]);
+      setSessions(data);
+      setArchivedSessions(Array.isArray(archivedRows) ? archivedRows : []);
+
+      setChangesReady((prev) => {
+        const next = { ...prev };
+        const alive = new Set(data.map((x) => x.id));
+        for (const k of Object.keys(next)) {
+          if (!alive.has(k)) delete next[k];
+        }
+        for (const s of data) {
+          if (!s.changes_ready) continue;
+          try {
+            next[s.id] =
+              typeof s.changes_ready === 'string' ? JSON.parse(s.changes_ready) : s.changes_ready;
+          } catch {
+            /* ignore malformed JSON */
+          }
+        }
+        return next;
+      });
+
+      const cur = activeSessionIdRef.current;
+      if (cur && !data.some((s) => s.id === cur)) {
+        const target = data[0];
+        if (target) {
+          setActiveSessionId(target.id);
+          const ag = agentsRef.current.find((a) => a.id === agentId);
+          setSessionEngine(target.engine || ag?.engine || 'claude-code');
+          setSessionModel(
+            target.model ||
+              modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
+              'claude-opus-4-7',
+          );
+          setSessionWorktree(isSessionWorktreeEnabled(target));
+          setGitWorktreeDetected(
+            target.git_worktree_detected != null ? target.git_worktree_detected === 1 : null,
+          );
+          setSessionAskMode(isSessionAskModeEnabled(target));
+        } else {
+          setActiveSessionId(null);
+          setMessages([]);
+          const fallbackEngine =
+            agentsRef.current.find((a) => a.id === agentId)?.engine || 'claude-code';
+          setSessionEngine(fallbackEngine);
+          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-7');
+          setSessionWorktree(true);
+          setGitWorktreeDetected(null);
+          setSessionAskMode(false);
+        }
+      }
+    } catch (err) {
+      console.warn('[Sessions] idle refresh failed:', err?.message || err);
+    } finally {
+      sessionListRefreshInFlight.current = false;
+    }
+  }, [modelConfig]);
+
+  // Long-idle / missed-WebSocket reconciliation: sidebar lists are otherwise only
+  // loaded on agent switch. Interval pauses while the window is hidden.
+  useVisibleIntervalRefresh(silentRefreshSessions, 120_000, {
+    enabled: projectDataReady && Boolean(activeAgentId),
+  });
+
+  useVisibleIntervalRefresh(refreshAgents, 300_000, {
+    enabled: projectDataReady,
+  });
 
   // WebSocket handler
   const handleWsMessage = useCallback(

@@ -17,6 +17,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
+import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh.js';
 import { epicFormToUpdateBody } from '../utils/epics.js';
 import {
   buildOrchestrationBudgetsPayload,
@@ -190,6 +191,21 @@ export default function KanbanBoard({
     fetchBoard();
     fetchReviewLogs();
   }, [refreshKey, projectId, fetchBoard, fetchReviewLogs]);
+
+  // WebSocket-driven `refreshKey` covers most edits; this catches long idle periods
+  // or missed events without toggling `loading` (fetchBoard leaves loading false).
+  useVisibleIntervalRefresh(
+    () => {
+      if (!projectId) return;
+      void fetchBoard();
+      void api
+        .get(`/projects/${projectId}/reviews?limit=20`)
+        .then(setReviewLogs)
+        .catch(() => {});
+    },
+    180_000,
+    { enabled: Boolean(projectId) },
+  );
 
   // Focus title input when add form opens
   useEffect(() => {
