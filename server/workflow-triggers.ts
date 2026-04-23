@@ -8,7 +8,7 @@ import { Router, type Request, type Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import config from './config.js';
 import { startWorkflowRun } from './workflow-runner.js';
-import type { Stmts, BroadcastFn, EnrichedAgent, Project } from './types.js';
+import type { Stmts, BroadcastFn, EnrichedAgent, Project, KanbanCardRow } from './types.js';
 
 /** Preset label → node-cron expression (server-authoritative). */
 export const CRON_PRESETS: Record<string, string> = {
@@ -302,4 +302,81 @@ export function createWorkflowIncomingRouter(deps: TriggerDeps): Router {
  */
 export function discardWorkflowTriggerCron(workflowId: string): void {
   clearWorkflowCronSchedule(workflowId);
+}
+
+/** Serializable card fields for `source: kanban_column` workflow run payloads. */
+export function kanbanCardTriggerPayload(card: KanbanCardRow): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    id: card.id,
+    title: card.title,
+    description: card.description,
+    priority: card.priority,
+    assignee: card.assignee,
+    labels: card.labels,
+    session_id: card.session_id,
+    github_issue_url: card.github_issue_url,
+    pr_url: card.pr_url,
+    review_status: card.review_status,
+    epic_id: card.epic_id,
+    column_id: card.column_id,
+    board_id: card.board_id,
+    position: card.position,
+    documented: card.documented,
+    autonomous_iterations: card.autonomous_iterations,
+    dispatched_by_autonomous: card.dispatched_by_autonomous,
+    created_at: card.created_at,
+    updated_at: card.updated_at,
+  };
+  if (card.assign_model != null && card.assign_model !== undefined) {
+    base.assign_model = card.assign_model;
+  }
+  return base;
+}
+
+/**
+ * When a kanban card moves into `destinationColumnId`, start every workflow
+ * configured with that column as `trigger_column_id`.
+ */
+export function maybeStartKanbanColumnWorkflowRuns(
+  deps: TriggerDeps,
+  args: {
+    projectId: string;
+    destinationColumnId: string;
+    previousColumnId: string;
+    destinationColumnName: string;
+    card: KanbanCardRow;
+  },
+): void {
+  if (args.previousColumnId === args.destinationColumnId) return;
+  const rows = deps.stmts.getWorkflowsByKanbanTriggerColumn.all(
+    args.projectId,
+    args.destinationColumnId,
+  ) as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    const workflowId = String(row.id);
+    const runPayload = JSON.stringify({
+      source: 'kanban_column',
+      columnId: args.destinationColumnId,
+      columnName: args.destinationColumnName,
+      previousColumnId: args.previousColumnId,
+      card: kanbanCardTriggerPayload(args.card),
+      movedAt: new Date().toISOString(),
+    });
+    const id = uuidv4();
+    try {
+      deps.stmts.createWorkflowRun.run(id, workflowId, 'pending', runPayload);
+      deps.broadcast({ type: 'workflow_run', projectId: args.projectId, workflowId, runId: id });
+      startWorkflowRun(
+        {
+          stmts: deps.stmts,
+          broadcast: deps.broadcast,
+          getEnrichedAgent: deps.getEnrichedAgent,
+          findProject: deps.findProject,
+        },
+        { projectId: args.projectId, workflowId, runId: id },
+      );
+    } catch (e) {
+      console.error('[workflow-kanban]', workflowId, e instanceof Error ? e.message : String(e));
+    }
+  }
 }

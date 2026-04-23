@@ -178,6 +178,7 @@ function toWorkflowResponse(
     cron_presets: { ...CRON_PRESETS },
     webhook_url: buildWorkflowWebhookUrl((row.webhook_path_token as string) ?? null),
     webhook_secret_set: Boolean(row.webhook_signing_secret),
+    trigger_column_id: row.trigger_column_id ?? null,
     steps: steps.map(toStepResponse),
   };
 }
@@ -297,6 +298,21 @@ function toStepRunDetailRow(row: Record<string, unknown>) {
     step_title: row.step_title ?? null,
     step_order: row.step_def_order ?? null,
   };
+}
+
+function assertKanbanTriggerColumnForProject(
+  stmts: Stmts,
+  projectId: string,
+  columnId: string,
+): void {
+  const col = stmts.getKanbanColumn.get(columnId) as { board_id: string } | undefined;
+  if (!col) throw new WorkflowValidationError('triggerColumnId: column not found');
+  const board = stmts.getKanbanBoardById.get(col.board_id) as { project_id: string } | undefined;
+  if (!board || board.project_id !== projectId) {
+    throw new WorkflowValidationError(
+      'triggerColumnId must reference a kanban column on this project board',
+    );
+  }
 }
 
 function groupStepsByWorkflowId(
@@ -436,6 +452,27 @@ export default function createWorkflowRoutes({
     const bodyRec = body as Record<string, unknown>;
     const cronE = readCronExprFromBody(bodyRec, {});
     const wh = readWebhookFromBody(bodyRec, null);
+
+    let triggerColumnId: string | null = null;
+    try {
+      if (hasOwnKey(bodyRec, 'triggerColumnId') || hasOwnKey(bodyRec, 'trigger_column_id')) {
+        const raw = bodyRec.triggerColumnId ?? bodyRec.trigger_column_id;
+        if (raw === null || raw === '') triggerColumnId = null;
+        else if (typeof raw === 'string' && raw.trim()) {
+          triggerColumnId = raw.trim();
+          assertKanbanTriggerColumnForProject(stmts, projectId, triggerColumnId);
+        } else {
+          throw new WorkflowValidationError('triggerColumnId must be a non-empty string or null');
+        }
+      }
+    } catch (e) {
+      if (e instanceof WorkflowValidationError) {
+        return res.status(400).json({ error: e.message });
+      }
+      console.error('[workflows] POST /workflows triggerColumnId', e);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+
     if (cronE && !cron.validate(cronE)) {
       return res.status(400).json({ error: 'cronExpr is not a valid cron expression' });
     }
@@ -450,6 +487,7 @@ export default function createWorkflowRoutes({
           cronE,
           wh.path,
           wh.secret,
+          triggerColumnId,
         );
         insertSteps(stmts, findAgent, projectId, id, stepList);
       })();
@@ -537,6 +575,27 @@ export default function createWorkflowRoutes({
     const bodyRec = req.body as Record<string, unknown>;
     const cronE = readCronExprFromBody(bodyRec, cur);
     const wh = readWebhookFromBody(bodyRec, cur);
+
+    let triggerColumnId = (cur.trigger_column_id as string | null) ?? null;
+    try {
+      if (hasOwnKey(bodyRec, 'triggerColumnId') || hasOwnKey(bodyRec, 'trigger_column_id')) {
+        const raw = bodyRec.triggerColumnId ?? bodyRec.trigger_column_id;
+        if (raw === null || raw === '') triggerColumnId = null;
+        else if (typeof raw === 'string' && raw.trim()) {
+          triggerColumnId = raw.trim();
+          assertKanbanTriggerColumnForProject(stmts, projectId, triggerColumnId);
+        } else {
+          throw new WorkflowValidationError('triggerColumnId must be a non-empty string or null');
+        }
+      }
+    } catch (e) {
+      if (e instanceof WorkflowValidationError) {
+        return res.status(400).json({ error: e.message });
+      }
+      console.error('[workflows] PUT /workflows triggerColumnId', e);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+
     if (cronE && !cron.validate(cronE)) {
       return res.status(400).json({ error: 'cronExpr is not a valid cron expression' });
     }
@@ -549,6 +608,7 @@ export default function createWorkflowRoutes({
           cronE,
           wh.path,
           wh.secret,
+          triggerColumnId,
           req.params.workflowId,
           projectId,
         );

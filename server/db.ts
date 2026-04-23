@@ -1293,6 +1293,9 @@ function initDb(dataDir: string): void {
       if (!wfCols.includes('webhook_signing_secret')) {
         db.exec('ALTER TABLE workflows ADD COLUMN webhook_signing_secret TEXT');
       }
+      if (!wfCols.includes('trigger_column_id')) {
+        db.exec('ALTER TABLE workflows ADD COLUMN trigger_column_id TEXT');
+      }
     }
     try {
       db.exec(
@@ -2351,11 +2354,11 @@ function initDb(dataDir: string): void {
     ),
     getWorkflow: db.prepare('SELECT * FROM workflows WHERE id = ?'),
     createWorkflow: db.prepare(
-      `INSERT INTO workflows (id, project_id, name, trigger_type, default_payload, cron_expr, cron_next_run_at, webhook_path_token, webhook_signing_secret)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      `INSERT INTO workflows (id, project_id, name, trigger_type, default_payload, cron_expr, cron_next_run_at, webhook_path_token, webhook_signing_secret, trigger_column_id)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
     ),
     updateWorkflow: db.prepare(
-      `UPDATE workflows SET name = ?, trigger_type = ?, default_payload = ?, cron_expr = ?, webhook_path_token = ?, webhook_signing_secret = ?, updated_at = datetime('now')
+      `UPDATE workflows SET name = ?, trigger_type = ?, default_payload = ?, cron_expr = ?, webhook_path_token = ?, webhook_signing_secret = ?, trigger_column_id = ?, updated_at = datetime('now')
        WHERE id = ? AND project_id = ?`,
     ),
     updateWorkflowCronNextRun: db.prepare(
@@ -2369,6 +2372,9 @@ function initDb(dataDir: string): void {
     ),
     getWorkflowsWithCronExpr: db.prepare(
       `SELECT * FROM workflows WHERE cron_expr IS NOT NULL AND length(trim(cron_expr)) > 0`,
+    ),
+    getWorkflowsByKanbanTriggerColumn: db.prepare(
+      `SELECT * FROM workflows WHERE project_id = ? AND trigger_column_id = ?`,
     ),
     deleteWorkflow: db.prepare('DELETE FROM workflows WHERE id = ? AND project_id = ?'),
     getWorkflowSteps: db.prepare(

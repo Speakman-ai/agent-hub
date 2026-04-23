@@ -4,7 +4,9 @@ import {
   resolveCronExpr,
   verifyWorkflowWebhookSignature,
   getCronNextRunPreview,
+  kanbanCardTriggerPayload,
 } from './workflow-triggers.js';
+import type { KanbanCardRow } from './types.js';
 
 describe('workflow-triggers', () => {
   it('resolveCronExpr: preset wins over raw expr', () => {
@@ -34,5 +36,35 @@ describe('workflow-triggers', () => {
   it('verifyWorkflowWebhookSignature rejects a bad signature', () => {
     const body = Buffer.from('{"a":1}', 'utf8');
     expect(verifyWorkflowWebhookSignature(body, 'a', 'sha256=abc')).toBe(false);
+  });
+
+  it('kanbanCardTriggerPayload copies card fields for workflow triggers', () => {
+    const card = {
+      id: 'c1',
+      column_id: 'col1',
+      board_id: 'b1',
+      title: 'T',
+      description: null,
+      priority: 'high' as const,
+      assignee: null,
+      labels: null,
+      session_id: null,
+      github_issue_url: null,
+      pr_url: null,
+      review_status: null,
+      created_by: null,
+      position: 0,
+      epic_id: null,
+      documented: 0,
+      autonomous_iterations: 0,
+      dispatched_by_autonomous: 0,
+      assign_model: 'opus',
+      created_at: 'x',
+      updated_at: 'y',
+    } satisfies KanbanCardRow;
+    const o = kanbanCardTriggerPayload(card);
+    expect(o.id).toBe('c1');
+    expect(o.title).toBe('T');
+    expect(o.assign_model).toBe('opus');
   });
 });

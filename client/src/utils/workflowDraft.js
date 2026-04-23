@@ -1,6 +1,6 @@
 /**
  * Normalized draft snapshot for dirty detection (Hub workflow builder).
- * @param {{ name: string, trigger_type: string, default_payload_str: string, steps: object[], cron_mode: string, cron_expr: string, webhook_enabled: boolean }} d
+ * @param {{ name: string, trigger_type: string, default_payload_str: string, steps: object[], cron_mode: string, cron_expr: string, webhook_enabled: boolean, kanban_trigger_column_id: string }} d
  */
 export const WORKFLOW_CRON_PRESET_LABELS = {
   off: 'Off (manual runs only)',
@@ -62,6 +62,7 @@ export function workflowDraftSnapshot(d) {
     cron_mode: String(d.cron_mode || 'off'),
     cron_expr: String(d.cron_expr || ''),
     webhook_enabled: Boolean(d.webhook_enabled),
+    kanban_trigger_column_id: String(d.kanban_trigger_column_id || ''),
   });
 }
 
@@ -93,6 +94,7 @@ export function workflowFromApi(apiWorkflow) {
       on_failure: String(s.on_failure || 'abort'),
     }));
   const { cron_mode, cron_expr } = inferCronFromApi(apiWorkflow);
+  const trigCol = apiWorkflow?.trigger_column_id;
   return {
     name: String(apiWorkflow?.name || '').trim() || 'Untitled workflow',
     trigger_type: String(apiWorkflow?.trigger_type || 'manual'),
@@ -101,11 +103,12 @@ export function workflowFromApi(apiWorkflow) {
     cron_mode,
     cron_expr,
     webhook_enabled: Boolean(apiWorkflow?.webhook_path_token && apiWorkflow?.webhook_secret_set),
+    kanban_trigger_column_id: trigCol ? String(trigCol) : '',
   };
 }
 
 /**
- * @param {{ name: string, trigger_type: string, default_payload_str: string, steps: object[], cron_mode: string, cron_expr: string, webhook_enabled: boolean }} draft
+ * @param {{ name: string, trigger_type: string, default_payload_str: string, steps: object[], cron_mode: string, cron_expr: string, webhook_enabled: boolean, kanban_trigger_column_id: string }} draft
  * @returns {object} API body for PUT/POST
  */
 export function draftToPutBody(draft) {
@@ -141,6 +144,9 @@ export function draftToPutBody(draft) {
     cronPreset = mode;
   }
 
+  const colRaw = draft.kanban_trigger_column_id;
+  const trimmed = typeof colRaw === 'string' && String(colRaw).trim() ? String(colRaw).trim() : '';
+
   return {
     name: draft.name.trim(),
     triggerType: draft.trigger_type || 'manual',
@@ -149,5 +155,6 @@ export function draftToPutBody(draft) {
     cronExpr,
     cronPreset,
     webhookEnabled: Boolean(draft.webhook_enabled),
+    triggerColumnId: trimmed.length ? trimmed : null,
   };
 }

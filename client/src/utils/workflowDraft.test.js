@@ -57,6 +57,7 @@ describe('workflowDraft', () => {
       name: 'X',
       trigger_type: 'manual',
       default_payload_str: '{}',
+      kanban_trigger_column_id: '',
       steps: [
         {
           id: 's',
@@ -80,6 +81,7 @@ describe('workflowDraft', () => {
       cron_mode: 'every_hour',
       cron_expr: '',
       webhook_enabled: true,
+      kanban_trigger_column_id: '',
       steps: [
         {
           id: 's1',
@@ -95,6 +97,21 @@ describe('workflowDraft', () => {
     expect(body.cronPreset).toBe('every_hour');
     expect(body.cronExpr).toBeUndefined();
     expect(body.webhookEnabled).toBe(true);
+    expect(body.triggerColumnId).toBe(null);
+  });
+
+  it('draftToPutBody sends triggerColumnId when kanban column is selected', () => {
+    const body = draftToPutBody({
+      name: 'K',
+      trigger_type: 'manual',
+      default_payload_str: '{}',
+      cron_mode: 'off',
+      cron_expr: '',
+      webhook_enabled: false,
+      kanban_trigger_column_id: 'col-uuid-1',
+      steps: [],
+    });
+    expect(body.triggerColumnId).toBe('col-uuid-1');
   });
 
   it('draftToPutBody emits camelCase for API', () => {
@@ -102,6 +119,7 @@ describe('workflowDraft', () => {
       name: ' N ',
       trigger_type: 'manual',
       default_payload_str: '{"x":true}',
+      kanban_trigger_column_id: '',
       steps: [
         {
           id: 'sid',

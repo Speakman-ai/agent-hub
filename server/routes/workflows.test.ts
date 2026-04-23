@@ -3,6 +3,7 @@ import { vi, describe, it, expect, beforeAll } from 'vitest';
 import type supertest from 'supertest';
 import { getRequest, createProject, createAgent } from '../test/helpers.js';
 import { stmts } from '../db.js';
+import * as workflowRunner from '../workflow-runner.js';
 
 vi.mock('../workflow-runner.js', () => ({
   startWorkflowRun: vi.fn(),
@@ -368,5 +369,90 @@ describe('Workflows API', () => {
     const parsed = JSON.parse(runRow.run_payload || '{}') as { source?: string; ship?: boolean };
     expect(parsed.source).toBe('webhook');
     expect(parsed.ship).toBe(true);
+  });
+
+  it('accepts triggerColumnId when the column belongs to the project kanban board', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const columns = board.body.columns as { id: string; name: string }[];
+    const col = columns.find((c) => /done/i.test(c.name)) ?? columns[columns.length - 1];
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+
+    const c = await request
+      .post(`/api/projects/${projectId}/workflows`)
+      .send({
+        name: 'On column',
+        triggerColumnId: col.id,
+        steps: [{ agentId, title: 'S', rolePrompt: 'R' }],
+      })
+      .expect(201);
+    expect(c.body.trigger_column_id).toBe(col.id);
+  });
+
+  it('rejects triggerColumnId when the column is not on the project board', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+    const res = await request.post(`/api/projects/${projectId}/workflows`).send({
+      name: 'Bad col',
+      triggerColumnId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      steps: [{ agentId, title: 'S', rolePrompt: 'R' }],
+    });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/column/i);
+  });
+
+  it('starts a workflow run when a card moves into the configured trigger column', async () => {
+    const startMock = vi.mocked(workflowRunner.startWorkflowRun);
+    startMock.mockClear();
+
+    const project = await createProject();
+    const projectId = project.id as string;
+    const { id: agentId } = (await createAgent({ projectId })) as { id: string };
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const columns = board.body.columns as { id: string; name: string }[];
+    const target = columns.find((c) => c.name === 'Done') ?? columns[columns.length - 1];
+    const from = columns.find((c) => c.name === 'Backlog') ?? columns[0];
+
+    await request
+      .post(`/api/projects/${projectId}/workflows`)
+      .send({
+        name: 'Enter Done',
+        triggerColumnId: target.id,
+        steps: [{ agentId, title: 'Wrap', rolePrompt: 'Finish for card' }],
+      })
+      .expect(201);
+
+    const cardTitle = `Ship it ${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const card = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({
+        title: cardTitle,
+        columnId: from.id,
+        priority: 'medium',
+      })
+      .expect(200);
+
+    await request
+      .post(`/api/projects/${projectId}/board/cards/${card.body.id as string}/move`)
+      .send({ columnId: target.id })
+      .expect(200);
+
+    expect(startMock).toHaveBeenCalled();
+    const wfList = await request.get(`/api/projects/${projectId}/workflows`).expect(200);
+    const wfId = (wfList.body as { id: string; name: string }[]).find(
+      (w) => w.name === 'Enter Done',
+    )?.id as string;
+    const runs = stmts!.getWorkflowRunsLimited.all(wfId, 5) as { run_payload: string | null }[];
+    expect(runs.length).toBeGreaterThanOrEqual(1);
+    const parsed = JSON.parse(runs[0].run_payload || '{}') as {
+      source?: string;
+      columnId?: string;
+      card?: { title?: string };
+    };
+    expect(parsed.source).toBe('kanban_column');
+    expect(parsed.columnId).toBe(target.id);
+    expect(parsed.card?.title).toBe(cardTitle);
   });
 });

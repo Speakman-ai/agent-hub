@@ -34,6 +34,7 @@ function emptyDraft() {
     cron_mode: 'off',
     cron_expr: '',
     webhook_enabled: false,
+    kanban_trigger_column_id: '',
   };
 }
 
@@ -72,6 +73,8 @@ export default function ProjectWorkflowBuilder({
   const [serverWorkflowId, setServerWorkflowId] = useState(isNew ? null : workflowId);
   const [webhookSecretFlash, setWebhookSecretFlash] = useState('');
   const [wfMeta, setWfMeta] = useState(null);
+  const [boardColumns, setBoardColumns] = useState([]);
+  const [boardColumnsLoadError, setBoardColumnsLoadError] = useState('');
 
   const dirtyRef = useRef(false);
   const dirty =
@@ -146,6 +149,31 @@ export default function ProjectWorkflowBuilder({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadBoardColumns() {
+      if (!projectId) return;
+      setBoardColumnsLoadError('');
+      try {
+        const data = await api.getBoard(projectId);
+        if (cancelled) return;
+        const cols = Array.isArray(data?.columns) ? data.columns : [];
+        setBoardColumns(
+          cols.map((c) => ({
+            id: String(c.id || ''),
+            name: String(c.name || ''),
+          })),
+        );
+      } catch (e) {
+        if (!cancelled) setBoardColumnsLoadError(String(e.message || e));
+      }
+    }
+    void loadBoardColumns();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   const wsDebounceTimerRef = useRef(null);
   const loadRef = useRef(load);
@@ -635,6 +663,43 @@ export default function ProjectWorkflowBuilder({
                         Rotate signing secret
                       </button>
                     )}
+                  </div>
+
+                  <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-4 space-y-3">
+                    <div className="text-xs font-medium text-emerald-200/90">Kanban column</div>
+                    <p className="text-xs text-gray-500">
+                      When a card is moved into the selected column, start this workflow. The run
+                      payload includes{' '}
+                      <code className="text-gray-400">source: &quot;kanban_column&quot;</code>,
+                      column metadata, and a <code className="text-gray-400">card</code> object —
+                      use <code className="text-gray-400">{'{{trigger.payload.card.title}}'}</code>{' '}
+                      in step prompts.
+                    </p>
+                    {boardColumnsLoadError ? (
+                      <p className="text-xs text-amber-400">{boardColumnsLoadError}</p>
+                    ) : null}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-400 mb-1">
+                        Trigger when card enters column
+                      </label>
+                      <select
+                        value={draft.kanban_trigger_column_id || ''}
+                        onChange={(e) =>
+                          setDraft((p) => ({
+                            ...p,
+                            kanban_trigger_column_id: e.target.value,
+                          }))
+                        }
+                        className="w-full max-w-md rounded-lg bg-gray-950 border border-gray-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
+                      >
+                        <option value="">Off (no kanban trigger)</option>
+                        {boardColumns.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name || c.id}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 </div>
               )}

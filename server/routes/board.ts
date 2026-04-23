@@ -16,6 +16,7 @@ import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
+import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
 
 interface BoardData {
   board: KanbanBoardRow;
@@ -71,6 +72,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   const {
     findProject,
     findAgent,
+    getEnrichedAgent,
     broadcast,
     stmts,
     handleChat,
@@ -300,6 +302,21 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
             sessionId: updatedCard.session_id || undefined,
             agentId,
           });
+          maybeStartKanbanColumnWorkflowRuns(
+            {
+              stmts,
+              broadcast,
+              getEnrichedAgent,
+              findProject,
+            },
+            {
+              projectId: req.params.projectId as string,
+              destinationColumnId: columnId,
+              previousColumnId,
+              destinationColumnName: String(col.name || ''),
+              card: updatedCard,
+            },
+          );
         }
         // Note: PR review is now triggered by the GitHub webhook handler
         // (pull_request.opened/synchronize) rather than by a card moving into

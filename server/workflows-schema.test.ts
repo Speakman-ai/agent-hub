@@ -50,6 +50,7 @@ describe('workflows schema', () => {
         'id',
         'name',
         'project_id',
+        'trigger_column_id',
         'trigger_type',
         'updated_at',
         'webhook_path_token',

@@ -8,6 +8,7 @@ vi.mock('../utils/api.js', () => ({
     getProjectWorkflow: vi.fn(),
     createProjectWorkflow: vi.fn(),
     updateProjectWorkflow: vi.fn(),
+    getBoard: vi.fn().mockResolvedValue({ columns: [] }),
   },
 }));
 

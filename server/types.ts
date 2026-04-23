@@ -1117,6 +1117,7 @@ export interface Stmts {
   updateWorkflowWebhookSecret: Stmt;
   getWorkflowByWebhookToken: Stmt;
   getWorkflowsWithCronExpr: Stmt;
+  getWorkflowsByKanbanTriggerColumn: Stmt;
   deleteWorkflow: Stmt;
   getWorkflowSteps: Stmt;
   getWorkflowStepsByProject: Stmt;

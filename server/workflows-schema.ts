@@ -21,6 +21,8 @@ export const WORKFLOWS_SCHEMA = `
     -- Per-workflow webhook: opaque URL token + HMAC signing secret (plain at rest; rotate from UI).
     webhook_path_token TEXT,
     webhook_signing_secret TEXT,
+    -- V1.1: when set, moving a card into this kanban column starts a run (see workflow-triggers.ts).
+    trigger_column_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
