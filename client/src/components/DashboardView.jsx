@@ -30,6 +30,7 @@ import { relativeTime } from '../utils/time.js';
  * @param {(projectId: string) => void} [onOpenKanban] — open project board
  * @param {(projectId: string) => void} [onOpenPulls] — open project PR list
  * @param {(url: string) => void} [onOpenExternalUrl] — open GitHub etc. (Electron uses shell)
+ * @param {() => void} [onNewProject] — open the full-screen new project wizard
  */
 export default function DashboardView({
   orgId,
@@ -37,6 +38,7 @@ export default function DashboardView({
   onOpenKanban,
   onOpenPulls,
   onOpenExternalUrl,
+  onNewProject,
 }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -116,6 +118,36 @@ export default function DashboardView({
           >
             Failed to load dashboard: {error}
           </div>
+        )}
+
+        {onNewProject && (
+          <section
+            aria-label="Create a new project"
+            className="mb-8 rounded-2xl border border-emerald-800/40 bg-gradient-to-br from-emerald-950/50 via-gray-900 to-gray-900 p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
+          >
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-emerald-400 mb-1">
+                <Sparkles size={18} className="shrink-0" />
+                <span className="text-xs font-semibold uppercase tracking-wider">Projects</span>
+              </div>
+              <h2 className="text-lg sm:text-xl font-semibold text-white">
+                Add a workspace to this org
+              </h2>
+              <p className="text-sm text-gray-400 mt-1 max-w-xl">
+                Connect a local folder or clone from GitHub, then review agents and context before
+                you land in the hub.
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="dashboard-new-project-cta"
+              onClick={onNewProject}
+              className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-900/30 hover:bg-emerald-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-950 transition-colors"
+            >
+              <Plus size={20} strokeWidth={2.5} aria-hidden />
+              New Project
+            </button>
+          </section>
         )}
 
         {!data && !error && loading && (

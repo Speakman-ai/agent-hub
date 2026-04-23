@@ -1,6 +1,69 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { ArrowLeft } from 'lucide-react';
 import { getApiBase, getAuthHeaders, getConnectionConfig } from '../utils/connection.js';
 import ServerBrowser from './ServerBrowser.jsx';
+
+export const NEW_PROJECT_WIZARD_DRAFT_KEY = 'agentHub:v1:newProjectWizardDraft';
+
+const JOURNEY_LABELS = ['Entry', 'Questions', 'Provisioning', 'Audit', 'Landing'];
+
+/** Maps wizard step (1–4) to journey strip segment states for the multi-step chrome. */
+function journeySegmentState(wizardStep, index) {
+  if (wizardStep === 1) {
+    if (index <= 1) return 'active';
+    return 'upcoming';
+  }
+  if (index < wizardStep) return 'done';
+  if (index === wizardStep) return 'active';
+  return 'upcoming';
+}
+
+export function JourneyProgressStrip({ wizardStep }) {
+  return (
+    <nav
+      data-testid="new-project-journey"
+      aria-label="Project setup progress"
+      className="w-full flex flex-wrap items-center justify-center gap-1 sm:gap-2 py-3 border-b border-gray-800/80 bg-gray-900/40"
+    >
+      {JOURNEY_LABELS.map((label, i) => {
+        const state = journeySegmentState(wizardStep, i);
+        const isDone = state === 'done';
+        const isActive = state === 'active';
+        return (
+          <div key={label} className="flex items-center gap-1 sm:gap-2">
+            {i > 0 && (
+              <div
+                className={`hidden sm:block w-4 md:w-8 h-px ${isDone || isActive ? 'bg-emerald-600/80' : 'bg-gray-700'}`}
+              />
+            )}
+            <div
+              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] sm:text-xs font-medium border transition-colors ${
+                isDone
+                  ? 'border-emerald-600/60 bg-emerald-950/40 text-emerald-300'
+                  : isActive
+                    ? 'border-emerald-500 bg-emerald-500/15 text-emerald-200'
+                    : 'border-gray-700 text-gray-500'
+              }`}
+            >
+              <span
+                className={`tabular-nums w-4 h-4 inline-flex items-center justify-center rounded-full text-[10px] ${
+                  isDone
+                    ? 'bg-emerald-600 text-white'
+                    : isActive
+                      ? 'bg-emerald-500/30 text-emerald-200'
+                      : 'bg-gray-800 text-gray-500'
+                }`}
+              >
+                {isDone ? '✓' : i + 1}
+              </span>
+              <span>{label}</span>
+            </div>
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
 
 const COLOR_PRESETS = [
   '#6366F1',
@@ -99,7 +162,7 @@ function StepIndicator({ currentStep }) {
   );
 }
 
-export default function OpenProjectWizard({ onClose, onProjectCreated }) {
+export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 'modal' }) {
   const [step, setStep] = useState(1);
 
   // Step 1 mode: 'local' or 'clone'
@@ -149,6 +212,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
 
   const analyzeIdRef = useRef(null);
   const terminalRef = useRef(null);
+  const hasRestoredDraftRef = useRef(false);
 
   // Determine if we're in remote mode (server browser needed)
   const isRemote = getConnectionConfig().mode === 'remote';
@@ -184,15 +248,6 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
   }, [progressText, cloneLog]);
-
-  // Escape key closes modal
-  useEffect(() => {
-    const handleKey = (e) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
 
   // WebSocket events for analysis
   useEffect(() => {
@@ -394,6 +449,11 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
         throw new Error(err.error || `Create failed: ${res.status}`);
       }
       const project = await res.json();
+      try {
+        sessionStorage.removeItem(NEW_PROJECT_WIZARD_DRAFT_KEY);
+      } catch {
+        /* ignore */
+      }
       onProjectCreated(project);
       onClose();
     } catch (err) {
@@ -416,36 +476,195 @@ export default function OpenProjectWizard({ onClose, onProjectCreated }) {
     onClose,
   ]);
 
+  const isFullscreen = layout === 'fullscreen';
+
+  const persistDraftSync = useCallback(() => {
+    try {
+      sessionStorage.setItem(
+        NEW_PROJECT_WIZARD_DRAFT_KEY,
+        JSON.stringify({
+          v: 1,
+          step,
+          sourceMode,
+          path,
+          name,
+          projectId,
+          color,
+          nameManuallyEdited,
+          idManuallyEdited,
+          cloneUrl,
+          cloneTarget,
+          skipGitHub,
+          repoOwner,
+          repoName,
+          selectedAgents,
+          contextFiles,
+          activeTab,
+          analysisResult,
+          ghStatus,
+          repoInfo,
+          testResult,
+          progressText,
+          progressLog,
+          cloneLog,
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [
+    step,
+    sourceMode,
+    path,
+    name,
+    projectId,
+    color,
+    nameManuallyEdited,
+    idManuallyEdited,
+    cloneUrl,
+    cloneTarget,
+    skipGitHub,
+    repoOwner,
+    repoName,
+    selectedAgents,
+    contextFiles,
+    activeTab,
+    analysisResult,
+    ghStatus,
+    repoInfo,
+    testResult,
+    progressText,
+    progressLog,
+    cloneLog,
+  ]);
+
+  const handleRequestClose = useCallback(() => {
+    persistDraftSync();
+    onClose();
+  }, [persistDraftSync, onClose]);
+
+  // Restore draft once (e.g. user left the wizard and re-opened it).
+  useEffect(() => {
+    if (hasRestoredDraftRef.current) return;
+    hasRestoredDraftRef.current = true;
+    try {
+      const raw = sessionStorage.getItem(NEW_PROJECT_WIZARD_DRAFT_KEY);
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      if (d.v !== 1) return;
+      let nextStep = typeof d.step === 'number' ? d.step : 1;
+      if (nextStep >= 2 && !d.analysisResult) nextStep = 1;
+      setStep(nextStep);
+      if (d.sourceMode === 'local' || d.sourceMode === 'clone') setSourceMode(d.sourceMode);
+      if (typeof d.nameManuallyEdited === 'boolean') setNameManuallyEdited(d.nameManuallyEdited);
+      if (typeof d.idManuallyEdited === 'boolean') setIdManuallyEdited(d.idManuallyEdited);
+      if (typeof d.path === 'string') setPath(d.path);
+      if (typeof d.name === 'string') setName(d.name);
+      if (typeof d.projectId === 'string') setProjectId(d.projectId);
+      if (typeof d.color === 'string') setColor(d.color);
+      if (typeof d.cloneUrl === 'string') setCloneUrl(d.cloneUrl);
+      if (typeof d.cloneTarget === 'string') setCloneTarget(d.cloneTarget);
+      if (typeof d.skipGitHub === 'boolean') setSkipGitHub(d.skipGitHub);
+      if (typeof d.repoOwner === 'string') setRepoOwner(d.repoOwner);
+      if (typeof d.repoName === 'string') setRepoName(d.repoName);
+      if (d.selectedAgents && typeof d.selectedAgents === 'object')
+        setSelectedAgents(d.selectedAgents);
+      if (d.contextFiles && typeof d.contextFiles === 'object') setContextFiles(d.contextFiles);
+      if (typeof d.activeTab === 'string') setActiveTab(d.activeTab);
+      if (d.analysisResult) setAnalysisResult(d.analysisResult);
+      if (d.ghStatus) setGhStatus(d.ghStatus);
+      if (d.repoInfo) setRepoInfo(d.repoInfo);
+      if (d.testResult) setTestResult(d.testResult);
+      if (typeof d.progressText === 'string') setProgressText(d.progressText);
+      if (Array.isArray(d.progressLog)) setProgressLog(d.progressLog);
+      if (Array.isArray(d.cloneLog)) setCloneLog(d.cloneLog);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => persistDraftSync(), 400);
+    return () => clearTimeout(t);
+  }, [persistDraftSync]);
+
+  useEffect(() => {
+    const handleKey = (e) => {
+      if (e.key === 'Escape') handleRequestClose();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [handleRequestClose]);
+
   const handleBackdropClick = (e) => {
-    if (e.target === e.currentTarget) onClose();
+    if (e.target === e.currentTarget) handleRequestClose();
   };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={handleBackdropClick}
+      className={
+        isFullscreen
+          ? 'fixed inset-0 z-[100] flex flex-col bg-gray-950 text-white'
+          : 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm'
+      }
+      onClick={isFullscreen ? undefined : handleBackdropClick}
     >
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 relative">
-        {/* Close button */}
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors"
-          aria-label="Close"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
+      {isFullscreen && (
+        <header className="flex shrink-0 items-center gap-3 border-b border-gray-800 bg-gray-900/90 px-3 py-3 sm:px-5">
+          <button
+            type="button"
+            onClick={handleRequestClose}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800/80 px-3 py-2 text-sm font-medium text-gray-200 hover:bg-gray-700 hover:text-white transition-colors"
+            aria-label="Back"
           >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
+            <ArrowLeft size={18} className="text-gray-400" />
+            Back
+          </button>
+          <h1 className="min-w-0 flex-1 text-center text-base font-semibold text-white sm:text-left">
+            New Project
+          </h1>
+          <button
+            type="button"
+            onClick={handleRequestClose}
+            className="rounded-lg px-3 py-2 text-sm text-gray-400 hover:bg-gray-800 hover:text-white transition-colors"
+            aria-label="Close"
+          >
+            Close
+          </button>
+        </header>
+      )}
 
-        <h2 className="text-lg font-semibold text-white mb-4">Open Project</h2>
+      {isFullscreen && <JourneyProgressStrip wizardStep={step} />}
 
-        <StepIndicator currentStep={step} />
+      <div
+        className={
+          isFullscreen
+            ? 'relative mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-4 py-6 sm:px-8'
+            : 'relative mx-4 max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-gray-700 bg-gray-900 p-6 shadow-2xl'
+        }
+        onClick={(e) => e.stopPropagation()}
+      >
+        {!isFullscreen && (
+          <button
+            onClick={handleRequestClose}
+            className="absolute right-4 top-4 text-gray-400 transition-colors hover:text-white"
+            aria-label="Close"
+          >
+            <svg
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
+
+        {!isFullscreen && <h2 className="mb-4 text-lg font-semibold text-white">Open Project</h2>}
+
+        {!isFullscreen && <StepIndicator currentStep={step} />}
 
         {/* Step 1: Select Folder or Clone */}
         {step === 1 && (

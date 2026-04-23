@@ -141,6 +141,18 @@ describe('DashboardView', () => {
     expect(feed).toHaveTextContent('PR opened');
   });
 
+  it('calls onNewProject when the dashboard New Project CTA is clicked', async () => {
+    const onNewProject = vi.fn();
+    render(<DashboardView orgId="org-1" onNewProject={onNewProject} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('dashboard-new-project-cta')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('dashboard-new-project-cta'));
+    expect(onNewProject).toHaveBeenCalledTimes(1);
+  });
+
   it('calls onOpenSession when a session activity row is clicked', async () => {
     const onOpenSession = vi.fn();
     render(<DashboardView orgId="org-1" onOpenSession={onOpenSession} />);

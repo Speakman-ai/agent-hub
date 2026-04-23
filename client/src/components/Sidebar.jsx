@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Container,
   BarChart3,
+  Plus,
   Palette,
   Archive,
   RotateCcw,
@@ -225,11 +226,13 @@ export default function Sidebar({
 
           {onOpenProject && (
             <button
+              type="button"
+              data-testid="sidebar-new-project-cta"
               onClick={onOpenProject}
-              className="w-full text-left px-2 py-2 mb-2 rounded-lg flex items-center gap-2 text-gray-400 hover:bg-gray-800/50 hover:text-gray-200 transition-colors border border-dashed border-gray-700 hover:border-gray-500"
+              className="w-full text-left px-3 py-2.5 mb-2 rounded-xl flex items-center gap-2 bg-emerald-600/90 hover:bg-emerald-500 text-white shadow-md shadow-emerald-900/20 transition-colors font-medium text-sm"
             >
-              <span className="text-sm">+</span>
-              <span className="text-sm font-medium">Open Project</span>
+              <Plus size={18} strokeWidth={2.5} className="shrink-0" aria-hidden />
+              <span>New Project</span>
             </button>
           )}
 

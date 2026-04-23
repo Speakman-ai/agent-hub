@@ -231,8 +231,6 @@ export default function App() {
   const [cronSessions, setCronSessions] = useState([]);
   // Skills for the active agent (for /slash-command autocomplete)
   const [skills, setSkills] = useState([]);
-  // Open Project wizard
-  const [showWizard, setShowWizard] = useState(false);
   // First-run setup
   const [setupStatus, setSetupStatus] = useState(null);
   const [showSetup, setShowSetup] = useState(false);
@@ -309,6 +307,13 @@ export default function App() {
   activeThreadIdRef.current = activeThreadId;
   const currentViewRef = useRef(currentView);
   currentViewRef.current = currentView;
+  const newProjectWizardReturnRef = useRef('chat');
+
+  const openNewProjectWizard = useCallback(() => {
+    const cur = currentViewRef.current;
+    newProjectWizardReturnRef.current = cur === 'new-project-wizard' ? 'chat' : cur;
+    setCurrentView('new-project-wizard');
+  }, []);
   const pullsProjectIdRef = useRef(pullsProjectId);
   pullsProjectIdRef.current = pullsProjectId;
 
@@ -1713,7 +1718,7 @@ export default function App() {
           if (!getOrgs()) {
             setShowSetup(true);
           } else {
-            setShowWizard(true);
+            openNewProjectWizard();
           }
         }
       } catch {} // server may not have endpoint yet
@@ -2805,7 +2810,7 @@ export default function App() {
             }}
             onNewRoom={handleNewRoom}
             onDeleteRoom={handleDeleteRoom}
-            onOpenProject={() => setShowWizard(true)}
+            onOpenProject={openNewProjectWizard}
             cronSessions={cronSessions}
             wikiProjectId={wikiProjectId}
             notesProjectId={notesProjectId}
@@ -2828,469 +2833,484 @@ export default function App() {
 
         <div className="flex-1 flex flex-col min-w-0">
           {/* Top bar */}
-          <TopBar
-            agent={activeAgent}
-            connected={connected}
-            reconnecting={reconnecting}
-            onNewSession={handleNewSession}
-            onNavigate={setCurrentView}
-            onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-            sessionEngine={sessionEngine}
-            onEngineChange={handleEngineChange}
-            sessionModel={sessionModel}
-            onModelChange={handleModelChange}
-            modelConfig={modelConfig}
-            messages={messages}
-            activeSessionId={activeSessionId}
-            sessionWorktree={sessionWorktree}
-            gitWorktreeDetected={gitWorktreeDetected}
-            onWorktreeChange={handleWorktreeChange}
-            sessionAskMode={sessionAskMode}
-            onAskModeChange={handleAskModeChange}
-            verboseMode={verboseMode}
-            onVerboseModeChange={handleVerboseModeChange}
-            projectId={
-              currentView.startsWith('kanban:')
-                ? currentView.split(':')[1]
-                : currentView.startsWith('workflows:')
-                  ? currentView.slice('workflows:'.length)
-                  : workflowEditRoute?.projectId ||
-                    projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
-            }
-            showToast={showToast}
-            onOpenForward={() => setShowForward(true)}
-            canForward={!!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0}
-            workflowProject={!!chatProjectIsWorkflow}
-          />
-
-          {currentView.startsWith('kanban:') ? (
-            <KanbanBoard
-              projectId={currentView.split(':')[1]}
-              project={projects.find((p) => p.id === currentView.split(':')[1])}
-              agents={agents}
-              refreshKey={kanbanRefreshKey}
-              showToast={showToast}
-              onNavigateToSession={(agentId, sessionId) => {
-                pendingSessionIdRef.current = sessionId;
-                setActiveAgentId(agentId);
-                setActiveSessionId(sessionId);
-                setCurrentView('chat');
-              }}
-            />
-          ) : workflowEditRoute ? (
-            <ProjectWorkflowBuilder
-              projectId={workflowEditRoute.projectId}
-              workflowId={workflowEditRoute.workflowId}
-              project={projects.find((p) => p.id === workflowEditRoute.projectId)}
-              projects={projects}
-              agents={agents}
-              onNavigate={navigateFromProjectWorkflows}
-              showToast={showToast}
-            />
-          ) : currentView.startsWith('workflows:') ? (
-            <ProjectWorkflowsPage
-              projectId={currentView.slice('workflows:'.length)}
-              project={projects.find((p) => p.id === currentView.slice('workflows:'.length))}
-              onNavigate={navigateFromProjectWorkflows}
-              onSelectAgent={setActiveAgentId}
-              showToast={showToast}
-            />
-          ) : currentView.startsWith('settings') ? (
-            <SettingsPage
-              projects={projects}
-              agents={agents}
-              onAgentsChange={refreshAgents}
-              initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined}
-              initialGithubExpandedProjectId={settingsGithubExpandProjectId}
-              onNavigate={(view, extra) => {
-                setCurrentView(view);
-                if (view === 'threads' && extra) {
-                  setThreadsProjectId(extra.projectId);
-                  if (extra.threadId) {
-                    setActiveThreadId(extra.threadId);
-                    setActiveThread(extra.thread || null);
-                  } else {
-                    setActiveThreadId(null);
-                    setActiveThread(null);
-                  }
+          {currentView !== 'new-project-wizard' && (
+            <>
+              <TopBar
+                agent={activeAgent}
+                connected={connected}
+                reconnecting={reconnecting}
+                onNewSession={handleNewSession}
+                onNavigate={setCurrentView}
+                onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+                sessionEngine={sessionEngine}
+                onEngineChange={handleEngineChange}
+                sessionModel={sessionModel}
+                onModelChange={handleModelChange}
+                modelConfig={modelConfig}
+                messages={messages}
+                activeSessionId={activeSessionId}
+                sessionWorktree={sessionWorktree}
+                gitWorktreeDetected={gitWorktreeDetected}
+                onWorktreeChange={handleWorktreeChange}
+                sessionAskMode={sessionAskMode}
+                onAskModeChange={handleAskModeChange}
+                verboseMode={verboseMode}
+                onVerboseModeChange={handleVerboseModeChange}
+                projectId={
+                  currentView.startsWith('kanban:')
+                    ? currentView.split(':')[1]
+                    : currentView.startsWith('workflows:')
+                      ? currentView.slice('workflows:'.length)
+                      : workflowEditRoute?.projectId ||
+                        projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
                 }
-              }}
-              showToast={showToast}
-              wsRef={wsRef}
-            />
-          ) : currentView === 'wiki' && wikiProjectId ? (
-            <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
-          ) : currentView === 'notes' && notesProjectId ? (
-            <NotesEditor projectId={notesProjectId} />
-          ) : currentView === 'threads' && threadsProjectId ? (
-            activeThreadId ? (
-              <ThreadView
-                ref={threadViewRef}
-                key={activeThreadId}
-                threadId={activeThreadId}
-                thread={activeThread}
-                onBack={() => {
-                  setActiveThreadId(null);
-                  setActiveThread(null);
-                }}
+                showToast={showToast}
+                onOpenForward={() => setShowForward(true)}
+                canForward={
+                  !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
+                }
+                workflowProject={!!chatProjectIsWorkflow}
               />
-            ) : (
-              <ThreadList
-                ref={threadListRef}
-                projectId={threadsProjectId}
-                onSelectThread={(thread) => {
-                  setActiveThreadId(thread.id);
-                  setActiveThread(thread);
-                }}
-              />
-            )
-          ) : currentView === 'captures' && capturesProjectId ? (
-            <CapturesPage projectId={capturesProjectId} />
-          ) : currentView === 'pulls' && pullsProjectId ? (
-            <PullRequestsPage
-              projectId={pullsProjectId}
-              project={projects.find((p) => p.id === pullsProjectId)}
-              listRefreshNonce={pullsListRefreshNonce}
-              onOpenSession={handleOpenHandoffSession}
-              onToast={showToast}
-            />
-          ) : currentView === 'dashboard' ? (
-            <DashboardView
-              orgId={getActiveOrgApiId()}
-              onOpenSession={(agentId, sessionId) => focusAgentSession(agentId, sessionId)}
-              onOpenKanban={(projectId) => {
-                setCurrentView(`kanban:${projectId}`);
-                setSidebarOpen(false);
-              }}
-              onOpenPulls={(projectId) => {
-                setPullsProjectId(projectId);
-                setCurrentView('pulls');
-                setSidebarOpen(false);
-              }}
-              onOpenExternalUrl={(url) => {
-                window.open(url, '_blank', 'noopener,noreferrer');
-              }}
-            />
-          ) : currentView === 'skills' ? (
-            <SkillsPage agents={agents} projects={projects} />
-          ) : currentView === 'room' && activeRoom ? (
-            <RoomChat
-              room={activeRoom}
-              agents={agents}
-              send={send}
-              roomMessages={roomMessages}
-              roomStreaming={roomStreaming}
-              roomThinking={roomThinking}
-              roomProcessing={roomProcessing}
-              roomQueueLength={roomQueueLength}
-              onRoomUpdated={handleRoomUpdated}
-            />
-          ) : currentView === 'designs' ? (
-            <DesignsList
-              designs={designs}
-              projects={projects}
-              onNavigate={(view, extra) => {
-                setCurrentView(view);
-                if (view === 'design' && extra) setActiveDesignId(extra);
-              }}
-              onChanged={refreshDesigns}
-            />
-          ) : currentView === 'design' && activeDesign ? (
-            <DesignView
-              design={activeDesign}
-              messages={designMessages}
-              streaming={designStreaming}
-              thinking={designThinking}
-              processing={designProcessing}
-              reloadToken={designReloadToken}
-              send={send}
-              onBack={() => setCurrentView('designs')}
-              onManualReload={() => setDesignReloadToken((t) => t + 1)}
-              showToast={showToast}
-              onDesignRecordUpdated={(d) =>
-                setDesigns((prev) => prev.map((x) => (x.id === d.id ? { ...x, ...d } : x)))
-              }
-              agents={agents}
-              onDesignForwarded={(result) => {
-                const session = result?.session;
-                if (!session) return;
-                pendingSessionIdRef.current = session.id;
-                setActiveAgentId(session.agent_id);
-                setActiveSessionId(session.id);
-                setCurrentView('chat');
-                showToast(`Design forwarded — ${session.name || 'new session'}`, 'success', 4000);
-              }}
-            />
-          ) : (
-            <div className="flex-1 flex flex-col lg:flex-row min-h-0 min-w-0 overflow-hidden">
-              <div className="flex-1 flex flex-col min-w-0 min-h-0">
-                {/* Messages */}
-                <div
-                  ref={scrollContainerRef}
-                  onScroll={handleScrollEvent}
-                  className="flex-1 overflow-y-auto p-3 md:p-6 relative"
-                >
-                  <div className="mx-auto" ref={messagesColumnRef}>
-                    {/* Cursor-style timed checklist — rendered at top of chat
+
+              {currentView.startsWith('kanban:') ? (
+                <KanbanBoard
+                  projectId={currentView.split(':')[1]}
+                  project={projects.find((p) => p.id === currentView.split(':')[1])}
+                  agents={agents}
+                  refreshKey={kanbanRefreshKey}
+                  showToast={showToast}
+                  onNavigateToSession={(agentId, sessionId) => {
+                    pendingSessionIdRef.current = sessionId;
+                    setActiveAgentId(agentId);
+                    setActiveSessionId(sessionId);
+                    setCurrentView('chat');
+                  }}
+                />
+              ) : workflowEditRoute ? (
+                <ProjectWorkflowBuilder
+                  projectId={workflowEditRoute.projectId}
+                  workflowId={workflowEditRoute.workflowId}
+                  project={projects.find((p) => p.id === workflowEditRoute.projectId)}
+                  projects={projects}
+                  agents={agents}
+                  onNavigate={navigateFromProjectWorkflows}
+                  showToast={showToast}
+                />
+              ) : currentView.startsWith('workflows:') ? (
+                <ProjectWorkflowsPage
+                  projectId={currentView.slice('workflows:'.length)}
+                  project={projects.find((p) => p.id === currentView.slice('workflows:'.length))}
+                  onNavigate={navigateFromProjectWorkflows}
+                  onSelectAgent={setActiveAgentId}
+                  showToast={showToast}
+                />
+              ) : currentView.startsWith('settings') ? (
+                <SettingsPage
+                  projects={projects}
+                  agents={agents}
+                  onAgentsChange={refreshAgents}
+                  initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined}
+                  initialGithubExpandedProjectId={settingsGithubExpandProjectId}
+                  onNavigate={(view, extra) => {
+                    setCurrentView(view);
+                    if (view === 'threads' && extra) {
+                      setThreadsProjectId(extra.projectId);
+                      if (extra.threadId) {
+                        setActiveThreadId(extra.threadId);
+                        setActiveThread(extra.thread || null);
+                      } else {
+                        setActiveThreadId(null);
+                        setActiveThread(null);
+                      }
+                    }
+                  }}
+                  showToast={showToast}
+                  wsRef={wsRef}
+                />
+              ) : currentView === 'wiki' && wikiProjectId ? (
+                <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
+              ) : currentView === 'notes' && notesProjectId ? (
+                <NotesEditor projectId={notesProjectId} />
+              ) : currentView === 'threads' && threadsProjectId ? (
+                activeThreadId ? (
+                  <ThreadView
+                    ref={threadViewRef}
+                    key={activeThreadId}
+                    threadId={activeThreadId}
+                    thread={activeThread}
+                    onBack={() => {
+                      setActiveThreadId(null);
+                      setActiveThread(null);
+                    }}
+                  />
+                ) : (
+                  <ThreadList
+                    ref={threadListRef}
+                    projectId={threadsProjectId}
+                    onSelectThread={(thread) => {
+                      setActiveThreadId(thread.id);
+                      setActiveThread(thread);
+                    }}
+                  />
+                )
+              ) : currentView === 'captures' && capturesProjectId ? (
+                <CapturesPage projectId={capturesProjectId} />
+              ) : currentView === 'pulls' && pullsProjectId ? (
+                <PullRequestsPage
+                  projectId={pullsProjectId}
+                  project={projects.find((p) => p.id === pullsProjectId)}
+                  listRefreshNonce={pullsListRefreshNonce}
+                  onOpenSession={handleOpenHandoffSession}
+                  onToast={showToast}
+                />
+              ) : currentView === 'dashboard' ? (
+                <DashboardView
+                  orgId={getActiveOrgApiId()}
+                  onNewProject={openNewProjectWizard}
+                  onOpenSession={(agentId, sessionId) => focusAgentSession(agentId, sessionId)}
+                  onOpenKanban={(projectId) => {
+                    setCurrentView(`kanban:${projectId}`);
+                    setSidebarOpen(false);
+                  }}
+                  onOpenPulls={(projectId) => {
+                    setPullsProjectId(projectId);
+                    setCurrentView('pulls');
+                    setSidebarOpen(false);
+                  }}
+                  onOpenExternalUrl={(url) => {
+                    window.open(url, '_blank', 'noopener,noreferrer');
+                  }}
+                />
+              ) : currentView === 'skills' ? (
+                <SkillsPage agents={agents} projects={projects} />
+              ) : currentView === 'room' && activeRoom ? (
+                <RoomChat
+                  room={activeRoom}
+                  agents={agents}
+                  send={send}
+                  roomMessages={roomMessages}
+                  roomStreaming={roomStreaming}
+                  roomThinking={roomThinking}
+                  roomProcessing={roomProcessing}
+                  roomQueueLength={roomQueueLength}
+                  onRoomUpdated={handleRoomUpdated}
+                />
+              ) : currentView === 'designs' ? (
+                <DesignsList
+                  designs={designs}
+                  projects={projects}
+                  onNavigate={(view, extra) => {
+                    setCurrentView(view);
+                    if (view === 'design' && extra) setActiveDesignId(extra);
+                  }}
+                  onChanged={refreshDesigns}
+                />
+              ) : currentView === 'design' && activeDesign ? (
+                <DesignView
+                  design={activeDesign}
+                  messages={designMessages}
+                  streaming={designStreaming}
+                  thinking={designThinking}
+                  processing={designProcessing}
+                  reloadToken={designReloadToken}
+                  send={send}
+                  onBack={() => setCurrentView('designs')}
+                  onManualReload={() => setDesignReloadToken((t) => t + 1)}
+                  showToast={showToast}
+                  onDesignRecordUpdated={(d) =>
+                    setDesigns((prev) => prev.map((x) => (x.id === d.id ? { ...x, ...d } : x)))
+                  }
+                  agents={agents}
+                  onDesignForwarded={(result) => {
+                    const session = result?.session;
+                    if (!session) return;
+                    pendingSessionIdRef.current = session.id;
+                    setActiveAgentId(session.agent_id);
+                    setActiveSessionId(session.id);
+                    setCurrentView('chat');
+                    showToast(
+                      `Design forwarded — ${session.name || 'new session'}`,
+                      'success',
+                      4000,
+                    );
+                  }}
+                />
+              ) : (
+                <div className="flex-1 flex flex-col lg:flex-row min-h-0 min-w-0 overflow-hidden">
+                  <div className="flex-1 flex flex-col min-w-0 min-h-0">
+                    {/* Messages */}
+                    <div
+                      ref={scrollContainerRef}
+                      onScroll={handleScrollEvent}
+                      className="flex-1 overflow-y-auto p-3 md:p-6 relative"
+                    >
+                      <div className="mx-auto" ref={messagesColumnRef}>
+                        {/* Cursor-style timed checklist — rendered at top of chat
                       whenever the session has emitted `[[STEP:...]]` markers.
                       Collapses automatically once all steps resolve. */}
-                    {(sessionProgress[activeSessionId] || []).length > 0 && (
-                      <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
-                        <ProgressPanel
-                          steps={sessionProgress[activeSessionId]}
-                          sessionRunning={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                        />
-                      </div>
-                    )}
-                    {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
-                      <ReactLoopObservabilityPanel
-                        steps={reactLoopStepsBySession[activeSessionId]}
-                        streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                      />
-                    )}
-                    {messages.length === 0 && !thinking && !streamingContent && (
-                      <div
-                        className="flex flex-col items-center justify-center h-full text-gray-600 py-20"
-                        data-testid={
-                          sessionMessagesLoading ? 'chat-messages-loading' : 'chat-empty-state'
-                        }
-                      >
-                        {sessionMessagesLoading ? (
-                          <>
-                            <Loader2 size={40} className="mb-4 text-gray-500 animate-spin" />
-                            <p className="text-lg">Loading conversation</p>
-                            <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
-                          </>
-                        ) : (
-                          <>
-                            <MessageCircle size={48} className="mb-4 text-gray-600" />
-                            {sessionsListLoading && projectDataReady && activeAgent ? (
+                        {(sessionProgress[activeSessionId] || []).length > 0 && (
+                          <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
+                            <ProgressPanel
+                              steps={sessionProgress[activeSessionId]}
+                              sessionRunning={Boolean(
+                                streamingMsgId || activeTasks[activeSessionId],
+                              )}
+                            />
+                          </div>
+                        )}
+                        {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
+                          <ReactLoopObservabilityPanel
+                            steps={reactLoopStepsBySession[activeSessionId]}
+                            streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                          />
+                        )}
+                        {messages.length === 0 && !thinking && !streamingContent && (
+                          <div
+                            className="flex flex-col items-center justify-center h-full text-gray-600 py-20"
+                            data-testid={
+                              sessionMessagesLoading ? 'chat-messages-loading' : 'chat-empty-state'
+                            }
+                          >
+                            {sessionMessagesLoading ? (
                               <>
+                                <Loader2 size={40} className="mb-4 text-gray-500 animate-spin" />
                                 <p className="text-lg">Loading conversation</p>
-                                <p className="text-sm mt-1 text-gray-500">Sessions are syncing…</p>
+                                <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
                               </>
                             ) : (
                               <>
-                                <p className="text-lg">Start a conversation</p>
-                                {activeAgent && (
-                                  <p className="text-sm mt-1">with {activeAgent.name}</p>
+                                <MessageCircle size={48} className="mb-4 text-gray-600" />
+                                {sessionsListLoading && projectDataReady && activeAgent ? (
+                                  <>
+                                    <p className="text-lg">Loading conversation</p>
+                                    <p className="text-sm mt-1 text-gray-500">
+                                      Sessions are syncing…
+                                    </p>
+                                  </>
+                                ) : (
+                                  <>
+                                    <p className="text-lg">Start a conversation</p>
+                                    {activeAgent && (
+                                      <p className="text-sm mt-1">with {activeAgent.name}</p>
+                                    )}
+                                  </>
                                 )}
                               </>
                             )}
-                          </>
-                        )}
-                        <p className="text-xs text-gray-700 mt-4 hidden sm:block">
-                          Ctrl+K to switch agents · Esc to cancel
-                        </p>
-                      </div>
-                    )}
-                    {(() => {
-                      const queuedIds = new Set(
-                        (messageQueues[activeSessionId] || []).map((q) => q.id),
-                      );
-                      // Render non-queued messages inline, queued messages stick to bottom
-                      const nonQueued = messages.filter((msg) => !queuedIds.has(msg.id));
-                      const queued = messages.filter((msg) => queuedIds.has(msg.id));
-                      return (
-                        <>
-                          {nonQueued.map((msg) =>
-                            msg.role === 'assistant' ? (
-                              <SessionTail
-                                key={msg.id}
-                                message={msg}
-                                events={eventsByMessage[msg.id]}
-                                agentColor={activeAgent?.color}
-                                onEventsLoaded={handleEventsLoaded}
-                                verboseMode={verboseMode}
-                                onAskSubmit={handleAskSubmit}
-                                askSubmittedIds={askSubmitted}
-                                fromAgent={activeAgent}
-                                agents={agents}
-                                sessionHandoffs={sessionHandoffs}
-                                sessionDelegations={delegations[activeSessionId]}
-                                onOpenSession={handleOpenHandoffSession}
-                              />
-                            ) : (
-                              <ChatMessage
-                                key={msg.id}
-                                message={msg}
-                                agentColor={activeAgent?.color}
-                              />
-                            ),
-                          )}
-                          {thinking && !streamingMsgId && (
-                            <ThinkingIndicator agentColor={activeAgent?.color} />
-                          )}
-                          {streamingMsgId && (
-                            <SessionTail
-                              key={streamingMsgId}
-                              message={{
-                                id: streamingMsgId,
-                                role: 'assistant',
-                                engine: streamingEngine,
-                                model: sessionModel,
-                                content: streamingContent,
-                              }}
-                              events={eventsByMessage[streamingMsgId]}
-                              agentColor={activeAgent?.color}
-                              streaming
-                              verboseMode={verboseMode}
-                              onAskSubmit={handleAskSubmit}
-                              askSubmittedIds={askSubmitted}
-                              fromAgent={activeAgent}
-                              agents={agents}
-                              sessionHandoffs={sessionHandoffs}
-                              sessionDelegations={delegations[activeSessionId]}
-                              onOpenSession={handleOpenHandoffSession}
-                            />
-                          )}
-                          {doneVerifyLogBySession[activeSessionId] && (
-                            <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">
-                              <div className="rounded-lg border border-amber-600/40 bg-amber-950/25 px-3 py-2">
-                                <div className="text-xs font-semibold text-amber-100/90 mb-1">
-                                  Pre-done verification
-                                </div>
-                                <pre className="text-[11px] text-gray-300 whitespace-pre-wrap font-mono max-h-72 overflow-y-auto leading-relaxed">
-                                  {doneVerifyLogBySession[activeSessionId]}
-                                </pre>
-                              </div>
-                            </div>
-                          )}
-                          {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
-                          {delegations[activeSessionId] &&
-                            delegations[activeSessionId].tasks.length > 0 && (
-                              <div className="px-4 max-w-[95%] sm:max-w-[90%]">
-                                <DelegationPanel
-                                  delegations={delegations[activeSessionId].tasks}
-                                  sessionId={activeSessionId}
-                                  throttled={throttle[activeSessionId]?.active}
-                                  onCancel={(sid) =>
-                                    send({ type: 'delegation_cancel', sessionId: sid })
-                                  }
-                                />
-                              </div>
-                            )}
-                          <div className="px-4 max-w-[95%] sm:max-w-[90%] lg:hidden">
-                            <SkillInvocationsPanel invocations={sessionSkillInvocations} />
+                            <p className="text-xs text-gray-700 mt-4 hidden sm:block">
+                              Ctrl+K to switch agents · Esc to cancel
+                            </p>
                           </div>
-                          {/* Ad-hoc PR creation prompt — shown when agent finishes work with uncommitted changes */}
-                          {changesReady[activeSessionId] &&
-                            !streamingMsgId &&
-                            !chatProjectIsWorkflow && (
-                              <ChangesReadyBox
-                                sessionId={activeSessionId}
-                                changes={changesReady[activeSessionId]}
-                                livePrLog={createPrLogBySession[activeSessionId] || ''}
-                                onPublishStart={(sessionId) => {
-                                  setCreatePrLogBySession((prev) => {
-                                    if (!prev[sessionId]) return prev;
-                                    const next = { ...prev };
-                                    delete next[sessionId];
-                                    return next;
-                                  });
-                                }}
-                                defaultAutoMerge={
-                                  projects.find((p) => p.id === activeAgent?.projectId)
-                                    ?.githubWorkflow?.autoMerge ?? false
-                                }
-                                onCreated={(sessionId, result) => {
-                                  setChangesReady((prev) => {
-                                    const next = { ...prev };
-                                    delete next[sessionId];
-                                    return next;
-                                  });
-                                  setCreatePrLogBySession((prev) => {
-                                    if (!prev[sessionId]) return prev;
-                                    const next = { ...prev };
-                                    delete next[sessionId];
-                                    return next;
-                                  });
-                                  setToasts((prev) => [
-                                    ...prev,
-                                    {
-                                      id: `pr-created-${Date.now()}`,
-                                      type: 'success',
-                                      message: `PR created: ${result.prUrl}`,
-                                      duration: 8000,
-                                    },
-                                  ]);
-                                }}
-                                onDismiss={(sessionId) => {
-                                  setChangesReady((prev) => {
-                                    const next = { ...prev };
-                                    delete next[sessionId];
-                                    return next;
-                                  });
-                                  setCreatePrLogBySession((prev) => {
-                                    if (!prev[sessionId]) return prev;
-                                    const next = { ...prev };
-                                    delete next[sessionId];
-                                    return next;
-                                  });
-                                }}
-                              />
-                            )}
-                          {/* Queued messages always render at the very bottom */}
-                          {queued.map((msg) => (
-                            <ChatMessage
-                              key={msg.id}
-                              message={{ ...msg, queued: true }}
-                              agentColor={activeAgent?.color}
-                              onDequeue={handleDequeue}
-                              onEditQueued={handleEditQueuedMessage}
-                            />
-                          ))}
-                        </>
-                      );
-                    })()}
-                  </div>
+                        )}
+                        {(() => {
+                          const queuedIds = new Set(
+                            (messageQueues[activeSessionId] || []).map((q) => q.id),
+                          );
+                          // Render non-queued messages inline, queued messages stick to bottom
+                          const nonQueued = messages.filter((msg) => !queuedIds.has(msg.id));
+                          const queued = messages.filter((msg) => queuedIds.has(msg.id));
+                          return (
+                            <>
+                              {nonQueued.map((msg) =>
+                                msg.role === 'assistant' ? (
+                                  <SessionTail
+                                    key={msg.id}
+                                    message={msg}
+                                    events={eventsByMessage[msg.id]}
+                                    agentColor={activeAgent?.color}
+                                    onEventsLoaded={handleEventsLoaded}
+                                    verboseMode={verboseMode}
+                                    onAskSubmit={handleAskSubmit}
+                                    askSubmittedIds={askSubmitted}
+                                    fromAgent={activeAgent}
+                                    agents={agents}
+                                    sessionHandoffs={sessionHandoffs}
+                                    sessionDelegations={delegations[activeSessionId]}
+                                    onOpenSession={handleOpenHandoffSession}
+                                  />
+                                ) : (
+                                  <ChatMessage
+                                    key={msg.id}
+                                    message={msg}
+                                    agentColor={activeAgent?.color}
+                                  />
+                                ),
+                              )}
+                              {thinking && !streamingMsgId && (
+                                <ThinkingIndicator agentColor={activeAgent?.color} />
+                              )}
+                              {streamingMsgId && (
+                                <SessionTail
+                                  key={streamingMsgId}
+                                  message={{
+                                    id: streamingMsgId,
+                                    role: 'assistant',
+                                    engine: streamingEngine,
+                                    model: sessionModel,
+                                    content: streamingContent,
+                                  }}
+                                  events={eventsByMessage[streamingMsgId]}
+                                  agentColor={activeAgent?.color}
+                                  streaming
+                                  verboseMode={verboseMode}
+                                  onAskSubmit={handleAskSubmit}
+                                  askSubmittedIds={askSubmitted}
+                                  fromAgent={activeAgent}
+                                  agents={agents}
+                                  sessionHandoffs={sessionHandoffs}
+                                  sessionDelegations={delegations[activeSessionId]}
+                                  onOpenSession={handleOpenHandoffSession}
+                                />
+                              )}
+                              {doneVerifyLogBySession[activeSessionId] && (
+                                <div className="px-4 max-w-[95%] sm:max-w-[90%] mx-auto mb-2">
+                                  <div className="rounded-lg border border-amber-600/40 bg-amber-950/25 px-3 py-2">
+                                    <div className="text-xs font-semibold text-amber-100/90 mb-1">
+                                      Pre-done verification
+                                    </div>
+                                    <pre className="text-[11px] text-gray-300 whitespace-pre-wrap font-mono max-h-72 overflow-y-auto leading-relaxed">
+                                      {doneVerifyLogBySession[activeSessionId]}
+                                    </pre>
+                                  </div>
+                                </div>
+                              )}
+                              {/* Delegation panel — shows when a lead agent delegates to sub-agents */}
+                              {delegations[activeSessionId] &&
+                                delegations[activeSessionId].tasks.length > 0 && (
+                                  <div className="px-4 max-w-[95%] sm:max-w-[90%]">
+                                    <DelegationPanel
+                                      delegations={delegations[activeSessionId].tasks}
+                                      sessionId={activeSessionId}
+                                      throttled={throttle[activeSessionId]?.active}
+                                      onCancel={(sid) =>
+                                        send({ type: 'delegation_cancel', sessionId: sid })
+                                      }
+                                    />
+                                  </div>
+                                )}
+                              <div className="px-4 max-w-[95%] sm:max-w-[90%] lg:hidden">
+                                <SkillInvocationsPanel invocations={sessionSkillInvocations} />
+                              </div>
+                              {/* Ad-hoc PR creation prompt — shown when agent finishes work with uncommitted changes */}
+                              {changesReady[activeSessionId] &&
+                                !streamingMsgId &&
+                                !chatProjectIsWorkflow && (
+                                  <ChangesReadyBox
+                                    sessionId={activeSessionId}
+                                    changes={changesReady[activeSessionId]}
+                                    livePrLog={createPrLogBySession[activeSessionId] || ''}
+                                    onPublishStart={(sessionId) => {
+                                      setCreatePrLogBySession((prev) => {
+                                        if (!prev[sessionId]) return prev;
+                                        const next = { ...prev };
+                                        delete next[sessionId];
+                                        return next;
+                                      });
+                                    }}
+                                    defaultAutoMerge={
+                                      projects.find((p) => p.id === activeAgent?.projectId)
+                                        ?.githubWorkflow?.autoMerge ?? false
+                                    }
+                                    onCreated={(sessionId, result) => {
+                                      setChangesReady((prev) => {
+                                        const next = { ...prev };
+                                        delete next[sessionId];
+                                        return next;
+                                      });
+                                      setCreatePrLogBySession((prev) => {
+                                        if (!prev[sessionId]) return prev;
+                                        const next = { ...prev };
+                                        delete next[sessionId];
+                                        return next;
+                                      });
+                                      setToasts((prev) => [
+                                        ...prev,
+                                        {
+                                          id: `pr-created-${Date.now()}`,
+                                          type: 'success',
+                                          message: `PR created: ${result.prUrl}`,
+                                          duration: 8000,
+                                        },
+                                      ]);
+                                    }}
+                                    onDismiss={(sessionId) => {
+                                      setChangesReady((prev) => {
+                                        const next = { ...prev };
+                                        delete next[sessionId];
+                                        return next;
+                                      });
+                                      setCreatePrLogBySession((prev) => {
+                                        if (!prev[sessionId]) return prev;
+                                        const next = { ...prev };
+                                        delete next[sessionId];
+                                        return next;
+                                      });
+                                    }}
+                                  />
+                                )}
+                              {/* Queued messages always render at the very bottom */}
+                              {queued.map((msg) => (
+                                <ChatMessage
+                                  key={msg.id}
+                                  message={{ ...msg, queued: true }}
+                                  agentColor={activeAgent?.color}
+                                  onDequeue={handleDequeue}
+                                  onEditQueued={handleEditQueuedMessage}
+                                />
+                              ))}
+                            </>
+                          );
+                        })()}
+                      </div>
 
-                  {/* Scroll to bottom button */}
-                  {showScrollBtn && (
-                    <button
-                      onClick={() => scrollToBottom(false)}
-                      className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
-                      style={{ width: 'fit-content', display: 'flex' }}
-                    >
-                      <svg
-                        className="w-3.5 h-3.5"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2.5}
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M19 14l-7 7m0 0l-7-7m7 7V3"
-                        />
-                      </svg>
-                      Scroll to bottom
-                    </button>
+                      {/* Scroll to bottom button */}
+                      {showScrollBtn && (
+                        <button
+                          onClick={() => scrollToBottom(false)}
+                          className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
+                          style={{ width: 'fit-content', display: 'flex' }}
+                        >
+                          <svg
+                            className="w-3.5 h-3.5"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={2.5}
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M19 14l-7 7m0 0l-7-7m7 7V3"
+                            />
+                          </svg>
+                          Scroll to bottom
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Input */}
+                    <MessageInput
+                      onSend={handleSend}
+                      onCancel={handleCancel}
+                      disabled={!activeAgent || !connected}
+                      isProcessing={isProcessing}
+                      queueLength={(messageQueues[activeSessionId] || []).length}
+                      agentColor={activeAgent?.color}
+                      skills={skills}
+                      askMode={sessionAskMode}
+                      draftKey={activeSessionId || activeAgentId || 'none'}
+                      onFileError={(msg) => showToast(msg, 'error', 6000)}
+                    />
+                  </div>
+                  {activeSessionId && (
+                    <SessionSummarySidebar
+                      sessionId={activeSessionId}
+                      isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                    />
                   )}
                 </div>
-
-                {/* Input */}
-                <MessageInput
-                  onSend={handleSend}
-                  onCancel={handleCancel}
-                  disabled={!activeAgent || !connected}
-                  isProcessing={isProcessing}
-                  queueLength={(messageQueues[activeSessionId] || []).length}
-                  agentColor={activeAgent?.color}
-                  skills={skills}
-                  askMode={sessionAskMode}
-                  draftKey={activeSessionId || activeAgentId || 'none'}
-                  onFileError={(msg) => showToast(msg, 'error', 6000)}
-                />
-              </div>
-              {activeSessionId && (
-                <SessionSummarySidebar
-                  sessionId={activeSessionId}
-                  isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                />
               )}
-            </div>
+            </>
           )}
         </div>
 
@@ -3344,17 +3364,18 @@ export default function App() {
             setupStatus={setupStatus}
             onComplete={() => {
               setShowSetup(false);
-              setShowWizard(true); // immediately open the Open Project wizard
+              openNewProjectWizard();
             }}
           />
         )}
 
-        {/* Open Project wizard */}
-        {showWizard && (
+        {/* New project — full-screen wizard (draft survives Back / Close / Esc) */}
+        {currentView === 'new-project-wizard' && (
           <OpenProjectWizard
-            onClose={() => setShowWizard(false)}
+            layout="fullscreen"
+            onClose={() => setCurrentView(newProjectWizardReturnRef.current)}
             onProjectCreated={() => {
-              setShowWizard(false);
+              setCurrentView(newProjectWizardReturnRef.current);
               refreshAgents();
             }}
           />
