@@ -14,8 +14,16 @@ set -e
 
 # Detect package manager (AL2023 = dnf, Ubuntu = apt-get). Keeps the template
 # portable across both AMI families.
+#
+# NOTE: do NOT install `curl` here. The ECS-optimized AL2023 AMI ships
+# `curl-minimal` preinstalled, which provides /usr/bin/curl; asking dnf to
+# install the full `curl` package triggers a hard conflict and, combined with
+# `set -e`, causes cloud-init to abort before reaching the docker-pull logic
+# below. Ubuntu cloud images also ship curl preinstalled, so it's safe (and
+# correct) to rely on the ambient binary on both AMI families.
+# `--allowerasing` is belt-and-suspenders for any future package-set drift.
 if command -v dnf >/dev/null 2>&1; then
-  PKG_INSTALL="dnf install -y"
+  PKG_INSTALL="dnf install -y --allowerasing"
   PKG_UPDATE="dnf -y makecache"
 else
   export DEBIAN_FRONTEND=noninteractive
@@ -24,7 +32,7 @@ else
 fi
 
 $PKG_UPDATE
-$PKG_INSTALL ca-certificates git curl
+$PKG_INSTALL ca-certificates git
 
 %{ if use_ecr_pull }
 # ── ECR pull path ───────────────────────────────────────────────────────────
