@@ -29,6 +29,7 @@ import NotesEditor from './components/NotesEditor.jsx';
 import CapturesPage from './components/CapturesPage.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
 import ProjectWorkflowsPage from './components/ProjectWorkflowsPage.jsx';
+import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder.jsx';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal.jsx';
 import UpdateAvailableModal from './components/UpdateAvailableModal.jsx';
 import { useWebSocket } from './hooks/useWebSocket.js';
@@ -40,6 +41,7 @@ import { api } from './utils/api.js';
 import { coalescePromiseByKey } from './utils/coalesceInFlight.js';
 import { isNearBottom } from './utils/chatScroll.js';
 import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver.js';
+import { parseWorkflowEditView } from './utils/workflowEditView.js';
 import {
   cardStartedNotification,
   cardReviewNotification,
@@ -289,9 +291,12 @@ export default function App() {
   const chatProjectIsWorkflow =
     projects.find((p) => p.id === activeAgent?.projectId)?.mode === 'workflow';
 
+  const workflowEditRoute = useMemo(() => parseWorkflowEditView(currentView), [currentView]);
+
   useEffect(() => {
-    if (!currentView.startsWith('workflows:')) return;
-    const projectId = currentView.slice('workflows:'.length);
+    const projectId = currentView.startsWith('workflows:')
+      ? currentView.slice('workflows:'.length)
+      : workflowEditRoute?.projectId;
     if (!projectId) return;
     setWorkflowSidebarBadgeByProject((prev) => {
       if (!prev[projectId]) return prev;
@@ -299,7 +304,7 @@ export default function App() {
       delete next[projectId];
       return next;
     });
-  }, [currentView]);
+  }, [currentView, workflowEditRoute]);
 
   useEffect(() => {
     if (!currentView.startsWith('settings')) {
@@ -2487,6 +2492,7 @@ export default function App() {
   const currentProjectId = useMemo(() => {
     if (currentView.startsWith('kanban:')) return currentView.split(':')[1];
     if (currentView.startsWith('workflows:')) return currentView.slice('workflows:'.length);
+    if (workflowEditRoute) return workflowEditRoute.projectId;
     if (currentView === 'wiki' && wikiProjectId) return wikiProjectId;
     if (currentView === 'notes' && notesProjectId) return notesProjectId;
     if (currentView === 'captures' && capturesProjectId) return capturesProjectId;
@@ -2496,6 +2502,7 @@ export default function App() {
     return byAgent?.id || projects[0]?.id || null;
   }, [
     currentView,
+    workflowEditRoute,
     wikiProjectId,
     notesProjectId,
     capturesProjectId,
@@ -2809,7 +2816,8 @@ export default function App() {
                 ? currentView.split(':')[1]
                 : currentView.startsWith('workflows:')
                   ? currentView.slice('workflows:'.length)
-                  : projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
+                  : workflowEditRoute?.projectId ||
+                    projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
             }
             showToast={showToast}
             onOpenForward={() => setShowForward(true)}
@@ -2830,6 +2838,15 @@ export default function App() {
                 setActiveSessionId(sessionId);
                 setCurrentView('chat');
               }}
+            />
+          ) : workflowEditRoute ? (
+            <ProjectWorkflowBuilder
+              projectId={workflowEditRoute.projectId}
+              workflowId={workflowEditRoute.workflowId}
+              project={projects.find((p) => p.id === workflowEditRoute.projectId)}
+              agents={agents}
+              onNavigate={navigateFromProjectWorkflows}
+              showToast={showToast}
             />
           ) : currentView.startsWith('workflows:') ? (
             <ProjectWorkflowsPage

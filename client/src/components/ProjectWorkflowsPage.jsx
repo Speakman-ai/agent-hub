@@ -1,8 +1,19 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { ArrowLeft, Loader2, Play, Pencil, Activity, RefreshCw, ListOrdered } from 'lucide-react';
+import {
+  ArrowLeft,
+  Loader2,
+  Play,
+  Pencil,
+  Activity,
+  RefreshCw,
+  ListOrdered,
+  Wrench,
+  Plus,
+} from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '../utils/api.js';
 import { buildWorkflowStepDots } from '../utils/workflowProgressDots.js';
+import { toWorkflowEditView } from '../utils/workflowEditView.js';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 
 const WORKFLOW_WS = 'agenthub-workflow-ws';
@@ -230,6 +241,14 @@ export default function ProjectWorkflowsPage({
         <span className="flex-1" />
         <button
           type="button"
+          onClick={() => onNavigate(toWorkflowEditView(projectId, 'new'))}
+          className="inline-flex items-center gap-1.5 text-sm bg-violet-700 hover:bg-violet-600 text-white px-3 py-1.5 rounded-lg"
+        >
+          <Plus size={14} />
+          New workflow
+        </button>
+        <button
+          type="button"
           onClick={handleRefresh}
           disabled={refreshing || loading}
           className="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 disabled:opacity-50"
@@ -253,9 +272,12 @@ export default function ProjectWorkflowsPage({
               Loading workflows…
             </div>
           ) : rows.length === 0 ? (
-            <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-6 text-center text-gray-400 text-sm">
-              No Hub workflows for this project yet. Create one via the API, or open Settings →
-              GitHub for manual runs when workflow mode is enabled.
+            <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-6 text-center text-gray-400 text-sm space-y-3">
+              <p>
+                No Hub workflows for this project yet. Use{' '}
+                <strong className="text-gray-300">New workflow</strong> above to open the builder,
+                or open Settings → GitHub for manual runs when workflow mode is enabled.
+              </p>
             </div>
           ) : (
             <ul className="space-y-2">
@@ -316,11 +338,19 @@ export default function ProjectWorkflowsPage({
                         </button>
                         <button
                           type="button"
+                          onClick={() => onNavigate(toWorkflowEditView(projectId, w.id))}
+                          className="inline-flex items-center gap-1.5 bg-violet-700 hover:bg-violet-600 text-white text-xs px-3 py-1.5 rounded-lg"
+                        >
+                          <Wrench size={12} />
+                          Builder
+                        </button>
+                        <button
+                          type="button"
                           onClick={openSettingsEdit}
                           className="inline-flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg"
                         >
                           <Pencil size={12} />
-                          Edit
+                          GitHub
                         </button>
                         <button
                           type="button"

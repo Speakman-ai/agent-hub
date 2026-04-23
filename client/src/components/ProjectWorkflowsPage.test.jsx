@@ -77,7 +77,7 @@ describe('ProjectWorkflowsPage', () => {
     });
   });
 
-  it('Edit navigates to GitHub settings with expandProjectId', async () => {
+  it('GitHub opens Settings with expandProjectId', async () => {
     api.getProjectWorkflows.mockResolvedValue([{ id: 'wf-1', name: 'W', steps: [] }]);
     api.getWorkflowRuns.mockResolvedValue([]);
     const onNavigate = vi.fn();
@@ -93,8 +93,28 @@ describe('ProjectWorkflowsPage', () => {
     );
 
     await waitFor(() => expect(screen.getByText('W')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^GitHub$/i }));
     expect(onNavigate).toHaveBeenCalledWith('settings:github', { expandProjectId: 'p1' });
+  });
+
+  it('Builder navigates to workflow editor view', async () => {
+    api.getProjectWorkflows.mockResolvedValue([{ id: 'wf-1', name: 'W', steps: [] }]);
+    api.getWorkflowRuns.mockResolvedValue([]);
+    const onNavigate = vi.fn();
+
+    render(
+      <ProjectWorkflowsPage
+        projectId="p1"
+        project={{ id: 'p1', name: 'Demo', agents: [] }}
+        onNavigate={onNavigate}
+        onSelectAgent={vi.fn()}
+        showToast={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('W')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Builder$/i }));
+    expect(onNavigate).toHaveBeenCalledWith('workflow-edit:p1/wf-1');
   });
 
   it('debounces workflow WebSocket refetches for the same project', async () => {

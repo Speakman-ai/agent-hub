@@ -73,6 +73,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  createProjectWorkflow: (projectId, body) =>
+    fetchJSON(`/projects/${projectId}/workflows`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateProjectWorkflow: (projectId, workflowId, body) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),

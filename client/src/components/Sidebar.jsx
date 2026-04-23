@@ -725,7 +725,10 @@ export default function Sidebar({
                     <button
                       onClick={() => onNavigate(`workflows:${project.id}`)}
                       className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView === `workflows:${project.id}`
+                        currentView === `workflows:${project.id}` ||
+                        (typeof currentView === 'string' &&
+                          currentView.startsWith('workflow-edit:') &&
+                          currentView.startsWith(`workflow-edit:${project.id}/`))
                           ? 'bg-gray-800 text-white'
                           : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
                       }`}
