@@ -19,10 +19,17 @@ fi
 sleep 2
 set -x
 for i in $(seq 1 12); do
-  if curl -fsS http://localhost:3051/api/health >/dev/null; then
+  if curl -fsS --connect-timeout 2 http://localhost:3051/api/health >/dev/null 2>&1; then
     echo "health ok on attempt $i"
     set +e
     exit 0
+  fi
+  # If the process is crash-looping (see ↺ in `pm2 list`), nothing will listen
+  # on 3051. Dump error log on the first miss so SSM/CloudWatch shows the
+  # real exception instead of 60s of "connection refused" only.
+  if [ "$i" -eq 1 ]; then
+    echo "First /api/health check failed. PM2 error log (likely crash loop if restarts is high):" >&2
+    pm2 logs agent-hub --err --lines 100 --nostream 2>&1 || true
   fi
   sleep 5
 done
