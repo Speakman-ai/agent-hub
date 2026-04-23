@@ -66,6 +66,7 @@ export default function TopBar({
   showToast,
   onOpenForward,
   canForward,
+  workflowProject = false,
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [engineOpen, setEngineOpen] = useState(false);
@@ -147,7 +148,7 @@ export default function TopBar({
       </div>
       <div className="flex items-center gap-1.5 md:gap-3">
         {/* Desktop: Worktree Toggle + Detection Badge */}
-        {agent && (
+        {agent && !workflowProject && (
           <div className="hidden sm:flex items-center gap-1">
             <button
               onClick={() => onWorktreeChange(!sessionWorktree)}
@@ -468,40 +469,44 @@ export default function TopBar({
                       {m.id === sessionModel && <span className="text-emerald-400 text-xs">✓</span>}
                     </button>
                   ))}
-                  <div className="border-t border-gray-700 my-1" />
-                  <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
-                    Worktree
-                  </div>
-                  <button
-                    onClick={() => {
-                      onWorktreeChange(!sessionWorktree);
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
-                      sessionWorktree ? 'text-emerald-400' : 'text-gray-400'
-                    }`}
-                  >
-                    <span>
-                      {sessionWorktree ? 'Isolated (own branch)' : 'Shared (project dir)'}
-                    </span>
-                    {sessionWorktree && <span className="text-emerald-400 text-xs">✓</span>}
-                  </button>
-                  {gitWorktreeDetected != null && (
-                    <div
-                      className={`mx-3 mb-1 px-2 py-1 rounded text-xs ${
-                        gitWorktreeDetected
-                          ? 'bg-emerald-900/30 text-emerald-400'
-                          : sessionWorktree
-                            ? 'bg-amber-900/30 text-amber-400'
-                            : 'bg-gray-800 text-gray-500'
-                      }`}
-                    >
-                      {gitWorktreeDetected
-                        ? '✓ CLI confirmed worktree'
-                        : sessionWorktree
-                          ? '⚠ CLI not in worktree'
-                          : '— CLI not in worktree'}
-                    </div>
+                  {!workflowProject && (
+                    <>
+                      <div className="border-t border-gray-700 my-1" />
+                      <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
+                        Worktree
+                      </div>
+                      <button
+                        onClick={() => {
+                          onWorktreeChange(!sessionWorktree);
+                          setMobileMenuOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
+                          sessionWorktree ? 'text-emerald-400' : 'text-gray-400'
+                        }`}
+                      >
+                        <span>
+                          {sessionWorktree ? 'Isolated (own branch)' : 'Shared (project dir)'}
+                        </span>
+                        {sessionWorktree && <span className="text-emerald-400 text-xs">✓</span>}
+                      </button>
+                      {gitWorktreeDetected != null && (
+                        <div
+                          className={`mx-3 mb-1 px-2 py-1 rounded text-xs ${
+                            gitWorktreeDetected
+                              ? 'bg-emerald-900/30 text-emerald-400'
+                              : sessionWorktree
+                                ? 'bg-amber-900/30 text-amber-400'
+                                : 'bg-gray-800 text-gray-500'
+                          }`}
+                        >
+                          {gitWorktreeDetected
+                            ? '✓ CLI confirmed worktree'
+                            : sessionWorktree
+                              ? '⚠ CLI not in worktree'
+                              : '— CLI not in worktree'}
+                        </div>
+                      )}
+                    </>
                   )}
                   <div className="border-t border-gray-700 my-1" />
                   <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">

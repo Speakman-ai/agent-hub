@@ -15,6 +15,7 @@ import type {
   SessionRow,
 } from './types.js';
 import { buildPrTitle } from './auto-git.js';
+import { defaultSessionUseWorktreeFlag } from './project-mode.js';
 
 // ─── Session handoff — `<handoff>` block protocol ────────────────────────────
 //
@@ -707,13 +708,14 @@ export async function handleHandoff(
     // title reflects the task instead of a timestamp. Source-agent provenance
     // is preserved on the `handoffs.from_agent_id` row, so we don't need to
     // bake it into the title.
+    const handoffWt = defaultSessionUseWorktreeFlag(sourceProject);
     stmts.createSession.run(
       toSessionId,
       targetAgent.id,
       deriveHandoffSessionTitle(task.note, sourceAgent.name),
       engine,
       model,
-      1, // use_worktree — default to isolated
+      handoffWt,
       0, // ask_mode — default off
       1,
     );

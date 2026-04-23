@@ -31,6 +31,7 @@ import {
 } from '../utils/prFormatting';
 import PrCapturesSection from '../components/PrCapturesSection';
 import { resolveAgentIdFromProject, reviewerAgentIdFromProject } from '../utils/projectAgents';
+import { isWorkflowProject } from '../utils/project-mode';
 
 const STATE_TABS = [
   { key: 'open', label: 'Open' },
@@ -449,6 +450,27 @@ export default function PullRequestsScreen({ route, navigation }) {
   const [nudgingDetail, setNudgingDetail] = useState(false);
   const [bulkResolving, setBulkResolving] = useState(false);
   const [sessionSpawnedByPr, setSessionSpawnedByPr] = useState({});
+
+  useEffect(() => {
+    if (!projectId || !project) return;
+    if (!isWorkflowProject(project)) return;
+    const id = requestAnimationFrame(() => {
+      Alert.alert(
+        'Workflow mode',
+        'Pull requests are hidden for workflow projects. Switch the project to dev mode in Settings if you need this screen.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              if (navigation?.canGoBack?.()) navigation.goBack();
+              else navigation?.navigate?.('Chat');
+            },
+          },
+        ],
+      );
+    });
+    return () => cancelAnimationFrame(id);
+  }, [projectId, project, navigation]);
 
   const openResolverChat = useCallback(
     (sessionId) => {

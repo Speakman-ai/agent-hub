@@ -76,6 +76,7 @@ import {
 } from './orchestration-budgets.js';
 import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-observability.js';
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
+import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
 
 const stmts = _stmts!;
 const DEFAULT_MODEL: string = config.defaultModel;
@@ -378,6 +379,8 @@ export function buildEnrichedPrompt(
     (project as ProjectWithCommands & { id?: string }).id ||
     (agent as EnrichedAgent).projectId ||
     undefined;
+  const projectMode = getProjectMode(project as Project);
+  const promptWorktree = !!(options.useWorktree && projectMode !== 'workflow');
   const rosterSection = projectId
     ? formatProjectAgentRosterSection(peersOnProject(projectId, agent.id))
     : '';
@@ -470,7 +473,8 @@ The host executes actions, appends a compact observation + loaded context, and m
         prompt += `\n\n## Wiki Documentation Guidelines
 After significant work, update the wiki to preserve knowledge. Search first (\`GET /api/projects/${projectId}/wiki?q=...\`), update existing pages rather than duplicating. Create via \`POST /api/projects/${projectId}/wiki\` with \`{title, content, category, updatedBy}\`. Update via \`PUT /api/projects/${projectId}/wiki/:slug\`. Categories: general, api-docs, architecture, conventions, test-patterns, troubleshooting, onboarding. Focus on decisions, patterns, and knowledge that would be lost when the session ends.`;
 
-        prompt += `\n\n## Kanban Board — Task Self-Reporting
+        if (projectMode !== 'workflow') {
+          prompt += `\n\n## Kanban Board — Task Self-Reporting
 Use the \`kanban\` skill to report work. Create/move cards via \`POST /api/projects/${projectId}/board/cards\` and \`POST /api/projects/${projectId}/board/cards/:cardId/move\`. Use \`GET /api/projects/${projectId}/board\` for column IDs. Skip cards for trivial tasks.
 When creating cards: use a **concise title** (under 60 chars) summarizing the problem/task, and include **acceptance criteria** as a bulleted checklist in the description. Pass \`session_id: "$AGENT_HUB_SESSION_ID"\` to link the card to your session (this auto-renames the sidebar to the card title).
 
@@ -485,6 +489,7 @@ If you pick up a card and discover the work is redundant — either covered by a
 - \`note\`: one-line explanation shown in the auto-close comment (required)
 - \`duplicateOfCardId\`: optional, the canonical card id the work duplicates
 The server moves the session's linked card to Done and appends an explanatory comment referencing this session.`;
+        }
       }
     }
   }
@@ -509,7 +514,7 @@ The server moves the session's linked card to Done and appends an explanatory co
 
   // Static instructional blocks — only on first message to save tokens
   if (isFirstMessage) {
-    if (isGitHubConnected) {
+    if (isGitHubConnected && projectMode !== 'workflow') {
       prompt += `\n\n## Development Lifecycle — GitHub-Connected Project
 This project is connected to GitHub. Follow this lifecycle for changes:
 
@@ -518,19 +523,50 @@ This project is connected to GitHub. Follow this lifecycle for changes:
    - **Acceptance Criteria**: Bulleted checklist of conditions that must be met for this to be complete
    Include \`session_id: "$AGENT_HUB_SESSION_ID"\` when creating the card — this links it to your session and **auto-renames the sidebar** to the card title.
    Move to "In Progress" when you begin.
-2. **Branch**: \`git checkout main && git pull && git checkout -b feature/<name>\`${options.useWorktree ? ' (worktree — safe to branch here)' : ''}
+2. **Branch**: \`git checkout main && git pull && git checkout -b feature/<name>\`${promptWorktree ? ' (worktree — safe to branch here)' : ''}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
 4. **Test & Lint**: ${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding
 5. **Commit**: Commit your changes to the feature branch. **Do NOT push or run \`gh pr create\`** — PR creation is owned by the server. If your session is linked to a kanban card, the server will push, open the PR, and move the card to "Review" automatically when your session ends. If your session is ad-hoc (no card), the user will get a "Create PR" button after your session ends and decide from there.
 
 **Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit. No new cards/branches/PRs. Do NOT push or merge.
 **Shortcuts**: Trivial fixes skip card creation. Found a bug? Create "Backlog" card.`;
-    } else if (options.useWorktree) {
+    } else if (isGitHubConnected && projectMode === 'workflow') {
+      prompt += `\n\n## Development — Workflow mode
+This project is in **workflow** mode (not the default dev/kanban automation profile). Prioritize workflow definitions, runs, and step outcomes. Work in the project checkout — **per-session git worktrees are off**, and the autonomous kanban→server-PR lifecycle described elsewhere does not apply. Use Git, tests, and the wiki as usual; coordinate shipping through the product's workflow surfaces rather than Agent Hub session PR automation.`;
+    } else if (promptWorktree) {
       prompt += `\n\n## Git Workflow
 You are in a git worktree. Never commit to main. Commit to the current feature branch. Do NOT push or run \`gh pr create\` — the server owns PR creation.`;
     }
 
-    prompt += `\n\n## Bias to Action — Don't Ask, Just Ship
+    if (projectMode === 'workflow') {
+      prompt += `\n\n## Bias to Action — Don't Ask, Just Ship
+When a user describes a problem, feature, or change, **do not ask permission to start implementing.** The default answer is "yes" ~95% of the time.
+
+**Do not emit questions like:**
+- "Should I go ahead and implement this?"
+- "Want me to open a PR?"
+- "Should I add a test for this?"
+
+**Instead, just do the work:** implement, test, and commit in the project checkout following team conventions.
+
+**When to actually ask first** (rare — use \`agenthub:ask\` picker or prose):
+- The request is genuinely ambiguous and multiple reasonable interpretations would produce very different work (e.g. "refactor this" with no direction).
+- The action is destructive and irreversible (e.g. \`git push --force\` to main, deleting production data, rotating shared secrets).
+- The user has explicitly asked you to propose a plan before executing.
+
+Everything else: ship it. A rejected change costs a few minutes; a blocked agent costs the user's entire turn.
+
+## Research Questions — Answer on the Spot, Don't Card It
+When a user asks a **research or investigation question** about the system (how something works, why something is behaving a certain way, where a feature lives, what the current state of X is), just **do the research and answer inline**. Do **not** offer to open a ticket for the investigation itself.
+
+**Do not emit questions like:**
+- "Want me to make a card to look into this?"
+- "Should I open a ticket to investigate?"
+- "Do you want me to track this as a research task?"
+
+Follow-up **shipping** work can be tracked the way this project prefers; research questions themselves stay in the chat.`;
+    } else {
+      prompt += `\n\n## Bias to Action — Don't Ask, Just Ship
 When a user describes a problem, feature, or change, **do not ask permission to create a kanban card, open a PR, or start implementing.** The default answer is "yes" ~95% of the time, and the review process (PR review, card rejection, human merge gate) exists precisely so that you can act now and be corrected cheaply later.
 
 **Do not emit questions like:**
@@ -561,6 +597,7 @@ When a user asks a **research or investigation question** about the system (how 
 - "Do you want me to track this as a research task?"
 
 Cards are for **work to ship** — code changes, features, bugfixes, refactors. They are not for **questions to answer**. If research surfaces a concrete bug or feature that needs shipping, *then* create a card for that follow-up work (per Bias to Action above). The investigation itself stays in the chat.`;
+    }
 
     prompt += `\n\n## Memory Instructions
 You have access to memory files. The memory context above shows your current knowledge. Mention important learnings (decisions, preferences, key facts) in your response so they get logged.`;
@@ -935,13 +972,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const sessionName = `[Bug] ${title.substring(0, 80)}`;
 
       try {
+        const intakeWt = defaultSessionUseWorktreeFlag(project);
         stmts.createSession.run(
           intakeSessionId,
           intakeTarget.id,
           sessionName,
           intakeEngine,
           intakeModel,
-          1,
+          intakeWt,
           0,
           1,
         );
@@ -1016,13 +1054,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     let session = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) {
       const initialEngine = agent.engine || 'claude-code';
+      const orphanWt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(
         sessionId,
         agentId,
         `Session ${new Date().toLocaleString()}`,
         initialEngine,
         (agent as AgentWithModel).model || defaultModelForEngine(initialEngine),
-        1,
+        orphanWt,
         0,
         1,
       );
@@ -1266,7 +1305,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     // Same cwd as the later `spawn` (worktree path when isolation is on) so
     // `cursor-agent create-chat` and `--resume` agree on repo root / `.cursor`.
     let effectiveCwd: string = project.cwd;
-    if (session!.use_worktree && (session!.worktree_path || isNewEngineSession)) {
+    if (
+      session!.use_worktree &&
+      getProjectMode(project as Project) !== 'workflow' &&
+      (session!.worktree_path || isNewEngineSession)
+    ) {
       const priorWorktree = session!.worktree_path;
       effectiveCwd = ensureWorktree(
         session!,

@@ -16,6 +16,7 @@ import { SidebarContext } from '../context/SidebarContext';
 import { getApiBaseUrl, getWsUrl } from '../utils/config';
 import { getActiveOrg } from '../utils/orgs';
 import { describeDetectionBadge } from '../utils/worktreeState';
+import { isWorkflowProject } from '../utils/project-mode';
 import { api } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
 import { engineOptionsFromConfig, modelsForEngine, modelDisplay } from '../utils/engineOptions';
@@ -26,6 +27,7 @@ export default function TopBar({ projectId, agentId } = {}) {
   const {
     activeAgent,
     activeAgentId,
+    projects,
     connected,
     reconnecting,
     sessionEngine,
@@ -48,6 +50,8 @@ export default function TopBar({ projectId, agentId } = {}) {
   // Prefer explicit props, fall back to the active agent from context.
   const effectiveAgentId = agentId || activeAgentId || activeAgent?.id || '';
   const effectiveProjectId = projectId || activeAgent?.projectId || '';
+  const activeProject = projects?.find((p) => p.id === effectiveProjectId);
+  const workflowProject = isWorkflowProject(activeProject);
 
   const [showPicker, setShowPicker] = useState(false);
   const [showForward, setShowForward] = useState(false);
@@ -112,8 +116,8 @@ export default function TopBar({ projectId, agentId } = {}) {
       </View>
 
       <View style={styles.right}>
-        {/* Worktree detection badge (only shown once CLI has reported) */}
-        {activeAgent && worktreeBadge && (
+        {/* Worktree detection badge (only shown once CLI has reported, hidden in workflow mode) */}
+        {activeAgent && worktreeBadge && !workflowProject && (
           <TouchableOpacity
             onPress={() => setShowPicker(true)}
             accessibilityRole="button"
@@ -308,51 +312,55 @@ export default function TopBar({ projectId, agentId } = {}) {
               </TouchableOpacity>
             ))}
 
-            <View style={styles.pickerDivider} />
+            {!workflowProject && (
+              <>
+                <View style={styles.pickerDivider} />
 
-            {/* Worktree section */}
-            <Text style={styles.pickerSectionLabel}>WORKTREE</Text>
-            <TouchableOpacity
-              style={styles.pickerItem}
-              onPress={() => {
-                handleWorktreeChange(!sessionWorktree);
-                setShowPicker(false);
-              }}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: sessionWorktree }}
-              accessibilityLabel={
-                sessionWorktree
-                  ? 'Worktree isolation on — toggle to shared'
-                  : 'Worktree isolation off — toggle to isolated'
-              }
-            >
-              <Text
-                style={[
-                  styles.pickerItemLabel,
-                  sessionWorktree && styles.pickerItemLabelActive,
-                ]}
-              >
-                {sessionWorktree ? 'Isolated (own branch)' : 'Shared (project dir)'}
-              </Text>
-              {sessionWorktree && <Text style={styles.pickerCheck}>✓</Text>}
-            </TouchableOpacity>
-            {worktreeBadge && (
-              <Text
-                style={[
-                  styles.worktreeHint,
-                  worktreeBadge.tone === 'ok'
-                    ? styles.worktreeHintOk
-                    : worktreeBadge.tone === 'warn'
-                    ? styles.worktreeHintWarn
-                    : styles.worktreeHintOff,
-                ]}
-              >
-                {worktreeBadge.tone === 'ok'
-                  ? '✓ CLI confirmed worktree'
-                  : worktreeBadge.tone === 'warn'
-                  ? '⚠ CLI not in worktree'
-                  : '— CLI not in worktree'}
-              </Text>
+                {/* Worktree section — hidden in workflow mode */}
+                <Text style={styles.pickerSectionLabel}>WORKTREE</Text>
+                <TouchableOpacity
+                  style={styles.pickerItem}
+                  onPress={() => {
+                    handleWorktreeChange(!sessionWorktree);
+                    setShowPicker(false);
+                  }}
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: sessionWorktree }}
+                  accessibilityLabel={
+                    sessionWorktree
+                      ? 'Worktree isolation on — toggle to shared'
+                      : 'Worktree isolation off — toggle to isolated'
+                  }
+                >
+                  <Text
+                    style={[
+                      styles.pickerItemLabel,
+                      sessionWorktree && styles.pickerItemLabelActive,
+                    ]}
+                  >
+                    {sessionWorktree ? 'Isolated (own branch)' : 'Shared (project dir)'}
+                  </Text>
+                  {sessionWorktree && <Text style={styles.pickerCheck}>✓</Text>}
+                </TouchableOpacity>
+                {worktreeBadge && (
+                  <Text
+                    style={[
+                      styles.worktreeHint,
+                      worktreeBadge.tone === 'ok'
+                        ? styles.worktreeHintOk
+                        : worktreeBadge.tone === 'warn'
+                        ? styles.worktreeHintWarn
+                        : styles.worktreeHintOff,
+                    ]}
+                  >
+                    {worktreeBadge.tone === 'ok'
+                      ? '✓ CLI confirmed worktree'
+                      : worktreeBadge.tone === 'warn'
+                      ? '⚠ CLI not in worktree'
+                      : '— CLI not in worktree'}
+                  </Text>
+                )}
+              </>
             )}
 
             <View style={styles.pickerDivider} />

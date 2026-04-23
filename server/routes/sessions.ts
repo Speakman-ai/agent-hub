@@ -30,6 +30,7 @@ import {
   parseOrchestrationMetaJson,
   parseOrchestrationPhase,
 } from '../orchestration.js';
+import { defaultSessionUseWorktreeFlag, getProjectMode } from '../project-mode.js';
 
 function safeParse(s: string): Record<string, unknown> {
   try {
@@ -176,7 +177,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const found = findAgent(req.params.agentId as string);
     const engine = req.body.engine || found?.agent?.engine || 'claude-code';
     const model = req.body.model || found?.agent?.model || defaultModelForEngine(engine);
-    const useWorktree = req.body.use_worktree !== undefined ? (req.body.use_worktree ? 1 : 0) : 1;
+    let useWorktree =
+      req.body.use_worktree !== undefined
+        ? req.body.use_worktree
+          ? 1
+          : 0
+        : defaultSessionUseWorktreeFlag(found?.project);
+    if (getProjectMode(found?.project) === 'workflow') useWorktree = 0;
     const askMode = req.body.ask_mode ? 1 : 0;
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode, 1);
     const session = stmts.getSession.get(id) as SessionRow;
@@ -218,7 +225,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const engine = found.agent.engine || 'claude-code';
     const model = found.agent.model || defaultModelForEngine(engine);
     const sessionName = `[BG] ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`;
-    stmts.createSession.run(sessionId, agentId, sessionName, engine, model, 1, 0, 1);
+    const wt = getProjectMode(found.project) === 'workflow' ? 0 : 1;
+    stmts.createSession.run(sessionId, agentId, sessionName, engine, model, wt, 0, 1);
 
     stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
 
@@ -565,6 +573,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
+    const agentLookup = findAgent(session.agent_id);
+    if (enabled && agentLookup && getProjectMode(agentLookup.project) === 'workflow') {
+      return res.status(403).json({
+        error: 'Per-session worktrees are disabled while this project is in workflow mode',
+      });
+    }
     stmts.updateSessionWorktree.run(enabled ? 1 : 0, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     res.json(updated);
@@ -992,7 +1006,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       );
       const engine = targetAgent.engine || 'claude-code';
       const model = targetAgent.model || defaultModelForEngine(engine);
-      stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, 1, 0, 1);
+      const wt = defaultSessionUseWorktreeFlag(targetFound.project);
+      stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, wt, 0, 1);
 
       // When autoStart is true, handleChat will store the user message itself,
       // so we only pre-store it when NOT auto-starting (to avoid duplicates).
@@ -1054,14 +1069,21 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     try {
       const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (!session) return res.status(404).json({ error: 'Session not found' });
-      if (!session.worktree_path) {
-        return res.status(400).json({ error: 'Session has no worktree — nothing to commit' });
-      }
 
       const agentLookup = findAgent(session.agent_id);
       if (!agentLookup) return res.status(404).json({ error: 'Agent not found' });
 
       const { project, agent } = agentLookup;
+
+      if (getProjectMode(project) === 'workflow') {
+        return res.status(403).json({
+          error: 'Session PR creation is disabled while this project is in workflow mode',
+        });
+      }
+
+      if (!session.worktree_path) {
+        return res.status(400).json({ error: 'Session has no worktree — nothing to commit' });
+      }
 
       const result = await manualCommitAndPR(
         sessionId,

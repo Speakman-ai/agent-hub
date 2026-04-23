@@ -264,6 +264,11 @@ export default function Sidebar({
                       style={{ backgroundColor: project.color }}
                     />
                     <span className="flex-1 truncate text-sm font-medium">{project.name}</span>
+                    {project.mode === 'workflow' && (
+                      <span className="text-[10px] font-medium text-violet-400/90 uppercase tracking-wide flex-shrink-0">
+                        Wf
+                      </span>
+                    )}
                     {activeAgents.length > 1 && (
                       <span className="text-gray-500 text-2xl leading-none flex items-center">
                         {isCollapsed ? '▸' : '▾'}
@@ -358,7 +363,7 @@ export default function Sidebar({
                                   )}
                                 </span>
                               </button>
-                              {activeReviews[agent.name] && (
+                              {project.mode !== 'workflow' && activeReviews[agent.name] && (
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -748,31 +753,35 @@ export default function Sidebar({
                       )}
                     </button>
 
-                    {/* Pull Requests */}
-                    <button
-                      onClick={() => onNavigate('pulls', project.id)}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView === 'pulls' && pullsProjectId === project.id
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                      }`}
-                    >
-                      <GitPullRequest size={14} className="flex-shrink-0" />
-                      <span className="truncate">Pulls</span>
-                    </button>
+                    {/* Pull Requests — hidden in workflow mode (no PR tracking UI) */}
+                    {project.mode !== 'workflow' && (
+                      <button
+                        onClick={() => onNavigate('pulls', project.id)}
+                        className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                          currentView === 'pulls' && pullsProjectId === project.id
+                            ? 'bg-gray-800 text-white'
+                            : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                        }`}
+                      >
+                        <GitPullRequest size={14} className="flex-shrink-0" />
+                        <span className="truncate">Pulls</span>
+                      </button>
+                    )}
 
                     {/* PR Captures */}
-                    <button
-                      onClick={() => onNavigate('captures', project.id)}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
-                        currentView === 'captures' && capturesProjectId === project.id
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                      }`}
-                    >
-                      <Container size={14} className="flex-shrink-0" />
-                      <span className="truncate">Captures</span>
-                    </button>
+                    {project.mode !== 'workflow' && (
+                      <button
+                        onClick={() => onNavigate('captures', project.id)}
+                        className={`w-full text-left px-3 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-colors text-xs ${
+                          currentView === 'captures' && capturesProjectId === project.id
+                            ? 'bg-gray-800 text-white'
+                            : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                        }`}
+                      >
+                        <Container size={14} className="flex-shrink-0" />
+                        <span className="truncate">Captures</span>
+                      </button>
+                    )}
                   </div>
                 )}
 

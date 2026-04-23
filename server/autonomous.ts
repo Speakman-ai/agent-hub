@@ -19,6 +19,7 @@ import type {
   ChatMessage,
   SessionRow,
 } from './types.js';
+import { defaultSessionUseWorktreeFlag } from './project-mode.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -279,7 +280,9 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
       } else {
         model = sessionModelForAutonomousDispatch(epic, agent, engineValidModels);
       }
-      d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, 1, 0, 1);
+      const projRow = d.findProject(projectId);
+      const wt = defaultSessionUseWorktreeFlag(projRow);
+      d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, wt, 0, 1);
       {
         const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
         if (row) {

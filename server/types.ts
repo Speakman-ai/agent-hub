@@ -1165,12 +1165,17 @@ export interface GithubWorkflowSettings {
   reviewerModel?: string;
 }
 
+/** `dev` — full Agent Hub dev experience. `workflow` — workflow-centric; per-session worktrees and PR-review automation are off by default. */
+export type ProjectMode = 'dev' | 'workflow';
+
 export interface Project {
   id: string;
   name: string;
   cwd: string;
   ahw: string;
   color?: string;
+  /** Defaults to dev when omitted (see `getProjectMode` in `project-mode.ts`). */
+  mode?: ProjectMode;
   githubRepo?: string;
   githubWorkflow?: GithubWorkflowSettings;
   /**

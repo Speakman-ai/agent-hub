@@ -13,6 +13,7 @@ import {
 } from '../utils/setupState';
 import { hydrateChangesReady } from '../utils/changesReady';
 import { resolveSessionWorktree, applyDetectedFlag } from '../utils/worktreeState';
+import { isWorkflowProject } from '../utils/project-mode';
 import { selectSessionToActivate } from '../utils/sessionSelection';
 import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
@@ -158,6 +159,8 @@ export function AppProvider({ children }) {
   // Keep the latest sessions list reachable from the notification listener
   // without re-running the subscription on every sessions change.
   const sessionsRef = useRef([]);
+  const agentsRef = useRef([]);
+  const projectsRef = useRef([]);
 
   // Show an in-app (foreground) notification for the subset of broadcast
   // events that map to the desktop/Expo push taxonomy. Remote pushes are
@@ -587,7 +590,11 @@ export function AppProvider({ children }) {
 
       // Ad-hoc PR creation — agent finished a worktree session with uncommitted
       // changes and no existing kanban card. Surface the "Create PR" banner.
-      case 'changes_ready':
+      case 'changes_ready': {
+        const aid = data.agentId;
+        const agentRow = agentsRef.current.find((a) => a.id === aid);
+        const proj = projectsRef.current.find((p) => p.id === agentRow?.projectId);
+        if (isWorkflowProject(proj)) break;
         setChangesReady((prev) => ({
           ...prev,
           [data.sessionId]: {
@@ -598,6 +605,7 @@ export function AppProvider({ children }) {
           },
         }));
         break;
+      }
 
       // A PR was opened (manually or automatically) — clear the banner.
       case 'auto_pr_created':
@@ -677,6 +685,14 @@ export function AppProvider({ children }) {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
+
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
 
   // Register for Expo push notifications once the connection config is
   // ready. Native modules are required lazily so this file can be imported
@@ -1199,6 +1215,15 @@ export function AppProvider({ children }) {
   // `handleWorktreeChange` in App.jsx.
   const handleWorktreeChange = useCallback(
     async (enabled) => {
+      const agent = agentsRef.current.find((a) => a.id === activeAgentIdRef.current);
+      const project = projectsRef.current.find((p) => p.id === agent?.projectId);
+      if (isWorkflowProject(project)) {
+        Alert.alert(
+          'Workflow mode',
+          'Per-session worktrees are disabled while this project is in workflow mode.',
+        );
+        return;
+      }
       const sid = activeSessionIdRef.current;
       const prevEnabled = sessionWorktree;
       setSessionWorktree(enabled);

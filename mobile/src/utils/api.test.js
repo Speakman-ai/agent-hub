@@ -274,6 +274,16 @@ describe('api worktree helpers — URL + method + body parity with web client', 
   });
 });
 
+describe('api updateProject — PATCH parity with web client', () => {
+  it('updateProject(projectId, body) → PATCH /projects/:id', async () => {
+    await api.updateProject('p1', { mode: 'workflow' });
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/p1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ mode: 'workflow' });
+  });
+});
+
 describe('api webhook helpers — request headers + error handling', () => {
   it('attaches the API key and JSON content-type to every call', async () => {
     await api.getWebhooks();

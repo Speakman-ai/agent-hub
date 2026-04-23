@@ -21,6 +21,7 @@ import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
 import ChangesReadyBox from '../components/ChangesReadyBox';
 import { resolveAutoMergeDefault } from '../utils/changesReady';
+import { isWorkflowProject } from '../utils/project-mode';
 
 export default function ChatScreen() {
   const {
@@ -91,6 +92,7 @@ export default function ChatScreen() {
   const activeDelegation = delegations[activeSessionId];
   const pendingChanges = changesReady?.[activeSessionId];
   const activeProject = projects?.find((p) => p.id === activeAgent?.projectId);
+  const workflowProject = isWorkflowProject(activeProject);
 
   // Build list data: messages + thinking + streaming indicators
   const listData = [
@@ -104,7 +106,7 @@ export default function ChatScreen() {
     ...(activeDelegation?.tasks?.length > 0
       ? [{ type: 'delegation', key: 'delegation', data: activeDelegation }]
       : []),
-    ...(pendingChanges && !thinking && !streamingContent
+    ...(pendingChanges && !workflowProject && !thinking && !streamingContent
       ? [{ type: 'changes-ready', key: 'changes-ready', data: pendingChanges }]
       : []),
   ];

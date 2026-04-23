@@ -15,6 +15,7 @@ import type {
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
+import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 
 interface BoardData {
   board: KanbanBoardRow;
@@ -333,7 +334,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         if (!v.ok) return res.status(400).json({ error: v.error });
       }
       const resolvedModel = trimmedOverride ?? (agent.model || defaultModelForEngine(engine));
-      stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, 1, 0, 1);
+      const wt = defaultSessionUseWorktreeFlag(project);
+      stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
 
       const board = stmts.getKanbanBoard.get(req.params.projectId) as KanbanBoardRow | undefined;
       let inProgressColumnId = card.column_id;

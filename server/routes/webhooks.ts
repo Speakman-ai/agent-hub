@@ -27,6 +27,7 @@ import {
   clearAllAnalyzePhaseTimers,
   scheduleReviewerAnalyzePhaseTransition,
 } from '../reviewer-analyze-phase-timer.js';
+import { getProjectMode } from '../project-mode.js';
 import type {
   RouteDeps,
   Stmts,
@@ -925,6 +926,13 @@ export function dispatchReviewerForPR(
   if (!reviewer) {
     console.log(
       `[Reviewer] No reviewer agent on project "${project.name}" — skipping dispatch for PR #${opts.prNumber}`,
+    );
+    return false;
+  }
+
+  if (getProjectMode(project) === 'workflow') {
+    console.log(
+      `[Reviewer] Project "${project.name}" is in workflow mode — skipping dispatch for PR #${opts.prNumber}`,
     );
     return false;
   }

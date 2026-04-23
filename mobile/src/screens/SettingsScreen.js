@@ -1937,6 +1937,71 @@ function parseEvents(raw) {
   return {};
 }
 
+// ─── Projects Tab ────────────────────────────────────────────
+function ProjectsSection() {
+  const { projects, refreshProjects } = useApp();
+  const [saving, setSaving] = useState({});
+
+  const handleModeChange = async (projectId, mode) => {
+    setSaving((prev) => ({ ...prev, [projectId]: true }));
+    try {
+      await api.updateProject(projectId, { mode });
+      refreshProjects();
+    } catch (e) {
+      Alert.alert('Error', e?.message || 'Failed to update project mode');
+    } finally {
+      setSaving((prev) => ({ ...prev, [projectId]: false }));
+    }
+  };
+
+  if (!projects || projects.length === 0) {
+    return (
+      <View>
+        <Text style={styles.sectionTitle}>Projects</Text>
+        <Text style={styles.emptyText}>No projects configured</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View>
+      <Text style={styles.sectionTitle}>Projects</Text>
+      <Text style={styles.sectionDesc}>
+        Dev (default): kanban lifecycle, per-session worktrees, and GitHub PR review automation.
+        Workflow: work in the project checkout; automated reviewer dispatch and session PR flows
+        stay off.
+      </Text>
+      {projects.map((project) => (
+        <View key={project.id} style={styles.formCard}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: project.color || '#6366f1' }} />
+            <Text style={[styles.fieldLabel, { marginBottom: 0, flex: 1 }]}>{project.name}</Text>
+            {saving[project.id] && <ActivityIndicator size="small" color={colors.gray400} />}
+          </View>
+          <Text style={[styles.fieldLabel, { marginBottom: 6 }]}>Mode</Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {['dev', 'workflow'].map((mode) => {
+              const active = (project.mode || 'dev') === mode;
+              return (
+                <TouchableOpacity
+                  key={mode}
+                  style={[styles.smallButton, active ? styles.buttonOn : styles.buttonOff]}
+                  onPress={() => !active && handleModeChange(project.id, mode)}
+                  disabled={saving[project.id]}
+                >
+                  <Text style={[styles.smallButtonText, active ? styles.buttonOnText : styles.buttonOffText]}>
+                    {mode === 'dev' ? 'Dev' : 'Workflow'}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function WebhookSection() {
   const { projects } = useApp();
   const [webhooks, setWebhooks] = useState([]);
@@ -2530,6 +2595,7 @@ export default function SettingsScreen() {
     { id: 'usage', label: 'Usage' },
     { id: 'heartbeats', label: 'Heartbeats' },
     { id: 'crons', label: 'Crons' },
+    { id: 'projects', label: 'Projects' },
     { id: 'webhooks', label: 'Webhooks' },
     { id: 'slack', label: 'Slack' },
     { id: 'agents', label: 'Agents' },
@@ -2574,6 +2640,7 @@ export default function SettingsScreen() {
           {tab === 'usage' && <UsageSection />}
           {tab === 'heartbeats' && <HeartbeatSection />}
           {tab === 'crons' && <CronSection />}
+          {tab === 'projects' && <ProjectsSection />}
           {tab === 'webhooks' && <WebhookSection />}
           {tab === 'slack' && <SlackSection />}
           {tab === 'agents' && <AgentConfigSection />}

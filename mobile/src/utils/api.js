@@ -136,6 +136,8 @@ export const api = {
 
   // Projects
   getProjects: () => fetchJSON('/projects'),
+  updateProject: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteProject: (projectId) => fetchJSON(`/projects/${projectId}`, { method: 'DELETE' }),
 
   // Usage

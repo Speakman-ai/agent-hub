@@ -14,6 +14,7 @@ import { getOrgs, getActiveOrg } from '../utils/orgs';
 import { colors } from '../theme/colors';
 import { relativeTime, daysUntilPurge } from '../utils/time';
 import humanCron from '../utils/humanCron';
+import { isWorkflowProject } from '../utils/project-mode';
 
 export default function DrawerContent({ navigation }) {
   const {
@@ -414,6 +415,9 @@ export default function DrawerContent({ navigation }) {
                       />
                       <Text style={styles.projectName} numberOfLines={1}>
                         {project.name}
+                        {isWorkflowProject(project) ? (
+                          <Text style={styles.workflowTag}> Wf</Text>
+                        ) : null}
                       </Text>
                       {projectAgents.length > 1 && (
                         <Text style={styles.collapseIcon}>
@@ -450,7 +454,7 @@ export default function DrawerContent({ navigation }) {
                         )}
                       </View>
                     </TouchableOpacity>
-                    {project.githubRepo ? (
+                    {project.githubRepo && !isWorkflowProject(project) ? (
                       <TouchableOpacity
                         style={styles.boardButton}
                         onPress={() => {
@@ -719,6 +723,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: colors.gray300,
+  },
+  workflowTag: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.amber400,
   },
   projectHeaderRow: {
     flexDirection: 'row',

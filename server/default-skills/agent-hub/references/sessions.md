@@ -34,6 +34,8 @@ scripts/sessions.sh messages <sessionId>     # full message history
 ## Session row
 
 Notable columns: `id`, `agent_id`, `engine` (`claude-code` | `cursor-agent` | `gemini-cli` | `codex-cli`), `model`,
+`use_worktree` (0/1 — per-session git isolation; new rows default from the project's `mode`, see
+[`<handoff>`](#handoff--ownership-transfer-to-one-specialist) below),
 `ask_mode` (0/1 — see below), `react_loop_enabled` (0/1 — see
 [ReAct loop](#react-loop--host-mediated-skillwikiweb-actions)), `created_at`, `updated_at`, `title`,
 `last_message_at`.
@@ -247,6 +249,12 @@ All three constants are overridable per-call via optional
 - **When to use**: the specialist needs multiple turns, will likely
   commit / open a PR, or needs the full transcript as background. Prefer
   `<handoff>` over `<delegate>` for anything beyond a short side-quest.
+- **Worktree default on the new session**: `handleHandoff` in
+  `server/handoff.ts` seeds `sessions.use_worktree` from the **source
+  project's** `mode`. **`workflow`** projects create the target row with
+  `use_worktree = 0` (work in the project checkout). **`dev`** (default or
+  omitted `mode`) keeps the historical default of `1` so isolation can apply
+  when chat spins up a worktree.
 - **Kanban card forwarding**: if your session owns a kanban card (i.e.
   the card's `session_id` points at you), `<handoff>` re-points the
   card to the **target** session and updates the assignee to the target

@@ -1,5 +1,5 @@
 import type supertest from 'supertest';
-import { getRequest, createSession } from './helpers.js';
+import { getRequest, createSession, createProject, createAgent } from './helpers.js';
 
 let request: supertest.Agent;
 
@@ -23,6 +23,16 @@ describe('POST /api/sessions/:sessionId/create-pr', () => {
       .send({ autoMerge: false });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/no worktree/i);
+  });
+
+  it('returns 403 when the project is in workflow mode', async () => {
+    const proj = await createProject();
+    await request.patch(`/api/projects/${proj.id}`).send({ mode: 'workflow' }).expect(200);
+    const agent = await createAgent({ projectId: String(proj.id) });
+    const session = await createSession({ agentId: agent.id as string });
+    const res = await request.post(`/api/sessions/${session.id}/create-pr`).send({});
+    expect(res.status).toBe(403);
+    expect(String(res.body.error)).toMatch(/workflow mode/i);
   });
 
   it('accepts autoMerge boolean and title string', async () => {

@@ -20,6 +20,7 @@ import CursorAuthSection from './CursorAuthSection.jsx';
 import PoolSection from './PoolSection.jsx';
 import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
+import { isWorkflowProject } from '../utils/projectMode.js';
 import * as LucideIcons from 'lucide-react';
 
 /** Error boundary to catch render crashes in individual settings tabs */
@@ -1956,7 +1957,7 @@ export function GeneralSection() {
   );
 }
 
-export function GitHubSection({ projects = [], onProjectsChange }) {
+export function GitHubSection({ projects = [], onProjectsChange, showToast }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -2628,81 +2629,120 @@ export function GitHubSection({ projects = [], onProjectsChange }) {
                       )}
                     </div>
 
-                    {/* Workflow Toggles */}
-                    {[
-                      {
-                        key: 'autoReview',
-                        label: 'Auto Review',
-                        desc: 'Lead agent automatically reviews every PR',
-                      },
-                      {
-                        key: 'autoMerge',
-                        label: 'Auto Merge',
-                        desc: 'Lead agent merges approved PRs automatically',
-                      },
-                      {
-                        key: 'waitForCI',
-                        label: 'Wait for CI',
-                        desc: 'Wait for all GitHub checks to pass before approving',
-                      },
-                      {
-                        key: 'waitForResolvedComments',
-                        label: 'Wait for Resolved Comments',
-                        desc: 'Wait for all review comments to be resolved',
-                      },
-                    ].map(({ key, label, desc }) => (
-                      <div key={key} className="flex items-center justify-between gap-3">
-                        <div className="flex-1 min-w-0">
-                          <span className="text-sm text-gray-200">{label}</span>
-                          <p className="text-xs text-gray-500 truncate">{desc}</p>
-                        </div>
-                        <button
-                          onClick={() => toggleWorkflowSetting(p.id, key)}
-                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
-                            projectWorkflow[p.id]?.[key] ? 'bg-emerald-600' : 'bg-gray-600'
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                              projectWorkflow[p.id]?.[key] ? 'translate-x-4' : 'translate-x-0.5'
-                            }`}
-                          />
-                        </button>
-                      </div>
-                    ))}
-                    <div className="pt-1 space-y-1">
-                      <label className={labelClass}>PR review model (GitHub webhook)</label>
-                      <p className="text-xs text-gray-500 mb-1">
-                        Model for the reviewer agent ({reviewerEngine}) when Auto Review runs after
-                        a PR webhook. Default follows the reviewer&apos;s Agents settings.
+                    <div className="space-y-2">
+                      <label className={labelClass}>Project mode</label>
+                      <p className="text-xs text-gray-500">
+                        Dev (default): kanban lifecycle, per-session worktrees, and GitHub PR review
+                        automation. Workflow: work in the project checkout; automated reviewer
+                        dispatch and session PR flows stay off.
                       </p>
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={projectWorkflow[p.id]?.reviewerModel || ''}
-                          disabled={reviewerModelSaving[p.id] || reviewerModelOpts.length === 0}
-                          onChange={(e) => saveWorkflowReviewerModel(p.id, e.target.value)}
-                          className={`${inputClass} max-w-xl flex-1`}
-                        >
-                          <option value="">Same as reviewer agent</option>
-                          {reviewerModelOpts.map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))}
-                        </select>
-                        {reviewerModelSaving[p.id] && (
-                          <Loader2 size={14} className="animate-spin text-gray-400 flex-shrink-0" />
-                        )}
-                      </div>
-                      {!modelConfig && <p className="text-[11px] text-gray-600">Loading models…</p>}
-                      {modelConfig && reviewerModelOpts.length === 0 && (
-                        <p className="text-[11px] text-amber-400/90">
-                          No models listed for this engine in server config — check
-                          engineValidModels.
-                        </p>
-                      )}
+                      <select
+                        value={isWorkflowProject(p) ? 'workflow' : 'dev'}
+                        onChange={async (e) => {
+                          const mode = e.target.value;
+                          try {
+                            await api.updateProject(p.id, { mode });
+                            if (onProjectsChange) onProjectsChange();
+                          } catch (err) {
+                            const msg = String(err.message || err);
+                            if (showToast) showToast(msg, 'error');
+                            else alert(msg);
+                          }
+                        }}
+                        className={inputClass}
+                      >
+                        <option value="dev">Dev</option>
+                        <option value="workflow">Workflow</option>
+                      </select>
                     </div>
-                    {workflowSaved[p.id] && <span className="text-xs text-emerald-400">Saved</span>}
+
+                    {/* Workflow Toggles */}
+                    {!isWorkflowProject(p) &&
+                      [
+                        {
+                          key: 'autoReview',
+                          label: 'Auto Review',
+                          desc: 'Lead agent automatically reviews every PR',
+                        },
+                        {
+                          key: 'autoMerge',
+                          label: 'Auto Merge',
+                          desc: 'Lead agent merges approved PRs automatically',
+                        },
+                        {
+                          key: 'waitForCI',
+                          label: 'Wait for CI',
+                          desc: 'Wait for all GitHub checks to pass before approving',
+                        },
+                        {
+                          key: 'waitForResolvedComments',
+                          label: 'Wait for Resolved Comments',
+                          desc: 'Wait for all review comments to be resolved',
+                        },
+                      ].map(({ key, label, desc }) => (
+                        <div key={key} className="flex items-center justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <span className="text-sm text-gray-200">{label}</span>
+                            <p className="text-xs text-gray-500 truncate">{desc}</p>
+                          </div>
+                          <button
+                            onClick={() => toggleWorkflowSetting(p.id, key)}
+                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
+                              projectWorkflow[p.id]?.[key] ? 'bg-emerald-600' : 'bg-gray-600'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                                projectWorkflow[p.id]?.[key] ? 'translate-x-4' : 'translate-x-0.5'
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      ))}
+                    {!isWorkflowProject(p) && (
+                      <>
+                        <div className="pt-1 space-y-1">
+                          <label className={labelClass}>PR review model (GitHub webhook)</label>
+                          <p className="text-xs text-gray-500 mb-1">
+                            Model for the reviewer agent ({reviewerEngine}) when Auto Review runs
+                            after a PR webhook. Default follows the reviewer&apos;s Agents settings.
+                          </p>
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={projectWorkflow[p.id]?.reviewerModel || ''}
+                              disabled={reviewerModelSaving[p.id] || reviewerModelOpts.length === 0}
+                              onChange={(e) => saveWorkflowReviewerModel(p.id, e.target.value)}
+                              className={`${inputClass} max-w-xl flex-1`}
+                            >
+                              <option value="">Same as reviewer agent</option>
+                              {reviewerModelOpts.map((m) => (
+                                <option key={m} value={m}>
+                                  {m}
+                                </option>
+                              ))}
+                            </select>
+                            {reviewerModelSaving[p.id] && (
+                              <Loader2
+                                size={14}
+                                className="animate-spin text-gray-400 flex-shrink-0"
+                              />
+                            )}
+                          </div>
+                          {!modelConfig && (
+                            <p className="text-[11px] text-gray-600">Loading models…</p>
+                          )}
+                          {modelConfig && reviewerModelOpts.length === 0 && (
+                            <p className="text-[11px] text-amber-400/90">
+                              No models listed for this engine in server config — check
+                              engineValidModels.
+                            </p>
+                          )}
+                        </div>
+                        {workflowSaved[p.id] && (
+                          <span className="text-xs text-emerald-400">Saved</span>
+                        )}
+                      </>
+                    )}
 
                     {/* Test Connection */}
                     <div className="pt-2 border-t border-gray-800">
@@ -6210,7 +6250,11 @@ export default function SettingsPage({
             </div>
           )}
           {tab === 'github' && (
-            <GitHubSection projects={projects} onProjectsChange={onAgentsChange} />
+            <GitHubSection
+              projects={projects}
+              onProjectsChange={onAgentsChange}
+              showToast={showToast}
+            />
           )}
           {tab === 'orgs' && <OrganizationsSection />}
           {tab === 'heartbeats' && (

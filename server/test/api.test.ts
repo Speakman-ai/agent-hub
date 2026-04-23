@@ -157,6 +157,30 @@ describe('Projects', () => {
       expect(res.body.color).toBe('#00FF00');
     });
 
+    it('updates project mode and clears with null', async () => {
+      const proj = await createProject();
+      const wf = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ mode: 'workflow' })
+        .expect(200);
+      expect(wf.body.mode).toBe('workflow');
+
+      const dev = await request.patch(`/api/projects/${proj.id}`).send({ mode: 'dev' }).expect(200);
+      expect(dev.body.mode).toBe('dev');
+
+      const cleared = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ mode: null })
+        .expect(200);
+      expect(cleared.body.mode).toBeUndefined();
+
+      const bad = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ mode: 'staging' })
+        .expect(400);
+      expect(String(bad.body.error)).toMatch(/mode must/i);
+    });
+
     it('updates githubWorkflow settings', async () => {
       const proj = await createProject();
       const res = await request
@@ -476,6 +500,25 @@ describe('Sessions', () => {
       expect(res.body).toHaveProperty('id');
       expect(res.body.agent_id).toBe(agent.id);
       expect(res.body.name).toBe('My Session');
+    });
+
+    it('defaults use_worktree to 0 when the project is in workflow mode', async () => {
+      const proj = await createProject();
+      await request.patch(`/api/projects/${proj.id}`).send({ mode: 'workflow' }).expect(200);
+      const agent = await createAgent({ projectId: String(proj.id) });
+      const res = await request
+        .post(`/api/agents/${agent.id}/sessions`)
+        .send({ name: 'Workflow session' })
+        .expect(200);
+      expect(res.body.use_worktree).toBe(0);
+    });
+
+    it('returns 403 when enabling worktree on a workflow-mode project', async () => {
+      const proj = await createProject();
+      await request.patch(`/api/projects/${proj.id}`).send({ mode: 'workflow' }).expect(200);
+      const agent = await createAgent({ projectId: String(proj.id) });
+      const session = await createSession({ agentId: agent.id as string, name: 'S' });
+      await request.put(`/api/sessions/${session.id}/worktree`).send({ enabled: true }).expect(403);
     });
   });
 

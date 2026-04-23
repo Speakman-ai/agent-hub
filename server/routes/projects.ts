@@ -6,7 +6,14 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
 import { buildSpawnEnv } from '../config.js';
-import type { RouteDeps, Agent, Project, StreamEvent, GithubWorkflowSettings } from '../types.js';
+import type {
+  RouteDeps,
+  Agent,
+  Project,
+  ProjectMode,
+  StreamEvent,
+  GithubWorkflowSettings,
+} from '../types.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
@@ -541,6 +548,16 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         } else {
           delete (project as Record<string, unknown>).orchestrationBudgets;
         }
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'mode')) {
+      const rawMode = (req.body as Record<string, unknown>).mode;
+      if (rawMode === null || rawMode === undefined || rawMode === '') {
+        delete (project as Record<string, unknown>).mode;
+      } else if (rawMode === 'dev' || rawMode === 'workflow') {
+        (project as Record<string, unknown>).mode = rawMode as ProjectMode;
+      } else {
+        return res.status(400).json({ error: 'mode must be "dev", "workflow", or null' });
       }
     }
     if (

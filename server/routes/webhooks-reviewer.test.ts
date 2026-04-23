@@ -113,6 +113,18 @@ describe('dispatchReviewerForPR — gating', () => {
     expect(deps.handleChat).not.toHaveBeenCalled();
   });
 
+  it('returns false in workflow mode even when a reviewer agent exists', () => {
+    const deps = makeDeps();
+    const project = { ...makeProject('reviewer'), mode: 'workflow' as const };
+
+    const scheduled = dispatchReviewerForPR(deps as never, project, OPTS);
+
+    expect(scheduled).toBe(false);
+    vi.runAllTimers();
+    expect(deps.handleChat).not.toHaveBeenCalled();
+    expect(deps.stmts.createSession.run).not.toHaveBeenCalled();
+  });
+
   it('schedules a debounced dispatch when a reviewer agent exists', () => {
     const deps = makeDeps();
     const project = makeProject('reviewer');

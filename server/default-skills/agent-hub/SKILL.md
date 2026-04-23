@@ -17,7 +17,7 @@ description: >-
   coincidental vocabulary ("kanban in Linear", "wiki in Notion") is not a
   trigger.
 category: platform
-version: 2.1.3
+version: 2.1.4
 keep-coding-instructions: true
 ---
 
@@ -107,6 +107,8 @@ your session (Done move + audit comment; rely on **CI and pre-commit hooks** for
 verification — see **references/sessions.md**).
 All three are fenced JSON blocks emitted at the end of a turn —
 see the reference for exact shape and lifecycle states.
+
+Projects may set **`mode`** to `dev` (default) or **`workflow`**. In workflow mode, new sessions — including **`<handoff>` targets** — default to **no per-session git worktree**, automated GitHub reviewer dispatch is off, and session-owned PR flows are gated. See **references/sessions.md**.
 
 ```bash
 scripts/sessions.sh list <agentId>           # sessions for an agent
