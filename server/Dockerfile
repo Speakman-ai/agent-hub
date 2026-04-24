@@ -11,7 +11,13 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts && npm rebuild better-sqlite3
 
 COPY server/package.json server/package-lock.json ./server/
-RUN cd server && npm ci --ignore-scripts
+# `--ignore-scripts` speeds up the install and avoids arbitrary code from
+# transitive deps, but we still need better-sqlite3's native binding. Rebuild
+# only that package — it fetches the prebuilt binary for the current Node
+# version, or compiles from source using python3/make/g++ installed above.
+# Without this, runtime crashes with "Could not locate the bindings file" as
+# Node resolves better-sqlite3 from /app/server/node_modules first.
+RUN cd server && npm ci --ignore-scripts && npm rebuild better-sqlite3
 
 COPY server/ ./server/
 COPY shared/ ./shared/
