@@ -1105,6 +1105,25 @@ function initDb(dataDir: string): void {
 
     CREATE INDEX IF NOT EXISTS idx_design_messages_design ON design_messages(design_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_design_projects_design ON design_projects(design_id);
+
+    -- Provisioning jobs: one row per new-project scaffold. Events live in
+    -- the orchestrator's in-memory ring buffer; we persist metadata + the
+    -- terminal result so crashed jobs show up as 'running' (recoverable
+    -- by the operator) instead of silently vanishing. See
+    -- server/provisioning/orchestrator.ts for the event contract.
+    CREATE TABLE IF NOT EXISTS provisioning_jobs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running'
+        CHECK(status IN ('running','succeeded','partial','failed')),
+      repo_url TEXT,
+      error_json TEXT,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_provisioning_jobs_project
+      ON provisioning_jobs(project_id);
   `);
 
   // Migration: designs gained org_id for multi-org scoping.
@@ -2571,6 +2590,18 @@ function initDb(dataDir: string): void {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     deleteIosBuildArtifacts: db.prepare('DELETE FROM ios_build_artifacts WHERE build_id = ?'),
+
+    // Provisioning jobs
+    createProvisioningJob: db.prepare(
+      `INSERT INTO provisioning_jobs (id, project_id, payload_json, status)
+       VALUES (?, ?, ?, ?)`,
+    ),
+    finishProvisioningJob: db.prepare(
+      `UPDATE provisioning_jobs
+         SET status = ?, repo_url = ?, error_json = ?, finished_at = datetime('now')
+       WHERE id = ?`,
+    ),
+    getProvisioningJob: db.prepare('SELECT * FROM provisioning_jobs WHERE id = ?'),
   } as Stmts;
 
   dbRegistry.set(dataDir, { db, stmts });

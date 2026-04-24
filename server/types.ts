@@ -1137,6 +1137,11 @@ export interface Stmts {
   getWorkflowRunScoped: Stmt;
   cancelWorkflowRunIfPending: Stmt;
   getWorkflowStepRunsForRun: Stmt;
+
+  // Provisioning jobs — see server/provisioning/orchestrator.ts.
+  createProvisioningJob: Stmt;
+  finishProvisioningJob: Stmt;
+  getProvisioningJob: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────

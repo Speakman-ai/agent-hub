@@ -12,6 +12,25 @@ import type {
   RoomMessageQueueRow,
 } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
+import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
+
+/**
+ * Match `/api/provisioning/<jobId>/events` and return the jobId. Returns
+ * null if the URL is not a provisioning subscription — callers fall
+ * through to the normal agent-chat connection handler.
+ */
+export function parseProvisioningPath(rawUrl: string | undefined): string | null {
+  if (!rawUrl) return null;
+  // Strip query string; we don't consult it here.
+  const pathOnly = rawUrl.split('?')[0] ?? '';
+  const m = pathOnly.match(/^\/api\/provisioning\/([^/]+)\/events\/?$/);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]!);
+  } catch {
+    return null;
+  }
+}
 
 export default function createWebSocket(
   server: Server,
@@ -50,6 +69,17 @@ export default function createWebSocket(
   wss.on('connection', (ws: WsClient, request: IncomingMessage) => {
     if (!authenticateWs(request)) {
       ws.close(4401, 'Unauthorized — invalid or missing API key');
+      return;
+    }
+
+    // Provisioning subscription — a dedicated URL hands this connection
+    // off to the orchestrator's event stream rather than the normal
+    // agent-chat pipeline. Every buffered event replays, then live
+    // events stream in; the socket is closed automatically once the
+    // orchestrator emits `done`.
+    const provisioningJobId = parseProvisioningPath(request.url);
+    if (provisioningJobId) {
+      handleProvisioningSubscription(ws, provisioningJobId);
       return;
     }
 
@@ -161,4 +191,60 @@ export default function createWebSocket(
   });
 
   return { wss, broadcast };
+}
+
+/**
+ * Attach a freshly-opened WebSocket to a provisioning job. Replays every
+ * buffered event, then streams live events. Closes the socket on the
+ * terminal `done` event (or on error if the job id is unknown).
+ */
+function handleProvisioningSubscription(ws: WsClient, jobId: string): void {
+  const send = (data: Record<string, unknown>): void => {
+    if (ws.readyState !== WsClient.OPEN) return;
+    try {
+      ws.send(JSON.stringify(data));
+    } catch {
+      /* caller disconnected */
+    }
+  };
+
+  const unsubscribe = subscribeToJob(jobId, (ev) => {
+    send(ev as unknown as Record<string, unknown>);
+    if (ev.type === 'done') {
+      try {
+        ws.close(1000, 'Job complete');
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  if (!unsubscribe) {
+    send({ type: 'done', error: { code: 404, message: `Unknown job ${jobId}` } });
+    try {
+      ws.close(4404, 'Unknown provisioning job');
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  // Edge case: if the job already finished before we subscribed (tight
+  // race between POST and WS open), `subscribeToJob` replays the
+  // terminal done and we still need to close the socket.
+  if (isJobFinished(jobId)) {
+    try {
+      ws.close(1000, 'Job already complete');
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  ws.on('close', () => {
+    unsubscribe();
+  });
+  ws.on('error', () => {
+    unsubscribe();
+  });
 }
