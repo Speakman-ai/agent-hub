@@ -36,4 +36,24 @@ describe('agent-hub-user-data.tftpl', () => {
     // `ca-certificates` is required for TLS to docker registries / GitHub.
     expect(tpl).toMatch(/\$PKG_INSTALL\s+ca-certificates\s+git\b/);
   });
+
+  // Context: the server container image uses node:22-slim and runs as the
+  // built-in `node` user (uid/gid 1000). Bind mounts preserve *host*
+  // ownership, so if the bootstrap creates $DATA_ROOT/{data,uploads} owned
+  // by root the container cannot open the SQLite file and crash-loops with
+  // SQLITE_CANTOPEN. We observed this on fresh test123 boots and had to
+  // chown -R 1000:1000 via SSM to recover; regression guard below keeps the
+  // fix in place.
+  it('creates the docker bind-mount data dirs as uid/gid 1000 (container `node` user)', () => {
+    const rootOwned = /install -d -m 0755 -o root -g root "\$DATA_ROOT\/data"/;
+    expect(tpl, 'must not create $DATA_ROOT/data as root').not.toMatch(rootOwned);
+
+    // Both bootstrap branches (ECR pull + legacy build) must create the dirs
+    // with numeric 1000:1000 so the container user can write SQLite/uploads.
+    const matches = tpl.match(
+      /install -d -m 0755 -o 1000 -g 1000 "\$DATA_ROOT\/data" "\$DATA_ROOT\/uploads"/g,
+    );
+    expect(matches, 'expected 1000:1000 install -d in both bootstrap branches').not.toBeNull();
+    expect(matches!.length).toBeGreaterThanOrEqual(2);
+  });
 });
