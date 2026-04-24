@@ -1124,6 +1124,26 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS idx_provisioning_jobs_project
       ON provisioning_jobs(project_id);
+
+    -- Post-scaffold audit reports — one row per project (latest wins).
+    -- Persisted so the Act IV landing page can re-render without
+    -- re-running the audit. Schema is intentionally JSON-blob: the
+    -- shape is owned by server/audit/audit-service.ts (AuditReport).
+    CREATE TABLE IF NOT EXISTS project_audit_reports (
+      project_id TEXT PRIMARY KEY,
+      report_json TEXT NOT NULL,
+      generated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Per-project agent roster — track id → agent id mapping persisted
+    -- by the Act IV roster picker. Future autonomous-dispatch reads
+    -- from here to know who owns each track. JSON-blob keeps the
+    -- table flat while letting the picker evolve track shape freely.
+    CREATE TABLE IF NOT EXISTS project_rosters (
+      project_id TEXT PRIMARY KEY,
+      tracks_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Migration: designs gained org_id for multi-org scoping.
@@ -2602,6 +2622,34 @@ function initDb(dataDir: string): void {
        WHERE id = ?`,
     ),
     getProvisioningJob: db.prepare('SELECT * FROM provisioning_jobs WHERE id = ?'),
+    getLatestProvisioningJobForProject: db.prepare(
+      `SELECT * FROM provisioning_jobs
+         WHERE project_id = ?
+         ORDER BY started_at DESC
+         LIMIT 1`,
+    ),
+
+    // Post-scaffold audit reports + roster (Act IV).
+    upsertAuditReport: db.prepare(
+      `INSERT INTO project_audit_reports (project_id, report_json, generated_at)
+         VALUES (?, ?, datetime('now'))
+       ON CONFLICT(project_id) DO UPDATE
+         SET report_json = excluded.report_json,
+             generated_at = excluded.generated_at`,
+    ),
+    getAuditReport: db.prepare(
+      'SELECT report_json, generated_at FROM project_audit_reports WHERE project_id = ?',
+    ),
+    upsertProjectRoster: db.prepare(
+      `INSERT INTO project_rosters (project_id, tracks_json, updated_at)
+         VALUES (?, ?, datetime('now'))
+       ON CONFLICT(project_id) DO UPDATE
+         SET tracks_json = excluded.tracks_json,
+             updated_at = excluded.updated_at`,
+    ),
+    getProjectRoster: db.prepare(
+      'SELECT tracks_json, updated_at FROM project_rosters WHERE project_id = ?',
+    ),
   } as Stmts;
 
   dbRegistry.set(dataDir, { db, stmts });

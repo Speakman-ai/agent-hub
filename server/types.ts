@@ -1142,6 +1142,13 @@ export interface Stmts {
   createProvisioningJob: Stmt;
   finishProvisioningJob: Stmt;
   getProvisioningJob: Stmt;
+  getLatestProvisioningJobForProject: Stmt;
+
+  // Post-scaffold audit (Act IV) — see server/audit/audit-service.ts.
+  upsertAuditReport: Stmt;
+  getAuditReport: Stmt;
+  upsertProjectRoster: Stmt;
+  getProjectRoster: Stmt;
 }
 
 // ─── Project / Agent Types ───────────────────────────────────────
