@@ -63,12 +63,16 @@ export interface PhaseEvent {
   status: PhaseStatus;
   message?: string;
   at: string;
+  /** Monotonic sequence id assigned by the orchestrator — lets a reconnecting
+   * client resume with `?since=<seq>` and receive only newer events. */
+  seq?: number;
 }
 
 export interface LogEvent {
   type: 'log';
   line: string;
   at: string;
+  seq?: number;
 }
 
 export interface DoneEvent {
@@ -77,6 +81,7 @@ export interface DoneEvent {
   partial?: boolean;
   error?: { code: number; message: string; hint?: string };
   at: string;
+  seq?: number;
 }
 
 export type ProvisioningEvent = PhaseEvent | LogEvent | DoneEvent;
@@ -131,6 +136,8 @@ interface JobState {
   projectId: string | null;
   payload: ProvisioningPayload;
   events: ProvisioningEvent[];
+  /** Next seq id to assign — grows monotonically across the job. */
+  nextSeq: number;
   /** True once a 'done' event has been appended. */
   finished: boolean;
   subscribers: Set<(ev: ProvisioningEvent) => void>;
@@ -165,6 +172,10 @@ function nowIso(): string {
 }
 
 function appendEvent(job: JobState, ev: ProvisioningEvent): void {
+  // Stamp the event with the next seq id. Seq ids are monotonic across
+  // the whole job (not the buffer) so a reconnecting client can pass the
+  // last seq it saw and receive only newer events, even after head-drop.
+  ev.seq = job.nextSeq++;
   job.events.push(ev);
   if (job.events.length > EVENT_BUFFER_CAP) {
     // Drop from the head so the tail (including terminal 'done') is always kept.
@@ -179,6 +190,12 @@ function appendEvent(job: JobState, ev: ProvisioningEvent): void {
   }
 }
 
+export interface SubscribeOptions {
+  /** When set, replay only events with `seq > since`. Enables clients to
+   * resume after a dropped WebSocket without re-processing the whole log. */
+  since?: number;
+}
+
 /**
  * Subscribe to a job's event stream. The subscriber receives every
  * buffered event immediately (replay), then every live event until it
@@ -191,12 +208,17 @@ function appendEvent(job: JobState, ev: ProvisioningEvent): void {
 export function subscribeToJob(
   jobId: string,
   handler: (ev: ProvisioningEvent) => void,
+  opts: SubscribeOptions = {},
 ): (() => void) | null {
   const job = jobs.get(jobId);
   if (!job) return null;
 
-  // Replay.
+  const since = typeof opts.since === 'number' && Number.isFinite(opts.since) ? opts.since : -1;
+
+  // Replay — filter on `since` so reconnecting clients don't re-process
+  // events they already got. `seq` is monotonically assigned at append.
   for (const ev of job.events) {
+    if (typeof ev.seq === 'number' && ev.seq <= since) continue;
     try {
       handler(ev);
     } catch {
@@ -280,6 +302,7 @@ export function startProvisioningJob(opts: StartJobOptions): void {
     projectId,
     payload,
     events: [],
+    nextSeq: 0,
     finished: false,
     subscribers: new Set(),
   };

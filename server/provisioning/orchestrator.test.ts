@@ -255,6 +255,91 @@ describe('orchestrator', () => {
     expect(snapshotEvents('job-replay').length).toBe(events.length);
   });
 
+  it('stamps every event with a monotonically increasing seq', async () => {
+    const executor: ProvisioningExecutor = {
+      async runPhase() {
+        return { status: 'ok' };
+      },
+    };
+
+    startProvisioningJob({
+      jobId: 'job-seq',
+      payload: { description: 'x', integrations: ['db'] },
+      projectId: 'proj-seq',
+      executor,
+    });
+
+    const c = collect('job-seq');
+    await waitForDone(c);
+
+    const seqs = c.events.map((e) => (e as { seq?: number }).seq);
+    expect(seqs.every((s) => typeof s === 'number')).toBe(true);
+    // Strictly monotonic from 0.
+    for (let i = 0; i < seqs.length; i++) {
+      expect(seqs[i]).toBe(i);
+    }
+  });
+
+  it('replays only events after `since` for a reconnecting subscriber', async () => {
+    const executor: ProvisioningExecutor = {
+      async runPhase() {
+        return { status: 'ok' };
+      },
+    };
+
+    startProvisioningJob({
+      jobId: 'job-since',
+      payload: { description: 'x', integrations: ['db'] },
+      projectId: 'proj-since',
+      executor,
+    });
+
+    // Let the orchestrator finish so the ring buffer is populated.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const snap = snapshotEvents('job-since');
+    expect(snap.length).toBeGreaterThan(3);
+    // Subscribe with `since` pointing at the middle of the stream.
+    const midSeq = (snap[Math.floor(snap.length / 2)] as { seq?: number }).seq!;
+    const received: ProvisioningEvent[] = [];
+    const unsubscribe = subscribeToJob('job-since', (ev) => received.push(ev), { since: midSeq });
+    expect(unsubscribe).not.toBeNull();
+
+    // Only strictly-newer events should have replayed.
+    expect(received.length).toBeGreaterThan(0);
+    expect(received.length).toBeLessThan(snap.length);
+    for (const ev of received) {
+      expect((ev as { seq?: number }).seq! > midSeq).toBe(true);
+    }
+    // And the terminal done must be present in the tail replay.
+    expect(received.some((e) => e.type === 'done')).toBe(true);
+  });
+
+  it('replays all events when `since` is negative or unset', async () => {
+    const executor: ProvisioningExecutor = {
+      async runPhase() {
+        return { status: 'ok' };
+      },
+    };
+
+    startProvisioningJob({
+      jobId: 'job-since-none',
+      payload: { description: 'x', integrations: ['db'] },
+      projectId: 'proj-sn',
+      executor,
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    const all = snapshotEvents('job-since-none');
+
+    const full: ProvisioningEvent[] = [];
+    subscribeToJob('job-since-none', (ev) => full.push(ev));
+    expect(full.length).toBe(all.length);
+
+    const negative: ProvisioningEvent[] = [];
+    subscribeToJob('job-since-none', (ev) => negative.push(ev), { since: -5 });
+    expect(negative.length).toBe(all.length);
+  });
+
   it('pipes executor log() calls into log events', async () => {
     const executor: ProvisioningExecutor = {
       async runPhase(phase, ctx) {

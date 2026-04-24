@@ -7,7 +7,7 @@
  * `null`, but never throws.
  */
 import { describe, it, expect } from 'vitest';
-import { parseProvisioningPath } from './websocket.js';
+import { parseProvisioningPath, parseProvisioningSince } from './websocket.js';
 
 describe('parseProvisioningPath', () => {
   it('extracts the jobId from a canonical UUID path', () => {
@@ -49,5 +49,35 @@ describe('parseProvisioningPath', () => {
     // returns a string or null, never throws.
     expect(() => parseProvisioningPath('/api/provisioning/foo.bar/events')).not.toThrow();
     expect(() => parseProvisioningPath('/api/provisioning/abc/events')).not.toThrow();
+  });
+});
+
+describe('parseProvisioningSince', () => {
+  it('returns null when no query string is present', () => {
+    expect(parseProvisioningSince('/api/provisioning/job-1/events')).toBeNull();
+    expect(parseProvisioningSince(undefined)).toBeNull();
+    expect(parseProvisioningSince('')).toBeNull();
+  });
+
+  it('returns null when `since` is missing from the query string', () => {
+    expect(parseProvisioningSince('/api/provisioning/job-1/events?token=abc')).toBeNull();
+  });
+
+  it('parses a valid non-negative integer `since` value', () => {
+    expect(parseProvisioningSince('/api/provisioning/job-1/events?since=0')).toBe(0);
+    expect(parseProvisioningSince('/api/provisioning/job-1/events?since=42')).toBe(42);
+    expect(parseProvisioningSince('/api/provisioning/job-1/events?token=t&since=7')).toBe(7);
+  });
+
+  it('rejects malformed / negative / non-integer values', () => {
+    expect(parseProvisioningSince('/api/provisioning/job-1/events?since=abc')).toBeNull();
+    expect(parseProvisioningSince('/api/provisioning/job-1/events?since=-1')).toBeNull();
+    expect(parseProvisioningSince('/api/provisioning/job-1/events?since=1.5')).toBeNull();
+    expect(parseProvisioningSince('/api/provisioning/job-1/events?since=')).toBeNull();
+  });
+
+  it('never throws on malformed escape sequences', () => {
+    expect(() => parseProvisioningSince('/api/provisioning/job-1/events?since=%ZZ')).not.toThrow();
+    expect(parseProvisioningSince('/api/provisioning/job-1/events?since=%ZZ')).toBeNull();
   });
 });

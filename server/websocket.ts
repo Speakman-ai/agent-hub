@@ -32,6 +32,39 @@ export function parseProvisioningPath(rawUrl: string | undefined): string | null
   }
 }
 
+/**
+ * Parse the `?since=<seq>` query parameter from a provisioning WS URL.
+ * Returns the non-negative integer seq, or `null` if absent/invalid.
+ * Callers use this to resume a dropped stream without re-processing
+ * already-received events. Malformed / negative / non-integer values
+ * are treated as absent rather than errors — the server just replays
+ * the whole buffer, which is a safe degradation.
+ */
+export function parseProvisioningSince(rawUrl: string | undefined): number | null {
+  if (!rawUrl) return null;
+  const qIndex = rawUrl.indexOf('?');
+  if (qIndex < 0) return null;
+  const query = rawUrl.slice(qIndex + 1);
+  let since: string | null = null;
+  for (const part of query.split('&')) {
+    const [k, v] = part.split('=', 2);
+    if (k === 'since') {
+      since = v ?? '';
+      break;
+    }
+  }
+  if (since == null || since === '') return null;
+  try {
+    const decoded = decodeURIComponent(since);
+    if (decoded === '') return null;
+    const n = Number(decoded);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) return null;
+    return n;
+  } catch {
+    return null;
+  }
+}
+
 export default function createWebSocket(
   server: Server,
   deps: WebSocketDeps,
@@ -79,7 +112,8 @@ export default function createWebSocket(
     // orchestrator emits `done`.
     const provisioningJobId = parseProvisioningPath(request.url);
     if (provisioningJobId) {
-      handleProvisioningSubscription(ws, provisioningJobId);
+      const since = parseProvisioningSince(request.url);
+      handleProvisioningSubscription(ws, provisioningJobId, since);
       return;
     }
 
@@ -197,8 +231,16 @@ export default function createWebSocket(
  * Attach a freshly-opened WebSocket to a provisioning job. Replays every
  * buffered event, then streams live events. Closes the socket on the
  * terminal `done` event (or on error if the job id is unknown).
+ *
+ * `since` (optional): the last seq id the client already received; only
+ * events with `seq > since` are replayed. Used by the client's reconnect
+ * path so a dropped stream can resume without re-processing.
  */
-function handleProvisioningSubscription(ws: WsClient, jobId: string): void {
+function handleProvisioningSubscription(
+  ws: WsClient,
+  jobId: string,
+  since: number | null = null,
+): void {
   const send = (data: Record<string, unknown>): void => {
     if (ws.readyState !== WsClient.OPEN) return;
     try {
@@ -208,16 +250,20 @@ function handleProvisioningSubscription(ws: WsClient, jobId: string): void {
     }
   };
 
-  const unsubscribe = subscribeToJob(jobId, (ev) => {
-    send(ev as unknown as Record<string, unknown>);
-    if (ev.type === 'done') {
-      try {
-        ws.close(1000, 'Job complete');
-      } catch {
-        /* ignore */
+  const unsubscribe = subscribeToJob(
+    jobId,
+    (ev) => {
+      send(ev as unknown as Record<string, unknown>);
+      if (ev.type === 'done') {
+        try {
+          ws.close(1000, 'Job complete');
+        } catch {
+          /* ignore */
+        }
       }
-    }
-  });
+    },
+    since != null ? { since } : {},
+  );
 
   if (!unsubscribe) {
     send({ type: 'done', error: { code: 404, message: `Unknown job ${jobId}` } });

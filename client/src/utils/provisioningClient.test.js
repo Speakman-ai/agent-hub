@@ -121,9 +121,12 @@ describe('subscribeProvisioningEvents', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('fires onClose when the server closes the socket', () => {
+  it('fires onClose after the server closes the socket following a terminal done event', () => {
     const onClose = vi.fn();
-    subscribeProvisioningEvents('ws://x', { onEvent: vi.fn(), onClose });
+    const onEvent = vi.fn();
+    subscribeProvisioningEvents('ws://x', { onEvent, onClose });
+    // Deliver terminal done, then server closes — this is the clean path.
+    sockets[0].onmessage({ data: JSON.stringify({ type: 'done', seq: 0 }) });
     sockets[0].onclose();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -137,5 +140,264 @@ describe('subscribeProvisioningEvents', () => {
     expect(onError).toHaveBeenCalled();
     // close() is still safe after construction failure
     expect(() => handle.close()).not.toThrow();
+  });
+
+  it('resumes from the last seq after an unexpected close', () => {
+    const sockets = [];
+    const factory = (url) => {
+      const sock = {
+        url,
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        closed: false,
+        close: vi.fn(function () {
+          this.closed = true;
+        }),
+      };
+      sockets.push(sock);
+      return sock;
+    };
+    const scheduled = [];
+    const setTimeoutFn = (fn /*, ms */) => {
+      scheduled.push(fn);
+      return scheduled.length;
+    };
+    const clearTimeoutFn = vi.fn();
+    const onEvent = vi.fn();
+    const onClose = vi.fn();
+
+    subscribeProvisioningEvents('ws://job', {
+      onEvent,
+      onClose,
+      watchdogMs: 60_000,
+      reconnectBackoffMs: 0,
+      maxReconnects: 1,
+      webSocketFactory: factory,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    expect(sockets.length).toBe(1);
+    // Deliver two events with seqs.
+    sockets[0].onmessage({
+      data: JSON.stringify({ type: 'phase', phase: 'validate', status: 'ok', seq: 0 }),
+    });
+    sockets[0].onmessage({
+      data: JSON.stringify({ type: 'phase', phase: 'copy-template', status: 'ok', seq: 1 }),
+    });
+    expect(onEvent).toHaveBeenCalledTimes(2);
+
+    // Server drops the socket mid-stream — onclose fires WITHOUT a terminal done.
+    sockets[0].onclose();
+    // onClose MUST NOT have been called yet — the client should reconnect silently.
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Run the scheduled reconnect timer.
+    expect(scheduled.length).toBeGreaterThan(0);
+    // First scheduled callback is the watchdog; find the reconnect one
+    // (scheduled after clearing the watchdog). We just run them all — the
+    // watchdog's callback is a no-op because state.closed is false but
+    // state.doneReceived is also false, so it'd synthesize a stall. To
+    // avoid that, only run the most recently scheduled (the reconnect).
+    const reconnectFn = scheduled[scheduled.length - 1];
+    reconnectFn();
+
+    // Second socket should have been opened with ?since=1.
+    expect(sockets.length).toBe(2);
+    expect(sockets[1].url).toBe('ws://job?since=1');
+
+    // Resume stream delivers terminal done — the second socket should
+    // fire onClose after the done event lands.
+    sockets[1].onmessage({ data: JSON.stringify({ type: 'done', seq: 2 }) });
+    sockets[1].onclose();
+    expect(onEvent).toHaveBeenCalledWith({ type: 'done', seq: 2 });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a STREAM_DROPPED failure when the second socket also drops', () => {
+    const sockets = [];
+    const factory = (url) => {
+      const sock = {
+        url,
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        closed: false,
+        close: vi.fn(),
+      };
+      sockets.push(sock);
+      return sock;
+    };
+    const scheduled = [];
+    const setTimeoutFn = (fn) => {
+      scheduled.push(fn);
+      return scheduled.length;
+    };
+    const clearTimeoutFn = vi.fn();
+    const onEvent = vi.fn();
+    const onClose = vi.fn();
+
+    subscribeProvisioningEvents('ws://job', {
+      onEvent,
+      onClose,
+      watchdogMs: 60_000,
+      reconnectBackoffMs: 0,
+      maxReconnects: 1,
+      webSocketFactory: factory,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    // First socket: deliver one event then drop.
+    sockets[0].onmessage({
+      data: JSON.stringify({ type: 'phase', phase: 'validate', status: 'ok', seq: 0 }),
+    });
+    sockets[0].onclose();
+
+    // Run the reconnect timer (last scheduled).
+    scheduled[scheduled.length - 1]();
+    expect(sockets.length).toBe(2);
+    expect(sockets[1].url).toBe('ws://job?since=0');
+
+    // Second socket drops without any event — reconnect budget exhausted.
+    sockets[1].onclose();
+
+    // Caller should have received a synthesized terminal done with
+    // STREAM_DROPPED so their UI can render the failure card.
+    const doneCall = onEvent.mock.calls.find((c) => c[0]?.type === 'done');
+    expect(doneCall).toBeTruthy();
+    expect(doneCall[0].error.code).toBe('STREAM_DROPPED');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('watchdog fires a STREAM_STALLED failure when the stream goes silent', () => {
+    const sockets = [];
+    const factory = (url) => {
+      const sock = {
+        url,
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        close: vi.fn(),
+      };
+      sockets.push(sock);
+      return sock;
+    };
+    const scheduled = [];
+    const setTimeoutFn = (fn, ms) => {
+      scheduled.push({ fn, ms });
+      return scheduled.length;
+    };
+    const clearTimeoutFn = vi.fn();
+    const onEvent = vi.fn();
+    const onClose = vi.fn();
+
+    subscribeProvisioningEvents('ws://job', {
+      onEvent,
+      onClose,
+      watchdogMs: 1_000,
+      reconnectBackoffMs: 0,
+      maxReconnects: 1,
+      webSocketFactory: factory,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    // No events arrive; run the watchdog timer (the very first scheduled
+    // callback after connect is the watchdog).
+    expect(scheduled.length).toBeGreaterThan(0);
+    expect(scheduled[0].ms).toBe(1_000);
+    scheduled[0].fn();
+
+    const doneCall = onEvent.mock.calls.find((c) => c[0]?.type === 'done');
+    expect(doneCall).toBeTruthy();
+    expect(doneCall[0].error.code).toBe('STREAM_STALLED');
+    expect(doneCall[0].error.message).toMatch(/1000ms/);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('watchdog resets on each incoming event', () => {
+    const sockets = [];
+    const factory = (url) => {
+      const sock = {
+        url,
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        close: vi.fn(),
+      };
+      sockets.push(sock);
+      return sock;
+    };
+    // Track timers — we clear & re-arm on every event, so the scheduled
+    // array grows monotonically and the clearTimeoutFn is called.
+    const scheduled = [];
+    let nextHandle = 1;
+    const setTimeoutFn = (fn, ms) => {
+      const id = nextHandle++;
+      scheduled.push({ id, fn, ms });
+      return id;
+    };
+    const clearTimeoutFn = vi.fn();
+
+    subscribeProvisioningEvents('ws://job', {
+      onEvent: vi.fn(),
+      onClose: vi.fn(),
+      watchdogMs: 1_000,
+      reconnectBackoffMs: 0,
+      webSocketFactory: factory,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    // Initial watchdog armed at connect.
+    expect(scheduled.length).toBe(1);
+    // Event arrives — watchdog should be cleared and re-armed.
+    sockets[0].onmessage({ data: JSON.stringify({ type: 'log', line: 'hi', seq: 0 }) });
+    expect(clearTimeoutFn).toHaveBeenCalled();
+    expect(scheduled.length).toBe(2);
+  });
+
+  it('terminal done clears the watchdog so it never fires post-completion', () => {
+    const sockets = [];
+    const factory = (url) => {
+      const sock = {
+        url,
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        close: vi.fn(),
+      };
+      sockets.push(sock);
+      return sock;
+    };
+    const scheduled = [];
+    const setTimeoutFn = (fn, ms) => {
+      scheduled.push({ fn, ms });
+      return scheduled.length;
+    };
+    const clearTimeoutFn = vi.fn();
+    const onEvent = vi.fn();
+    const onClose = vi.fn();
+
+    subscribeProvisioningEvents('ws://job', {
+      onEvent,
+      onClose,
+      watchdogMs: 1_000,
+      webSocketFactory: factory,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    sockets[0].onmessage({ data: JSON.stringify({ type: 'done', seq: 0 }) });
+    sockets[0].onclose();
+
+    // Running the initial watchdog callback after done must NOT emit a
+    // second synthesized terminal event.
+    const firstWatchdog = scheduled[0].fn;
+    onEvent.mockClear();
+    firstWatchdog();
+    expect(onEvent).not.toHaveBeenCalled();
   });
 });

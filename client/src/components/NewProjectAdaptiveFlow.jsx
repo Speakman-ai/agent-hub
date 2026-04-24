@@ -43,6 +43,10 @@ export default function NewProjectAdaptiveFlow({
   onProjectCreated,
   provision = defaultProvision,
   subscribe = defaultSubscribe,
+  /** Provisioning watchdog window (ms) — how long the stream can stay
+   * silent before we synthesize a terminal failure. Override via prop for
+   * E2E tests; subscribe() also honours VITE_PROVISIONING_WATCHDOG_MS. */
+  watchdogMs,
 }) {
   const [view, setView] = useState('questionnaire');
   const [events, setEvents] = useState([]);
@@ -77,16 +81,19 @@ export default function NewProjectAdaptiveFlow({
         const handle = subscribe(wsUrl, {
           onEvent: (ev) => setEvents((prev) => [...prev, ev]),
           onClose: () => {
-            // No-op — the terminal `done` event in the stream drives the
-            // overall status. An unexpected close without a done event
-            // leaves the UI mid-flight; a follow-up card will add a
-            // watchdog timer.
+            // The terminal `done` event in the stream drives the overall
+            // status. The subscribe helper owns the reconnect + watchdog
+            // behavior — if it can't recover, it synthesizes a terminal
+            // `done` with a STREAM_STALLED / STREAM_DROPPED error code,
+            // which ProvisioningStatus renders as a failure card with
+            // retry. Nothing extra needed here.
           },
           onError: (err) => {
             setLaunchError(
               err instanceof Error ? err.message : 'Unknown provisioning stream error',
             );
           },
+          ...(typeof watchdogMs === 'number' ? { watchdogMs } : {}),
         });
         streamHandleRef.current = handle;
       } catch (err) {
@@ -104,7 +111,7 @@ export default function NewProjectAdaptiveFlow({
         ]);
       }
     },
-    [provision, subscribe],
+    [provision, subscribe, watchdogMs],
   );
 
   const handleRetry = useCallback(() => {
