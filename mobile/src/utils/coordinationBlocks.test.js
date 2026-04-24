@@ -6,6 +6,16 @@ import {
   pickHandoffRow,
 } from './coordinationBlocks.js';
 
+const delegateTask = (agentId = 'a', task = 'do A') => ({
+  agentId,
+  task,
+  owner: 'hub-backend',
+  scope: 'server-only',
+  expectedArtifact: 'patch + tests',
+  deadline: 'end-of-turn',
+  returnFormat: 'summary',
+});
+
 // Mirror of client/src/utils/coordinationBlocks.test.js so the mobile twin
 // stays in parse-parity with the web util. New cases live below under
 // `pickHandoffRow` for the mobile-only helper.
@@ -47,26 +57,25 @@ describe('parseHandoffBlock', () => {
 
 describe('parseDelegateBlock', () => {
   it('parses an array of tasks using the canonical agentId field', () => {
-    const text = `<delegate>[{"agentId":"a","task":"do A"},{"agentId":"b","task":"do B"}]</delegate>`;
-    expect(parseDelegateBlock(text)).toEqual([
-      { agentId: 'a', task: 'do A' },
-      { agentId: 'b', task: 'do B' },
-    ]);
+    const text = `<delegate>[${JSON.stringify(delegateTask('a', 'do A'))},${JSON.stringify(delegateTask('b', 'do B'))}]</delegate>`;
+    expect(parseDelegateBlock(text)).toEqual([delegateTask('a', 'do A'), delegateTask('b', 'do B')]);
   });
 
-  it('also accepts the legacy toAgent alias', () => {
-    const text = `<delegate>[{"toAgent":"a","task":"do A"}]</delegate>`;
-    expect(parseDelegateBlock(text)).toEqual([{ agentId: 'a', task: 'do A' }]);
+  it('accepts toAgent as an alias for agentId when the full contract is present', () => {
+    const full = delegateTask('a', 'do A');
+    const { agentId, ...rest } = full;
+    const text = `<delegate>${JSON.stringify([{ toAgent: agentId, ...rest }])}</delegate>`;
+    expect(parseDelegateBlock(text)).toEqual([full]);
   });
 
   it('coerces a single object into a one-element array', () => {
-    const text = `<delegate>{"agentId":"a","task":"do A"}</delegate>`;
-    expect(parseDelegateBlock(text)).toEqual([{ agentId: 'a', task: 'do A' }]);
+    const text = `<delegate>${JSON.stringify(delegateTask('a', 'do A'))}</delegate>`;
+    expect(parseDelegateBlock(text)).toEqual([delegateTask('a', 'do A')]);
   });
 
-  it('skips entries with missing fields', () => {
-    const text = `<delegate>[{"agentId":"a","task":"x"},{"agentId":"","task":"y"},{"task":"z"}]</delegate>`;
-    expect(parseDelegateBlock(text)).toEqual([{ agentId: 'a', task: 'x' }]);
+  it('returns null when some rows omit contract fields', () => {
+    const text = `<delegate>[{"agentId":"a","task":"x"},{"agentId":"b","task":"y","owner":"x"}]</delegate>`;
+    expect(parseDelegateBlock(text)).toBeNull();
   });
 
   it('returns null when no valid entries remain', () => {
@@ -100,18 +109,20 @@ describe('extractCoordinationBlocks', () => {
   });
 
   it('strips a delegate block and returns the parsed tasks (server-spec agentId format)', () => {
-    const text = `Splitting work.\n<delegate>[{"agentId":"a","task":"x"}]</delegate>`;
+    const text = `Splitting work.\n<delegate>[${JSON.stringify(delegateTask('a', 'x'))}]</delegate>`;
     const out = extractCoordinationBlocks(text);
     expect(out.stripped).toBe('Splitting work.');
-    expect(out.delegate).toEqual([{ agentId: 'a', task: 'x' }]);
+    expect(out.delegate).toEqual([delegateTask('a', 'x')]);
     expect(out.handoff).toBeNull();
   });
 
-  it('strips a delegate block authored with the legacy toAgent alias so the raw JSON never leaks', () => {
-    const text = `Splitting work.\n<delegate>[{"toAgent":"a","task":"x"}]</delegate>`;
+  it('strips a delegate block that uses toAgent with the full contract', () => {
+    const full = delegateTask('a', 'x');
+    const { agentId, ...rest } = full;
+    const text = `Splitting work.\n<delegate>${JSON.stringify([{ toAgent: agentId, ...rest }])}</delegate>`;
     const out = extractCoordinationBlocks(text);
     expect(out.stripped).toBe('Splitting work.');
-    expect(out.delegate).toEqual([{ agentId: 'a', task: 'x' }]);
+    expect(out.delegate).toEqual([full]);
   });
 
   it('collapses excess blank lines left by stripping', () => {
@@ -121,19 +132,19 @@ describe('extractCoordinationBlocks', () => {
   });
 
   it('handles both block kinds in a single message', () => {
-    const text = `Prose.\n<handoff>{"toAgent":"a","note":"b"}</handoff>\n<delegate>[{"agentId":"c","task":"d"}]</delegate>`;
+    const text = `Prose.\n<handoff>{"toAgent":"a","note":"b"}</handoff>\n<delegate>[${JSON.stringify(delegateTask('c', 'd'))}]</delegate>`;
     const out = extractCoordinationBlocks(text);
     expect(out.stripped).toBe('Prose.');
     expect(out.handoff).toEqual({ toAgent: 'a', note: 'b' });
-    expect(out.delegate).toEqual([{ agentId: 'c', task: 'd' }]);
+    expect(out.delegate).toEqual([delegateTask('c', 'd')]);
   });
 
   it('peels delegate after handoff when delegate is inner suffix (matches web loop)', () => {
-    const text = `Prose.\n<delegate>[{"agentId":"c","task":"d"}]</delegate>\n<handoff>{"toAgent":"a","note":"b"}</handoff>`;
+    const text = `Prose.\n<delegate>[${JSON.stringify(delegateTask('c', 'd'))}]</delegate>\n<handoff>{"toAgent":"a","note":"b"}</handoff>`;
     const out = extractCoordinationBlocks(text);
     expect(out.stripped).toBe('Prose.');
     expect(out.handoff).toEqual({ toAgent: 'a', note: 'b' });
-    expect(out.delegate).toEqual([{ agentId: 'c', task: 'd' }]);
+    expect(out.delegate).toEqual([delegateTask('c', 'd')]);
     expect(out.stripped).not.toMatch(/<delegate>|<handoff>/);
   });
 

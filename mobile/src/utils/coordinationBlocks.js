@@ -40,13 +40,16 @@ export function parseDelegateBlock(text) {
   } catch {
     return null;
   }
+  if (parsed == null || (typeof parsed !== 'object' && !Array.isArray(parsed))) return null;
   const list = Array.isArray(parsed) ? parsed : [parsed];
+  if (list.length === 0) return null;
   const tasks = [];
+  let invalidRows = 0;
   for (const entry of list) {
-    if (!entry || typeof entry !== 'object') continue;
-    // Canonical field is `agentId` (matches server/delegation.ts). Accept
-    // `toAgent` as a tolerant alias so mis-schooled / legacy messages still
-    // strip cleanly in the UI.
+    if (!entry || typeof entry !== 'object') {
+      invalidRows += 1;
+      continue;
+    }
     const rawAgentId =
       typeof entry.agentId === 'string'
         ? entry.agentId
@@ -55,10 +58,21 @@ export function parseDelegateBlock(text) {
           : '';
     const agentId = rawAgentId.trim();
     const task = typeof entry.task === 'string' ? entry.task.trim() : '';
-    if (!agentId || !task) continue;
-    tasks.push({ agentId, task });
+    const owner = typeof entry.owner === 'string' ? entry.owner.trim() : '';
+    const scope = typeof entry.scope === 'string' ? entry.scope.trim() : '';
+    const expectedArtifact =
+      typeof entry.expectedArtifact === 'string' ? entry.expectedArtifact.trim() : '';
+    const deadline = typeof entry.deadline === 'string' ? entry.deadline.trim() : '';
+    const returnFormat = typeof entry.returnFormat === 'string' ? entry.returnFormat.trim() : '';
+    if (!agentId || !task || !owner || !scope || !expectedArtifact || !deadline || !returnFormat) {
+      invalidRows += 1;
+      continue;
+    }
+    tasks.push({ agentId, task, owner, scope, expectedArtifact, deadline, returnFormat });
   }
-  return tasks.length > 0 ? tasks : null;
+  if (tasks.length === 0) return null;
+  if (invalidRows > 0) return null;
+  return tasks;
 }
 
 export function extractCoordinationBlocks(text) {

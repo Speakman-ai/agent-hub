@@ -20,7 +20,11 @@ import {
   handleHandoff,
   buildHandoffPromptSection,
 } from './handoff.js';
-import { parseCloseCardBlock, handleCardAutoClose } from './card-auto-close.js';
+import {
+  detectCloseCardBlock,
+  describeCloseCardReason,
+  handleCardAutoClose,
+} from './card-auto-close.js';
 import {
   detectSkillBlock as detectSkillInvokeBlock,
   handleSkillInvoke,
@@ -106,6 +110,11 @@ interface SlashSkillResult {
 interface DelegateTask {
   agentId: string;
   task: string;
+  owner: string;
+  scope: string;
+  expectedArtifact: string;
+  deadline: string;
+  returnFormat: string;
 }
 
 interface BuildEnrichedPromptOptions {
@@ -488,7 +497,7 @@ If you pick up a card and discover the work is redundant — either covered by a
 - \`reason\`: \`"duplicate"\` or \`"already-done"\` (required)
 - \`note\`: one-line explanation shown in the auto-close comment (required)
 - \`duplicateOfCardId\`: optional, the canonical card id the work duplicates
-The server moves the session's linked card to Done and appends an explanatory comment referencing this session.`;
+The server moves the session's linked card to Done and appends an explanatory comment referencing this session. Malformed payloads (missing/invalid fields) are rejected with a system message and the card is **not** moved.`;
         }
       }
     }
@@ -680,12 +689,21 @@ Agent Hub renders a rich picker (radio/checkbox cards with side-by-side previews
       .join('\n');
 
     if (isFirstMessage) {
+      prompt += `\n\n## Lead Response Contract
+For non-trivial execution updates, end with a compact structured block in prose (not JSON) using these headings:
+- \`Goal\`
+- \`Actions taken\`
+- \`Evidence\`
+- \`Result\`
+- \`Next step\`
+Do not omit \`Evidence\` or \`Next step\`.`;
+
       prompt += `\n\n## Delegation
 
 You lead a team of sub-agents. Delegate by including a \`<delegate>\` block:
 \`\`\`
 <delegate>
-[{"agentId": "sub-agent-id", "task": "..."}]
+[{"agentId":"sub-agent-id","task":"...","owner":"...","scope":"...","expectedArtifact":"...","deadline":"...","returnFormat":"..."}]
 </delegate>
 \`\`\`
 
@@ -710,6 +728,7 @@ Format (single target, JSON payload):
 Rules:
 - Handoff is **terminal** in the turn — anything you emit after \`</handoff>\` is dropped.
 - Target must be one of your listed sub-agents (same project).
+- Only \`toAgent\` and \`note\` are parsed. Put evidence of current state and the exact next action **inside \`note\` as prose** — extra top-level keys are silently ignored.
 - Use a meaty \`note\`: file paths with line numbers, linked card id, the exact next action. The transcript comes along for free, but the note is what the target reads first.
 - Prefer \`<handoff>\` over \`<delegate>\` when the specialist will take multiple turns, needs full context, or is expected to commit/PR. Prefer \`<delegate>\` for short parallel side-quests whose results you'll synthesize.`;
     } else {
@@ -917,6 +936,50 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       console.error('Failed to persist error message:', message);
     }
     return content;
+  }
+
+  // Persist a system message explaining why a close-card gate rejected a
+  // malformed `<agenthub:close-card>` block. Best-effort: on DB failure we
+  // still broadcast to live clients so the rejection is visible in the
+  // running session, even if a reload wouldn't show it.
+  function persistCloseCardGateSystemMessage(
+    sessionId: string,
+    content: string,
+    meta: Record<string, unknown>,
+  ): void {
+    const msgId = uuidv4();
+    const metadata = JSON.stringify(meta);
+    try {
+      stmts.addMessage.run(msgId, sessionId, 'system', content, null, null, null, metadata);
+      stmts.touchSession.run(sessionId);
+      const insertedMessage = (stmts.getMessageById.get(msgId) as MessageRow | undefined) ?? {
+        id: msgId,
+        session_id: sessionId,
+        role: 'system' as const,
+        content,
+        engine: null,
+        model: null,
+        attachments: null,
+        metadata,
+        created_at: new Date().toISOString(),
+      };
+      broadcast({ type: 'message_added', sessionId, message: insertedMessage });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[close-card-gate] Failed to persist system message:', message);
+      const fallback: MessageRow = {
+        id: msgId,
+        session_id: sessionId,
+        role: 'system',
+        content,
+        engine: null,
+        model: null,
+        attachments: null,
+        metadata,
+        created_at: new Date().toISOString(),
+      };
+      broadcast({ type: 'message_added', sessionId, message: fallback });
+    }
   }
 
   function createCursorChat(cwd: string): Promise<string> {
@@ -1956,7 +2019,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       const rawFinalContent = assembled || errorOutput.trim() || '(empty response)';
       let finalContent = rawFinalContent;
-      const closeTask = parseCloseCardBlock(rawFinalContent);
+      const closeCardDetection = detectCloseCardBlock(rawFinalContent);
+      const closeTask = closeCardDetection.task;
       const handoffDetection = enrichedAgent ? detectHandoffBlock(rawFinalContent) : null;
       const delegateTasks =
         agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0
@@ -2291,8 +2355,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           : '(empty response)';
       }
 
+      const hasDelegateBlock = /<delegate>\s*[\s\S]*?\s*<\/delegate>/.test(rawFinalContent);
       const controlFlowPresent =
-        !!closeTask || !!handoffDetection?.present || !!handoffDetection?.task || !!delegateTasks;
+        !!closeTask ||
+        !!closeCardDetection.present ||
+        !!handoffDetection?.present ||
+        !!handoffDetection?.task ||
+        !!delegateTasks ||
+        hasDelegateBlock;
       budgetResult = evaluateReactContinuationBudgets({
         reactLoopEnabled,
         continuationContextAdded,
@@ -2497,6 +2567,20 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       // Auto-close the linked kanban card when the agent reports the work
       // is a duplicate or already done via an `<agenthub:close-card>` block.
+      // Malformed blocks (missing/invalid fields) are rejected via a system
+      // message; the linked card is not moved.
+      if (closeCardDetection.present && !closeTask && closeCardDetection.reason) {
+        persistCloseCardGateSystemMessage(
+          sessionId,
+          `**Card close gate rejected:** ${describeCloseCardReason(closeCardDetection.reason)}.\n\nThe linked kanban card was **not** moved to Done.`,
+          {
+            kind: 'close_card_gate',
+            outcome: 'gate_rejected',
+            reason: closeCardDetection.reason,
+          },
+        );
+      }
+
       if (closeTask) {
         try {
           const projectId =
@@ -2605,6 +2689,49 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           );
           drainQueue(sessionId);
           return;
+        }
+      }
+
+      if (
+        agent.role === 'lead' &&
+        agent.subAgents &&
+        agent.subAgents.length > 0 &&
+        hasDelegateBlock &&
+        !delegateTasks
+      ) {
+        const sysId = uuidv4();
+        const body =
+          '**Delegation gate rejected.** `<delegate>` payload must be a JSON array of task objects (or a single task object — it will be coerced to a one-element array). Every task must include `agentId`, `task`, `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`. No delegation was started.';
+        try {
+          stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
+          stmts.touchSession.run(sessionId);
+          const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
+            id: sysId,
+            session_id: sessionId,
+            role: 'system' as const,
+            content: body,
+            engine: null,
+            model: null,
+            attachments: null,
+            metadata: null,
+            created_at: new Date().toISOString(),
+          };
+          broadcast({ type: 'message_added', sessionId, message: insertedMessage });
+        } catch (err: unknown) {
+          const m = err instanceof Error ? err.message : String(err);
+          console.warn(`[delegation] failed to persist malformed delegate notice: ${m}`);
+          const fallback: MessageRow = {
+            id: sysId,
+            session_id: sessionId,
+            role: 'system',
+            content: body,
+            engine: null,
+            model: null,
+            attachments: null,
+            metadata: null,
+            created_at: new Date().toISOString(),
+          };
+          broadcast({ type: 'message_added', sessionId, message: fallback });
         }
       }
 

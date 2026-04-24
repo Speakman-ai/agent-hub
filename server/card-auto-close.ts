@@ -36,6 +36,21 @@ export interface CloseCardTask {
   duplicateOfCardId?: string;
 }
 
+export type CloseCardMalformedReason =
+  | 'invalid-json'
+  | 'not-object'
+  | 'missing-reason'
+  | 'invalid-reason'
+  | 'missing-note'
+  | 'empty-note';
+
+export interface CloseCardDetectionResult {
+  present: boolean;
+  task: CloseCardTask | null;
+  reason: CloseCardMalformedReason | null;
+  rawBody: string | null;
+}
+
 export interface CardAutoCloseResult {
   cardId: string;
   previousColumnId: string;
@@ -79,21 +94,27 @@ export interface CardAutoCloseDeps {
  *
  * Exported for tests.
  */
-export function parseCloseCardBlock(text: string): CloseCardTask | null {
-  if (typeof text !== 'string') return null;
+export function detectCloseCardBlock(text: string): CloseCardDetectionResult {
+  if (typeof text !== 'string') {
+    return { present: false, task: null, reason: null, rawBody: null };
+  }
   const match = text.match(/<agenthub:close-card>\s*([\s\S]*?)\s*<\/agenthub:close-card>/);
-  if (!match) return null;
+  if (!match) return { present: false, task: null, reason: null, rawBody: null };
   let parsed: unknown;
   try {
     parsed = JSON.parse(match[1]);
   } catch {
-    return null;
+    return { present: true, task: null, reason: 'invalid-json', rawBody: match[1] ?? '' };
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { present: true, task: null, reason: 'not-object', rawBody: match[1] ?? '' };
+  }
   const obj = parsed as Record<string, unknown>;
 
   const rawReason = typeof obj.reason === 'string' ? obj.reason.trim().toLowerCase() : '';
   let reason: CloseCardReason | null = null;
+  if (!rawReason)
+    return { present: true, task: null, reason: 'missing-reason', rawBody: match[1] ?? '' };
   if (rawReason === 'duplicate') reason = 'duplicate';
   else if (
     rawReason === 'already-done' ||
@@ -102,10 +123,14 @@ export function parseCloseCardBlock(text: string): CloseCardTask | null {
     rawReason === 'done'
   )
     reason = 'already-done';
-  if (!reason) return null;
+  if (!reason)
+    return { present: true, task: null, reason: 'invalid-reason', rawBody: match[1] ?? '' };
 
   const note = typeof obj.note === 'string' ? obj.note.trim() : '';
-  if (!note) return null;
+  if (typeof obj.note !== 'string') {
+    return { present: true, task: null, reason: 'missing-note', rawBody: match[1] ?? '' };
+  }
+  if (!note) return { present: true, task: null, reason: 'empty-note', rawBody: match[1] ?? '' };
 
   const duplicateOfCardIdRaw =
     typeof obj.duplicateOfCardId === 'string'
@@ -115,7 +140,33 @@ export function parseCloseCardBlock(text: string): CloseCardTask | null {
         : '';
   const duplicateOfCardId = duplicateOfCardIdRaw || undefined;
 
-  return duplicateOfCardId ? { reason, note, duplicateOfCardId } : { reason, note };
+  const task: CloseCardTask = duplicateOfCardId
+    ? { reason, note, duplicateOfCardId }
+    : { reason, note };
+  return { present: true, task, reason: null, rawBody: match[1] ?? '' };
+}
+
+export function describeCloseCardReason(reason: CloseCardMalformedReason): string {
+  switch (reason) {
+    case 'invalid-json':
+      return 'Close-card block contains invalid JSON';
+    case 'not-object':
+      return 'Close-card block payload is not a JSON object';
+    case 'missing-reason':
+      return 'Close-card block is missing the "reason" field';
+    case 'invalid-reason':
+      return 'Close-card block has an invalid "reason" value';
+    case 'missing-note':
+      return 'Close-card block is missing the "note" field';
+    case 'empty-note':
+      return 'Close-card block has an empty "note" value';
+    default:
+      return 'Close-card block could not be parsed';
+  }
+}
+
+export function parseCloseCardBlock(text: string): CloseCardTask | null {
+  return detectCloseCardBlock(text).task;
 }
 
 // ─── Comment body rendering ──────────────────────────────────────────────

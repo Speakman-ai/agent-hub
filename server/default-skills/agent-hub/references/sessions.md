@@ -272,17 +272,22 @@ All three constants are overridable per-call via optional
 
 If you pick up a kanban card and discover the work is redundant
 (duplicates an earlier card, or already shipped), don't leave the card
-parked. End your turn with:
+parked. End your turn with a fenced `<agenthub:close-card>` block whose
+body is a JSON object with `reason` and `note`. Malformed JSON or missing
+required fields is rejected with a **Card close gate rejected** system
+message — the linked card is **not** moved.
 
 ```
 <agenthub:close-card>
-{"reason": "duplicate", "note": "Covered by card 5c8f2a — see PR #313.", "duplicateOfCardId": "5c8f2a..."}
+{"reason":"duplicate","note":"Covered by card 5c8f2a — see PR #313.","duplicateOfCardId":"5c8f2a..."}
 </agenthub:close-card>
 ```
 
-- **Fields**: `reason` ∈ {`"duplicate"`, `"already-done"`} (required),
-  `note` (required, non-empty, one-line shown in the auto-close comment),
-  `duplicateOfCardId` (optional canonical card id).
+- **Fields**:
+  - **`reason`** ∈ {`"duplicate"`, `"already-done"`} (required).
+  - **`note`** (required, non-empty) — one line shown in the auto-close comment.
+  - **`duplicateOfCardId`** (optional) — canonical card id when `reason` is
+    `"duplicate"`.
 - **Server behavior**: finds the card linked to the current session via
   `kanban_cards.session_id`, then moves it to the board’s **Done** column and
   appends an audit comment (best effort). In-repo verification is expected from

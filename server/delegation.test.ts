@@ -118,6 +118,18 @@ function makeAgent(id: string, overrides: Partial<EnrichedAgent> = {}): Enriched
   } as unknown as EnrichedAgent;
 }
 
+function delegateTask(task: string) {
+  return {
+    agentId: 'sub-1',
+    task,
+    owner: 'hub-backend',
+    scope: 'Implement only server-side changes for this task.',
+    expectedArtifact: 'Code patch + test updates',
+    deadline: 'end-of-turn',
+    returnFormat: 'summary + changed files + test status',
+  };
+}
+
 describe('handleDelegation — retry logic', () => {
   let tmpWorkspace: string;
   let fakeProcs: FakeProc[];
@@ -201,7 +213,7 @@ describe('handleDelegation — retry logic', () => {
     const pending = handleDelegation(
       'session-1',
       'msg-1',
-      [{ agentId: 'sub-1', task: 'do the thing' }],
+      [delegateTask('do the thing')],
       leadAgent,
       project,
       '/tmp',
@@ -243,7 +255,7 @@ describe('handleDelegation — retry logic', () => {
     const pending = handleDelegation(
       'session-2',
       'msg-2',
-      [{ agentId: 'sub-1', task: 'impossible task' }],
+      [delegateTask('impossible task')],
       leadAgent,
       project,
       '/tmp',
@@ -297,7 +309,7 @@ describe('handleDelegation — retry logic', () => {
     const pending = handleDelegation(
       'session-3',
       'msg-3',
-      [{ agentId: 'sub-1', task: 'x' }],
+      [delegateTask('x')],
       leadAgent,
       project,
       '/tmp',
@@ -319,7 +331,7 @@ describe('handleDelegation — retry logic', () => {
     const pending = handleDelegation(
       'session-cancel-1',
       'msg-c1',
-      [{ agentId: 'sub-1', task: 'parallel research' }],
+      [delegateTask('parallel research')],
       leadAgent,
       project,
       '/tmp',
@@ -360,7 +372,7 @@ describe('handleDelegation — retry logic', () => {
     const pending = handleDelegation(
       'session-cursor',
       'msg-cursor',
-      [{ agentId: 'sub-1', task: 'inspect api' }],
+      [delegateTask('inspect api')],
       leadAgent,
       project,
       '/tmp',
@@ -391,7 +403,7 @@ describe('handleDelegation — retry logic', () => {
     const pending = handleDelegation(
       'session-gemini',
       'msg-g',
-      [{ agentId: 'sub-1', task: 'audit routes' }],
+      [delegateTask('audit routes')],
       leadAgent,
       project,
       '/tmp',
@@ -431,7 +443,7 @@ describe('handleDelegation — retry logic', () => {
     const pending = handleDelegation(
       'session-codex',
       'msg-x',
-      [{ agentId: 'sub-1', task: 'scan imports' }],
+      [delegateTask('scan imports')],
       leadAgent,
       project,
       '/tmp',
@@ -472,7 +484,7 @@ describe('handleDelegation — retry logic', () => {
     const pending = handleDelegation(
       'session-g-ask',
       'msg-g-ask',
-      [{ agentId: 'sub-1', task: 'readonly audit' }],
+      [delegateTask('readonly audit')],
       leadAgent,
       project,
       '/tmp',
@@ -507,7 +519,7 @@ describe('handleDelegation — retry logic', () => {
     const pending = handleDelegation(
       'session-x-ask',
       'msg-x-ask',
-      [{ agentId: 'sub-1', task: 'inspect' }],
+      [delegateTask('inspect')],
       leadAgent,
       project,
       '/tmp',

@@ -18,6 +18,7 @@ import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.jsx';
 import ReactLoopObservabilityPanel from './components/ReactLoopObservabilityPanel.jsx';
+import OrchestrationTimelinePanel from './components/OrchestrationTimelinePanel.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
 import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
@@ -730,6 +731,7 @@ export default function App() {
             durationMs: data.durationMs,
             continuationDepth: data.continuationDepth ?? 0,
             detail: data.detail,
+            receivedAt: Date.now(),
           };
           setReactLoopStepsBySession((prev) => {
             const cur = prev[sid] || [];
@@ -860,6 +862,30 @@ export default function App() {
         // output after commit_failed / push_failed / pr_failed. Cleared on
         // success (auto_pr_created), dismiss, or a new Create attempt.
         case 'create_pr_log_done':
+          break;
+        case 'done_verify_log':
+          if (data.sessionId && typeof data.text === 'string') {
+            const maxChars = 250_000;
+            _setDoneVerifyLogBySession((prev) => {
+              const existing = prev[data.sessionId];
+              const combined = (existing ? existing.log : '') + data.text;
+              const log = combined.length > maxChars ? combined.slice(-maxChars) : combined;
+              return {
+                ...prev,
+                [data.sessionId]: { log, receivedAt: existing ? existing.receivedAt : Date.now() },
+              };
+            });
+          }
+          break;
+        case 'done_verify_log_done':
+          if (data.sessionId) {
+            _setDoneVerifyLogBySession((prev) => {
+              if (!prev[data.sessionId]) return prev;
+              const next = { ...prev };
+              delete next[data.sessionId];
+              return next;
+            });
+          }
           break;
         case 'message_added':
           // A new message (e.g. the system 'PR created' marker persisted by the
@@ -1109,6 +1135,7 @@ export default function App() {
         // ─── Delegation events ────────────────────────────────
         case 'delegation_start':
           if (data.sessionId === activeSessionIdRef.current) {
+            const delegationStartedAt = Date.now();
             setDelegations((prev) => ({
               ...prev,
               [data.sessionId]: {
@@ -1123,6 +1150,7 @@ export default function App() {
                   content: '',
                   output: null,
                   error: null,
+                  startedAt: delegationStartedAt,
                 })),
               },
             }));
@@ -2538,6 +2566,64 @@ export default function App() {
   };
 
   const isProcessing = thinking || !!streamingContent;
+  const activeSession = useMemo(
+    () => sessions.find((s) => s.id === activeSessionId) || null,
+    [sessions, activeSessionId],
+  );
+  const orchestrationTimelineEntries = useMemo(() => {
+    if (!activeSessionId) return [];
+    const out = [];
+    if (activeSession?.orchestration_phase) {
+      out.push({
+        id: `phase:${activeSession.id}:${activeSession.orchestration_phase}`,
+        ts: Date.parse(activeSession.updated_at || '') || Date.now(),
+        kind: 'phase',
+        summary: `Session phase is "${activeSession.orchestration_phase}".`,
+      });
+    }
+    for (const step of sessionProgress[activeSessionId] || []) {
+      out.push({
+        id: `progress:${activeSessionId}:${step.step}:${step.startedAt}:${step.status}`,
+        ts: Date.parse(step.finishedAt || step.startedAt || '') || Date.now(),
+        kind: 'progress',
+        summary: `${step.step} -> ${step.status}`,
+      });
+    }
+    for (const step of reactLoopStepsBySession[activeSessionId] || []) {
+      const outcome = Number(step.exitCode) === 0 ? 'ok' : `exit ${step.exitCode}`;
+      out.push({
+        id: `react:${activeSessionId}:${step.stepId}`,
+        ts: step.receivedAt,
+        kind: 'react',
+        summary: `${step.phase}/${step.tool} -> ${outcome}${step.detail ? ` (${step.detail})` : ''}`,
+      });
+    }
+    for (const row of delegations[activeSessionId]?.tasks || []) {
+      out.push({
+        id: `delegation:${activeSessionId}:${row.agentId}:${row.status}`,
+        ts: row.startedAt,
+        kind: 'delegate',
+        summary: `${row.agentName || row.agentId} -> ${row.status}`,
+      });
+    }
+    if (doneVerifyLogBySession[activeSessionId]) {
+      out.push({
+        id: `verify:${activeSessionId}`,
+        ts: doneVerifyLogBySession[activeSessionId].receivedAt,
+        kind: 'verify',
+        summary: 'Pre-done verification log captured for this turn.',
+      });
+    }
+    out.sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
+    return out.slice(-40);
+  }, [
+    activeSessionId,
+    activeSession,
+    sessionProgress,
+    reactLoopStepsBySession,
+    delegations,
+    doneVerifyLogBySession,
+  ]);
 
   // ─── Global keyboard shortcut actions ───────────────────────
   // Resolve the "current project" for navigation shortcuts: prefer the
@@ -3059,6 +3145,9 @@ export default function App() {
                         {/* Cursor-style timed checklist — rendered at top of chat
                       whenever the session has emitted `[[STEP:...]]` markers.
                       Collapses automatically once all steps resolve. */}
+                        {orchestrationTimelineEntries.length > 0 && (
+                          <OrchestrationTimelinePanel entries={orchestrationTimelineEntries} />
+                        )}
                         {(sessionProgress[activeSessionId] || []).length > 0 && (
                           <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
                             <ProgressPanel

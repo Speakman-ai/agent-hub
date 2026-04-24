@@ -627,6 +627,7 @@ export async function handleHandoff(
   const handleChat = getHandleChat();
 
   const handoffId = uuidv4();
+  const structuredNote = task.note;
   const projectId =
     (sourceProject as Project & { id?: string }).id ||
     (sourceAgent as EnrichedAgent & { projectId?: string }).projectId ||
@@ -659,7 +660,7 @@ export async function handleHandoff(
       sourceAgent.id,
       resolvedTargetId,
       projectId,
-      task.note,
+      structuredNote,
     );
   } catch (err) {
     console.error('[Handoff] DB insert failed:', (err as Error).message);
@@ -811,7 +812,7 @@ export async function handleHandoff(
   // knows which kanban card it now owns (the card's `session_id` now points
   // at this session, so `<agenthub:close-card>` / auto-PR creation will work)
   // and whether this is autonomous-mode work.
-  const seedingContent = buildHandoffSeedingContent(task.note, forwardedCard, forwardedEpic);
+  const seedingContent = buildHandoffSeedingContent(structuredNote, forwardedCard, forwardedEpic);
   if (handleChat) {
     Promise.resolve()
       .then(() =>

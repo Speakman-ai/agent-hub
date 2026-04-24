@@ -27,7 +27,10 @@ describe('parseCloseCardBlock', () => {
 {"reason": "already-done", "note": "Shipped in commit a1b2c3d."}
 </agenthub:close-card>`;
     const result = parseCloseCardBlock(text);
-    expect(result).toEqual({ reason: 'already-done', note: 'Shipped in commit a1b2c3d.' });
+    expect(result).toEqual({
+      reason: 'already-done',
+      note: 'Shipped in commit a1b2c3d.',
+    });
     expect(result?.duplicateOfCardId).toBeUndefined();
   });
 

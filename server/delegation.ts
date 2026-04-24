@@ -53,6 +53,88 @@ const DEFAULT_RETRY_BACKOFF_MS = 1000;
 interface DelegateTask {
   agentId: string;
   task: string;
+  owner: string;
+  scope: string;
+  expectedArtifact: string;
+  deadline: string;
+  returnFormat: string;
+}
+
+export type DelegateMalformedReason =
+  | 'invalid-json'
+  | 'not-object'
+  | 'empty-array'
+  | 'no-valid-entries'
+  | 'missing-contract-fields';
+
+export interface DelegateDetectionResult {
+  present: boolean;
+  tasks: DelegateTask[] | null;
+  reason: DelegateMalformedReason | null;
+  rawBody: string | null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function normalizeDelegateTask(raw: unknown): DelegateTask | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const rawAgentId =
+    typeof row.agentId === 'string'
+      ? row.agentId
+      : typeof row.toAgent === 'string'
+        ? row.toAgent
+        : '';
+  if (!isNonEmptyString(rawAgentId) || !isNonEmptyString(row.task)) return null;
+  if (
+    !isNonEmptyString(row.owner) ||
+    !isNonEmptyString(row.scope) ||
+    !isNonEmptyString(row.expectedArtifact) ||
+    !isNonEmptyString(row.deadline) ||
+    !isNonEmptyString(row.returnFormat)
+  ) {
+    return null;
+  }
+  return {
+    agentId: rawAgentId.trim(),
+    task: (row.task as string).trim(),
+    owner: row.owner.trim(),
+    scope: row.scope.trim(),
+    expectedArtifact: row.expectedArtifact.trim(),
+    deadline: row.deadline.trim(),
+    returnFormat: row.returnFormat.trim(),
+  };
+}
+
+export function detectDelegateBlock(text: string): DelegateDetectionResult {
+  if (typeof text !== 'string') return { present: false, tasks: null, reason: null, rawBody: null };
+  const match = text.match(/<delegate>\s*([\s\S]*?)\s*<\/delegate>/);
+  if (!match) return { present: false, tasks: null, reason: null, rawBody: null };
+
+  const rawBody = match[1] ?? '';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return { present: true, tasks: null, reason: 'invalid-json', rawBody };
+  }
+  if (parsed == null || typeof parsed !== 'object') {
+    return { present: true, tasks: null, reason: 'not-object', rawBody };
+  }
+  const list = Array.isArray(parsed) ? parsed : [parsed];
+  if (list.length === 0) return { present: true, tasks: null, reason: 'empty-array', rawBody };
+
+  const normalized = list
+    .map((entry) => normalizeDelegateTask(entry))
+    .filter((entry): entry is DelegateTask => !!entry);
+  if (normalized.length === 0)
+    return { present: true, tasks: null, reason: 'no-valid-entries', rawBody };
+  if (normalized.length !== list.length) {
+    return { present: true, tasks: null, reason: 'missing-contract-fields', rawBody };
+  }
+  return { present: true, tasks: normalized, reason: null, rawBody };
 }
 
 interface DelegationState {
@@ -189,22 +271,15 @@ export function initDelegation(d: DelegationDeps): void {
 }
 
 export function parseDelegateBlock(text: string): DelegateTask[] | null {
-  const match = text.match(/<delegate>\s*([\s\S]*?)\s*<\/delegate>/);
-  if (!match) return null;
-  try {
-    const parsed: unknown = JSON.parse(match[1]);
-    if (!Array.isArray(parsed)) return null;
-    const valid = (parsed as Array<Record<string, unknown>>).filter(
-      (t) => t && typeof t.agentId === 'string' && typeof t.task === 'string',
-    ) as unknown as DelegateTask[];
-    return valid.length > 0 ? valid : null;
-  } catch {
-    const excerpt = (match[1] || '').replace(/\s+/g, ' ').trim().slice(0, 200);
-    console.error(
-      `[Delegation] Failed to parse delegate block JSON (excerpt: ${excerpt || '<empty>'})`,
-    );
-    return null;
-  }
+  const detection = detectDelegateBlock(text);
+  if (!detection.present || detection.tasks) return detection.tasks;
+  const excerpt = (detection.rawBody || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+  console.error(
+    `[Delegation] Invalid delegate payload (${detection.reason ?? 'unknown'}) (excerpt: ${
+      excerpt || '<empty>'
+    })`,
+  );
+  return null;
 }
 
 export function handleDelegationCancel(sessionId: string): void {
@@ -293,7 +368,15 @@ export async function handleDelegation(
     type: 'delegation_start',
     sessionId,
     parentMessageId,
-    tasks: validTasks.map((t) => ({ agentId: t.agentId, task: t.task })),
+    tasks: validTasks.map((t) => ({
+      agentId: t.agentId,
+      task: t.task,
+      owner: t.owner,
+      scope: t.scope,
+      expectedArtifact: t.expectedArtifact,
+      deadline: t.deadline,
+      returnFormat: t.returnFormat,
+    })),
   });
   broadcastActiveTasksSnapshot(stmts, broadcast);
 

@@ -8,13 +8,15 @@
  *
  *   <delegate>[{"agentId": "...", "task": "..."}, ...]</delegate>
  *     — spawns one or more parallel sub-agent sessions (lead keeps running).
+ *     Body may be a JSON **array** or a single **object** (treated as a
+ *     one-element array); both match `server/delegation.ts`.
  *
  * The canonical delegate field is `agentId` (matches the prompt wired in
- * `server/chat.ts` and the validator in `server/delegation.ts`). Earlier
- * iterations of this helper used `toAgent`; we still accept that as a
- * tolerant alias so in-flight messages / mis-schooled agents still strip
- * cleanly. See `server/delegation.ts#parseDelegateBlock` for the source of
- * truth.
+ * `server/chat.ts`). The top-level JSON body may be an **array** or a single
+ * **object** (coerced to a one-element list on the server in
+ * `server/delegation.ts#detectDelegateBlock`). Each row must include the full
+ * contract: `agentId` (or legacy `toAgent` for the same field), `task`,
+ * `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`.
  *
  * This module gives the renderer:
  *   - parseHandoffBlock(text)      → { toAgent, note } | null
@@ -136,7 +138,8 @@ export function parseHandoffBlock(text) {
  *   'invalid-json'       — body is not valid JSON
  *   'not-object'         — body parsed but is neither object nor array
  *   'empty-array'        — body is `[]`
- *   'no-valid-entries'   — every entry is missing `agentId` or `task`
+ *   'no-valid-entries'   — every entry is missing required contract fields
+ *   'missing-contract-fields' — at least one entry is valid, but another is missing required fields
  */
 export function detectDelegateBlock(text) {
   if (typeof text !== 'string' || !text.includes('<delegate>')) {
@@ -162,8 +165,12 @@ export function detectDelegateBlock(text) {
     return { present: true, tasks: null, reason: 'empty-array', rawBody };
   }
   const tasks = [];
+  let invalidRows = 0;
   for (const entry of list) {
-    if (!entry || typeof entry !== 'object') continue;
+    if (!entry || typeof entry !== 'object') {
+      invalidRows += 1;
+      continue;
+    }
     const rawAgentId =
       typeof entry.agentId === 'string'
         ? entry.agentId
@@ -172,11 +179,23 @@ export function detectDelegateBlock(text) {
           : '';
     const agentId = rawAgentId.trim();
     const task = typeof entry.task === 'string' ? entry.task.trim() : '';
-    if (!agentId || !task) continue;
-    tasks.push({ agentId, task });
+    const owner = typeof entry.owner === 'string' ? entry.owner.trim() : '';
+    const scope = typeof entry.scope === 'string' ? entry.scope.trim() : '';
+    const expectedArtifact =
+      typeof entry.expectedArtifact === 'string' ? entry.expectedArtifact.trim() : '';
+    const deadline = typeof entry.deadline === 'string' ? entry.deadline.trim() : '';
+    const returnFormat = typeof entry.returnFormat === 'string' ? entry.returnFormat.trim() : '';
+    if (!agentId || !task || !owner || !scope || !expectedArtifact || !deadline || !returnFormat) {
+      invalidRows += 1;
+      continue;
+    }
+    tasks.push({ agentId, task, owner, scope, expectedArtifact, deadline, returnFormat });
   }
   if (tasks.length === 0) {
     return { present: true, tasks: null, reason: 'no-valid-entries', rawBody };
+  }
+  if (invalidRows > 0) {
+    return { present: true, tasks: null, reason: 'missing-contract-fields', rawBody };
   }
   return { present: true, tasks, reason: null, rawBody };
 }
@@ -185,7 +204,10 @@ const DELEGATE_REASON_MESSAGES = {
   'invalid-json': 'Delegate block contains invalid JSON',
   'not-object': 'Delegate block payload is not a JSON object or array',
   'empty-array': 'Delegate block payload is an empty array',
-  'no-valid-entries': 'Delegate block has no entries with both "agentId" and "task"',
+  'no-valid-entries':
+    'Delegate block has no entries with the required contract fields (agentId, task, owner, scope, expectedArtifact, deadline, returnFormat)',
+  'missing-contract-fields':
+    'Delegate block includes entries missing required contract fields; every entry must include agentId, task, owner, scope, expectedArtifact, deadline, and returnFormat',
 };
 
 /**
@@ -196,13 +218,9 @@ export function describeDelegateReason(reason) {
 }
 
 /**
- * Parse a `<delegate>` block. Returns an array of `{agentId, task}` entries
- * (single-object blocks are coerced to a 1-element array) or null on missing
- * / malformed input. Mirrors `server/delegation.ts#parseDelegateBlock`.
- *
- * Field names: the canonical target field is `agentId`; we also accept
- * `toAgent` as a tolerant alias so messages authored before the schemas
- * were aligned still strip cleanly in the chat UI.
+ * Parse a `<delegate>` block. Returns an array of delegate contract objects or
+ * null on missing / malformed input. Same rules as
+ * `server/delegation.ts#parseDelegateBlock`.
  */
 export function parseDelegateBlock(text) {
   return detectDelegateBlock(text).tasks;
