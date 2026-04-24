@@ -5,66 +5,6 @@ import ServerBrowser from './ServerBrowser.jsx';
 
 export const NEW_PROJECT_WIZARD_DRAFT_KEY = 'agentHub:v1:newProjectWizardDraft';
 
-const JOURNEY_LABELS = ['Entry', 'Questions', 'Provisioning', 'Audit', 'Landing'];
-
-/** Maps wizard step (1–4) to journey strip segment states for the multi-step chrome. */
-function journeySegmentState(wizardStep, index) {
-  if (wizardStep === 1) {
-    if (index <= 1) return 'active';
-    return 'upcoming';
-  }
-  if (index < wizardStep) return 'done';
-  if (index === wizardStep) return 'active';
-  return 'upcoming';
-}
-
-export function JourneyProgressStrip({ wizardStep }) {
-  return (
-    <nav
-      data-testid="new-project-journey"
-      aria-label="Project setup progress"
-      className="w-full flex flex-wrap items-center justify-center gap-1 sm:gap-2 py-3 border-b border-gray-800/80 bg-gray-900/40"
-    >
-      {JOURNEY_LABELS.map((label, i) => {
-        const state = journeySegmentState(wizardStep, i);
-        const isDone = state === 'done';
-        const isActive = state === 'active';
-        return (
-          <div key={label} className="flex items-center gap-1 sm:gap-2">
-            {i > 0 && (
-              <div
-                className={`hidden sm:block w-4 md:w-8 h-px ${isDone || isActive ? 'bg-emerald-600/80' : 'bg-gray-700'}`}
-              />
-            )}
-            <div
-              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] sm:text-xs font-medium border transition-colors ${
-                isDone
-                  ? 'border-emerald-600/60 bg-emerald-950/40 text-emerald-300'
-                  : isActive
-                    ? 'border-emerald-500 bg-emerald-500/15 text-emerald-200'
-                    : 'border-gray-700 text-gray-500'
-              }`}
-            >
-              <span
-                className={`tabular-nums w-4 h-4 inline-flex items-center justify-center rounded-full text-[10px] ${
-                  isDone
-                    ? 'bg-emerald-600 text-white'
-                    : isActive
-                      ? 'bg-emerald-500/30 text-emerald-200'
-                      : 'bg-gray-800 text-gray-500'
-                }`}
-              >
-                {isDone ? '✓' : i + 1}
-              </span>
-              <span>{label}</span>
-            </div>
-          </div>
-        );
-      })}
-    </nav>
-  );
-}
-
 const COLOR_PRESETS = [
   '#6366F1',
   '#8B5CF6',
@@ -633,8 +573,6 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
           </button>
         </header>
       )}
-
-      {isFullscreen && <JourneyProgressStrip wizardStep={step} />}
 
       <div
         className={

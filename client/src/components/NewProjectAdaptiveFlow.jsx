@@ -172,17 +172,21 @@ export default function NewProjectAdaptiveFlow({
   const handleAuditSkip = useCallback(() => {
     // Skip is an explicit exit — don't create a landing context. Emit the
     // "project created" signal with whatever we have so the host can
-    // still refresh its project list / sidebar.
+    // still refresh its project list / sidebar. The host's onProjectCreated
+    // handler routes the view; we don't call onClose to avoid clobbering.
     if (createdProjectId) {
       onProjectCreated?.({ projectId: createdProjectId, skipped: true });
+    } else {
+      onClose?.();
     }
-    onClose?.();
   }, [onClose, onProjectCreated, createdProjectId]);
 
   // Landing action handlers — every path funnels through `onProjectCreated`
   // with a payload the host can route on (e.g. open a chat, open the
-  // kanban). We close the wizard on every outbound action so the user
-  // doesn't have to dismiss it separately.
+  // kanban). `onProjectCreated` is the terminal signal; we intentionally
+  // do NOT call `onClose` here because the host's `onProjectCreated`
+  // handler already manages the view transition, and calling both in the
+  // same tick would let `onClose`'s setState clobber the routing.
   const handleLandingOpenProject = useCallback(
     ({ projectId, repoUrl: outRepoUrl }) => {
       onProjectCreated?.({
@@ -190,9 +194,8 @@ export default function NewProjectAdaptiveFlow({
         repoUrl: outRepoUrl || null,
         action: 'open',
       });
-      onClose?.();
     },
-    [onProjectCreated, onClose, createdProjectId],
+    [onProjectCreated, createdProjectId],
   );
 
   const handleLandingStartChat = useCallback(
@@ -204,9 +207,8 @@ export default function NewProjectAdaptiveFlow({
         trackId: trackId || null,
         action: 'chat',
       });
-      onClose?.();
     },
-    [onProjectCreated, onClose, createdProjectId],
+    [onProjectCreated, createdProjectId],
   );
 
   const handleLandingStarterTask = useCallback(
@@ -216,9 +218,8 @@ export default function NewProjectAdaptiveFlow({
         action: 'task',
         task: task || null,
       });
-      onClose?.();
     },
-    [onProjectCreated, onClose, createdProjectId],
+    [onProjectCreated, createdProjectId],
   );
 
   if (view === 'questionnaire') {

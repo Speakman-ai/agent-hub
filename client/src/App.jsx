@@ -19,6 +19,7 @@ import ChangesReadyBox from './components/ChangesReadyBox.jsx';
 import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.jsx';
 import ReactLoopObservabilityPanel from './components/ReactLoopObservabilityPanel.jsx';
 import OpenProjectWizard from './components/OpenProjectWizard.jsx';
+import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import KanbanBoard from './components/KanbanBoard.jsx';
 import DashboardView from './components/DashboardView.jsx';
@@ -311,8 +312,18 @@ export default function App() {
 
   const openNewProjectWizard = useCallback(() => {
     const cur = currentViewRef.current;
-    newProjectWizardReturnRef.current = cur === 'new-project-wizard' ? 'chat' : cur;
+    newProjectWizardReturnRef.current =
+      cur === 'new-project-wizard' || cur === 'new-project-adaptive' ? 'chat' : cur;
     setCurrentView('new-project-wizard');
+  }, []);
+  // Primary "+ New Project" CTA — routes to the adaptive (prompt-first)
+  // wizard (Acts I–V). `openNewProjectWizard` above is retained for the
+  // legacy "I already have a folder/repo" import path.
+  const openAdaptiveProjectWizard = useCallback(() => {
+    const cur = currentViewRef.current;
+    newProjectWizardReturnRef.current =
+      cur === 'new-project-wizard' || cur === 'new-project-adaptive' ? 'chat' : cur;
+    setCurrentView('new-project-adaptive');
   }, []);
   const pullsProjectIdRef = useRef(pullsProjectId);
   pullsProjectIdRef.current = pullsProjectId;
@@ -1718,7 +1729,7 @@ export default function App() {
           if (!getOrgs()) {
             setShowSetup(true);
           } else {
-            openNewProjectWizard();
+            openAdaptiveProjectWizard();
           }
         }
       } catch {} // server may not have endpoint yet
@@ -2810,7 +2821,7 @@ export default function App() {
             }}
             onNewRoom={handleNewRoom}
             onDeleteRoom={handleDeleteRoom}
-            onOpenProject={openNewProjectWizard}
+            onOpenProject={openAdaptiveProjectWizard}
             cronSessions={cronSessions}
             wikiProjectId={wikiProjectId}
             notesProjectId={notesProjectId}
@@ -2833,7 +2844,7 @@ export default function App() {
 
         <div className="flex-1 flex flex-col min-w-0">
           {/* Top bar */}
-          {currentView !== 'new-project-wizard' && (
+          {currentView !== 'new-project-wizard' && currentView !== 'new-project-adaptive' && (
             <>
               <TopBar
                 agent={activeAgent}
@@ -2966,7 +2977,7 @@ export default function App() {
               ) : currentView === 'dashboard' ? (
                 <DashboardView
                   orgId={getActiveOrgApiId()}
-                  onNewProject={openNewProjectWizard}
+                  onNewProject={openAdaptiveProjectWizard}
                   onOpenSession={(agentId, sessionId) => focusAgentSession(agentId, sessionId)}
                   onOpenKanban={(projectId) => {
                     setCurrentView(`kanban:${projectId}`);
@@ -3364,7 +3375,7 @@ export default function App() {
             setupStatus={setupStatus}
             onComplete={() => {
               setShowSetup(false);
-              openNewProjectWizard();
+              openAdaptiveProjectWizard();
             }}
           />
         )}
@@ -3379,6 +3390,37 @@ export default function App() {
               refreshAgents();
             }}
           />
+        )}
+
+        {/* New project — adaptive (prompt-first) flow, Acts I–V. Routed via
+            the primary "+ New Project" CTA. Rendered as a fixed-inset
+            overlay so it fills the viewport (same layout semantics as the
+            legacy fullscreen wizard). */}
+        {currentView === 'new-project-adaptive' && (
+          <div
+            data-testid="new-project-adaptive-mount"
+            className="fixed inset-0 z-[100] flex flex-col bg-gray-950 text-white"
+          >
+            <NewProjectAdaptiveFlow
+              onClose={() => setCurrentView(newProjectWizardReturnRef.current)}
+              onProjectCreated={(payload) => {
+                refreshAgents();
+                if (payload?.action === 'chat' && payload.agentId) {
+                  setActiveAgentId(payload.agentId);
+                  setCurrentView('chat');
+                  setSidebarOpen(false);
+                  return;
+                }
+                if (payload?.action === 'task' && payload.projectId) {
+                  setCurrentView(`kanban:${payload.projectId}`);
+                  setSidebarOpen(false);
+                  return;
+                }
+                // Default: open/landed — return to the prior view.
+                setCurrentView(newProjectWizardReturnRef.current);
+              }}
+            />
+          </div>
         )}
 
         {/* Toast notifications */}

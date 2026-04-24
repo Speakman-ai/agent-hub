@@ -233,12 +233,14 @@ describe('NewProjectAdaptiveFlow', () => {
     expect(onClose).not.toHaveBeenCalled();
 
     // Clicking the primary "Brief lead" CTA routes through onProjectCreated
-    // with `action: 'chat'` + the assigned agent id, and closes the wizard.
+    // with `action: 'chat'` + the assigned agent id. onClose is NOT called —
+    // the host's onProjectCreated handler owns the view transition to avoid
+    // a setState race where onClose would clobber the routing.
     fireEvent.click(screen.getByTestId('pl-next-chat-lead'));
     expect(onProjectCreated).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: 'proj-1', agentId: 'hub-lead', action: 'chat' }),
     );
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('audit-skip bypasses the landing and closes the wizard', async () => {
@@ -257,7 +259,9 @@ describe('NewProjectAdaptiveFlow', () => {
     });
     fireEvent.click(screen.getByTestId('psa-skip'));
     expect(screen.queryByTestId('project-landing')).not.toBeInTheDocument();
-    expect(onClose).toHaveBeenCalled();
+    // onClose is NOT called when onProjectCreated fires — the host's
+    // onProjectCreated handler owns the view transition.
+    expect(onClose).not.toHaveBeenCalled();
     expect(onProjectCreated).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: 'proj-1', skipped: true }),
     );
