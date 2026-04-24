@@ -561,7 +561,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
             Back
           </button>
           <h1 className="min-w-0 flex-1 text-center text-base font-semibold text-white sm:text-left">
-            New Project
+            Import existing project
           </h1>
           <button
             type="button"
@@ -600,7 +600,9 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
           </button>
         )}
 
-        {!isFullscreen && <h2 className="mb-4 text-lg font-semibold text-white">Open Project</h2>}
+        {!isFullscreen && (
+          <h2 className="mb-4 text-lg font-semibold text-white">Import existing project</h2>
+        )}
 
         {!isFullscreen && <StepIndicator currentStep={step} />}
 

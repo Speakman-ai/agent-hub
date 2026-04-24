@@ -311,10 +311,11 @@ export default function App() {
   currentViewRef.current = currentView;
   const newProjectWizardReturnRef = useRef('chat');
 
+  const isWizardView = (v) =>
+    v === 'new-project-wizard' || v === 'new-project-adaptive' || v === 'import-project-wizard';
   const openNewProjectWizard = useCallback(() => {
     const cur = currentViewRef.current;
-    newProjectWizardReturnRef.current =
-      cur === 'new-project-wizard' || cur === 'new-project-adaptive' ? 'chat' : cur;
+    newProjectWizardReturnRef.current = isWizardView(cur) ? 'chat' : cur;
     setCurrentView('new-project-wizard');
   }, []);
   // Primary "+ New Project" CTA — routes to the adaptive (prompt-first)
@@ -322,9 +323,17 @@ export default function App() {
   // legacy "I already have a folder/repo" import path.
   const openAdaptiveProjectWizard = useCallback(() => {
     const cur = currentViewRef.current;
-    newProjectWizardReturnRef.current =
-      cur === 'new-project-wizard' || cur === 'new-project-adaptive' ? 'chat' : cur;
+    newProjectWizardReturnRef.current = isWizardView(cur) ? 'chat' : cur;
     setCurrentView('new-project-adaptive');
+  }, []);
+  // Secondary "Import existing project" CTA — routes to the legacy
+  // folder-picker / clone-from-GitHub wizard. Uses a distinct view key
+  // (`import-project-wizard`) for telemetry clarity; the legacy
+  // `new-project-wizard` key is preserved for backward compatibility.
+  const openImportProjectWizard = useCallback(() => {
+    const cur = currentViewRef.current;
+    newProjectWizardReturnRef.current = isWizardView(cur) ? 'chat' : cur;
+    setCurrentView('import-project-wizard');
   }, []);
   const pullsProjectIdRef = useRef(pullsProjectId);
   pullsProjectIdRef.current = pullsProjectId;
@@ -2908,6 +2917,7 @@ export default function App() {
             onNewRoom={handleNewRoom}
             onDeleteRoom={handleDeleteRoom}
             onOpenProject={openAdaptiveProjectWizard}
+            onImportProject={openImportProjectWizard}
             cronSessions={cronSessions}
             wikiProjectId={wikiProjectId}
             notesProjectId={notesProjectId}
@@ -2930,7 +2940,7 @@ export default function App() {
 
         <div className="flex-1 flex flex-col min-w-0">
           {/* Top bar */}
-          {currentView !== 'new-project-wizard' && currentView !== 'new-project-adaptive' && (
+          {!isWizardView(currentView) && (
             <>
               <TopBar
                 agent={activeAgent}
@@ -3469,8 +3479,13 @@ export default function App() {
           />
         )}
 
-        {/* New project — full-screen wizard (draft survives Back / Close / Esc) */}
-        {currentView === 'new-project-wizard' && (
+        {/* Import existing project — full-screen wizard (draft survives
+            Back / Close / Esc). Two view keys mount the same component:
+            `import-project-wizard` is the current, telemetry-friendly name
+            surfaced by the new "Import existing project" CTA;
+            `new-project-wizard` is retained as a legacy alias for any
+            older links, deep-state, or tests that still reference it. */}
+        {(currentView === 'import-project-wizard' || currentView === 'new-project-wizard') && (
           <OpenProjectWizard
             layout="fullscreen"
             onClose={() => setCurrentView(newProjectWizardReturnRef.current)}

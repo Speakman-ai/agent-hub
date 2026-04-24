@@ -54,6 +54,7 @@ export default function Sidebar({
   onNewRoom,
   onDeleteRoom,
   onOpenProject,
+  onImportProject,
   cronSessions = [],
   wikiProjectId,
   notesProjectId,
@@ -233,6 +234,18 @@ export default function Sidebar({
             >
               <Plus size={18} strokeWidth={2.5} className="shrink-0" aria-hidden />
               <span>New Project</span>
+            </button>
+          )}
+
+          {onImportProject && (
+            <button
+              type="button"
+              data-testid="sidebar-import-project-cta"
+              onClick={onImportProject}
+              className="w-full text-left px-2.5 py-1.5 mb-2 rounded-lg flex items-center gap-2 text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors text-xs"
+            >
+              <Plus size={14} strokeWidth={2} className="shrink-0" aria-hidden />
+              <span>Import existing project</span>
             </button>
           )}
 

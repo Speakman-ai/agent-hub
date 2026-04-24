@@ -165,6 +165,37 @@ describe('Sidebar — actionable session visibility', () => {
   });
 });
 
+describe('Sidebar — New Project + Import existing project CTAs', () => {
+  it('renders only the primary "+ New Project" CTA when onImportProject is not provided', () => {
+    const onOpenProject = vi.fn();
+    render(<Sidebar {...buildProps({ onOpenProject })} />);
+
+    expect(screen.getByTestId('sidebar-new-project-cta')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-import-project-cta')).not.toBeInTheDocument();
+  });
+
+  it('renders both CTAs and wires them to independent callbacks', () => {
+    const onOpenProject = vi.fn();
+    const onImportProject = vi.fn();
+    render(<Sidebar {...buildProps({ onOpenProject, onImportProject })} />);
+
+    const newProjectCta = screen.getByTestId('sidebar-new-project-cta');
+    const importCta = screen.getByTestId('sidebar-import-project-cta');
+
+    expect(newProjectCta).toHaveTextContent('New Project');
+    expect(importCta).toHaveTextContent('Import existing project');
+
+    fireEvent.click(newProjectCta);
+    expect(onOpenProject).toHaveBeenCalledTimes(1);
+    expect(onImportProject).not.toHaveBeenCalled();
+
+    fireEvent.click(importCta);
+    expect(onImportProject).toHaveBeenCalledTimes(1);
+    // Primary CTA wasn't triggered a second time.
+    expect(onOpenProject).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Sidebar — archived sessions', () => {
   it('omits the Archived section when the list is empty', () => {
     render(<Sidebar {...buildProps({ archivedSessions: [] })} />);

@@ -22,10 +22,13 @@ describe('OpenProjectWizard layout', () => {
     const onClose = vi.fn();
     render(<OpenProjectWizard layout="fullscreen" onClose={onClose} onProjectCreated={() => {}} />);
 
-    expect(screen.getByRole('heading', { name: 'New Project' })).toBeInTheDocument();
+    // The legacy wizard is now labelled "Import existing project" to
+    // distinguish it from the adaptive (prompt-first) "New Project" flow.
+    expect(screen.getByRole('heading', { name: 'Import existing project' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'New Project' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
     // The Acts I–V journey strip belongs to the adaptive flow now —
-    // the legacy "I already have a folder" wizard must not render it.
+    // the import wizard must not render it.
     expect(screen.queryByTestId('new-project-journey')).not.toBeInTheDocument();
   });
 
@@ -33,6 +36,7 @@ describe('OpenProjectWizard layout', () => {
     render(<OpenProjectWizard onClose={() => {}} onProjectCreated={() => {}} />);
 
     expect(screen.queryByTestId('new-project-journey')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Open Project' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Import existing project' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Open Project' })).not.toBeInTheDocument();
   });
 });
