@@ -23,7 +23,8 @@ import {
   type ProvisioningExecutor,
   type ProvisioningPayload,
 } from '../provisioning/orchestrator.js';
-import { createTemplateExecutorForProject } from '../provisioning/template-executor.js';
+import { createTemplateExecutor } from '../provisioning/template-executor.js';
+import { createGithubExecutor } from '../provisioning/github.js';
 
 /**
  * Injectable executor resolver — tests swap in fakes via this hook.
@@ -31,9 +32,26 @@ import { createTemplateExecutorForProject } from '../provisioning/template-execu
  * The `deps` argument is passed at route-construction time so the
  * factory can build an executor that knows how to resolve workspace
  * paths. Tests that just want the stub can ignore it.
+ *
+ * Production composes two executors: the template executor handles
+ * copy/setup/lint/test phases, and the github executor handles
+ * mint-token/gh-create/gh-push. Each executor delegates unknown
+ * phases to its `fallback`, and the outermost fallback is the stub
+ * — so phases nobody implements (e.g. git-init in dev) still succeed.
  */
-let executorFactory: (deps: RouteDeps) => ProvisioningExecutor = (deps) =>
-  createTemplateExecutorForProject(deps.getProjectDataDir);
+function defaultExecutorFactory(deps: RouteDeps): ProvisioningExecutor {
+  const resolveWorkspace = (projectId: string | null): string => {
+    if (!projectId) throw new Error('provisioning executor requires a projectId');
+    return path.join(deps.getProjectDataDir(projectId), 'workspace');
+  };
+  const templates = createTemplateExecutor({ resolveWorkspace });
+  return createGithubExecutor({
+    resolveWorkspace,
+    fallback: templates,
+  });
+}
+
+let executorFactory: (deps: RouteDeps) => ProvisioningExecutor = defaultExecutorFactory;
 
 /** Test hook: override the executor returned for new jobs. */
 export function setProvisioningExecutorFactory(
@@ -44,7 +62,7 @@ export function setProvisioningExecutorFactory(
 
 /** Test hook: restore the default (template-backed) executor. */
 export function resetProvisioningExecutorFactory(): void {
-  executorFactory = (deps) => createTemplateExecutorForProject(deps.getProjectDataDir);
+  executorFactory = defaultExecutorFactory;
 }
 
 /** Produce a project id from a requested name, falling back to a random uuid-ish slug. */
