@@ -69,6 +69,11 @@ export default defineConfig({
         AGENT_HUB_PORT: String(SERVER_PORT),
         AGENT_HUB_DATA_DIR: DATA_DIR,
         AGENT_HUB_API_KEY: '', // disable auth for E2E tests
+        // Swap the real template + github executors for the deterministic
+        // stub (see server/routes/provisioning.ts). Keeps the new-project
+        // happy-path e2e under a few seconds — no npm install, no gh CLI,
+        // no shell commands against the workspace tree.
+        AGENT_HUB_PROVISIONING_STUB: '1',
       },
       timeout: 30_000,
     },

@@ -7,7 +7,7 @@
  */
 import './setup.js';
 import type supertest from 'supertest';
-import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { getRequest } from './helpers.js';
 import {
   _resetJobsForTests,
@@ -19,7 +19,10 @@ import {
 import {
   setProvisioningExecutorFactory,
   resetProvisioningExecutorFactory,
+  defaultExecutorFactory,
 } from '../routes/provisioning.js';
+import { stubExecutor } from '../provisioning/orchestrator.js';
+import type { RouteDeps } from '../types.js';
 import { getStmts } from '../db.js';
 
 let request: supertest.Agent;
@@ -163,5 +166,58 @@ describe('POST /api/projects/provision', () => {
 describe('GET /api/provisioning/:jobId', () => {
   it('returns 404 for unknown jobs', async () => {
     await request.get('/api/provisioning/not-a-real-id').expect(404);
+  });
+});
+
+describe('defaultExecutorFactory — AGENT_HUB_PROVISIONING_STUB hook', () => {
+  // Minimal RouteDeps — defaultExecutorFactory only reads
+  // getProjectDataDir when building the real executor chain, which is
+  // the exact path we're trying to short-circuit in stub mode. The stub
+  // branch must return before touching deps.
+  const fakeDeps = {
+    getProjectDataDir: () => {
+      throw new Error('getProjectDataDir should not be called in stub mode');
+    },
+  } as unknown as RouteDeps;
+
+  const originalEnv = process.env.AGENT_HUB_PROVISIONING_STUB;
+
+  beforeEach(() => {
+    delete process.env.AGENT_HUB_PROVISIONING_STUB;
+  });
+
+  afterAll(() => {
+    if (originalEnv === undefined) {
+      delete process.env.AGENT_HUB_PROVISIONING_STUB;
+    } else {
+      process.env.AGENT_HUB_PROVISIONING_STUB = originalEnv;
+    }
+  });
+
+  it('returns stubExecutor (the deterministic fake) when flag is "1"', () => {
+    process.env.AGENT_HUB_PROVISIONING_STUB = '1';
+    const executor = defaultExecutorFactory(fakeDeps);
+    // Identity check against the shared stub keeps the test strict: if
+    // someone wraps the stub in production glue, this test will notice.
+    expect(executor).toBe(stubExecutor);
+  });
+
+  it('falls through to the real executor chain when flag is unset', () => {
+    const deps = {
+      getProjectDataDir: (id: string) => `/tmp/e2e-stub/${id}`,
+    } as unknown as RouteDeps;
+    const executor = defaultExecutorFactory(deps);
+    expect(executor).not.toBe(stubExecutor);
+  });
+
+  it('ignores values other than "1"', () => {
+    process.env.AGENT_HUB_PROVISIONING_STUB = 'true';
+    const deps = {
+      getProjectDataDir: (id: string) => `/tmp/e2e-stub/${id}`,
+    } as unknown as RouteDeps;
+    const executor = defaultExecutorFactory(deps);
+    // Guardrail: only the exact string "1" flips the switch. Prevents
+    // accidental enablement from truthy-but-unexpected values.
+    expect(executor).not.toBe(stubExecutor);
   });
 });

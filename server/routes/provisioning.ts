@@ -20,6 +20,7 @@ import path from 'path';
 import type { RouteDeps, Project } from '../types.js';
 import {
   startProvisioningJob,
+  stubExecutor,
   type ProvisioningExecutor,
   type ProvisioningPayload,
 } from '../provisioning/orchestrator.js';
@@ -39,7 +40,18 @@ import { createGithubExecutor } from '../provisioning/github.js';
  * phases to its `fallback`, and the outermost fallback is the stub
  * — so phases nobody implements (e.g. git-init in dev) still succeed.
  */
-function defaultExecutorFactory(deps: RouteDeps): ProvisioningExecutor {
+export function defaultExecutorFactory(deps: RouteDeps): ProvisioningExecutor {
+  // E2E / deterministic-happy-path hook. Setting
+  // `AGENT_HUB_PROVISIONING_STUB=1` swaps the real template + github
+  // executors for the built-in stub (see orchestrator.ts), which emits
+  // plausible success messages for every phase without touching disk,
+  // spawning commands, or calling the GitHub CLI. The stub is the same
+  // deterministic fake used throughout the orchestrator Vitest suite, so
+  // behaviour stays consistent across unit + E2E tests. Production never
+  // sets this flag.
+  if (process.env.AGENT_HUB_PROVISIONING_STUB === '1') {
+    return stubExecutor;
+  }
   const resolveWorkspace = (projectId: string | null): string => {
     if (!projectId) throw new Error('provisioning executor requires a projectId');
     return path.join(deps.getProjectDataDir(projectId), 'workspace');
