@@ -73,7 +73,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.9.0
+          terraform_version: 1.10.0
 
       - name: Terraform fmt (check)
         run: terraform fmt -check -recursive

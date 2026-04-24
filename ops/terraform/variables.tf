@@ -147,9 +147,9 @@ variable "agent_hub_web_port" {
 }
 
 variable "user_data_replace_on_change" {
-  description = "Set true to replace the instance when user_data (bootstrap) changes. Required to re-apply a new .env on already-created EC2, or update in place on the host instead."
+  description = "Set true (the default) to replace the instance when user_data (bootstrap) changes. Without this, TF updates the user_data attribute in-place but cloud-init doesn't re-run on the existing instance — meaning the OS keeps running whatever was first-booted. Turn off only if you have an explicit out-of-band mechanism for re-running bootstrap (e.g. SSM)."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "ssh_user" {

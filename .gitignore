@@ -44,6 +44,20 @@ server/uploads/
 # accidentally added they appear as dangling submodule gitlinks in PRs.
 .claude/worktrees/
 
+# Terraform — never commit state or provider caches. Lockfile (.terraform.lock.hcl)
+# IS committed for reproducible provider versions.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+ops/terraform/state/
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
 # OS files
 .DS_Store
 Thumbs.db

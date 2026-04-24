@@ -15,6 +15,11 @@ moved {
 }
 
 terraform {
+  # Keep the floor low so operators on older TF (e.g. 1.7.x) can still plan/apply.
+  # Features that require a newer TF (e.g. `use_lockfile = true` for native S3
+  # state locking, which needs >= 1.10) are opt-in per-env via backend.hcl, not
+  # globally enforced here. Operators on TF < 1.10 use the DynamoDB lock-table
+  # fallback — see environments/*/backend.hcl.
   required_version = ">= 1.5"
 
   required_providers {
