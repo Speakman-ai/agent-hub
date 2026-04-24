@@ -8,8 +8,11 @@ import '../test/setup.js';
 import type supertest from 'supertest';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
+import { existsSync, readFileSync, mkdtempSync } from 'fs';
+import path from 'path';
+import os from 'os';
 import { getRequest } from '../test/helpers.js';
-import { setAuditRunner, resetAuditRunner } from './audit.js';
+import { setAuditRunner, resetAuditRunner, formatRosterSection } from './audit.js';
 import { getStmts } from '../db.js';
 import type { AuditReport } from '../audit/audit-service.js';
 
@@ -24,6 +27,15 @@ async function freshProject(): Promise<string> {
   await request
     .post('/api/projects')
     .send({ id, name: id, cwd: '/tmp', color: '#3B82F6' })
+    .expect(201);
+  return id;
+}
+
+async function freshAgent(projectId: string): Promise<string> {
+  const id = `agent-${uuidv4().slice(0, 8)}`;
+  await request
+    .post('/api/agents')
+    .send({ id, projectId, name: id, engine: 'claude-code' })
     .expect(201);
   return id;
 }
@@ -144,22 +156,34 @@ describe('GET /api/projects/:id/roster/suggest', () => {
 });
 
 describe('POST + GET /api/projects/:id/roster', () => {
-  it('persists a roster and reads it back', async () => {
+  it('persists a roster with existing agents and reads it back', async () => {
     const projectId = await freshProject();
+    const agentA = await freshAgent(projectId);
+    const agentB = await freshAgent(projectId);
     const payload = {
       tracks: [
-        { id: 'backend', label: 'Backend', agentId: 'agent-be' },
-        { id: 'frontend', label: 'Frontend', agentId: null },
+        { id: 'backend', label: 'Backend', agentId: agentA },
+        { id: 'frontend', label: 'Frontend', agentId: agentB },
       ],
     };
     const post = await request.post(`/api/projects/${projectId}/roster`).send(payload).expect(200);
     expect(post.body.tracks).toHaveLength(2);
     expect(post.body.updatedAt).toBeTruthy();
+    // Response shape must match the frontend destructure:
+    // saved.tracks = [{ id, label, agentId, custom }].
+    for (const t of post.body.tracks) {
+      expect(t).toMatchObject({
+        id: expect.any(String),
+        label: expect.any(String),
+        agentId: expect.any(String),
+        custom: expect.any(Boolean),
+      });
+    }
 
     const get = await request.get(`/api/projects/${projectId}/roster`).expect(200);
     expect(get.body.tracks).toEqual([
-      { id: 'backend', label: 'Backend', agentId: 'agent-be', custom: false },
-      { id: 'frontend', label: 'Frontend', agentId: null, custom: false },
+      { id: 'backend', label: 'Backend', agentId: agentA, custom: false },
+      { id: 'frontend', label: 'Frontend', agentId: agentB, custom: false },
     ]);
   });
 
@@ -169,17 +193,183 @@ describe('POST + GET /api/projects/:id/roster', () => {
     expect(res.body.error).toMatch(/tracks/);
   });
 
-  it('returns 400 when no usable tracks pass validation', async () => {
+  it('returns 400 on an empty tracks array', async () => {
     const projectId = await freshProject();
     const res = await request
       .post(`/api/projects/${projectId}/roster`)
-      .send({ tracks: [{ label: 'no id' }, { id: 42 }] })
+      .send({ tracks: [] })
       .expect(400);
     expect(res.body.error).toMatch(/no usable tracks/);
+  });
+
+  it('returns 400 when a track has neither agentId nor custom', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({ tracks: [{ id: 'frontend', label: 'Frontend', agentId: null }] })
+      .expect(400);
+    expect(res.body.error).toMatch(/must have either agentId OR custom/i);
+  });
+
+  it('returns 400 when a track has both agentId and custom:true', async () => {
+    const projectId = await freshProject();
+    const agent = await freshAgent(projectId);
+    const res = await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({ tracks: [{ id: 'x', label: 'X', agentId: agent, custom: true }] })
+      .expect(400);
+    expect(res.body.error).toMatch(/must have either agentId OR custom/i);
+  });
+
+  it('returns 400 when a track id is missing or non-string', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({ tracks: [{ label: 'no id', custom: true }] })
+      .expect(400);
+    expect(res.body.error).toMatch(/id must be a non-empty string/i);
+  });
+
+  it('returns 400 when agentId references a non-existent agent', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({ tracks: [{ id: 'backend', label: 'Backend', agentId: 'no-such-agent' }] })
+      .expect(400);
+    expect(res.body.error).toMatch(/unknown agentId/i);
   });
 
   it('returns 404 from the GET when no roster set', async () => {
     const projectId = await freshProject();
     await request.get(`/api/projects/${projectId}/roster`).expect(404);
+  });
+
+  it('returns 404 when the project does not exist', async () => {
+    await request
+      .post('/api/projects/does-not-exist/roster')
+      .send({ tracks: [{ id: 'x', custom: true }] })
+      .expect(404);
+  });
+
+  it('creates a new agent for each custom track and links it to the project', async () => {
+    const projectId = await freshProject();
+    const res = await request
+      .post(`/api/projects/${projectId}/roster`)
+      .send({
+        tracks: [
+          { id: 'architect', label: 'Architect', custom: true },
+          { id: 'qa', label: 'QA', custom: true },
+        ],
+      })
+      .expect(200);
+
+    expect(res.body.tracks).toEqual([
+      { id: 'architect', label: 'Architect', agentId: `${projectId}-architect`, custom: true },
+      { id: 'qa', label: 'QA', agentId: `${projectId}-qa`, custom: true },
+    ]);
+
+    // Both new agents must be queryable through /api/agents with the
+    // correct project linkage and default engine.
+    const list = (await request.get('/api/agents').expect(200)).body as Array<{
+      id: string;
+      projectId: string;
+      engine: string;
+      role?: string;
+      cwd?: string;
+    }>;
+    const architect = list.find((a) => a.id === `${projectId}-architect`);
+    const qa = list.find((a) => a.id === `${projectId}-qa`);
+    expect(architect).toBeTruthy();
+    expect(architect?.projectId).toBe(projectId);
+    expect(architect?.engine).toBe('claude-code');
+    expect(architect?.role).toBe('Architect');
+    expect(qa?.role).toBe('QA');
+  });
+
+  it('is idempotent across re-runs for the same custom track', async () => {
+    const projectId = await freshProject();
+    const payload = {
+      tracks: [{ id: 'devex', label: 'DevEx', custom: true }],
+    };
+    await request.post(`/api/projects/${projectId}/roster`).send(payload).expect(200);
+    // Second run — must not 4xx on duplicate custom track and must not
+    // create a second agent row.
+    await request.post(`/api/projects/${projectId}/roster`).send(payload).expect(200);
+
+    const list = (await request.get('/api/agents').expect(200)).body as Array<{ id: string }>;
+    const matches = list.filter((a) => a.id === `${projectId}-devex`);
+    expect(matches).toHaveLength(1);
+  });
+
+  it('writes AGENTS.md with the confirmed roster and re-applies idempotently', async () => {
+    // Use a dedicated project so the AGENTS.md write path is isolated.
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'roster-agents-md-'));
+    const id = `roster-md-${uuidv4().slice(0, 8)}`;
+    await request
+      .post('/api/projects')
+      .send({ id, name: id, cwd: tmp, color: '#3B82F6' })
+      .expect(201);
+    const projectId = id;
+
+    const agentExisting = await freshAgent(projectId);
+
+    const first = {
+      tracks: [
+        { id: 'backend', label: 'Backend', agentId: agentExisting },
+        { id: 'architect', label: 'Architect', custom: true },
+      ],
+    };
+    await request.post(`/api/projects/${projectId}/roster`).send(first).expect(200);
+
+    // AGENTS.md is owned by the project workspace data dir (`ahw`),
+    // not cwd. Pull the project record to find the ahw path.
+    const projRes = await request.get(`/api/projects/${projectId}`).expect(200);
+    const ahw = (projRes.body as { ahw: string }).ahw;
+    const agentsMdPath = path.join(ahw, 'AGENTS.md');
+    expect(existsSync(agentsMdPath)).toBe(true);
+
+    let body = readFileSync(agentsMdPath, 'utf-8');
+    expect(body).toContain('## Agent Roster');
+    expect(body).toContain(`\`${agentExisting}\``);
+    expect(body).toContain(`\`${projectId}-architect\``);
+    expect(body).toContain('<!-- agent-hub-roster:start -->');
+    expect(body).toContain('<!-- agent-hub-roster:end -->');
+
+    // Second POST with a different roster — the section between the
+    // markers must be rewritten, not duplicated.
+    const agentExisting2 = await freshAgent(projectId);
+    const second = {
+      tracks: [{ id: 'frontend', label: 'Frontend', agentId: agentExisting2 }],
+    };
+    await request.post(`/api/projects/${projectId}/roster`).send(second).expect(200);
+
+    body = readFileSync(agentsMdPath, 'utf-8');
+    // Exactly one roster block, and it reflects the *new* roster only.
+    const startMatches = body.match(/<!-- agent-hub-roster:start -->/g) ?? [];
+    const endMatches = body.match(/<!-- agent-hub-roster:end -->/g) ?? [];
+    expect(startMatches).toHaveLength(1);
+    expect(endMatches).toHaveLength(1);
+    expect(body).toContain(`\`${agentExisting2}\``);
+    expect(body).not.toContain(`\`${agentExisting}\``);
+    expect(body).not.toContain(`\`${projectId}-architect\``);
+  });
+});
+
+describe('formatRosterSection', () => {
+  it('wraps content in start/end markers', () => {
+    const out = formatRosterSection([
+      { id: 'backend', label: 'Backend', agentId: 'agent-a', custom: false },
+      { id: 'arch', label: 'Architect', agentId: 'proj-arch', custom: true },
+    ]);
+    expect(out).toMatch(/^<!-- agent-hub-roster:start -->/);
+    expect(out.trimEnd()).toMatch(/<!-- agent-hub-roster:end -->$/);
+    expect(out).toContain('**Backend** (`agent-a`)');
+    expect(out).toContain('**Architect** (`proj-arch`)');
+    expect(out).toContain('_(new)_');
+  });
+
+  it('renders a friendly placeholder when the roster is empty', () => {
+    const out = formatRosterSection([]);
+    expect(out).toContain('_No agents assigned._');
   });
 });
