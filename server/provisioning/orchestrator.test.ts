@@ -6,6 +6,7 @@ import {
   snapshotEvents,
   plannedPhases,
   hasGithubIntegration,
+  resolveTemplateForPayload,
   PROVISIONING_PHASE_IDS,
   type ProvisioningEvent,
   type ProvisioningExecutor,
@@ -25,6 +26,20 @@ describe('hasGithubIntegration', () => {
 
   it('includes gh when the array lists it', () => {
     expect(hasGithubIntegration({ integrations: ['github'] })).toBe(true);
+  });
+});
+
+describe('resolveTemplateForPayload', () => {
+  it('routes stack:"idk" via the appType default (CLI → go-cobra)', () => {
+    expect(resolveTemplateForPayload({ appType: 'cli', stack: 'idk' })).toBe('go-cobra');
+  });
+
+  it('honours an explicit known template id regardless of appType', () => {
+    expect(resolveTemplateForPayload({ appType: 'api', stack: 'rust-axum' })).toBe('rust-axum');
+  });
+
+  it('falls back to the universal default when both fields are missing', () => {
+    expect(resolveTemplateForPayload({})).toBe('typescript-node-tsx');
   });
 });
 

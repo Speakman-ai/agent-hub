@@ -6,13 +6,11 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "rootDir": ".",
-    "noEmit": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["node", "vitest/globals"]
+    "noEmit": true,
+    "types": ["node"]
   },
-  "include": ["**/*.ts"],
-  "exclude": ["node_modules", "dist", "provisioning/templates/*/files/**"]
+  "include": ["src/**/*.ts"]
 }

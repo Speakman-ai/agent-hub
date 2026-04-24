@@ -12,6 +12,11 @@ export default defineConfig({
   test: {
     globals: true,
     include: ['**/*.test.ts', '**/*.test.mjs'],
+    // Starter template payloads ship their own test files that are only
+    // valid inside a scaffolded project (they expect the template's own
+    // devDependencies, not the server's). Keep them out of the server
+    // test run.
+    exclude: ['**/node_modules/**', 'provisioning/templates/*/files/**'],
     setupFiles: ['./test/setup.ts'],
     sequence: { concurrent: false },
     fileParallelism: false,

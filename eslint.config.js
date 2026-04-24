@@ -19,6 +19,11 @@ export default [
       '.worktrees/',
       'client/vite.config.js',
       '**/*.cjs',
+      // Starter template payloads — these are scaffolding source trees
+      // copied into newly-provisioned projects, not first-party server code.
+      // They have their own linters (ruff / eslint / golangci-lint / clippy)
+      // that run inside the scaffolded workspace after setup.
+      'server/provisioning/templates/*/files/',
     ],
   },
 

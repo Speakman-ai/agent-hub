@@ -1,0 +1,14 @@
+# Binaries
+/starter
+/bin/
+*.exe
+*.test
+*.out
+
+# Dependency & build caches
+vendor/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

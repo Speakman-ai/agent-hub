@@ -1,0 +1,9 @@
+{
+  "id": "rust-axum",
+  "label": "Rust · axum",
+  "appTypes": ["api", "service", "backend"],
+  "setup": ["cargo fetch", "cargo build"],
+  "test": "cargo test",
+  "lint": "cargo clippy -- -D warnings",
+  "recommendedFor": ["service", "api"]
+}

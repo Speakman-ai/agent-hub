@@ -1,0 +1,9 @@
+{
+  "id": "typescript-node-tsx",
+  "label": "TypeScript · Node + tsx",
+  "appTypes": ["web-app", "api", "library", "mobile", "desktop"],
+  "setup": ["npm install"],
+  "test": "npm test",
+  "lint": "npm run lint",
+  "recommendedFor": ["web-app", "library", "desktop", "mobile"]
+}

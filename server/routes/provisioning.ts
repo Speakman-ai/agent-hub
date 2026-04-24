@@ -20,22 +20,31 @@ import path from 'path';
 import type { RouteDeps, Project } from '../types.js';
 import {
   startProvisioningJob,
-  stubExecutor,
   type ProvisioningExecutor,
   type ProvisioningPayload,
 } from '../provisioning/orchestrator.js';
+import { createTemplateExecutorForProject } from '../provisioning/template-executor.js';
 
-/** Injectable executor resolver — tests swap in fakes via this hook. */
-let executorFactory: () => ProvisioningExecutor = () => stubExecutor;
+/**
+ * Injectable executor resolver — tests swap in fakes via this hook.
+ *
+ * The `deps` argument is passed at route-construction time so the
+ * factory can build an executor that knows how to resolve workspace
+ * paths. Tests that just want the stub can ignore it.
+ */
+let executorFactory: (deps: RouteDeps) => ProvisioningExecutor = (deps) =>
+  createTemplateExecutorForProject(deps.getProjectDataDir);
 
 /** Test hook: override the executor returned for new jobs. */
-export function setProvisioningExecutorFactory(factory: () => ProvisioningExecutor): void {
+export function setProvisioningExecutorFactory(
+  factory: (deps: RouteDeps) => ProvisioningExecutor,
+): void {
   executorFactory = factory;
 }
 
-/** Test hook: restore the default stub executor. */
+/** Test hook: restore the default (template-backed) executor. */
 export function resetProvisioningExecutorFactory(): void {
-  executorFactory = () => stubExecutor;
+  executorFactory = (deps) => createTemplateExecutorForProject(deps.getProjectDataDir);
 }
 
 /** Produce a project id from a requested name, falling back to a random uuid-ish slug. */
@@ -170,7 +179,7 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
       jobId,
       payload,
       projectId,
-      executor: executorFactory(),
+      executor: executorFactory(deps),
       stmts,
     });
 

@@ -1,0 +1,9 @@
+{
+  "id": "python-fastapi-uv",
+  "label": "Python · FastAPI + uv",
+  "appTypes": ["api", "bot", "ml", "backend"],
+  "setup": ["uv sync"],
+  "test": "uv run pytest -q",
+  "lint": "uv run ruff check .",
+  "recommendedFor": ["bot", "ml", "api"]
+}

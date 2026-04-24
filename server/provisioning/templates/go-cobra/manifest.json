@@ -1,0 +1,9 @@
+{
+  "id": "go-cobra",
+  "label": "Go · stdlib + cobra",
+  "appTypes": ["cli", "api"],
+  "setup": ["go mod tidy"],
+  "test": "go test ./...",
+  "lint": "golangci-lint run",
+  "recommendedFor": ["cli"]
+}

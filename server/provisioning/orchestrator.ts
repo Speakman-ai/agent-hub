@@ -24,6 +24,14 @@
  */
 
 import type { Stmts } from '../types.js';
+import { resolveTemplateId, type TemplateId } from './stack-defaults.js';
+
+// Re-exported so callers don't need to import from two places when they
+// want to know "given this payload, which template will we scaffold?".
+// The resolution itself is a pure function — see stack-defaults.ts for
+// the Bot→python, Web→typescript, CLI→go, etc. mapping.
+export { resolveTemplateId };
+export type { TemplateId };
 
 /** Ordered phase ids — must match provisioningStatus.js `PROVISIONING_PHASES`. */
 export const PROVISIONING_PHASE_IDS = [
@@ -218,6 +226,20 @@ export function plannedPhases(payload: ProvisioningPayload): {
     phase,
     skip: !withGithub && GITHUB_PHASE_IDS.has(phase),
   }));
+}
+
+/**
+ * Resolve the concrete template id that this payload will scaffold.
+ *
+ * Thin wrapper around `resolveTemplateId` that unpacks the payload
+ * fields. Exposed here so callers can query "what will we scaffold?"
+ * without reaching into the executor — handy for the UI preview panel
+ * and for log lines emitted before the `copy-template` phase runs.
+ */
+export function resolveTemplateForPayload(payload: ProvisioningPayload): TemplateId {
+  const appType = typeof payload.appType === 'string' ? payload.appType : null;
+  const stack = typeof payload.stack === 'string' ? payload.stack : null;
+  return resolveTemplateId(appType, stack);
 }
 
 export function hasGithubIntegration(payload: ProvisioningPayload): boolean {
