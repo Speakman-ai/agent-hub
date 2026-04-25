@@ -140,7 +140,45 @@ export function parseHandoffBlock(text) {
  *   'empty-array'        — body is `[]`
  *   'no-valid-entries'   — every entry is missing required contract fields
  *   'missing-contract-fields' — at least one entry is valid, but another is missing required fields
+ *
+ * When the reason is `no-valid-entries` or `missing-contract-fields`, the
+ * result also carries a `rows` array with one entry per raw row:
+ *   { agentId: string | null, missing: string[] }
+ * so the UI can tell the user (and the model) exactly which fields to add
+ * — this is what turns the generic "Failed —" card into an actionable
+ * diagnostic and is the mitigation for the recurring bug where models
+ * emit `{agentId, task}` and omit the rest of the contract.
  */
+export const DELEGATE_REQUIRED_FIELDS = [
+  'agentId',
+  'task',
+  'owner',
+  'scope',
+  'expectedArtifact',
+  'deadline',
+  'returnFormat',
+];
+
+function summarizeDelegateRow(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return { agentId: null, missing: ['entry-not-object'] };
+  }
+  const rawAgentId =
+    typeof entry.agentId === 'string'
+      ? entry.agentId
+      : typeof entry.toAgent === 'string'
+        ? entry.toAgent
+        : '';
+  const agentId = rawAgentId.trim();
+  const fieldValue = (key) => (typeof entry[key] === 'string' ? entry[key].trim() : '');
+  const missing = [];
+  if (!agentId) missing.push('agentId');
+  for (const key of ['task', 'owner', 'scope', 'expectedArtifact', 'deadline', 'returnFormat']) {
+    if (!fieldValue(key)) missing.push(key);
+  }
+  return { agentId: agentId || null, missing };
+}
+
 export function detectDelegateBlock(text) {
   if (typeof text !== 'string' || !text.includes('<delegate>')) {
     return { present: false, tasks: null, reason: null, rawBody: null };
@@ -160,42 +198,49 @@ export function detectDelegateBlock(text) {
   if (parsed == null || (typeof parsed !== 'object' && !Array.isArray(parsed))) {
     return { present: true, tasks: null, reason: 'not-object', rawBody };
   }
-  const list = Array.isArray(parsed) ? parsed : [parsed];
+  // Accept `{ tasks: [...] }` wrapper shape (mirrors server/delegation.ts).
+  // Models regularly emit this REST-flavoured form; previously it wrapped
+  // the whole object as `[wrapper]` and failed with `no-valid-entries`.
+  const list = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed.tasks)
+      ? parsed.tasks
+      : [parsed];
   if (list.length === 0) {
     return { present: true, tasks: null, reason: 'empty-array', rawBody };
   }
   const tasks = [];
+  const rows = [];
   let invalidRows = 0;
   for (const entry of list) {
-    if (!entry || typeof entry !== 'object') {
+    const summary = summarizeDelegateRow(entry);
+    rows.push(summary);
+    if (summary.missing.length > 0) {
       invalidRows += 1;
       continue;
     }
+    // summary.missing.length === 0 ⇒ every field trimmed to non-empty string.
     const rawAgentId =
       typeof entry.agentId === 'string'
         ? entry.agentId
         : typeof entry.toAgent === 'string'
           ? entry.toAgent
           : '';
-    const agentId = rawAgentId.trim();
-    const task = typeof entry.task === 'string' ? entry.task.trim() : '';
-    const owner = typeof entry.owner === 'string' ? entry.owner.trim() : '';
-    const scope = typeof entry.scope === 'string' ? entry.scope.trim() : '';
-    const expectedArtifact =
-      typeof entry.expectedArtifact === 'string' ? entry.expectedArtifact.trim() : '';
-    const deadline = typeof entry.deadline === 'string' ? entry.deadline.trim() : '';
-    const returnFormat = typeof entry.returnFormat === 'string' ? entry.returnFormat.trim() : '';
-    if (!agentId || !task || !owner || !scope || !expectedArtifact || !deadline || !returnFormat) {
-      invalidRows += 1;
-      continue;
-    }
-    tasks.push({ agentId, task, owner, scope, expectedArtifact, deadline, returnFormat });
+    tasks.push({
+      agentId: rawAgentId.trim(),
+      task: entry.task.trim(),
+      owner: entry.owner.trim(),
+      scope: entry.scope.trim(),
+      expectedArtifact: entry.expectedArtifact.trim(),
+      deadline: entry.deadline.trim(),
+      returnFormat: entry.returnFormat.trim(),
+    });
   }
   if (tasks.length === 0) {
-    return { present: true, tasks: null, reason: 'no-valid-entries', rawBody };
+    return { present: true, tasks: null, reason: 'no-valid-entries', rawBody, rows };
   }
   if (invalidRows > 0) {
-    return { present: true, tasks: null, reason: 'missing-contract-fields', rawBody };
+    return { present: true, tasks: null, reason: 'missing-contract-fields', rawBody, rows };
   }
   return { present: true, tasks, reason: null, rawBody };
 }
@@ -264,6 +309,7 @@ export function extractCoordinationBlocks(text) {
         delegateMalformed = {
           reason: delegateDetection.reason,
           rawBody: delegateDetection.rawBody ?? '',
+          rows: Array.isArray(delegateDetection.rows) ? delegateDetection.rows : null,
         };
       working = trimmed.slice(0, m.index).trimEnd();
       continue;

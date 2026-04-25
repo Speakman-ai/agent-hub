@@ -7,6 +7,7 @@ import {
   describeHandoffReason,
   detectDelegateBlock,
   describeDelegateReason,
+  DELEGATE_REQUIRED_FIELDS,
 } from './coordinationBlocks.js';
 
 const delegateTask = (agentId = 'a', task = 'do A') => ({
@@ -285,6 +286,116 @@ describe('detectDelegateBlock', () => {
     expect(detectDelegateBlock(null).present).toBe(false);
     expect(detectDelegateBlock(undefined).present).toBe(false);
     expect(detectDelegateBlock(42).present).toBe(false);
+  });
+});
+
+describe('detectDelegateBlock — per-row missing-field diagnostics', () => {
+  // Reproduces the bug report: user-facing card showed a generic "Failed —"
+  // when the model emitted the short `[{agentId, task}]` form. The detector
+  // must now surface which specific fields are missing per row so the UI
+  // (and the model on its next turn) can self-correct.
+  it('returns rows[] when every entry omits contract fields (the recurring user bug)', () => {
+    const text = `<delegate>[{"agentId":"agent-hub-reviewer","task":"Re-review PR #648"}]</delegate>`;
+    const out = detectDelegateBlock(text);
+    expect(out.reason).toBe('no-valid-entries');
+    expect(out.tasks).toBeNull();
+    expect(out.rows).toEqual([
+      {
+        agentId: 'agent-hub-reviewer',
+        missing: ['owner', 'scope', 'expectedArtifact', 'deadline', 'returnFormat'],
+      },
+    ]);
+  });
+
+  it('reports missing agentId separately from missing contract fields', () => {
+    const text = `<delegate>[{"task":"orphan"}]</delegate>`;
+    const out = detectDelegateBlock(text);
+    expect(out.reason).toBe('no-valid-entries');
+    expect(out.rows[0].agentId).toBeNull();
+    expect(out.rows[0].missing).toEqual([
+      'agentId',
+      'owner',
+      'scope',
+      'expectedArtifact',
+      'deadline',
+      'returnFormat',
+    ]);
+  });
+
+  it('mixes valid rows with missing-field rows under missing-contract-fields', () => {
+    const full = {
+      agentId: 'a',
+      task: 'do',
+      owner: 'lead',
+      scope: 's',
+      expectedArtifact: 'e',
+      deadline: 'd',
+      returnFormat: 'r',
+    };
+    const text = `<delegate>[${JSON.stringify(full)},{"agentId":"b","task":"short"}]</delegate>`;
+    const out = detectDelegateBlock(text);
+    expect(out.reason).toBe('missing-contract-fields');
+    expect(out.rows).toHaveLength(2);
+    expect(out.rows[0].missing).toEqual([]);
+    expect(out.rows[1]).toEqual({
+      agentId: 'b',
+      missing: ['owner', 'scope', 'expectedArtifact', 'deadline', 'returnFormat'],
+    });
+  });
+
+  it('exports the canonical required field list so UIs can render the contract', () => {
+    expect(DELEGATE_REQUIRED_FIELDS).toEqual([
+      'agentId',
+      'task',
+      'owner',
+      'scope',
+      'expectedArtifact',
+      'deadline',
+      'returnFormat',
+    ]);
+  });
+
+  it('unwraps `{ tasks: [...] }` wrapper so the REST-style payload parses', () => {
+    // Previously the wrapper was coerced to `[wrapper]` and failed
+    // `no-valid-entries` because the wrapper has no `agentId`/`task`.
+    const full = {
+      agentId: 'a',
+      task: 'do',
+      owner: 'lead',
+      scope: 's',
+      expectedArtifact: 'e',
+      deadline: 'd',
+      returnFormat: 'r',
+    };
+    const text = `<delegate>${JSON.stringify({ tasks: [full] })}</delegate>`;
+    const out = detectDelegateBlock(text);
+    expect(out.tasks).toEqual([full]);
+    expect(out.reason).toBeNull();
+  });
+
+  it('surfaces per-row diagnostics for the wrapper shape when rows are partial', () => {
+    const text = `<delegate>{"tasks":[{"agentId":"b","task":"short"}]}</delegate>`;
+    const out = detectDelegateBlock(text);
+    expect(out.reason).toBe('no-valid-entries');
+    expect(out.rows).toEqual([
+      {
+        agentId: 'b',
+        missing: ['owner', 'scope', 'expectedArtifact', 'deadline', 'returnFormat'],
+      },
+    ]);
+  });
+
+  it('threads rows[] through extractCoordinationBlocks.delegateMalformed', () => {
+    const text = `Prose.\n<delegate>[{"agentId":"agent-hub-reviewer","task":"re-review"}]</delegate>`;
+    const out = extractCoordinationBlocks(text);
+    expect(out.delegate).toBeNull();
+    expect(out.delegateMalformed.reason).toBe('no-valid-entries');
+    expect(out.delegateMalformed.rows).toEqual([
+      {
+        agentId: 'agent-hub-reviewer',
+        missing: ['owner', 'scope', 'expectedArtifact', 'deadline', 'returnFormat'],
+      },
+    ]);
   });
 });
 

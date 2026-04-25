@@ -114,6 +114,37 @@ describe('DelegateCard', () => {
     expect(screen.getByTestId('delegate-raw-body')).toHaveTextContent('not json');
   });
 
+  it('renders per-row missing-field diagnostics and the required contract on partial payloads', () => {
+    // The recurring user bug: model emits `[{agentId, task}]` and the UI
+    // previously showed a generic "Failed —" with no guidance. The card now
+    // surfaces the exact missing fields per row and the canonical contract.
+    render(
+      <DelegateCard
+        tasks={null}
+        malformed={{
+          reason: 'no-valid-entries',
+          rawBody: '[{"agentId":"hub-backend","task":"go"}]',
+          rows: [
+            {
+              agentId: 'hub-backend',
+              missing: ['owner', 'scope', 'expectedArtifact', 'deadline', 'returnFormat'],
+            },
+          ],
+        }}
+        malformedReasonText="Delegate block has no entries with the required contract fields"
+        agents={AGENTS}
+      />,
+    );
+    expect(screen.getByTestId('delegate-card-failed')).toBeInTheDocument();
+    expect(screen.getByTestId('delegate-missing-fields-heading')).toBeInTheDocument();
+    const row = screen.getByTestId('delegate-missing-field-row');
+    expect(row).toHaveTextContent('hub-backend');
+    expect(row).toHaveTextContent('owner, scope, expectedArtifact, deadline, returnFormat');
+    expect(screen.getByTestId('delegate-required-contract')).toHaveTextContent(
+      'agentId, task, owner, scope, expectedArtifact, deadline, returnFormat',
+    );
+  });
+
   it('omits the raw-body panel when malformed.rawBody is empty', () => {
     render(
       <DelegateCard

@@ -123,7 +123,17 @@ export function detectDelegateBlock(text: string): DelegateDetectionResult {
   if (parsed == null || typeof parsed !== 'object') {
     return { present: true, tasks: null, reason: 'not-object', rawBody };
   }
-  const list = Array.isArray(parsed) ? parsed : [parsed];
+  // Accept `{ tasks: [...] }` wrapper shape — models regularly emit this
+  // (mirroring a REST payload) and the previous behaviour was to wrap the
+  // whole object as `[wrapper]`, which then failed `no-valid-entries`
+  // because the wrapper has no `agentId`/`task`. Tolerating the wrapper
+  // here (and on the client) is a purely permissive change — the legacy
+  // bare-array and single-object shapes still work.
+  const list: unknown[] = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray((parsed as { tasks?: unknown }).tasks)
+      ? (parsed as { tasks: unknown[] }).tasks
+      : [parsed];
   if (list.length === 0) return { present: true, tasks: null, reason: 'empty-array', rawBody };
 
   const normalized = list

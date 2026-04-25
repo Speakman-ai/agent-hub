@@ -41,6 +41,13 @@ agent-hub-lead     - Agent Hub Lead
 block from your assistant message after the CLI process closes. Anything after
 `</delegate>` is dropped — keep the block last.
 
+The server gate (`server/delegation.ts#detectDelegateBlock`) and the client UI
+(`client/src/utils/coordinationBlocks.js`) both require **all seven contract
+fields per task**: `agentId`, `task`, `owner`, `scope`, `expectedArtifact`,
+`deadline`, `returnFormat`. Partial rows (e.g. `[{agentId, task}]` only) are
+rejected — the failed-state `DelegateCard` will list which fields are missing
+per row, but no sub-agents will be spawned. Re-emit with the full contract.
+
 ````markdown
 I'll fan this out to the two specialists in parallel and synthesize their
 findings when they return.
@@ -49,15 +56,33 @@ findings when they return.
 [
   {
     "agentId": "agent-hub-frontend",
-    "task": "Audit client/src/components/Chat.jsx and the useChatScroll hook for scroll-follow regressions. Is the user-scroll-up detection still accurate? Does auto-follow re-engage on new assistant messages when the user is at the bottom? Report exact file:line references and a one-paragraph verdict."
+    "task": "Audit client/src/components/Chat.jsx and the useChatScroll hook for scroll-follow regressions. Is the user-scroll-up detection still accurate? Does auto-follow re-engage on new assistant messages when the user is at the bottom? Report exact file:line references and a one-paragraph verdict.",
+    "owner": "agent-hub-lead",
+    "scope": "client/src/components/Chat.jsx, client/src/hooks/useChatScroll.js (read-only audit)",
+    "expectedArtifact": "Markdown report with file:line references and a verdict paragraph",
+    "deadline": "end-of-turn",
+    "returnFormat": "summary"
   },
   {
     "agentId": "agent-hub-backend",
-    "task": "Check whether server/chat.ts still emits the legacy `stream_end` WebSocket event, or only the new `message_end`. Grep for both names, report the emit sites, and confirm whether the client hook in step 1 still needs the legacy name."
+    "task": "Check whether server/chat.ts still emits the legacy `stream_end` WebSocket event, or only the new `message_end`. Grep for both names, report the emit sites, and confirm whether the client hook in step 1 still needs the legacy name.",
+    "owner": "agent-hub-lead",
+    "scope": "server/chat.ts and any server/*.ts that emits WebSocket events (read-only audit)",
+    "expectedArtifact": "Grep summary listing emit sites + verdict on legacy name removal",
+    "deadline": "end-of-turn",
+    "returnFormat": "summary"
   }
 ]
 </delegate>
 ````
+
+**Accepted body shapes** (all parsed identically by the server):
+
+- Bare array: `[{...}, {...}]` — canonical.
+- Single object: `{...}` — coerced to a one-element array.
+- Wrapper: `{"tasks": [{...}, {...}]}` — REST-flavoured, unwrapped before
+  validation. Useful when models prefer named payloads, but bare arrays are
+  preferred for clarity.
 
 ### 3. What the server does
 
@@ -116,8 +141,10 @@ Expected output (abbreviated):
 
 - **One fenced block per turn.** Multiple `<delegate>` blocks are ignored after
   the first.
-- **Array payload only.** `<delegate>` requires a JSON array. For a single
+- **Array, single object, or `{tasks: [...]}` wrapper accepted.** For a single
   target where you want ownership transfer, use `<handoff>` instead.
+- **Full 7-field contract is mandatory.** Partial rows render a failed-state
+  `DelegateCard` listing which fields are missing — no sub-agents spawn.
 - **No chat content after `</delegate>`.** It's logged and dropped. Put any
   narration for the user *before* the block.
 - **Don't confuse with `<handoff>`.** `<delegate>` collects output and resumes

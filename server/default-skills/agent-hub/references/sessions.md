@@ -33,7 +33,7 @@ scripts/sessions.sh messages <sessionId>     # full message history
 
 ## Session row
 
-Notable columns: `id`, `agent_id`, `engine` (`claude-code` | `cursor-agent` | `gemini-cli` | `codex-cli`), `model`,
+Notable columns: `id`, `agent_id`, `engine` (`claude-code` | `cursor-agent` | `gemini-cli`), `model`,
 `use_worktree` (0/1 — per-session git isolation; new rows default from the project's `mode`, see
 [`<handoff>`](#handoff--ownership-transfer-to-one-specialist) below),
 `ask_mode` (0/1 — see below), `react_loop_enabled` (0/1 — see
@@ -139,24 +139,36 @@ lead stays running.
 ```
 <delegate>
 [
-  {"agentId": "hub-frontend", "task": "Audit client/src/components/Chat.jsx for scroll-follow regressions."},
-  {"agentId": "hub-backend",  "task": "Check if server/chat.ts still emits the old `stream_end` event."}
+  {
+    "agentId": "hub-frontend",
+    "task": "Audit client/src/components/Chat.jsx for scroll-follow regressions.",
+    "owner": "hub-lead",
+    "scope": "client/src/components/Chat.jsx (read-only audit)",
+    "expectedArtifact": "Markdown report with file:line refs + verdict",
+    "deadline": "end-of-turn",
+    "returnFormat": "summary"
+  },
+  {
+    "agentId": "hub-backend",
+    "task": "Check if server/chat.ts still emits the old `stream_end` event.",
+    "owner": "hub-lead",
+    "scope": "server/chat.ts (read-only grep)",
+    "expectedArtifact": "Grep summary listing emit sites + verdict",
+    "deadline": "end-of-turn",
+    "returnFormat": "summary"
+  }
 ]
 </delegate>
 ```
 
-- **Payload**: JSON array of `{agentId, task}` objects. Both fields
-  required, both strings.
-- **CLI engine**: each sub-agent is spawned with the binary that matches its
-  configured `engine` (Claude Code, Cursor Agent, Gemini CLI, or Codex).
-  Prompt shaping (enriched prompt + task) mirrors chat, but **one-shot
-  delegates do not resume a Cursor engine session** — no `--resume` /
-  `stream-json` on that subprocess (interactive Cursor chat does). For
-  **Gemini** and **Codex** delegates, flags such as `--yolo` vs read-only
-  sandbox follow the **lead session’s Ask Mode** (`sessions.ask_mode`), same as
-  interactive chat. Synthesis after delegation uses the **lead session**
-  engine (including Ask Mode for Gemini/Codex/Claude) so privileges match a
-  normal user turn.
+- **Payload**: JSON array of task objects (`{tasks: [...]}` wrapper and a
+  bare single object are also accepted and unwrapped to a one-element array).
+  **Each task MUST include all seven contract fields**: `agentId`, `task`,
+  `owner`, `scope`, `expectedArtifact`, `deadline`, `returnFormat` — all
+  non-empty strings. The server gate (`server/delegation.ts#detectDelegateBlock`)
+  and the client UI (`client/src/utils/coordinationBlocks.js`) reject partial
+  rows; the failed-state `DelegateCard` then lists exactly which fields are
+  missing per row so the lead can re-emit a corrected block.
 - **JSONL stream folding (Cursor + synthesis)**: engines that emit
   `stream-json` partial `assistant_text` plus a terminal `result` line also
   emit a final `assistant_text` with `replacesAssistantBuffer` when there is
@@ -299,8 +311,8 @@ message — the linked card is **not** moved.
 
 ### Choosing between them
 
-| Scenario                                                  | Use                     |
-| --------------------------------------------------------- | ----------------------- |
-| Two or three short audits you'll synthesize yourself      | `<delegate>`            |
-| Specialist needs to commit / PR / take multiple turns     | `<handoff>`             |
-| Discovered the card you're on is already shipped / a dupe | `<agenthub:close-card>` |
+| Scenario                                                       | Use                     |
+| -------------------------------------------------------------- | ----------------------- |
+| Two or three short audits you'll synthesize yourself           | `<delegate>`            |
+| Specialist needs to commit / PR / take multiple turns          | `<handoff>`             |
+| Discovered the card you're on is already shipped / a dupe      | `<agenthub:close-card>` |

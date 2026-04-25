@@ -4,6 +4,8 @@ import {
   parseDelegateBlock,
   extractCoordinationBlocks,
   pickHandoffRow,
+  detectDelegateBlock,
+  DELEGATE_REQUIRED_FIELDS,
 } from './coordinationBlocks.js';
 
 const delegateTask = (agentId = 'a', task = 'do A') => ({
@@ -173,6 +175,49 @@ describe('extractCoordinationBlocks', () => {
   it('handles null/empty input safely', () => {
     expect(extractCoordinationBlocks('')).toEqual({ stripped: '', handoff: null, delegate: null });
     expect(extractCoordinationBlocks(null).stripped).toBe('');
+  });
+});
+
+describe('detectDelegateBlock — parity with client util', () => {
+  it('exposes per-row diagnostics for the recurring {agentId, task}-only payload', () => {
+    const text = `<delegate>[{"agentId":"agent-hub-reviewer","task":"Re-review PR #648"}]</delegate>`;
+    const out = detectDelegateBlock(text);
+    expect(out.reason).toBe('no-valid-entries');
+    expect(out.tasks).toBeNull();
+    expect(out.rows).toEqual([
+      {
+        agentId: 'agent-hub-reviewer',
+        missing: ['owner', 'scope', 'expectedArtifact', 'deadline', 'returnFormat'],
+      },
+    ]);
+  });
+
+  it('unwraps `{ tasks: [...] }` wrapper shape (parity with web + server)', () => {
+    const full = {
+      agentId: 'a',
+      task: 'do',
+      owner: 'lead',
+      scope: 's',
+      expectedArtifact: 'e',
+      deadline: 'd',
+      returnFormat: 'r',
+    };
+    const text = `<delegate>${JSON.stringify({ tasks: [full] })}</delegate>`;
+    const out = detectDelegateBlock(text);
+    expect(out.tasks).toEqual([full]);
+    expect(out.reason).toBeNull();
+  });
+
+  it('keeps the canonical field list in parity with the web util', () => {
+    expect(DELEGATE_REQUIRED_FIELDS).toEqual([
+      'agentId',
+      'task',
+      'owner',
+      'scope',
+      'expectedArtifact',
+      'deadline',
+      'returnFormat',
+    ]);
   });
 });
 

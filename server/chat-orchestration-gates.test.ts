@@ -161,4 +161,26 @@ describe('detectDelegateBlock — missing-contract-fields reason', () => {
     expect(detection.tasks).toBeNull();
     expect(detection.reason).toBe('missing-contract-fields');
   });
+
+  it('unwraps the `{ tasks: [...] }` wrapper shape (parity with client util)', () => {
+    // Regression: before tolerance was added, the wrapper object was coerced
+    // to `[wrapper]` and failed with `no-valid-entries` because the wrapper
+    // object itself has no `agentId`/`task`. Models regularly emit this
+    // REST-flavoured form — tolerating it here (without relaxing the
+    // per-task contract) closes a recurring false-negative.
+    const fullTask = {
+      agentId: 'sub-1',
+      task: 'Do something',
+      owner: 'lead',
+      scope: 'server',
+      expectedArtifact: 'PR',
+      deadline: 'today',
+      returnFormat: 'summary',
+    };
+    const text = `<delegate>${JSON.stringify({ tasks: [fullTask] })}</delegate>`;
+    const detection = detectDelegateBlock(text);
+    expect(detection.present).toBe(true);
+    expect(detection.reason).toBeNull();
+    expect(detection.tasks).toEqual([fullTask]);
+  });
 });

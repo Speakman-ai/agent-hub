@@ -139,14 +139,36 @@ lead stays running.
 ```
 <delegate>
 [
-  {"agentId": "hub-frontend", "task": "Audit client/src/components/Chat.jsx for scroll-follow regressions."},
-  {"agentId": "hub-backend",  "task": "Check if server/chat.ts still emits the old `stream_end` event."}
+  {
+    "agentId": "hub-frontend",
+    "task": "Audit client/src/components/Chat.jsx for scroll-follow regressions.",
+    "owner": "hub-lead",
+    "scope": "client/src/components/Chat.jsx (read-only audit)",
+    "expectedArtifact": "Markdown report with file:line refs + verdict",
+    "deadline": "end-of-turn",
+    "returnFormat": "summary"
+  },
+  {
+    "agentId": "hub-backend",
+    "task": "Check if server/chat.ts still emits the old `stream_end` event.",
+    "owner": "hub-lead",
+    "scope": "server/chat.ts (read-only grep)",
+    "expectedArtifact": "Grep summary listing emit sites + verdict",
+    "deadline": "end-of-turn",
+    "returnFormat": "summary"
+  }
 ]
 </delegate>
 ```
 
-- **Payload**: JSON array of `{agentId, task}` objects. Both fields
-  required, both strings.
+- **Payload**: JSON array of task objects (`{tasks: [...]}` wrapper and a
+  bare single object are also accepted and unwrapped to a one-element array).
+  **Each task MUST include all seven contract fields**: `agentId`, `task`,
+  `owner`, `scope`, `expectedArtifact`, `deadline`, `returnFormat` — all
+  non-empty strings. The server gate (`server/delegation.ts#detectDelegateBlock`)
+  and the client UI (`client/src/utils/coordinationBlocks.js`) reject partial
+  rows; the failed-state `DelegateCard` then lists exactly which fields are
+  missing per row so the lead can re-emit a corrected block.
 - **JSONL stream folding (Cursor + synthesis)**: engines that emit
   `stream-json` partial `assistant_text` plus a terminal `result` line also
   emit a final `assistant_text` with `replacesAssistantBuffer` when there is

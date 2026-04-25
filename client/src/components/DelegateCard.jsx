@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { GitFork, AlertTriangle, Loader2 } from 'lucide-react';
+import { DELEGATE_REQUIRED_FIELDS } from '../utils/coordinationBlocks.js';
 
 /**
  * DelegateCard
@@ -43,6 +44,7 @@ import { GitFork, AlertTriangle, Loader2 } from 'lucide-react';
 function DelegateCard({ tasks, malformed, malformedReasonText, agents, sessionDelegations }) {
   if (malformed && !tasks) {
     const rawBody = malformed.rawBody || '';
+    const rows = Array.isArray(malformed.rows) ? malformed.rows : [];
     return (
       <div
         data-testid="delegate-card-failed"
@@ -57,6 +59,52 @@ function DelegateCard({ tasks, malformed, malformedReasonText, agents, sessionDe
             <AlertTriangle size={11} />
             Failed — {malformedReasonText || 'Delegate block could not be parsed'}
           </span>
+        </div>
+        {rows.length > 0 && (
+          <div className="px-4 py-3 border-b border-red-800/20">
+            <div
+              className="text-[10px] uppercase tracking-wide text-red-200/60 mb-1.5"
+              data-testid="delegate-missing-fields-heading"
+            >
+              Missing fields per row
+            </div>
+            <ul className="space-y-1.5" data-testid="delegate-missing-fields-list">
+              {rows.map((row, i) => {
+                const label = row?.agentId || `row ${i + 1}`;
+                const missing = Array.isArray(row?.missing) ? row.missing : [];
+                return (
+                  <li
+                    key={`${label}-${i}`}
+                    className="text-xs text-gray-300 flex flex-wrap items-baseline gap-2"
+                    data-testid="delegate-missing-field-row"
+                  >
+                    <span className="font-medium text-red-200">{label}</span>
+                    {missing.length === 0 ? (
+                      <span className="text-emerald-300">ok</span>
+                    ) : (
+                      <span className="text-gray-400">
+                        missing:{' '}
+                        <code className="text-red-300 bg-red-950/40 rounded px-1 py-0.5">
+                          {missing.join(', ')}
+                        </code>
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+        <div className="px-4 py-3 border-b border-red-800/20">
+          <div className="text-[10px] uppercase tracking-wide text-red-200/60 mb-1.5">
+            Required contract
+          </div>
+          <code
+            className="text-[11px] text-gray-300 bg-gray-900/60 rounded px-2 py-1 inline-block"
+            data-testid="delegate-required-contract"
+          >
+            {DELEGATE_REQUIRED_FIELDS.join(', ')}
+          </code>
         </div>
         {rawBody && (
           <div className="px-4 py-3">
@@ -74,7 +122,7 @@ function DelegateCard({ tasks, malformed, malformedReasonText, agents, sessionDe
         <div className="px-4 pb-3 pt-1">
           <p className="text-[11px] text-gray-500 italic">
             The lead agent emitted a delegate block, but it couldn&apos;t be parsed — no sub-agents
-            were spawned.
+            were spawned. Re-emit with the full contract above to retry.
           </p>
         </div>
       </div>

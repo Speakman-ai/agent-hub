@@ -732,8 +732,15 @@ Rules:
 - Use a meaty \`note\`: file paths with line numbers, linked card id, the exact next action. The transcript comes along for free, but the note is what the target reads first.
 - Prefer \`<handoff>\` over \`<delegate>\` when the specialist will take multiple turns, needs full context, or is expected to commit/PR. Prefer \`<delegate>\` for short parallel side-quests whose results you'll synthesize.`;
     } else {
-      // On subsequent messages, just remind of available sub-agents (compact)
-      prompt += `\n\n## Sub-Agents\n${subAgentDescriptions}\nDelegate via \`<delegate>\` block (not Agent tool).`;
+      // On subsequent messages, keep the reminder compact but still state the
+      // full `<delegate>` contract. The first-message prompt already described
+      // it in full; models that drift to `[{"agentId":"…","task":"…"}]` — the
+      // recurring "Delegate block has no entries with the required contract
+      // fields" failure in the UI — do so because the subsequent-turn reminder
+      // used to only say "Delegate via `<delegate>` block" without field
+      // names. Listing every required field every turn makes the short form
+      // immediately recognisable as incomplete.
+      prompt += `\n\n## Sub-Agents\n${subAgentDescriptions}\nDelegate via \`<delegate>\` block (not Agent tool). Each task object MUST include all seven fields: \`agentId\`, \`task\`, \`owner\`, \`scope\`, \`expectedArtifact\`, \`deadline\`, \`returnFormat\`.`;
     }
   }
 
