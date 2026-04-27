@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { Sparkles, CheckCircle, AlertCircle, XCircle } from 'lucide-react';
 import { relativeTime } from '../utils/time.js';
 import { formatInjectedBytes } from '../utils/formatBytes.js';
+import { dedupeSkillInvocations } from '../utils/dedupeSkillInvocations.js';
 
 function statusMeta(status) {
   switch (status) {
@@ -27,11 +28,11 @@ function statusMeta(status) {
 }
 
 function SkillInvocationsPanel({ invocations }) {
-  const rows = Array.isArray(invocations)
-    ? invocations
-        .slice()
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-    : [];
+  // Dedupe by skill_id first (per <agenthub:skill> wiki: each distinct skill
+  // appears at most once), then sort newest-first for display.
+  const rows = dedupeSkillInvocations(invocations).sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
 
   return (
     <section className="mt-2 mb-3 border border-gray-700/50 rounded-xl bg-gray-850 overflow-hidden">

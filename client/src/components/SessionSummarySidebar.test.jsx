@@ -117,4 +117,50 @@ describe('<SessionSummarySidebar /> — project PR detail fetch', () => {
 
     await waitFor(() => expect(api.getProjectPullDetail).toHaveBeenCalledWith('proj-1', 7));
   });
+
+  it('renders each loaded skill once even when the server returns duplicate invocations', async () => {
+    api.getSessionSummary.mockResolvedValue({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: null,
+      sessionTitlePrUrl: null,
+      session: { id: 's1', name: 'x' },
+      runSnapshot: emptyRun,
+      skills: [
+        {
+          id: '1',
+          skillId: 'kanban',
+          status: 'loaded',
+          source: 'project',
+          injectedBytes: 4096,
+          createdAt: '2026-04-21T17:00:00Z',
+        },
+        {
+          id: '2',
+          skillId: 'kanban',
+          status: 'loaded',
+          source: 'project',
+          injectedBytes: 4096,
+          createdAt: '2026-04-21T17:05:00Z',
+        },
+        {
+          id: '3',
+          skillId: 'wiki-search',
+          status: 'loaded',
+          source: 'default',
+          injectedBytes: 2048,
+          createdAt: '2026-04-21T17:02:00Z',
+        },
+      ],
+    });
+
+    render(<SessionSummarySidebar sessionId="sess-dup" isLive={false} />);
+
+    await waitFor(() => expect(api.getSessionSummary).toHaveBeenCalledWith('sess-dup'));
+    // Each distinct skill renders exactly one chip.
+    await waitFor(() => {
+      expect(screen.getAllByText('kanban')).toHaveLength(1);
+    });
+    expect(screen.getAllByText('wiki-search')).toHaveLength(1);
+  });
 });

@@ -84,4 +84,53 @@ describe('SkillInvocationsPanel', () => {
     expect(screen.getByTestId('skill-status-not-found').className).toContain('text-amber-300');
     expect(screen.getByTestId('skill-status-malformed').className).toContain('text-red-300');
   });
+
+  it('dedupes repeated invocations of the same skill, keeping the most recent row', () => {
+    // Simulates an agent loading the same skill multiple times across turns
+    // (e.g., hot-reload). The sidebar must collapse to one entry per skill_id.
+    const rows = [
+      {
+        id: '1',
+        skill_id: 'kanban',
+        source: 'project',
+        status: 'not-found',
+        injected_bytes: 0,
+        created_at: '2026-04-21T16:55:00Z',
+      },
+      {
+        id: '2',
+        skill_id: 'kanban',
+        source: 'project',
+        status: 'loaded',
+        injected_bytes: 4096,
+        created_at: '2026-04-21T17:05:00Z',
+      },
+      {
+        id: '3',
+        skill_id: 'kanban',
+        source: 'project',
+        status: 'loaded',
+        injected_bytes: 4096,
+        created_at: '2026-04-21T17:00:00Z',
+      },
+      {
+        id: '4',
+        skill_id: 'wiki-search',
+        source: 'default',
+        status: 'loaded',
+        injected_bytes: 2048,
+        created_at: '2026-04-21T17:02:00Z',
+      },
+    ];
+
+    render(<SkillInvocationsPanel invocations={rows} />);
+
+    // Exactly one entry per skill_id.
+    expect(screen.getAllByText('kanban')).toHaveLength(1);
+    expect(screen.getAllByText('wiki-search')).toHaveLength(1);
+    // Most recent kanban row wins (id=2 -> status 'loaded'), so the 'not-found'
+    // pill from the older invocation is gone.
+    expect(screen.queryByTestId('skill-status-not-found')).toBeNull();
+    expect(screen.getAllByTestId('skill-status-loaded')).toHaveLength(2);
+  });
 });

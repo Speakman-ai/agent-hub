@@ -20,6 +20,7 @@ import {
 } from '../utils/prFormatting.js';
 import { shortenPath } from '../utils/diff.js';
 import { formatInjectedBytes } from '../utils/formatBytes.js';
+import { dedupeSkillInvocations } from '../utils/dedupeSkillInvocations.js';
 
 const CHECK_ICONS = {
   success: CheckCircle2,
@@ -160,6 +161,11 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
     return files.filter((f) => f.group === filter);
   }, [files, filter]);
 
+  // Collapse repeated <agenthub:skill> loads for the same skill into a single
+  // sidebar pill (most-recent invocation wins). Without this, hot-reloads or
+  // skill re-loads across turns produce duplicate rows in the Skills section.
+  const skills = useMemo(() => dedupeSkillInvocations(summary?.skills), [summary?.skills]);
+
   const copyText = useMemo(() => {
     if (!summary) return '';
     const lines = [
@@ -170,7 +176,7 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
       const st = pull ? prStateBadge(pull) : { label: 'PR' };
       lines.push(`PR: ${linkedPrUrl} (${st.label})`);
     }
-    const sk = (summary.skills || []).map((s) => s.skillId);
+    const sk = skills.map((s) => s.skillId);
     if (sk.length) lines.push(`Skills: ${sk.join(', ')}`);
     if (files.length) {
       const parts = [
@@ -187,7 +193,7 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
       );
     }
     return lines.filter(Boolean).join('\n');
-  }, [summary, pull, files, run, linkedPrUrl]);
+  }, [summary, pull, files, run, linkedPrUrl, skills]);
 
   const copySummary = async () => {
     if (!copyText) return;
@@ -335,15 +341,15 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
                   <Sparkles size={14} className="text-sky-400/80" />
                   Skills
                 </h3>
-                <span className="text-[10px] text-gray-500">{(summary?.skills || []).length}</span>
+                <span className="text-[10px] text-gray-500">{skills.length}</span>
               </div>
-              {!summary || (summary?.skills || []).length === 0 ? (
+              {!summary || skills.length === 0 ? (
                 <p className="text-gray-500">No skills loaded yet.</p>
               ) : (
                 <div className="flex flex-wrap gap-1">
-                  {(summary.skills || []).map((s) => (
+                  {skills.map((s) => (
                     <span
-                      key={s.id ?? `${s.skillId}:${s.createdAt ?? ''}`}
+                      key={s.skillId ?? s.id}
                       className="px-1.5 py-0.5 rounded border border-gray-700/60 bg-gray-800/50 text-gray-200 text-[10px]"
                       title={
                         s.injectedBytes != null
