@@ -3176,7 +3176,7 @@ export default function App() {
                         )}
                         {messages.length === 0 && !thinking && !streamingContent && (
                           <div
-                            className="flex flex-col items-center justify-center h-full text-gray-600 py-20"
+                            className="flex flex-col items-center justify-center h-full text-gray-500 py-20 px-6 text-center"
                             data-testid={
                               sessionMessagesLoading ? 'chat-messages-loading' : 'chat-empty-state'
                             }
@@ -3189,7 +3189,7 @@ export default function App() {
                               </>
                             ) : (
                               <>
-                                <MessageCircle size={48} className="mb-4 text-gray-600" />
+                                <MessageCircle size={40} className="mb-3 text-gray-600" />
                                 {sessionsListLoading && projectDataReady && activeAgent ? (
                                   <>
                                     <p className="text-lg">Loading conversation</p>
@@ -3197,17 +3197,39 @@ export default function App() {
                                       Sessions are syncing…
                                     </p>
                                   </>
+                                ) : activeAgent ? (
+                                  <>
+                                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
+                                      Chat
+                                    </p>
+                                    <h2 className="text-xl font-semibold text-gray-200 mb-2">
+                                      Talk to {activeAgent.name}
+                                    </h2>
+                                    <p className="text-sm text-gray-500 max-w-md leading-relaxed">
+                                      This is a chat session with{' '}
+                                      <span className="text-gray-300">{activeAgent.name}</span>.
+                                      Type a message below to ask a question, hand off a task, or
+                                      pair on changes — replies stream in real time.
+                                    </p>
+                                  </>
                                 ) : (
                                   <>
-                                    <p className="text-lg">Start a conversation</p>
-                                    {activeAgent && (
-                                      <p className="text-sm mt-1">with {activeAgent.name}</p>
-                                    )}
+                                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
+                                      Chat
+                                    </p>
+                                    <h2 className="text-xl font-semibold text-gray-200 mb-2">
+                                      No agent selected
+                                    </h2>
+                                    <p className="text-sm text-gray-500 max-w-md leading-relaxed">
+                                      Pick an agent from the sidebar to start a conversation, or
+                                      jump to the dashboard to see what&apos;s happening across your
+                                      projects.
+                                    </p>
                                   </>
                                 )}
                               </>
                             )}
-                            <p className="text-xs text-gray-700 mt-4 hidden sm:block">
+                            <p className="text-xs text-gray-700 mt-5 hidden sm:block">
                               Ctrl+K to switch agents · Esc to cancel
                             </p>
                           </div>
