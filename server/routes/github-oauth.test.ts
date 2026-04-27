@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import express from 'express';
+import express, { type Request } from 'express';
 import request from 'supertest';
 import { tmpdir } from 'os';
 import { mkdtempSync, mkdirSync } from 'fs';
@@ -75,16 +75,27 @@ function buildDeps(overrides: Record<string, unknown> = {}): RouteDeps {
   } as unknown as RouteDeps;
 }
 
-function makeApp(deps: RouteDeps, opts: { authUserId?: string } = {}): express.Express {
+interface FakeAuth {
+  authUserId?: string;
+  authLocalOrgBypass?: boolean;
+  authOrgId?: string;
+  authViaApiKey?: boolean;
+}
+
+function makeApp(deps: RouteDeps, opts: FakeAuth = {}): express.Express {
   const app = express();
   app.use(express.json());
-  // Inject fake auth state — mirrors what the real auth middleware does on
-  // a successful JWT verification. Public paths (callback) don't rely on
-  // this, so we conditionally set it.
+  // Inject fake auth state — mirrors what the real auth middleware does
+  // on a successful JWT verification (sets `authUserId`) or on the
+  // local-mode org bypass (sets `authLocalOrgBypass` + `authOrgId`).
+  // Public paths (callback) don't rely on this, so we conditionally set
+  // each field.
   app.use((req, _res, next) => {
-    if (opts.authUserId) {
-      (req as { authUserId?: string }).authUserId = opts.authUserId;
-    }
+    const r = req as Request & FakeAuth;
+    if (opts.authUserId) r.authUserId = opts.authUserId;
+    if (opts.authLocalOrgBypass) r.authLocalOrgBypass = true;
+    if (opts.authOrgId) r.authOrgId = opts.authOrgId;
+    if (opts.authViaApiKey) r.authViaApiKey = true;
     next();
   });
   app.use(createGithubOAuthRoutes(deps));
@@ -96,6 +107,14 @@ describe('GET /api/auth/github/start', () => {
 
   it('401s when the caller is unauthenticated', async () => {
     const app = makeApp(buildDeps());
+    const res = await request(app).get('/api/auth/github/start');
+    expect(res.status).toBe(401);
+  });
+
+  it('401s when the caller is apiKey-only (no personal user identity)', async () => {
+    // The break-glass apiKey is shared across machines/sub-agents, so the
+    // route refuses to bind a personal GitHub identity to it.
+    const app = makeApp(buildDeps(), { authViaApiKey: true });
     const res = await request(app).get('/api/auth/github/start');
     expect(res.status).toBe(401);
   });
@@ -140,6 +159,59 @@ describe('GET /api/auth/github/start', () => {
     const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf8'));
     expect(payload.sub).toBe(user.id);
     expect(payload.purpose).toBe('github-oauth');
+  });
+
+  it('lazily provisions a synthetic local user when the active org is local-mode', async () => {
+    // Local-mode org bypass: middleware sets authLocalOrgBypass + authOrgId
+    // but no authUserId. Pre-fix: route 401s. Post-fix: get-or-create a
+    // deterministic `local-<orgId>` user row and bind the OAuth state to it.
+    const { getUserByUsername: getU } = await import('../users-store.js');
+    expect(getU('local-default')).toBeNull();
+
+    const app = makeApp(buildDeps(), {
+      authLocalOrgBypass: true,
+      authOrgId: 'default',
+    });
+    const res = await request(app).get('/api/auth/github/start');
+    expect(res.status).toBe(200);
+
+    const created = getU('local-default');
+    expect(created).not.toBeNull();
+
+    // State JWT must bind to the synthetic user's id so the callback
+    // persists tokens against the same row on the round-trip.
+    const url = new URL(res.body.authorizeUrl);
+    const stateToken = url.searchParams.get('state')!;
+    const [, payloadB64] = stateToken.split('.');
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf8'));
+    expect(payload.sub).toBe(created!.id);
+    expect(payload.purpose).toBe('github-oauth');
+  });
+
+  it('reuses the synthetic local user across requests (idempotent provisioning)', async () => {
+    const { getUserByUsername: getU } = await import('../users-store.js');
+    const app = makeApp(buildDeps(), {
+      authLocalOrgBypass: true,
+      authOrgId: 'default',
+    });
+    const res1 = await request(app).get('/api/auth/github/start');
+    const res2 = await request(app).get('/api/auth/github/start');
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+    const id1 = JSON.parse(
+      Buffer.from(
+        new URL(res1.body.authorizeUrl).searchParams.get('state')!.split('.')[1],
+        'base64',
+      ).toString('utf8'),
+    ).sub;
+    const id2 = JSON.parse(
+      Buffer.from(
+        new URL(res2.body.authorizeUrl).searchParams.get('state')!.split('.')[1],
+        'base64',
+      ).toString('utf8'),
+    ).sub;
+    expect(id1).toBe(id2);
+    expect(getU('local-default')!.id).toBe(id1);
   });
 });
 
@@ -311,6 +383,16 @@ describe('GET /api/auth/github/status', () => {
     expect(res.status).toBe(200);
     expect(res.body.serverConfigured).toBe(false);
   });
+
+  it('returns disconnected status (200) under local-org bypass without 401', async () => {
+    const app = makeApp(buildDeps(), {
+      authLocalOrgBypass: true,
+      authOrgId: 'default',
+    });
+    const res = await request(app).get('/api/auth/github/status');
+    expect(res.status).toBe(200);
+    expect(res.body.connected).toBe(false);
+  });
 });
 
 describe('DELETE /api/auth/github', () => {
@@ -353,5 +435,14 @@ describe('DELETE /api/auth/github', () => {
 
     const res2 = await request(app).delete('/api/auth/github');
     expect(res2.status).toBe(200);
+  });
+
+  it('succeeds (200) under local-org bypass even when no connection exists', async () => {
+    const app = makeApp(buildDeps(), {
+      authLocalOrgBypass: true,
+      authOrgId: 'default',
+    });
+    const res = await request(app).delete('/api/auth/github');
+    expect(res.status).toBe(200);
   });
 });

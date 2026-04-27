@@ -33,6 +33,7 @@ import {
   getGithubConnectionStatus,
   deleteGithubConnection,
 } from '../github-connections-store.js';
+import { createUser, getUserByUsername } from '../users-store.js';
 
 const STATE_TOKEN_TTL_SEC = 10 * 60; // 10 min — plenty for the redirect round-trip
 const STATE_PURPOSE = 'github-oauth';
@@ -48,6 +49,41 @@ function getOAuthCredentials(config: AppConfig): { clientId: string; clientSecre
   const app = config.githubApp;
   if (!app?.clientId || !app?.clientSecret) return null;
   return { clientId: app.clientId, clientSecret: app.clientSecret };
+}
+
+/**
+ * Resolve the hub user id that owns the GitHub connection for this
+ * request. Three paths:
+ *
+ *   1. JWT-authenticated request → `authUserId` is the resolved user row id.
+ *   2. Local-mode org bypass → `authUserId` is unset because the auth
+ *      middleware short-circuits without resolving a user row, but the
+ *      install IS effectively single-tenant. Lazily get-or-create a
+ *      deterministic synthetic user (`local-<orgId>`) so the GitHub
+ *      connection has a stable anchor in the `users` table. Without
+ *      this, "Sign in with GitHub" returned a confusing 401 in every
+ *      Electron / desktop install.
+ *   3. apiKey-only request → return `null`. The apiKey is a shared
+ *      break-glass secret across machines and sub-agents; binding a
+ *      personal GitHub identity to it would attribute "merge as user"
+ *      actions to whoever held the secret, not the human at the
+ *      keyboard. Personal GitHub sign-in requires real auth.
+ */
+function resolveOAuthUserId(req: Request): string | null {
+  const areq = req as AuthenticatedRequest;
+  if (areq.authUserId) return areq.authUserId;
+  if (areq.authLocalOrgBypass && areq.authOrgId) {
+    const username = `local-${areq.authOrgId}`;
+    const existing = getUserByUsername(username);
+    if (existing) return existing.id;
+    // password_hash is NOT NULL in the schema; an empty string is fine
+    // here — this synthetic row has no login path. Auth for local-mode
+    // installs is gated by the org's `mode='local'` bypass, not by a
+    // password check against this row.
+    const created = createUser({ username, passwordHash: '' });
+    return created.id;
+  }
+  return null;
 }
 
 function getRedirectUri(config: AppConfig, req: Request): string {
@@ -111,8 +147,7 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
 
   // ── Start: mint state token + authorize URL ────────────────────
   router.get('/api/auth/github/start', (req: Request, res: Response) => {
-    const areq = req as AuthenticatedRequest;
-    const uid = areq.authUserId;
+    const uid = resolveOAuthUserId(req);
     if (!uid) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
@@ -289,8 +324,7 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
 
   // ── Status: for the Settings UI to render "Connected as @foo" ─
   router.get('/api/auth/github/status', (req: Request, res: Response) => {
-    const areq = req as AuthenticatedRequest;
-    const uid = areq.authUserId;
+    const uid = resolveOAuthUserId(req);
     if (!uid) return res.status(401).json({ error: 'Not authenticated' });
     const status = getGithubConnectionStatus(uid);
     const creds = getOAuthCredentials(config);
@@ -302,8 +336,7 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
 
   // ── Disconnect ──────────────────────────────────────────────────
   router.delete('/api/auth/github', (req: Request, res: Response) => {
-    const areq = req as AuthenticatedRequest;
-    const uid = areq.authUserId;
+    const uid = resolveOAuthUserId(req);
     if (!uid) return res.status(401).json({ error: 'Not authenticated' });
     deleteGithubConnection(uid);
     return res.json({ ok: true });
