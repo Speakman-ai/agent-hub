@@ -362,9 +362,14 @@ export async function handleDelegation(
   if (validTasks.length === 0) {
     const detail = delegateTasks.map((t) => t.agentId).join(', ') || '(none)';
     console.warn(`[Delegation] No valid tasks after filtering (requested: ${detail})`);
+    // Include `parentMessageId` so the client can scope the persistent
+    // "Dispatch failed" banner to the correct DelegateCard. Without it the
+    // banner falls back to per-session scoping (still correct, just less
+    // precise across multi-round sessions).
     broadcast({
       type: 'delegation_error',
       sessionId,
+      parentMessageId,
       error: 'No valid sub-agents found for delegation',
     });
     return [];

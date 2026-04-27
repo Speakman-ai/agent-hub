@@ -174,6 +174,13 @@ export default function App() {
   const [designReloadToken, setDesignReloadToken] = useState(0);
   // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
   const [delegations, setDelegations] = useState({});
+  // Last `delegation_error` per session — surfaces "Dispatch failed: …" on
+  // the message-anchored DelegateCard when the round never produced a
+  // `delegation_start` (no valid sub-agents, dispatcher exception, etc.).
+  // Without this, the only signal was a transient toast and the card sat
+  // on "Queued" forever. Cleared when a fresh `delegation_start` arrives
+  // for the same session. Shape: { [sessionId]: { message, parentMessageId? } }.
+  const [delegationDispatchErrors, setDelegationDispatchErrors] = useState({});
   // Rate-limit throttle state: Map of sessionId -> { active, retryAfterMs, clearedAt }
   const [throttle, setThrottle] = useState({});
   // Subagent tracking: Map of sessionId -> { total, running, done, errored }
@@ -1164,6 +1171,14 @@ export default function App() {
                 })),
               },
             }));
+            // A fresh round just kicked off — clear any stale dispatch-error
+            // banner so the new card doesn't inherit the previous failure.
+            setDelegationDispatchErrors((prev) => {
+              if (!prev[data.sessionId]) return prev;
+              const next = { ...prev };
+              delete next[data.sessionId];
+              return next;
+            });
           }
           break;
         case 'delegation_thinking':
@@ -1286,6 +1301,20 @@ export default function App() {
                 duration: 10000,
               },
             ]);
+          }
+          // Stash the error so the message-anchored DelegateCard can render a
+          // persistent "Dispatch failed: …" banner. Without this, a user who
+          // missed the toast saw an indefinite "Queued" spinner with no clue
+          // why the round never started.
+          if (data.sessionId) {
+            setDelegationDispatchErrors((prev) => ({
+              ...prev,
+              [data.sessionId]: {
+                message: typeof data.error === 'string' ? data.error : 'Unknown dispatch error',
+                parentMessageId:
+                  typeof data.parentMessageId === 'string' ? data.parentMessageId : null,
+              },
+            }));
           }
           notify({ title: 'Delegation Error', body: delegationMsg, type: 'error' });
           break;
@@ -3297,6 +3326,9 @@ export default function App() {
                                     agents={agents}
                                     sessionHandoffs={sessionHandoffs}
                                     sessionDelegations={delegations[activeSessionId]}
+                                    delegationDispatchError={
+                                      delegationDispatchErrors[activeSessionId]
+                                    }
                                     onOpenSession={handleOpenHandoffSession}
                                   />
                                 ) : (
@@ -3330,6 +3362,9 @@ export default function App() {
                                   agents={agents}
                                   sessionHandoffs={sessionHandoffs}
                                   sessionDelegations={delegations[activeSessionId]}
+                                  delegationDispatchError={
+                                    delegationDispatchErrors[activeSessionId]
+                                  }
                                   onOpenSession={handleOpenHandoffSession}
                                 />
                               )}

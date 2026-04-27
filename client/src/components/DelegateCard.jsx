@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { GitFork, AlertTriangle, Loader2 } from 'lucide-react';
+import { GitFork, AlertTriangle, Loader2, AlertCircle } from 'lucide-react';
 import { DELEGATE_REQUIRED_FIELDS } from '../utils/coordinationBlocks.js';
 
 /**
@@ -37,11 +37,43 @@ import { DELEGATE_REQUIRED_FIELDS } from '../utils/coordinationBlocks.js';
  *   agents             — full agents list (from App state) used to resolve
  *                        `agentId` → display name + color.
  *   sessionDelegations — optional live status for this session:
- *                          { tasks: Array<{ agentId, status, agentName, agentColor }> }
- *                        When present, we correlate by agentId to show the
- *                        current status inline.
+ *                          { parentMessageId, tasks: Array<{ agentId, status, agentName, agentColor }> }
+ *                        When present AND the live snapshot's `parentMessageId`
+ *                        matches this card's `parentMessageId` (or either is
+ *                        unknown — backwards-compatible fallback), we correlate
+ *                        by `agentId` and render real per-task statuses. When
+ *                        the snapshot belongs to a *different* delegate round
+ *                        in the same session (newer round started), we render
+ *                        an "Older round" badge instead of misleading "Queued"
+ *                        rows that will never resolve.
+ *   parentMessageId    — optional id of the assistant message that emitted this
+ *                        delegate block. Used to correlate live snapshots to
+ *                        the correct round. Without it, we conservatively
+ *                        accept any snapshot (legacy callers).
+ *   parentSessionActive — optional boolean. `true` while the parent assistant
+ *                        message is still streaming or its session is in-flight
+ *                        (we genuinely *are* awaiting dispatch). `false` for
+ *                        historical / closed-turn renders — when no live row
+ *                        exists in that case, dispatch almost certainly never
+ *                        started (filtered out, errored before broadcast, or
+ *                        session crashed) and we should say so instead of
+ *                        showing an indefinite "Queued" spinner.
+ *   dispatchError      — optional `{ message, parentMessageId? }` describing a
+ *                        `delegation_error` broadcast for this session. When
+ *                        present and the parent ids match (or `parentMessageId`
+ *                        is unset on either side), surfaces a banner so the
+ *                        user knows dispatch failed instead of guessing.
  */
-function DelegateCard({ tasks, malformed, malformedReasonText, agents, sessionDelegations }) {
+function DelegateCard({
+  tasks,
+  malformed,
+  malformedReasonText,
+  agents,
+  sessionDelegations,
+  parentMessageId,
+  parentSessionActive,
+  dispatchError,
+}) {
   if (malformed && !tasks) {
     const rawBody = malformed.rawBody || '';
     const rows = Array.isArray(malformed.rows) ? malformed.rows : [];
@@ -132,11 +164,52 @@ function DelegateCard({ tasks, malformed, malformedReasonText, agents, sessionDe
   if (!Array.isArray(tasks) || tasks.length === 0) return null;
 
   const liveTasks = Array.isArray(sessionDelegations?.tasks) ? sessionDelegations.tasks : [];
-  const hasLive = liveTasks.length > 0;
+  // Live snapshots are per-session, not per-round — `delegations[sessionId]`
+  // gets *replaced* on every `delegation_start`. So a snapshot whose
+  // `parentMessageId` doesn't match this card's anchor belongs to a *different*
+  // delegate round and its statuses must NOT be applied to this card's rows.
+  // When either side's parentMessageId is unknown we fall back to the legacy
+  // "trust the snapshot" behaviour to stay backwards-compatible.
+  const liveParentId = sessionDelegations?.parentMessageId ?? null;
+  const liveBelongsToThisRound =
+    !parentMessageId || !liveParentId || liveParentId === parentMessageId;
+  const hasLive = liveBelongsToThisRound && liveTasks.length > 0;
+
+  // Determine fallback badge state for rows with no matching live row.
+  // - 'awaiting-dispatch': parent session/turn is still active → server should
+  //   broadcast `delegation_start` momentarily; current spinner is correct.
+  // - 'older-round': a *newer* delegate round is in flight in the same session,
+  //   so this card's live data was overwritten and will not return.
+  // - 'no-dispatch': turn ended without any live data for this round →
+  //   dispatch most likely never happened (no valid sub-agents, crash,
+  //   filtered, etc.). Indefinite "Queued" was the bug.
+  let fallbackState;
+  if (!liveBelongsToThisRound) {
+    fallbackState = 'older-round';
+  } else if (parentSessionActive) {
+    fallbackState = 'awaiting-dispatch';
+  } else {
+    fallbackState = 'no-dispatch';
+  }
+
+  // Surface a dispatch error banner only when it's plausibly *this* round's
+  // failure (parent ids match, or one side is unknown — same compatibility
+  // rule as the snapshot correlation above).
+  const dispatchErrorMessage =
+    dispatchError &&
+    typeof dispatchError === 'object' &&
+    typeof dispatchError.message === 'string' &&
+    dispatchError.message.length > 0 &&
+    (!parentMessageId ||
+      !dispatchError.parentMessageId ||
+      dispatchError.parentMessageId === parentMessageId)
+      ? dispatchError.message
+      : null;
 
   return (
     <div
       data-testid="delegate-card"
+      data-fallback-state={fallbackState}
       className="my-2 border border-indigo-800/40 rounded-xl bg-gradient-to-br from-indigo-950/30 to-gray-900/40 overflow-hidden"
     >
       <div className="flex items-center gap-2 px-4 py-2.5 bg-indigo-950/30 border-b border-indigo-800/30">
@@ -148,6 +221,17 @@ function DelegateCard({ tasks, malformed, malformedReasonText, agents, sessionDe
           {tasks.length} sub-agent{tasks.length === 1 ? '' : 's'}
         </span>
       </div>
+      {dispatchErrorMessage && (
+        <div
+          data-testid="delegate-dispatch-error"
+          className="flex items-start gap-2 px-4 py-2 bg-red-950/30 border-b border-red-800/30 text-[11px] text-red-200"
+        >
+          <AlertCircle size={12} className="mt-0.5 flex-shrink-0 text-red-300" />
+          <span>
+            <span className="font-semibold">Dispatch failed:</span> {dispatchErrorMessage}
+          </span>
+        </div>
+      )}
       <ul className="divide-y divide-indigo-900/30">
         {tasks.map((t, i) => {
           const live = hasLive ? liveTasks.find((lt) => lt.agentId === t.agentId) : null;
@@ -164,7 +248,7 @@ function DelegateCard({ tasks, malformed, malformedReasonText, agents, sessionDe
                   aria-hidden="true"
                 />
                 <span className="text-sm font-medium text-gray-200 truncate flex-1">{name}</span>
-                <StatusBadge status={status} />
+                <StatusBadge status={status} fallbackState={fallbackState} />
               </div>
               <p className="text-xs text-gray-400 mt-1 ml-4 line-clamp-3">{t.task}</p>
             </li>
@@ -180,8 +264,40 @@ function DelegateCard({ tasks, malformed, malformedReasonText, agents, sessionDe
   );
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, fallbackState = 'awaiting-dispatch' }) {
   if (!status) {
+    if (fallbackState === 'no-dispatch') {
+      // The parent turn ended without ever broadcasting `delegation_start` for
+      // this round. Almost always means dispatch was filtered (no valid sub-
+      // agents), the server crashed, or the session was cancelled before the
+      // delegate block landed. Indefinite "Queued" was the bug — say what
+      // happened so the user can act (re-emit, check sub-agent roster, etc.).
+      return (
+        <span
+          data-testid="delegate-status-no-dispatch"
+          className="text-[11px] text-amber-300 font-medium inline-flex items-center gap-1"
+          title="Dispatch never started for this delegate block — sub-agent missing from roster, dispatch error, or session ended before kickoff. Re-emit the delegate block to retry."
+        >
+          <AlertCircle size={11} />
+          Did not start
+        </span>
+      );
+    }
+    if (fallbackState === 'older-round') {
+      // A *newer* delegate round is already in flight in the same session,
+      // and `delegations[sessionId]` only stores one round at a time, so live
+      // status for this card was overwritten and won't return.
+      return (
+        <span
+          data-testid="delegate-status-older-round"
+          className="text-[11px] text-gray-400 font-medium inline-flex items-center gap-1"
+          title="Live status unavailable — a newer delegation round started in this session and replaced the live snapshot."
+        >
+          Older round
+        </span>
+      );
+    }
+    // Default: parent turn is still streaming, server should broadcast soon.
     return (
       <span
         data-testid="delegate-status-queued"
@@ -189,7 +305,7 @@ function StatusBadge({ status }) {
         title="Awaiting dispatch confirmation from server"
       >
         <Loader2 size={11} className="animate-spin" />
-        Queued
+        Awaiting dispatch
       </span>
     );
   }

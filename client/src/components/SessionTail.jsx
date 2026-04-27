@@ -70,8 +70,14 @@ function SessionTail({
   agents,
   sessionHandoffs,
   sessionDelegations,
+  delegationDispatchError,
   onOpenSession,
 }) {
+  // `streaming` doubles as the parent-active signal for DelegateCard so it
+  // can decide whether an empty live snapshot means "still awaiting dispatch"
+  // (active turn) or "dispatch never happened" (closed turn) — the original
+  // "Queued forever" bug.
+  const parentSessionActive = !!streaming;
   const messageId = message?.id;
 
   /** Tracks lazy GET /messages/:id/events — must not conflate with "loaded empty". */
@@ -220,6 +226,7 @@ function SessionTail({
         agents={agents}
         sessionHandoffs={sessionHandoffs}
         sessionDelegations={sessionDelegations}
+        delegationDispatchError={delegationDispatchError}
         onOpenSession={onOpenSession}
       />
     );
@@ -249,6 +256,9 @@ function SessionTail({
                 agents={agents}
                 sessionHandoffs={sessionHandoffs}
                 sessionDelegations={sessionDelegations}
+                delegationDispatchError={delegationDispatchError}
+                parentMessageId={messageId}
+                parentSessionActive={parentSessionActive}
                 onOpenSession={onOpenSession}
               />
             ) : (
@@ -302,6 +312,9 @@ function SessionTail({
                     agents={agents}
                     sessionHandoffs={sessionHandoffs}
                     sessionDelegations={sessionDelegations}
+                    delegationDispatchError={delegationDispatchError}
+                    parentMessageId={messageId}
+                    parentSessionActive={parentSessionActive}
                     onOpenSession={onOpenSession}
                   />
                 );
@@ -946,6 +959,9 @@ function TextBubble({
   agents,
   sessionHandoffs,
   sessionDelegations,
+  delegationDispatchError,
+  parentMessageId,
+  parentSessionActive,
   onOpenSession,
 }) {
   // Strip any <handoff>/<delegate> blocks from the prose so the raw JSON
@@ -1004,6 +1020,9 @@ function TextBubble({
           malformedReasonText={delegateReasonText}
           agents={agents}
           sessionDelegations={sessionDelegations}
+          parentMessageId={parentMessageId}
+          parentSessionActive={parentSessionActive}
+          dispatchError={delegationDispatchError}
         />
       )}
     </>
@@ -1155,6 +1174,7 @@ function LegacyAssistantBubble({
   agents,
   sessionHandoffs,
   sessionDelegations,
+  delegationDispatchError,
   onOpenSession,
 }) {
   // Strip coordination blocks here too — legacy messages were saved with the
@@ -1224,6 +1244,14 @@ function LegacyAssistantBubble({
             malformedReasonText={delegateReasonText}
             agents={agents}
             sessionDelegations={sessionDelegations}
+            parentMessageId={message?.id}
+            // Legacy persisted messages are inherently historical — the turn
+            // ended long ago, so an empty live snapshot here means dispatch
+            // didn't happen (or the WS broadcast was never received). Default
+            // to the historical branch so we render "Did not start" instead
+            // of an indefinite "Awaiting dispatch" spinner.
+            parentSessionActive={false}
+            dispatchError={delegationDispatchError}
           />
         )}
       </div>

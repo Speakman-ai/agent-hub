@@ -285,6 +285,25 @@ work, log a `TOOL_ERROR` and escalate.
   turn. The lead already sees the error via synthesis, so acknowledge
   and decide — don't silently re-dispatch the same failing task.
 
+### `<delegate>` filtered: "No valid sub-agents found for delegation"
+
+- **Symptom**: the message-anchored DelegateCard renders a persistent
+  `Dispatch failed: No valid sub-agents found for delegation` banner and
+  every row shows the amber `Did not start` chip (instead of the old
+  indefinite "Queued" spinner). A red toast also appears once.
+- **Cause**: every `agentId` in the `<delegate>` payload was either not
+  listed under `subAgents` for the lead or not present in the project
+  roster. `handleDelegation` filters them out, then — with `validTasks`
+  empty — broadcasts `{ type: 'delegation_error', sessionId,
+  parentMessageId, error: 'No valid sub-agents found for delegation' }`
+  and returns without spawning anything. No `delegation_start` follows,
+  so live status never arrives for that round.
+- **Recovery**: run `scripts/server.sh agents` to see who's actually a
+  sub-agent of the current lead, fix the `agentId` values, and re-emit
+  the block as the last thing in a fresh turn. The new `parentMessageId`
+  on the broadcast is what lets the client scope the banner to the
+  correct DelegateCard when a session has multiple delegate rounds.
+
 ### `<delegate>` cancelled mid-flight (user stop)
 
 - **Symptom**: `delegation_cancelled` in the client; synthesis text
