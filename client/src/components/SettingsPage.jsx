@@ -6223,7 +6223,7 @@ const SETTINGS_GROUPS = [
     label: 'Agents & Auth',
     tabs: [
       { id: 'agents', iconName: 'Bot', text: 'Agents' },
-      { id: 'claude-auth', iconName: 'Key', text: 'Auth' },
+      { id: 'claude-auth', iconName: 'Key', text: 'AI Authentication' },
       { id: 'github', iconName: 'GitBranch', text: 'GitHub' },
     ],
   },

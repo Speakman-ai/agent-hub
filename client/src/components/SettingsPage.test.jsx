@@ -115,6 +115,48 @@ describe('GitHubSection — return from GitHub App auto-setup', () => {
   });
 });
 
+describe('SettingsPage — tab labels', () => {
+  beforeEach(() => {
+    api.getConfig.mockResolvedValue({
+      claudeBin: '/bin/claude',
+      cursorBin: '/bin/cursor',
+      defaultModel: 'claude-opus-4-7',
+      defaultCwd: '/tmp',
+      port: 3051,
+      publicUrl: '',
+      githubApp: null,
+      botGithubTokenSet: false,
+      botGithubUser: null,
+      anthropicApiKeySet: false,
+      _file: {},
+    });
+    api.get.mockResolvedValue({});
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'claude-opus-4-7',
+      engineDefaultModels: {},
+      engineValidModels: { 'claude-code': ['claude-opus-4-7'] },
+    });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('labels the combined AI CLI auth tab "AI Authentication"', async () => {
+    // Bug report: the combined Claude/Gemini/Cursor/Codex auth tab was
+    // simply labeled "Auth", which is too terse and ambiguous. It should
+    // read "AI Authentication" so users can find CLI sign-in flows.
+    const { findByText, queryByRole } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
+    );
+
+    expect(await findByText('AI Authentication')).toBeTruthy();
+    // Regression guard: don't accidentally render two tabs labeled just "Auth".
+    expect(queryByRole('button', { name: /^Auth$/ })).toBeNull();
+  });
+});
+
 describe('GeneralSection — CLI binary paths', () => {
   beforeEach(() => {
     api.getConfig.mockResolvedValue({
