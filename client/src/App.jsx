@@ -40,6 +40,7 @@ import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
 import { useVersionCheck } from './hooks/useVersionCheck.js';
 import { api } from './utils/api.js';
+import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate.js';
 import { coalescePromiseByKey } from './utils/coalesceInFlight.js';
 import { isNearBottom } from './utils/chatScroll.js';
 import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver.js';
@@ -2040,6 +2041,44 @@ export default function App() {
       })
       .catch(() => {
         if (!cancelled) setSessionHandoffs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId]);
+
+  // Hydrate historical delegations on session load so message-anchored
+  // `<delegate>` cards in saved assistant messages render their real
+  // terminal status (done/error/cancelled) instead of the "Queued"
+  // placeholder. Without this fetch, `delegations[sessionId]` is empty
+  // until a fresh `delegation_start` WS event arrives — meaning a session
+  // refresh after the round completed showed every delegate row as
+  // "Queued" forever (Bug intake: "Delegations stay queued; user expects
+  // immediate sub-agent kickoff"). Live WS events still win — the
+  // `delegation_start` handler replaces the entry when a *new* round
+  // begins. Best-effort: missing endpoint / offline must never block
+  // the chat render.
+  useEffect(() => {
+    if (!activeSessionId) return undefined;
+    let cancelled = false;
+    const sessionId = activeSessionId;
+    api
+      .getSessionDelegations(sessionId)
+      .then((rows) => {
+        if (cancelled) return;
+        const hydrated = mapDelegationRowsToLiveShape(rows);
+        if (!hydrated) return;
+        setDelegations((prev) => {
+          // Don't clobber a live round that arrived between fetch start
+          // and resolution — the WS-driven entry is always more
+          // authoritative than the historical snapshot.
+          if (prev[sessionId]) return prev;
+          return { ...prev, [sessionId]: hydrated };
+        });
+      })
+      .catch(() => {
+        // Missing endpoint / offline / 500 — silent: the panel falls back
+        // to the existing "Queued" placeholder, matching pre-fix behavior.
       });
     return () => {
       cancelled = true;

@@ -99,6 +99,13 @@ export const api = {
     }),
   getMessages: (sessionId) => fetchJSON(`/sessions/${sessionId}/messages`),
   getSessionHandoffs: (sessionId) => fetchJSON(`/sessions/${sessionId}/handoffs`),
+  /**
+   * Historical delegations for this session, ordered `started_at DESC`.
+   * Hydrates `delegations[sessionId]` on session load so message-anchored
+   * `<delegate>` cards in past assistant messages render their real terminal
+   * status (done/error/cancelled) instead of the "Queued" placeholder.
+   */
+  getSessionDelegations: (sessionId) => fetchJSON(`/sessions/${sessionId}/delegations`),
   /** Session sidebar: linked kanban card, skills, aggregated run snapshot from message events. */
   getSessionSummary: (sessionId) => fetchJSON(`/sessions/${sessionId}/summary`),
   getSessionSkillInvocations: (sessionId) => fetchJSON(`/sessions/${sessionId}/skill-invocations`),
