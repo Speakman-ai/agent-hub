@@ -1157,6 +1157,13 @@ export interface HeartbeatConfig {
   enabled: boolean;
   interval: string;
   prompt: string;
+  /**
+   * Optional Claude model ID (e.g. "claude-opus-4-7") forwarded as `--model`
+   * when this heartbeat runs. Empty string / undefined leaves the Claude CLI
+   * default in place. Heartbeats always spawn the Claude binary, so only
+   * `claude-code` engine model IDs apply here.
+   */
+  model?: string;
 }
 
 export interface HookEntry {

@@ -496,7 +496,10 @@ function HeartbeatSection() {
   const [logs, setLogs] = useState({});
   const [running, setRunning] = useState({});
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ interval: '', prompt: '' });
+  const [editForm, setEditForm] = useState({ interval: '', prompt: '', model: '' });
+  // Heartbeat always spawns the Claude CLI, so the picker is locked to the
+  // claude-code engine catalog from /api/config/models.
+  const [claudeModels, setClaudeModels] = useState([]);
   // Tick every 30s so the "next run in Xm" badges decrement live without
   // hitting the network. Server is re-polled every 60s for fresh state.
   const [, setTick] = useState(0);
@@ -504,6 +507,10 @@ function HeartbeatSection() {
   useEffect(() => {
     const refresh = () => api.getHeartbeats().then(setHeartbeats).catch(console.error);
     refresh();
+    api
+      .getModelConfig()
+      .then((cfg) => setClaudeModels(cfg?.engineValidModels?.['claude-code'] || []))
+      .catch(() => {});
     const pollId = setInterval(refresh, 60_000);
     const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
     return () => {
@@ -548,6 +555,7 @@ function HeartbeatSection() {
     setEditForm({
       interval: hb.heartbeat.interval || '',
       prompt: hb.heartbeat.prompt || '',
+      model: hb.heartbeat.model || '',
     });
   };
 
@@ -560,6 +568,9 @@ function HeartbeatSection() {
       await api.updateHeartbeat(editingId, {
         interval: editForm.interval,
         prompt: editForm.prompt,
+        // Send empty string explicitly so the server PUT route can clear an
+        // existing override (it maps "" → undefined).
+        model: editForm.model || '',
       });
       setHeartbeats((prev) =>
         prev.map((h) =>
@@ -570,6 +581,7 @@ function HeartbeatSection() {
                   ...h.heartbeat,
                   interval: editForm.interval,
                   prompt: editForm.prompt,
+                  model: editForm.model || undefined,
                 },
               }
             : h
@@ -630,6 +642,48 @@ function HeartbeatSection() {
                   multiline
                   textAlignVertical="top"
                 />
+                {claudeModels.length > 0 && (
+                  <>
+                    <Text style={styles.fieldLabel}>Model</Text>
+                    <View style={styles.engineToggle}>
+                      <TouchableOpacity
+                        style={[
+                          styles.engineOption,
+                          !editForm.model && styles.engineOptionActive,
+                        ]}
+                        onPress={() => setEditForm({ ...editForm, model: '' })}
+                      >
+                        <Text
+                          style={[
+                            styles.engineOptionText,
+                            !editForm.model && styles.engineOptionTextActive,
+                          ]}
+                        >
+                          default
+                        </Text>
+                      </TouchableOpacity>
+                      {claudeModels.map((m) => (
+                        <TouchableOpacity
+                          key={m}
+                          style={[
+                            styles.engineOption,
+                            editForm.model === m && styles.engineOptionActive,
+                          ]}
+                          onPress={() => setEditForm({ ...editForm, model: m })}
+                        >
+                          <Text
+                            style={[
+                              styles.engineOptionText,
+                              editForm.model === m && styles.engineOptionTextActive,
+                            ]}
+                          >
+                            {m.replace(/^claude-/, '')}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </>
+                )}
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <TouchableOpacity style={styles.primaryBtn} onPress={saveEdit}>
                     <Text style={styles.primaryBtnText}>Save</Text>
@@ -654,6 +708,9 @@ function HeartbeatSection() {
                 <Text style={styles.cardSubtext} numberOfLines={1}>
                   {hb.heartbeat.prompt || 'No prompt configured'}
                 </Text>
+                {hb.heartbeat.model ? (
+                  <Text style={styles.cardMeta}>model: {hb.heartbeat.model}</Text>
+                ) : null}
                 {hb.latestLog && (
                   <Text style={styles.cardMeta}>
                     Last run: {relativeTime(hb.latestLog.timestamp)} —{' '}

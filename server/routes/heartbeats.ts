@@ -96,11 +96,27 @@ export default function createHeartbeatRoutes(deps: RouteDeps): Router {
     if (!found) return res.status(404).json({ error: 'Agent not found' });
     const { agent } = found;
 
-    const { enabled, interval, prompt } = req.body;
+    const { enabled, interval, prompt, model } = req.body as {
+      enabled?: boolean;
+      interval?: string;
+      prompt?: string;
+      model?: string | null;
+    };
+
+    // `model` uses an explicit-undefined check so the caller can clear the
+    // override by sending `""` or `null` (mapped to undefined) without losing
+    // it under the truthy-fallback logic the other fields use.
+    let nextModel = agent.heartbeat?.model;
+    if (model !== undefined) {
+      const trimmed = typeof model === 'string' ? model.trim() : '';
+      nextModel = trimmed || undefined;
+    }
+
     agent.heartbeat = {
       enabled: enabled !== undefined ? enabled : (agent.heartbeat?.enabled ?? false),
       interval: interval || agent.heartbeat?.interval || '',
       prompt: prompt || agent.heartbeat?.prompt || '',
+      ...(nextModel ? { model: nextModel } : {}),
     };
 
     saveProjects();

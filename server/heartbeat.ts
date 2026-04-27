@@ -148,6 +148,13 @@ function persistLastRun(kind: 'heartbeat' | 'cron', id: string | number, when = 
 interface RunClaudeOptions {
   timeoutMs?: number;
   detailed?: boolean;
+  /**
+   * Optional Claude model ID forwarded as `--model <id>`. When unset/empty
+   * the CLI default is used. Validated upstream by the heartbeat route /
+   * heartbeat config; no allowlist check happens here so cron/manual runs
+   * stay agnostic to engine catalog drift.
+   */
+  model?: string;
 }
 
 interface DetailedResult {
@@ -186,6 +193,11 @@ export function runClaude(
     const args: string[] = ['--print', '--permission-mode', 'bypassPermissions'];
     if (systemPrompt) {
       args.push('--system-prompt', systemPrompt);
+    }
+    const modelOverride =
+      typeof options.model === 'string' && options.model.trim() ? options.model.trim() : null;
+    if (modelOverride) {
+      args.push('--model', modelOverride);
     }
     args.push(prompt);
 
@@ -325,8 +337,13 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
     const timeoutMs =
       (agent.heartbeat as EnrichedAgent['heartbeat'] & { timeoutMs?: number })?.timeoutMs ||
       (isDocsAgent ? config.docsTimeoutMs : config.defaultTimeoutMs);
+    const heartbeatModel =
+      typeof agent.heartbeat.model === 'string' && agent.heartbeat.model.trim()
+        ? agent.heartbeat.model.trim()
+        : undefined;
     const result = (await runClaude(agent.heartbeat.prompt, heartbeatCwd, agent.systemPrompt, {
       timeoutMs,
+      model: heartbeatModel,
     })) as string;
     stmts.updateHeartbeatLog.run(result, 'success', logId);
     console.log(`[Heartbeat] ${agent.name} completed successfully`);

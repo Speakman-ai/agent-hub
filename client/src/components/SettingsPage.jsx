@@ -2914,7 +2914,12 @@ function HeartbeatSection({ onNavigate, showToast }) {
   const [logs, setLogs] = useState({});
   const [running, setRunning] = useState({});
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ interval: '', prompt: '' });
+  const [editForm, setEditForm] = useState({ interval: '', prompt: '', model: '' });
+  // Heartbeats always spawn the Claude CLI, so the picker is locked to the
+  // claude-code engine catalog from /api/config/models. We fetch it lazily
+  // on mount; an empty list means Claude is unauthenticated and the picker
+  // hides itself.
+  const [claudeModels, setClaudeModels] = useState([]);
   // Tick every 30s so the "next run in Xm" badges decrement live without
   // hitting the network. Server is re-polled every 60s for fresh state.
   const [, setTick] = useState(0);
@@ -2922,6 +2927,10 @@ function HeartbeatSection({ onNavigate, showToast }) {
   useEffect(() => {
     const refresh = () => api.getHeartbeats().then(setHeartbeats).catch(console.error);
     refresh();
+    api
+      .getModelConfig()
+      .then((cfg) => setClaudeModels(cfg?.engineValidModels?.['claude-code'] || []))
+      .catch((err) => console.warn('[HeartbeatSection] getModelConfig failed:', err?.message));
     const pollId = setInterval(refresh, 60_000);
     const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
     return () => {
@@ -2976,18 +2985,33 @@ function HeartbeatSection({ onNavigate, showToast }) {
 
   const startEdit = (hb) => {
     setEditingId(hb.agentId);
-    setEditForm({ interval: hb.heartbeat.interval || '', prompt: hb.heartbeat.prompt || '' });
+    setEditForm({
+      interval: hb.heartbeat.interval || '',
+      prompt: hb.heartbeat.prompt || '',
+      model: hb.heartbeat.model || '',
+    });
   };
 
   const saveEdit = async (e) => {
     e.preventDefault();
-    await api.updateHeartbeat(editingId, { interval: editForm.interval, prompt: editForm.prompt });
+    // Send empty string explicitly so the server can clear an existing
+    // model override (PUT route maps "" → undefined).
+    await api.updateHeartbeat(editingId, {
+      interval: editForm.interval,
+      prompt: editForm.prompt,
+      model: editForm.model || '',
+    });
     setHeartbeats((prev) =>
       prev.map((h) =>
         h.agentId === editingId
           ? {
               ...h,
-              heartbeat: { ...h.heartbeat, interval: editForm.interval, prompt: editForm.prompt },
+              heartbeat: {
+                ...h.heartbeat,
+                interval: editForm.interval,
+                prompt: editForm.prompt,
+                model: editForm.model || undefined,
+              },
             }
           : h,
       ),
@@ -3030,6 +3054,34 @@ function HeartbeatSection({ onNavigate, showToast }) {
                   rows={4}
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 resize-none"
                 />
+                {claudeModels.length > 0 && (
+                  <div>
+                    <label
+                      htmlFor={`heartbeat-model-${hb.agentId}`}
+                      className="block text-xs font-medium text-gray-400 mb-1"
+                    >
+                      Model
+                    </label>
+                    <select
+                      id={`heartbeat-model-${hb.agentId}`}
+                      value={editForm.model || ''}
+                      onChange={(e) => setEditForm({ ...editForm, model: e.target.value })}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                    >
+                      <option value="">CLI default</option>
+                      {claudeModels.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Forwarded as <code className="font-mono">--model</code> to the Claude CLI for
+                      both scheduled and manual runs. Leave on “CLI default” to fall back to the
+                      binary’s built-in default.
+                    </p>
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <button
                     type="submit"
@@ -3079,6 +3131,11 @@ function HeartbeatSection({ onNavigate, showToast }) {
                   <p className="text-xs text-gray-500 truncate mt-0.5">
                     {hb.heartbeat.prompt || 'No prompt configured'}
                   </p>
+                  {hb.heartbeat.model && (
+                    <p className="text-xs text-gray-500 mt-0.5 font-mono" title="Heartbeat model">
+                      model: {hb.heartbeat.model}
+                    </p>
+                  )}
                   {hb.latestLog && (
                     <p className="text-xs text-gray-600 mt-0.5">
                       Last run: {relativeTime(hb.latestLog.timestamp)} —{' '}
@@ -5429,6 +5486,27 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                           className={inputClass + ' resize-none'}
                         />
                       </div>
+                      {(modelConfig?.engineValidModels?.['claude-code'] || []).length > 0 && (
+                        <div>
+                          <label className={labelClass}>Heartbeat Model</label>
+                          <select
+                            value={edit.heartbeat?.model || ''}
+                            onChange={(e) => setHeartbeatEdit(agent.id, 'model', e.target.value)}
+                            className={inputClass}
+                          >
+                            <option value="">CLI default</option>
+                            {(modelConfig.engineValidModels['claude-code'] || []).map((m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Heartbeats always run via the Claude CLI, so only{' '}
+                            <code className="font-mono">claude-code</code> models apply.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
 
