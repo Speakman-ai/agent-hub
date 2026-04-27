@@ -1,0 +1,26 @@
+{
+  "name": "agent-hub-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Outbound-only runner that lets the Agent Hub control plane spawn CLI processes on a user's machine. Phase 1: connect + ping/pong only.",
+  "bin": {
+    "agent-hub-runner": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "tsx src/cli.ts start",
+    "dev": "tsx watch src/cli.ts start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "tsx": "^4.21.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
+  }
+}

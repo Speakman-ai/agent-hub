@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    // Bumped to repo root so the runner can import the shared protocol
+    // module from `../shared/`. NodeNext resolution handles the relative
+    // `.js` import suffix at runtime via `tsx`.
+    "rootDir": ".."
+  },
+  "include": ["src/**/*.ts", "../shared/runner-protocol.ts"]
+}

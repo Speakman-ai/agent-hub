@@ -13,6 +13,7 @@ import type {
 } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
 import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
+import { handleRunnerConnection, isRunnerWsPath } from './runners-ws.js';
 
 /**
  * Match `/api/provisioning/<jobId>/events` and return the jobId. Returns
@@ -100,6 +101,15 @@ export default function createWebSocket(
   }
 
   wss.on('connection', (ws: WsClient, request: IncomingMessage) => {
+    // Runner connections authenticate with a runner-token on the wire
+    // (see runners-ws.ts), not with the API key. Detect the dedicated
+    // path BEFORE the API-key gate so runners can connect without an
+    // API key in the request URL.
+    if (isRunnerWsPath(request.url)) {
+      handleRunnerConnection(ws, request);
+      return;
+    }
+
     if (!authenticateWs(request)) {
       ws.close(4401, 'Unauthorized — invalid or missing API key');
       return;
