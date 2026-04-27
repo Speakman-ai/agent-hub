@@ -113,6 +113,7 @@ import {
   UserCircle,
   AlertTriangle,
   Info,
+  Menu,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -6198,6 +6199,91 @@ export function ToolErrorsSection({ projects }) {
   );
 }
 
+/**
+ * Settings tabs grouped into logical sections for the left sidebar.
+ *
+ * Grouping mirrors mental model rather than alphabetical order:
+ *   - Workspace: org/account/general level config the user touches first
+ *   - Agents & Auth: per-agent and per-engine credential surfaces
+ *   - Automation: scheduled & external integrations
+ *   - Operations: observability & infra-adjacent panels
+ */
+const SETTINGS_GROUPS = [
+  {
+    id: 'workspace',
+    label: 'Workspace',
+    tabs: [
+      { id: 'general', iconName: 'Settings', text: 'General' },
+      { id: 'account', iconName: 'UserCircle', text: 'Account' },
+      { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
+    ],
+  },
+  {
+    id: 'agents-auth',
+    label: 'Agents & Auth',
+    tabs: [
+      { id: 'agents', iconName: 'Bot', text: 'Agents' },
+      { id: 'claude-auth', iconName: 'Key', text: 'Auth' },
+      { id: 'github', iconName: 'GitBranch', text: 'GitHub' },
+    ],
+  },
+  {
+    id: 'automation',
+    label: 'Automation',
+    tabs: [
+      { id: 'heartbeats', iconName: 'HeartPulse', text: 'Heartbeats' },
+      { id: 'crons', iconName: 'Clock', text: 'Cron Jobs' },
+      { id: 'slack', iconName: 'MessageSquare', text: 'Slack' },
+    ],
+  },
+  {
+    id: 'operations',
+    label: 'Operations',
+    tabs: [
+      { id: 'usage', iconName: 'BarChart3', text: 'Usage' },
+      { id: 'pool', iconName: 'Activity', text: 'Pool' },
+      { id: 'pr-environments', iconName: 'GitBranch', text: 'PR Environments' },
+      { id: 'tool-errors', iconName: 'AlertTriangle', text: 'Tool Errors' },
+      { id: 'backup', iconName: 'HardDrive', text: 'Backup' },
+      { id: 'logs', iconName: 'FileText', text: 'Logs' },
+    ],
+  },
+];
+
+const SETTINGS_ICONS = {
+  Settings: SettingsIcon,
+  UserCircle,
+  Building2,
+  Bot,
+  Key,
+  GitBranch,
+  HeartPulse,
+  Clock,
+  MessageSquare,
+  BarChart3,
+  Activity,
+  AlertTriangle,
+  HardDrive,
+  FileText,
+};
+
+function SettingsNavItem({ tab, active, onSelect }) {
+  const Icon = SETTINGS_ICONS[tab.iconName] || SettingsIcon;
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(tab.id)}
+      aria-current={active ? 'page' : undefined}
+      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors min-h-[40px] text-left ${
+        active ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
+      }`}
+    >
+      <Icon size={16} className={active ? '' : 'text-gray-500'} />
+      <span className="truncate">{tab.text}</span>
+    </button>
+  );
+}
+
 export default function SettingsPage({
   projects = [],
   agents,
@@ -6210,106 +6296,158 @@ export default function SettingsPage({
   wsRef,
 }) {
   const [tab, setTab] = useState(initialTab || 'general');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // When navigating directly to a specific tab (e.g. from OrgSwitcher)
   useEffect(() => {
     if (initialTab) setTab(initialTab);
   }, [initialTab]);
 
-  const tabs = [
-    { id: 'general', icon: <SettingsIcon size={16} />, text: 'General' },
-    { id: 'account', icon: <UserCircle size={16} />, text: 'Account' },
-    { id: 'claude-auth', icon: <Key size={16} />, text: 'Auth' },
-    { id: 'github', icon: <GitBranch size={16} />, text: 'GitHub' },
-    { id: 'orgs', icon: <Building2 size={16} />, text: 'Organizations' },
-    { id: 'agents', icon: <Bot size={16} />, text: 'Agents' },
-    { id: 'heartbeats', icon: <HeartPulse size={16} />, text: 'Heartbeats' },
-    { id: 'crons', icon: <Clock size={16} />, text: 'Cron Jobs' },
+  // Find the currently active tab metadata across all groups (for mobile header).
+  const activeTab = useMemo(() => {
+    for (const group of SETTINGS_GROUPS) {
+      const found = group.tabs.find((t) => t.id === tab);
+      if (found) return found;
+    }
+    return SETTINGS_GROUPS[0].tabs[0];
+  }, [tab]);
 
-    { id: 'slack', icon: <MessageSquare size={16} />, text: 'Slack' },
-    { id: 'usage', icon: <BarChart3 size={16} />, text: 'Usage' },
-    { id: 'pool', icon: <Activity size={16} />, text: 'Pool' },
-    { id: 'pr-environments', icon: <GitBranch size={16} />, text: 'PR Environments' },
-    { id: 'tool-errors', icon: <AlertTriangle size={16} />, text: 'Tool Errors' },
-    { id: 'backup', icon: <HardDrive size={16} />, text: 'Backup' },
-    { id: 'logs', icon: <FileText size={16} />, text: 'Logs' },
-  ];
+  const handleSelectTab = (id) => {
+    setTab(id);
+    setMobileNavOpen(false);
+  };
+
+  const sidebar = (
+    <nav aria-label="Settings sections" className="space-y-5">
+      {SETTINGS_GROUPS.map((group) => (
+        <div key={group.id}>
+          <p className="text-[11px] uppercase tracking-wider text-gray-500 font-semibold px-3 mb-1.5">
+            {group.label}
+          </p>
+          <div className="space-y-0.5">
+            {group.tabs.map((t) => (
+              <SettingsNavItem
+                key={t.id}
+                tab={t}
+                active={tab === t.id}
+                onSelect={handleSelectTab}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </nav>
+  );
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 md:p-6">
-      <div className="max-w-4xl mx-auto">
-        <h2 className="text-2xl font-bold mb-6">Settings</h2>
-
-        <AuthUpgradeBanner />
-
-        <div className="flex gap-1.5 sm:gap-2 mb-6 overflow-x-auto pb-1 -mx-1 px-1">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-3 sm:px-4 py-2.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors min-h-[44px] ${
-                tab === t.id
-                  ? 'bg-gray-800 text-white'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
-              }`}
-            >
-              <span className="flex items-center gap-1.5">
-                {t.icon}
-                <span>{t.text}</span>
-              </span>
-            </button>
-          ))}
+    <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
+      {/* Mobile header — surfaces the current section + a button to reveal the nav drawer. */}
+      <div className="md:hidden flex items-center justify-between border-b border-gray-800 px-4 py-3 bg-gray-950">
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-lg font-bold truncate">Settings</h2>
+          <span className="text-gray-600">/</span>
+          <span className="text-sm text-gray-300 truncate">{activeTab.text}</span>
         </div>
-
-        <SettingsErrorBoundary key={tab}>
-          {tab === 'general' && <GeneralSection />}
-          {tab === 'account' && <AccountSection />}
-          {tab === 'claude-auth' && (
-            <div className="space-y-10">
-              <ClaudeAuthSection />
-              <div className="h-px bg-gray-800" />
-              <GeminiAuthSection />
-              <div className="h-px bg-gray-800" />
-              <CursorAuthSection />
-              <div className="h-px bg-gray-800" />
-              <CodexAuthSection />
-            </div>
-          )}
-          {tab === 'github' && (
-            <GitHubSection
-              projects={projects}
-              onProjectsChange={onAgentsChange}
-              showToast={showToast}
-              initialExpandedProjectId={initialGithubExpandedProjectId}
-            />
-          )}
-          {tab === 'orgs' && <OrganizationsSection />}
-          {tab === 'heartbeats' && (
-            <HeartbeatSection onNavigate={onNavigate} showToast={showToast} />
-          )}
-          {tab === 'crons' && (
-            <CronSection projects={projects} onNavigate={onNavigate} showToast={showToast} />
-          )}
-
-          {tab === 'slack' && <SlackSection />}
-          {tab === 'agents' && (
-            <AgentConfigSection
-              agents={agents}
-              projects={projects}
-              onAgentsChange={onAgentsChange}
-              showToast={showToast}
-            />
-          )}
-          {tab === 'usage' && <UsageSection />}
-          {tab === 'pool' && <PoolSection />}
-          {tab === 'pr-environments' && <PrEnvironmentsSection />}
-          {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
-          {tab === 'backup' && (
-            <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />
-          )}
-          {tab === 'logs' && <ServerLogsSection wsRef={wsRef} />}
-        </SettingsErrorBoundary>
+        <button
+          type="button"
+          onClick={() => setMobileNavOpen(true)}
+          className="p-2 rounded-lg hover:bg-gray-800 text-gray-300"
+          aria-label="Open settings navigation"
+        >
+          <Menu size={18} />
+        </button>
       </div>
+
+      {/* Desktop sidebar — persistent left rail */}
+      <aside className="hidden md:flex md:flex-col w-60 lg:w-64 shrink-0 border-r border-gray-800 bg-gray-950/40 overflow-y-auto">
+        <div className="px-4 pt-6 pb-3">
+          <h2 className="text-lg font-bold">Settings</h2>
+        </div>
+        <div className="px-2 pb-6">{sidebar}</div>
+      </aside>
+
+      {/* Mobile drawer — sliding overlay, dismissible by tapping outside or selecting a tab */}
+      {mobileNavOpen && (
+        <div className="md:hidden fixed inset-0 z-40 flex">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setMobileNavOpen(false)}
+            aria-hidden="true"
+          />
+          <div className="relative w-72 max-w-[85vw] bg-gray-900 border-r border-gray-800 flex flex-col overflow-y-auto">
+            <div className="flex items-center justify-between px-4 pt-6 pb-3">
+              <h2 className="text-lg font-bold">Settings</h2>
+              <button
+                type="button"
+                onClick={() => setMobileNavOpen(false)}
+                className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-300"
+                aria-label="Close settings navigation"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="px-2 pb-6">{sidebar}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Main content panel */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="p-4 md:p-6">
+          <div className="max-w-4xl mx-auto">
+            <AuthUpgradeBanner />
+
+            <SettingsErrorBoundary key={tab}>
+              {tab === 'general' && <GeneralSection />}
+              {tab === 'account' && <AccountSection />}
+              {tab === 'claude-auth' && (
+                <div className="space-y-10">
+                  <ClaudeAuthSection />
+                  <div className="h-px bg-gray-800" />
+                  <GeminiAuthSection />
+                  <div className="h-px bg-gray-800" />
+                  <CursorAuthSection />
+                  <div className="h-px bg-gray-800" />
+                  <CodexAuthSection />
+                </div>
+              )}
+              {tab === 'github' && (
+                <GitHubSection
+                  projects={projects}
+                  onProjectsChange={onAgentsChange}
+                  showToast={showToast}
+                  initialExpandedProjectId={initialGithubExpandedProjectId}
+                />
+              )}
+              {tab === 'orgs' && <OrganizationsSection />}
+              {tab === 'heartbeats' && (
+                <HeartbeatSection onNavigate={onNavigate} showToast={showToast} />
+              )}
+              {tab === 'crons' && (
+                <CronSection projects={projects} onNavigate={onNavigate} showToast={showToast} />
+              )}
+
+              {tab === 'slack' && <SlackSection />}
+              {tab === 'agents' && (
+                <AgentConfigSection
+                  agents={agents}
+                  projects={projects}
+                  onAgentsChange={onAgentsChange}
+                  showToast={showToast}
+                />
+              )}
+              {tab === 'usage' && <UsageSection />}
+              {tab === 'pool' && <PoolSection />}
+              {tab === 'pr-environments' && <PrEnvironmentsSection />}
+              {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
+              {tab === 'backup' && (
+                <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />
+              )}
+              {tab === 'logs' && <ServerLogsSection wsRef={wsRef} />}
+            </SettingsErrorBoundary>
+          </div>
+        </div>
+      </main>
     </div>
   );
 }
