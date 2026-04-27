@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { normalizeNotesMarkdown } from '../utils/notesMarkdown.js';
 import {
   StickyNote,
   Search,
@@ -376,7 +378,9 @@ export default function NotesEditor({ projectId }) {
 
   const renderMarkdownPreview = (content) => (
     <div className="prose prose-invert prose-sm max-w-none text-gray-300">
-      <ReactMarkdown>{content || ''}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        {normalizeNotesMarkdown(content || '')}
+      </ReactMarkdown>
     </div>
   );
 
