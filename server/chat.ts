@@ -54,6 +54,7 @@ import {
   planDelegationRoundOnProcClose,
 } from './delegation-kickoff-buffer.js';
 import { clearDelegationUiMeta } from './delegation-state.js';
+import { isDelegationDisabledForAgent } from './delegation-gate.js';
 import type {
   Project,
   Agent,
@@ -1666,6 +1667,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (!enrichedAgent) return;
       if (agent.role !== 'lead' || !agent.subAgents || agent.subAgents.length === 0) return;
       if (!assistantAccumulated.includes('<delegate>')) return;
+      // Operator gate (per-agent `delegationEnabled === false`): never kick off
+      // mid-stream when the lead is configured for inline-only completion. The
+      // post-stream branch in `proc.on('close')` is responsible for surfacing
+      // the in-chat nudge — doing it here would race the assistant message
+      // persistence and confuse the message-anchored DelegateCard.
+      if (isDelegationDisabledForAgent(agent)) return;
       const tasks = parseDelegateBlock(assistantAccumulated);
       if (!tasks || tasks.length === 0) return;
       startDelegationOnce(tasks);
@@ -2029,8 +2036,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const closeCardDetection = detectCloseCardBlock(rawFinalContent);
       const closeTask = closeCardDetection.task;
       const handoffDetection = enrichedAgent ? detectHandoffBlock(rawFinalContent) : null;
+      // The operator-controlled `delegationEnabled === false` flag is the
+      // first thing we check after the stream closes: a disabled lead should
+      // ALWAYS produce `delegateTasks = null` regardless of what the model
+      // emitted, so the post-stream "if (delegateTasks)" branch never runs and
+      // synthesis is skipped. The in-chat nudge ("Delegation disabled for
+      // this lead") is emitted later in this same handler so the user can
+      // see exactly what happened.
+      const delegationDisabled = isDelegationDisabledForAgent(agent);
       const delegateTasks =
-        agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0
+        agent.role === 'lead' &&
+        agent.subAgents &&
+        agent.subAgents.length > 0 &&
+        !delegationDisabled
           ? parseDelegateBlock(rawFinalContent)
           : null;
       let shouldAutoContinue = false;
@@ -2699,13 +2717,62 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       }
 
-      if (
-        agent.role === 'lead' &&
-        agent.subAgents &&
-        agent.subAgents.length > 0 &&
-        hasDelegateBlock &&
-        !delegateTasks
-      ) {
+      // Operator-controlled gate (`delegationEnabled === false`): the lead is
+      // configured for inline-only completion. Surface a clear in-chat nudge
+      // and a `delegation_disabled` WS event for the message-anchored
+      // DelegateCard so the user knows exactly why nothing dispatched. This
+      // case takes priority over the malformed-gate branch below — when
+      // delegation is disabled we don't care whether the block parsed, the
+      // outcome is the same: nothing spawns.
+      const leadHasSubAgents =
+        agent.role === 'lead' && !!agent.subAgents && agent.subAgents.length > 0;
+      if (leadHasSubAgents && hasDelegateBlock && delegationDisabled) {
+        const sysId = uuidv4();
+        const body =
+          '**Delegation disabled for this lead.** The `<delegate>` block was ignored — this lead agent is configured to complete work inline. Re-enable delegation in agent settings to use sub-agents, or finish the task yourself.';
+        try {
+          stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
+          stmts.touchSession.run(sessionId);
+          const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
+            id: sysId,
+            session_id: sessionId,
+            role: 'system' as const,
+            content: body,
+            engine: null,
+            model: null,
+            attachments: null,
+            metadata: null,
+            created_at: new Date().toISOString(),
+          };
+          broadcast({ type: 'message_added', sessionId, message: insertedMessage });
+        } catch (err: unknown) {
+          const m = err instanceof Error ? err.message : String(err);
+          console.warn(`[delegation] failed to persist disabled-gate notice: ${m}`);
+          const fallback: MessageRow = {
+            id: sysId,
+            session_id: sessionId,
+            role: 'system',
+            content: body,
+            engine: null,
+            model: null,
+            attachments: null,
+            metadata: null,
+            created_at: new Date().toISOString(),
+          };
+          broadcast({ type: 'message_added', sessionId, message: fallback });
+        }
+        // Anchored banner on the DelegateCard. Same shape as
+        // `delegation_error` so the client's existing dispatchError
+        // correlation logic works without a parallel state machine.
+        broadcast({
+          type: 'delegation_disabled',
+          sessionId,
+          parentMessageId: assistantMsgId,
+          reason: 'Delegation disabled for this lead',
+        });
+      }
+
+      if (leadHasSubAgents && hasDelegateBlock && !delegateTasks && !delegationDisabled) {
         const sysId = uuidv4();
         const body =
           '**Delegation gate rejected.** `<delegate>` payload must be a JSON array of task objects (or a single task object — it will be coerced to a one-element array). Every task must include `agentId`, `task`, `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`. No delegation was started.';

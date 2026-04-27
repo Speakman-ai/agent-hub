@@ -345,4 +345,39 @@ describe('DelegateCard', () => {
     expect(screen.getByTestId('delegate-card-failed')).toBeInTheDocument();
     expect(screen.queryByTestId('delegate-raw-body')).toBeNull();
   });
+
+  // Operator-controlled `delegationEnabled === false` gate. The server
+  // detects the lead is configured for inline-only completion, persists a
+  // system-message nudge, and broadcasts `delegation_disabled` (instead of
+  // `delegation_error`). App.jsx funnels that into `dispatchError` with
+  // `kind: 'disabled'`. The card must render an informational amber banner —
+  // distinct from the red "Dispatch failed" state — and replace the per-row
+  // "Did not start" badge with a "Disabled" badge so the user knows nothing
+  // went wrong: the operator chose this.
+  it('renders the operator-disabled banner when dispatchError.kind === "disabled"', () => {
+    render(
+      <DelegateCard
+        tasks={[{ agentId: 'hub-frontend', task: 'go' }]}
+        agents={AGENTS}
+        parentMessageId="msg-A"
+        parentSessionActive={false}
+        dispatchError={{
+          kind: 'disabled',
+          parentMessageId: 'msg-A',
+          message: 'Delegation disabled for this lead',
+        }}
+      />,
+    );
+    const banner = screen.getByTestId('delegate-dispatch-disabled');
+    expect(banner).toHaveTextContent(/Delegation disabled/);
+    expect(banner).toHaveTextContent('Delegation disabled for this lead');
+    // Per-row badge swaps to the "Disabled" amber chip.
+    expect(screen.getByTestId('delegate-status-disabled')).toBeInTheDocument();
+    // The red "Dispatch failed" banner must NOT render alongside it.
+    expect(screen.queryByTestId('delegate-dispatch-error')).toBeNull();
+    expect(screen.queryByTestId('delegate-status-no-dispatch')).toBeNull();
+    // The card itself stamps the new `data-fallback-state="disabled"` so
+    // E2E and visual-regression tools can target it without parsing copy.
+    expect(screen.getByTestId('delegate-card')).toHaveAttribute('data-fallback-state', 'disabled');
+  });
 });

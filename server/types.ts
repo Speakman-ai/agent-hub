@@ -1196,6 +1196,14 @@ export interface Agent {
   heartbeat?: HeartbeatConfig;
   parentAgentId?: string;
   subAgents?: string[];
+  /**
+   * When set to `false`, the lead agent's `<delegate>` blocks are gated:
+   * the server skips spawning sub-agent sessions and emits a system-message
+   * + `delegation_disabled` WS event so the lead is nudged to complete work
+   * inline. Only meaningful for lead agents (those with `subAgents`).
+   * `undefined` / `true` → delegation enabled (default behaviour).
+   */
+  delegationEnabled?: boolean;
   hooks?: Record<string, HookConfig[]>;
   mcpServers?: Record<string, McpServerConfig>;
   installCommand?: string;

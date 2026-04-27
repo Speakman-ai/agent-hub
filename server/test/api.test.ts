@@ -471,6 +471,36 @@ describe('Agents', () => {
 
       expect(res.body.avatar).toBe('/uploads/abc123.png');
     });
+
+    // Operator-controlled `delegationEnabled` gate (per-agent disable switch
+    // for `<delegate>` dispatch). The PATCH route must accept this field on
+    // the allowlist so the SettingsPage toggle can flip it. The actual
+    // dispatch-skipping behaviour is unit-tested separately in
+    // `delegation-gate.test.ts`; here we just lock down round-trip
+    // persistence so a future allowlist edit can't silently drop the field.
+    it('persists delegationEnabled=false and round-trips it', async () => {
+      const agent = await createAgent();
+      const res = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ delegationEnabled: false })
+        .expect(200);
+
+      expect(res.body.delegationEnabled).toBe(false);
+
+      const list = await request.get('/api/agents').expect(200);
+      const fetched = list.body.find((a: { id: string }) => a.id === agent.id);
+      expect(fetched?.delegationEnabled).toBe(false);
+    });
+
+    it('lets the operator re-enable delegation by sending true', async () => {
+      const agent = await createAgent();
+      await request.patch(`/api/agents/${agent.id}`).send({ delegationEnabled: false }).expect(200);
+      const res = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ delegationEnabled: true })
+        .expect(200);
+      expect(res.body.delegationEnabled).toBe(true);
+    });
   });
 
   describe('DELETE /api/agents/:agentId', () => {

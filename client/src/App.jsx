@@ -1319,6 +1319,31 @@ export default function App() {
           notify({ title: 'Delegation Error', body: delegationMsg, type: 'error' });
           break;
         }
+        case 'delegation_disabled': {
+          // Operator gate: lead has `delegationEnabled === false`. The server
+          // already persisted the explanatory system message — we just need
+          // to anchor a card-level banner so users browsing history without
+          // the system-message visible (e.g. compact view) still see why
+          // dispatch never started. Reuse the dispatchError state slot with
+          // a `kind: 'disabled'` discriminator so DelegateCard can render
+          // distinct copy (informational, not failure-red).
+          if (data.sessionId) {
+            const reason =
+              typeof data.reason === 'string' && data.reason.length > 0
+                ? data.reason
+                : 'Delegation disabled for this lead';
+            setDelegationDispatchErrors((prev) => ({
+              ...prev,
+              [data.sessionId]: {
+                kind: 'disabled',
+                message: reason,
+                parentMessageId:
+                  typeof data.parentMessageId === 'string' ? data.parentMessageId : null,
+              },
+            }));
+          }
+          break;
+        }
 
         case 'sessions_resuming': {
           const count = data.count || 0;

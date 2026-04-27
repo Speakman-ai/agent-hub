@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { GitFork, AlertTriangle, Loader2, AlertCircle } from 'lucide-react';
+import { GitFork, AlertTriangle, Loader2, AlertCircle, Slash } from 'lucide-react';
 import { DELEGATE_REQUIRED_FIELDS } from '../utils/coordinationBlocks.js';
 
 /**
@@ -58,11 +58,15 @@ import { DELEGATE_REQUIRED_FIELDS } from '../utils/coordinationBlocks.js';
  *                        started (filtered out, errored before broadcast, or
  *                        session crashed) and we should say so instead of
  *                        showing an indefinite "Queued" spinner.
- *   dispatchError      — optional `{ message, parentMessageId? }` describing a
- *                        `delegation_error` broadcast for this session. When
- *                        present and the parent ids match (or `parentMessageId`
- *                        is unset on either side), surfaces a banner so the
- *                        user knows dispatch failed instead of guessing.
+ *   dispatchError      — optional `{ message, parentMessageId?, kind? }` describing a
+ *                        `delegation_error` or `delegation_disabled` broadcast
+ *                        for this session. When `kind === 'disabled'` we render
+ *                        an informational amber banner ("Delegation disabled:
+ *                        …") because the operator gate fired — no sub-agent
+ *                        actually failed; dispatch was intentionally skipped.
+ *                        Otherwise (`kind` undefined or any other value) we
+ *                        render the red "Dispatch failed: …" banner. The
+ *                        parent-id correlation is the same in both cases.
  */
 function DelegateCard({
   tasks,
@@ -175,7 +179,31 @@ function DelegateCard({
     !parentMessageId || !liveParentId || liveParentId === parentMessageId;
   const hasLive = liveBelongsToThisRound && liveTasks.length > 0;
 
+  // Surface a dispatch error banner only when it's plausibly *this* round's
+  // failure (parent ids match, or one side is unknown — same compatibility
+  // rule as the snapshot correlation above).
+  const dispatchErrorActiveForRound =
+    dispatchError &&
+    typeof dispatchError === 'object' &&
+    typeof dispatchError.message === 'string' &&
+    dispatchError.message.length > 0 &&
+    (!parentMessageId ||
+      !dispatchError.parentMessageId ||
+      dispatchError.parentMessageId === parentMessageId);
+  // `kind: 'disabled'` is the operator-gate path (`delegationEnabled === false`).
+  // We render an informational amber banner for this case and treat it as the
+  // dominant fallback state below — once the gate fires, no row will ever get
+  // a live status, so the per-row badge should match.
+  const dispatchDisabled = dispatchErrorActiveForRound && dispatchError.kind === 'disabled';
+  const dispatchErrorMessage =
+    dispatchErrorActiveForRound && !dispatchDisabled ? dispatchError.message : null;
+  const disabledBannerMessage =
+    dispatchDisabled && typeof dispatchError.message === 'string' ? dispatchError.message : null;
+
   // Determine fallback badge state for rows with no matching live row.
+  // - 'disabled': operator gate active (`delegationEnabled === false`) →
+  //   dispatch was intentionally suppressed. Distinct from 'no-dispatch'
+  //   because the operator chose this; nothing went wrong.
   // - 'awaiting-dispatch': parent session/turn is still active → server should
   //   broadcast `delegation_start` momentarily; current spinner is correct.
   // - 'older-round': a *newer* delegate round is in flight in the same session,
@@ -184,27 +212,15 @@ function DelegateCard({
   //   dispatch most likely never happened (no valid sub-agents, crash,
   //   filtered, etc.). Indefinite "Queued" was the bug.
   let fallbackState;
-  if (!liveBelongsToThisRound) {
+  if (dispatchDisabled) {
+    fallbackState = 'disabled';
+  } else if (!liveBelongsToThisRound) {
     fallbackState = 'older-round';
   } else if (parentSessionActive) {
     fallbackState = 'awaiting-dispatch';
   } else {
     fallbackState = 'no-dispatch';
   }
-
-  // Surface a dispatch error banner only when it's plausibly *this* round's
-  // failure (parent ids match, or one side is unknown — same compatibility
-  // rule as the snapshot correlation above).
-  const dispatchErrorMessage =
-    dispatchError &&
-    typeof dispatchError === 'object' &&
-    typeof dispatchError.message === 'string' &&
-    dispatchError.message.length > 0 &&
-    (!parentMessageId ||
-      !dispatchError.parentMessageId ||
-      dispatchError.parentMessageId === parentMessageId)
-      ? dispatchError.message
-      : null;
 
   return (
     <div
@@ -229,6 +245,18 @@ function DelegateCard({
           <AlertCircle size={12} className="mt-0.5 flex-shrink-0 text-red-300" />
           <span>
             <span className="font-semibold">Dispatch failed:</span> {dispatchErrorMessage}
+          </span>
+        </div>
+      )}
+      {disabledBannerMessage && (
+        <div
+          data-testid="delegate-dispatch-disabled"
+          className="flex items-start gap-2 px-4 py-2 bg-amber-950/30 border-b border-amber-800/30 text-[11px] text-amber-200"
+        >
+          <Slash size={12} className="mt-0.5 flex-shrink-0 text-amber-300" />
+          <span>
+            <span className="font-semibold">Delegation disabled:</span> {disabledBannerMessage}. The
+            lead is configured to complete work inline — no sub-agents were spawned.
           </span>
         </div>
       )}
@@ -266,6 +294,18 @@ function DelegateCard({
 
 function StatusBadge({ status, fallbackState = 'awaiting-dispatch' }) {
   if (!status) {
+    if (fallbackState === 'disabled') {
+      return (
+        <span
+          data-testid="delegate-status-disabled"
+          className="text-[11px] text-amber-300 font-medium inline-flex items-center gap-1"
+          title="Delegation disabled for this lead — re-enable in agent settings to dispatch sub-agents."
+        >
+          <Slash size={11} />
+          Disabled
+        </span>
+      );
+    }
     if (fallbackState === 'no-dispatch') {
       // The parent turn ended without ever broadcasting `delegation_start` for
       // this round. Almost always means dispatch was filtered (no valid sub-
