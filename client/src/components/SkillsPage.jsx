@@ -25,7 +25,33 @@ import {
   Check,
   Shield,
   Cloud,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
+
+function SkillsLoadError({ section, message, onRetry }) {
+  return (
+    <div
+      role="alert"
+      data-testid={`skills-load-error-${section}`}
+      className="bg-red-900/20 border border-red-800/50 rounded-xl p-4 flex items-start gap-3"
+    >
+      <AlertTriangle size={18} className="text-red-400 flex-shrink-0 mt-0.5" />
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-red-300">Failed to load {section}</p>
+        <p className="text-xs text-red-400/80 mt-1 break-words">{message}</p>
+        {onRetry && (
+          <button
+            onClick={onRetry}
+            className="mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-red-800/40 text-red-200 hover:bg-red-800/60 transition-colors"
+          >
+            <RefreshCw size={12} /> Retry
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const CATEGORIES = [
   { id: 'all', label: 'All', color: 'gray' },
@@ -71,8 +97,10 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
       try {
         const data = await api.getSkill(agentId, skill.id);
         setFullContent(data.content);
-      } catch {
-        setFullContent('Failed to load skill content.');
+      } catch (err) {
+        const detail = err?.message ? `: ${err.message}` : '.';
+        setFullContent(`Failed to load skill content${detail}`);
+        console.error('Failed to load skill content:', err);
       } finally {
         setLoading(false);
       }
@@ -667,6 +695,10 @@ export default function SkillsPage({ agents, projects }) {
   const [loadingSkills, setLoadingSkills] = useState(false);
   const [loadingContext, setLoadingContext] = useState(false);
   const [loadingRegistry, setLoadingRegistry] = useState(false);
+  const [skillsError, setSkillsError] = useState(null);
+  const [contextError, setContextError] = useState(null);
+  const [registryError, setRegistryError] = useState(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [showImport, setShowImport] = useState(false);
@@ -684,34 +716,71 @@ export default function SkillsPage({ agents, projects }) {
     if (!activeAgentId) return;
     setLoadingSkills(true);
     setLoadingContext(true);
+    setSkillsError(null);
+    setContextError(null);
 
     api
       .getSkills(activeAgentId)
-      .then(setSkills)
-      .catch(() => setSkills([]))
+      .then((data) => {
+        setSkills(data);
+        setSkillsError(null);
+      })
+      .catch((err) => {
+        setSkills([]);
+        setSkillsError(err?.message || 'Unknown error loading skills');
+        console.error('Failed to load skills:', err);
+      })
       .finally(() => setLoadingSkills(false));
     api
       .getContext(activeAgentId)
-      .then(setContext)
-      .catch(() => setContext({}))
+      .then((data) => {
+        setContext(data);
+        setContextError(null);
+      })
+      .catch((err) => {
+        setContext({});
+        setContextError(err?.message || 'Unknown error loading context files');
+        console.error('Failed to load context:', err);
+      })
       .finally(() => setLoadingContext(false));
     api
       .getSkillOverrides(activeAgentId)
       .then(setOverrides)
-      .catch(() => setOverrides([]));
-  }, [activeAgentId]);
+      .catch((err) => {
+        setOverrides([]);
+        console.error('Failed to load skill overrides:', err);
+      });
+  }, [activeAgentId, reloadKey]);
 
   // Load registry
   useEffect(() => {
     if (activeTab !== 'registry') return;
     setLoadingRegistry(true);
+    setRegistryError(null);
     const cat = categoryFilter === 'all' ? undefined : categoryFilter;
     api
       .getRegistry(cat, searchQuery || undefined)
-      .then(setRegistry)
-      .catch(() => setRegistry([]))
+      .then((data) => {
+        setRegistry(data);
+        setRegistryError(null);
+      })
+      .catch((err) => {
+        setRegistry([]);
+        setRegistryError(err?.message || 'Unknown error loading registry');
+        console.error('Failed to load registry:', err);
+      })
       .finally(() => setLoadingRegistry(false));
-  }, [activeTab, categoryFilter, searchQuery]);
+  }, [activeTab, categoryFilter, searchQuery, reloadKey]);
+
+  const retryInstalledLoad = useCallback(() => setReloadKey((k) => k + 1), []);
+  const retryRegistryLoad = useCallback(() => setReloadKey((k) => k + 1), []);
+
+  const [actionError, setActionError] = useState(null);
+  useEffect(() => {
+    if (!actionError) return undefined;
+    const t = setTimeout(() => setActionError(null), 6000);
+    return () => clearTimeout(t);
+  }, [actionError]);
 
   const handleToggle = useCallback(
     async (skillId, enabled) => {
@@ -731,6 +800,7 @@ export default function SkillsPage({ agents, projects }) {
         });
       } catch (err) {
         console.error('Failed to toggle skill:', err);
+        setActionError(`Failed to toggle skill ${skillId}: ${err?.message || 'unknown error'}`);
       }
     },
     [activeAgentId],
@@ -750,6 +820,7 @@ export default function SkillsPage({ agents, projects }) {
         setRegistry(reg);
       } catch (err) {
         console.error('Failed to install skill:', err);
+        setActionError(`Failed to install skill ${skillId}: ${err?.message || 'unknown error'}`);
       }
     },
     [currentProjectId, activeAgentId, categoryFilter, searchQuery],
@@ -763,6 +834,7 @@ export default function SkillsPage({ agents, projects }) {
         setSkills((prev) => prev.filter((s) => s.id !== skillId));
       } catch (err) {
         console.error('Failed to uninstall:', err);
+        setActionError(`Failed to uninstall skill ${skillId}: ${err?.message || 'unknown error'}`);
       }
     },
     [currentProjectId],
@@ -780,6 +852,26 @@ export default function SkillsPage({ agents, projects }) {
         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
           <BookOpen size={20} /> Skills & Context
         </h2>
+
+        {actionError && (
+          <div
+            role="alert"
+            data-testid="skills-action-error"
+            className="mb-4 bg-red-900/30 border border-red-800/60 rounded-lg px-4 py-2.5 flex items-start justify-between gap-3"
+          >
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-red-300 break-words">{actionError}</p>
+            </div>
+            <button
+              onClick={() => setActionError(null)}
+              className="text-red-400 hover:text-red-200 flex-shrink-0"
+              aria-label="Dismiss"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
         {/* Tabs: Installed | Registry */}
         <div className="flex items-center gap-1 mb-6 border-b border-gray-700 pb-0">
@@ -868,6 +960,12 @@ export default function SkillsPage({ agents, projects }) {
                   </h3>
                   {loadingSkills ? (
                     <p className="text-sm text-gray-500">Loading skills...</p>
+                  ) : skillsError ? (
+                    <SkillsLoadError
+                      section="skills"
+                      message={skillsError}
+                      onRetry={retryInstalledLoad}
+                    />
                   ) : skills.length === 0 ? (
                     <div className="bg-gray-800 rounded-xl p-6 text-center">
                       <p className="text-gray-500 text-sm">No skills installed</p>
@@ -910,6 +1008,12 @@ export default function SkillsPage({ agents, projects }) {
                   </h3>
                   {loadingContext ? (
                     <p className="text-sm text-gray-500">Loading context files...</p>
+                  ) : contextError ? (
+                    <SkillsLoadError
+                      section="context files"
+                      message={contextError}
+                      onRetry={retryInstalledLoad}
+                    />
                   ) : Object.keys(context).length === 0 ? (
                     <div className="bg-gray-800 rounded-xl p-6 text-center">
                       <p className="text-gray-500 text-sm">No context files found</p>
@@ -978,6 +1082,12 @@ export default function SkillsPage({ agents, projects }) {
               <div className="flex items-center justify-center py-12">
                 <Loader2 size={20} className="animate-spin text-gray-500" />
               </div>
+            ) : registryError ? (
+              <SkillsLoadError
+                section="registry"
+                message={registryError}
+                onRetry={retryRegistryLoad}
+              />
             ) : registry.length === 0 ? (
               <div className="bg-gray-800 rounded-xl p-8 text-center">
                 <p className="text-gray-500 text-sm">No skills found</p>
