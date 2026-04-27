@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Loader2, Users } from 'lucide-react';
 import RoleBadge from './RoleBadge.jsx';
-import GithubConnectionSection from './GithubConnectionSection.jsx';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { hasRole, getUserRole } from '../utils/auth.js';
 
@@ -84,8 +83,6 @@ export default function AccountSection() {
           while they're the only one. Multi-user management arrives in Phase 3.
         </p>
       </div>
-
-      <GithubConnectionSection />
 
       {users !== null && (
         <div className="bg-gray-800 rounded-xl p-4">

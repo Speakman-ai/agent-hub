@@ -15,6 +15,7 @@ import humanCron from '../../../shared/utils/humanCron.js';
 import CronSchedulePicker from './CronSchedulePicker.jsx';
 import AgentAvatar from './AgentAvatar.jsx';
 import AccountSection from './AccountSection.jsx';
+import GithubConnectionSection from './GithubConnectionSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
 import PoolSection from './PoolSection.jsx';
@@ -114,6 +115,7 @@ import {
   AlertTriangle,
   Info,
   Menu,
+  FolderGit2,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -1959,13 +1961,7 @@ export function GeneralSection() {
   );
 }
 
-export function GitHubSection({
-  projects = [],
-  onProjectsChange,
-  showToast,
-  /** When set (e.g. deep-link from Workflows page), expand this project card on load. */
-  initialExpandedProjectId = null,
-}) {
+export function GitHubSection({ onProjectsChange }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -1980,43 +1976,6 @@ export function GitHubSection({
   const [showPublicUrlPrompt, setShowPublicUrlPrompt] = useState(false);
   const pollIntervalRef = useRef(null);
   const pollTimeoutRef = useRef(null);
-
-  // Per-project state
-  const [projectWorkflow, setProjectWorkflow] = useState({});
-  const [modelConfig, setModelConfig] = useState(null);
-  const [reviewerModelSaving, setReviewerModelSaving] = useState({});
-  const [projectRepos, setProjectRepos] = useState({});
-  const [workflowSaved, setWorkflowSaved] = useState({});
-  const [repoSaving, setRepoSaving] = useState({});
-  const [repoSaveStatus, setRepoSaveStatus] = useState({});
-  const [expandedProject, setExpandedProject] = useState(null);
-  const [detecting, setDetecting] = useState({});
-  /** One-shot deep-link expand — do not re-expand on `projects` identity churn after manual collapse. */
-  const lastDeepLinkExpandIdRef = useRef(null);
-
-  useEffect(() => {
-    if (!initialExpandedProjectId) {
-      lastDeepLinkExpandIdRef.current = null;
-      return;
-    }
-    if (!projects.some((p) => p.id === initialExpandedProjectId)) return;
-    if (lastDeepLinkExpandIdRef.current === initialExpandedProjectId) return;
-    setExpandedProject(initialExpandedProjectId);
-    lastDeepLinkExpandIdRef.current = initialExpandedProjectId;
-  }, [initialExpandedProjectId, projects]);
-
-  // Per-project repo test
-  const [repoTesting, setRepoTesting] = useState({});
-  const [repoTestResult, setRepoTestResult] = useState({});
-
-  // Per-project author allowlist (comma-separated input, per-project webhook)
-  const [allowlistInput, setAllowlistInput] = useState({});
-  const [allowlistSaving, setAllowlistSaving] = useState({});
-  const [allowlistStatus, setAllowlistStatus] = useState({});
-  const [webhookIds, setWebhookIds] = useState({}); // projectId → first webhook id
-
-  // Project delete confirmation (inline toggle pattern)
-  const [confirmDeleteProject, setConfirmDeleteProject] = useState(null);
 
   // Clean up polling on unmount
   useEffect(() => {
@@ -2067,74 +2026,6 @@ export function GitHubSection({
       if (msgMatch) alert(decodeURIComponent(msgMatch[1]));
     }
   }, [onProjectsChange]);
-
-  // Load each project's first webhook config to pick up its author_allowlist.
-  // There's typically one webhook per project (auto-managed when the repo is
-  // linked), so we grab [0] and use its id for subsequent PUTs.
-  const loadAllowlistFor = async (projectId) => {
-    try {
-      const hooks = await api.getProjectWebhooks(projectId);
-      const first = Array.isArray(hooks) && hooks.length > 0 ? hooks[0] : null;
-      if (!first) return;
-      setWebhookIds((prev) => ({ ...prev, [projectId]: first.id }));
-      const list = parseAllowlistFromBackend(first.author_allowlist);
-      setAllowlistInput((prev) => ({ ...prev, [projectId]: serializeAllowlist(list) }));
-    } catch {
-      /* ignore — project may not have a webhook yet */
-    }
-  };
-
-  const saveAllowlist = async (projectId) => {
-    const webhookId = webhookIds[projectId];
-    if (!webhookId) {
-      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'no-webhook' }));
-      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
-      return;
-    }
-    setAllowlistSaving((prev) => ({ ...prev, [projectId]: true }));
-    setAllowlistStatus((prev) => ({ ...prev, [projectId]: null }));
-    try {
-      const normalized = parseAllowlist(allowlistInput[projectId] || '');
-      await api.updateWebhook(webhookId, { authorAllowlist: normalized });
-      // Normalize the input back so the user sees what was actually saved.
-      setAllowlistInput((prev) => ({ ...prev, [projectId]: serializeAllowlist(normalized) }));
-      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
-      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
-    } catch {
-      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'error' }));
-      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
-    } finally {
-      setAllowlistSaving((prev) => ({ ...prev, [projectId]: false }));
-    }
-  };
-
-  useEffect(() => {
-    api
-      .getModelConfig()
-      .then(setModelConfig)
-      .catch(() => {});
-  }, []);
-
-  // Init per-project state when projects arrive
-  useEffect(() => {
-    const wf = {};
-    const repos = {};
-    projects.forEach((p) => {
-      wf[p.id] = {
-        autoMerge: p.githubWorkflow?.autoMerge || false,
-        autoReview: p.githubWorkflow?.autoReview !== false,
-        waitForCI: p.githubWorkflow?.waitForCI || false,
-        waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
-        reviewerModel:
-          typeof p.githubWorkflow?.reviewerModel === 'string' ? p.githubWorkflow.reviewerModel : '',
-      };
-      repos[p.id] = p.githubRepo || '';
-      // Fire-and-forget: hydrate allowlist from the webhook API.
-      loadAllowlistFor(p.id);
-    });
-    setProjectWorkflow(wf);
-    setProjectRepos(repos);
-  }, [projects]);
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
@@ -2235,140 +2126,6 @@ export function GitHubSection({
     }
   };
 
-  // --- Per-project handlers ---
-
-  const toggleWorkflowSetting = async (projectId, key) => {
-    const current = projectWorkflow[projectId] || {};
-    const newValue = !current[key];
-    setProjectWorkflow((prev) => ({
-      ...prev,
-      [projectId]: { ...prev[projectId], [key]: newValue },
-    }));
-    try {
-      await api.updateProject(projectId, { githubWorkflow: { [key]: newValue } });
-      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
-      if (onProjectsChange) onProjectsChange();
-    } catch {
-      setProjectWorkflow((prev) => ({
-        ...prev,
-        [projectId]: { ...prev[projectId], [key]: !newValue },
-      }));
-    }
-  };
-
-  const saveWorkflowReviewerModel = async (projectId, value) => {
-    const prevVal =
-      typeof projectWorkflow[projectId]?.reviewerModel === 'string'
-        ? projectWorkflow[projectId].reviewerModel
-        : '';
-    setProjectWorkflow((prev) => ({
-      ...prev,
-      [projectId]: { ...prev[projectId], reviewerModel: value },
-    }));
-    setReviewerModelSaving((s) => ({ ...s, [projectId]: true }));
-    try {
-      await api.updateProject(projectId, {
-        githubWorkflow: { reviewerModel: value.trim() ? value.trim() : '' },
-      });
-      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
-      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
-      if (onProjectsChange) onProjectsChange();
-    } catch {
-      setProjectWorkflow((prev) => ({
-        ...prev,
-        [projectId]: { ...prev[projectId], reviewerModel: prevVal },
-      }));
-    } finally {
-      setReviewerModelSaving((s) => ({ ...s, [projectId]: false }));
-    }
-  };
-
-  const saveProjectRepo = async (projectId) => {
-    setRepoSaving((prev) => ({ ...prev, [projectId]: true }));
-    setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null }));
-    try {
-      await api.updateProject(projectId, { githubRepo: projectRepos[projectId] });
-      setRepoSaveStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
-      setTimeout(() => setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
-      if (onProjectsChange) onProjectsChange();
-    } catch {
-      setRepoSaveStatus((prev) => ({ ...prev, [projectId]: 'error' }));
-      setTimeout(() => setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
-    } finally {
-      setRepoSaving((prev) => ({ ...prev, [projectId]: false }));
-    }
-  };
-
-  const detectRepo = async (project) => {
-    setDetecting((prev) => ({ ...prev, [project.id]: true }));
-    try {
-      const res = await fetch(`${getApiBase()}/github/detect-repo`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ cwd: project.cwd }),
-      });
-      const data = await res.json();
-      if (data.owner && data.repo) {
-        setProjectRepos((prev) => ({ ...prev, [project.id]: `${data.owner}/${data.repo}` }));
-      }
-    } catch {
-      /* ignore */
-    } finally {
-      setDetecting((prev) => ({ ...prev, [project.id]: false }));
-    }
-  };
-
-  const testProjectConnection = async (project) => {
-    setRepoTesting((prev) => ({ ...prev, [project.id]: true }));
-    setRepoTestResult((prev) => ({ ...prev, [project.id]: null }));
-    try {
-      const repo = projectRepos[project.id];
-      if (!repo) {
-        setRepoTestResult((prev) => ({
-          ...prev,
-          [project.id]: { ok: false, error: 'No repo configured' },
-        }));
-        return;
-      }
-      const [owner, repoName] = repo.split('/');
-      const testRes = await fetch(`${getApiBase()}/github/test-connection`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ owner, repo: repoName }),
-      });
-      const result = await testRes.json();
-      setRepoTestResult((prev) => ({
-        ...prev,
-        [project.id]: result.ok
-          ? { ok: true, detail: `${repo} (${result.repoInfo.private ? 'private' : 'public'})` }
-          : { ok: false, error: result.error },
-      }));
-    } catch {
-      setRepoTestResult((prev) => ({
-        ...prev,
-        [project.id]: { ok: false, error: 'Request failed' },
-      }));
-    } finally {
-      setRepoTesting((prev) => ({ ...prev, [project.id]: false }));
-    }
-  };
-
-  const handleDeleteProject = async (projectId) => {
-    if (confirmDeleteProject === projectId) {
-      try {
-        await api.deleteProject(projectId);
-        if (onProjectsChange) onProjectsChange();
-      } catch (err) {
-        console.error('Failed to delete project:', err);
-      }
-      setConfirmDeleteProject(null);
-    } else {
-      setConfirmDeleteProject(projectId);
-      setTimeout(() => setConfirmDeleteProject(null), 3000);
-    }
-  };
-
   if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
   if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
 
@@ -2377,9 +2134,15 @@ export function GitHubSection({
       <div>
         <h3 className="text-lg font-semibold mb-1">GitHub Settings</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Connect a GitHub App and link repositories to your projects.
+          Sign in with your personal GitHub account, then connect a GitHub App for project-level PR
+          review automation. Per-project repo links live on the{' '}
+          <span className="text-gray-300">Projects</span> tab.
         </p>
       </div>
+
+      {/* Personal GitHub OAuth — moved here so the connected account is visible
+          alongside the App + per-project tabs that depend on it. */}
+      <GithubConnectionSection />
 
       {/* GitHub App */}
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
@@ -2549,8 +2312,275 @@ export function GitHubSection({
           </div>
         )}
       </div>
+    </div>
+  );
+}
 
-      {/* Projects & Repos */}
+/**
+ * ProjectsSection — per-project repository, workflow, and lifecycle settings.
+ *
+ * Split out of GitHubSection so the sidebar can navigate to "Projects" as its
+ * own surface, separate from the personal GitHub account / GitHub App config
+ * on the GitHub tab. The deep-link from the per-project Workflows page
+ * (settings:projects) still expands a single project card on mount.
+ */
+function ProjectsSection({
+  projects = [],
+  onProjectsChange,
+  showToast,
+  /** When set (e.g. deep-link from Workflows page), expand this project card on load. */
+  initialExpandedProjectId = null,
+}) {
+  const [projectWorkflow, setProjectWorkflow] = useState({});
+  const [modelConfig, setModelConfig] = useState(null);
+  const [reviewerModelSaving, setReviewerModelSaving] = useState({});
+  const [projectRepos, setProjectRepos] = useState({});
+  const [workflowSaved, setWorkflowSaved] = useState({});
+  const [repoSaving, setRepoSaving] = useState({});
+  const [repoSaveStatus, setRepoSaveStatus] = useState({});
+  const [expandedProject, setExpandedProject] = useState(null);
+  const [detecting, setDetecting] = useState({});
+  /** One-shot deep-link expand — do not re-expand on `projects` identity churn after manual collapse. */
+  const lastDeepLinkExpandIdRef = useRef(null);
+
+  // Per-project repo test
+  const [repoTesting, setRepoTesting] = useState({});
+  const [repoTestResult, setRepoTestResult] = useState({});
+
+  // Per-project author allowlist (comma-separated input, per-project webhook)
+  const [allowlistInput, setAllowlistInput] = useState({});
+  const [allowlistSaving, setAllowlistSaving] = useState({});
+  const [allowlistStatus, setAllowlistStatus] = useState({});
+  const [webhookIds, setWebhookIds] = useState({}); // projectId → first webhook id
+
+  // Project delete confirmation (inline toggle pattern)
+  const [confirmDeleteProject, setConfirmDeleteProject] = useState(null);
+
+  useEffect(() => {
+    if (!initialExpandedProjectId) {
+      lastDeepLinkExpandIdRef.current = null;
+      return;
+    }
+    if (!projects.some((p) => p.id === initialExpandedProjectId)) return;
+    if (lastDeepLinkExpandIdRef.current === initialExpandedProjectId) return;
+    setExpandedProject(initialExpandedProjectId);
+    lastDeepLinkExpandIdRef.current = initialExpandedProjectId;
+  }, [initialExpandedProjectId, projects]);
+
+  // Load each project's first webhook config to pick up its author_allowlist.
+  // There's typically one webhook per project (auto-managed when the repo is
+  // linked), so we grab [0] and use its id for subsequent PUTs.
+  const loadAllowlistFor = async (projectId) => {
+    try {
+      const hooks = await api.getProjectWebhooks(projectId);
+      const first = Array.isArray(hooks) && hooks.length > 0 ? hooks[0] : null;
+      if (!first) return;
+      setWebhookIds((prev) => ({ ...prev, [projectId]: first.id }));
+      const list = parseAllowlistFromBackend(first.author_allowlist);
+      setAllowlistInput((prev) => ({ ...prev, [projectId]: serializeAllowlist(list) }));
+    } catch {
+      /* ignore — project may not have a webhook yet */
+    }
+  };
+
+  const saveAllowlist = async (projectId) => {
+    const webhookId = webhookIds[projectId];
+    if (!webhookId) {
+      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'no-webhook' }));
+      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
+      return;
+    }
+    setAllowlistSaving((prev) => ({ ...prev, [projectId]: true }));
+    setAllowlistStatus((prev) => ({ ...prev, [projectId]: null }));
+    try {
+      const normalized = parseAllowlist(allowlistInput[projectId] || '');
+      await api.updateWebhook(webhookId, { authorAllowlist: normalized });
+      setAllowlistInput((prev) => ({ ...prev, [projectId]: serializeAllowlist(normalized) }));
+      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
+      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
+    } catch {
+      setAllowlistStatus((prev) => ({ ...prev, [projectId]: 'error' }));
+      setTimeout(() => setAllowlistStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
+    } finally {
+      setAllowlistSaving((prev) => ({ ...prev, [projectId]: false }));
+    }
+  };
+
+  useEffect(() => {
+    api
+      .getModelConfig()
+      .then(setModelConfig)
+      .catch(() => {});
+  }, []);
+
+  // Init per-project state when projects arrive
+  useEffect(() => {
+    const wf = {};
+    const repos = {};
+    projects.forEach((p) => {
+      wf[p.id] = {
+        autoMerge: p.githubWorkflow?.autoMerge || false,
+        autoReview: p.githubWorkflow?.autoReview !== false,
+        waitForCI: p.githubWorkflow?.waitForCI || false,
+        waitForResolvedComments: p.githubWorkflow?.waitForResolvedComments || false,
+        reviewerModel:
+          typeof p.githubWorkflow?.reviewerModel === 'string' ? p.githubWorkflow.reviewerModel : '',
+      };
+      repos[p.id] = p.githubRepo || '';
+      // Fire-and-forget: hydrate allowlist from the webhook API.
+      loadAllowlistFor(p.id);
+    });
+    setProjectWorkflow(wf);
+    setProjectRepos(repos);
+  }, [projects]);
+
+  const inputClass =
+    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+  const labelClass = 'block text-xs text-gray-400 mb-1';
+
+  // --- Per-project handlers ---
+
+  const toggleWorkflowSetting = async (projectId, key) => {
+    const current = projectWorkflow[projectId] || {};
+    const newValue = !current[key];
+    setProjectWorkflow((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], [key]: newValue },
+    }));
+    try {
+      await api.updateProject(projectId, { githubWorkflow: { [key]: newValue } });
+      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
+      if (onProjectsChange) onProjectsChange();
+    } catch {
+      setProjectWorkflow((prev) => ({
+        ...prev,
+        [projectId]: { ...prev[projectId], [key]: !newValue },
+      }));
+    }
+  };
+
+  const saveWorkflowReviewerModel = async (projectId, value) => {
+    const prevVal =
+      typeof projectWorkflow[projectId]?.reviewerModel === 'string'
+        ? projectWorkflow[projectId].reviewerModel
+        : '';
+    setProjectWorkflow((prev) => ({
+      ...prev,
+      [projectId]: { ...prev[projectId], reviewerModel: value },
+    }));
+    setReviewerModelSaving((s) => ({ ...s, [projectId]: true }));
+    try {
+      await api.updateProject(projectId, {
+        githubWorkflow: { reviewerModel: value.trim() ? value.trim() : '' },
+      });
+      setWorkflowSaved((prev) => ({ ...prev, [projectId]: true }));
+      setTimeout(() => setWorkflowSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
+      if (onProjectsChange) onProjectsChange();
+    } catch {
+      setProjectWorkflow((prev) => ({
+        ...prev,
+        [projectId]: { ...prev[projectId], reviewerModel: prevVal },
+      }));
+    } finally {
+      setReviewerModelSaving((s) => ({ ...s, [projectId]: false }));
+    }
+  };
+
+  const saveProjectRepo = async (projectId) => {
+    setRepoSaving((prev) => ({ ...prev, [projectId]: true }));
+    setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null }));
+    try {
+      await api.updateProject(projectId, { githubRepo: projectRepos[projectId] });
+      setRepoSaveStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
+      setTimeout(() => setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
+      if (onProjectsChange) onProjectsChange();
+    } catch {
+      setRepoSaveStatus((prev) => ({ ...prev, [projectId]: 'error' }));
+      setTimeout(() => setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
+    } finally {
+      setRepoSaving((prev) => ({ ...prev, [projectId]: false }));
+    }
+  };
+
+  const detectRepo = async (project) => {
+    setDetecting((prev) => ({ ...prev, [project.id]: true }));
+    try {
+      const res = await fetch(`${getApiBase()}/github/detect-repo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ cwd: project.cwd }),
+      });
+      const data = await res.json();
+      if (data.owner && data.repo) {
+        setProjectRepos((prev) => ({ ...prev, [project.id]: `${data.owner}/${data.repo}` }));
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      setDetecting((prev) => ({ ...prev, [project.id]: false }));
+    }
+  };
+
+  const testProjectConnection = async (project) => {
+    setRepoTesting((prev) => ({ ...prev, [project.id]: true }));
+    setRepoTestResult((prev) => ({ ...prev, [project.id]: null }));
+    try {
+      const repo = projectRepos[project.id];
+      if (!repo) {
+        setRepoTestResult((prev) => ({
+          ...prev,
+          [project.id]: { ok: false, error: 'No repo configured' },
+        }));
+        return;
+      }
+      const [owner, repoName] = repo.split('/');
+      const testRes = await fetch(`${getApiBase()}/github/test-connection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ owner, repo: repoName }),
+      });
+      const result = await testRes.json();
+      setRepoTestResult((prev) => ({
+        ...prev,
+        [project.id]: result.ok
+          ? { ok: true, detail: `${repo} (${result.repoInfo.private ? 'private' : 'public'})` }
+          : { ok: false, error: result.error },
+      }));
+    } catch {
+      setRepoTestResult((prev) => ({
+        ...prev,
+        [project.id]: { ok: false, error: 'Request failed' },
+      }));
+    } finally {
+      setRepoTesting((prev) => ({ ...prev, [project.id]: false }));
+    }
+  };
+
+  const handleDeleteProject = async (projectId) => {
+    if (confirmDeleteProject === projectId) {
+      try {
+        await api.deleteProject(projectId);
+        if (onProjectsChange) onProjectsChange();
+      } catch (err) {
+        console.error('Failed to delete project:', err);
+      }
+      setConfirmDeleteProject(null);
+    } else {
+      setConfirmDeleteProject(projectId);
+      setTimeout(() => setConfirmDeleteProject(null), 3000);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold mb-1">Projects</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Link GitHub repositories, configure PR workflow, and manage each project&apos;s lifecycle.
+        </p>
+      </div>
+
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
         <h4 className="text-sm font-medium text-gray-300">Projects & Repos</h4>
         <p className="text-xs text-gray-500">
@@ -6216,6 +6246,7 @@ const SETTINGS_GROUPS = [
       { id: 'general', iconName: 'Settings', text: 'General' },
       { id: 'account', iconName: 'UserCircle', text: 'Account' },
       { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
+      { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
     ],
   },
   {
@@ -6265,6 +6296,7 @@ const SETTINGS_ICONS = {
   AlertTriangle,
   HardDrive,
   FileText,
+  FolderGit2,
 };
 
 function SettingsNavItem({ tab, active, onSelect }) {
@@ -6411,8 +6443,9 @@ export default function SettingsPage({
                   <CodexAuthSection />
                 </div>
               )}
-              {tab === 'github' && (
-                <GitHubSection
+              {tab === 'github' && <GitHubSection onProjectsChange={onAgentsChange} />}
+              {tab === 'projects' && (
+                <ProjectsSection
                   projects={projects}
                   onProjectsChange={onAgentsChange}
                   showToast={showToast}

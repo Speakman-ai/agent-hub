@@ -205,12 +205,12 @@ export default function ProjectWorkflowsPage({
   };
 
   const openSettingsEdit = () => {
-    onNavigate('settings:github', { expandProjectId: projectId });
+    onNavigate('settings:projects', { expandProjectId: projectId });
     if (showToast) {
       const now = Date.now();
       if (now - lastEditToastAtRef.current > 10_000) {
         lastEditToastAtRef.current = now;
-        showToast('Opening Settings → GitHub with this project expanded.', 'info', 4000);
+        showToast('Opening Settings → Projects with this project expanded.', 'info', 4000);
       }
     }
   };

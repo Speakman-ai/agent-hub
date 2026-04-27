@@ -77,7 +77,7 @@ describe('ProjectWorkflowsPage', () => {
     });
   });
 
-  it('GitHub opens Settings with expandProjectId', async () => {
+  it('GitHub opens Settings → Projects with expandProjectId', async () => {
     api.getProjectWorkflows.mockResolvedValue([{ id: 'wf-1', name: 'W', steps: [] }]);
     api.getWorkflowRuns.mockResolvedValue([]);
     const onNavigate = vi.fn();
@@ -94,7 +94,10 @@ describe('ProjectWorkflowsPage', () => {
 
     await waitFor(() => expect(screen.getByText('W')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /^GitHub$/i }));
-    expect(onNavigate).toHaveBeenCalledWith('settings:github', { expandProjectId: 'p1' });
+    // The Settings → Projects tab now hosts per-project repo + workflow config
+    // (split out of the GitHub tab so the connected GitHub account isn't
+    // crowded by the project list).
+    expect(onNavigate).toHaveBeenCalledWith('settings:projects', { expandProjectId: 'p1' });
   });
 
   it('Builder navigates to workflow editor view', async () => {

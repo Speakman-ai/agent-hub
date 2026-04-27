@@ -23,6 +23,9 @@ vi.mock('../utils/api.js', () => ({
     updateConfig: vi.fn(),
     get: vi.fn(),
     getModelConfig: vi.fn(),
+    getProjectWebhooks: vi.fn().mockResolvedValue([]),
+    updateProject: vi.fn().mockResolvedValue({ ok: true }),
+    deleteProject: vi.fn().mockResolvedValue({ ok: true }),
   },
 }));
 
@@ -301,5 +304,50 @@ describe('SettingsPage — sidebar navigation', () => {
   it('exposes a mobile menu trigger labelled "Open settings navigation"', () => {
     const { getByLabelText } = render(<SettingsPage projects={[]} agents={[]} />);
     expect(getByLabelText('Open settings navigation')).toBeTruthy();
+  });
+
+  // Bug "GitHub account on this page; Projects in its own tab" (Electron 1.10.1):
+  // Projects must have a dedicated sidebar entry rather than being crammed
+  // under the GitHub tab. The GitHub tab now hosts the personal GitHub OAuth
+  // connection + GitHub App config — and nothing per-project.
+  it('exposes a "Projects" entry in the Workspace group', () => {
+    const { getAllByText } = render(<SettingsPage projects={[]} agents={[]} />);
+    expect(getAllByText('Projects').length).toBeGreaterThan(0);
+  });
+
+  it('renders the project list on the Projects tab (not the GitHub tab)', async () => {
+    const projects = [
+      { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },
+    ];
+    const { getAllByText, queryByText } = render(
+      <SettingsPage projects={projects} agents={[]} initialTab="projects" />,
+    );
+    // The "Projects & Repos" subheading is the unique marker for the project
+    // list block we moved off the GitHub tab.
+    await waitFor(() => {
+      expect(queryByText('Projects & Repos')).toBeTruthy();
+    });
+    // The project name renders as a row under it.
+    expect(getAllByText('Acme').length).toBeGreaterThan(0);
+  });
+
+  it('does NOT render the project list on the GitHub tab anymore', async () => {
+    const projects = [
+      { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },
+    ];
+    const { queryByText, findByText } = render(
+      <SettingsPage projects={projects} agents={[]} initialTab="github" />,
+    );
+    // GitHub Settings heading still present…
+    await findByText('GitHub Settings');
+    // …but the per-project block is gone from this tab.
+    expect(queryByText('Projects & Repos')).toBeFalsy();
+  });
+
+  it('renders the GitHub Account ("Sign in with GitHub") block on the GitHub tab', async () => {
+    const { findByText } = render(<SettingsPage projects={[]} agents={[]} initialTab="github" />);
+    // GithubConnectionSection's heading — proves the personal GitHub identity
+    // is now visible on the same page that hosts the GitHub App config.
+    await findByText('GitHub Account');
   });
 });
