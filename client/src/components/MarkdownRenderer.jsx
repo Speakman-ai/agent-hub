@@ -3,6 +3,28 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { resolveServerMediaUrl } from '../utils/resolveServerMediaUrl.js';
+import MermaidDiagram from './MermaidDiagram.jsx';
+
+/** Extract `mermaid` from `language-mermaid` etc. Returns '' for no/empty class. */
+export function fencedCodeLanguage(className) {
+  const cls = typeof className === 'string' ? className : '';
+  const match = /\blanguage-([\w-]+)/.exec(cls);
+  return match ? match[1].toLowerCase() : '';
+}
+
+/**
+ * Inspect the hast node react-markdown passes to a `<pre>` component and
+ * decide whether the wrapped code is a mermaid fence. We need this because
+ * react-markdown structures fenced code as `<pre><code class="language-X">…</code></pre>`,
+ * and we want mermaid diagrams rendered *outside* the monospace `<pre>`.
+ */
+export function preChildIsMermaidFence(node) {
+  const codeNode = node?.children?.find((c) => c?.tagName === 'code');
+  if (!codeNode) return false;
+  const cls = codeNode?.properties?.className;
+  const classStr = Array.isArray(cls) ? cls.join(' ') : typeof cls === 'string' ? cls : '';
+  return fencedCodeLanguage(classStr) === 'mermaid';
+}
 
 export function extractText(node) {
   if (typeof node === 'string') return node;
@@ -59,6 +81,10 @@ export function CodeBlock({ children, className }) {
 export const markdownComponents = {
   code({ node: _node, inline, className, children, ...props }) {
     if (markdownCodeIsBlock({ inline, className, children })) {
+      if (fencedCodeLanguage(className) === 'mermaid') {
+        const source = extractText(children).replace(/\n$/, '');
+        return <MermaidDiagram source={source} />;
+      }
       return <CodeBlock className={className}>{children}</CodeBlock>;
     }
     return (
@@ -66,6 +92,13 @@ export const markdownComponents = {
         {children}
       </code>
     );
+  },
+  pre({ node, children, ...props }) {
+    // For mermaid fences, the child `code` component already returns a
+    // self-contained <MermaidDiagram>; wrapping it in <pre> would force
+    // monospace styling and a horizontal scrollbar around the SVG.
+    if (preChildIsMermaidFence(node)) return <>{children}</>;
+    return <pre {...props}>{children}</pre>;
   },
   a({ href, children, ...props }) {
     return (
@@ -89,6 +122,10 @@ export const markdownComponents = {
 export const markdownComponentsCompact = {
   code({ inline, className, children, ...props }) {
     if (markdownCodeIsBlock({ inline, className, children })) {
+      if (fencedCodeLanguage(className) === 'mermaid') {
+        const source = extractText(children).replace(/\n$/, '');
+        return <MermaidDiagram source={source} />;
+      }
       return (
         <pre className="bg-gray-950 rounded p-2 overflow-x-auto text-xs my-2">
           <code className={className}>{children}</code>
@@ -100,6 +137,10 @@ export const markdownComponentsCompact = {
         {children}
       </code>
     );
+  },
+  pre({ node, children, ...props }) {
+    if (preChildIsMermaidFence(node)) return <>{children}</>;
+    return <pre {...props}>{children}</pre>;
   },
   a({ href, children, ...props }) {
     return (

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import ReactMarkdown from 'react-markdown';
 import { BookOpen, Search, Plus, Trash2, Pencil, Save, X } from 'lucide-react';
 import { getAuthHeaders } from '../utils/connection.js';
+import { MarkdownContent } from './MarkdownRenderer.jsx';
 
 const CATEGORIES = [
   { value: 'all', label: 'All' },
@@ -453,7 +453,7 @@ export default function WikiBrowser({ projectId, apiBase }) {
             </div>
             <div className="p-6 flex-1">
               <div className="prose prose-invert prose-sm max-w-none text-gray-300">
-                <ReactMarkdown>{selectedPage.content || ''}</ReactMarkdown>
+                <MarkdownContent content={selectedPage.content || ''} />
               </div>
             </div>
           </div>
