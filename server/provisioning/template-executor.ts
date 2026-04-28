@@ -64,26 +64,37 @@ export type SpawnCommand = (
 ) => Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>;
 
 /**
- * Strip the env vars that make `npm install` (and any other dev-tool
- * setup command) skip devDependencies. The Agent Hub server is run
- * under PM2 with `NODE_ENV=production`, which would otherwise be
- * inherited by every spawned `npm install` and cause `tsx`, `eslint`,
- * `vitest`, etc. to be silently omitted — making `npm test` / `npm
- * run lint` exit 127 with `<tool>: not found`.
+ * Build the env passed to template setup/test/lint commands.
  *
- * Provisioning setup commands by definition need the full dependency
- * graph (build/test tooling included), so we scrub these vars at the
- * spawn boundary rather than asking every template manifest to
- * remember `--include=dev`.
+ * We deliberately do NOT propagate `NODE_ENV=production` or any of the
+ * `npm_config_*` knobs that tell npm to skip devDependencies. PM2 sets
+ * `NODE_ENV=production` for the agent-hub server (see
+ * `ecosystem.config.cjs`), and npm honours that by skipping
+ * `devDependencies` during `npm install` — which is exactly the wrong
+ * behaviour for a starter template that ships its toolchain (tsx,
+ * typescript, eslint, etc.) as devDependencies. The result was that a
+ * freshly scaffolded `typescript-node-tsx` workspace had `tsx` listed
+ * in package.json but absent from `node_modules/.bin`, and `npm test`
+ * exited 127 with `sh: 1: tsx: not found`.
+ *
+ * Defense-in-depth: we both force `NODE_ENV=development` AND strip the
+ * `NPM_CONFIG_PRODUCTION` / `NPM_CONFIG_OMIT` overrides (and their
+ * snake_case aliases) — npm 7+ honours `--omit=dev` via
+ * `npm_config_omit` even when NODE_ENV is unset, so just clearing
+ * NODE_ENV isn't sufficient on its own. Other env vars — PATH, HOME,
+ * NPM_TOKEN, proxy settings — pass through unchanged.
+ *
+ * Exported for tests; production callers should use
+ * `defaultSpawnCommand` directly.
  */
-function buildChildEnv(): NodeJS.ProcessEnv {
-  const {
-    NODE_ENV: _nodeEnv,
-    npm_config_production: _npmProduction,
-    npm_config_omit: _npmOmit,
-    ...rest
-  } = process.env;
-  return rest;
+export function buildTemplateSpawnEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...parentEnv };
+  delete env.NPM_CONFIG_PRODUCTION;
+  delete env.npm_config_production;
+  delete env.NPM_CONFIG_OMIT;
+  delete env.npm_config_omit;
+  env.NODE_ENV = 'development';
+  return env;
 }
 
 /** Default spawner — pipes stdout/stderr line-by-line into `log`. */
@@ -93,7 +104,7 @@ export const defaultSpawnCommand: SpawnCommand = (command, { cwd, log, timeoutMs
     const child = spawn(command, {
       cwd,
       shell: true,
-      env: buildChildEnv(),
+      env: buildTemplateSpawnEnv(process.env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

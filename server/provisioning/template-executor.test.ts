@@ -1,9 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 import {
+  buildTemplateSpawnEnv,
   createTemplateExecutor,
   defaultCopyTree,
   defaultSpawnCommand,
@@ -244,12 +250,59 @@ describe('template executor — wire-tests / wire-lint phases', () => {
   });
 });
 
+describe('buildTemplateSpawnEnv', () => {
+  it('forces NODE_ENV=development so npm installs devDependencies', () => {
+    // PM2 puts agent-hub in production. The starter ships tsx/typescript as
+    // devDependencies, so inheriting NODE_ENV=production made `npm install`
+    // skip them and `npm test` failed with "sh: 1: tsx: not found" (exit 127).
+    const env = buildTemplateSpawnEnv({ NODE_ENV: 'production', PATH: '/usr/bin' });
+    expect(env.NODE_ENV).toBe('development');
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
+  it('strips NPM_CONFIG_PRODUCTION (both casings) so npm honours its defaults', () => {
+    const env = buildTemplateSpawnEnv({
+      NPM_CONFIG_PRODUCTION: 'true',
+      npm_config_production: 'true',
+      HOME: '/home/agenthub',
+    });
+    expect(env.NPM_CONFIG_PRODUCTION).toBeUndefined();
+    expect(env.npm_config_production).toBeUndefined();
+    // Unrelated vars pass through unchanged.
+    expect(env.HOME).toBe('/home/agenthub');
+  });
+
+  it('strips NPM_CONFIG_OMIT (both casings) — npm 7+ honours --omit=dev independently', () => {
+    // Defense-in-depth alongside NPM_CONFIG_PRODUCTION: npm 7+ deprecated
+    // `--production` in favour of `--omit=dev`, exposed via `npm_config_omit`.
+    // Even if PM2 isn't currently setting this, a future config change could,
+    // and we want every `npm install` during provisioning to install devDeps.
+    const env = buildTemplateSpawnEnv({
+      NPM_CONFIG_OMIT: 'dev',
+      npm_config_omit: 'dev',
+      PATH: '/usr/bin',
+    });
+    expect(env.NPM_CONFIG_OMIT).toBeUndefined();
+    expect(env.npm_config_omit).toBeUndefined();
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
+  it('does not mutate the parent env object', () => {
+    const parent = { NODE_ENV: 'production', NPM_CONFIG_PRODUCTION: 'true' };
+    buildTemplateSpawnEnv(parent);
+    expect(parent.NODE_ENV).toBe('production');
+    expect(parent.NPM_CONFIG_PRODUCTION).toBe('true');
+  });
+});
+
 // Regression: PM2 runs the server with NODE_ENV=production, which by default
 // makes `npm install` skip devDependencies. Setup commands during provisioning
 // (`npm install`, `npm test`, `npm run lint`) need the full dep graph, so the
 // default spawner must strip NODE_ENV (and the matching npm_config_*) before
 // invoking the child shell. Without this, `tsx`/`vitest`/`eslint` etc. silently
-// fail with `<tool>: not found`.
+// fail with `<tool>: not found`. This is the integration counterpart to the
+// `buildTemplateSpawnEnv` unit tests above — it verifies the env hygiene
+// actually reaches the spawned shell, not just the helper return value.
 describe('template executor — defaultSpawnCommand env hygiene', () => {
   let workspace: string;
 
@@ -264,7 +317,7 @@ describe('template executor — defaultSpawnCommand env hygiene', () => {
     }
   });
 
-  it('strips NODE_ENV / npm_config_production from the child env', async () => {
+  it('child shell sees NODE_ENV=development and no npm_config_production / npm_config_omit', async () => {
     const original = {
       NODE_ENV: process.env.NODE_ENV,
       npm_config_production: process.env.npm_config_production,
@@ -291,7 +344,10 @@ describe('template executor — defaultSpawnCommand env hygiene', () => {
       // The `$ <cmd>` echo line is index 0; the node output is the next line.
       const stdoutLine = lines.find((l) => l.includes('|') && !l.startsWith('$ '));
       expect(stdoutLine, `lines were: ${JSON.stringify(lines)}`).toBeDefined();
-      expect(stdoutLine).toBe('||');
+      // PR-side forces NODE_ENV=development; main-side just deleted it.
+      // Forcing development is strictly stronger — npm install treats both
+      // identically, but the running scripts also see the explicit signal.
+      expect(stdoutLine).toBe('development||');
     } finally {
       // Restore — vitest shares process state across tests in the same worker.
       for (const [k, v] of Object.entries(original)) {
@@ -301,6 +357,103 @@ describe('template executor — defaultSpawnCommand env hygiene', () => {
     }
   });
 });
+
+describe('starter templates — binary-on-PATH contract', () => {
+  // Regression for "Provisioning fails on Wire tests: tsx not found".
+  // Every npm-based starter MUST declare each binary referenced by its
+  // `scripts` block as a (dev)Dependency, so that `npm install` produces
+  // a working `node_modules/.bin/<bin>` even when NODE_ENV=production
+  // would otherwise prune devDependencies.
+  it('every npm-based starter declares the binaries its scripts reference', () => {
+    const templatesDir = path.join(__dirname, 'templates');
+    const ids = readdirSync(templatesDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+
+    const npmStarters: Array<{ id: string; pkg: PackageJsonShape }> = [];
+    for (const id of ids) {
+      const pkgPath = path.join(templatesDir, id, 'files', 'package.json');
+      if (!existsSync(pkgPath)) continue;
+      npmStarters.push({
+        id,
+        pkg: JSON.parse(readFileSync(pkgPath, 'utf8')) as PackageJsonShape,
+      });
+    }
+
+    // We expect at least one npm-based starter — guard against accidentally
+    // deleting them all and silently passing the test.
+    expect(npmStarters.length).toBeGreaterThan(0);
+
+    for (const { id, pkg } of npmStarters) {
+      const declared = new Set([
+        ...Object.keys(pkg.dependencies ?? {}),
+        ...Object.keys(pkg.devDependencies ?? {}),
+      ]);
+      // Node built-ins / npm shipped commands that don't need a dependency entry.
+      const NODE_BUILTINS = new Set(['npm', 'npx', 'node']);
+
+      for (const [scriptName, scriptCmd] of Object.entries(pkg.scripts ?? {})) {
+        for (const bin of extractBinaries(scriptCmd)) {
+          if (NODE_BUILTINS.has(bin)) continue;
+          expect(
+            declared.has(bin),
+            `starter "${id}" script "${scriptName}" runs "${bin}" but neither dependencies nor devDependencies declare a "${bin}" package`,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+});
+
+interface PackageJsonShape {
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+}
+
+/**
+ * Extract the leading binary name from each `&&`/`;`/`|` segment of a
+ * shell command. Crude on purpose — we want false positives (extra
+ * binaries flagged) rather than false negatives (a missing tsx that
+ * slips through). Skips obvious shell builtins and `npm run <name>`
+ * which dispatches to another script entry.
+ */
+function extractBinaries(command: string): string[] {
+  const SHELL_BUILTINS = new Set([
+    'cd',
+    'echo',
+    'export',
+    'set',
+    'true',
+    'false',
+    'if',
+    'then',
+    'else',
+    'fi',
+    'rm',
+    'mkdir',
+    'cp',
+    'mv',
+    'cat',
+    'test',
+    '[',
+  ]);
+  const segments = command.split(/&&|\|\||;|\|/);
+  const bins: string[] = [];
+  for (const segRaw of segments) {
+    const seg = segRaw.trim();
+    if (!seg) continue;
+    const tokens = seg.split(/\s+/);
+    let head = tokens[0];
+    // `npm run foo` chains within the same package — not a missing binary.
+    if (head === 'npm' && tokens[1] === 'run') continue;
+    // `npx foo` is npm-shipped; skip the `npx` itself.
+    if (head === 'npx') head = tokens[1] ?? '';
+    if (!head || SHELL_BUILTINS.has(head)) continue;
+    bins.push(head);
+  }
+  return bins;
+}
 
 // Real setup+test integration test. Heavy: it runs `npm install` in a tmpdir.
 // Kept behind a skipIf so machines without npm (rare in CI but possible in
