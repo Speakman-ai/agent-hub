@@ -4,6 +4,7 @@
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { defaultModelForEngine } from './config.js';
+import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { AppConfig, DesignMessageRow } from './types.js';
 
 export const DESIGN_CHAT_ENGINES = [
@@ -195,6 +196,8 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     'stream-json',
     '--include-partial-messages',
     '--verbose',
+    // see claude-cli-args.ts
+    ...disableNativeSkillToolArgs(),
   ];
   if (isNewEngineSession) {
     args.push('--session-id', designId);

@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getMemoryContext, appendDailyNote } from './memory.js';
 import config, { buildSpawnEnv } from './config.js';
+import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { EnrichedAgent, Stmts, SlackMessageRow } from './types.js';
 
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
@@ -185,6 +186,8 @@ function runAgent(
       if (systemPrompt) {
         args.push('--system-prompt', systemPrompt);
       }
+      // see claude-cli-args.ts
+      args.push(...disableNativeSkillToolArgs());
       args.push(userMessage);
       bin = CLAUDE_BIN;
     }

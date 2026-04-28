@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { buildSpawnEnv } from './config.js';
+import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type {
   Stmts,
   EnrichedAgent,
@@ -345,6 +346,8 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
           model,
           '--system-prompt',
           roomSystemPrompt,
+          // see claude-cli-args.ts
+          ...disableNativeSkillToolArgs(),
           userPrompt,
         ];
 

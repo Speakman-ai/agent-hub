@@ -4,6 +4,7 @@ import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
 import config, { buildSpawnEnv, fileConfig } from './config.js';
+import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
@@ -199,6 +200,8 @@ export function runClaude(
     if (modelOverride) {
       args.push('--model', modelOverride);
     }
+    // see claude-cli-args.ts
+    args.push(...disableNativeSkillToolArgs());
     args.push(prompt);
 
     let output = '';

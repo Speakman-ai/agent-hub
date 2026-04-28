@@ -120,6 +120,24 @@ When `react_loop_enabled=0` the host falls back to the legacy
 auto-continues. Per-session web-search and wiki-hybrid-RAG budgets are
 enforced independently of this flag.
 
+### Skill loading: `<agenthub:skill>` only — native `Skill` tool is disabled
+
+Every Claude Code spawn that runs an Agent-Hub-enriched system prompt is
+launched with `--disallowed-tools Skill` (helper:
+`server/claude-cli-args.ts → disableNativeSkillToolArgs()`). This covers
+the chat session, `<delegate>` sub-agents and synthesis, conference rooms,
+`runClaude` (heartbeats / crons / workflow steps), Slack one-shots, the
+memory reconciliation pass, and Design Studio.
+
+The reason is that Agent Hub's per-agent skill registry includes skills
+that are **not** in Claude Code's bundled list (`aws-infra`, `design`,
+`designs`, etc.). Calling the native `Skill` tool with one of those names
+returned `<tool_use_error>Unknown skill: …</tool_use_error>`, surfaced as
+"Couldnt find tool skill" in the UI, and burned a turn. Routing skill
+loads exclusively through `<agenthub:skill>` (or the `skill` action inside
+`<agenthub:react>`) is the documented gateway and the only one that
+works. Bash, WebFetch, and the rest of the tool surface are untouched.
+
 ## Delegation to sub-agents
 
 Lead agents coordinate with sub-agents by emitting **fenced JSON blocks**

@@ -34,6 +34,7 @@ import {
 import { routeSkillFromMessage } from './skill-router.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
 import { allAgents } from './project-model.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
@@ -1594,6 +1595,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         'stream-json',
         '--include-partial-messages',
         '--verbose',
+        // Agent Hub provides skills via the `<agenthub:skill>` block protocol;
+        // disable Claude Code's native `Skill` tool so agents don't fall back
+        // to it for skills outside the bundled list (see claude-cli-args.ts).
+        ...disableNativeSkillToolArgs(),
       ];
       if (isNewEngineSession) {
         args.push('--session-id', sessionId);

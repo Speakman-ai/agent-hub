@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
+import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 
 export function localDateStr(d = new Date()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -186,6 +187,8 @@ function runClaudeForMemory(
   return new Promise((resolve, reject) => {
     const args = ['--print', '--permission-mode', 'bypassPermissions'];
     if (systemPrompt) args.push('--system-prompt', systemPrompt);
+    // see claude-cli-args.ts
+    args.push(...disableNativeSkillToolArgs());
     args.push(prompt);
 
     let output = '';

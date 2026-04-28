@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { buildSpawnEnv, defaultModelForEngine } from './config.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { createStreamParser } from './stream-parser.js';
 import type { StreamEvent } from './types.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
@@ -218,6 +219,8 @@ function buildDelegateCliSpec(
           model,
           '--system-prompt',
           subPrompt,
+          // see claude-cli-args.ts
+          ...disableNativeSkillToolArgs(),
           taskText,
         ],
         engine: 'claude-code',
@@ -894,6 +897,8 @@ export async function synthesizeResults(
           sessionModel,
           '--resume',
           engineSessionId || sessionId,
+          // see claude-cli-args.ts
+          ...disableNativeSkillToolArgs(),
           synthesisPrompt,
         ];
       }

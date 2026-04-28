@@ -105,8 +105,9 @@ parallel sub-agents, `<handoff>` transfers ownership, and
 `<agenthub:close-card>` auto-closes a duplicate / already-done card linked to
 your session (Done move + audit comment; rely on **CI and pre-commit hooks** for
 verification — see **references/sessions.md**).
-All three are fenced JSON blocks emitted at the end of a turn —
-see the reference for exact shape and lifecycle states.
+All three are fenced JSON blocks emitted at the end of a turn — see the
+reference for shape and lifecycle. The native Claude Code `Skill` tool is
+disabled host-side (`--disallowed-tools Skill`); load skills via `<agenthub:skill>`.
 
 Projects may set **`mode`** to `dev` (default) or **`workflow`**. In workflow mode, new sessions — including **`<handoff>` targets** — default to **no per-session git worktree**, automated GitHub reviewer dispatch is off, and session-owned PR flows are gated. See **references/sessions.md**.
 
