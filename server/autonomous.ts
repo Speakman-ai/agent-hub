@@ -8,6 +8,7 @@ import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks
 import { createEscalation } from './routes/escalations.js';
 import { defaultModelForEngine } from './config.js';
 import { loadBoardBlockers, hasUnresolvedBlockers } from './kanban-blockers.js';
+import { pickTriageAgent, buildTriagePromptContext } from './triage.js';
 import type {
   Stmts,
   Project,
@@ -51,6 +52,18 @@ interface WebhookHandlerDeps {
 // ─── Module-level state ────────────────────────────────────────────────────
 const autonomousCrons = new Map<string, cron.ScheduledTask>();
 const autonomousProjects = new Set<string>();
+/**
+ * Cap the number of concurrent triage sessions per project. Triage is cheap
+ * (one back-and-forth that emits a JSON block) but we still don't want a
+ * freshly-enabled epic with 50 cards to spawn 50 intake sessions at once.
+ *
+ * Enforcement lives in `runTriageBatchForProject`: each tick counts the
+ * currently-locked triage cards (via `getInFlightTriageCards`, intersected
+ * with the live process set) and only spawns up to
+ * `TRIAGE_MAX_CONCURRENT - inFlight` new sessions. The cap therefore
+ * applies project-wide across ticks, not just within a single tick.
+ */
+const TRIAGE_MAX_CONCURRENT = 3;
 /**
  * Tracks the highest GitHub review id we've already dispatched feedback for,
  * keyed by kanban card id. Used by `pollForMissedReviews` so we don't re-dispatch
@@ -129,6 +142,51 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   if (eligible.length === 0) {
     console.log(
       `[Autonomous] No eligible cards for epic "${epic.name}" (all assigned, done, blocked, or at max iterations)`,
+    );
+    // Even when nothing is dispatchable, we still want to opportunistically
+    // pull untriaged cards through triage so the next pass has triaged work
+    // ready to go.
+    runTriageBatchForProject(projectId, epic).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Triage] Batch error for "${epic.name}":`, msg);
+    });
+    return;
+  }
+
+  // Triage gate: only cards with `triaged_at != null` are dispatchable. The
+  // remainder are routed to the project's intake/lead for triage. We only
+  // enforce the gate when the project actually has a triage-capable agent —
+  // otherwise older projects (no intake, no lead) would silently halt.
+  const triageAgent = pickTriageAgent(project);
+  let dispatchable: KanbanCardRow[];
+  let untriaged: KanbanCardRow[] = [];
+  if (triageAgent) {
+    dispatchable = [];
+    for (const c of eligible) {
+      if (c.triaged_at && Number(c.triaged_at) > 0) {
+        dispatchable.push(c);
+      } else {
+        untriaged.push(c);
+      }
+    }
+    if (untriaged.length > 0) {
+      console.log(
+        `[Triage] ${untriaged.length} untriaged card(s) for epic "${epic.name}" — routing to ${triageAgent.name} (\`${triageAgent.id}\`)`,
+      );
+      runTriageBatchForProject(projectId, epic).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[Triage] Batch error for "${epic.name}":`, msg);
+      });
+    }
+  } else {
+    // No intake or lead agent — skip gating entirely so existing flows keep
+    // working. Operators add an intake agent to opt into triage routing.
+    dispatchable = eligible;
+  }
+
+  if (dispatchable.length === 0) {
+    console.log(
+      `[Autonomous] No dispatchable cards for epic "${epic.name}" — ${untriaged.length} awaiting triage`,
     );
     return;
   }
@@ -214,22 +272,37 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   const agentSlotsCopy = agentsWithSlots.map((a) => ({ ...a }));
   const webhookHandlerDeps = d.getWebhookHandlerDeps();
 
-  while (assigned < slotsAvailable && assigned < eligible.length) {
-    let found = false;
-    for (let tries = 0; tries < agentSlotsCopy.length; tries++) {
-      const idx = (agentIdx + tries) % agentSlotsCopy.length;
-      if (agentSlotsCopy[idx].slots > 0) {
-        agentIdx = idx;
-        found = true;
-        break;
+  while (assigned < slotsAvailable && assigned < dispatchable.length) {
+    const card = dispatchable[assigned];
+
+    // Assignee preference — when triage tagged the card with a
+    // `suggested_assignee` and that agent has an open slot, route to that
+    // agent. Falls back to round-robin when the suggested agent is missing,
+    // out of slots, or not in the assignable pool.
+    let pickedIdx = -1;
+    if (card.suggested_assignee) {
+      pickedIdx = agentSlotsCopy.findIndex(
+        (s) => s.agent.id === card.suggested_assignee && s.slots > 0,
+      );
+    }
+    if (pickedIdx < 0) {
+      for (let tries = 0; tries < agentSlotsCopy.length; tries++) {
+        const idx = (agentIdx + tries) % agentSlotsCopy.length;
+        if (agentSlotsCopy[idx].slots > 0) {
+          pickedIdx = idx;
+          break;
+        }
       }
     }
-    if (!found) break;
+    if (pickedIdx < 0) break;
 
-    const card = eligible[assigned];
-    const agent = agentSlotsCopy[agentIdx].agent;
-    agentSlotsCopy[agentIdx].slots--;
-    agentIdx = (agentIdx + 1) % agentSlotsCopy.length;
+    const agent = agentSlotsCopy[pickedIdx].agent;
+    agentSlotsCopy[pickedIdx].slots--;
+    // Round-robin cursor only advances when WE didn't honor an explicit
+    // assignee — that way the next un-routed card still rotates fairly.
+    if (!card.suggested_assignee || agent.id !== card.suggested_assignee) {
+      agentIdx = (pickedIdx + 1) % agentSlotsCopy.length;
+    }
 
     const rollbackCard = (err: unknown): void => {
       try {
@@ -348,6 +421,169 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   }
 }
 
+// ─── Triage Batch ──────────────────────────────────────────────────────────
+//
+// Pulls untriaged eligible cards in this epic and spawns intake sessions
+// (capped at TRIAGE_MAX_CONCURRENT in flight per project). The triage agent
+// emits an <agenthub:triage> block at end of turn; chat.ts post-stream
+// applies the block via applyTriageResult, which stamps `triaged_at` and
+// hands the card back to the dispatcher for the next pass.
+//
+// Best-effort: failures rollback card state but do NOT throw.
+export async function runTriageBatchForProject(
+  projectId: string,
+  epic: KanbanEpicRow,
+): Promise<void> {
+  const d = getDeps();
+  const project = d.findProject(projectId);
+  if (!project) return;
+
+  const triageAgent = pickTriageAgent(project);
+  if (!triageAgent) return; // Project has no intake or lead — triage disabled.
+
+  const untriaged = d.stmts.getUntriagedAutonomousCards.all(
+    epic.id,
+    epic.autonomous_max_iterations,
+  ) as KanbanCardRow[];
+  if (untriaged.length === 0) return;
+
+  // In-flight triage sessions are cards locked to a still-running triage
+  // session: assignee = triage agent name, session_id non-null, triaged_at
+  // null. The dedicated `getInFlightTriageCards` query is required because
+  // `getUntriagedAutonomousCards` filters on `assignee IS NULL` and so
+  // EXCLUDES every card that has already been locked — querying it for
+  // in-flight triage rows would always return zero. We then cross-reference
+  // session_id against activeProcesses to ignore stale locks left behind by
+  // crashed sessions; survivors count toward the project-wide cap.
+  const activeProcesses = d.getActiveProcesses();
+  const lockedRows = d.stmts.getInFlightTriageCards.all(epic.id, triageAgent.name) as Array<{
+    id: string;
+    session_id: string | null;
+  }>;
+  let inFlight = 0;
+  for (const row of lockedRows) {
+    if (row.session_id && activeProcesses.has(row.session_id)) {
+      inFlight++;
+    }
+  }
+  const slotsAvailable = Math.max(0, TRIAGE_MAX_CONCURRENT - inFlight);
+  if (slotsAvailable === 0) {
+    console.log(
+      `[Triage] Cap reached (${inFlight}/${TRIAGE_MAX_CONCURRENT}) for project "${project.name}" — waiting`,
+    );
+    return;
+  }
+
+  // Specialists offered to the intake agent: anyone other than docs/intake/
+  // reviewer roles. The intake agent picks one of these as the assignee.
+  const specialists = (project.agents || []).filter(
+    (a) => a.role !== 'docs' && a.role !== 'intake' && a.role !== 'reviewer',
+  );
+
+  let spawned = 0;
+  for (const card of untriaged) {
+    if (spawned >= slotsAvailable) break;
+
+    // Defense in depth: every row from `getUntriagedAutonomousCards` already
+    // has assignee IS NULL and session_id IS NULL, so this branch should
+    // never fire. We still guard against it in case the query semantics
+    // change in the future or the row is mutated between SELECT and here.
+    if (
+      card.session_id &&
+      activeProcesses.has(card.session_id) &&
+      card.assignee === triageAgent.name
+    ) {
+      continue;
+    }
+
+    try {
+      const sessionId = crypto.randomUUID();
+      const engine = triageAgent.engine || 'claude-code';
+      // Triage runs at the agent's default model — per-card / per-epic
+      // model overrides only apply to the specialist that picks the card up
+      // after triage, not to triage itself.
+      const model = triageAgent.model || defaultModelForEngine(engine);
+      const projRow = d.findProject(projectId);
+      const wt = defaultSessionUseWorktreeFlag(projRow);
+
+      d.stmts.createSession.run(
+        sessionId,
+        triageAgent.id,
+        `Triage: ${card.title}`,
+        engine,
+        model,
+        wt,
+        0,
+        1,
+      );
+      const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (row) d.broadcast({ type: 'session_created', agentId: triageAgent.id, session: row });
+
+      // Lock the card to the triage session: assignee = intake agent name,
+      // session_id = triage session. setCardTriage clears both when triage
+      // applies, so the dispatcher can pick the card up cleanly afterward.
+      d.stmts.updateKanbanCard.run(
+        card.title,
+        card.description,
+        card.priority,
+        triageAgent.name,
+        card.labels,
+        sessionId,
+        card.github_issue_url,
+        card.pr_url,
+        card.epic_id,
+        card.assign_model,
+        card.id,
+      );
+
+      const seedPrompt = buildTriagePromptContext({ card, specialists });
+      d.handleChat(null, {
+        type: 'chat',
+        agentId: triageAgent.id,
+        sessionId,
+        content: seedPrompt,
+        hookSpecificOutput: { sessionTitle: `Triage: ${card.title}` },
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[Triage] handleChat failed for card "${card.title}":`, msg);
+        // Best-effort rollback: clear the lock so the next pass retries.
+        try {
+          d.stmts.updateKanbanCard.run(
+            card.title,
+            card.description,
+            card.priority,
+            null,
+            card.labels,
+            null,
+            card.github_issue_url,
+            card.pr_url,
+            card.epic_id,
+            card.assign_model,
+            card.id,
+          );
+        } catch {
+          /* best-effort */
+        }
+      });
+
+      d.broadcast({
+        type: 'kanban_update',
+        projectId,
+      });
+      spawned++;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Triage] Failed to spawn for card "${card.title}":`, msg);
+    }
+  }
+
+  if (spawned > 0) {
+    console.log(
+      `[Triage] Spawned ${spawned} session(s) for epic "${epic.name}" (cap ${TRIAGE_MAX_CONCURRENT}, in-flight ${inFlight})`,
+    );
+  }
+}
+
 export function tryAutonomousDispatch(): void {
   for (const projectId of autonomousProjects) {
     runAutonomousLoop(projectId).catch((err: unknown) => {
@@ -384,6 +620,16 @@ export function scheduleAutonomousEpic(projectId: string, epic: KanbanEpicRow): 
   console.log(
     `[Autonomous] Activated epic "${epic.name}" for project "${projectId}" (event-driven + 60s safety net)`,
   );
+
+  // One-shot triage pass: when autonomous mode is FIRST enabled (or
+  // re-enabled after being off), run triage across every untriaged eligible
+  // card in this epic before dispatch starts. Dispatch will also run, but
+  // it will skip untriaged cards on this first pass and pick them up on
+  // subsequent ticks once the intake agent has emitted triage blocks.
+  runTriageBatchForProject(projectId, epic).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Triage] Initial batch error for "${epic.name}":`, msg);
+  });
 
   runAutonomousLoop(projectId).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);

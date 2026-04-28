@@ -344,6 +344,15 @@ export interface KanbanCardRow {
   dispatched_by_autonomous: number;
   /** Optional model id chosen at assign time; null/absent means use agent + engine defaults. */
   assign_model?: string | null;
+  /** Epoch-ms timestamp set when an intake/lead agent emits a valid
+   *  <agenthub:triage> block for this card. NULL = not yet triaged, in which
+   *  case autonomous dispatch skips it (see runAutonomousLoop). */
+  triaged_at?: number | null;
+  /** Agent id that produced the triage. */
+  triaged_by?: string | null;
+  /** Specialist agent id chosen by triage. runAutonomousLoop prefers this
+   *  agent when it has an open slot; falls back to round-robin otherwise. */
+  suggested_assignee?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -954,6 +963,10 @@ export interface Stmts {
   getEligibleAutonomousCards: Stmt;
   incrementCardIterations: Stmt;
   resetCardIterations: Stmt;
+  setCardTriage: Stmt;
+  clearCardTriage: Stmt;
+  getUntriagedAutonomousCards: Stmt;
+  getInFlightTriageCards: Stmt;
 
   // Webhook configs
   getWebhookConfigs: Stmt;
