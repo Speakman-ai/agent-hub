@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { spawnSync } from 'child_process';
-import { createTemplateExecutor, defaultCopyTree, type SpawnCommand } from './template-executor.js';
+import {
+  createTemplateExecutor,
+  defaultCopyTree,
+  defaultSpawnCommand,
+  type SpawnCommand,
+} from './template-executor.js';
 import { _resetJobsForTests } from './orchestrator.js';
 import { _resetTemplateCache, getTemplate } from './templates.js';
 
@@ -236,6 +241,64 @@ describe('template executor — wire-tests / wire-lint phases', () => {
 
     expect(seen).toEqual(['git-init']);
     expect(result.message).toBe('from-fallback');
+  });
+});
+
+// Regression: PM2 runs the server with NODE_ENV=production, which by default
+// makes `npm install` skip devDependencies. Setup commands during provisioning
+// (`npm install`, `npm test`, `npm run lint`) need the full dep graph, so the
+// default spawner must strip NODE_ENV (and the matching npm_config_*) before
+// invoking the child shell. Without this, `tsx`/`vitest`/`eslint` etc. silently
+// fail with `<tool>: not found`.
+describe('template executor — defaultSpawnCommand env hygiene', () => {
+  let workspace: string;
+
+  beforeEach(() => {
+    workspace = mkdtempSync(path.join(os.tmpdir(), 'tmpl-env-'));
+  });
+  afterEach(() => {
+    try {
+      rmSync(workspace, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  it('strips NODE_ENV / npm_config_production from the child env', async () => {
+    const original = {
+      NODE_ENV: process.env.NODE_ENV,
+      npm_config_production: process.env.npm_config_production,
+      npm_config_omit: process.env.npm_config_omit,
+    };
+    process.env.NODE_ENV = 'production';
+    process.env.npm_config_production = 'true';
+    process.env.npm_config_omit = 'dev';
+
+    try {
+      const lines: string[] = [];
+      // `node -p` cross-platform; emits `<NODE_ENV>|<npm_config_production>|<npm_config_omit>`
+      const cmd =
+        "node -p \"[process.env.NODE_ENV||''," +
+        "process.env.npm_config_production||''," +
+        "process.env.npm_config_omit||''].join('|')\"";
+      const result = await defaultSpawnCommand(cmd, {
+        cwd: workspace,
+        log: (line) => lines.push(line),
+        timeoutMs: 30_000,
+      });
+
+      expect(result.exitCode).toBe(0);
+      // The `$ <cmd>` echo line is index 0; the node output is the next line.
+      const stdoutLine = lines.find((l) => l.includes('|') && !l.startsWith('$ '));
+      expect(stdoutLine, `lines were: ${JSON.stringify(lines)}`).toBeDefined();
+      expect(stdoutLine).toBe('||');
+    } finally {
+      // Restore — vitest shares process state across tests in the same worker.
+      for (const [k, v] of Object.entries(original)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
   });
 });
 

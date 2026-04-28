@@ -63,6 +63,29 @@ export type SpawnCommand = (
   opts: { cwd: string; log: (line: string) => void; timeoutMs: number },
 ) => Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>;
 
+/**
+ * Strip the env vars that make `npm install` (and any other dev-tool
+ * setup command) skip devDependencies. The Agent Hub server is run
+ * under PM2 with `NODE_ENV=production`, which would otherwise be
+ * inherited by every spawned `npm install` and cause `tsx`, `eslint`,
+ * `vitest`, etc. to be silently omitted — making `npm test` / `npm
+ * run lint` exit 127 with `<tool>: not found`.
+ *
+ * Provisioning setup commands by definition need the full dependency
+ * graph (build/test tooling included), so we scrub these vars at the
+ * spawn boundary rather than asking every template manifest to
+ * remember `--include=dev`.
+ */
+function buildChildEnv(): NodeJS.ProcessEnv {
+  const {
+    NODE_ENV: _nodeEnv,
+    npm_config_production: _npmProduction,
+    npm_config_omit: _npmOmit,
+    ...rest
+  } = process.env;
+  return rest;
+}
+
 /** Default spawner — pipes stdout/stderr line-by-line into `log`. */
 export const defaultSpawnCommand: SpawnCommand = (command, { cwd, log, timeoutMs }) => {
   return new Promise((resolve) => {
@@ -70,7 +93,7 @@ export const defaultSpawnCommand: SpawnCommand = (command, { cwd, log, timeoutMs
     const child = spawn(command, {
       cwd,
       shell: true,
-      env: { ...process.env },
+      env: buildChildEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
