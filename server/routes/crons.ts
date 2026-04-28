@@ -11,6 +11,33 @@ import type {
   ThreadEntryRow,
 } from '../types.js';
 
+/**
+ * Coerce a `model` request value into the DB-friendly form: a non-empty
+ * string from the `claude-code` engine allowlist, or null (use default).
+ * Throws on a bad type or an unknown id so the API returns 400 instead of
+ * silently persisting a model that the CLI will reject at run time.
+ *
+ * Crons currently always run via the `claude-code` engine (see runCronJob
+ * in heartbeat.ts), so we validate against that allowlist only. If/when
+ * crons gain a per-row engine field, validation should pivot to that.
+ *
+ * Exported (module-scoped) so import paths in `routes/config.ts` can
+ * reuse the same allowlist check on cron rows arriving via project /
+ * v1-agents config import. Keeping a single validator avoids drift if
+ * the allowlist grows or shrinks.
+ */
+export function normalizeCronModel(raw: unknown): string | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') {
+    throw new Error('model must be a string');
+  }
+  const allowed = config.engineValidModels['claude-code'] || [];
+  if (!allowed.includes(raw)) {
+    throw new Error(`model must be one of: ${allowed.join(', ')}`);
+  }
+  return raw;
+}
+
 export default function createCronRoutes(deps: RouteDeps): Router {
   const { stmts } = deps;
   const router = Router();
@@ -52,7 +79,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
   }
 
   router.post('/api/crons', (req: Request, res: Response) => {
-    const { name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run } =
+    const { name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model } =
       req.body;
     if (!name || !schedule || !prompt) {
       return res.status(400).json({ error: 'name, schedule, and prompt are required' });
@@ -71,6 +98,12 @@ export default function createCronRoutes(deps: RouteDeps): Router {
         return res.status(400).json({ error: (err as Error).message });
       }
     }
+    let normalizedModel: string | null;
+    try {
+      normalizedModel = normalizeCronModel(model);
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
     const result = stmts.createCron.run(
       name,
       schedule,
@@ -80,6 +113,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       project_id || null,
       normalizedTimeout,
       normalizedNotify,
+      normalizedModel,
     );
     const cronJob = stmts.getCron.get(result.lastInsertRowid) as CronRow;
     rescheduleCron(cronJob);
@@ -90,7 +124,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     const existing = stmts.getCron.get(parseInt(req.params.id as string)) as CronRow | undefined;
     if (!existing) return res.status(404).json({ error: 'Cron not found' });
 
-    const { name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run } =
+    const { name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model } =
       req.body;
     let nextTimeout: number | null = existing.timeout_ms;
     if (Object.prototype.hasOwnProperty.call(req.body, 'timeout_ms')) {
@@ -108,6 +142,14 @@ export default function createCronRoutes(deps: RouteDeps): Router {
         return res.status(400).json({ error: (err as Error).message });
       }
     }
+    let nextModel: string | null = existing.model;
+    if (Object.prototype.hasOwnProperty.call(req.body, 'model')) {
+      try {
+        nextModel = normalizeCronModel(model);
+      } catch (err) {
+        return res.status(400).json({ error: (err as Error).message });
+      }
+    }
     stmts.updateCron.run(
       name || existing.name,
       schedule || existing.schedule,
@@ -117,6 +159,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       project_id !== undefined ? project_id : existing.project_id || null,
       nextTimeout,
       nextNotify,
+      nextModel,
       existing.id,
     );
     const updated = stmts.getCron.get(existing.id) as CronRow;

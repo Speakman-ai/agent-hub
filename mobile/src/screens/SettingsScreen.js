@@ -833,7 +833,7 @@ function minutesToTimeoutMs(minutes) {
   return Math.round(n * 60_000);
 }
 
-function CronFormFields({ form, setForm, projects }) {
+function CronFormFields({ form, setForm, projects, modelOptions = [], defaultModel = '' }) {
   return (
     <>
       <TextInput
@@ -936,6 +936,57 @@ function CronFormFields({ form, setForm, projects }) {
         style={styles.formInput}
         keyboardType="number-pad"
       />
+      {modelOptions.length > 0 && (
+        <>
+          <Text style={styles.fieldLabel}>
+            Model{' '}
+            <Text style={{ color: colors.gray600 }}>
+              — blank uses engine default{defaultModel ? ` (${defaultModel})` : ''}
+            </Text>
+          </Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 6 }}
+          >
+            <TouchableOpacity
+              onPress={() => setForm({ ...form, model: '' })}
+              style={[
+                styles.projectChip,
+                !form.model && styles.projectChipActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.projectChipText,
+                  !form.model && styles.projectChipTextActive,
+                ]}
+              >
+                Default{defaultModel ? ` (${defaultModel})` : ''}
+              </Text>
+            </TouchableOpacity>
+            {modelOptions.map((m) => {
+              const active = form.model === m;
+              return (
+                <TouchableOpacity
+                  key={m}
+                  onPress={() => setForm({ ...form, model: m })}
+                  style={[styles.projectChip, active && styles.projectChipActive]}
+                >
+                  <Text
+                    style={[
+                      styles.projectChipText,
+                      active && styles.projectChipTextActive,
+                    ]}
+                  >
+                    {m}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </>
+      )}
       <TouchableOpacity
         onPress={() => setForm({ ...form, notify_on_run: !form.notify_on_run })}
         style={styles.notifyToggleRow}
@@ -972,6 +1023,7 @@ function CronSection() {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [, setTick] = useState(0);
+  const [modelConfig, setModelConfig] = useState(null);
   const [form, setForm] = useState({
     name: '',
     schedule: '*/30 * * * *',
@@ -984,6 +1036,7 @@ function CronSection() {
     // off — historically every cron pinged every device on every tick,
     // which mobile users complained about. Toggled per-cron from the form.
     notify_on_run: false,
+    model: '',
   });
 
   const refreshLogs = async (cronList) => {
@@ -1013,6 +1066,10 @@ function CronSection() {
     refresh();
     const pollId = setInterval(refresh, 60_000);
     const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
+
+    // Hydrate model dropdown from the server's engineValidModels.
+    api.getModelConfig().then(setModelConfig).catch(() => {});
+
     return () => {
       clearInterval(pollId);
       clearInterval(tickId);
@@ -1089,6 +1146,7 @@ function CronSection() {
         enabled: true,
         timeoutMinutes: '',
         notify_on_run: false,
+        model: '',
       });
     } catch (e) {
       Alert.alert('Create failed', e?.message || 'Could not create cron.');
@@ -1107,6 +1165,7 @@ function CronSection() {
         ? String(Math.round(cronJob.timeout_ms / 60_000))
         : '',
       notify_on_run: !!cronJob.notify_on_run,
+      model: cronJob.model || '',
     });
   };
 
@@ -1132,6 +1191,9 @@ function CronSection() {
     }
   };
 
+  const modelOptions = modelConfig?.engineValidModels?.['claude-code'] || [];
+  const defaultModel = modelConfig?.engineDefaultModels?.['claude-code'] || '';
+
   const renderNextRunBadge = (cronJob) => {
     if (!cronJob.enabled || !cronJob.next_run_at) return null;
     const { label, overdue } = relativeFuture(cronJob.next_run_at);
@@ -1156,7 +1218,7 @@ function CronSection() {
 
       {showForm && (
         <View style={styles.formCard}>
-          <CronFormFields form={form} setForm={setForm} projects={projects} />
+          <CronFormFields form={form} setForm={setForm} projects={projects} modelOptions={modelOptions} defaultModel={defaultModel} />
           <TouchableOpacity style={styles.createButton} onPress={createCron}>
             <Text style={styles.createButtonText}>Create</Text>
           </TouchableOpacity>
@@ -1172,6 +1234,8 @@ function CronSection() {
                   form={editForm}
                   setForm={setEditForm}
                   projects={projects}
+                  modelOptions={modelOptions}
+                  defaultModel={defaultModel}
                 />
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <TouchableOpacity style={styles.primaryBtn} onPress={saveEdit}>
@@ -1204,6 +1268,7 @@ function CronSection() {
                   {cronJob.timeout_ms
                     ? ` · Timeout: ${Math.round(cronJob.timeout_ms / 60_000)}m`
                     : ''}
+                  {cronJob.model ? ` · Model: ${cronJob.model}` : ''}
                   {cronJob.notify_on_run ? ' · 🔔 Notifies on run' : ''}
                   {cronJob.last_run && ` · Last: ${relativeTime(cronJob.last_run)}`}
                 </Text>

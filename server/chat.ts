@@ -1646,6 +1646,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             broadcast({
               type: 'delegation_error',
               sessionId,
+              parentMessageId: assistantMsgId,
               error: 'Delegation timed out (safety limit reached)',
             });
             drainQueue(sessionId);
@@ -2843,7 +2844,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               .catch((err: unknown) => {
                 const message = err instanceof Error ? err.message : String(err);
                 console.error('[Delegation] Failed:', message);
-                broadcast({ type: 'delegation_error', sessionId, error: message });
+                broadcast({
+                  type: 'delegation_error',
+                  sessionId,
+                  parentMessageId: assistantMsgId,
+                  error: message,
+                });
               })
               .finally(() => {
                 clearDelegationSafetyTimer();

@@ -18,6 +18,7 @@ import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { parseCursorStatusJson } from '../cursor-auth-parse.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
+import { normalizeCronModel } from './crons.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -58,6 +59,10 @@ interface CronImportData {
   project_id?: string;
   timeout_ms?: number | null;
   notify_on_run?: boolean | number;
+  // Optional Claude model id. Validated against `engineValidModels['claude-code']`
+  // by `normalizeCronModel`; unknown ids fall back to null (engine default) on
+  // import rather than 500ing the whole batch.
+  model?: string | null;
 }
 
 interface RoomImportData {
@@ -1071,6 +1076,16 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         let imported = 0;
         for (const c of data.crons) {
           if (existingNames.has(c.name)) continue;
+          // Validate `model` against the cron API allowlist so a stale or
+          // hand-crafted export can't smuggle an unknown id into the DB
+          // and crash the CLI at run time. An invalid id falls back to
+          // null (engine default) instead of failing the whole import.
+          let importedModel: string | null = null;
+          try {
+            importedModel = normalizeCronModel(c.model);
+          } catch {
+            importedModel = null;
+          }
           stmts.createCron.run(
             c.name,
             c.schedule,
@@ -1080,6 +1095,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             targetProject.id || null,
             typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
             c.notify_on_run ? 1 : 0,
+            importedModel,
           );
           imported++;
         }
@@ -1442,6 +1458,15 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         let imported = 0;
         for (const c of data.crons) {
           if (existingNames.has(c.name)) continue;
+          // Validate `model` against the cron API allowlist; invalid id
+          // falls back to null (engine default) so a single bad row
+          // doesn't take down the whole v1-agents import.
+          let importedModel: string | null = null;
+          try {
+            importedModel = normalizeCronModel(c.model);
+          } catch {
+            importedModel = null;
+          }
           stmts.createCron.run(
             c.name,
             c.schedule,
@@ -1451,6 +1476,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             c.project_id || null,
             typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
             c.notify_on_run ? 1 : 0,
+            importedModel,
           );
           imported++;
         }

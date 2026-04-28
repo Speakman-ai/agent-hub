@@ -3,7 +3,7 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
-import config, { buildSpawnEnv, fileConfig } from './config.js';
+import config, { buildSpawnEnv, defaultModelForEngine, fileConfig } from './config.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
 import { reconcileMemoryFromWiki } from './memory.js';
@@ -151,11 +151,14 @@ interface RunClaudeOptions {
   detailed?: boolean;
   /**
    * Optional Claude model ID forwarded as `--model <id>`. When unset/empty
-   * the CLI default is used. Validated upstream by the heartbeat route /
-   * heartbeat config; no allowlist check happens here so cron/manual runs
-   * stay agnostic to engine catalog drift.
+   * the CLI default is used. Validated upstream by the heartbeat route,
+   * heartbeat config, and the cron API's `model` column (all validate
+   * against `config.engineValidModels['claude-code']`); no allowlist check
+   * happens here so cron/manual runs stay agnostic to engine catalog drift.
+   * Per-cron model selection flows through here via `runCronJob` after
+   * being resolved against the engine default.
    */
-  model?: string;
+  model?: string | null;
 }
 
 interface DetailedResult {
@@ -460,12 +463,19 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
 
   const thread = getOrCreateCronThread(cronJob);
 
+  // Per-cron model override; null means "use the engine default". Resolved
+  // once here so both the CLI invocation and the session record share the
+  // same value (otherwise the session row would always read the default
+  // even when the actual run picked something else).
+  const cronModel = cronJob.model || defaultModelForEngine('claude-code');
+
   try {
     const resolvedCwd = resolveCronCwd(cronJob);
     const cronCwd = getOrCreateProcessWorktree(resolvedCwd, `cron-${cronJob.id}`);
     const detailed = (await runClaude(cronJob.prompt, cronCwd, undefined, {
       timeoutMs,
       detailed: true,
+      model: cronModel,
     })) as DetailedResult;
     const durationMs = Date.now() - startTime;
     const result = detailed.stdout || detailed.stderr || '(empty response)';
@@ -512,16 +522,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       if (!session) {
         const sessionId = uuidv4();
         const sessionName = `Cron: ${cronJob.name}`;
-        stmts.createSession.run(
-          sessionId,
-          '_cron',
-          sessionName,
-          'claude-code',
-          'claude-opus-4-7',
-          0,
-          0,
-          1,
-        );
+        stmts.createSession.run(sessionId, '_cron', sessionName, 'claude-code', cronModel, 0, 0, 1);
         stmts.updateSessionCronId.run(cronJob.id, sessionId);
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       }

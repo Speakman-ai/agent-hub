@@ -681,6 +681,16 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE crons ADD COLUMN notify_on_run INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Per-cron model selection. Nullable — when unset the cron runs with the
+  // engine default (`defaultModelForEngine('claude-code')`). Stored as a free-
+  // form TEXT column so a future allowlist change doesn't strand existing
+  // rows; the API validates on write against `config.engineValidModels`.
+  try {
+    db.prepare('SELECT model FROM crons LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE crons ADD COLUMN model TEXT');
+  }
+
   try {
     db.prepare('SELECT engine FROM sessions LIMIT 1').get();
   } catch {
@@ -1662,10 +1672,10 @@ function initDb(dataDir: string): void {
     getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
     getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
     createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     updateCron: db.prepare(
-      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ? WHERE id = ?',
+      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ?, model = ? WHERE id = ?',
     ),
     deleteCron: db.prepare('DELETE FROM crons WHERE id = ?'),
     updateCronResult: db.prepare(

@@ -3250,6 +3250,12 @@ function CronSection({ projects = [], onNavigate, showToast }) {
   const [expandedLog, setExpandedLog] = useState(null); // "cronId:logId"
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
+  // Model allowlist for the cron's claude-code engine. Fetched once from
+  // /api/config/models so the dropdown stays in sync with the server's
+  // engineValidModels (config.ts) without us hardcoding the list here. The
+  // dropdown stays hidden until the fetch resolves so we never present an
+  // empty <select>.
+  const [modelConfig, setModelConfig] = useState(null);
   const [form, setForm] = useState({
     name: '',
     schedule: '*/30 * * * *',
@@ -3264,6 +3270,11 @@ function CronSection({ projects = [], onNavigate, showToast }) {
     // which mobile users complained about. Users explicitly enable on the
     // crons they actually want notifications for.
     notify_on_run: false,
+    // Empty string = "use engine default" (resolved server-side via
+    // defaultModelForEngine('claude-code')). The blank option is the first
+    // entry in the model dropdown so existing crons don't auto-pin to a
+    // specific id when an operator opens the form.
+    model: '',
   });
 
   /** Fetch last-3 logs for every cron */
@@ -3295,11 +3306,29 @@ function CronSection({ projects = [], onNavigate, showToast }) {
     const pollId = setInterval(refresh, 60_000);
     const tickId = setInterval(() => setTick((t) => t + 1), 30_000);
 
+    // Fire-and-forget: hydrate the model dropdown from the server's
+    // engineValidModels. Failures fall back to a hidden dropdown rather
+    // than blocking cron CRUD — operators can still create crons that
+    // run with the engine default.
+    api
+      .getModelConfig()
+      .then(setModelConfig)
+      .catch(() => {});
+
     return () => {
       clearInterval(pollId);
       clearInterval(tickId);
     };
   }, []);
+
+  /**
+   * The list of models we render in the dropdown. Driven by the server's
+   * `engineValidModels['claude-code']` so a config update propagates without
+   * a client redeploy. Returns [] when the config hasn't loaded yet (or
+   * comes back empty), in which case the caller hides the dropdown.
+   */
+  const modelOptions = modelConfig?.engineValidModels?.['claude-code'] || [];
+  const defaultModel = modelConfig?.engineDefaultModels?.['claude-code'];
 
   const viewThread = async (cronJob) => {
     if (!onNavigate) return;
@@ -3361,6 +3390,10 @@ function CronSection({ projects = [], onNavigate, showToast }) {
     }
     const payload = { ...form, timeout_ms };
     delete payload.timeoutMinutes;
+    // The API's normalizeModel treats '' as null (= "use engine default").
+    // Passing the empty string explicitly keeps the round-trip stable: the
+    // row stores NULL, the dropdown stays on "Default" when the cron is
+    // re-opened for editing.
     const created = await api.createCron(payload);
     setCrons((prev) => [...prev, created]);
     setShowForm(false);
@@ -3373,6 +3406,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
       enabled: true,
       timeoutMinutes: '',
       notify_on_run: false,
+      model: '',
     });
   };
 
@@ -3386,6 +3420,8 @@ function CronSection({ projects = [], onNavigate, showToast }) {
       project_id: cronJob.project_id || '',
       timeoutMinutes: cronJob.timeout_ms ? String(Math.round(cronJob.timeout_ms / 60_000)) : '',
       notify_on_run: !!cronJob.notify_on_run,
+      // Null in the DB = "use engine default" — render as the empty option.
+      model: cronJob.model || '',
     });
   };
 
@@ -3474,6 +3510,29 @@ function CronSection({ projects = [], onNavigate, showToast }) {
               className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
             />
           </div>
+          {modelOptions.length > 0 && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Model{' '}
+                <span className="text-gray-600">
+                  — blank uses the engine default
+                  {defaultModel ? ` (${defaultModel})` : ''}
+                </span>
+              </label>
+              <select
+                value={form.model}
+                onChange={(e) => setForm({ ...form, model: e.target.value })}
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+              >
+                <option value="">Default{defaultModel ? ` (${defaultModel})` : ''}</option>
+                {modelOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <label className="flex items-start gap-2 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -3563,6 +3622,29 @@ function CronSection({ projects = [], onNavigate, showToast }) {
                     className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                   />
                 </div>
+                {modelOptions.length > 0 && (
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Model{' '}
+                      <span className="text-gray-600">
+                        — blank uses the engine default
+                        {defaultModel ? ` (${defaultModel})` : ''}
+                      </span>
+                    </label>
+                    <select
+                      value={editForm.model ?? ''}
+                      onChange={(e) => setEditForm({ ...editForm, model: e.target.value })}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                    >
+                      <option value="">Default{defaultModel ? ` (${defaultModel})` : ''}</option>
+                      {modelOptions.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <label className="flex items-start gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -3625,6 +3707,7 @@ function CronSection({ projects = [], onNavigate, showToast }) {
                     {cronJob.timeout_ms ? (
                       <> · Timeout: {Math.round(cronJob.timeout_ms / 60_000)}m</>
                     ) : null}
+                    {cronJob.model ? <> · Model: {cronJob.model}</> : null}
                     {cronJob.notify_on_run ? <> · 🔔 Notifies on run</> : null}
                     {cronJob.last_run && <> · Last: {relativeTime(cronJob.last_run)}</>}
                   </p>
