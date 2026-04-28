@@ -68,7 +68,48 @@ export function normalizeNotesMarkdown(source) {
     out[i] = rewritten;
   }
 
-  // Second pass — append two-space hard breaks between adjacent non-blank
+  // Second pass — break out of a list cleanly when the user's next line is
+  // a plain prose line. CommonMark's lazy-continuation rule otherwise pulls
+  // those trailing lines INTO the last list item, producing the merged
+  // "Title Builder" rendering reported in the screenshot bug. We insert a
+  // synthetic blank line so the list ends and a new paragraph starts.
+  //
+  // We mutate `out` in place (splice in '' entries). The third pass that
+  // appends hard-break trailing spaces runs against the post-splice buffer,
+  // so it sees the new structure and treats the now-separated paragraph
+  // lines normally.
+  inFence = false;
+  fenceMarker = '';
+  for (let i = 0; i < out.length - 1; i++) {
+    const line = out[i];
+    const fenceMatch = line.match(/^(\s{0,3})(`{3,}|~{3,})/);
+    if (fenceMatch) {
+      const marker = fenceMatch[2][0];
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = marker;
+      } else if (marker === fenceMarker) {
+        inFence = false;
+        fenceMarker = '';
+      }
+      continue;
+    }
+    if (inFence) continue;
+
+    const next = out[i + 1];
+    if (!isListItem(line)) continue;
+    if (next === undefined) continue;
+    if (/^\s*$/.test(next)) continue; // already blank, list ends naturally
+    if (isListItem(next)) continue; // next item in the same list, fine
+    if (isBlockStart(next)) continue; // heading / blockquote / hr — also breaks
+    // List item → plain prose with no separator. Splice in a blank line.
+    out.splice(i + 1, 0, '');
+    // Skip past the blank we just inserted; the inner for-loop check still
+    // runs against `out.length` so the third pass sees the spliced buffer.
+    i += 1;
+  }
+
+  // Third pass — append two-space hard breaks between adjacent non-blank
   // lines so that the visible newlines the user typed survive into the
   // preview. We do this after the dash rewrite so list items don't get
   // double-spaced (a list item already starts a new block; CommonMark
@@ -106,6 +147,16 @@ export function normalizeNotesMarkdown(source) {
   return out.join('\n');
 }
 
+/** True when `line` opens a CommonMark list item (`-`, `*`, `+`, or `1.`/`1)`). */
+function isListItem(line) {
+  return /^\s*([-*+]|\d+[.)])\s+/.test(line);
+}
+
+/** True when `line` opens a heading / blockquote / horizontal rule. */
+function isBlockStart(line) {
+  return /^\s*(#{1,6}\s|>\s|-{3,}\s*$|_{3,}\s*$|\*{3,}\s*$)/.test(line);
+}
+
 /**
  * Decide whether a hard line break should be inserted at the end of `line`
  * because `next` continues directly underneath it. We skip cases where
@@ -121,13 +172,13 @@ export function shouldHardBreak(line, next) {
   if (/^\s*$/.test(next)) return false;
   // Next line is a CommonMark block-level construct that ends the paragraph
   // on its own — no <br> needed.
-  if (/^\s*(#{1,6}\s|>\s|-{3,}\s*$|_{3,}\s*$|\*{3,}\s*$)/.test(next)) return false;
+  if (isBlockStart(next)) return false;
   // Next line starts a list item — already a new block.
-  if (/^\s*([-*+]|\d+[.)])\s+/.test(next)) return false;
+  if (isListItem(next)) return false;
   // Current line is itself a heading / hr / blockquote — let it stand alone.
-  if (/^\s*(#{1,6}\s|>\s|-{3,}\s*$|_{3,}\s*$|\*{3,}\s*$)/.test(line)) return false;
+  if (isBlockStart(line)) return false;
   // Current line is a list item — CommonMark already handles tight-list
   // line breaks; we don't want to force a <br> inside the item.
-  if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) return false;
+  if (isListItem(line)) return false;
   return true;
 }

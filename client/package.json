@@ -25,6 +25,7 @@
     "remark-gfm": "^4.0.0"
   },
   "devDependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^18.3.0",
