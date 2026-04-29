@@ -31,6 +31,13 @@ import {
   parseOrchestrationPhase,
 } from '../orchestration.js';
 import { defaultSessionUseWorktreeFlag, getProjectMode } from '../project-mode.js';
+import {
+  resolveOwnerUserId,
+  setSessionOwner,
+  inheritOwnerFromSession,
+  userOwnsSession,
+} from '../session-ownership.js';
+import type { AuthenticatedRequest } from '../auth.js';
 
 function safeParse(s: string): Record<string, unknown> {
   try {
@@ -217,7 +224,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   const router = Router();
 
   router.get('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
-    const sessions = stmts.getSessions.all(req.params.agentId) as SessionRow[];
+    const all = stmts.getSessions.all(req.params.agentId) as SessionRow[];
+    // Strict per-user filter: hide sessions whose owner doesn't match the
+    // caller. NULL-owner rows (pre-Phase-4 legacy / mid-migration) fall
+    // through to `userOwnsSession`, which treats them as org-owner-owned.
+    const sessions = all.filter((s) => userOwnsSession(req as AuthenticatedRequest, s.id));
     res.json(sessions);
   });
 
@@ -236,14 +247,32 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (getProjectMode(found?.project) === 'workflow') useWorktree = 0;
     const askMode = req.body.ask_mode ? 1 : 0;
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode, 1);
+    setSessionOwner(id, resolveOwnerUserId(req as AuthenticatedRequest));
     const session = stmts.getSession.get(id) as SessionRow;
     deps.broadcast({ type: 'session_created', agentId: req.params.agentId, session });
     res.json(session);
   });
 
-  router.get('/api/sessions/cron', (_req: Request, res: Response) => {
-    const sessions = stmts.getAllCronSessions.all() as SessionRow[];
+  router.get('/api/sessions/cron', (req: Request, res: Response) => {
+    const all = stmts.getAllCronSessions.all() as SessionRow[];
+    // Cron sessions are owned by the org owner; non-owners see nothing.
+    const sessions = all.filter((s) => userOwnsSession(req as AuthenticatedRequest, s.id));
     res.json(sessions);
+  });
+
+  /**
+   * Strict per-user gate for everything under `/api/sessions/:sessionId`.
+   * Returns 404 (not 403) so non-owners can't probe for the existence
+   * of another user's sessions. Registered here so the static
+   * `/api/sessions/cron` handler above is reached first.
+   */
+  router.use('/api/sessions/:sessionId', (req, res, next) => {
+    const sid = (req.params as { sessionId?: string }).sessionId;
+    if (!sid || sid === 'cron') return next();
+    if (!userOwnsSession(req as AuthenticatedRequest, sid)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    return next();
   });
 
   router.get('/api/sessions/:sessionId', (req: Request, res: Response) => {
@@ -277,6 +306,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const sessionName = `[BG] ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`;
     const wt = getProjectMode(found.project) === 'workflow' ? 0 : 1;
     stmts.createSession.run(sessionId, agentId, sessionName, engine, model, wt, 0, 1);
+    setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
 
     stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
 
@@ -291,9 +321,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.status(201).json({ taskId, sessionId, session });
   });
 
-  router.get('/api/tasks', (_req: Request, res: Response) => {
-    const limit = parseInt(_req.query.limit as string) || 50;
-    const tasks = stmts.getBackgroundTasks.all(limit) as BackgroundTaskRow[];
+  router.get('/api/tasks', (req: Request, res: Response) => {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const tasks = (stmts.getBackgroundTasks.all(limit) as BackgroundTaskRow[]).filter((t) =>
+      userOwnsSession(req as AuthenticatedRequest, t.session_id),
+    );
 
     const enriched = tasks.map((t) => {
       const agent = getEnrichedAgent(t.agent_id);
@@ -310,6 +342,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.get('/api/tasks/:taskId', (req: Request, res: Response) => {
     const task = stmts.getBackgroundTask.get(req.params.taskId) as BackgroundTaskRow | undefined;
     if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!userOwnsSession(req as AuthenticatedRequest, task.session_id)) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
 
     const agent = getEnrichedAgent(task.agent_id);
     const messages = stmts.getMessages.all(task.session_id) as MessageRow[];
@@ -324,6 +359,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.post('/api/tasks/:taskId/stop', (req: Request, res: Response) => {
     const task = stmts.getBackgroundTask.get(req.params.taskId) as BackgroundTaskRow | undefined;
     if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!userOwnsSession(req as AuthenticatedRequest, task.session_id)) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
     if (task.status !== 'running') return res.status(400).json({ error: 'Task is not running' });
 
     const proc = activeProcesses.get(task.session_id);
@@ -435,6 +473,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.get('/api/messages/:messageId/events', (req: Request, res: Response) => {
+    // Resolve the parent session and gate by ownership — events leak the
+    // full tool-use stream of someone else's chat otherwise.
+    const message = stmts.getMessageById.get(req.params.messageId) as MessageRow | undefined;
+    if (!message || !userOwnsSession(req as AuthenticatedRequest, message.session_id)) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
     const rows = stmts.getSessionEvents.all('message', req.params.messageId) as SessionEventRow[];
     const events = rows.map((r) => ({
       id: r.id,
@@ -447,7 +491,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.delete('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
-    const sessions = stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[];
+    const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
+      (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
+    );
     let archived = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
@@ -473,7 +519,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.delete('/api/agents/:agentId/sessions/inactive', (req: Request, res: Response) => {
-    const sessions = stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[];
+    const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
+      (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
+    );
     let archived = 0;
     for (const session of sessions) {
       if (session.deleted_at) continue;
@@ -530,7 +578,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // Archived (soft-deleted) sessions for a given agent within the 24-hour
   // recovery window, newest first. Powers the sidebar "Archived" section.
   router.get('/api/agents/:agentId/archived-sessions', (req: Request, res: Response) => {
-    const rows = stmts.getArchivedSessionsByAgent.all(req.params.agentId) as SessionRow[];
+    const rows = (stmts.getArchivedSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
+      (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
+    );
     res.json(rows);
   });
 
@@ -705,6 +755,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   router.get('/api/delegations/:messageId', (req: Request, res: Response) => {
     try {
+      const message = stmts.getMessageById.get(req.params.messageId) as MessageRow | undefined;
+      if (!message || !userOwnsSession(req as AuthenticatedRequest, message.session_id)) {
+        return res.status(404).json({ error: 'Message not found' });
+      }
       const delegations = stmts.getDelegations.all(req.params.messageId);
       res.json(delegations);
     } catch (err) {
@@ -1058,6 +1112,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       const model = targetAgent.model || defaultModelForEngine(engine);
       const wt = defaultSessionUseWorktreeFlag(targetFound.project);
       stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, wt, 0, 1);
+      // Forwarded session inherits ownership from the source — the caller
+      // must own the source (gated by the prefix middleware above), and the
+      // forwarded transcript should stay strictly with that same user.
+      inheritOwnerFromSession(newSessionId, String(req.params.sessionId));
 
       // When autoStart is true, handleChat will store the user message itself,
       // so we only pre-store it when NOT auto-starting (to avoid duplicates).

@@ -270,6 +270,20 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       console.error('[Auth] migrateAuthRecordIfNeeded after /setup failed:', err);
     }
 
+    // Belt-and-suspenders cache invalidation. `getOrgOwnerUserId` no
+    // longer caches `null` (see `session-ownership.ts`), but resetting
+    // here keeps the cache honest if a future change re-introduces a
+    // negative-cache code path. Without this, system spawns immediately
+    // after first-run setup might still resolve to a stale `null`.
+    // Imported lazily so test files that mock `../config.js` (without
+    // seeding `defaultCwd`) don't trigger `db.ts` module-load initDb.
+    try {
+      const { resetOrgOwnerCache } = await import('../session-ownership.js');
+      resetOrgOwnerCache();
+    } catch (err) {
+      console.warn('[Auth] failed to reset org owner cache after /setup:', err);
+    }
+
     const { token, expiresAt } = issueToken(
       user ?? { id: '', username: record.username },
       record.role,

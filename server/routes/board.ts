@@ -17,6 +17,8 @@ import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
+import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
+import type { AuthenticatedRequest } from '../auth.js';
 
 interface BoardData {
   board: KanbanBoardRow;
@@ -380,6 +382,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const resolvedModel = trimmedOverride ?? (agent.model || defaultModelForEngine(engine));
       const wt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
+      setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
 
       const board = stmts.getKanbanBoard.get(req.params.projectId) as KanbanBoardRow | undefined;
       let inProgressColumnId = card.column_id;

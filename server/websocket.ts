@@ -1,8 +1,14 @@
 import { WebSocketServer, WebSocket as WsClient } from 'ws';
 import type { Server } from 'http';
 import type { IncomingMessage } from 'http';
-import { authenticateWs } from './auth.js';
+import { authenticateWsDetailed } from './auth.js';
 import { stmts } from './db.js';
+import {
+  userOwnsSession,
+  setWsAuthUserId,
+  getWsAuthUserId,
+  type AuthStampedWs,
+} from './session-ownership.js';
 import { handleBroadcastForPush } from './push.js';
 import type {
   WebSocketDeps,
@@ -100,10 +106,16 @@ export default function createWebSocket(
   }
 
   wss.on('connection', (ws: WsClient, request: IncomingMessage) => {
-    if (!authenticateWs(request)) {
+    const wsAuth = authenticateWsDetailed(request);
+    if (!wsAuth.ok) {
       ws.close(4401, 'Unauthorized — invalid or missing API key');
       return;
     }
+    // Stamp the resolved user id on the ws so per-session ownership
+    // checks below (and createSession in chat.ts) can attribute new
+    // sessions to the caller. Local-bundled mode and apiKey paths don't
+    // populate `userId`; those are resolved to the org owner downstream.
+    setWsAuthUserId(ws as AuthStampedWs, wsAuth.userId);
 
     // Provisioning subscription — a dedicated URL hands this connection
     // off to the orchestrator's event stream rather than the normal
@@ -163,6 +175,21 @@ export default function createWebSocket(
       }
     } catch {}
 
+    // Per-session ownership gate. Returns true if the caller may act on
+    // `sessionId`. Sessions that don't yet exist (orphan auto-create
+    // path used by `chat`) are permitted — they get stamped with the
+    // caller's user id at create time.
+    const ownerReq = { authUserId: getWsAuthUserId(ws as AuthStampedWs) };
+    const mayActOnSession = (sessionId: string): boolean => {
+      try {
+        const row = stmts!.getSession.get(sessionId) as { id?: string } | undefined;
+        if (!row) return true;
+      } catch {
+        return true;
+      }
+      return userOwnsSession(ownerReq, sessionId);
+    };
+
     ws.on('message', (raw: Buffer | string) => {
       let msg: Record<string, unknown>;
       try {
@@ -174,6 +201,10 @@ export default function createWebSocket(
 
       const { type } = msg;
       if (type === 'chat' && typeof msg.agentId === 'string' && typeof msg.sessionId === 'string') {
+        if (!mayActOnSession(msg.sessionId)) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Session not found' }));
+          return;
+        }
         handleChat(ws, msg as unknown as import('./types.js').ChatMessage);
       } else if (
         type === 'room_chat' &&
@@ -182,6 +213,7 @@ export default function createWebSocket(
       ) {
         handleRoomChat(ws, msg as unknown as import('./types.js').RoomChatMessage);
       } else if (type === 'cancel' && typeof msg.sessionId === 'string') {
+        if (!mayActOnSession(msg.sessionId)) return;
         handleCancel(msg.sessionId);
       } else if (type === 'room_cancel' && typeof msg.roomId === 'string') {
         handleRoomCancel(msg.roomId);
@@ -200,12 +232,14 @@ export default function createWebSocket(
       } else if (type === 'design_cancel' && typeof msg.designId === 'string') {
         handleDesignCancel(msg.designId);
       } else if (type === 'delegation_cancel' && typeof msg.sessionId === 'string') {
+        if (!mayActOnSession(msg.sessionId)) return;
         handleDelegationCancel(msg.sessionId);
       } else if (
         type === 'dequeue' &&
         typeof msg.sessionId === 'string' &&
         typeof msg.messageId === 'string'
       ) {
+        if (!mayActOnSession(msg.sessionId)) return;
         handleDequeue(msg.sessionId, msg.messageId);
       } else if (
         type === 'edit_queue_item' &&
@@ -213,6 +247,7 @@ export default function createWebSocket(
         typeof msg.messageId === 'string' &&
         typeof msg.content === 'string'
       ) {
+        if (!mayActOnSession(msg.sessionId)) return;
         handleEditQueueItem(msg.sessionId, msg.messageId, msg.content);
       } else if (type === 'ping') {
         ws.send(JSON.stringify({ type: 'pong' }));

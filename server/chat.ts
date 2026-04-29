@@ -42,6 +42,13 @@ import {
   buildSessionIdInUseRecoveryMessage,
 } from './claude-session-id-conflict.js';
 import { allAgents } from './project-model.js';
+import {
+  setSessionOwner,
+  inheritOwnerFromSession,
+  getOrgOwnerUserId,
+  getWsAuthUserId,
+  type AuthStampedWs,
+} from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import {
   detectWikiRequestBlock,
@@ -1082,6 +1089,20 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     });
   }
 
+  /**
+   * Resolve the user id to attribute to a session created on the chat
+   * spawn paths (orphan-session auto-create, etc.). The websocket
+   * handshake stamps `_authUserId` on the ws object when JWT auth
+   * succeeds; system spawn paths run with `ws === null` and fall back
+   * to the org owner so single-tenant local installs continue to see
+   * everything they create.
+   */
+  function ownerUserIdForChatSpawn(ws: WebSocketLike | null): string | null {
+    const stamped = getWsAuthUserId(ws as unknown as AuthStampedWs | null);
+    if (stamped) return stamped;
+    return getOrgOwnerUserId();
+  }
+
   async function handleChat(ws: WebSocketLike | null, msg: InternalChatMessage): Promise<void> {
     const { agentId, sessionId, content, images, hookSpecificOutput } = msg;
     const isAutoContinuation = msg._autoContinuation === true;
@@ -1126,6 +1147,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           0,
           1,
         );
+        // Bug-report reroute: rerouted intake session inherits ownership from
+        // the user's original session so the bug-report transcript stays
+        // attributable to the same user who filed it.
+        inheritOwnerFromSession(intakeSessionId, sessionId);
         const taskId = uuidv4();
         stmts.insertBackgroundTask.run(taskId, intakeSessionId, intakeTarget.id, content);
       } catch (err) {
@@ -1208,6 +1233,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         0,
         1,
       );
+      // Orphan-session auto-create: the WebSocket handshake validated the
+      // caller's identity; attribute the new row to that user (or fall back
+      // to the org owner in the local-bypass / system-spawn path).
+      setSessionOwner(sessionId, ownerUserIdForChatSpawn(ws));
       session = stmts.getSession.get(sessionId) as SessionRow | undefined;
     }
 

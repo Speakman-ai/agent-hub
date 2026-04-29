@@ -16,6 +16,7 @@ import type {
 } from './types.js';
 import { buildPrTitle } from './auto-git.js';
 import { defaultSessionUseWorktreeFlag } from './project-mode.js';
+import { inheritOwnerFromSession } from './session-ownership.js';
 
 // ─── Session handoff — `<handoff>` block protocol ────────────────────────────
 //
@@ -720,6 +721,9 @@ export async function handleHandoff(
       0, // ask_mode — default off
       1,
     );
+    // Handoff target inherits the source session's owner so the
+    // recipient agent's session is visible to the same user.
+    inheritOwnerFromSession(toSessionId, srcSessionId);
     stmts.setHandoffToSession.run(toSessionId, handoffId);
     // Mark delivered BEFORE triggering the first chat turn so that the
     // target's enriched-prompt builder can find the handoff row via

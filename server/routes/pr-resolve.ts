@@ -27,6 +27,8 @@ import { fetchPrDetail } from '../pr-detail-fetch.js';
 import { parseRepoFullName, resolveUserToken } from './pr-list.js';
 import { AUTOFIX_KINDS, loadAutofixTemplate, type AutofixKind } from '../prompts/autofix/index.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
+import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
+import type { AuthenticatedRequest } from '../auth.js';
 
 /** CLI (`CONFLICTING`) and App (`dirty`, `conflicting`) values both get caught here. */
 const CONFLICT_STATES = new Set(['dirty', 'conflicting']);
@@ -238,6 +240,7 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
 
       const wt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(sessionId, agentId, sessionName, engine, model, wt, 0, 1);
+      setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
       stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
 
       handleChat(null, {

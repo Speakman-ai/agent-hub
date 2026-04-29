@@ -20,7 +20,16 @@ vi.mock('./routes/webhooks.js', () => ({
 }));
 
 vi.mock('./config.js', () => ({
+  default: { apiKey: null },
   defaultModelForEngine: vi.fn(() => 'mock-model'),
+}));
+
+vi.mock('./session-ownership.js', () => ({
+  setSessionOwner: vi.fn(),
+  getOrgOwnerUserId: vi.fn(() => null),
+  inheritOwnerFromSession: vi.fn(),
+  resolveOwnerUserId: vi.fn(() => null),
+  userOwnsSession: vi.fn(() => true),
 }));
 
 const {

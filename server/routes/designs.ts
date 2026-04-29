@@ -29,6 +29,8 @@ import {
 } from '../design-multi-engine.js';
 import { getDesignStatus } from '../design-chat.js';
 import { getActiveOrgId } from '../orgs.js';
+import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
+import type { AuthenticatedRequest } from '../auth.js';
 
 interface DesignRouteDeps extends RouteDeps {
   /** Absolute path of `<dataDir>/designs/`. Injected by index.ts. */
@@ -409,6 +411,7 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
       const engine = targetAgent.engine || 'claude-code';
       const model = targetAgent.model || defaultModelForEngine(engine);
       stmts.createSession.run(newSessionId, targetAgentId, sessionName, engine, model, 1, 0, 1);
+      setSessionOwner(newSessionId, resolveOwnerUserId(req as AuthenticatedRequest));
 
       let forwardedMessageId: string | null = null;
       if (!autoStart) {

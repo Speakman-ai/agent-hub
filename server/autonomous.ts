@@ -22,6 +22,7 @@ import type {
   SessionRow,
 } from './types.js';
 import { defaultSessionUseWorktreeFlag } from './project-mode.js';
+import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -357,6 +358,10 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
       const projRow = d.findProject(projectId);
       const wt = defaultSessionUseWorktreeFlag(projRow);
       d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, wt, 0, 1);
+      // Autonomous-dispatch sessions are created by the system (no
+      // human caller in scope); attribute them to the org owner so the
+      // single-tenant operator can see them in their session list.
+      setSessionOwner(sessionId, getOrgOwnerUserId());
       {
         const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
         if (row) {
@@ -517,6 +522,7 @@ export async function runTriageBatchForProject(
         0,
         1,
       );
+      setSessionOwner(sessionId, getOrgOwnerUserId());
       const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (row) d.broadcast({ type: 'session_created', agentId: triageAgent.id, session: row });
 

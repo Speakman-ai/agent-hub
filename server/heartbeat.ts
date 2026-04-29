@@ -11,6 +11,7 @@ import { runWorkspacePurge } from './session-purge.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
+import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import {
   runCertRenewalHeartbeat,
   CERT_RENEWAL_CRON,
@@ -550,6 +551,8 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         const sessionId = uuidv4();
         const sessionName = `Cron: ${cronJob.name}`;
         stmts.createSession.run(sessionId, '_cron', sessionName, 'claude-code', cronModel, 0, 0, 1);
+        // System-spawned cron sessions belong to the org owner.
+        setSessionOwner(sessionId, getOrgOwnerUserId());
         stmts.updateSessionCronId.run(cronJob.id, sessionId);
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       }

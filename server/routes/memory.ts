@@ -7,6 +7,8 @@ import { stmts } from '../db.js';
 import { findProject } from '../project-model.js';
 import { defaultModelForEngine } from '../config.js';
 import type { RouteDeps, NoteProcessingRow } from '../types.js';
+import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
+import type { AuthenticatedRequest } from '../auth.js';
 
 type NoteTarget = 'auto' | 'wiki' | 'memory' | 'plan';
 
@@ -147,6 +149,7 @@ export default function createMemoryRoutes(routeDeps: RouteDeps = {} as RouteDep
     const sessionName = `[Note] ${date} → ${target}`;
 
     stmts!.createSession.run(sessionId, docsAgent.id, sessionName, engine, model, 1, 0, 1);
+    setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
 
     const taskId = uuidv4();
     stmts!.insertBackgroundTask.run(taskId, sessionId, docsAgent.id, prompt);

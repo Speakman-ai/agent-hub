@@ -19,8 +19,17 @@ vi.mock('../prompts/autofix/index.js', async (importOriginal) => {
 
 // config.ts — avoid touching real config loaders.
 vi.mock('../config.js', () => ({
+  default: { apiKey: null },
   defaultModelForEngine: () => 'sonnet',
   buildSpawnEnv: () => ({}),
+}));
+
+vi.mock('../session-ownership.js', () => ({
+  setSessionOwner: vi.fn(),
+  getOrgOwnerUserId: vi.fn(() => null),
+  inheritOwnerFromSession: vi.fn(),
+  resolveOwnerUserId: vi.fn(() => null),
+  userOwnsSession: vi.fn(() => true),
 }));
 
 import { detectKinds, latestChangesRequestedReviews, buildResolvePrompt } from './pr-resolve.js';

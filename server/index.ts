@@ -54,6 +54,7 @@ import {
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
+import { backfillSessionOwners, resetOrgOwnerCache } from './session-ownership.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { ensureSessionWorkspace } from './worktree.js';
 
@@ -274,6 +275,21 @@ if (_startupOrgId !== 'default') {
   _activeDataDir = _startupDataDir;
   initProjects(_startupDataDir);
   console.log(`[Org] Restoring last-active org: ${_startupOrgId} → ${_startupDataDir}`);
+}
+
+// Backfill `sessions.owner_user_id` for legacy rows created before
+// per-user session ownership existed. The auth migration above has
+// already populated the `users` table; we set every NULL session to
+// the oldest user (the org owner) so the post-migration boot serves
+// the existing transcripts to that user without an empty sidebar.
+try {
+  resetOrgOwnerCache();
+  const { updated } = backfillSessionOwners();
+  if (updated > 0) {
+    console.log(`[Auth] Backfilled owner_user_id on ${updated} legacy session(s)`);
+  }
+} catch (err) {
+  console.error('[Auth] Failed to backfill session owners:', (err as Error).message);
 }
 
 migrateAhwDirectories();

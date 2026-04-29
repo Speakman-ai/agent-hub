@@ -45,6 +45,14 @@ export interface SessionRow {
   orchestration_phase?: string | null;
   /** JSON object — host/operator metadata for outer orchestration (see `server/orchestration.ts`). */
   orchestration_meta?: string | null;
+  /**
+   * Logical reference to a row in the shared `orgs.db` users table.
+   * NULL only for legacy rows pre-Phase-4 and for fresh installs that
+   * haven't completed auth setup yet. Strict ownership is enforced at
+   * the API + WebSocket layer via `session-ownership.ts` — list/read
+   * routes hide rows the caller doesn't own.
+   */
+  owner_user_id?: string | null;
 }
 
 export interface MessageRow {

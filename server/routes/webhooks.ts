@@ -28,6 +28,7 @@ import {
   scheduleReviewerAnalyzePhaseTransition,
 } from '../reviewer-analyze-phase-timer.js';
 import { getProjectMode } from '../project-mode.js';
+import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
 import type {
   AppConfig,
   RouteDeps,
@@ -600,6 +601,8 @@ export function dispatchReviewFeedback(
       0,
       1,
     );
+    // Webhook-spawned (no per-user JWT) → org owner.
+    setSessionOwner(sessionId, getOrgOwnerUserId());
     {
       const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (row) {
@@ -1015,6 +1018,8 @@ async function runReviewerDispatch(
     0,
     1,
   );
+  // PR review sessions originate from a GitHub webhook (no JWT) → org owner.
+  setSessionOwner(sessionId, getOrgOwnerUserId());
   {
     const row = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (row) {

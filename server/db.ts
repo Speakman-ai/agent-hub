@@ -925,6 +925,21 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  // Per-user session ownership (Phase 4). Logical reference to a row in the
+  // shared orgs.db `users` table — kept as plain TEXT (not a FK) because the
+  // users table lives in a different SQLite database. NULL is reserved for
+  // legacy / pre-migration rows; runtime callers backfill via setSessionOwner.
+  try {
+    db.prepare('SELECT owner_user_id FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN owner_user_id TEXT DEFAULT NULL');
+  }
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner_user_id)');
+  } catch (_e) {
+    /* already exists */
+  }
+
   try {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN pr_url TEXT');
   } catch (_e) {

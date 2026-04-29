@@ -48,6 +48,41 @@ Task planning within a turn is owned by the engine’s native todo / scratch flo
 `system`), `content`, `tool_calls` (JSON blob when applicable), and
 timestamps. Messages are stored in order; there's no separate turn index.
 
+## Per-user session ownership
+
+Each `sessions` row carries an `owner_user_id` column populated from
+the caller that created it. Ownership is **strict** — only the
+recorded owner can read or mutate the session, message log, tasks,
+delegations, forwards, and the WebSocket `chat` / `cancel` surface.
+Non-owners get **404 Not Found** (not 403) so foreign sessions can't
+be probed for existence.
+
+Ownership rules:
+
+- **Interactive spawns** (REST + WebSocket): owner = caller's
+  `req.authUserId` from the verified JWT. Local-bundled mode (Electron
+  / dev box) and apiKey callers, which lack a per-user identity,
+  resolve to the org owner — single-tenant installs keep working.
+- **System spawns** (cron, heartbeat, webhook reviewer, autonomous
+  dispatch, bug-report intake): owner = the org owner (oldest user in
+  `users.created_at ASC`). Net effect in strict mode: only the owner
+  sees these sessions in `GET /api/sessions/cron` and friends.
+- **Child sessions** (`<handoff>` target, `/forward` clone): inherit
+  the parent's owner via `inheritOwnerFromSession` in `handoff.ts` /
+  `routes/sessions.ts`. A specialist taking over a transcript stays
+  scoped to whoever started the conversation.
+- **Pre-migration NULL owners**: treated as belonging to the org owner
+  so legacy rows stay accessible after the upgrade. The startup
+  `backfillSessionOwners()` then replaces every NULL with that user.
+
+Helpers live in `server/session-ownership.ts` —
+`userOwnsSession(req, sessionId)`, `setSessionOwner(id, ownerId)`,
+`inheritOwnerFromSession(target, source)`,
+`resolveOwnerUserId(req)`. The org-owner lookup is cached for the
+process lifetime once a positive result is known; negative lookups
+are not memoised so a `/api/auth/setup` immediately after boot is
+visible without a process restart.
+
 ## Ask mode — read-only / plan-mode sessions
 
 Sessions carry an `ask_mode` flag (`sessions.ask_mode` column, toggled via
