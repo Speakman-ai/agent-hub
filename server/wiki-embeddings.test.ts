@@ -252,6 +252,77 @@ describe('defaultEmbedClient', () => {
     expect(body.requests[0].content.parts[0].text).toBe('hello');
   });
 
+  it('pins the exact request body shape for gemini-embedding-001', async () => {
+    // Regression guard from PR #698 — text-embedding-004 was silently dropped
+    // from v1beta and embedPage / query embed both started 404ing because
+    // nothing pinned the precise body shape Gemini's batchEmbedContents
+    // accepts. If Gemini changes the contract again, this should fail loudly.
+    process.env.GEMINI_API_KEY = 'test-key';
+    const calls: { url: string; init: RequestInit }[] = [];
+    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ embeddings: [{ values: [0.1, 0.2] }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+
+    await defaultEmbedClient.embedTexts(['hello'], 'RETRIEVAL_DOCUMENT');
+
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+
+    expect(url).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents',
+    );
+    expect(init.method).toBe('POST');
+    const headers = init.headers as Record<string, string>;
+    expect(typeof headers['x-goog-api-key']).toBe('string');
+    expect(headers['x-goog-api-key']!.length).toBeGreaterThan(0);
+    expect(headers['Content-Type']).toBe('application/json');
+
+    const body = JSON.parse(init.body as string);
+    expect(body.requests).toHaveLength(1);
+    expect(body.requests[0]).toEqual({
+      model: 'models/gemini-embedding-001',
+      content: { parts: [{ text: 'hello' }] },
+      taskType: 'RETRIEVAL_DOCUMENT',
+    });
+  });
+
+  it('honors the GEMINI_EMBED_MODEL override at module load time', async () => {
+    // The env var is read at module-load (DEFAULT_MODEL is a const). We
+    // can still verify the override path works by re-importing the module
+    // fresh with the env var set.
+    const origModel = process.env.GEMINI_EMBED_MODEL;
+    process.env.GEMINI_API_KEY = 'test-key';
+    process.env.GEMINI_EMBED_MODEL = 'custom-embed-model';
+    try {
+      vi.resetModules();
+      const fresh = await import('./wiki-embeddings.js');
+      const calls: { url: string; init: RequestInit }[] = [];
+      globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return new Response(JSON.stringify({ embeddings: [{ values: [0.1] }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      await fresh.defaultEmbedClient.embedTexts(['hi'], 'RETRIEVAL_QUERY');
+
+      const { url, init } = calls[0]!;
+      expect(url).toContain('/models/custom-embed-model:batchEmbedContents');
+      const body = JSON.parse(init.body as string);
+      expect(body.requests[0].model).toBe('models/custom-embed-model');
+      expect(body.requests[0].taskType).toBe('RETRIEVAL_QUERY');
+    } finally {
+      if (origModel === undefined) delete process.env.GEMINI_EMBED_MODEL;
+      else process.env.GEMINI_EMBED_MODEL = origModel;
+      vi.resetModules();
+    }
+  });
+
   it('throws an informative error when Gemini returns 404 for an unknown model', async () => {
     process.env.GEMINI_API_KEY = 'test-key';
     globalThis.fetch = vi.fn(async () => {

@@ -6,9 +6,14 @@
  * - `embedTexts` calls Gemini's `gemini-embedding-001` REST endpoint (or whichever
  *   model is configured via `GEMINI_EMBED_MODEL`). Swappable via
  *   `setEmbedClient` so tests don't hit the network.
- *   NOTE: the legacy `text-embedding-004` model was shut down on 2026-01-14;
- *   any rows persisted under that name are stale (different dim) and are
- *   filtered out by `runSemantic` so they can't pollute results.
+ *   NOTE: the legacy `text-embedding-004` model was shut down on 2026-01-14
+ *   (https://ai.google.dev/gemini-api/docs/deprecations) and started
+ *   returning 404 NOT_FOUND on `v1beta`. `gemini-embedding-001` is the
+ *   current text-only embedding model on `v1beta:batchEmbedContents`. The
+ *   embedding spaces are not compatible across model families — any rows
+ *   persisted under the old model name are stale (different dim) and are
+ *   filtered out by `runSemantic` so they can't pollute results. Operators
+ *   should re-run the backfill endpoint after deploying.
  * - `rankHybrid` blends normalized FTS5 BM25 with cosine similarity (50/50 by
  *   default). Input is a list of FTS hits + a list of embedding rows for the
  *   project; output is a sorted list of (page, score, chunk) triples.
@@ -160,7 +165,8 @@ export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): nu
 // `embedContent` / `batchEmbedContents` shape on the `v1beta` endpoint but
 // returns vectors of a different dimensionality, so existing stored
 // embeddings under the old model name are NOT compatible and should be
-// re-generated via the backfill endpoint.
+// re-generated via the backfill endpoint. `GEMINI_EMBED_MODEL` env override
+// is preserved for staging/testing alternative models.
 export const DEFAULT_MODEL = process.env.GEMINI_EMBED_MODEL || 'gemini-embedding-001';
 
 class MissingGeminiKeyError extends Error {
