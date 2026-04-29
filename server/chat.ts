@@ -37,6 +37,10 @@ import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-rer
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
+import {
+  detectSessionIdInUseError,
+  buildSessionIdInUseRecoveryMessage,
+} from './claude-session-id-conflict.js';
 import { allAgents } from './project-model.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import {
@@ -1792,6 +1796,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       }
 
+      // Claude Code emits a `system` (subtype=init) event the moment it has
+      // booted and created its on-disk JSONL. Persist `engine_session_id`
+      // immediately so subsequent turns use `--resume` instead of `--session-id`.
+      // Without this, if the spawn dies before any `assistant_text` arrives
+      // (cancel, network blip, upstream API error), the JSONL exists on disk
+      // but our DB still has `engine_session_id = NULL`. The next turn would
+      // re-spawn with `--session-id <same X>` and the CLI would reject it
+      // with "Session ID X is already in use." See claude-session-id-conflict.ts.
+      if (
+        engine === 'claude-code' &&
+        event.type === 'system' &&
+        event.sessionId &&
+        !engineSessionId
+      ) {
+        engineSessionId = event.sessionId;
+        try {
+          S.updateSessionEngineSessionId.run(event.sessionId, sessionId);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn('[chat] Failed to persist claude engine_session_id:', message);
+        }
+      }
+
       if (event.type === 'checkpoint' && event.uuid) {
         S.addCheckpoint.run(sessionId, assistantMsgId, event.uuid, event.turnIndex, null);
         broadcast({
@@ -1985,6 +2012,31 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           errorMsg =
             `${engine} binary ${reason} at ${bin}. ` +
             `Update ${configKey} in Settings (or ~/.agent-hub/data/config.json) to the correct path.`;
+        }
+
+        // Self-heal "Session ID X is already in use" — the session's on-disk
+        // JSONL exists but our DB never recorded `engine_session_id` (e.g. the
+        // first turn died before any assistant_text). Persist the id so the
+        // next retry uses `--resume`, and rewrite the surfaced error to point
+        // the user at a retry instead of the cryptic CLI line.
+        if (engine === 'claude-code' && isNewEngineSession && !engineSessionId) {
+          const conflict =
+            detectSessionIdInUseError(errorOutput) ||
+            detectSessionIdInUseError(streamErrorMessage) ||
+            detectSessionIdInUseError(errorMsg);
+          if (conflict) {
+            engineSessionId = conflict.sessionId;
+            try {
+              S.updateSessionEngineSessionId.run(conflict.sessionId, sessionId);
+            } catch (err: unknown) {
+              const message = err instanceof Error ? err.message : String(err);
+              console.warn(
+                '[chat] Failed to persist claude engine_session_id during recovery:',
+                message,
+              );
+            }
+            errorMsg = buildSessionIdInUseRecoveryMessage(conflict.sessionId);
+          }
         }
         console.error(`[chat] ${engine} exited code=${code} session=${sessionId}`);
         console.error(`  bin: ${bin}`);
