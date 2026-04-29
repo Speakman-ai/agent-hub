@@ -151,7 +151,18 @@ function IconPickerGrid({ selected, color = '#6b7280', onSelect }) {
   );
 }
 
-function OrganizationsSection() {
+// Web clients are served *by* the Agent Hub server they talk to, so the
+// page's origin is the server URL — there is no other server they could
+// sensibly point at. The Local/Remote toggle is meaningful only on
+// Electron (which can spawn a bundled local server *or* HTTP/WS to a
+// remote one). Hiding the toggle on web prevents users from flipping a
+// knob that has no coherent meaning here, and removes a footgun that
+// would let them put their own org into a state where the configured
+// `remoteUrl` disagrees with the actual page origin.
+const isElectronShell = () =>
+  typeof window !== 'undefined' && window.electronAPI?.isElectron === true;
+
+export function OrganizationsSection() {
   const [orgsState, setOrgsState] = useState(() => getOrgs());
   const [expandedOrgId, setExpandedOrgId] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -422,15 +433,19 @@ function OrganizationsSection() {
                     </div>
                   </div>
 
-                  <div>
-                    <label className={labelClass}>Connection Mode</label>
-                    {renderModeToggle(editForm.mode, (mode) => {
-                      setEditForm((prev) => ({ ...prev, mode }));
-                      setTestResult(null);
-                    })}
-                  </div>
+                  {isElectronShell() && (
+                    <div>
+                      <label className={labelClass}>Connection Mode</label>
+                      {renderModeToggle(editForm.mode, (mode) => {
+                        setEditForm((prev) => ({ ...prev, mode }));
+                        setTestResult(null);
+                      })}
+                    </div>
+                  )}
 
-                  {editForm.mode === 'remote' && renderRemoteFields(editForm, setEditForm)}
+                  {isElectronShell() &&
+                    editForm.mode === 'remote' &&
+                    renderRemoteFields(editForm, setEditForm)}
 
                   <div className="flex items-center justify-between pt-2">
                     <button
@@ -486,15 +501,19 @@ function OrganizationsSection() {
             </div>
           </div>
 
-          <div>
-            <label className={labelClass}>Connection Mode</label>
-            {renderModeToggle(newForm.mode, (mode) => {
-              setNewForm((prev) => ({ ...prev, mode }));
-              setTestResult(null);
-            })}
-          </div>
+          {isElectronShell() && (
+            <div>
+              <label className={labelClass}>Connection Mode</label>
+              {renderModeToggle(newForm.mode, (mode) => {
+                setNewForm((prev) => ({ ...prev, mode }));
+                setTestResult(null);
+              })}
+            </div>
+          )}
 
-          {newForm.mode === 'remote' && renderRemoteFields(newForm, setNewForm)}
+          {isElectronShell() &&
+            newForm.mode === 'remote' &&
+            renderRemoteFields(newForm, setNewForm)}
 
           <div className="flex gap-2 pt-1">
             <button

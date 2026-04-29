@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor, fireEvent } from '@testing-library/react';
-import SettingsPage, { GeneralSection, GitHubSection } from './SettingsPage.jsx';
+import SettingsPage, {
+  GeneralSection,
+  GitHubSection,
+  OrganizationsSection,
+} from './SettingsPage.jsx';
 import { api } from '../utils/api.js';
 
 /**
@@ -28,6 +32,25 @@ vi.mock('../utils/api.js', () => ({
     deleteProject: vi.fn().mockResolvedValue({ ok: true }),
   },
 }));
+
+// `OrganizationsSection` calls into `utils/orgs.js` at render time.
+// Mock the surface it touches so the focused tests below don't depend on
+// localStorage / Electron file storage / live server fetches.
+vi.mock('../utils/orgs.js', async () => {
+  const actual = await vi.importActual('../utils/orgs.js');
+  return {
+    ...actual,
+    getOrgs: vi.fn(() => ({
+      orgs: [{ id: 'default', name: 'Personal', mode: 'local', color: '#6366f1' }],
+      activeOrgId: 'default',
+    })),
+    getActiveOrg: vi.fn(() => ({ id: 'default', name: 'Personal', mode: 'local' })),
+    createOrg: vi.fn(),
+    updateOrg: vi.fn(),
+    deleteOrg: vi.fn(),
+    switchOrg: vi.fn(),
+  };
+});
 
 describe('GitHubSection — return from GitHub App auto-setup', () => {
   beforeEach(() => {
@@ -349,5 +372,52 @@ describe('SettingsPage — sidebar navigation', () => {
     // GithubConnectionSection's heading — proves the personal GitHub identity
     // is now visible on the same page that hosts the GitHub App config.
     await findByText('GitHub Account');
+  });
+});
+
+/**
+ * The Connection Mode (Local/Remote) toggle is meaningful only when the
+ * client is decoupled from its server — i.e. Electron, which can spawn a
+ * bundled local server *or* HTTP/WS to a remote one. The web client is
+ * served *by* its server, so the page's origin *is* the server URL: there
+ * is no other server it could sensibly point at, and rendering the toggle
+ * just lets users put their org into a state where the configured
+ * `remoteUrl` disagrees with the actual page origin.
+ *
+ * These tests guard the hide-on-web behavior in both the per-org edit
+ * form and the "Add Organization" form.
+ */
+describe('OrganizationsSection — Connection Mode toggle visibility', () => {
+  beforeEach(() => {
+    delete window.electronAPI;
+  });
+
+  afterEach(() => {
+    delete window.electronAPI;
+  });
+
+  it('hides the Connection Mode toggle on web (no electronAPI)', () => {
+    const { queryByText, getByText } = render(<OrganizationsSection />);
+    // The orgs heading still renders — we only dropped the toggle, not
+    // the section.
+    expect(getByText('Organizations')).toBeTruthy();
+    // No Connection Mode label anywhere on the page.
+    expect(queryByText(/Connection Mode/i)).toBeNull();
+    // No Local / Remote toggle buttons under the Add-Organization form.
+    fireEvent.click(getByText(/Add Organization/i));
+    expect(queryByText(/Connection Mode/i)).toBeNull();
+    expect(queryByText(/Server runs on this machine/i)).toBeNull();
+    expect(queryByText(/Connect to a remote server/i)).toBeNull();
+  });
+
+  it('renders the Connection Mode toggle on Electron (window.electronAPI.isElectron)', () => {
+    window.electronAPI = { isElectron: true };
+    const { getByText } = render(<OrganizationsSection />);
+    // Click "Add Organization" to expand the new-org form, where the toggle
+    // is unconditionally rendered for the Electron build.
+    fireEvent.click(getByText(/Add Organization/i));
+    expect(getByText(/Connection Mode/i)).toBeTruthy();
+    expect(getByText(/Server runs on this machine/i)).toBeTruthy();
+    expect(getByText(/Connect to a remote server/i)).toBeTruthy();
   });
 });

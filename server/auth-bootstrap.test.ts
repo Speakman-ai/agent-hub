@@ -21,21 +21,6 @@ vi.mock('./users-store.js', () => ({
   migrateAuthRecordIfNeeded: vi.fn(() => null),
 }));
 
-// orgs.db is similarly not initialized; we stub updateOrg / getActiveOrgId
-// so we can observe calls without needing the real sqlite layer. The
-// `default` org id is what the real code seeds at startup.
-const updateOrgMock = vi.fn(
-  (_orgId: string, _opts: { mode?: string }): { org_id: string; mode: string } | null => ({
-    org_id: 'default',
-    mode: 'remote',
-  }),
-);
-const getActiveOrgIdMock = vi.fn((): string => 'default');
-vi.mock('./orgs.js', () => ({
-  updateOrg: (orgId: string, opts: { mode?: string }) => updateOrgMock(orgId, opts),
-  getActiveOrgId: () => getActiveOrgIdMock(),
-}));
-
 const { maybeAutoProvisionOwner, credentialsFilePath } = await import('./auth-bootstrap.js');
 const { getAuthRecord, reloadAuthRecord, setAuthFilePathForTests, saveAuthRecord } =
   await import('./auth-store.js');
@@ -61,8 +46,6 @@ const baseOpts = () => ({
 describe('auth-bootstrap — maybeAutoProvisionOwner', () => {
   beforeEach(() => {
     freshTmpDir();
-    updateOrgMock.mockClear();
-    getActiveOrgIdMock.mockClear();
   });
 
   it('skips when AGENT_HUB_DEFAULT_PASSWORD is unset', async () => {
@@ -204,38 +187,14 @@ describe('auth-bootstrap — maybeAutoProvisionOwner', () => {
     }
   });
 
-  it("flips the active org to mode='remote' on successful provision", async () => {
-    const result = await maybeAutoProvisionOwner({
-      env: { AGENT_HUB_DEFAULT_PASSWORD: 'literal-password-1234' },
-      ...baseOpts(),
-    });
-    expect(result.provisioned).toBe(true);
-    expect(getActiveOrgIdMock).toHaveBeenCalled();
-    expect(updateOrgMock).toHaveBeenCalledWith('default', { mode: 'remote' });
-  });
-
-  it('does NOT flip org mode when provisioning is skipped', async () => {
-    // Skip path: missing env. Org mode must NOT be touched, otherwise we'd
-    // forcibly disable local-bypass on every cold boot.
-    await maybeAutoProvisionOwner({ env: {}, ...baseOpts() });
-    expect(updateOrgMock).not.toHaveBeenCalled();
-
-    // Skip path: auth already configured. Same expectation.
-    saveAuthRecord({
-      username: 'existing',
-      passwordHash: 'preexisting-hash',
-      jwtSecret: 'preexisting-secret',
-      role: 'Owner',
-    });
-    await maybeAutoProvisionOwner({
-      env: { AGENT_HUB_DEFAULT_PASSWORD: 'literal-password-1234' },
-      ...baseOpts(),
-    });
-    expect(updateOrgMock).not.toHaveBeenCalled();
-  });
-
-  it('logs but does not throw when updateOrg cannot find the org', async () => {
-    updateOrgMock.mockReturnValueOnce(null as unknown as { org_id: string; mode: string });
+  it('does not touch org.mode (auth bypass is env-driven, not DB-driven)', async () => {
+    // Regression: an earlier revision flipped the active org to
+    // mode='remote' on provision so the auth middleware would actually
+    // enforce credentials. That coupling has been replaced by the
+    // AGENT_HUB_MODE env var (see `isLocalBundledServer()` in
+    // server/auth.ts). The bootstrap path must therefore NOT import or
+    // call anything from orgs.js — verified here by asserting the
+    // module isn't even resolved as a side effect of provisioning.
     const log = vi.fn();
     const result = await maybeAutoProvisionOwner({
       env: { AGENT_HUB_DEFAULT_PASSWORD: 'literal-password-1234' },
@@ -243,24 +202,11 @@ describe('auth-bootstrap — maybeAutoProvisionOwner', () => {
       log,
     });
     expect(result.provisioned).toBe(true);
-    expect(log).toHaveBeenCalledWith('error', expect.stringContaining('flip org'));
-  });
-
-  it('logs but does not throw when updateOrg itself throws', async () => {
-    updateOrgMock.mockImplementationOnce(() => {
-      throw new Error('orgs.db not initialized');
-    });
-    const log = vi.fn();
-    const result = await maybeAutoProvisionOwner({
-      env: { AGENT_HUB_DEFAULT_PASSWORD: 'literal-password-1234' },
-      ...baseOpts(),
-      log,
-    });
-    expect(result.provisioned).toBe(true);
-    expect(log).toHaveBeenCalledWith(
-      'error',
-      expect.stringContaining('Failed to flip active org to remote mode'),
+    // No "flip org" / "remote mode" log lines should have been emitted.
+    const flipLogs = log.mock.calls.filter(
+      ([, msg]) => typeof msg === 'string' && /flip|remote mode/.test(msg),
     );
+    expect(flipLogs).toEqual([]);
   });
 
   it('persists a JWT secret unique per provision', async () => {

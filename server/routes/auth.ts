@@ -36,7 +36,7 @@ import {
   generateJwtSecret,
 } from '../auth-store.js';
 import { requireRole, hasAtLeastRole, parseRole, type Role } from '../roles.js';
-import type { AuthenticatedRequest } from '../auth.js';
+import { isLocalBundledServer, type AuthenticatedRequest } from '../auth.js';
 import { getActiveOrgId, getOrg, getOrgsDb } from '../orgs.js';
 import {
   createUser,
@@ -198,16 +198,15 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     // record exists and this flips to false even if the apiKey is still
     // present (apiKey stays as break-glass, not a migration signal).
     const needsMigration = apiKeyConfigured && !jwtConfigured;
-    // Signals to the client whether the auth gate is short-circuited by
-    // the active org's mode. If orgs.db isn't up yet we report `false`
-    // rather than throwing — the client can retry after boot.
-    let activeOrgIsLocal = false;
-    try {
-      const org = getOrg(getActiveOrgId());
-      activeOrgIsLocal = org?.mode === 'local';
-    } catch {
-      activeOrgIsLocal = false;
-    }
+    // Signals to the client whether the auth gate is short-circuited
+    // because the server is running as a local bundled install
+    // (Electron / dev box). Source-of-truth is the `AGENT_HUB_MODE` env
+    // var, set by the launching process — not the orgs DB. See the
+    // JSDoc on `isLocalBundledServer()` for why.
+    //
+    // Field name `activeOrgIsLocal` is preserved for client/back-compat;
+    // the AuthGate consumes it to suppress the login screen on local.
+    const activeOrgIsLocal = isLocalBundledServer();
     res.json({
       authConfigured: jwtConfigured,
       username: record?.username ?? null,

@@ -41,7 +41,6 @@ import { hashPassword } from './password.js';
 import { getAuthRecord, saveAuthRecord, generateJwtSecret } from './auth-store.js';
 import { sanitizeUsername, sanitizePassword, MIN_PASSWORD_LEN } from './auth-validation.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
-import { updateOrg, getActiveOrgId } from './orgs.js';
 
 const DEFAULT_USERNAME = 'admin';
 const AUTO_KEYWORD = 'auto';
@@ -206,31 +205,13 @@ export async function maybeAutoProvisionOwner(
     );
   }
 
-  // Flip the active org out of `local` mode so the auth middleware
-  // actually enforces the credentials we just provisioned. Default orgs
-  // are seeded with mode='local', which triggers the synthetic Owner
-  // bypass in `requireAuth` (server/auth.ts) — meaning every request
-  // would still be served as Owner without ever hitting the login flow.
-  // This step is the difference between "provisioned an admin" and
-  // "the deployment actually requires logging in as that admin".
-  //
-  // Best-effort: if orgs.db hasn't been initialized in a test/edge
-  // path the migration above already failed; we just log and move on.
-  try {
-    const activeOrgId = getActiveOrgId();
-    const updated = updateOrg(activeOrgId, { mode: 'remote' });
-    if (!updated) {
-      log(
-        'error',
-        `[Auth] Could not flip org '${activeOrgId}' to remote mode (org row missing). Login flow may still bypass auth.`,
-      );
-    }
-  } catch (err) {
-    log(
-      'error',
-      `[Auth] Failed to flip active org to remote mode after auto-provision: ${(err as Error).message}`,
-    );
-  }
+  // No org-mode flip needed: auth bypass is now keyed off the
+  // `AGENT_HUB_MODE` env var (see `isLocalBundledServer()` in
+  // `server/auth.ts`), not the persisted `org.mode` column. A web/cloud
+  // deployment will not have `AGENT_HUB_MODE=local` set, so the Owner
+  // we just provisioned is enforced regardless of what the orgs table
+  // says. Electron / dev installs explicitly set the env var and keep
+  // the bypass.
 
   if (isAuto) {
     log(

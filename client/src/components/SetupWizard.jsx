@@ -82,8 +82,20 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
+  // The Local/Remote toggle is only meaningful when the client is decoupled
+  // from the server it talks to. The web build is *served by* its server, so
+  // the page's origin is the server URL — there's no other server it could
+  // sensibly point at, and a "remote" mode here would just dump the user
+  // into a connection-test UI that, on success, would navigate the page
+  // away to a server which serves its own copy of this same wizard. The
+  // shell desktop app (Electron) is the only place this choice means
+  // anything — it ships a renderer that can either spawn a bundled local
+  // server or HTTP/WS to a remote one. React Native uses its own flow.
+  const isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectron === true;
+
   // Org step state
   const [orgName, setOrgName] = useState('Personal');
+  // Web defaults to (and is locked to) `local`. Electron lets the user pick.
   const [orgMode, setOrgMode] = useState('local');
   const [orgRemoteUrl, setOrgRemoteUrl] = useState('');
   const [orgApiKey, setOrgApiKey] = useState('');
@@ -246,47 +258,49 @@ export default function SetupWizard({ onComplete, setupStatus }) {
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-2">
-                  Connection Mode
-                </label>
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => {
-                      setOrgMode('local');
-                      setOrgTestResult(null);
-                    }}
-                    className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
-                      orgMode === 'local'
-                        ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                        : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
-                    }`}
-                  >
-                    <div className="text-base mb-1 flex items-center gap-1.5">
-                      <Monitor size={18} /> Local
-                    </div>
-                    <div className="text-xs text-gray-500">Server on this machine</div>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setOrgMode('remote');
-                      setOrgTestResult(null);
-                    }}
-                    className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
-                      orgMode === 'remote'
-                        ? 'border-blue-500 bg-blue-500/10 text-blue-400'
-                        : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
-                    }`}
-                  >
-                    <div className="text-base mb-1 flex items-center gap-1.5">
-                      <Cloud size={18} /> Remote
-                    </div>
-                    <div className="text-xs text-gray-500">Connect to a remote server</div>
-                  </button>
+              {isElectron && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-2">
+                    Connection Mode
+                  </label>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => {
+                        setOrgMode('local');
+                        setOrgTestResult(null);
+                      }}
+                      className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
+                        orgMode === 'local'
+                          ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                          : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+                      }`}
+                    >
+                      <div className="text-base mb-1 flex items-center gap-1.5">
+                        <Monitor size={18} /> Local
+                      </div>
+                      <div className="text-xs text-gray-500">Server on this machine</div>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setOrgMode('remote');
+                        setOrgTestResult(null);
+                      }}
+                      className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all text-sm font-medium ${
+                        orgMode === 'remote'
+                          ? 'border-blue-500 bg-blue-500/10 text-blue-400'
+                          : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+                      }`}
+                    >
+                      <div className="text-base mb-1 flex items-center gap-1.5">
+                        <Cloud size={18} /> Remote
+                      </div>
+                      <div className="text-xs text-gray-500">Connect to a remote server</div>
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {orgMode === 'remote' && (
+              {isElectron && orgMode === 'remote' && (
                 <div className="space-y-3 pt-1">
                   <div>
                     <label className="block text-xs font-medium text-gray-400 mb-1">

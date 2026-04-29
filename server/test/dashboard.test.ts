@@ -230,14 +230,19 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(res.body).toHaveProperty('activeOrgId', 'default');
   });
 
-  it('returns 200 without a bearer token when JWT auth is configured but the active org is local (Electron desktop)', async () => {
+  it('returns 200 without a bearer token when JWT auth is configured but the server is in local-bundled mode (Electron desktop)', async () => {
     const { unlinkSync, existsSync } = await import('fs');
     const path = await import('path');
     const { saveAuthRecord, reloadAuthRecord } = await import('../auth-store.js');
     const config = (await import('../config.js')).default;
     const authPath = path.join(config.dataDir, 'auth.json');
 
+    const originalMode = process.env.AGENT_HUB_MODE;
     try {
+      // Simulate Electron's main.js setting AGENT_HUB_MODE=local before
+      // spawning the embedded server. This is the env-driven signal that
+      // replaced the previous `org.mode='local'` lookup.
+      process.env.AGENT_HUB_MODE = 'local';
       saveAuthRecord({
         username: 'dash-local-owner',
         passwordHash: 'scrypt$deadbeef',
@@ -248,6 +253,8 @@ describe('GET /api/orgs/:id/dashboard', () => {
       expect(body.orgId).toBe('default');
       expect(body.isActive).toBe(true);
     } finally {
+      if (originalMode === undefined) delete process.env.AGENT_HUB_MODE;
+      else process.env.AGENT_HUB_MODE = originalMode;
       try {
         if (existsSync(authPath)) unlinkSync(authPath);
       } catch {

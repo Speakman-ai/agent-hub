@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from 'express';
 import config from './config.js';
 import { verifyJwt } from './jwt.js';
 import { getAuthRecord } from './auth-store.js';
-import { getActiveOrgId, getOrg } from './orgs.js';
+import { getActiveOrgId } from './orgs.js';
 import { getUserById, getUserByUsername } from './users-store.js';
 import { getMembershipRole } from './memberships-store.js';
 import type { Role } from './roles.js';
@@ -44,24 +44,27 @@ function isPublicPath(pathname: string): boolean {
 }
 
 /**
- * Returns true iff the currently active org has `mode='local'`. Local
- * orgs are single-tenant dev/desktop installs where the auth gate is
- * intentionally bypassed — the REST middleware and WS handshake use this
- * helper to short-circuit to a synthetic `local` Owner identity.
+ * Returns true iff the server is running as a single-tenant local
+ * bundled install (Electron desktop, dev `npm run dev`). In that case the
+ * auth gate is intentionally bypassed — the REST middleware and WS
+ * handshake short-circuit to a synthetic `local` Owner identity.
  *
- * Safety: if orgs.db isn't initialized yet (mid-boot / legacy test
- * harness), we return `false` so the caller falls through to the
- * existing JWT/apiKey gate rather than accidentally bypassing auth.
+ * Source of truth: the `AGENT_HUB_MODE` env var, set to `'local'` by
+ * trusted callers (electron/main.js when launching the embedded server,
+ * or operators running a single-user dev box). Anything else — including
+ * an unset env, the empty string, `'remote'`, etc. — means a multi-user
+ * deployment where auth MUST be enforced.
+ *
+ * Why not the orgs DB? Earlier revisions read `org.mode === 'local'`
+ * from sqlite, but `org.mode` is editable from the Settings UI; on a
+ * remote/web deployment a single bad click would silently disable auth
+ * for every visitor. The env var is set by the process that owns the
+ * deployment context (Electron's main process / sysadmin's systemd
+ * unit) and cannot be flipped from the UI, which makes "fail-closed"
+ * the default.
  */
-function isActiveOrgLocal(): boolean {
-  try {
-    const orgId = getActiveOrgId();
-    const org = getOrg(orgId);
-    return org?.mode === 'local';
-  } catch {
-    // orgs.db not initialized — DO NOT bypass auth in this case.
-    return false;
-  }
+export function isLocalBundledServer(): boolean {
+  return process.env.AGENT_HUB_MODE === 'local';
 }
 
 /** Augmented Express request populated by the middleware on success. */
@@ -75,10 +78,15 @@ export interface AuthenticatedRequest extends Request {
   /** True when the caller used the apiKey fallback. */
   authViaApiKey?: boolean;
   /**
-   * True when `isActiveOrgLocal()` bypassed JWT/apiKey — the active org is a
-   * desktop/local install. Downstream membership gates that normally require
-   * `authUserId` must treat this as full access to the active org (mirrors
-   * `AuthGate`'s `activeOrgIsLocal` client bypass).
+   * True when `isLocalBundledServer()` bypassed JWT/apiKey — the server
+   * was launched in single-tenant local mode (Electron / dev box).
+   * Downstream membership gates that normally require `authUserId` must
+   * treat this as full access to the active org (mirrors `AuthGate`'s
+   * `activeOrgIsLocal` client bypass).
+   *
+   * NOTE: the field name retains the historical "OrgBypass" suffix for
+   * back-compat with route handlers and tests. The signal is no longer
+   * tied to `org.mode` — see `isLocalBundledServer()` above.
    */
   authLocalOrgBypass?: boolean;
   /**
@@ -178,11 +186,11 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     return;
   }
 
-  // Local-mode active org: the desktop/dev install intentionally runs
-  // without per-user auth. Populate a synthetic `local` Owner identity
-  // so downstream handlers still see `authUser`, `authRole`, and
+  // Local bundled server (Electron / dev box) intentionally runs without
+  // per-user auth. Populate a synthetic `local` Owner identity so
+  // downstream handlers still see `authUser`, `authRole`, and
   // `authOrgId`, then short-circuit the JWT/apiKey branches below.
-  if (isActiveOrgLocal()) {
+  if (isLocalBundledServer()) {
     const r = req as AuthenticatedRequest;
     r.authUser = 'local';
     r.authRole = 'Owner';
@@ -311,10 +319,10 @@ export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
   const authRecord = getAuthRecord();
   if (!apiKey && !authRecord) return { ok: true };
 
-  // Local-mode active org: mirror the REST bypass — return a synthetic
+  // Local bundled server: mirror the REST bypass — return a synthetic
   // `local` Owner handshake so the WS session has an attributable
   // identity without requiring a token.
-  if (isActiveOrgLocal()) {
+  if (isLocalBundledServer()) {
     let orgId = '';
     try {
       orgId = getActiveOrgId();

@@ -588,14 +588,16 @@ describe('authenticateWs', () => {
   });
 });
 
-// ─── Active-org local bypass (card 3d72338d) ────────────────────────
-// When the *active* org has `mode='local'`, the REST middleware and WS
+// ─── Local-bundled-server bypass ─────────────────────────────────
+// When the server is launched with `AGENT_HUB_MODE=local` (Electron
+// desktop / single-tenant dev box), the REST middleware and WS
 // handshake short-circuit the JWT/apiKey gate and install a synthetic
-// `local` Owner identity. This block verifies the bypass, its inverse
-// (remote mode falls through to the real gate), that switching the
-// active org flips enforcement, and — critically — that an
-// un-initialized orgs.db does NOT accidentally open the gate.
-describe('authMiddleware — active-org local bypass', () => {
+// `local` Owner identity. The earlier coupling to `org.mode='local'`
+// was removed because that value is editable from the Settings UI —
+// keying off a process-env signal instead means a deployed multi-user
+// server cannot have its auth gate disabled by a stray DB write.
+describe('authMiddleware — local-bundled-server bypass (AGENT_HUB_MODE)', () => {
+  const originalMode = process.env.AGENT_HUB_MODE;
   beforeEach(() => {
     config.apiKey = null;
     mockAuthRecord = {
@@ -606,17 +608,20 @@ describe('authMiddleware — active-org local bypass', () => {
       createdAt: '2026-04-18',
     };
     resetPhase3Mocks();
+    delete process.env.AGENT_HUB_MODE;
   });
 
   afterEach(() => {
-    // Reset mocks so the 'local' mode doesn't leak into unrelated
-    // suites that expect the default 'remote' fall-through.
+    // Always restore — leaking AGENT_HUB_MODE='local' into another
+    // suite would silently disable auth in the rest of the file.
+    if (originalMode === undefined) delete process.env.AGENT_HUB_MODE;
+    else process.env.AGENT_HUB_MODE = originalMode;
     resetPhase3Mocks();
   });
 
-  it('bypasses the gate when active org is local and populates synthetic identity', () => {
+  it('bypasses the gate when AGENT_HUB_MODE=local and populates synthetic identity', () => {
+    process.env.AGENT_HUB_MODE = 'local';
     mockActiveOrgId = 'default';
-    mockActiveOrgMode = 'local';
     const next = vi.fn();
     const req = mockReq();
     authMiddleware(req, mockRes() as unknown as Response, next);
@@ -633,8 +638,8 @@ describe('authMiddleware — active-org local bypass', () => {
     expect(r.authLocalOrgBypass).toBe(true);
   });
 
-  it('returns 401 when active org is remote and no credentials are provided', () => {
-    mockActiveOrgMode = 'remote';
+  it('returns 401 when AGENT_HUB_MODE is unset and no credentials are provided', () => {
+    // Default deployment: no env var → multi-user → auth required.
     const next = vi.fn();
     const res = mockRes();
     authMiddleware(mockReq(), res as unknown as Response, next);
@@ -642,18 +647,26 @@ describe('authMiddleware — active-org local bypass', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('flips enforcement when the active org changes between requests', () => {
-    // First request: local → bypass
-    mockActiveOrgId = 'default';
-    mockActiveOrgMode = 'local';
+  it('returns 401 when AGENT_HUB_MODE is set to a non-local value', () => {
+    // Anything other than the literal string 'local' must NOT bypass —
+    // including 'LOCAL', 'remote', 'true', or accidental whitespace.
+    for (const v of ['', 'remote', 'LOCAL', 'true', ' local ']) {
+      process.env.AGENT_HUB_MODE = v;
+      const res = mockRes();
+      authMiddleware(mockReq(), res as unknown as Response, vi.fn());
+      expect(res.statusCode).toBe(401);
+    }
+  });
+
+  it('flips enforcement when AGENT_HUB_MODE changes between requests', () => {
+    // Same process, env var changed (e.g. an operator set it via a
+    // pm2 restart with a different env). Behavior must follow.
+    process.env.AGENT_HUB_MODE = 'local';
     const next1 = vi.fn();
     authMiddleware(mockReq(), mockRes() as unknown as Response, next1);
     expect(next1).toHaveBeenCalledOnce();
 
-    // Simulate `setActiveOrgId('remote-org')` — the active org is now
-    // remote. Same request should now be gated.
-    mockActiveOrgId = 'remote-org';
-    mockActiveOrgMode = 'remote';
+    delete process.env.AGENT_HUB_MODE;
     const next2 = vi.fn();
     const res2 = mockRes();
     authMiddleware(mockReq(), res2 as unknown as Response, next2);
@@ -661,7 +674,11 @@ describe('authMiddleware — active-org local bypass', () => {
     expect(res2.statusCode).toBe(401);
   });
 
-  it('does NOT bypass when orgs.db is unavailable — falls through to the JWT gate', () => {
+  it('does NOT bypass when orgs.db is unavailable in non-local mode', () => {
+    // Regression: the old code path returned `false` from
+    // isActiveOrgLocal() on orgs.db error so the JWT gate still
+    // enforced. The env-based check doesn't read the DB at all, so
+    // the same scenario must still result in a 401.
     mockOrgsDbUnavailable = true;
     const next = vi.fn();
     const res = mockRes();
@@ -671,7 +688,8 @@ describe('authMiddleware — active-org local bypass', () => {
   });
 });
 
-describe('authenticateWsDetailed — active-org local bypass', () => {
+describe('authenticateWsDetailed — local-bundled-server bypass (AGENT_HUB_MODE)', () => {
+  const originalMode = process.env.AGENT_HUB_MODE;
   beforeEach(() => {
     config.apiKey = null;
     mockAuthRecord = {
@@ -682,15 +700,18 @@ describe('authenticateWsDetailed — active-org local bypass', () => {
       createdAt: '2026-04-18',
     };
     resetPhase3Mocks();
+    delete process.env.AGENT_HUB_MODE;
   });
 
   afterEach(() => {
+    if (originalMode === undefined) delete process.env.AGENT_HUB_MODE;
+    else process.env.AGENT_HUB_MODE = originalMode;
     resetPhase3Mocks();
   });
 
-  it('returns ok with synthetic local Owner when active org is local', () => {
+  it('returns ok with synthetic local Owner when AGENT_HUB_MODE=local', () => {
+    process.env.AGENT_HUB_MODE = 'local';
     mockActiveOrgId = 'default';
-    mockActiveOrgMode = 'local';
     const result = authenticateWsDetailed({
       url: '/ws',
       headers: { host: 'localhost:3051' },
@@ -701,8 +722,7 @@ describe('authenticateWsDetailed — active-org local bypass', () => {
     expect(result.orgId).toBe('default');
   });
 
-  it('rejects WS handshake when active org is remote and no token is provided', () => {
-    mockActiveOrgMode = 'remote';
+  it('rejects WS handshake when AGENT_HUB_MODE is unset and no token is provided', () => {
     const result = authenticateWsDetailed({
       url: '/ws',
       headers: { host: 'localhost:3051' },

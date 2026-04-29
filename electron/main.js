@@ -187,11 +187,20 @@ function startServer() {
     // the platform path delimiter (Windows needs `;`, not `:`). See merge-server-path.js.
     const mergedPath = mergeElectronServerPath(process.env.PATH);
 
-    // Set env so the server knows to serve the built client
+    // Set env so the server knows to serve the built client.
+    //
+    // AGENT_HUB_MODE='local' is the trust signal that lets the server's
+    // auth middleware short-circuit JWT/apiKey checks for this single-user
+    // desktop install. It MUST only be set by deployment contexts that are
+    // genuinely single-tenant (Electron, hypothetical CLI dev mode) — a
+    // deployed web server must never set it. Source-of-truth lives in the
+    // process env (not the orgs DB) so a Settings UI toggle can never
+    // accidentally disable auth on a remote deployment.
     const env = {
       ...process.env,
       PATH: mergedPath,
       ELECTRON: '1',
+      AGENT_HUB_MODE: 'local',
       AGENT_HUB_DATA_DIR: USER_DATA,
       AGENT_HUB_SERVE_CLIENT: isDev ? '' : path.join(ROOT, 'client', 'dist'),
     };

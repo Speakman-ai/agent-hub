@@ -35,15 +35,20 @@ afterEach(() => {
   delete window.electronAPI;
 });
 
+// The wizard renders the same Step 2 heading regardless of build, but the
+// Connection Mode section only appears on Electron now (web has no use for
+// a Local/Remote toggle — the page's origin *is* the server URL). Tests
+// that need the toggle must set `window.electronAPI.isElectron = true`
+// *before* calling this helper; web-only tests can advance without it.
 async function advanceToOrgStep() {
   fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-  await waitFor(() => expect(screen.getByText(/Connection Mode/i)).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText(/Create Your Organization/i)).toBeInTheDocument());
 }
 
-describe('SetupWizard — remote mode', () => {
+describe('SetupWizard — remote mode (Electron only)', () => {
   it('saves connection config and navigates without touching local orgs', async () => {
     testConnection.mockResolvedValue({ ok: true, message: 'Connected' });
-    window.electronAPI = { navigateToOrg: vi.fn() };
+    window.electronAPI = { isElectron: true, navigateToOrg: vi.fn() };
 
     render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
     await advanceToOrgStep();
@@ -77,7 +82,7 @@ describe('SetupWizard — remote mode', () => {
 
   it('blocks progression when remote test fails', async () => {
     testConnection.mockResolvedValue({ ok: false, message: 'refused' });
-    window.electronAPI = { navigateToOrg: vi.fn() };
+    window.electronAPI = { isElectron: true, navigateToOrg: vi.fn() };
 
     render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
     await advanceToOrgStep();
@@ -98,6 +103,7 @@ describe('SetupWizard — remote mode', () => {
   });
 
   it('requires a URL before continuing in remote mode', async () => {
+    window.electronAPI = { isElectron: true, navigateToOrg: vi.fn() };
     render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
     await advanceToOrgStep();
 
@@ -116,6 +122,9 @@ describe('SetupWizard — remote mode', () => {
 describe('SetupWizard — local mode (regression)', () => {
   it('creates a local org and advances to step 3', async () => {
     createOrg.mockResolvedValue({ id: 'org-new' });
+    // Run as Electron so the toggle is rendered — this test is asserting
+    // the local-mode branch still works end-to-end, not the web hiding.
+    window.electronAPI = { isElectron: true };
 
     render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
     await advanceToOrgStep();
@@ -132,6 +141,45 @@ describe('SetupWizard — local mode (regression)', () => {
     });
     expect(switchOrg).toHaveBeenCalledWith('org-new');
     // Critically: no connection config was rewritten for the local path.
+    expect(saveConnectionConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('SetupWizard — web build hides the Connection Mode toggle', () => {
+  // The web client is *served by* the Agent Hub server it talks to, so a
+  // Local/Remote toggle is incoherent here: there is no other server it
+  // could sensibly point at. Hiding the toggle prevents users from
+  // flipping a meaningful-only-on-Electron knob, and (by extension)
+  // prevents them from accidentally creating an org with mode='remote'
+  // that doesn't match the page origin.
+
+  it('does not render the Connection Mode toggle when window.electronAPI is absent', async () => {
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    await advanceToOrgStep();
+
+    expect(screen.queryByText(/Connection Mode/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^remote$/i })).not.toBeInTheDocument();
+    // The Org Name field and Continue button must still be there — the
+    // wizard stays usable, we're just dropping a meaningless choice.
+    expect(screen.getByPlaceholderText('Personal')).toBeInTheDocument();
+  });
+
+  it('still creates a local org on Continue (default behavior)', async () => {
+    createOrg.mockResolvedValue({ id: 'org-web' });
+
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    await advanceToOrgStep();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    });
+
+    await waitFor(() => {
+      expect(createOrg).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Personal', mode: 'local' }),
+      );
+    });
+    expect(switchOrg).toHaveBeenCalledWith('org-web');
     expect(saveConnectionConfig).not.toHaveBeenCalled();
   });
 });

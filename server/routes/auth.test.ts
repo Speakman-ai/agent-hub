@@ -204,9 +204,8 @@ describe('GET /api/auth/status', () => {
   it('reports unconfigured before setup', async () => {
     const res = await supertest(buildApp()).get('/api/auth/status');
     expect(res.status).toBe(200);
-    // `activeOrgIsLocal` is `false` here because orgs.db hasn't been
-    // initialized in this test path — the endpoint's try/catch swallows
-    // the "orgs.db not initialized" error and falls back to false.
+    // `activeOrgIsLocal` is `false` here because AGENT_HUB_MODE is
+    // unset in the test environment — defaulting to multi-user mode.
     expect(res.body).toEqual({
       authConfigured: false,
       username: null,
@@ -236,40 +235,44 @@ describe('GET /api/auth/status', () => {
   });
 });
 
-// Dedicated block for `activeOrgIsLocal` — initialises a throwaway
-// orgs.db per test so we can exercise both local and remote modes
-// through the real handler rather than a mocked store.
+// Dedicated block for `activeOrgIsLocal` — exercises the env-driven
+// signal that replaces the previous `org.mode='local'` lookup. The
+// status endpoint is the public surface AuthGate consumes to decide
+// whether to render the login screen, so the field must follow
+// AGENT_HUB_MODE exactly: `'local'` → true, anything else → false.
 describe('GET /api/auth/status — activeOrgIsLocal field', () => {
-  beforeEach(async () => {
+  const originalMode = process.env.AGENT_HUB_MODE;
+  beforeEach(() => {
     TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
     setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
     reloadAuthRecord();
-    // Point the orgs.db at a per-test tmp file and init the default
-    // schema. initOrgsDb seeds a single 'default' org with mode='local'.
-    const { setOrgsDbPathForTests, initOrgsDb } = await import('../orgs.js');
-    setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
-    initOrgsDb();
+    delete process.env.AGENT_HUB_MODE;
   });
 
-  afterEach(async () => {
-    // Close the per-test orgs.db and clear the override so subsequent
-    // describe blocks see an un-initialised orgs store again.
-    const { setOrgsDbPathForTests } = await import('../orgs.js');
-    setOrgsDbPathForTests(null);
+  afterEach(() => {
+    if (originalMode === undefined) delete process.env.AGENT_HUB_MODE;
+    else process.env.AGENT_HUB_MODE = originalMode;
   });
 
-  it('reports true when the active org is local (default seed)', async () => {
+  it('reports true when AGENT_HUB_MODE=local (Electron / dev)', async () => {
+    process.env.AGENT_HUB_MODE = 'local';
     const res = await supertest(buildApp()).get('/api/auth/status');
     expect(res.status).toBe(200);
     expect(res.body.activeOrgIsLocal).toBe(true);
   });
 
-  it('reports false when the active org is remote', async () => {
-    const { updateOrg } = await import('../orgs.js');
-    updateOrg('default', { mode: 'remote' });
+  it('reports false when AGENT_HUB_MODE is unset (default web deploy)', async () => {
     const res = await supertest(buildApp()).get('/api/auth/status');
     expect(res.status).toBe(200);
     expect(res.body.activeOrgIsLocal).toBe(false);
+  });
+
+  it('reports false for non-local AGENT_HUB_MODE values', async () => {
+    for (const v of ['', 'remote', 'LOCAL', 'true', ' local ']) {
+      process.env.AGENT_HUB_MODE = v;
+      const res = await supertest(buildApp()).get('/api/auth/status');
+      expect(res.body.activeOrgIsLocal).toBe(false);
+    }
   });
 });
 
