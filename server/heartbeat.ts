@@ -449,6 +449,31 @@ interface CronRunResult {
   result: string;
 }
 
+/**
+ * Build the `last_result` value written into the `crons` row when a run
+ * fails. When the failure carried partial stdout/stderr (e.g. a timeout
+ * surfaced through `runClaude({ detailed: true })`), include it so the
+ * cron card shows the work-in-progress output instead of just
+ * `ERROR: Timed out after N minutes`. Falls back to the historical
+ * `ERROR: <msg>` shape when no partial output is available.
+ *
+ * Exported for unit testing — the runtime call site is in `runCronJob`.
+ */
+export function formatCronErrorResult(
+  errorMsg: string,
+  partialStdout: string | null | undefined,
+  partialStderr: string | null | undefined,
+): string {
+  const message = (errorMsg || 'Unknown error').trim() || 'Unknown error';
+  const stdout = (partialStdout || '').trim();
+  const stderr = (partialStderr || '').trim();
+  const partial = stdout || stderr;
+  if (!partial) {
+    return `ERROR: ${message}`;
+  }
+  return `ERROR: ${message}\n\n--- Partial output ---\n${partial}`;
+}
+
 export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
   console.log(`[Cron] Running "${cronJob.name}"...`);
   const logEntry = stmts.addCronLog.run(cronJob.id, 'running');
@@ -580,7 +605,8 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     const typedErr = err as Error & { stdout?: string; stderr?: string };
     const errorMsg = typedErr.message || 'Unknown error';
     const durationMs = Date.now() - startTime;
-    stmts.updateCronResult.run(`ERROR: ${errorMsg}`, cronJob.id);
+    const cronResult = formatCronErrorResult(errorMsg, typedErr.stdout, typedErr.stderr);
+    stmts.updateCronResult.run(cronResult, cronJob.id);
     stmts.updateCronLog.run(errorMsg, 'error', durationMs, logId);
     console.error(`[Cron] "${cronJob.name}" failed:`, errorMsg);
 

@@ -1,11 +1,67 @@
 import type TestAgent from 'supertest/lib/agent.js';
 import { getRequest } from './helpers.js';
 import type { CronRow } from '../types.js';
+import { formatCronErrorResult } from '../heartbeat.js';
 
 let request: TestAgent;
 
 beforeAll(async () => {
   request = await getRequest();
+});
+
+/**
+ * `formatCronErrorResult` builds the `last_result` value written into the
+ * `crons` row when a run errors. Historically the column only stored
+ * `ERROR: <msg>` — a timeout therefore looked like
+ * `ERROR: Timed out after 5 minutes` and threw away whatever partial
+ * stdout/stderr the CLI emitted before being killed. The success path
+ * already wrote partial output; the error path now mirrors that so the
+ * cron card surfaces progress instead of a bare error string.
+ */
+describe('formatCronErrorResult', () => {
+  it('returns the historical "ERROR: <msg>" shape when there is no partial output', () => {
+    expect(formatCronErrorResult('Timed out after 5 minutes', undefined, undefined)).toBe(
+      'ERROR: Timed out after 5 minutes',
+    );
+    expect(formatCronErrorResult('boom', null, null)).toBe('ERROR: boom');
+    // Whitespace-only partial output is treated as no output — don't emit
+    // an empty "--- Partial output ---" section.
+    expect(formatCronErrorResult('boom', '   \n\t', '')).toBe('ERROR: boom');
+  });
+
+  it('appends partial stdout under a "--- Partial output ---" section', () => {
+    const out = formatCronErrorResult(
+      'Timed out after 5 minutes',
+      'scanned 1200 lines\nfound 3 errors',
+      '',
+    );
+    expect(out).toBe(
+      'ERROR: Timed out after 5 minutes\n\n--- Partial output ---\nscanned 1200 lines\nfound 3 errors',
+    );
+  });
+
+  it('falls back to partial stderr when stdout is empty', () => {
+    const out = formatCronErrorResult('boom', '', 'stderr line 1\nstderr line 2');
+    expect(out).toBe('ERROR: boom\n\n--- Partial output ---\nstderr line 1\nstderr line 2');
+  });
+
+  it('prefers stdout over stderr when both are present', () => {
+    const out = formatCronErrorResult('boom', 'good stuff', 'noise');
+    expect(out).toContain('--- Partial output ---\ngood stuff');
+    expect(out).not.toContain('noise');
+  });
+
+  it('trims surrounding whitespace from the partial output', () => {
+    const out = formatCronErrorResult('boom', '\n\n  stdout body  \n\n', undefined);
+    expect(out).toBe('ERROR: boom\n\n--- Partial output ---\nstdout body');
+  });
+
+  it('coerces an empty / whitespace error message to "Unknown error"', () => {
+    expect(formatCronErrorResult('', undefined, undefined)).toBe('ERROR: Unknown error');
+    expect(formatCronErrorResult('   ', 'partial', undefined)).toBe(
+      'ERROR: Unknown error\n\n--- Partial output ---\npartial',
+    );
+  });
 });
 
 /**
