@@ -14,13 +14,13 @@ const { getOrCreateProcessWorktree, ensureSessionWorkspace, removeWorkspace } =
   await import('./worktree.js');
 
 describe('getOrCreateProcessWorktree — cwd validation', () => {
-  it('falls back to defaultCwd when cwd does not exist', () => {
-    const result = getOrCreateProcessWorktree('/nonexistent/fake/path', 'test-process');
+  it('falls back to defaultCwd when cwd does not exist', async () => {
+    const result = await getOrCreateProcessWorktree('/nonexistent/fake/path', 'test-process');
     expect(result).toBe('/tmp');
   });
 
-  it('returns the original cwd when it exists', () => {
-    const result = getOrCreateProcessWorktree('/tmp', 'test-process');
+  it('returns the original cwd when it exists', async () => {
+    const result = await getOrCreateProcessWorktree('/tmp', 'test-process');
     expect(result).toBe('/tmp');
   });
 });
@@ -105,11 +105,16 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     };
   }
 
-  it('fetches origin on reuse so origin/main reflects new upstream commits', () => {
+  it('fetches origin on reuse so origin/main reflects new upstream commits', async () => {
     const persist = vi.fn();
 
     // First call — creates the session clone fresh from origin
-    const clonePath = ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
     createdWorkspace = clonePath;
 
     expect(clonePath).not.toBe(sourceRepo);
@@ -128,7 +133,12 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     // Second call — session is resumed, should hit the reuse path.
     // Pass a session with no worktree_path so the function walks the
     // "cloneDir already exists on disk" branch.
-    const reusedPath = ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    const reusedPath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
     expect(reusedPath).toBe(clonePath);
 
     // origin/main in the reused clone should now point at the new commit
@@ -136,7 +146,7 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(refreshedOriginTip).toBe(newOriginTip);
   });
 
-  it('recovers from a zombie clone dir (exists but no .git) on next call', () => {
+  it('recovers from a zombie clone dir (exists but no .git) on next call', async () => {
     const persist = vi.fn();
 
     // Pre-create the expected cloneDir as a zombie: has files but no .git.
@@ -152,7 +162,12 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(existsSync(path.join(expectedCloneDir, '.git'))).toBe(false);
 
     // ensureSessionWorkspace should nuke the zombie and successfully clone.
-    const clonePath = ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
     createdWorkspace = clonePath;
 
     expect(clonePath).toBe(expectedCloneDir);
@@ -167,7 +182,7 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(persistArgs[2]).toBe(sessionId);
   });
 
-  it('invokes onFailure and returns projectCwd when the source is not a git repo', () => {
+  it('invokes onFailure and returns projectCwd when the source is not a git repo', async () => {
     const persist = vi.fn();
     const onFailure = vi.fn();
 
@@ -175,7 +190,7 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     const nonGitDir = path.join(tmpRoot, 'not-a-git-repo');
     mkdirSync(nonGitDir, { recursive: true });
 
-    const result = ensureSessionWorkspace(
+    const result = await ensureSessionWorkspace(
       makeSession(null),
       nonGitDir,
       'test-agent',
@@ -193,11 +208,11 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(failMsg).toMatch(/not a git repo/);
   });
 
-  it('does not invoke onFailure when the clone succeeds', () => {
+  it('does not invoke onFailure when the clone succeeds', async () => {
     const persist = vi.fn();
     const onFailure = vi.fn();
 
-    const clonePath = ensureSessionWorkspace(
+    const clonePath = await ensureSessionWorkspace(
       makeSession(null),
       sourceRepo,
       'test-agent',
@@ -213,7 +228,7 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(onFailure).not.toHaveBeenCalled();
   });
 
-  it('wires core.hooksPath to .husky in the session clone when the source has a .husky/ dir', () => {
+  it('wires core.hooksPath to .husky in the session clone when the source has a .husky/ dir', async () => {
     const persist = vi.fn();
 
     // Source repo ships a husky dir (commit it so the shallow clone picks it up)
@@ -224,7 +239,12 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     git(sourceRepo, 'commit -m "add husky"');
     git(sourceRepo, 'push origin main');
 
-    const clonePath = ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
     createdWorkspace = clonePath;
 
     expect(existsSync(path.join(clonePath, '.husky'))).toBe(true);
@@ -232,10 +252,15 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(hooksPath).toBe('.husky');
   });
 
-  it('skips core.hooksPath config when the source has no .husky/ dir', () => {
+  it('skips core.hooksPath config when the source has no .husky/ dir', async () => {
     const persist = vi.fn();
 
-    const clonePath = ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
     createdWorkspace = clonePath;
 
     // No .husky/ in source, so core.hooksPath should be unset (or not '.husky')
@@ -248,10 +273,15 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(hooksPath).not.toBe('.husky');
   });
 
-  it('does not reset the checked-out feature branch on reuse', () => {
+  it('does not reset the checked-out feature branch on reuse', async () => {
     const persist = vi.fn();
 
-    const clonePath = ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
     createdWorkspace = clonePath;
 
     // Simulate in-progress work on the feature branch
@@ -270,7 +300,7 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     git(sourceRepo, 'push origin main');
 
     // Reuse
-    ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
+    await ensureSessionWorkspace(makeSession(null), sourceRepo, 'test-agent', persist);
 
     // Feature branch tip must be untouched — the agent's wip commit is preserved
     expect(git(clonePath, 'rev-parse --abbrev-ref HEAD')).toBe(featureBranch);

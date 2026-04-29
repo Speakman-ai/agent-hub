@@ -3,9 +3,27 @@ import os from 'os';
 
 // Mock child_process before importing heartbeat.js so the runClaude spawn
 // path is captured rather than executing the real Claude binary.
+//
+// Note: heartbeat.js transitively imports `worktree.js`, which now uses
+// `execFile` (promisified) for all git plumbing — so the mock must export
+// `execFile` and `exec` too, or the worktree module fails at import time
+// with "No 'execFile' export is defined on the 'child_process' mock".
+// This test never exercises the worktree path (it stubs runClaude's spawn
+// and the cwd/runClaude path goes around getOrCreateProcessWorktree), so
+// these stubs only need to satisfy the import — they're never invoked.
 vi.mock('child_process', () => {
   const mockSpawn = vi.fn();
-  return { spawn: mockSpawn };
+  const noopExec = vi.fn(
+    (
+      _file: unknown,
+      _args: unknown,
+      _opts: unknown,
+      cb: (err: Error | null, value: { stdout: string; stderr: string }) => void,
+    ) => {
+      if (typeof cb === 'function') cb(null, { stdout: '', stderr: '' });
+    },
+  );
+  return { spawn: mockSpawn, execFile: noopExec, exec: noopExec };
 });
 
 const { spawn } = await import('child_process');

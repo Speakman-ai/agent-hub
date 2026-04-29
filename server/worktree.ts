@@ -1,4 +1,5 @@
-import { execSync, exec } from 'child_process';
+import { execFile, exec } from 'child_process';
+import { promisify } from 'util';
 import { existsSync, mkdirSync, cpSync, rmSync, readdirSync, statSync, symlinkSync } from 'fs';
 import path from 'path';
 import { homedir } from 'os';
@@ -7,18 +8,98 @@ import type { SessionRow } from './types.js';
 
 const WORKSPACES_ROOT: string = path.join(homedir(), '.agent-hub', 'workspaces');
 
-export function isGitRepo(dir: string): boolean {
+/**
+ * Promisified `execFile` — used everywhere in this module instead of
+ * `execSync` so git network I/O does not block the Node event loop.
+ *
+ * The whole `getOrCreateProcessWorktree` / `ensureSessionWorkspace` graph runs
+ * at the top of every heartbeat tick and every cron tick (see
+ * `runHeartbeat` / `runCronJob` in heartbeat.ts). Synchronous git calls there
+ * froze the loop for up to ~60s under network slowness, which manifested as
+ * the node-cron `missed execution` warning bursts on PID 19954.
+ */
+const execFileP = promisify(execFile);
+
+/**
+ * Short-op timeout (ms) — applied to all metadata-only git commands
+ * (`rev-parse`, `remote get-url`, `config`, `symbolic-ref`, `checkout`, …).
+ * 5s is generous for any local git plumbing call; if we exceed it, something
+ * is wedged (auth prompt, hung SSH agent, frozen filesystem) and we want to
+ * fail fast rather than block agents.
+ */
+const SHORT_GIT_TIMEOUT_MS = 5000;
+
+/**
+ * Fetch timeout (ms) — applied to `git fetch origin --quiet` on the reuse
+ * path. 30s is a balance between transient network blips (which fetch
+ * tolerates) and avoiding the historical multi-minute stalls when DNS or
+ * the remote was unreachable.
+ */
+const FETCH_TIMEOUT_MS = 30000;
+
+/**
+ * Clone timeout (ms) — applied to `git clone --depth 1`. Larger than fetch
+ * because a fresh shallow clone may transfer a few MB of objects on first
+ * use, especially for repos with a large `.git/objects` set.
+ */
+const CLONE_TIMEOUT_MS = 60000;
+
+/**
+ * Fail-fast git environment.
+ *
+ * - `GIT_TERMINAL_PROMPT=0` — never prompt for credentials. Without this,
+ *   git silently waits on stdin for a username/password when an
+ *   authenticated remote rejects credentials, which produces an event-loop
+ *   stall that only ends at the configured timeout.
+ * - `GIT_SSH_COMMAND` — for SSH remotes, refuse interactive prompts
+ *   (`BatchMode=yes`), refuse host-key prompts (`StrictHostKeyChecking=accept-new`
+ *   would still be interactive on first contact — `BatchMode=yes` already
+ *   forces SSH to fail rather than prompt), and cap the TCP connect at 5s.
+ *
+ * Merged on top of `process.env` so PATH / HOME / GIT_* overrides from the
+ * caller still apply.
+ */
+function gitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=5',
+  };
+}
+
+interface RunGitOptions {
+  cwd?: string;
+  timeoutMs?: number;
+}
+
+/**
+ * Run `git <args>` via `execFile` with the fail-fast env and a short
+ * default timeout. Returns trimmed stdout. Rejects on non-zero exit /
+ * timeout — callers that want to silently swallow the error wrap this in
+ * try/catch (mirrors the previous `execSync` + try/catch shape).
+ */
+async function runGit(args: string[], opts: RunGitOptions = {}): Promise<string> {
+  const { stdout } = await execFileP('git', args, {
+    cwd: opts.cwd,
+    env: gitEnv(),
+    timeout: opts.timeoutMs ?? SHORT_GIT_TIMEOUT_MS,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return stdout.toString().trim();
+}
+
+export async function isGitRepo(dir: string): Promise<boolean> {
   try {
-    execSync('git rev-parse --git-dir', { cwd: dir, stdio: 'pipe' });
+    await runGit(['rev-parse', '--git-dir'], { cwd: dir });
     return true;
   } catch {
     return false;
   }
 }
 
-function getRemoteUrl(cwd: string): string | null {
+async function getRemoteUrl(cwd: string): Promise<string | null> {
   try {
-    return execSync('git remote get-url origin', { cwd, stdio: 'pipe' }).toString().trim();
+    return await runGit(['remote', 'get-url', 'origin'], { cwd });
   } catch {
     return null;
   }
@@ -44,10 +125,10 @@ function projectSlug(projectCwd: string): string {
  *
  * Idempotent: safe to call on reuse. Non-fatal — logs and continues on error.
  */
-function enableHuskyHooks(cloneDir: string): void {
+async function enableHuskyHooks(cloneDir: string): Promise<void> {
   try {
     if (!existsSync(path.join(cloneDir, '.husky'))) return;
-    execSync('git config core.hooksPath .husky', { cwd: cloneDir, stdio: 'pipe' });
+    await runGit(['config', 'core.hooksPath', '.husky'], { cwd: cloneDir });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[Workspace] Failed to enable husky hooks in ${cloneDir}:`, message);
@@ -58,16 +139,14 @@ function enableHuskyHooks(cloneDir: string): void {
  * Copy git user.name and user.email from a source repo (or global config)
  * into a newly-cloned directory so that `git commit` works without a global identity.
  */
-function copyGitUserConfig(sourceCwd: string, targetCwd: string): void {
+async function copyGitUserConfig(sourceCwd: string, targetCwd: string): Promise<void> {
   const keys = ['user.name', 'user.email'] as const;
   for (const key of keys) {
     try {
       // Try source repo's local config first, then falls back to global
-      const value = execSync(`git config ${key}`, { cwd: sourceCwd, stdio: 'pipe' })
-        .toString()
-        .trim();
+      const value = await runGit(['config', key], { cwd: sourceCwd });
       if (value) {
-        execSync(`git config ${key} ${JSON.stringify(value)}`, { cwd: targetCwd, stdio: 'pipe' });
+        await runGit(['config', key, value], { cwd: targetCwd });
       }
     } catch {
       // Key not set anywhere — skip
@@ -106,15 +185,13 @@ function removeZombieCloneDir(cloneDir: string): boolean {
   }
 }
 
-function getDefaultBranch(cwd: string): string {
+async function getDefaultBranch(cwd: string): Promise<string> {
   try {
-    const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd, stdio: 'pipe' })
-      .toString()
-      .trim();
+    const ref = await runGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd });
     return ref.replace('refs/remotes/origin/', '');
   } catch {
     try {
-      execSync('git rev-parse --verify main', { cwd, stdio: 'pipe' });
+      await runGit(['rev-parse', '--verify', 'main'], { cwd });
       return 'main';
     } catch {
       return 'master';
@@ -225,11 +302,11 @@ function copyFallback(projectCwd: string, destDir: string): string {
   }
 }
 
-export function getOrCreateProcessWorktree(
+export async function getOrCreateProcessWorktree(
   projectCwd: string,
   processKey: string,
   installCommand?: string | null,
-): string {
+): Promise<string> {
   if (!existsSync(projectCwd)) {
     const fallback = config.defaultCwd || homedir();
     console.warn(
@@ -238,7 +315,7 @@ export function getOrCreateProcessWorktree(
     projectCwd = fallback;
   }
 
-  if (!isGitRepo(projectCwd)) {
+  if (!(await isGitRepo(projectCwd))) {
     return projectCwd;
   }
 
@@ -248,14 +325,17 @@ export function getOrCreateProcessWorktree(
 
   if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
     try {
-      execSync('git fetch origin --quiet', { cwd: cloneDir, stdio: 'pipe', timeout: 30000 });
-      const defaultBranch = getDefaultBranch(projectCwd);
-      execSync(`git reset --hard origin/${defaultBranch}`, { cwd: cloneDir, stdio: 'pipe' });
+      await runGit(['fetch', 'origin', '--quiet'], {
+        cwd: cloneDir,
+        timeoutMs: FETCH_TIMEOUT_MS,
+      });
+      const defaultBranch = await getDefaultBranch(projectCwd);
+      await runGit(['reset', '--hard', `origin/${defaultBranch}`], { cwd: cloneDir });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[Workspace] Sync failed for "${safeName}", reusing as-is:`, message);
     }
-    enableHuskyHooks(cloneDir);
+    await enableHuskyHooks(cloneDir);
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     return cloneDir;
   }
@@ -266,21 +346,19 @@ export function getOrCreateProcessWorktree(
   removeZombieCloneDir(cloneDir);
 
   try {
-    const remoteUrl = getRemoteUrl(projectCwd);
+    const remoteUrl = await getRemoteUrl(projectCwd);
     if (remoteUrl) {
-      execSync(`git clone --depth 1 --quiet "${remoteUrl}" "${cloneDir}"`, {
+      await runGit(['clone', '--depth', '1', '--quiet', remoteUrl, cloneDir], {
         cwd: projectCwd,
-        stdio: 'pipe',
-        timeout: 60000,
+        timeoutMs: CLONE_TIMEOUT_MS,
       });
     } else {
-      execSync(`git clone --depth 1 --quiet "${projectCwd}" "${cloneDir}"`, {
-        stdio: 'pipe',
-        timeout: 60000,
+      await runGit(['clone', '--depth', '1', '--quiet', projectCwd, cloneDir], {
+        timeoutMs: CLONE_TIMEOUT_MS,
       });
     }
-    copyGitUserConfig(projectCwd, cloneDir);
-    enableHuskyHooks(cloneDir);
+    await copyGitUserConfig(projectCwd, cloneDir);
+    await enableHuskyHooks(cloneDir);
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     console.log(`[Workspace] Created clone: ${cloneDir}`);
     return cloneDir;
@@ -294,19 +372,19 @@ export function getOrCreateProcessWorktree(
 type PersistFn = (workspacePath: string, branchName: string, sessionId: string) => void;
 type OnFailureFn = (sessionId: string, errorMessage: string) => void;
 
-export function ensureSessionWorkspace(
+export async function ensureSessionWorkspace(
   session: SessionRow,
   projectCwd: string,
   agentId: string,
   persistFn: PersistFn,
   installCommand?: string | null,
   onFailure?: OnFailureFn,
-): string {
+): Promise<string> {
   if (session.worktree_path && existsSync(session.worktree_path)) {
     return session.worktree_path;
   }
 
-  if (!isGitRepo(projectCwd)) {
+  if (!(await isGitRepo(projectCwd))) {
     const message = `${projectCwd} is not a git repo`;
     console.warn(`[Workspace] Workspace requested but ${message} — falling back`);
     onFailure?.(session.id, message);
@@ -325,12 +403,15 @@ export function ensureSessionWorkspace(
     // work. Agents that want to see merged PRs can `git log origin/<default>`
     // or rebase explicitly.
     try {
-      execSync('git fetch origin --quiet', { cwd: cloneDir, stdio: 'pipe', timeout: 30000 });
+      await runGit(['fetch', 'origin', '--quiet'], {
+        cwd: cloneDir,
+        timeoutMs: FETCH_TIMEOUT_MS,
+      });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[Workspace] Fetch failed for session "${safeName}", reusing as-is:`, message);
     }
-    enableHuskyHooks(cloneDir);
+    await enableHuskyHooks(cloneDir);
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     persistFn(cloneDir, branchName, session.id);
     return cloneDir;
@@ -343,23 +424,21 @@ export function ensureSessionWorkspace(
   removeZombieCloneDir(cloneDir);
 
   try {
-    const remoteUrl = getRemoteUrl(projectCwd);
+    const remoteUrl = await getRemoteUrl(projectCwd);
     if (remoteUrl) {
-      execSync(`git clone --depth 1 --quiet "${remoteUrl}" "${cloneDir}"`, {
+      await runGit(['clone', '--depth', '1', '--quiet', remoteUrl, cloneDir], {
         cwd: projectCwd,
-        stdio: 'pipe',
-        timeout: 60000,
+        timeoutMs: CLONE_TIMEOUT_MS,
       });
     } else {
-      execSync(`git clone --depth 1 --quiet "${projectCwd}" "${cloneDir}"`, {
-        stdio: 'pipe',
-        timeout: 60000,
+      await runGit(['clone', '--depth', '1', '--quiet', projectCwd, cloneDir], {
+        timeoutMs: CLONE_TIMEOUT_MS,
       });
     }
 
-    execSync(`git checkout -b "${branchName}"`, { cwd: cloneDir, stdio: 'pipe' });
-    copyGitUserConfig(projectCwd, cloneDir);
-    enableHuskyHooks(cloneDir);
+    await runGit(['checkout', '-b', branchName], { cwd: cloneDir });
+    await copyGitUserConfig(projectCwd, cloneDir);
+    await enableHuskyHooks(cloneDir);
 
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     persistFn(cloneDir, branchName, session.id);
@@ -419,3 +498,12 @@ export function cleanupStaleWorkspaces(
     console.error('[Workspace] Cleanup scan failed:', message);
   }
 }
+
+/**
+ * Test-only export: lets unit tests assert on the fail-fast git env without
+ * spawning git. Not part of the public worktree contract — do not consume
+ * from production code paths.
+ *
+ * @internal
+ */
+export const __test = { gitEnv, SHORT_GIT_TIMEOUT_MS, FETCH_TIMEOUT_MS, CLONE_TIMEOUT_MS };

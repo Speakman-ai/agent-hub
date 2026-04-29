@@ -36,7 +36,7 @@ function stubChatHandlerDeps(): ChatHandlerDeps {
     uploadsDir: '/tmp',
     resolveSlashSkill: vi.fn(),
     createCursorChat: undefined,
-    ensureWorktree: vi.fn(),
+    ensureWorktree: vi.fn(async () => ''),
     drainQueue: vi.fn(),
     handleDelegation: vi.fn(async () => []),
     handleDelegationCancel: vi.fn(),

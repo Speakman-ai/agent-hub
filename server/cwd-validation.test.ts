@@ -11,7 +11,7 @@ vi.mock('./config.js', () => ({
   buildSpawnEnv: () => process.env,
 }));
 vi.mock('./worktree.js', () => ({
-  getOrCreateProcessWorktree: (cwd: string) => cwd,
+  getOrCreateProcessWorktree: async (cwd: string) => cwd,
 }));
 vi.mock('./memory.js', () => ({ reconcileMemoryFromWiki: vi.fn() }));
 vi.mock('./wiki.js', () => ({ listPages: vi.fn(), getPage: vi.fn() }));

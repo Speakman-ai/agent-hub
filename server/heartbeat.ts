@@ -338,7 +338,7 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
   const logId = logEntry.lastInsertRowid;
 
   try {
-    const heartbeatCwd = getOrCreateProcessWorktree(agent.cwd, `heartbeat-${agent.id}`);
+    const heartbeatCwd = await getOrCreateProcessWorktree(agent.cwd, `heartbeat-${agent.id}`);
     const isDocsAgent = agent.role === 'docs';
     const timeoutMs =
       (agent.heartbeat as EnrichedAgent['heartbeat'] & { timeoutMs?: number })?.timeoutMs ||
@@ -471,7 +471,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
 
   try {
     const resolvedCwd = resolveCronCwd(cronJob);
-    const cronCwd = getOrCreateProcessWorktree(resolvedCwd, `cron-${cronJob.id}`);
+    const cronCwd = await getOrCreateProcessWorktree(resolvedCwd, `cron-${cronJob.id}`);
     const detailed = (await runClaude(cronJob.prompt, cronCwd, undefined, {
       timeoutMs,
       detailed: true,

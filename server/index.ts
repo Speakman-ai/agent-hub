@@ -283,7 +283,7 @@ function ensureWorktree(
   projectCwd: string,
   agentId: string,
   installCommand: string | null,
-): string {
+): Promise<string> {
   return ensureSessionWorkspace(
     session,
     projectCwd,

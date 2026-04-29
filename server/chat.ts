@@ -183,7 +183,7 @@ export interface ChatHandlerDeps {
     projectCwd: string,
     agentId: string,
     installCommand: string | null,
-  ) => string;
+  ) => Promise<string>;
   drainQueue: (sessionId: string) => void;
   handleDelegation: (
     sessionId: string,
@@ -1387,7 +1387,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       (session!.worktree_path || isNewEngineSession)
     ) {
       const priorWorktree = session!.worktree_path;
-      effectiveCwd = ensureWorktree(
+      effectiveCwd = await ensureWorktree(
         session!,
         project.cwd,
         agentId,

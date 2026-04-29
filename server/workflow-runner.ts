@@ -260,7 +260,7 @@ export async function runWorkflowSequential(
         const systemPrompt = buildEnrichedPrompt(stepProject, enriched, {
           useWorktree: useWtForPrompt,
         });
-        const workDir = getOrCreateProcessWorktree(
+        const workDir = await getOrCreateProcessWorktree(
           enriched.cwd,
           `wf-${runId.slice(0, 8)}-${step.id.slice(0, 8)}-a${attempt}`,
         );
