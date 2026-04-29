@@ -161,6 +161,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (!columnId) return res.status(400).json({ error: 'columnId is required' });
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
 
+    // FK pre-flight: better-sqlite3 throws an opaque
+    // `SqliteError: FOREIGN KEY constraint failed` if columnId is stale or
+    // belongs to a different board. Validate up-front so clients get a
+    // clean 404 instead of a 500.
+    const targetColumn = stmts.getKanbanColumn.get(columnId) as KanbanColumnRow | undefined;
+    if (!targetColumn || targetColumn.board_id !== board.id) {
+      return res.status(404).json({ error: 'Column not found on this project board' });
+    }
+
     // Deduplication: check for existing card with same title (case-insensitive) on this board
     const allBoardCards = stmts.getKanbanCards.all(board.id) as KanbanCardRow[];
     const titleLower = title.toLowerCase().trim();
@@ -234,6 +243,16 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const hasAssignModel = 'assignModel' in body || 'assign_model' in body;
     const assignModel = (body.assignModel ?? body.assign_model) as string | null | undefined;
 
+    // FK pre-flight: a non-null epicId must reference an existing epic on
+    // the same board, otherwise the UPDATE throws an opaque
+    // `SqliteError: FOREIGN KEY constraint failed`.
+    if (hasEpicId && epicId != null) {
+      const epic = stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+      if (!epic || epic.board_id !== card.board_id) {
+        return res.status(404).json({ error: "Epic not found on this card's board" });
+      }
+    }
+
     const nextAssignee = hasAssignee ? (assignee ?? null) : card.assignee;
     if (hasAssignModel) {
       const normalized =
@@ -272,6 +291,14 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       if (!card) return res.status(404).json({ error: 'Card not found' });
       const { columnId, position } = req.body as { columnId?: string; position?: number };
       if (!columnId) return res.status(400).json({ error: 'columnId is required' });
+      // FK pre-flight: target column must exist AND belong to the card's
+      // own board. Cross-board moves silently corrupt the join with
+      // kanban_boards via the cascading FK; a stale columnId throws an
+      // opaque 500 from better-sqlite3. Both cases get a clean 404 here.
+      const targetColumn = stmts.getKanbanColumn.get(columnId) as KanbanColumnRow | undefined;
+      if (!targetColumn || targetColumn.board_id !== card.board_id) {
+        return res.status(404).json({ error: "Column not found on this card's board" });
+      }
       const previousColumnId = card.column_id;
       stmts.moveKanbanCard.run(columnId, position ?? 0, req.params.cardId);
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
@@ -514,6 +541,10 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const { author, content } = req.body as { author?: string; content?: string };
       if (!author || !content)
         return res.status(400).json({ error: 'author and content are required' });
+      // FK pre-flight: comments are FK-bound to kanban_cards.id. A stale
+      // cardId would otherwise surface as a 500 SqliteError.
+      const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
+      if (!card) return res.status(404).json({ error: 'Card not found' });
       const id = uuidv4();
       stmts.createKanbanCardComment.run(id, req.params.cardId, author, content);
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
@@ -780,6 +811,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const card = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow | undefined;
       if (!card) return res.status(404).json({ error: 'Card not found' });
       const { epicId } = req.body as { epicId?: string };
+      // FK pre-flight: a non-empty epicId must reference an existing epic
+      // on the same board. Without this, a stale epicId from the client
+      // surfaces as an opaque `SqliteError: FOREIGN KEY constraint failed`.
+      if (epicId) {
+        const epic = stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+        if (!epic || epic.board_id !== card.board_id) {
+          return res.status(404).json({ error: "Epic not found on this card's board" });
+        }
+      }
       stmts.updateKanbanCardEpic.run(epicId || null, req.params.cardId);
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
       res.json(stmts.getKanbanCard.get(req.params.cardId));
