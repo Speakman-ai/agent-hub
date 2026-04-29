@@ -1394,6 +1394,14 @@ export async function autoCommitAndPR(
         );
         if (prOutcome.ok) {
           d.stmts.clearSessionChangesReady.run(sessionId);
+        } else if (prOutcome.code === 'nothing_to_publish') {
+          // Benign no-op: a clean worktree with no open PR is a normal
+          // terminal state for sessions that intentionally do no work
+          // (research/Q&A turns, already-done cards). Log at INFO, not
+          // ERROR, so it stops triggering the tool-error classifier.
+          console.log(
+            `[auto-commit] Ad-hoc push/PR path: nothing to publish (clean worktree, no open PR) — ${prOutcome.error}`,
+          );
         } else {
           console.error(
             `[auto-commit] Ad-hoc push/PR path failed (${prOutcome.code}): ${prOutcome.error}`,
@@ -1445,9 +1453,21 @@ export async function autoCommitAndPR(
       card,
     );
     if (!autonomousOutcome.ok) {
-      console.error(
-        `[auto-commit] Autonomous PR path failed (${autonomousOutcome.code}): ${autonomousOutcome.error}`,
-      );
+      if (autonomousOutcome.code === 'nothing_to_publish') {
+        // Benign no-op: an autonomous-dispatched session can finish without
+        // producing changes (e.g. picked up a card and discovered the work
+        // was already shipped, then closed it via <agenthub:close-card>;
+        // research/Q&A turns; no-op investigations). The function contract
+        // already distinguishes this case via its own code — log at INFO so
+        // it stops feeding the tool-error classifier as an ERROR.
+        console.log(
+          `[auto-commit] Autonomous PR path: nothing to publish (clean worktree, no open PR) — ${autonomousOutcome.error}`,
+        );
+      } else {
+        console.error(
+          `[auto-commit] Autonomous PR path failed (${autonomousOutcome.code}): ${autonomousOutcome.error}`,
+        );
+      }
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

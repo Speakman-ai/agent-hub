@@ -1553,6 +1553,236 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
   });
 });
 
+describe('autoCommitAndPR — nothing_to_publish log severity', () => {
+  // Regression: autonomous-mode sessions that finish without producing
+  // changes (research turns, already-done cards, <agenthub:close-card>
+  // bailouts) used to emit `console.error("[auto-commit] Autonomous PR
+  // path failed (nothing_to_publish): …")`. The dispatch-side classifier
+  // picked that up as a tool-error even though the outcome is a benign
+  // no-op. We now log nothing_to_publish at INFO and reserve `console.error`
+  // for actual failures (commit_failed / push_failed / pr_failed).
+  const mockBroadcast = vi.fn();
+
+  function makeAutonomousStmts(card: Record<string, unknown> | undefined) {
+    return {
+      getKanbanCardBySession: { get: vi.fn(() => card) },
+      getSession: { get: vi.fn(() => ({ name: 'Test session' })) },
+      setCardPrUrl: { run: vi.fn() },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-review', name: 'Review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      moveKanbanCard: { run: vi.fn() },
+      updateKanbanCard: { run: vi.fn() },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      getMessageById: { get: vi.fn() },
+      createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
+    } as Record<string, unknown>;
+  }
+
+  /** Clean worktree + no open PR for this branch → triggers nothing_to_publish. */
+  function mockExecCleanWorktreeNoPR() {
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        // Clean worktree: nothing uncommitted, nothing unpushed.
+        if (cmd.includes('git status --porcelain')) return ok('');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/no-op\n');
+        // gh pr view returns empty → no open PR for this branch.
+        if (cmd.startsWith('gh pr view')) return ok('');
+        return ok('');
+      },
+    );
+  }
+
+  /** Real failure path: push fails. Used to confirm console.error still fires. */
+  function mockExecPushFails(execCalls: string[]) {
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git log main..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/push-fail\n');
+        if (cmd.startsWith('git push')) return fail('Permission denied');
+        return ok('');
+      },
+    );
+  }
+
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    consoleLogSpy.mockRestore();
+  });
+
+  it('autonomous path: nothing_to_publish logs at INFO (console.log), not ERROR', async () => {
+    const stmts = makeAutonomousStmts({
+      id: 'card-noop',
+      title: 'Already done',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 1,
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecCleanWorktreeNoPR();
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-noop', 'agent-1', project, agent, '/repo/.worktrees/x', '');
+
+    // Must NOT log the autonomous-failure message at ERROR for nothing_to_publish.
+    const errorMatches = consoleErrorSpy.mock.calls.filter((args: unknown[]) =>
+      String(args[0] ?? '').includes('Autonomous PR path failed (nothing_to_publish)'),
+    );
+    expect(errorMatches).toHaveLength(0);
+
+    // Must log the benign no-op at INFO instead.
+    const infoMatches = consoleLogSpy.mock.calls.filter((args: unknown[]) =>
+      String(args[0] ?? '').includes('Autonomous PR path: nothing to publish'),
+    );
+    expect(infoMatches.length).toBeGreaterThan(0);
+  });
+
+  it('autonomous path: real failure (push_failed) still logs at ERROR', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeAutonomousStmts({
+      id: 'card-push-fail',
+      title: 'Push will fail',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 1,
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    mockExecPushFails(execCalls);
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-push-fail', 'agent-1', project, agent, '/repo/.worktrees/x', '');
+
+    // Real failure code (push_failed) MUST keep firing console.error so the
+    // tool-error classifier surfaces it.
+    const errorMatches = consoleErrorSpy.mock.calls.filter((args: unknown[]) =>
+      String(args[0] ?? '').includes('Autonomous PR path failed (push_failed)'),
+    );
+    expect(errorMatches.length).toBeGreaterThan(0);
+  });
+
+  it('ad-hoc-with-existing-PR path: nothing_to_publish logs at INFO, not ERROR', async () => {
+    // Construct the no-card / existing-PR ad-hoc shape: the worktree has
+    // changes (so the early !changes return is skipped), gh pr view finds an
+    // existing PR (so we recurse into commitPushAndCreatePR), and *inside*
+    // commitPushAndCreatePR the worktree is now reported clean — yielding
+    // the nothing_to_publish code on the inner call.
+    const stmts = {
+      getKanbanCardBySession: { get: vi.fn(() => undefined) },
+      getSession: { get: vi.fn(() => ({ name: 'Ad-hoc no-op' })) },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+    } as Record<string, unknown>;
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    // First-pass checkWorktreeChanges (in autoCommitAndPR) must report
+    // hasUnpushed=true so we enter the "existing PR" branch. Inside
+    // commitPushAndCreatePR's checkWorktreeChanges call we then report
+    // clean (no uncommitted, no unpushed) so it returns nothing_to_publish.
+    let statusCalls = 0;
+    let unpushedCalls = 0;
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) {
+          statusCalls += 1;
+          // First call (outer): clean. Subsequent (inner): clean too.
+          return ok('');
+        }
+        if (cmd.includes('git log @{upstream}..HEAD')) {
+          unpushedCalls += 1;
+          // First call: report unpushed so we enter the existing-PR branch.
+          // Subsequent calls (inner check): clean.
+          return ok(unpushedCalls === 1 ? 'abc commit\n' : '');
+        }
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/adhoc-noop\n');
+        if (cmd.startsWith('gh pr view')) return ok('https://github.com/test/repo/pull/77\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-adhoc-noop', 'agent-1', project, agent, '/repo/.worktrees/x', '');
+
+    // Sanity: the outer flow ran (status was queried at least once).
+    expect(statusCalls).toBeGreaterThan(0);
+
+    const errorMatches = consoleErrorSpy.mock.calls.filter((args: unknown[]) =>
+      String(args[0] ?? '').includes('Ad-hoc push/PR path failed (nothing_to_publish)'),
+    );
+    expect(errorMatches).toHaveLength(0);
+  });
+});
+
 describe('buildCardDescription', () => {
   it('includes the first user message as the task', () => {
     const messages = [
