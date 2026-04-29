@@ -549,19 +549,15 @@ function ClaudeAuthSection() {
   const [auth, setAuth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [loginLoading, setLoginLoading] = useState(false);
-  const [logoutLoading, setLogoutLoading] = useState(false);
-  const [oauthUrl, setOauthUrl] = useState(null);
-  const [pasteMode, setPasteMode] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiKeySaving, setApiKeySaving] = useState(false);
   const [apiKeyValidating, setApiKeyValidating] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState(null); // { type: 'success'|'error', msg }
-  const [callbackInput, setCallbackInput] = useState('');
-  const [callbackSubmitting, setCallbackSubmitting] = useState(false);
-  const [callbackStatus, setCallbackStatus] = useState(null); // { type: 'success'|'error', msg }
+  const [oauthTokenInput, setOauthTokenInput] = useState('');
+  const [oauthTokenSaving, setOauthTokenSaving] = useState(false);
+  const [oauthTokenStatus, setOauthTokenStatus] = useState(null);
+  const [showClaudeOauthToken, setShowClaudeOauthToken] = useState(false);
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
@@ -582,83 +578,6 @@ function ClaudeAuthSection() {
   useEffect(() => {
     fetchAuth();
   }, []);
-
-  const handleOAuthLogin = async () => {
-    setLoginLoading(true);
-    setOauthUrl(null);
-    setPasteMode(false);
-    setCallbackInput('');
-    setCallbackStatus(null);
-    try {
-      const data = await api.startClaudeOAuthLogin();
-      if (data.oauthUrl) {
-        setOauthUrl(data.oauthUrl);
-        setPasteMode(!!data.pasteMode);
-        window.open(data.oauthUrl, '_blank');
-        // Poll for completion
-        const poll = setInterval(async () => {
-          try {
-            const status = await api.getClaudeAuth();
-            if (status.oauth?.loggedIn) {
-              clearInterval(poll);
-              clearTimeout(timeout);
-              setAuth(status);
-              setOauthUrl(null);
-              setLoginLoading(false);
-            } else if (!status.loginInProgress) {
-              // Process exited without success — stop polling
-              clearInterval(poll);
-              clearTimeout(timeout);
-              setAuth(status);
-              setLoginLoading(false);
-              setCallbackStatus({
-                type: 'error',
-                msg: 'Login process exited without completing. Please try again.',
-              });
-            }
-          } catch {
-            /* keep polling */
-          }
-        }, 3000);
-        // Stop polling after 2 minutes
-        const timeout = setTimeout(() => {
-          clearInterval(poll);
-          setLoginLoading(false);
-        }, 120_000);
-      } else if (data.completed) {
-        await fetchAuth();
-        setLoginLoading(false);
-      } else {
-        setLoginLoading(false);
-      }
-    } catch {
-      setLoginLoading(false);
-    }
-  };
-
-  const handleCancelLogin = async () => {
-    try {
-      await api.cancelClaudeOAuthLogin();
-    } catch {
-      /* ignore */
-    }
-    setLoginLoading(false);
-    setOauthUrl(null);
-    setPasteMode(false);
-    setCallbackInput('');
-    setCallbackStatus(null);
-  };
-
-  const handleLogout = async () => {
-    setLogoutLoading(true);
-    try {
-      await api.logoutClaude();
-      await fetchAuth();
-    } catch {
-      /* ignore */
-    }
-    setLogoutLoading(false);
-  };
 
   const handleSaveApiKey = async () => {
     setApiKeySaving(true);
@@ -708,68 +627,38 @@ function ClaudeAuthSection() {
     setApiKeyValidating(false);
   };
 
-  const handleCopyUrl = () => {
-    if (oauthUrl) {
-      navigator.clipboard.writeText(oauthUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  const handleSubmitCallback = async () => {
-    if (!callbackInput.trim()) return;
-    setCallbackSubmitting(true);
-    setCallbackStatus(null);
+  const handleSaveOauthToken = async () => {
+    setOauthTokenSaving(true);
+    setOauthTokenStatus(null);
     try {
-      const result = await api.submitOAuthCallback(callbackInput.trim());
+      // Terminal-wrapped `claude setup-token` output may contain newlines inside the token.
+      const collapsed = oauthTokenInput.trim().replace(/\s+/g, '');
+      const result = await api.setClaudeOAuthToken(collapsed);
       if (result.ok) {
-        setCallbackStatus({
+        setOauthTokenStatus({
           type: 'success',
-          msg: 'Callback submitted — waiting for confirmation...',
+          msg: result.masked ? `Saved: ${result.masked}` : 'Cleared',
         });
-        setCallbackInput('');
-        // Poll for login completion — check both success AND process exit
-        const poll = setInterval(async () => {
-          try {
-            const status = await api.getClaudeAuth();
-            if (status.oauth?.loggedIn) {
-              clearInterval(poll);
-              clearTimeout(timeout);
-              setAuth(status);
-              setOauthUrl(null);
-              setLoginLoading(false);
-              setCallbackStatus(null);
-            } else if (!status.loginInProgress) {
-              // Process exited without success — stop polling immediately
-              clearInterval(poll);
-              clearTimeout(timeout);
-              setAuth(status);
-              setLoginLoading(false);
-              setCallbackStatus({
-                type: 'error',
-                msg: 'Login failed — the auth process exited without completing. Try logging in via CLI: claude /login',
-              });
-            }
-          } catch {
-            /* keep polling */
-          }
-        }, 3000);
-        // Stop polling after 2 minutes
-        const timeout = setTimeout(() => {
-          clearInterval(poll);
-          setLoginLoading(false);
-          setCallbackStatus({
-            type: 'error',
-            msg: 'Timed out waiting for login confirmation. Please try again.',
-          });
-        }, 120_000);
-      } else {
-        setCallbackStatus({ type: 'error', msg: result.error || 'Failed to submit callback' });
+        setOauthTokenInput('');
+        await fetchAuth();
       }
     } catch (err) {
-      setCallbackStatus({ type: 'error', msg: err.message || 'Failed to submit callback' });
+      setOauthTokenStatus({ type: 'error', msg: err.message });
     }
-    setCallbackSubmitting(false);
+    setOauthTokenSaving(false);
+  };
+
+  const handleClearOauthToken = async () => {
+    setOauthTokenSaving(true);
+    setOauthTokenStatus(null);
+    try {
+      await api.setClaudeOAuthToken('');
+      setOauthTokenStatus({ type: 'success', msg: 'Cleared' });
+      await fetchAuth();
+    } catch (err) {
+      setOauthTokenStatus({ type: 'error', msg: err.message });
+    }
+    setOauthTokenSaving(false);
   };
 
   if (loading)
@@ -811,6 +700,9 @@ function ClaudeAuthSection() {
   const tokenExpired = auth?.token?.expired;
   const apiKeyConfigured = auth?.apiKey?.configured;
   const apiKeySource = auth?.apiKey?.source;
+  const oauthTokenConfigured = auth?.oauthToken?.configured;
+  const oauthTokenSource = auth?.oauthToken?.source;
+  const subscriptionAuthOk = !!(isOAuthLoggedIn || oauthTokenConfigured);
   const activeMethod = auth?.activeMethod;
 
   return (
@@ -818,16 +710,15 @@ function ClaudeAuthSection() {
       <div>
         <h3 className="text-lg font-semibold mb-1">Claude Code Authentication</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Manage how Agent Hub authenticates with Claude Code. OAuth is the default method; an API
-          key can be used as an alternative.
+          API key or paste a token from <code className="text-gray-400">claude setup-token</code>.
+          Subscription CLI login stays in your terminal.
         </p>
       </div>
 
-      {/* Active Method Badge */}
       <div className="bg-gray-800 rounded-xl p-4">
         <div className="flex items-center justify-between mb-3">
           <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-            <Shield size={16} /> Authentication Status
+            <Shield size={16} /> Status
           </h4>
           <span
             className={`text-xs px-2.5 py-1 rounded-full font-medium ${
@@ -839,14 +730,14 @@ function ClaudeAuthSection() {
             }`}
           >
             {activeMethod === 'oauth'
-              ? 'OAuth Active'
+              ? 'CLI OAuth'
               : activeMethod === 'api-key'
                 ? 'API Key Active'
                 : 'Not Authenticated'}
           </span>
         </div>
 
-        {(isOAuthLoggedIn || apiKeyConfigured) && (
+        {(subscriptionAuthOk || apiKeyConfigured) && (
           <div className="grid grid-cols-2 gap-2 text-xs">
             {email && (
               <>
@@ -890,156 +781,106 @@ function ClaudeAuthSection() {
         )}
       </div>
 
-      {/* OAuth Section */}
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <LogIn size={16} /> OAuth Login
+          <Terminal size={16} /> Setup token
         </h4>
-
-        {isOAuthLoggedIn ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-sm text-emerald-400">
-              <CheckCircle2 size={16} />
-              <span>
-                Logged in as <span className="font-mono font-medium">{email}</span>
+        <p className="text-xs text-gray-500">
+          Run <code className="text-gray-400">claude setup-token</code>, then paste here.{' '}
+          <a
+            href="https://docs.anthropic.com/en/docs/claude-code/authentication#generate-a-long-lived-token"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:text-blue-300"
+          >
+            Docs
+          </a>
+        </p>
+        <p className="text-xs text-gray-500 mt-1">
+          If chats show <code className="text-gray-400">401 Invalid bearer</code>, run{' '}
+          <code className="text-gray-400">claude setup-token</code> again and paste the new token —
+          setup tokens can expire, and Hub runs Claude in non-interactive mode where refresh is less
+          reliable than in an interactive terminal. Multi-line terminal output is joined
+          automatically.
+        </p>
+        {oauthTokenConfigured && (
+          <div className="flex items-center justify-between bg-gray-900 rounded-lg p-3">
+            <div className="flex items-center gap-2 text-sm">
+              <CheckCircle2 size={14} className="text-emerald-400" />
+              <span className="text-gray-300">
+                Saved
+                <span className="text-gray-500 ml-1">
+                  ({oauthTokenSource}) {auth?.oauthToken?.masked || ''}
+                </span>
               </span>
             </div>
-            <button
-              onClick={handleLogout}
-              disabled={logoutLoading}
-              className="flex items-center gap-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-sm px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
-            >
-              {logoutLoading ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <LogOut size={14} />
-              )}
-              {logoutLoading ? 'Logging out...' : 'Logout'}
-            </button>
-          </div>
-        ) : loginLoading ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-sm text-blue-400">
-              <Loader2 size={16} className="animate-spin" />
-              <span>Waiting for OAuth completion...</span>
-            </div>
-            {oauthUrl && (
-              <div className="bg-gray-900 rounded-lg p-3 space-y-2">
-                <p className="text-xs text-gray-400">
-                  A browser tab should have opened. If not, copy and open this URL:
-                </p>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 text-xs text-blue-400 break-all">{oauthUrl}</code>
-                  <button
-                    onClick={handleCopyUrl}
-                    className="text-gray-400 hover:text-white p-1 shrink-0"
-                    title="Copy URL"
-                  >
-                    {copied ? (
-                      <CheckCircle2 size={14} className="text-emerald-400" />
-                    ) : (
-                      <Copy size={14} />
-                    )}
-                  </button>
-                  <a
-                    href={oauthUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-gray-400 hover:text-white p-1 shrink-0"
-                    title="Open in new tab"
-                  >
-                    <ExternalLink size={14} />
-                  </a>
-                </div>
-              </div>
+            {oauthTokenSource === 'config' && (
+              <button
+                type="button"
+                onClick={handleClearOauthToken}
+                disabled={oauthTokenSaving}
+                className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
+              >
+                {oauthTokenSaving ? '…' : 'Clear'}
+              </button>
             )}
-            {/* Callback URL paste input */}
-            <div className="bg-gray-900 rounded-lg p-3 space-y-2">
-              <p className="text-xs text-gray-400">
-                {pasteMode
-                  ? 'After approving on Anthropic\u2019s site, copy the authorization code shown on that page and paste it here:'
-                  : 'After logging in on Anthropic\u2019s site, paste the authorization code (or the full callback URL) here:'}
-              </p>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={callbackInput}
-                  onChange={(e) => {
-                    setCallbackInput(e.target.value);
-                    setCallbackStatus(null);
-                  }}
-                  className={`${inputClass} text-xs`}
-                  placeholder={
-                    pasteMode
-                      ? 'Paste the authorization code from the Anthropic page...'
-                      : 'Paste the authorization code or callback URL from Anthropic here...'
-                  }
-                  autoComplete="off"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleSubmitCallback();
-                  }}
-                />
-                <button
-                  onClick={handleSubmitCallback}
-                  disabled={!callbackInput.trim() || callbackSubmitting}
-                  className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-2 rounded-lg transition-colors shrink-0"
-                >
-                  {callbackSubmitting ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <CheckCircle2 size={12} />
-                  )}
-                  {callbackSubmitting ? 'Submitting...' : 'Submit'}
-                </button>
-              </div>
-              {callbackStatus && (
-                <div
-                  className={`flex items-center gap-2 text-xs ${
-                    callbackStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
-                  }`}
-                >
-                  {callbackStatus.type === 'success' ? (
-                    <CheckCircle2 size={12} />
-                  ) : (
-                    <AlertCircle size={12} />
-                  )}
-                  <span>{callbackStatus.msg}</span>
-                </div>
-              )}
-            </div>
-
-            <button
-              onClick={handleCancelLogin}
-              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-xs text-gray-500">
-              Log in via OAuth to authenticate with claude.ai. This opens a browser tab to complete
-              the login.
-            </p>
-            <button
-              onClick={handleOAuthLogin}
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
-            >
-              <LogIn size={14} />
-              Start OAuth Login
-            </button>
           </div>
         )}
+        <div className="space-y-2">
+          <div className="relative">
+            <input
+              type={showClaudeOauthToken ? 'text' : 'password'}
+              value={oauthTokenInput}
+              onChange={(e) => {
+                setOauthTokenInput(e.target.value);
+                setOauthTokenStatus(null);
+              }}
+              className={`${inputClass} pr-10 text-xs`}
+              placeholder="sk-ant-oat01-..."
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+            />
+            <button
+              type="button"
+              onClick={() => setShowClaudeOauthToken(!showClaudeOauthToken)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 p-1"
+            >
+              {showClaudeOauthToken ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={handleSaveOauthToken}
+            disabled={!oauthTokenInput.trim().replace(/\s+/g, '') || oauthTokenSaving}
+            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg"
+          >
+            {oauthTokenSaving ? <Loader2 size={12} className="animate-spin" /> : null}
+            {oauthTokenSaving ? 'Saving…' : 'Save'}
+          </button>
+          {oauthTokenStatus && (
+            <div
+              className={`flex items-center gap-2 text-xs ${
+                oauthTokenStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+              }`}
+            >
+              {oauthTokenStatus.type === 'success' ? (
+                <CheckCircle2 size={12} />
+              ) : (
+                <AlertCircle size={12} />
+              )}
+              <span>{oauthTokenStatus.msg}</span>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* API Key Section */}
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
           <Key size={16} /> API Key
         </h4>
         <p className="text-xs text-gray-500">
-          Alternative to OAuth — set an Anthropic API key that gets passed to all spawned Claude
-          Code processes.
+          Passed to spawned Claude Code processes (recommended for Agent Hub).
         </p>
 
         {apiKeyConfigured && (
@@ -1126,7 +967,6 @@ function ClaudeAuthSection() {
         </div>
       </div>
 
-      {/* Refresh */}
       <div className="flex justify-end">
         <button
           onClick={() => {

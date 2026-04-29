@@ -1354,6 +1354,8 @@ export interface AppConfig {
   githubApp: GitHubAppConfig | null;
   apiKey: string | null;
   anthropicApiKey: string | null;
+  /** From `claude setup-token`; applied as CLAUDE_CODE_OAUTH_TOKEN on spawns. */
+  claudeCodeOAuthToken: string | null;
   openaiApiKey: string | null;
   geminiApiKey: string | null;
   codexApiKey: string | null;

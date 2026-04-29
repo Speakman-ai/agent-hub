@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { buildSpawnEnv, refreshShellPath } from './config.js';
+import config, { buildSpawnEnv, normalizeClaudeSetupToken, refreshShellPath } from './config.js';
 
 describe('buildSpawnEnv — PATH propagation', () => {
   beforeEach(() => {
@@ -32,5 +32,38 @@ describe('buildSpawnEnv — PATH propagation', () => {
     const segs = (env.PATH as string).split(':');
     const unique = new Set(segs);
     expect(segs.length).toBe(unique.size);
+  });
+
+  it('sets CLAUDE_CODE_OAUTH_TOKEN when config includes setup-token value', () => {
+    const env = buildSpawnEnv({
+      ...config,
+      claudeCodeOAuthToken: 'sk-ant-oat01-test-token',
+    });
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-test-token');
+  });
+
+  it('collapses interior whitespace/newlines in setup-token (wrapped terminal paste)', () => {
+    const raw = 'sk-ant-oat01-partOne\npartTwo';
+    expect(normalizeClaudeSetupToken(raw)).toBe('sk-ant-oat01-partOnepartTwo');
+    const env = buildSpawnEnv({
+      ...config,
+      claudeCodeOAuthToken: raw,
+    });
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat01-partOnepartTwo');
+  });
+
+  it('does not pass ANTHROPIC_API_KEY when Hub config has no API key (avoids stale process.env)', () => {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-api03-should-not-leak';
+    try {
+      const env = buildSpawnEnv({
+        ...config,
+        anthropicApiKey: null,
+      });
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prev;
+    }
   });
 });

@@ -146,6 +146,29 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
 const mergedEngineDefaultModelsRaw =
   (fileConfig.engineDefaultModels as Record<string, string>) || DEFAULT_ENGINE_DEFAULT_MODELS;
 const mergedEngineDefaultModels = { ...mergedEngineDefaultModelsRaw };
+
+/**
+ * Prefer a real `claude` on disk. Many installs land at ~/.local/bin/claude (pip/npm)
+ * while config.json still points at /usr/local/bin/claude or Homebrew paths that
+ * don't exist on this machine — OAuth then runs the wrong binary or nothing useful.
+ */
+function pickClaudeBin(): string {
+  const envBin = process.env.CLAUDE_BIN?.trim();
+  const fileBin =
+    typeof fileConfig.claudeBin === 'string' ? (fileConfig.claudeBin as string).trim() : '';
+  const candidate = envBin || fileBin || '';
+  if (candidate && existsSync(candidate)) return candidate;
+  if (candidate && !existsSync(candidate)) {
+    console.warn(`[config] claudeBin "${candidate}" not found — using first existing default`);
+  }
+  const localUser = path.join(HOME, '.local', 'bin', 'claude');
+  if (existsSync(localUser)) return localUser;
+  const brewArm = '/opt/homebrew/bin/claude';
+  if (existsSync(brewArm)) return brewArm;
+  const legacy = '/usr/local/bin/claude';
+  if (existsSync(legacy)) return legacy;
+  return localUser;
+}
 const cursorAllowed = mergedEngineValidModels['cursor-agent'] || [];
 if (!cursorAllowed.includes(mergedEngineDefaultModels['cursor-agent'])) {
   mergedEngineDefaultModels['cursor-agent'] = cursorAllowed[0] || 'composer-2';
@@ -162,7 +185,7 @@ const config: AppConfig = {
   // $HOME/.local/bin/agent. Aligning the default here means a fresh box
   // with just the installer run (and no config.json override) works out
   // of the box — no sudo symlink into /usr/local/bin required.
-  claudeBin: resolve('CLAUDE_BIN', 'claudeBin', '/usr/local/bin/claude') as string,
+  claudeBin: pickClaudeBin(),
   cursorBin: resolve(
     'CURSOR_BIN',
     'cursorBin',
@@ -214,6 +237,7 @@ const config: AppConfig = {
   // ── Auth ───────────────────────────────────────────────────────
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
   anthropicApiKey: resolve('ANTHROPIC_API_KEY', 'anthropicApiKey', null),
+  claudeCodeOAuthToken: resolve('CLAUDE_CODE_OAUTH_TOKEN', 'claudeCodeOAuthToken', null),
   openaiApiKey: resolve('OPENAI_API_KEY', 'openaiApiKey', null),
   geminiApiKey: resolve('GEMINI_API_KEY', 'geminiApiKey', null),
   // Codex CLI reads its API key from either `OPENAI_API_KEY` or `CODEX_API_KEY`
@@ -240,14 +264,36 @@ export function defaultModelForEngine(engine: string): string {
   return config.engineDefaultModels[engine] || config.defaultModel;
 }
 
+/**
+ * `claude setup-token` is one logical string; terminal wrapping / copy-paste often inserts
+ * newlines in the middle. Anthropic expects a single Bearer value — embedded whitespace breaks auth.
+ */
+export function normalizeClaudeSetupToken(raw: string): string | null {
+  const collapsed = raw.trim().replace(/\s+/g, '');
+  return collapsed.length > 0 ? collapsed : null;
+}
+
 export function buildSpawnEnv(cfg: AppConfig = config): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   // Merge the login-shell PATH into the spawn env so newly-installed CLIs
   // (aws, gh, etc.) are visible without restarting the server. See
   // server/shell-path.ts for the full rationale.
   env.PATH = resolveSpawnPath(process.env.PATH);
+  // Hub config must win over the server process env: spreading `process.env` would keep a stale
+  // ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN after the user clears keys in Settings or switches
+  // to OAuth-only — Anthropic then prefers the API key and breaks Bearer/OAuth with 401.
   if (cfg.anthropicApiKey) {
     env.ANTHROPIC_API_KEY = cfg.anthropicApiKey;
+  } else {
+    delete env.ANTHROPIC_API_KEY;
+  }
+  const oauthToken = cfg.claudeCodeOAuthToken
+    ? normalizeClaudeSetupToken(cfg.claudeCodeOAuthToken)
+    : null;
+  if (oauthToken) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+  } else {
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
   }
   if (cfg.geminiApiKey) {
     // The Gemini CLI reads GEMINI_API_KEY from the environment when no cached

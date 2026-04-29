@@ -1,12 +1,110 @@
 import http from 'http';
 import { spawn } from 'child_process';
 import {
+  credentialsRawLooksLikeOAuthSession,
   extractOAuthUrl,
   extractStateFromUrl,
+  formatChildExitInfo,
   isPasteCodeMode,
+  parseCallbackPortFromLsofLine,
+  parseCredentialsFileContent,
   proxyCallbackToLocalServer,
   waitForLoginCompletion,
 } from '../routes/claude-auth.js';
+
+describe('credentialsRawLooksLikeOAuthSession', () => {
+  it('detects claudeAiOauth object prefix in partial JSON', () => {
+    expect(credentialsRawLooksLikeOAuthSession('{"claudeAiOauth":{')).toBe(true);
+  });
+
+  it('detects access_token field', () => {
+    expect(credentialsRawLooksLikeOAuthSession('{"access_token":"x"}')).toBe(true);
+  });
+
+  it('returns false for unrelated JSON', () => {
+    expect(credentialsRawLooksLikeOAuthSession('{"foo":1}')).toBe(false);
+  });
+});
+
+describe('parseCredentialsFileContent', () => {
+  it('treats empty input as logged out', () => {
+    expect(parseCredentialsFileContent(null).oauth.loggedIn).toBe(false);
+    expect(parseCredentialsFileContent('').oauth.loggedIn).toBe(false);
+    expect(parseCredentialsFileContent('   ').oauth.loggedIn).toBe(false);
+  });
+
+  it('parses claudeAiOauth with future expiresAt', () => {
+    const future = Date.now() + 86400000;
+    const json = JSON.stringify({ claudeAiOauth: { expiresAt: future } });
+    const r = parseCredentialsFileContent(json);
+    expect(r.oauth.loggedIn).toBe(true);
+    expect(r.tokenInfo?.expiresAt).toBe(future);
+  });
+
+  it('parses claude_ai_oauth snake_case bundle', () => {
+    const future = Date.now() + 3600000;
+    const json = JSON.stringify({ claude_ai_oauth: { expiresAt: future, scopes: ['a'] } });
+    const r = parseCredentialsFileContent(json);
+    expect(r.oauth.loggedIn).toBe(true);
+    expect(r.tokenInfo?.scopes).toEqual(['a']);
+  });
+
+  it('infers logged in from nested oauth-like key when bundle shape varies', () => {
+    const json = JSON.stringify({
+      anthropicOAuthSession: { expiresAt: Date.now() + 10000, subscriptionType: 'pro' },
+    });
+    const r = parseCredentialsFileContent(json);
+    expect(r.oauth.loggedIn).toBe(true);
+    expect(r.tokenInfo?.subscriptionType).toBe('pro');
+  });
+
+  it('treats invalid JSON as logged in when raw text clearly contains OAuth material', () => {
+    const broken = '{"claudeAiOauth":{';
+    const r = parseCredentialsFileContent(broken);
+    expect(r.oauth.loggedIn).toBe(true);
+  });
+
+  it('treats invalid JSON as logged out when unrecognizable', () => {
+    const r = parseCredentialsFileContent('{not json');
+    expect(r.oauth.loggedIn).toBe(false);
+  });
+});
+
+describe('formatChildExitInfo', () => {
+  it('prefers signal when process was killed', () => {
+    expect(formatChildExitInfo(null, 'SIGTERM')).toBe('signal=SIGTERM');
+  });
+
+  it('includes non-zero code with signal when Node supplies both', () => {
+    expect(formatChildExitInfo(-2, 'SIGKILL')).toBe('signal=SIGKILL code=-2');
+  });
+
+  it('formats numeric exit when no signal', () => {
+    expect(formatChildExitInfo(1, null)).toBe('code=1');
+    expect(formatChildExitInfo(-2, null)).toBe('code=-2');
+  });
+
+  it('formats null code without signal', () => {
+    expect(formatChildExitInfo(null, null)).toBe('code=null');
+  });
+});
+
+describe('parseCallbackPortFromLsofLine', () => {
+  it('parses macOS-style 127.0.0.1 LISTEN line', () => {
+    const line =
+      'node  12345  user  16u  IPv4 0xf2af6abf05301f88      0t0  TCP 127.0.0.1:45123 (LISTEN)';
+    expect(parseCallbackPortFromLsofLine(line)).toBe(45123);
+  });
+
+  it('parses * wildcard bind LISTEN line', () => {
+    const line = 'node  48586  user  16u  IPv4 0x61c995557e404313      0t0  TCP *:3051 (LISTEN)';
+    expect(parseCallbackPortFromLsofLine(line)).toBe(3051);
+  });
+
+  it('returns null for unrelated lines', () => {
+    expect(parseCallbackPortFromLsofLine('bogus')).toBeNull();
+  });
+});
 
 describe('extractOAuthUrl', () => {
   it('extracts URL from "visit: https://..." text', () => {

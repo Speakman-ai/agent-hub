@@ -1787,6 +1787,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       return base;
     })();
 
+    if (process.env.AGENT_HUB_DEBUG_CLAUDE_AUTH === '1' && engine === 'claude-code') {
+      console.log('[chat] claude-code spawn auth:', {
+        sessionId,
+        hasAnthropicApiKey: Boolean(spawnEnv.ANTHROPIC_API_KEY),
+        hasClaudeOAuthToken: Boolean(spawnEnv.CLAUDE_CODE_OAUTH_TOKEN),
+        cwd: effectiveCwd,
+      });
+    }
+
     const chainStartedAtMs = msg._chainStartedAtMs ?? Date.now();
 
     const cliTurnStartMs = Date.now();

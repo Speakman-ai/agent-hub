@@ -1,16 +1,31 @@
 import { Router, Request, Response } from 'express';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
 import { execFile, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import http from 'http';
 import os from 'os';
 import path from 'path';
 import type { RouteDeps, AppConfig } from '../types.js';
+import config, { buildSpawnEnv, normalizeClaudeSetupToken } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
-const HOME = os.homedir();
-const CREDENTIALS_PATH = path.join(HOME, '.claude', '.credentials.json');
+/** Prefer $HOME / %USERPROFILE% over raw os.homedir() so we match the user's shell & Claude CLI. */
+function getUserHome(): string {
+  return process.env.HOME || process.env.USERPROFILE || os.homedir();
+}
+
+/**
+ * Claude Code credentials file — must match the CLI.
+ * See CLAUDE_CONFIG_DIR (custom dir) vs default ~/.claude/.credentials.json.
+ */
+export function getClaudeCredentialsPath(): string {
+  const raw = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (raw) {
+    return path.join(path.resolve(raw), '.credentials.json');
+  }
+  return path.join(getUserHome(), '.claude', '.credentials.json');
+}
 
 interface ClaudeRunResult {
   stdout: string;
@@ -30,6 +45,96 @@ interface CredentialsOAuth {
   rateLimitTier?: string | null;
 }
 
+/**
+ * When JSON is invalid mid-write or the CLI uses slightly different keys, still detect OAuth material.
+ * Conservative: require obvious token/oauth JSON keys (not just any substring).
+ */
+export function credentialsRawLooksLikeOAuthSession(rawText: string): boolean {
+  const t = rawText.trim();
+  if (!t) return false;
+  if (/"(?:claudeAiOauth|claude_ai_oauth)"\s*:\s*\{/.test(t)) return true;
+  if (/"(?:refresh_token|access_token|oauth_token|id_token)"\s*:\s*"/.test(t)) return true;
+  return false;
+}
+
+function extractOAuthBundleFromRoot(raw: Record<string, unknown>): CredentialsOAuth | null {
+  const direct = raw.claudeAiOauth ?? raw.claude_ai_oauth;
+  if (direct && typeof direct === 'object') {
+    return direct as CredentialsOAuth;
+  }
+  for (const k of Object.keys(raw)) {
+    if (!/oauth|anthropic|claude|credential|session/i.test(k)) continue;
+    const v = raw[k];
+    if (!v || typeof v !== 'object') continue;
+    const o = v as CredentialsOAuth & Record<string, unknown>;
+    if (typeof o.expiresAt === 'number' || Array.isArray(o.scopes) || o.subscriptionType != null) {
+      return o;
+    }
+    if (Object.keys(o).length > 0) {
+      return o as CredentialsOAuth;
+    }
+  }
+  return null;
+}
+
+export type ParsedCredentialsFile = {
+  oauth: OAuthStatus;
+  tokenInfo: Record<string, unknown> | null;
+};
+
+/** Parse ~/.claude/.credentials.json for OAuth + token display (no CLI). Exported for unit tests. */
+export function parseCredentialsFileContent(rawText: string | null): ParsedCredentialsFile {
+  if (!rawText?.trim()) {
+    return { oauth: { loggedIn: false }, tokenInfo: null };
+  }
+
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(rawText) as Record<string, unknown>;
+  } catch {
+    if (credentialsRawLooksLikeOAuthSession(rawText)) {
+      return { oauth: { loggedIn: true }, tokenInfo: null };
+    }
+    return { oauth: { loggedIn: false }, tokenInfo: null };
+  }
+
+  const bundle = extractOAuthBundleFromRoot(raw);
+  let loggedIn = false;
+  if (bundle) {
+    if (typeof bundle.expiresAt === 'number') {
+      loggedIn = Date.now() < bundle.expiresAt;
+    } else {
+      loggedIn = Object.keys(bundle as object).length > 0;
+    }
+  } else {
+    for (const k of Object.keys(raw)) {
+      if (!/oauth|anthropic|claude|credential/i.test(k)) continue;
+      const v = raw[k];
+      if (v && typeof v === 'object' && Object.keys(v as object).length > 0) {
+        loggedIn = true;
+        break;
+      }
+    }
+  }
+
+  if (!loggedIn && credentialsRawLooksLikeOAuthSession(rawText)) {
+    loggedIn = true;
+  }
+
+  let tokenInfo: Record<string, unknown> | null = null;
+  if (bundle) {
+    tokenInfo = {
+      expiresAt: bundle.expiresAt,
+      expired: bundle.expiresAt ? Date.now() > bundle.expiresAt : null,
+      scopes: bundle.scopes || [],
+      subscriptionType: bundle.subscriptionType || null,
+      rateLimitTier: bundle.rateLimitTier || null,
+    };
+  }
+
+  return { oauth: { loggedIn }, tokenInfo };
+}
+
 function runClaude(
   bin: string,
   args: string[],
@@ -37,8 +142,8 @@ function runClaude(
 ): Promise<ClaudeRunResult> {
   return new Promise((resolve) => {
     const proc = spawn(bin, args, {
-      cwd: HOME,
-      env: { ...process.env, ...opts.env },
+      cwd: getUserHome(),
+      env: { ...buildSpawnEnv(config), ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: opts.timeout || 15_000,
     });
@@ -51,6 +156,39 @@ function runClaude(
     proc.on('close', (code) => resolve({ stdout, stderr, code }));
     proc.on('error', (err) => resolve({ stdout, stderr: err.message, code: 1 }));
   });
+}
+
+function readCredentialsFileSafe(): string | null {
+  const primary = getClaudeCredentialsPath();
+  const fallback = path.join(getUserHome(), '.claude', '.credentials.json');
+  const paths = primary === fallback ? [primary] : [primary, fallback];
+  for (const p of paths) {
+    try {
+      if (existsSync(p)) return readFileSync(p, 'utf-8');
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+/** Latest mtime among known credential file locations (detect OAuth write during paste-code). */
+function credentialsFilesMaxMtime(): number | null {
+  const primary = getClaudeCredentialsPath();
+  const fallback = path.join(getUserHome(), '.claude', '.credentials.json');
+  const paths = [...new Set([primary, fallback])];
+  let max: number | null = null;
+  for (const p of paths) {
+    try {
+      if (existsSync(p)) {
+        const m = statSync(p).mtimeMs;
+        max = max === null ? m : Math.max(max, m);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return max;
 }
 
 export function extractOAuthUrl(text: string): string | null {
@@ -93,12 +231,48 @@ export function isPasteCodeMode(url: string): boolean {
   return false;
 }
 
+/** Parse a single `lsof` LISTEN line for a locally bound TCP port (macOS/BSD output). */
+export function parseCallbackPortFromLsofLine(line: string): number | null {
+  const m = line.match(
+    /\bTCP\s+(?:127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0|\*):(\d+)\s+\(LISTEN\)/i,
+  );
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/** Log-friendly description of how the CLI subprocess ended (Node passes `signal` when killed). */
+export function formatChildExitInfo(code: number | null, signal: NodeJS.Signals | null): string {
+  if (signal) {
+    return code != null && code !== 0 ? `signal=${signal} code=${code}` : `signal=${signal}`;
+  }
+  if (code === null) return 'code=null';
+  return `code=${code}`;
+}
+
+async function detectCallbackPortLsof(pid: number): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'lsof',
+      ['-nP', '-a', '-iTCP', '-sTCP:LISTEN', '-p', String(pid)],
+      { timeout: 3000 },
+    );
+    for (const line of stdout.split('\n')) {
+      const port = parseCallbackPortFromLsofLine(line);
+      if (port) return port;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Detect the localhost port that `claude auth login` opens for its OAuth callback server.
- * NOTE: Uses `ss` which is Linux-only. On macOS, `lsof -i -P` would be needed instead.
- * This is fine for now since the server runs on EC2 (Linux).
+ * Uses `lsof` on macOS and `ss` on Linux (EC2).
  */
 async function detectCallbackPort(pid: number): Promise<number | null> {
+  if (os.platform() === 'darwin') {
+    return detectCallbackPortLsof(pid);
+  }
   try {
     const { stdout } = await execFileAsync('ss', ['-tlnp'], { timeout: 3000 });
     const lines = stdout.split('\n').filter((l) => l.includes(`pid=${pid},`));
@@ -147,6 +321,12 @@ export function waitForLoginCompletion(
   timeoutMs: number,
 ): Promise<{ code: number | null; tailOutput: string; timedOut: boolean }> {
   return new Promise((resolve) => {
+    // Process may have already exited before we attach (fast CLI paths).
+    if (proc.exitCode !== null) {
+      resolve({ code: proc.exitCode, tailOutput: '', timedOut: false });
+      return;
+    }
+
     let tailOutput = '';
     const onTail = (chunk: Buffer): void => {
       tailOutput += chunk.toString();
@@ -184,6 +364,8 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   let activeLoginPort: number | null = null;
   let activeLoginState: string | null = null;
   let activeLoginPasteMode: boolean = false;
+  /** `mtimeMs` of ~/.claude/.credentials.json when this login attempt started (detect successful write during paste-code). */
+  let credentialsMtimeAtLoginStart: number | null = null;
 
   const resetActiveLogin = (): void => {
     activeLoginProc = null;
@@ -191,43 +373,38 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
     activeLoginPort = null;
     activeLoginState = null;
     activeLoginPasteMode = false;
+    credentialsMtimeAtLoginStart = null;
   };
 
   router.get('/api/config/claude-auth', async (_req: Request, res: Response) => {
     try {
-      const { stdout, code } = await runClaude(config.claudeBin, ['auth', 'status']);
-      let oauthStatus: OAuthStatus | null = null;
+      // Never call `claude auth status` here — it can hang (spawn timeout unreliable) or deadlock
+      // with `auth login`. UI reads only `~/.claude/.credentials.json` (or CLAUDE_CONFIG_DIR).
+      const credText = readCredentialsFileSafe();
+      const parsed = parseCredentialsFileContent(credText);
+      let oauthStatus: OAuthStatus = parsed.oauth;
+      let tokenInfo = parsed.tokenInfo;
 
-      if (code === 0 && stdout.trim()) {
-        try {
-          oauthStatus = JSON.parse(stdout.trim()) as OAuthStatus;
-        } catch {
-          oauthStatus = { raw: stdout.trim() };
-        }
-      }
-
-      let tokenInfo: Record<string, unknown> | null = null;
-      if (existsSync(CREDENTIALS_PATH)) {
-        try {
-          const creds = JSON.parse(readFileSync(CREDENTIALS_PATH, 'utf-8')) as {
-            claudeAiOauth?: CredentialsOAuth;
-          };
-          const oauth = creds.claudeAiOauth;
-          if (oauth) {
-            tokenInfo = {
-              expiresAt: oauth.expiresAt,
-              expired: oauth.expiresAt ? Date.now() > oauth.expiresAt : null,
-              scopes: oauth.scopes || [],
-              subscriptionType: oauth.subscriptionType || null,
-              rateLimitTier: oauth.rateLimitTier || null,
-            };
-          }
-        } catch {
-          /* credentials file unreadable */
+      if (activeLoginProc && !oauthStatus.loggedIn) {
+        const now = credentialsFilesMaxMtime();
+        if (
+          now !== null &&
+          credentialsMtimeAtLoginStart !== null &&
+          now > credentialsMtimeAtLoginStart
+        ) {
+          oauthStatus = { loggedIn: true };
+        } else if (credentialsMtimeAtLoginStart === null && credText) {
+          oauthStatus = { loggedIn: true };
         }
       }
 
       const apiKeyConfigured = !!(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+      const oauthTokenConfigured = !!(
+        config.claudeCodeOAuthToken || process.env.CLAUDE_CODE_OAUTH_TOKEN
+      );
+      const oauthTokenStr =
+        config.claudeCodeOAuthToken || process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
+      const subscriptionOAuthActive = !!(oauthStatus.loggedIn || oauthTokenConfigured);
 
       // Safety: clear stale process reference if the subprocess has already exited
       if (activeLoginProc && activeLoginProc.exitCode !== null) {
@@ -249,7 +426,16 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
               ? 'config'
               : null,
         },
-        activeMethod: apiKeyConfigured ? 'api-key' : oauthStatus?.loggedIn ? 'oauth' : 'none',
+        oauthToken: {
+          configured: oauthTokenConfigured,
+          source: process.env.CLAUDE_CODE_OAUTH_TOKEN
+            ? 'environment'
+            : config.claudeCodeOAuthToken
+              ? 'config'
+              : null,
+          masked: oauthTokenConfigured ? `••••••••${oauthTokenStr.slice(-4)}` : null,
+        },
+        activeMethod: apiKeyConfigured ? 'api-key' : subscriptionOAuthActive ? 'oauth' : 'none',
         loginInProgress,
       });
     } catch (err: unknown) {
@@ -288,9 +474,15 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
     const loginId = Date.now().toString(36);
     activeLoginId = loginId;
 
+    credentialsMtimeAtLoginStart = credentialsFilesMaxMtime();
+
+    console.log(
+      `[claude-auth] OAuth login spawn — credentials file(s): primary=${getClaudeCredentialsPath()} CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? '(unset)'}`,
+    );
+
     const proc = spawn(config.claudeBin, args, {
-      cwd: HOME,
-      env: { ...process.env, BROWSER: 'false' },
+      cwd: getUserHome(),
+      env: { ...buildSpawnEnv(config), BROWSER: 'false' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -313,23 +505,27 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
         console.log(`[claude-auth] OAuth URL indicates paste-code mode (loginId=${loginId})`);
       }
 
-      // Detect the local callback server port the CLI opened.
-      // The CLI binds a localhost HTTP server in BOTH paste-code mode and
-      // standard (browser-redirect) mode — we proxy the OAuth callback there
-      // in either case. Retry a few times since the server may start slightly
-      // after the URL is printed.
-      const detectPort = async (retries: number): Promise<void> => {
-        const port = await detectCallbackPort(proc.pid!);
-        if (port) {
-          activeLoginPort = port;
-          console.log(`[claude-auth] Detected CLI callback server on port ${port}`);
-        } else if (retries > 0) {
-          setTimeout(() => detectPort(retries - 1), 500);
-        } else {
-          console.log('[claude-auth] Could not detect CLI callback server port');
-        }
-      };
-      detectPort(5);
+      // Browser-redirect OAuth: detect the CLI's localhost callback server for HTTP proxy.
+      // Paste-code (`code=true`): user pastes the auth code here — `lsof` may match an unrelated
+      // listener on the CLI PID (ECONNREFUSED). Skip detection; POST /callback uses stdin only.
+      if (!activeLoginPasteMode) {
+        const detectPort = async (retries: number): Promise<void> => {
+          const port = await detectCallbackPort(proc.pid!);
+          if (port) {
+            activeLoginPort = port;
+            console.log(`[claude-auth] Detected CLI callback server on port ${port}`);
+          } else if (retries > 0) {
+            setTimeout(() => detectPort(retries - 1), 500);
+          } else {
+            console.log('[claude-auth] Could not detect CLI callback server port');
+          }
+        };
+        detectPort(5);
+      } else {
+        console.log(
+          `[claude-auth] Paste-code mode — skipping localhost listener detection (loginId=${loginId})`,
+        );
+      }
 
       res.json({ ok: true, loginId, oauthUrl: url, pasteMode: activeLoginPasteMode });
     };
@@ -346,7 +542,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
     proc.stdout!.on('data', onData);
     proc.stderr!.on('data', onData);
 
-    proc.on('close', (code) => {
+    proc.on('close', (code, signal) => {
       if (activeLoginId === loginId) {
         resetActiveLogin();
       }
@@ -369,16 +565,31 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
         }
       } else {
         const status = code === 0 ? 'success' : 'failed';
+        const tail = allOutput.trim().slice(0, 500);
+        const exitInfo = status === 'failed' ? ` ${formatChildExitInfo(code, signal)}` : '';
         console.log(
-          `[claude-auth] OAuth login ${status} (loginId=${loginId})${status === 'failed' ? ` output: ${allOutput.trim().slice(0, 500)}` : ''}`,
+          `[claude-auth] OAuth login ${status} (loginId=${loginId})${exitInfo}${status === 'failed' ? ` output: ${tail || '(empty)'}` : ''}`,
         );
+        if (status === 'failed') {
+          const cmd = [config.claudeBin, ...args].map((a) =>
+            /\s/.test(a) ? JSON.stringify(a) : a,
+          );
+          console.log(
+            `[claude-auth] Same login is run as: ${cmd.join(' ')}  (set claudeBin in data-dir config if wrong). If this keeps failing, run that command in a terminal or use an API key in Settings.`,
+          );
+        }
         if (broadcast) {
           broadcast({
             type: 'claude-auth-update',
             loginId,
             status,
             ...(status === 'failed' && {
-              error: allOutput.trim().slice(0, 500) || 'Login process exited unexpectedly',
+              error:
+                tail ||
+                `Login process exited unexpectedly (${formatChildExitInfo(
+                  code,
+                  signal,
+                )}). If this repeats, run the same \`claude auth login\` in a terminal or add an API key in Settings.`,
             }),
           });
         }
@@ -446,17 +657,15 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
 
     const proc = activeLoginProc;
 
-    // If we don't have the port yet, try one more time. The CLI opens a
-    // localhost HTTP callback server in BOTH paste-code mode and standard mode,
-    // so we proxy through it in either case.
-    if (!activeLoginPort && proc.pid) {
+    // Retry port detection for browser-redirect flows only (paste-code uses stdin; see sendUrl).
+    if (!activeLoginPasteMode && !activeLoginPort && proc.pid) {
       activeLoginPort = await detectCallbackPort(proc.pid);
     }
 
-    // ─── Preferred path: proxy through the CLI's localhost callback server ───
-    if (activeLoginPort && activeLoginState) {
+    // ─── Browser redirect: HTTP proxy to CLI localhost callback server ───
+    if (!activeLoginPasteMode && activeLoginPort && activeLoginState) {
       console.log(
-        `[claude-auth] Proxying callback to localhost:${activeLoginPort} (state=${activeLoginState.slice(0, 8)}..., pasteMode=${activeLoginPasteMode})`,
+        `[claude-auth] Proxying callback to localhost:${activeLoginPort} (state=${activeLoginState.slice(0, 8)}..., pasteMode=false)`,
       );
 
       let proxyResult: { status: number; body: string };
@@ -470,60 +679,69 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
         `[claude-auth] Proxy response: status=${proxyResult.status} body=${(proxyResult.body || '').slice(0, 200)}`,
       );
 
-      if (proxyResult.status < 200 || proxyResult.status >= 400) {
+      const proxyOk = proxyResult.status >= 200 && proxyResult.status < 400;
+      const body = proxyResult.body || '';
+      const proxyConnFailed =
+        !proxyOk && /ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ETIMEDOUT/i.test(body);
+
+      if (proxyOk) {
+        const completion = await waitForLoginCompletion(proc, 8_000);
+        if (completion.timedOut) {
+          return res.json({
+            ok: true,
+            pending: true,
+            output: 'Code submitted — waiting for login to finalize (watch for status update)',
+          });
+        }
+        if (completion.code === 0) {
+          return res.json({ ok: true, output: 'Code accepted — login complete' });
+        }
         return res.status(502).json({
           ok: false,
-          error: `CLI callback returned ${proxyResult.status}: ${proxyResult.body || 'unknown error'}`,
+          error:
+            completion.tailOutput.trim().slice(0, 500) ||
+            `CLI rejected the code (exit ${completion.code ?? 'unknown'})`,
         });
       }
 
-      // CLI accepted the callback. Wait briefly for the token exchange + exit
-      // so we can return a truthful success/failure rather than just "submitted".
-      const completion = await waitForLoginCompletion(proc, 8_000);
-      if (completion.timedOut) {
-        return res.json({
-          ok: true,
-          pending: true,
-          output: 'Code submitted — waiting for login to finalize (watch for status update)',
+      if (proxyConnFailed) {
+        console.log(
+          `[claude-auth] Proxy unreachable (${body.slice(0, 120)}) — submitting authorization code via stdin`,
+        );
+      } else {
+        return res.status(502).json({
+          ok: false,
+          error: `CLI callback returned ${proxyResult.status}: ${body || 'unknown error'}`,
         });
       }
-      if (completion.code === 0) {
-        return res.json({ ok: true, output: 'Code accepted — login complete' });
-      }
-      return res.status(502).json({
-        ok: false,
-        error:
-          completion.tailOutput.trim().slice(0, 500) ||
-          `CLI rejected the code (exit ${completion.code ?? 'unknown'})`,
-      });
+    } else if (activeLoginPasteMode) {
+      console.log('[claude-auth] Paste-code mode — submitting authorization code via stdin');
+    } else {
+      console.log('[claude-auth] No callback port/state — submitting authorization code via stdin');
     }
 
-    // ─── Fallback: stdin write (only when port detection failed entirely) ───
-    console.log('[claude-auth] No callback port/state — falling back to stdin write');
+    // ─── Paste-code and fallback: write authorization code to CLI stdin ───
     try {
-      proc.stdin?.write(authCode + '\n');
+      const stdin = proc.stdin;
+      if (stdin && !stdin.destroyed) {
+        stdin.write(authCode + '\n');
+        stdin.end();
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return res.status(500).json({ error: `Failed to submit code via stdin: ${message}` });
     }
 
-    const fallback = await waitForLoginCompletion(proc, 8_000);
-    if (fallback.timedOut) {
-      return res.json({
-        ok: true,
-        pending: true,
-        output:
-          'Code submitted via stdin fallback — waiting for login to finalize (watch for status update)',
-      });
-    }
-    if (fallback.code === 0) {
-      return res.json({ ok: true, output: 'Code accepted — login complete' });
-    }
-    return res.status(502).json({
-      ok: false,
-      error:
-        fallback.tailOutput.trim().slice(0, 500) ||
-        `CLI rejected the code (exit ${fallback.code ?? 'unknown'})`,
+    // Return immediately — long waits + polling would block this request and stall the UI spinner.
+    // GET /claude-auth avoids `auth status` while login is active (see above); the client polls until
+    // credentials show logged in or the CLI process exits.
+    console.log(
+      '[claude-auth] Authorization code written to stdin — returning; poll GET /claude-auth for completion',
+    );
+    return res.json({
+      ok: true,
+      pending: true,
+      output: 'Code sent to Claude CLI. Completing login…',
     });
   });
 
@@ -556,6 +774,44 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       ok: true,
       configured: !!apiKey,
       masked: apiKey ? `••••••••${apiKey.slice(-4)}` : null,
+    });
+  });
+
+  router.post('/api/config/claude-auth/oauth-token', (req: Request, res: Response) => {
+    const { oauthToken } = (req.body || {}) as { oauthToken?: unknown };
+    if (oauthToken !== undefined && typeof oauthToken !== 'string') {
+      return res.status(400).json({ error: 'oauthToken must be a string' });
+    }
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: Record<string, unknown> = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      /* no file yet */
+    }
+
+    const mutableConfig = config as AppConfig & { claudeCodeOAuthToken: string | null };
+    let storedToken: string | null = null;
+    if (oauthToken) {
+      const normalized = normalizeClaudeSetupToken(oauthToken);
+      if (!normalized) {
+        return res.status(400).json({ error: 'oauthToken is empty after removing whitespace' });
+      }
+      fileConfig.claudeCodeOAuthToken = normalized;
+      mutableConfig.claudeCodeOAuthToken = normalized;
+      storedToken = normalized;
+    } else {
+      delete fileConfig.claudeCodeOAuthToken;
+      mutableConfig.claudeCodeOAuthToken = null;
+    }
+
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    res.json({
+      ok: true,
+      configured: !!storedToken,
+      masked: storedToken ? `••••••••${storedToken.slice(-4)}` : null,
     });
   });
 

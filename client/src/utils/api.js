@@ -437,21 +437,14 @@ export const api = {
 
   // Claude Code Authentication
   getClaudeAuth: () => fetchJSON('/config/claude-auth'),
-  startClaudeOAuthLogin: (opts = {}) =>
-    fetchJSON('/config/claude-auth/login', {
-      method: 'POST',
-      body: JSON.stringify(opts),
-      timeout: 20000,
-    }),
-  cancelClaudeOAuthLogin: () => fetchJSON('/config/claude-auth/cancel-login', { method: 'POST' }),
-  submitOAuthCallback: (code) =>
-    fetchJSON('/config/claude-auth/callback', {
-      method: 'POST',
-      body: JSON.stringify({ code }),
-    }),
   logoutClaude: () => fetchJSON('/config/claude-auth', { method: 'DELETE' }),
   setClaudeApiKey: (apiKey) =>
     fetchJSON('/config/claude-auth/api-key', { method: 'POST', body: JSON.stringify({ apiKey }) }),
+  setClaudeOAuthToken: (oauthToken) =>
+    fetchJSON('/config/claude-auth/oauth-token', {
+      method: 'POST',
+      body: JSON.stringify({ oauthToken }),
+    }),
   validateClaudeApiKey: (apiKey) =>
     fetchJSON('/config/claude-auth/validate-key', {
       method: 'POST',

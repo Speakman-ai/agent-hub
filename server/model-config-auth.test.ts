@@ -38,6 +38,7 @@ function makeConfig(): AppConfig {
     githubApp: null,
     apiKey: null,
     anthropicApiKey: null,
+    claudeCodeOAuthToken: null,
     openaiApiKey: null,
     geminiApiKey: null,
     codexApiKey: null,
