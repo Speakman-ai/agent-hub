@@ -14,11 +14,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const CONNECTION_KEY = 'agent-hub-connection';
 const REMOTE_ORGS_KEY = 'agent-hub-remote-orgs';
 const ACTIVE_ORG_KEY = 'agent-hub-active-org';
+const JWT_KEY = 'agent-hub-jwt';
 
 function clearAllOrgState() {
   localStorage.removeItem(CONNECTION_KEY);
   localStorage.removeItem(REMOTE_ORGS_KEY);
   localStorage.removeItem(ACTIVE_ORG_KEY);
+  localStorage.removeItem(JWT_KEY);
   // Wipe any lingering electronAPI stub from other tests.
   delete window.electronAPI;
 }
@@ -154,5 +156,97 @@ describe('getActiveOrgApiId', () => {
   it('returns null when there is no active org', async () => {
     const { getActiveOrgApiId } = await import('./orgs.js');
     expect(getActiveOrgApiId()).toBeNull();
+  });
+});
+
+/**
+ * Auth header propagation — regression coverage for the SetupWizard 401.
+ *
+ * Background: when the server has JWT auth configured (an `auth.json` exists,
+ * e.g. via `AGENT_HUB_DEFAULT_PASSWORD=auto` on a deployed instance), every
+ * call into `/api/orgs` runs through the JWT middleware. Before this fix the
+ * org helpers in this module fired bare fetches with no `Authorization`
+ * header, which the middleware rejected with 401 — blocking the
+ * "Create Your Organization" wizard step even after the user had signed in.
+ *
+ * Each test below seeds a JWT in localStorage and asserts the helper attaches
+ * `Authorization: Bearer <token>` to the outgoing request.
+ */
+describe('orgs.js — auth header propagation', () => {
+  beforeEach(() => {
+    clearAllOrgState();
+    vi.resetModules();
+    // Seed a non-expired JWT so getAuthHeaders() returns a Bearer header.
+    localStorage.setItem(
+      JWT_KEY,
+      JSON.stringify({
+        token: 'jwt-token-abc',
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        user: { id: 'u1', username: 'admin', role: 'Owner' },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    clearAllOrgState();
+    vi.restoreAllMocks();
+  });
+
+  function authHeaderOf(call) {
+    const [, init] = call;
+    const headers = init?.headers ?? {};
+    return headers.Authorization ?? headers.authorization;
+  }
+
+  it('createOrg() sends the JWT bearer header on POST /api/orgs', async () => {
+    // createOrg triggers fetchOrgs() on success, so the GET reload must
+    // return an array shape — otherwise allOrgs() blows up on `[..._localOrgs]`.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      if (init?.method === 'POST') {
+        return { ok: true, json: async () => ({ id: 'new-org', name: 'McSteen', mode: 'local' }) };
+      }
+      return { ok: true, json: async () => [] };
+    });
+
+    const { createOrg } = await import('./orgs.js');
+    await createOrg({ name: 'McSteen', mode: 'local' });
+
+    const createCall = fetchSpy.mock.calls.find(
+      ([url, init]) => url === '/api/orgs' && init?.method === 'POST',
+    );
+    expect(createCall).toBeTruthy();
+    expect(authHeaderOf(createCall)).toBe('Bearer jwt-token-abc');
+  });
+
+  it('fetchOrgs() sends the JWT bearer header on GET /api/orgs', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    });
+
+    const { fetchOrgs } = await import('./orgs.js');
+    await fetchOrgs();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(authHeaderOf(fetchSpy.mock.calls[0])).toBe('Bearer jwt-token-abc');
+  });
+
+  it('updateOrg() sends the JWT bearer header on PUT /api/orgs/:id', async () => {
+    // updateOrg also calls fetchOrgs() after success — return an array on GET.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      if (init?.method === 'PUT') {
+        return { ok: true, json: async () => ({ id: 'org-1', name: 'Renamed', mode: 'local' }) };
+      }
+      return { ok: true, json: async () => [] };
+    });
+
+    const { updateOrg } = await import('./orgs.js');
+    await updateOrg('org-1', { name: 'Renamed' });
+
+    const putCall = fetchSpy.mock.calls.find(
+      ([url, init]) => url === '/api/orgs/org-1' && init?.method === 'PUT',
+    );
+    expect(putCall).toBeTruthy();
+    expect(authHeaderOf(putCall)).toBe('Bearer jwt-token-abc');
   });
 });

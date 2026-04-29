@@ -12,7 +12,12 @@
  * The unified org list shown in the UI is a merge of both sources.
  */
 
-import { getConnectionConfig, getLocalApiBase, saveConnectionConfig } from './connection.js';
+import {
+  getConnectionConfig,
+  getLocalApiBase,
+  saveConnectionConfig,
+  getAuthHeaders,
+} from './connection.js';
 
 const REMOTE_ORGS_KEY = 'agent-hub-remote-orgs';
 
@@ -92,9 +97,13 @@ export async function fetchOrgs() {
     return { orgs: merged, activeOrgId: _activeOrgId };
   }
 
-  // Fetch local orgs from the server
+  // Fetch local orgs from the server. Auth headers are required when the
+  // server has JWT auth configured (auth.json on disk) — otherwise the
+  // middleware rejects with 401 before the route handler runs.
   try {
-    const res = await fetch(`${getLocalApiBase()}/orgs`, {});
+    const res = await fetch(`${getLocalApiBase()}/orgs`, {
+      headers: { ...getAuthHeaders() },
+    });
     if (res.ok) {
       _localOrgs = await res.json();
     }
@@ -162,7 +171,7 @@ export async function switchOrg(orgId) {
     try {
       await fetch(`${getLocalApiBase()}/orgs/${orgId}/switch`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       });
     } catch (err) {
       console.warn('[Orgs] Server switch failed:', err.message);
@@ -197,7 +206,7 @@ export async function createOrg({
   // Local orgs go to the server
   const res = await fetch(`${getLocalApiBase()}/orgs`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify({ name, mode, color, remoteUrl, apiKey }),
   });
   if (!res.ok) throw new Error('Failed to create org');
@@ -223,7 +232,7 @@ export async function updateOrg(orgId, updates) {
   // Local org — update on server
   const res = await fetch(`${getLocalApiBase()}/orgs/${orgId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify(updates),
   });
   if (!res.ok) throw new Error('Failed to update org');
@@ -247,6 +256,7 @@ export async function deleteOrg(orgId) {
     // Local org — delete on server
     const res = await fetch(`${getLocalApiBase()}/orgs/${orgId}`, {
       method: 'DELETE',
+      headers: { ...getAuthHeaders() },
     });
     if (!res.ok) return false;
     await fetchOrgs();
@@ -304,7 +314,7 @@ export async function migrateFromLegacy() {
         try {
           await fetch(`${getLocalApiBase()}/orgs`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({
               id: legacyOrg.id,
               name: legacyOrg.name,
