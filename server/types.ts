@@ -1285,19 +1285,6 @@ export interface Project {
    * Shapes match `OrchestrationBudgetsPartial` in `server/orchestration-budgets.ts`.
    */
   orchestrationBudgets?: Record<string, unknown>;
-  /**
-   * Optional runner id (`runners.id`) that should host CLI spawns for sessions
-   * in this project. When omitted the control plane spawns CLI processes
-   * locally — preserving Phase 1 behaviour. When set, the server dispatches
-   * `spawn` over the runner's WebSocket and routes stream/exit/result frames
-   * back to the originating session via `RemoteRunnerTransport`.
-   *
-   * Validated at request time, not on disk: an unknown or offline runner id
-   * surfaces as a session-level toast ("runner offline") rather than a
-   * project-load failure, so config files written before a runner is
-   * registered still load.
-   */
-  runnerId?: string | null;
   agents: Agent[];
   [key: string]: unknown;
 }

@@ -1,7 +1,5 @@
-import { execFile, execSync } from 'child_process';
+import { spawn, execFile, execSync } from 'child_process';
 import type { ChildProcess } from 'child_process';
-import { isRunnerTransportError } from './runner-transport.js';
-import { getRunnerTransport } from './runner-transport-select.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
@@ -1723,46 +1721,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const chainStartedAtMs = msg._chainStartedAtMs ?? Date.now();
 
     const cliTurnStartMs = Date.now();
-
-    // Phase 2: route the CLI spawn through the runner transport. For
-    // projects without `runnerId` this is a behaviour-preserving no-op
-    // (LocalSpawnTransport wraps the same `child_process.spawn` call,
-    // including the historical `['ignore','pipe','pipe']` stdio shape).
-    // For remote runners the await resolves on the runner's `result`
-    // ack; offline runners reject with `RUNNER_OFFLINE` so the chat
-    // handler can surface the toast-then-block UX.
-    let proc: ChildProcess;
-    try {
-      const transport = getRunnerTransport(project);
-      const handle = await transport.spawn({
-        engine,
-        bin,
-        args,
-        cwd: effectiveCwd,
-        env: spawnEnv,
-        sessionId,
-      });
-      // ProcessHandle is duck-compatible with ChildProcess for every
-      // surface chat.ts touches (pid, stdout, stderr, kill, EventEmitter).
-      // The cast keeps activeProcesses' historical type without forcing
-      // every other reader (delegation, autonomous, sessions routes)
-      // to widen in this commit.
-      proc = handle as unknown as ChildProcess;
-    } catch (err: unknown) {
-      const errMsg =
-        isRunnerTransportError(err) && err.code === 'RUNNER_OFFLINE'
-          ? `Runner ${project.runnerId} is offline. Sessions in this project are blocked until it reconnects.`
-          : err instanceof Error
-            ? err.message
-            : String(err);
-      saveErrorMessage(sessionId, assistantMsgId, engine, model || DEFAULT_MODEL, errMsg);
-      try {
-        stmts.deleteActiveTask.run(sessionId);
-      } catch {}
-      activeProcesses.delete(sessionId);
-      if (ws) ws.send(JSON.stringify({ type: 'error', error: errMsg, sessionId }));
-      return;
-    }
+    const proc = spawn(bin, args, {
+      cwd: effectiveCwd,
+      env: spawnEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
     const S = stmts;
 

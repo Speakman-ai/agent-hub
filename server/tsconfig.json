@@ -6,16 +6,13 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    // rootDir bumped to repo root so server/ can import the shared
-    // runner protocol module from `../shared/`. noEmit makes this
-    // purely a type-checking concern — no output paths change.
-    "rootDir": "..",
+    "rootDir": ".",
     "noEmit": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["**/*.ts", "../shared/runner-protocol.ts"],
+  "include": ["**/*.ts"],
   "exclude": ["node_modules", "dist", "provisioning/templates/*/files/**"]
 }
