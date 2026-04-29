@@ -38,7 +38,21 @@ BACKEND_HCL="${TF_DIR}/environments/${ENV_NAME}/backend.hcl"
 
 if [[ ! -f "${BACKEND_HCL}" ]]; then
   echo "error: backend config not found at ${BACKEND_HCL}" >&2
-  echo "       create it before running this script. See environments/test123/backend.hcl for a template." >&2
+  echo "       create it before running this script. See environments/ryan/backend.hcl for a template." >&2
+  exit 2
+fi
+
+# Refuse to proceed if anyone has dropped a local state file into ops/terraform/.
+# Local state is the #1 way envs get orphaned (the file lives on someone's laptop,
+# nobody else can `terraform destroy`). All envs MUST use the S3 backend defined
+# in their backend.hcl. If you genuinely need to migrate an existing local state
+# into S3, do it once: `terraform init -migrate-state -backend-config=...`
+LOCAL_STATE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)/state"
+if compgen -G "${LOCAL_STATE_DIR}/*.tfstate*" >/dev/null 2>&1; then
+  echo "error: found local state files under ${LOCAL_STATE_DIR}" >&2
+  echo "       remote-state is mandatory. Migrate with:" >&2
+  echo "         terraform init -reconfigure -migrate-state -backend-config=${BACKEND_HCL}" >&2
+  echo "       or, if the resources are throwaway, delete the state file and rerun." >&2
   exit 2
 fi
 

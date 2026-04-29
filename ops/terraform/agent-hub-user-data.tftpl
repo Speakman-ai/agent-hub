@@ -117,15 +117,63 @@ for i in 1 2 3; do
   sleep 10
 done
 
+# Install a systemd-managed container instead of `docker run --restart=unless-stopped`.
+# Rationale: the daemon's auto-restart simply re-launches the *cached* image, which
+# means after CI pushes a new `:main` the box keeps running the stale digest until
+# someone SSMs in and manually pulls. This unit re-runs `docker pull` on every
+# start (boot, manual restart, redeploy) so a host reboot is enough to pick up
+# new image tags.
+cat >/usr/local/bin/agenthub-server-run.sh <<RUNSCRIPT
+#!/bin/bash
+set -e
+IMAGE_URI="$IMAGE_URI"
+REPO_DIR="$REPO_DIR"
+DATA_ROOT="$DATA_ROOT"
+APP_PORT="${app_port}"
+
+# Pull-on-start: cheap when the digest is unchanged (a few hundred bytes for the
+# manifest), and the only correctness-preserving way to redeploy on reboot.
+for i in 1 2 3; do
+  docker pull --quiet "\$IMAGE_URI" && break
+  echo "docker pull failed (attempt \$i); retrying in 10s..." >&2
+  sleep 10
+done
+
 docker rm -f agenthub-server 2>/dev/null || true
-docker run -d --name agenthub-server --restart unless-stopped \
-  -p ${app_port}:3051 \
-  -v "$DATA_ROOT/data:/data" -v "$DATA_ROOT/uploads:/app/uploads" \
-  --env-file "$REPO_DIR/.env" \
-  "$IMAGE_URI"
+exec docker run --rm --name agenthub-server \
+  -p "\$APP_PORT:3051" \
+  -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
+  --env-file "\$REPO_DIR/.env" \
+  "\$IMAGE_URI"
+RUNSCRIPT
+chmod 0755 /usr/local/bin/agenthub-server-run.sh
+
+cat >/etc/systemd/system/agenthub-server.service <<'UNIT'
+[Unit]
+Description=Agent Hub server (Docker container, pull-on-start)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f agenthub-server
+ExecStart=/usr/local/bin/agenthub-server-run.sh
+ExecStop=/usr/bin/docker stop -t 30 agenthub-server
+Restart=always
+RestartSec=5
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now agenthub-server.service
 
 # Surface the running image + tag for debugging.
-docker ps --filter name=agenthub-server --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+sleep 3
+docker ps --filter name=agenthub-server --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
 %{ else ~}
 # ── Legacy clone+build branch (requires TF_VAR_github_token_for_git_clone) ──
 sudo -H -u ${app_user} bash -c "mkdir -p \$(dirname \"${repo_dir}\")"

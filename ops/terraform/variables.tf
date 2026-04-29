@@ -159,12 +159,10 @@ variable "ssh_user" {
 }
 
 # --- ECR Public (agent-hub image registry) -----------------------------------
-
-variable "manage_ecr_public_repo" {
-  description = "If true, manage the ECR Public repository (aws_ecrpublic_repository.agent_hub) with Terraform. The repo was created out-of-band first; import with `terraform import aws_ecrpublic_repository.agent_hub agent-hub`. If false, treat the repo as externally owned and just emit the pull URI from ecr_public_registry_alias + ecr_public_repo_name."
-  type        = bool
-  default     = true
-}
+#
+# The ECR Public repo itself is NOT managed by Terraform — it's one-time shared
+# infra (see ecr-public.tf for the create-repository runbook). Per-env stacks
+# only need the URI (alias + name) to construct the pull URL.
 
 variable "ecr_public_repo_name" {
   description = "ECR Public repository name (URI suffix after the alias). Used by CI push + user-data pull."
