@@ -13,6 +13,8 @@ import {
   isRunnerWsPath,
   activeRunners,
   MAX_MISSED_PONGS,
+  getRunnerSender,
+  subscribeToRunner,
 } from '../runners-ws.js';
 import { getDb } from '../db.js';
 import { createRunner } from '../runners-store.js';
@@ -340,5 +342,145 @@ describe('reconnect race', () => {
       status: string;
     };
     expect(after.status).toBe('offline');
+  });
+});
+
+// ─── Phase 2 inbound dispatcher (subscribe / sender / fanout) ────────
+
+describe('Phase 2 dispatcher — getRunnerSender / subscribeToRunner', () => {
+  async function authOnce(): Promise<{
+    runnerId: string;
+    ws: WebSocket;
+    frames: CapturedFrames;
+    settled: Promise<void>;
+  }> {
+    const { runner, token } = createRunner({ orgId: 'default', name: 'phase2' });
+    const c = connect();
+    await new Promise<void>((resolve) => c.ws.once('open', resolve));
+    await send(c.ws, {
+      type: 'auth',
+      runnerId: runner.id,
+      token,
+      version: RUNNER_PROTOCOL_VERSION,
+    });
+    await waitFor(() => c.frames.registered !== null);
+    return { runnerId: runner.id, ...c };
+  }
+
+  it('returns null sender for unknown / disconnected runners', () => {
+    expect(getRunnerSender('no-such-runner')).toBeNull();
+  });
+
+  it('routes result/stream/exit frames to subscribed listeners', async () => {
+    const { runnerId, ws, settled } = await authOnce();
+    const received: unknown[] = [];
+    const unsubscribe = subscribeToRunner(runnerId, (msg) => received.push(msg));
+
+    await send(ws, { type: 'result', id: 'spawn-1', ok: true, pid: 99 });
+    await send(ws, { type: 'stream', id: 'spawn-1', channel: 'stdout', data: 'hi', seq: 0 });
+    await send(ws, { type: 'exit', id: 'spawn-1', code: 0, signal: null });
+    await waitFor(() => received.length === 3);
+
+    expect(received).toEqual([
+      { type: 'result', id: 'spawn-1', ok: true, pid: 99 },
+      { type: 'stream', id: 'spawn-1', channel: 'stdout', data: 'hi', seq: 0 },
+      { type: 'exit', id: 'spawn-1', code: 0, signal: null },
+    ]);
+
+    unsubscribe();
+    ws.close();
+    await settled;
+  });
+
+  it('fans out a single frame to multiple subscribers', async () => {
+    const { runnerId, ws, settled } = await authOnce();
+    const a: unknown[] = [];
+    const b: unknown[] = [];
+    const unA = subscribeToRunner(runnerId, (msg) => a.push(msg));
+    const unB = subscribeToRunner(runnerId, (msg) => b.push(msg));
+
+    await send(ws, { type: 'stream', id: 'x', channel: 'stdout', data: 'fan', seq: 0 });
+    await waitFor(() => a.length === 1 && b.length === 1);
+    expect(a).toEqual(b);
+
+    unA();
+    unB();
+    ws.close();
+    await settled;
+  });
+
+  it('unsubscribe stops further deliveries', async () => {
+    const { runnerId, ws, settled } = await authOnce();
+    const received: unknown[] = [];
+    const unsubscribe = subscribeToRunner(runnerId, (msg) => received.push(msg));
+
+    await send(ws, { type: 'stream', id: 'x', channel: 'stdout', data: '1', seq: 0 });
+    await waitFor(() => received.length === 1);
+    unsubscribe();
+    await send(ws, { type: 'stream', id: 'x', channel: 'stdout', data: '2', seq: 1 });
+    // Give the message a tick to arrive.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(received).toHaveLength(1);
+
+    ws.close();
+    await settled;
+  });
+
+  it('subscriber that throws does not break the dispatch loop', async () => {
+    const { runnerId, ws, settled } = await authOnce();
+    const good: unknown[] = [];
+    const unBad = subscribeToRunner(runnerId, () => {
+      throw new Error('boom');
+    });
+    const unGood = subscribeToRunner(runnerId, (msg) => good.push(msg));
+
+    await send(ws, { type: 'stream', id: 'x', channel: 'stdout', data: 'ok', seq: 0 });
+    await waitFor(() => good.length === 1);
+    expect(good).toHaveLength(1);
+
+    unBad();
+    unGood();
+    ws.close();
+    await settled;
+  });
+
+  it('closes the socket on unauthenticated result/stream/exit frames', async () => {
+    const { ws, frames, settled } = connect();
+    await new Promise<void>((resolve) => ws.once('open', resolve));
+    await send(ws, { type: 'result', id: 'x', ok: true });
+    await settled;
+    // protocol-violation close code lives in 4xxx range; the exact code
+    // is private to runners-ws.ts (CLOSE_PROTOCOL = 4400).
+    expect(frames.closed?.code).toBe(4400);
+  });
+
+  it('getRunnerSender returns a working sender for a connected runner', async () => {
+    const { runnerId, ws, settled } = await authOnce();
+
+    // Capture frames the runner receives back from the server.
+    const fromServer: unknown[] = [];
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString('utf8')) as { type?: string };
+        if (msg.type === 'spawn') fromServer.push(msg);
+      } catch {
+        /* ignore */
+      }
+    });
+
+    const sender = getRunnerSender(runnerId);
+    expect(sender).not.toBeNull();
+    sender!({
+      type: 'spawn',
+      id: 'sp-1',
+      engine: 'claude-code',
+      args: [],
+      sessionId: 'sess',
+    });
+    await waitFor(() => fromServer.length === 1);
+    expect(fromServer[0]).toMatchObject({ type: 'spawn', id: 'sp-1' });
+
+    ws.close();
+    await settled;
   });
 });

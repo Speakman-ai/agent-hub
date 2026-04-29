@@ -11,11 +11,15 @@ import os from 'os';
 import { WebSocket } from 'ws';
 import {
   RUNNER_PROTOCOL_VERSION,
+  parseRunnerOutbound,
   type RunnerAuthMessage,
   type RunnerCapabilities,
+  type RunnerInbound,
   type RunnerPongMessage,
 } from '../../shared/runner-protocol.js';
 import type { RunnerConfig } from './config.js';
+import { SpawnRegistry, type SpawnerOptions } from './spawner.js';
+import { KNOWN_ENGINES } from './engine-resolver.js';
 
 const RUNNER_BUILD = '0.1.0';
 const RECONNECT_MIN_MS = 1_000;
@@ -29,6 +33,11 @@ export interface RunnerClientOptions {
   log?: (msg: string) => void;
   /** When true, give up on first auth failure instead of looping forever. */
   exitOnAuthError?: boolean;
+  /** Override options handed to the lazily-created `SpawnRegistry`.
+   * Production passes nothing; tests inject a fake `childSpawner` and a
+   * 1ms flush interval so the e2e harness doesn't shell out to a real
+   * binary or wait 50ms per assertion. */
+  spawnerOptions?: Partial<Omit<SpawnerOptions, 'send'>>;
 }
 
 /**
@@ -49,9 +58,10 @@ function defaultCapabilities(): RunnerCapabilities {
     os: process.platform,
     arch: process.arch,
     runnerVersion: RUNNER_BUILD,
-    // Engines are filled in by phase 2 once the runner can actually
-    // spawn CLIs. Empty list signals "no spawn capability yet".
-    engines: [],
+    // Engines the runner can spawn — populated from `engine-resolver`'s
+    // built-in defaults. Phase 2 enables CLI spawn end-to-end so this
+    // is no longer empty.
+    engines: KNOWN_ENGINES,
   };
 }
 
@@ -61,10 +71,36 @@ export class RunnerClient {
   private stopped = false;
   private readonly WSCtor: typeof WebSocket;
   private readonly log: (msg: string) => void;
+  /** Lazily initialised on first spawn frame so unit tests that exercise
+   * only the keepalive path don't pay for a registry they won't use. */
+  private spawns: SpawnRegistry | null = null;
 
   constructor(private readonly opts: RunnerClientOptions) {
     this.WSCtor = opts.WebSocketCtor ?? WebSocket;
     this.log = opts.log ?? ((msg) => console.log(msg));
+  }
+
+  /** Send a frame to the control plane. Public so SpawnRegistry can
+   * reuse it via the `send` callback. Silently drops if the socket is
+   * closed — the control plane will surface the disconnect on its end. */
+  private sendFrame(frame: RunnerInbound): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== this.WSCtor.OPEN) return;
+    try {
+      ws.send(JSON.stringify(frame));
+    } catch (err) {
+      this.log('[runner] send failed: ' + (err as Error).message);
+    }
+  }
+
+  private getSpawns(): SpawnRegistry {
+    if (!this.spawns) {
+      this.spawns = new SpawnRegistry({
+        send: (f) => this.sendFrame(f),
+        ...(this.opts.spawnerOptions ?? {}),
+      });
+    }
+    return this.spawns;
   }
 
   start(): void {
@@ -104,37 +140,40 @@ export class RunnerClient {
     });
 
     ws.on('message', (raw) => {
-      let msg: { type?: string; id?: string };
-      try {
-        msg = JSON.parse(raw.toString('utf8')) as { type?: string; id?: string };
-      } catch {
+      const msg = parseRunnerOutbound(raw as Buffer | string);
+      if (!msg) {
         this.log('[runner] received malformed frame; ignoring');
         return;
       }
-      if (msg.type === 'registered') {
-        this.backoffMs = RECONNECT_MIN_MS;
-        this.log('[runner] registered with control plane');
-        return;
-      }
-      if (msg.type === 'auth_error') {
-        const m = msg as { code?: string; message?: string };
-        this.log(`[runner] auth_error (${m.code}): ${m.message}`);
-        if (this.opts.exitOnAuthError) {
-          this.stop();
+      switch (msg.type) {
+        case 'registered':
+          this.backoffMs = RECONNECT_MIN_MS;
+          this.log('[runner] registered with control plane');
+          return;
+        case 'auth_error':
+          this.log(`[runner] auth_error (${msg.code}): ${msg.message}`);
+          if (this.opts.exitOnAuthError) {
+            this.stop();
+          }
+          return;
+        case 'ping': {
+          const pong: RunnerPongMessage = {
+            type: 'pong',
+            id: msg.id,
+            ts: new Date().toISOString(),
+          };
+          this.sendFrame(pong);
+          return;
         }
-        return;
-      }
-      if (msg.type === 'ping') {
-        if (typeof msg.id !== 'string') return;
-        const pong: RunnerPongMessage = {
-          type: 'pong',
-          id: msg.id,
-          ts: new Date().toISOString(),
-        };
-        try {
-          ws.send(JSON.stringify(pong));
-        } catch {}
-        return;
+        case 'spawn':
+          this.getSpawns().handleSpawn(msg);
+          return;
+        case 'cancel':
+          this.getSpawns().handleCancel(msg);
+          return;
+        case 'stdin':
+          this.getSpawns().handleStdin(msg);
+          return;
       }
     });
 

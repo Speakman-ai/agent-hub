@@ -60,6 +60,38 @@ export default [
     },
   },
 
+  // Runner files — Node.js ES modules (TypeScript). Mirrors the server
+  // block so the runner CLI's .ts files (incl. *.test.ts) parse with
+  // typescript-eslint's parser instead of falling through to plain JS.
+  {
+    files: ['runner/**/*.ts'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parser: tseslint.parser,
+      globals: {
+        ...globals.node,
+      },
+    },
+    plugins: {
+      '@typescript-eslint': tseslint.plugin,
+    },
+    rules: {
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
+      'no-undef': 'off',
+      'no-redeclare': 'off',
+      '@typescript-eslint/no-redeclare': 'error',
+      'no-console': 'off',
+      'no-constant-condition': 'warn',
+      'no-empty': ['warn', { allowEmptyCatch: true }],
+      'no-prototype-builtins': 'off',
+    },
+  },
+
   // Client files — React + JSX
   {
     files: ['client/src/**/*.{js,jsx}'],
