@@ -3,9 +3,12 @@
  *
  * - Chunker splits markdown into overlapping ~char-sized chunks (char count is a
  *   close-enough proxy for tokens at our scale; ~4 chars per token).
- * - `embedTexts` calls Gemini's `text-embedding-004` REST endpoint (or whichever
+ * - `embedTexts` calls Gemini's `gemini-embedding-001` REST endpoint (or whichever
  *   model is configured via `GEMINI_EMBED_MODEL`). Swappable via
  *   `setEmbedClient` so tests don't hit the network.
+ *   NOTE: the legacy `text-embedding-004` model was shut down on 2026-01-14;
+ *   any rows persisted under that name are stale (different dim) and are
+ *   filtered out by `runSemantic` so they can't pollute results.
  * - `rankHybrid` blends normalized FTS5 BM25 with cosine similarity (50/50 by
  *   default). Input is a list of FTS hits + a list of embedding rows for the
  *   project; output is a sorted list of (page, score, chunk) triples.
@@ -151,7 +154,14 @@ export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): nu
 
 // ─── Gemini REST client ────────────────────────────────────────────
 
-const DEFAULT_MODEL = process.env.GEMINI_EMBED_MODEL || 'text-embedding-004';
+// Gemini's `text-embedding-004` was deprecated and shut down on 2026-01-14
+// (https://ai.google.dev/gemini-api/docs/deprecations). Default to its
+// recommended replacement, `gemini-embedding-001`, which uses the same
+// `embedContent` / `batchEmbedContents` shape on the `v1beta` endpoint but
+// returns vectors of a different dimensionality, so existing stored
+// embeddings under the old model name are NOT compatible and should be
+// re-generated via the backfill endpoint.
+export const DEFAULT_MODEL = process.env.GEMINI_EMBED_MODEL || 'gemini-embedding-001';
 
 class MissingGeminiKeyError extends Error {
   constructor() {
@@ -461,15 +471,22 @@ function runSemantic(projectId: string, queryVector: number[], limit: number): S
   const rows = s.getWikiEmbeddingsByProject.all(projectId) as EmbeddingRow[];
   if (rows.length === 0) return [];
   const q = new Float32Array(queryVector);
-  const scored = rows.map((r) => {
-    const vec = decodeEmbedding(r.embedding);
-    return {
-      pageId: r.page_id,
-      chunkIdx: r.chunk_idx,
-      chunkText: r.chunk_text,
-      score: cosineSimilarity(q, vec),
-    };
-  });
+  // Skip rows persisted under a different embedding model — embedding spaces
+  // across Gemini models (e.g. text-embedding-004 → gemini-embedding-001) are
+  // incompatible and have different dimensionalities. Cosine similarity over
+  // mismatched lengths returns 0 anyway, so these rows are dead weight until a
+  // backfill rewrites them under DEFAULT_MODEL.
+  const scored = rows
+    .filter((r) => r.model === DEFAULT_MODEL)
+    .map((r) => {
+      const vec = decodeEmbedding(r.embedding);
+      return {
+        pageId: r.page_id,
+        chunkIdx: r.chunk_idx,
+        chunkText: r.chunk_text,
+        score: cosineSimilarity(q, vec),
+      };
+    });
   scored.sort((a, b) => b.score - a.score);
   // Over-fetch so rankHybrid still has good coverage per page after dedup.
   return scored.slice(0, Math.max(limit * 5, 25));

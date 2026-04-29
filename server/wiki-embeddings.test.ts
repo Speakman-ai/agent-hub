@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   chunkMarkdown,
   cosineSimilarity,
@@ -6,6 +6,8 @@ import {
   rankHybrid,
   encodeEmbedding,
   decodeEmbedding,
+  defaultEmbedClient,
+  DEFAULT_MODEL,
   type FtsHit,
   type SemanticHit,
 } from './wiki-embeddings.js';
@@ -198,5 +200,83 @@ describe('rankHybrid', () => {
     ];
     const ranked = rankHybrid(fts, semantic, lookup);
     expect(ranked[0]!.matchedChunk).toBe('high');
+  });
+});
+
+describe('DEFAULT_MODEL', () => {
+  it('points at the supported gemini-embedding-001 model (text-embedding-004 was shut down 2026-01-14)', () => {
+    // Guard against accidentally regressing to the deprecated model.
+    // GEMINI_EMBED_MODEL env override could change this — only assert in the
+    // common case where it is unset.
+    if (!process.env.GEMINI_EMBED_MODEL) {
+      expect(DEFAULT_MODEL).toBe('gemini-embedding-001');
+    }
+    expect(DEFAULT_MODEL).not.toBe('text-embedding-004');
+  });
+});
+
+describe('defaultEmbedClient', () => {
+  const origFetch = globalThis.fetch;
+  const origKey = process.env.GEMINI_API_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+    if (origKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = origKey;
+  });
+
+  it('targets the configured model on v1beta with batchEmbedContents', async () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    const calls: { url: string; init: RequestInit }[] = [];
+    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ embeddings: [{ values: [0.1, 0.2, 0.3] }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+
+    const out = await defaultEmbedClient.embedTexts(['hello'], 'RETRIEVAL_QUERY');
+    expect(out).toEqual([{ values: [0.1, 0.2, 0.3] }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(DEFAULT_MODEL)}:batchEmbedContents`,
+    );
+    // We don't assert the exact key value because config.geminiApiKey may
+    // override the env var — only that an API key header is being sent.
+    expect((calls[0]!.init.headers as Record<string, string>)['x-goog-api-key']).toBeTruthy();
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body.requests).toHaveLength(1);
+    expect(body.requests[0].model).toBe(`models/${DEFAULT_MODEL}`);
+    expect(body.requests[0].taskType).toBe('RETRIEVAL_QUERY');
+    expect(body.requests[0].content.parts[0].text).toBe('hello');
+  });
+
+  it('throws an informative error when Gemini returns 404 for an unknown model', async () => {
+    process.env.GEMINI_API_KEY = 'test-key';
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 404,
+            message: 'models/text-embedding-004 is not found for API version v1beta',
+            status: 'NOT_FOUND',
+          },
+        }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+
+    await expect(defaultEmbedClient.embedTexts(['hi'])).rejects.toThrow(
+      /Gemini embed failed \(404\)/,
+    );
+  });
+
+  it('returns [] without calling fetch for an empty input list', async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const out = await defaultEmbedClient.embedTexts([]);
+    expect(out).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
