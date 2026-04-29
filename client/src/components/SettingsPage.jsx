@@ -116,6 +116,8 @@ import {
   Info,
   Menu,
   FolderGit2,
+  Download,
+  Package,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -5720,6 +5722,230 @@ function UsageSection() {
   );
 }
 
+function formatBytes(n) {
+  if (!n || n <= 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+/**
+ * InstanceBackupSection — pick-and-zip migration export.
+ *
+ * Loads the manifest from /api/instance-backup/manifest, lets the user
+ * select a subset, and POSTs to /api/instance-backup/bundle to download
+ * a streamed zip. db.full and db.slim are mutually exclusive in the UI.
+ */
+export function InstanceBackupSection({ showToast }) {
+  const [manifest, setManifest] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [selected, setSelected] = useState(() => new Set(['db.slim', 'config']));
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getInstanceBackupManifest()
+      .then((data) => {
+        if (cancelled) return;
+        setManifest(data);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLoadError(err.message || String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggle = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+        // db.full and db.slim are mutually exclusive.
+        if (id === 'db.full') next.delete('db.slim');
+        if (id === 'db.slim') next.delete('db.full');
+      }
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (!manifest) return;
+    const next = new Set(manifest.items.map((i) => i.id));
+    // Default to slim when bulk-selecting.
+    next.delete('db.full');
+    setSelected(next);
+  };
+
+  const clearAll = () => setSelected(new Set());
+
+  const totalBytes = useMemo(() => {
+    if (!manifest) return 0;
+    return manifest.items
+      .filter((i) => selected.has(i.id))
+      .reduce((acc, i) => acc + (i.estimatedBytes || 0), 0);
+  }, [manifest, selected]);
+
+  const handleDownload = async () => {
+    if (selected.size === 0) return;
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const items = Array.from(selected);
+      const { blob, filename } = await api.downloadInstanceBackup(items);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      if (showToast) showToast('Backup downloaded', 'success');
+    } catch (err) {
+      setDownloadError(err.message || String(err));
+      if (showToast) showToast('Backup failed', 'error');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="mb-8">
+      <h3 className="text-lg font-semibold mb-2 flex items-center gap-2">
+        <Package size={18} className="text-gray-400" />
+        Download Instance Backup
+      </h3>
+      <p className="text-sm text-gray-400 mb-4">
+        Pick the data you want to ship to another Agent Hub instance. The download is a single zip
+        containing live SQLite backups, config files, agent workspaces, and JSON dumps for the items
+        you select. Owner role required.
+      </p>
+
+      {loadError && (
+        <div className="bg-red-900/30 border border-red-700/50 rounded-lg p-3 mb-4 flex items-start gap-2">
+          <AlertCircle size={16} className="text-red-400 mt-0.5 flex-shrink-0" />
+          <div className="text-sm text-red-300">
+            <p className="font-medium mb-0.5">Couldn&apos;t load backup manifest</p>
+            <p className="text-xs text-red-400/80">{loadError}</p>
+          </div>
+        </div>
+      )}
+
+      {!manifest && !loadError && (
+        <div className="bg-gray-800/50 rounded-lg p-4 flex items-center gap-2 text-sm text-gray-400">
+          <Loader2 size={14} className="animate-spin" />
+          Loading manifest...
+        </div>
+      )}
+
+      {manifest && (
+        <div className="bg-gray-800/50 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={selectAll}
+                className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 rounded"
+              >
+                Select all
+              </button>
+              <button
+                type="button"
+                onClick={clearAll}
+                className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-xs text-gray-200 rounded"
+              >
+                Clear
+              </button>
+            </div>
+            <div className="text-xs text-gray-500">
+              {selected.size} item{selected.size === 1 ? '' : 's'} • ~{formatBytes(totalBytes)}
+            </div>
+          </div>
+
+          <ul className="divide-y divide-gray-700/50 mb-4">
+            {manifest.items.map((item) => {
+              const isSelected = selected.has(item.id);
+              // Disable the alternate DB option if the other is already selected.
+              const disabled =
+                (item.id === 'db.full' && selected.has('db.slim')) ||
+                (item.id === 'db.slim' && selected.has('db.full'));
+              return (
+                <li key={item.id} className="py-2">
+                  <label
+                    className={`flex items-start gap-3 cursor-pointer ${
+                      disabled ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      disabled={disabled}
+                      onChange={() => !disabled && toggle(item.id)}
+                      className="mt-1 accent-blue-500"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <span className="text-sm font-medium text-gray-100">{item.label}</span>
+                        <span className="text-xs text-gray-500 whitespace-nowrap">
+                          {formatBytes(item.estimatedBytes)}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-0.5">{item.description}</p>
+                      {disabled && (
+                        <p className="text-xs text-amber-400/80 mt-0.5">
+                          Choose either slim or full DB, not both.
+                        </p>
+                      )}
+                    </div>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+
+          {downloadError && (
+            <div className="bg-red-900/30 border border-red-700/50 rounded-lg p-3 mb-3 flex items-start gap-2">
+              <AlertCircle size={16} className="text-red-400 mt-0.5 flex-shrink-0" />
+              <p className="text-sm text-red-300">{downloadError}</p>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleDownload}
+            disabled={downloading || selected.size === 0}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 disabled:text-gray-400 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            {downloading ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Preparing backup…
+              </>
+            ) : (
+              <>
+                <Download size={14} />
+                Download backup
+              </>
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ConfigBackupSection({ projects = [], onAgentsChange }) {
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [exporting, setExporting] = useState(false);
@@ -6549,7 +6775,10 @@ export default function SettingsPage({
               {tab === 'pr-environments' && <PrEnvironmentsSection />}
               {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
               {tab === 'backup' && (
-                <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />
+                <>
+                  <InstanceBackupSection showToast={showToast} />
+                  <ConfigBackupSection projects={projects} onAgentsChange={onAgentsChange} />
+                </>
               )}
               {tab === 'logs' && <ServerLogsSection wsRef={wsRef} />}
             </SettingsErrorBoundary>

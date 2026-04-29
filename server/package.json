@@ -14,6 +14,7 @@
   "dependencies": {
     "@browserbasehq/stagehand": "^3.2.1",
     "@slack/bolt": "^4.6.0",
+    "archiver": "^7.0.1",
     "better-sqlite3": "^11.10.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
@@ -27,6 +28,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/archiver": "^7.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",

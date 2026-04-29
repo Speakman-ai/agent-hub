@@ -505,6 +505,37 @@ export const api = {
   importConfig: (data) =>
     fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
 
+  // Instance backup — pick-and-zip migration export.
+  getInstanceBackupManifest: () => fetchJSON('/instance-backup/manifest'),
+  downloadInstanceBackup: async (items) => {
+    const base = getApiBase();
+    const res = await fetch(`${base}/instance-backup/bundle`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const body = await res.json();
+        detail = body.error || body.message || JSON.stringify(body);
+      } catch {
+        /* not json */
+      }
+      throw new Error(detail ? `${res.status}: ${detail}` : `Backup failed: ${res.status}`);
+    }
+    const blob = await res.blob();
+    const dispo = res.headers.get('content-disposition') || '';
+    const m = /filename="([^"]+)"/.exec(dispo);
+    const filename = m
+      ? m[1]
+      : `agent-hub-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+    return { blob, filename };
+  },
+
   // Directory browsing (server-side)
   browse: (path) => fetchJSON(`/browse?path=${encodeURIComponent(path || '')}`),
 

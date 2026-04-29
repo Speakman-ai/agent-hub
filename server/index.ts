@@ -96,6 +96,7 @@ import createWorkflowRoutes from './routes/workflows.js';
 import { failStuckWorkflowRunsOnBoot } from './workflow-runner.js';
 import { createWorkflowIncomingRouter, refreshWorkflowCronSchedules } from './workflow-triggers.js';
 import createEscalationRoutes from './routes/escalations.js';
+import createInstanceBackupRoutes from './routes/instance-backup.js';
 import createCaptureRoutes, { createCaptureGlobalRoutes } from './routes/captures.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
 import { initIosBuildEngine } from './ios-build-engine.js';
@@ -627,6 +628,7 @@ app.use(createCodexAuthRoutes(routeDeps));
 app.use(createThreadRoutes(routeDeps));
 app.use(createWorkflowRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
+app.use(createInstanceBackupRoutes(routeDeps));
 // `/api/captures/status` is the only non-project-scoped endpoint — everything
 // else must know which project it belongs to. Keeping these on separate routers
 // prevents accidental matches like `POST /api/captures` (which would have no
