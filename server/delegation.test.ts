@@ -97,11 +97,26 @@ function makeStmts() {
   const getSession = {
     get: vi.fn((_id: string) => ({ ask_mode: delegationLeadAskMode })),
   };
+  // Used by the no-valid-tasks path to persist a system-message into the
+  // lead's session — see persistDelegationSkipSystemMessage in delegation.ts.
+  const addMessage = { run: vi.fn() };
+  const touchSession = { run: vi.fn() };
+  const getMessageById = { get: vi.fn((id: string) => ({ id, role: 'system' })) };
   return {
-    stmts: { createDelegation, updateDelegation, getSession } as unknown as Stmts,
+    stmts: {
+      createDelegation,
+      updateDelegation,
+      getSession,
+      addMessage,
+      touchSession,
+      getMessageById,
+    } as unknown as Stmts,
     createDelegation,
     updateDelegation,
     getSession,
+    addMessage,
+    touchSession,
+    getMessageById,
   };
 }
 
@@ -1061,5 +1076,159 @@ describe('buildDelegationSynthesisPrompt', () => {
     expect(prompt).toContain('Failed (not user-cancel)');
     expect(prompt).toContain('nope');
     expect(prompt).toContain('Cancelled — you must carry out yourself');
+  });
+});
+
+/**
+ * Regression: when every <delegate> task is filtered out (target not in the
+ * lead's `subAgents` allowlist, or unknown agent), the server must persist a
+ * system message into the lead's session in addition to broadcasting
+ * `delegation_error`. Without the system message the model never sees the
+ * filter reason and just stops on its next turn (which is exactly the
+ * "Delegation skip: target agent not in sub-agent roster" tool-error this
+ * test guards against re-introducing).
+ */
+describe('handleDelegation — empty-after-filter regression', () => {
+  let tmpWorkspace: string;
+  let project: Project;
+  let leadAgent: EnrichedAgent;
+  let broadcast: ReturnType<typeof vi.fn>;
+  let stmts: ReturnType<typeof makeStmts>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delegationLeadAskMode = 0;
+    tmpWorkspace = mkdtempSync(path.join(os.tmpdir(), 'delegation-skip-test-'));
+    broadcast = vi.fn();
+    stmts = makeStmts();
+
+    project = {
+      id: 'proj',
+      name: 'Proj',
+      slug: 'proj',
+      cwd: '/tmp',
+      ahw: tmpWorkspace,
+      color: '#000',
+      agentIds: ['lead'],
+    } as unknown as Project;
+
+    initDelegation({
+      stmts: stmts.stmts,
+      broadcast: broadcast as unknown as BroadcastFn,
+      // No sub-agents resolvable — even if the allowlist passed, the lookup
+      // would return null. We exercise both skip reasons below.
+      getEnrichedAgent: () => null,
+      buildEnrichedPrompt: (() => 'prompt') as DelegationDeps['buildEnrichedPrompt'],
+      saveErrorMessage: vi.fn(),
+      appendDailyNote: vi.fn(),
+      getActiveProcesses: () => new Map(),
+      getClaudeBin: () => '/bin/claude',
+      getCursorBin: () => '/bin/cursor',
+      getGeminiBin: () => '/bin/gemini',
+      getCodexBin: () => '/bin/codex',
+      getDefaultModel: () => 'sonnet',
+      getConfig: () =>
+        ({
+          conferenceTimeoutMs: 600000,
+          delegationMaxAttempts: 3,
+          delegationRetryBackoffMs: 0,
+        }) as unknown as import('./types.js').AppConfig,
+    });
+  });
+
+  afterEach(() => {
+    rmSync(tmpWorkspace, { recursive: true, force: true });
+  });
+
+  it('persists a system message AND broadcasts delegation_error when the target is not in subAgents', async () => {
+    leadAgent = makeAgent('lead', { subAgents: ['frontend'] } as Partial<EnrichedAgent>);
+
+    const results = await handleDelegation(
+      'session-skip-1',
+      'msg-skip-1',
+      [delegateTask('do something')], // delegateTask defaults agentId to 'sub-1'
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    expect(results).toEqual([]);
+
+    // delegation_error broadcast still fires (UI banner contract preserved).
+    const errEvents = broadcast.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.type === 'delegation_error');
+    expect(errEvents).toHaveLength(1);
+    expect(errEvents[0].sessionId).toBe('session-skip-1');
+    expect(errEvents[0].parentMessageId).toBe('msg-skip-1');
+
+    // System message persisted into the lead's session.
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(1);
+    const args = stmts.addMessage.run.mock.calls[0];
+    expect(args[1]).toBe('session-skip-1'); // sessionId
+    expect(args[2]).toBe('system'); // role
+    const content = args[3] as string;
+    expect(content).toContain('Delegation skipped');
+    expect(content).toContain('`sub-1`');
+    expect(content).toContain('subAgents');
+    expect(content).toContain('`frontend`'); // allowlist surfaced
+    expect(content).toContain('<handoff>');
+    const metadata = JSON.parse(args[7] as string);
+    expect(metadata.kind).toBe('delegation_skip');
+    expect(metadata.parentMessageId).toBe('msg-skip-1');
+    expect(metadata.allowlist).toEqual(['frontend']);
+    expect(metadata.skipped).toEqual([{ agentId: 'sub-1', reason: 'not-sub-agent' }]);
+
+    // touchSession bumped so the sidebar moves the session up.
+    expect(stmts.touchSession.run).toHaveBeenCalledWith('session-skip-1');
+
+    // message_added broadcast fires alongside delegation_error so any open
+    // chat view picks up the system message without a refetch.
+    const msgEvents = broadcast.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.type === 'message_added');
+    expect(msgEvents).toHaveLength(1);
+    expect(msgEvents[0].sessionId).toBe('session-skip-1');
+  });
+
+  it('explains when the lead has no subAgents at all', async () => {
+    leadAgent = makeAgent('lone-lead', {} as Partial<EnrichedAgent>); // no subAgents
+
+    const results = await handleDelegation(
+      'session-skip-2',
+      'msg-skip-2',
+      [delegateTask('attempt')],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    expect(results).toEqual([]);
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(1);
+    const content = stmts.addMessage.run.mock.calls[0][3] as string;
+    expect(content).toContain('no registered sub-agents');
+    expect(content).toContain('`<delegate>` is unavailable');
+  });
+
+  it('records reason=agent-not-found when the target is on subAgents but missing from the project', async () => {
+    leadAgent = makeAgent('lead', { subAgents: ['sub-1'] } as Partial<EnrichedAgent>);
+    // getEnrichedAgent already returns null in this describe's beforeEach,
+    // so the agent passes the allowlist check but fails the project lookup.
+
+    const results = await handleDelegation(
+      'session-skip-3',
+      'msg-skip-3',
+      [delegateTask('attempt')],
+      leadAgent,
+      project,
+      '/tmp',
+    );
+
+    expect(results).toEqual([]);
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(1);
+    const metadata = JSON.parse(stmts.addMessage.run.mock.calls[0][7] as string);
+    expect(metadata.skipped).toEqual([{ agentId: 'sub-1', reason: 'agent-not-found' }]);
+    const content = stmts.addMessage.run.mock.calls[0][3] as string;
+    expect(content).toContain('not a known agent on this project');
   });
 });

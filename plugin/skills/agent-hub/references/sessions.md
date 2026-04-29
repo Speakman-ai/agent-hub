@@ -206,6 +206,22 @@ lead stays running.
 - **When to use**: short parallel side-quests whose results you will read
   and synthesize. Not for multi-turn ownership — use `<handoff>` for
   that.
+- **Sub-agent allowlist enforcement**: every `agentId` must appear in the
+  emitting agent's `subAgents` list (configured in `agents.json`). Tasks
+  targeting peers outside that list are silently dropped by
+  `server/delegation.ts`. Two surfaces help the lead self-correct:
+  - **Prompt annotation** — `buildEnrichedPrompt` injects a
+    `### Valid <delegate> targets` section into every lead turn listing
+    the allowlisted peers and noting that other peers are reachable only
+    via `<handoff>`, chat, or conference rooms. Misconfigured allowlist
+    entries (ids that don't match any project peer) are flagged inline.
+  - **Skip system message** — when *every* `<delegate>` in a block is
+    filtered out, the server persists a `role=system` message into the
+    lead's session (with `metadata.kind = "delegation_skip"`) listing
+    each skipped agent + reason (`not-sub-agent` / `agent-not-found`)
+    and the current allowlist, alongside the existing
+    `delegation_error` WS broadcast. The lead sees the reason on its
+    next turn and can retarget or fall back to `<handoff>`.
 
 ### User cancellation → lead takeover
 

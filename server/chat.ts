@@ -316,15 +316,72 @@ export type ProjectAgentRosterPeer = { id: string; name: string; role?: string }
 /**
  * Markdown block listing peer agents for injection into the enriched system prompt.
  * Excludes the current agent; empty when there are no peers.
+ *
+ * When `delegateAllowlist` is provided and non-empty, an additional annotation
+ * is appended that calls out which peers are valid `<delegate>` targets for
+ * the current (lead) agent. Peers omitted from the allowlist remain reachable
+ * via `<handoff>`, chat, and conference rooms — the server's delegation
+ * filter (see `server/delegation.ts`) silently drops `<delegate>` blocks
+ * whose `agentId` is not on this list, so surfacing the allowlist in the
+ * prompt lets the model self-correct without trial-and-error.
+ *
+ * Passing `undefined` (or an empty array) preserves the legacy section,
+ * which is the right call for non-lead agents that have no `subAgents`
+ * configured at all.
  */
-export function formatProjectAgentRosterSection(peers: ProjectAgentRosterPeer[]): string {
+export function formatProjectAgentRosterSection(
+  peers: ProjectAgentRosterPeer[],
+  delegateAllowlist?: string[],
+): string {
   if (peers.length === 0) return '';
   const lines = peers.map((p) => {
     const display = (p.name || '').trim() || p.id;
     const roleBit = p.role ? ` · Role: ${p.role}` : '';
     return `- **${display}** (\`${p.id}\`)${roleBit}`;
   });
-  return `\n\n## Project agent roster (same project)\nOther agents on this project you may reference by name or \`id\` in chat, \`<handoff>\`, \`<delegate>\`, and conference rooms:\n${lines.join('\n')}`;
+  let section = `\n\n## Project agent roster (same project)\nOther agents on this project you may reference by name or \`id\` in chat, \`<handoff>\`, \`<delegate>\`, and conference rooms:\n${lines.join('\n')}`;
+
+  if (Array.isArray(delegateAllowlist) && delegateAllowlist.length > 0) {
+    const peerIds = new Set(peers.map((p) => p.id));
+    const allowedPeers = peers.filter((p) => delegateAllowlist.includes(p.id));
+    const peerById = new Map(peers.map((p) => [p.id, p]));
+    if (allowedPeers.length > 0) {
+      const allowedLines = allowedPeers.map((p) => {
+        const display = (p.name || '').trim() || p.id;
+        return `- **${display}** (\`${p.id}\`)`;
+      });
+      // Allowlist entries that don't correspond to any peer on this project
+      // (mis-configured `subAgents` in agents.json) are surfaced so the
+      // operator can spot the typo, but they don't get a clickable target.
+      const orphanIds = delegateAllowlist.filter((id) => !peerById.has(id));
+      const orphanNote =
+        orphanIds.length > 0
+          ? `\n_Configured but not on this project (typo in \`subAgents\`?): ${orphanIds
+              .map((id) => `\`${id}\``)
+              .join(', ')}_`
+          : '';
+      const otherPeers = peers.filter((p) => !delegateAllowlist.includes(p.id));
+      const handoffNote =
+        otherPeers.length > 0
+          ? `\n\nOther peers above are reachable via \`<handoff>\`, chat, and conference rooms — but \`<delegate>\` blocks targeting them will be silently dropped by the server.`
+          : '';
+      section += `\n\n### Valid \`<delegate>\` targets\nOnly the following peers are registered as your sub-agents and will receive dispatched \`<delegate>\` work:\n${allowedLines.join(
+        '\n',
+      )}${orphanNote}${handoffNote}`;
+    } else {
+      // Allowlist is configured but matches no peer on this project — likely
+      // a misconfiguration. Tell the model so it doesn't waste a turn
+      // emitting <delegate> blocks that will all be filtered out.
+      const orphanIds = delegateAllowlist.filter((id) => !peerById.has(id));
+      const orphanList = orphanIds.length > 0 ? orphanIds.map((id) => `\`${id}\``).join(', ') : '';
+      void peerIds; // touched purely to keep the symbol locally scoped above
+      section += `\n\n### Valid \`<delegate>\` targets\nNone of your configured sub-agents${
+        orphanList ? ` (${orphanList})` : ''
+      } are registered on this project. \`<delegate>\` blocks will be silently dropped — use \`<handoff>\`, chat, or conference rooms instead until \`subAgents\` is fixed.`;
+    }
+  }
+
+  return section;
 }
 
 function peersOnProject(projectId: string, excludeAgentId: string): ProjectAgentRosterPeer[] {
@@ -397,8 +454,16 @@ export function buildEnrichedPrompt(
     undefined;
   const projectMode = getProjectMode(project as Project);
   const promptWorktree = !!(options.useWorktree && projectMode !== 'workflow');
+  // For lead agents, surface their `subAgents` allowlist alongside the
+  // peer roster so the model knows exactly which peers will accept a
+  // `<delegate>` dispatch. The same allowlist is enforced server-side in
+  // `server/delegation.ts` — drift between the prompt and the filter is
+  // exactly what produces silently-dropped delegations.
+  const delegateAllowlist = Array.isArray((agent as AgentWithModel).subAgents)
+    ? ((agent as AgentWithModel).subAgents as string[])
+    : undefined;
   const rosterSection = projectId
-    ? formatProjectAgentRosterSection(peersOnProject(projectId, agent.id))
+    ? formatProjectAgentRosterSection(peersOnProject(projectId, agent.id), delegateAllowlist)
     : '';
   const systemPromptBody = (agent.systemPrompt || '').trim();
   let prompt: string = identityAnchor + rosterSection + systemPromptBody;

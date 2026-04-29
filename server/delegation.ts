@@ -313,6 +313,90 @@ export function handleDelegationCancel(sessionId: string): void {
   broadcastActiveTasksSnapshot(stmts, broadcast);
 }
 
+/**
+ * Persist a system message into the lead's session explaining why every
+ * `<delegate>` task was filtered out. Pairs with the `delegation_error`
+ * WS broadcast: the broadcast renders a UI banner, the message lands in
+ * the transcript so the engine sees it on its next turn and can either
+ * retarget (`<delegate>` to a registered sub-agent) or fall back to
+ * `<handoff>` / inline work.
+ *
+ * Failures are swallowed: this is a best-effort observability hook and
+ * we never want it to mask the underlying delegation_error.
+ */
+function persistDelegationSkipSystemMessage(
+  sessionId: string,
+  parentMessageId: string,
+  leadAgent: EnrichedAgent,
+  skipped: Array<{ agentId: string; reason: 'not-sub-agent' | 'agent-not-found' }>,
+): void {
+  if (!deps) return;
+  const { stmts, broadcast } = deps;
+
+  const allowlist = Array.isArray(leadAgent.subAgents) ? leadAgent.subAgents : [];
+  const allowlistLine =
+    allowlist.length > 0
+      ? `Your registered sub-agents are: ${allowlist.map((id) => `\`${id}\``).join(', ')}.`
+      : 'You have no registered sub-agents — `<delegate>` is unavailable for this agent.';
+
+  const lines: string[] = [];
+  lines.push('**Delegation skipped — no valid sub-agents.**');
+  lines.push('');
+  for (const { agentId, reason } of skipped) {
+    if (reason === 'not-sub-agent') {
+      lines.push(
+        `- \`${agentId}\` is not listed in your \`subAgents\` allowlist; \`<delegate>\` only dispatches to your registered sub-agents.`,
+      );
+    } else {
+      lines.push(`- \`${agentId}\` is not a known agent on this project.`);
+    }
+  }
+  lines.push('');
+  lines.push(allowlistLine);
+  lines.push(
+    'For peers outside your sub-agent list, use `<handoff>` (single-target ownership transfer) or address them directly in chat / a conference room — `<delegate>` blocks targeting them are silently dropped.',
+  );
+
+  const content = lines.join('\n');
+  const metadata = JSON.stringify({
+    kind: 'delegation_skip',
+    parentMessageId,
+    skipped,
+    allowlist,
+  });
+  const msgId = uuidv4();
+  try {
+    stmts.addMessage.run(msgId, sessionId, 'system', content, null, null, null, metadata);
+    stmts.touchSession.run(sessionId);
+    let insertedMessage: unknown;
+    try {
+      insertedMessage = stmts.getMessageById.get(msgId);
+    } catch {
+      // older test stubs may not implement getMessageById — fall back to a
+      // synthetic shape so the broadcast still fires.
+      insertedMessage = undefined;
+    }
+    broadcast({
+      type: 'message_added',
+      sessionId,
+      message: (insertedMessage as { id?: string } | undefined) ?? {
+        id: msgId,
+        session_id: sessionId,
+        role: 'system' as const,
+        content,
+        engine: null,
+        model: null,
+        attachments: null,
+        metadata,
+        created_at: new Date().toISOString(),
+      },
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[Delegation] Failed to persist delegation_skip system message: ${message}`);
+  }
+}
+
 export async function handleDelegation(
   sessionId: string,
   parentMessageId: string,
@@ -348,15 +432,19 @@ export async function handleDelegation(
   const retryBackoffMs = Math.max(0, cfg.delegationRetryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS);
 
   const validTasks: DelegateTask[] = [];
+  type SkipReason = 'not-sub-agent' | 'agent-not-found';
+  const skipped: Array<{ agentId: string; reason: SkipReason }> = [];
   for (const t of delegateTasks) {
     if (!leadAgent.subAgents || !leadAgent.subAgents.includes(t.agentId)) {
       console.warn(
         `[Delegation] Skip task for ${t.agentId}: not listed as sub-agent of ${leadAgent.id}`,
       );
+      skipped.push({ agentId: t.agentId, reason: 'not-sub-agent' });
       continue;
     }
     if (!getEnrichedAgent(t.agentId)) {
       console.warn(`[Delegation] Skip task for ${t.agentId}: agent not found in project roster`);
+      skipped.push({ agentId: t.agentId, reason: 'agent-not-found' });
       continue;
     }
     validTasks.push(t);
@@ -375,6 +463,15 @@ export async function handleDelegation(
       parentMessageId,
       error: 'No valid sub-agents found for delegation',
     });
+
+    // Persist a system message into the lead's session so the model
+    // **sees** the filter reason on its next turn. The existing
+    // `delegation_error` WS event surfaces a UI banner but never lands in
+    // the message log, which means the lead engine has no way to
+    // self-correct (the empirical symptom: a `<delegate>` to an
+    // unregistered peer is silently dropped and the lead just stops).
+    persistDelegationSkipSystemMessage(sessionId, parentMessageId, leadAgent, skipped);
+
     return [];
   }
 
