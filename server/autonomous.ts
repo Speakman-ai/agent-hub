@@ -3,6 +3,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import cron from 'node-cron';
 import { v4 as uuidv4 } from 'uuid';
+import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateBoard } from './routes/board.js';
 import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
 import { createEscalation } from './routes/escalations.js';
@@ -610,12 +611,21 @@ export function scheduleAutonomousEpic(projectId: string, epic: KanbanEpicRow): 
 
   autonomousProjects.add(projectId);
 
-  const task = cron.schedule('* * * * *', () => {
-    runAutonomousLoop(projectId).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Autonomous] Safety-net error for "${epic.name}":`, msg);
-    });
-  });
+  const task = cron.schedule(
+    '* * * * *',
+    wrapCronTick(
+      () =>
+        runAutonomousLoop(projectId).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[Autonomous] Safety-net error for "${epic.name}":`, msg);
+        }),
+      `autonomous:${projectId}`,
+    ),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds('* * * * *'),
+      name: `autonomous:${projectId}`,
+    }),
+  );
   autonomousCrons.set(key, task);
   console.log(
     `[Autonomous] Activated epic "${epic.name}" for project "${projectId}" (event-driven + 60s safety net)`,
@@ -683,15 +693,22 @@ export function startReviewPollingFallback(): void {
     }
   }, 10_000);
 
-  reviewPollCron = cron.schedule('*/3 * * * *', async () => {
-    try {
-      await reconcileKanbanWithGitHub();
-      await pollForMissedReviews();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[ReviewPoll] Polling error:', msg);
-    }
-  });
+  reviewPollCron = cron.schedule(
+    '*/3 * * * *',
+    wrapCronTick(async () => {
+      try {
+        await reconcileKanbanWithGitHub();
+        await pollForMissedReviews();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[ReviewPoll] Polling error:', msg);
+      }
+    }, 'review-poll'),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds('*/3 * * * *'),
+      name: 'review-poll',
+    }),
+  );
   console.log('[ReviewPoll] Fallback polling started (every 3 minutes)');
 }
 

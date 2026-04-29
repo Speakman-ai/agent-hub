@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
 import config, { buildSpawnEnv, defaultModelForEngine, fileConfig } from './config.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
@@ -658,9 +659,14 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
         );
         continue;
       }
-      const task = cron.schedule(agent.heartbeat.interval, () => {
-        runHeartbeat(agent);
-      });
+      const task = cron.schedule(
+        agent.heartbeat.interval,
+        wrapCronTick(() => runHeartbeat(agent), `heartbeat:${agent.id}`),
+        defaultTickOptions({
+          intervalSeconds: estimateIntervalSeconds(agent.heartbeat.interval),
+          name: `heartbeat:${agent.id}`,
+        }),
+      );
       scheduledTasks.set(`heartbeat:${agent.id}`, task);
       console.log(`[Heartbeat] Scheduled ${agent.name}: ${agent.heartbeat.interval}`);
 
@@ -689,12 +695,19 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
         console.error(`[Cron] Invalid expression for "${cronJob.name}": ${cronJob.schedule}`);
         continue;
       }
-      const task = cron.schedule(cronJob.schedule, () => {
-        const fresh = stmts.getCron.get(cronJob.id) as CronRow | undefined;
-        if (fresh && fresh.enabled) {
-          runCronJob(fresh);
-        }
-      });
+      const task = cron.schedule(
+        cronJob.schedule,
+        wrapCronTick(() => {
+          const fresh = stmts.getCron.get(cronJob.id) as CronRow | undefined;
+          if (fresh && fresh.enabled) {
+            runCronJob(fresh);
+          }
+        }, `cron:${cronJob.id}`),
+        defaultTickOptions({
+          intervalSeconds: estimateIntervalSeconds(cronJob.schedule),
+          name: `cron:${cronJob.id}`,
+        }),
+      );
       scheduledTasks.set(`cron:${cronJob.id}`, task);
       console.log(`[Cron] Scheduled "${cronJob.name}": ${cronJob.schedule}`);
 
@@ -719,11 +732,20 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   }
 
   const WIKI_SYNC_SCHEDULE = '0 4 * * *';
-  const wikiSyncTask = cron.schedule(WIKI_SYNC_SCHEDULE, () => {
-    runWikiMemorySync().catch((err: unknown) => {
-      console.error('[Wiki→Memory Sync] Scheduled run failed:', (err as Error).message);
-    });
-  });
+  const wikiSyncTask = cron.schedule(
+    WIKI_SYNC_SCHEDULE,
+    wrapCronTick(
+      () =>
+        runWikiMemorySync().catch((err: unknown) => {
+          console.error('[Wiki→Memory Sync] Scheduled run failed:', (err as Error).message);
+        }),
+      'system:wiki-memory-sync',
+    ),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds(WIKI_SYNC_SCHEDULE),
+      name: 'system:wiki-memory-sync',
+    }),
+  );
   scheduledTasks.set('system:wiki-memory-sync', wikiSyncTask);
   console.log(`[Scheduler] Wiki→Memory sync scheduled: ${WIKI_SYNC_SCHEDULE}`);
 
@@ -731,20 +753,29 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   // wildcard preview cert. No-op when the PR-env feature flag is off.
   // Wrapped in try/catch because readPrEnvConfig throws on partial
   // config — we don't want one bad key to block the whole scheduler.
-  const certRenewalTask = cron.schedule(CERT_RENEWAL_CRON, () => {
-    runCertRenewalHeartbeat({
-      getConfig: () => {
-        try {
-          return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow());
-        } catch (err) {
-          console.error('[cert-renewal] config read failed:', (err as Error).message);
-          return null;
-        }
-      },
-    }).catch((err: unknown) => {
-      console.error('[cert-renewal] heartbeat threw:', (err as Error).message);
-    });
-  });
+  const certRenewalTask = cron.schedule(
+    CERT_RENEWAL_CRON,
+    wrapCronTick(
+      () =>
+        runCertRenewalHeartbeat({
+          getConfig: () => {
+            try {
+              return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow());
+            } catch (err) {
+              console.error('[cert-renewal] config read failed:', (err as Error).message);
+              return null;
+            }
+          },
+        }).catch((err: unknown) => {
+          console.error('[cert-renewal] heartbeat threw:', (err as Error).message);
+        }),
+      'system:cert-renewal',
+    ),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds(CERT_RENEWAL_CRON),
+      name: 'system:cert-renewal',
+    }),
+  );
   scheduledTasks.set('system:cert-renewal', certRenewalTask);
   console.log(`[Scheduler] Cert-renewal heartbeat scheduled: ${CERT_RENEWAL_CRON}`);
 
@@ -756,31 +787,45 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   // dispatcher doesn't have a production home yet; when W1 lands in
   // production, swap the lazy allocator out for the shared singleton.
   const reaperAllocator = new PoolAllocator(db);
-  const reaperTask = cron.schedule(REAPER_CRON, () => {
-    runReaperHeartbeat({
-      db,
-      allocator: reaperAllocator,
-      getConfig: () => {
-        try {
-          return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow());
-        } catch (err) {
-          console.error('[reaper] config read failed:', (err as Error).message);
-          return null;
-        }
-      },
-    }).catch((err: unknown) => {
-      console.error('[reaper] heartbeat threw:', (err as Error).message);
-    });
-  });
+  const reaperTask = cron.schedule(
+    REAPER_CRON,
+    wrapCronTick(
+      () =>
+        runReaperHeartbeat({
+          db,
+          allocator: reaperAllocator,
+          getConfig: () => {
+            try {
+              return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow());
+            } catch (err) {
+              console.error('[reaper] config read failed:', (err as Error).message);
+              return null;
+            }
+          },
+        }).catch((err: unknown) => {
+          console.error('[reaper] heartbeat threw:', (err as Error).message);
+        }),
+      'system:reaper',
+    ),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds(REAPER_CRON),
+      name: 'system:reaper',
+    }),
+  );
   scheduledTasks.set('system:reaper', reaperTask);
   console.log(`[Scheduler] Container-pool reaper scheduled: ${REAPER_CRON}`);
 
   // Pool-alerts heartbeat — every minute, evaluates pool_metrics rows
   // against alert thresholds and fires/resolves rows in pool_alerts.
   // Pure SQLite reads/writes, no network or process spawn.
-  const poolAlertsTask = cron.schedule(POOL_ALERTS_CRON, () => {
-    runPoolAlertsHeartbeat({ db });
-  });
+  const poolAlertsTask = cron.schedule(
+    POOL_ALERTS_CRON,
+    wrapCronTick(() => runPoolAlertsHeartbeat({ db }), 'system:pool-alerts'),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds(POOL_ALERTS_CRON),
+      name: 'system:pool-alerts',
+    }),
+  );
   scheduledTasks.set('system:pool-alerts', poolAlertsTask);
   console.log(`[Scheduler] Pool-alerts heartbeat scheduled: ${POOL_ALERTS_CRON}`);
 
@@ -849,12 +894,19 @@ export function rescheduleCron(cronJob: CronRow): void {
   }
 
   if (cronJob.enabled && cron.validate(cronJob.schedule)) {
-    const task = cron.schedule(cronJob.schedule, () => {
-      const fresh = stmts.getCron.get(cronJob.id) as CronRow | undefined;
-      if (fresh && fresh.enabled) {
-        runCronJob(fresh);
-      }
-    });
+    const task = cron.schedule(
+      cronJob.schedule,
+      wrapCronTick(() => {
+        const fresh = stmts.getCron.get(cronJob.id) as CronRow | undefined;
+        if (fresh && fresh.enabled) {
+          runCronJob(fresh);
+        }
+      }, `cron:${cronJob.id}`),
+      defaultTickOptions({
+        intervalSeconds: estimateIntervalSeconds(cronJob.schedule),
+        name: `cron:${cronJob.id}`,
+      }),
+    );
     scheduledTasks.set(key, task);
     persistNextRun('cron', cronJob.id, task);
     console.log(`[Cron] Rescheduled "${cronJob.name}": ${cronJob.schedule}`);
@@ -878,9 +930,14 @@ export function rescheduleHeartbeat(agent: EnrichedAgent): void {
     agent.heartbeat?.interval &&
     cron.validate(agent.heartbeat.interval)
   ) {
-    const task = cron.schedule(agent.heartbeat.interval, () => {
-      runHeartbeat(agent);
-    });
+    const task = cron.schedule(
+      agent.heartbeat.interval,
+      wrapCronTick(() => runHeartbeat(agent), `heartbeat:${agent.id}`),
+      defaultTickOptions({
+        intervalSeconds: estimateIntervalSeconds(agent.heartbeat.interval),
+        name: `heartbeat:${agent.id}`,
+      }),
+    );
     scheduledTasks.set(key, task);
     persistNextRun('heartbeat', agent.id, task);
     console.log(`[Heartbeat] Rescheduled ${agent.name}: ${agent.heartbeat.interval}`);

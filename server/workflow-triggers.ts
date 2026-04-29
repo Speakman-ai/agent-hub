@@ -8,6 +8,7 @@ import { Router, type Request, type Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import config from './config.js';
 import { startWorkflowRun } from './workflow-runner.js';
+import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import type { Stmts, BroadcastFn, EnrichedAgent, Project, KanbanCardRow } from './types.js';
 
 /** Preset label → node-cron expression (server-authoritative). */
@@ -147,7 +148,7 @@ function registerWorkflowCron(
   clearWorkflowCronSchedule(workflowId);
   const task = cron.schedule(
     schedule,
-    () => {
+    wrapCronTick(() => {
       const id = uuidv4();
       const runPayload = JSON.stringify({
         source: 'cron',
@@ -173,8 +174,14 @@ function registerWorkflowCron(
         );
       }
       persistWorkflowCronNextRun(deps.stmts, projectId, workflowId, task);
+    }, `workflow-cron:${workflowId}`),
+    {
+      ...defaultTickOptions({
+        intervalSeconds: estimateIntervalSeconds(schedule),
+        name: `workflow-cron:${workflowId}`,
+      }),
+      timezone: 'UTC',
     },
-    { timezone: 'UTC' },
   );
   workflowCronTasks.set(workflowId, task);
   console.debug(`[workflow-cron] scheduled workflow ${workflowId}: ${schedule}`);
