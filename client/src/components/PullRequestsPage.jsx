@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   GitPullRequest,
+  GitMerge,
   CheckCircle2,
   XCircle,
   Clock,
@@ -28,6 +29,7 @@ import {
   checkRowStyle,
   reviewStateColor,
   prListRowResolveDisabledHeuristic,
+  mergeButtonState,
 } from '../utils/prFormatting.js';
 
 // ─── Shared atoms ──────────────────────────────────────────────
@@ -63,10 +65,12 @@ function PrListItem({
   onOpen,
   onResolveRow,
   onNudgeReviewerRow,
+  onMergeRow,
   resolveAgentId,
   reviewerAgentId,
   resolvingThisRow,
   nudgingThisRow,
+  mergingThisRow,
   bulkResolving,
   spawnedSessionId,
   onOpenSession,
@@ -83,6 +87,14 @@ function PrListItem({
   const resolveDisabled = !resolveAgentId || resolveBusy || heuristicOff;
   const nudgeBusy = bulkResolving || nudgingThisRow;
   const nudgeDisabled = !reviewerAgentId || nudgeBusy;
+  const mergeState = mergeButtonState(pr);
+  const mergeBusy = bulkResolving || mergingThisRow;
+  const mergeDisabled = !mergeState.enabled || mergeBusy;
+  const mergeTitle = mergeBusy
+    ? 'Merging…'
+    : !pr.html_url
+      ? 'No GitHub URL on this PR'
+      : mergeState.reason;
   const nudgeTitle = !reviewerAgentId
     ? 'No reviewer agent on this project'
     : bulkResolving
@@ -149,6 +161,25 @@ function PrListItem({
         )}
       </button>
       <div className="flex-shrink-0 self-center flex flex-col gap-2 items-stretch">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onMergeRow(pr.number);
+          }}
+          disabled={mergeDisabled || !pr.html_url}
+          title={mergeTitle}
+          aria-label={`Merge PR #${pr.number}`}
+          className="flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-emerald-800/80 bg-emerald-950/40 text-xs font-medium text-emerald-200 hover:bg-emerald-950/70 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-950/40 disabled:hover:text-emerald-200 min-w-[5.5rem]"
+        >
+          {mergingThisRow ? (
+            <Loader2 size={16} className="animate-spin text-emerald-300" />
+          ) : (
+            <GitMerge size={16} className="text-emerald-300" />
+          )}
+          <span>Merge</span>
+        </button>
         <button
           type="button"
           onClick={(e) => {
@@ -290,6 +321,8 @@ function PrDetail({
   resolving,
   onNudgeReviewer,
   nudgingReviewer,
+  onMerge,
+  merging,
   agentId,
   reviewerAgentId,
   spawnedSessionId,
@@ -318,6 +351,14 @@ function PrDetail({
     : nudgingReviewer
       ? 'Requesting review…'
       : 'Request a formal PR review from the reviewer agent';
+
+  const mergeState = mergeButtonState(pr);
+  const mergeDisabled = merging || !mergeState.enabled || !pr.html_url;
+  const mergeTitle = merging
+    ? 'Merging…'
+    : !pr.html_url
+      ? 'No GitHub URL on this PR'
+      : mergeState.reason;
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -371,6 +412,21 @@ function PrDetail({
               <BellRing size={14} className="text-violet-300" />
             )}
             Nudge reviewer
+          </button>
+          <button
+            type="button"
+            onClick={onMerge}
+            disabled={mergeDisabled}
+            title={mergeTitle}
+            aria-label={`Merge PR #${pr.number}`}
+            className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {merging ? (
+              <Loader2 size={14} className="animate-spin text-emerald-300" />
+            ) : (
+              <GitMerge size={14} className="text-emerald-300" />
+            )}
+            Merge
           </button>
           <button
             type="button"
@@ -501,6 +557,8 @@ export default function PullRequestsPage({
   const [resolvingFromList, setResolvingFromList] = useState(null);
   const [nudgingFromList, setNudgingFromList] = useState(null);
   const [nudgingDetail, setNudgingDetail] = useState(false);
+  const [mergingDetail, setMergingDetail] = useState(false);
+  const [mergingFromList, setMergingFromList] = useState(null);
   const [bulkResolving, setBulkResolving] = useState(false);
   /** PR numbers for which a resolve run spawned a session (inline checkmark; no auto navigation). */
   const [sessionSpawnedByPr, setSessionSpawnedByPr] = useState(() => ({}));
@@ -716,6 +774,79 @@ export default function PullRequestsPage({
     [projectId, reviewerAgentId, bulkResolving, nudgingFromList, onToast],
   );
 
+  const handleMerge = useCallback(async () => {
+    if (!projectId || !selectedNumber || mergingDetail) return;
+    const pr = detail?.pr;
+    if (!pr?.html_url) {
+      if (typeof onToast === 'function') {
+        onToast('Cannot merge: no GitHub URL on this PR.', 'error', 5000);
+      }
+      return;
+    }
+    if (!mergeButtonState(pr).enabled) return;
+    const prLabel = `PR #${selectedNumber}`;
+    setMergingDetail(true);
+    try {
+      const res = await api.mergePr(pr.html_url, 'squash');
+      if (typeof onToast === 'function') {
+        onToast(
+          res?.alreadyMerged ? `${prLabel} was already merged.` : `${prLabel} merged.`,
+          'success',
+          5000,
+        );
+      }
+      // Refresh detail + list so badges/state reflect the merge.
+      loadDetail(selectedNumber);
+      loadListRef.current({ soft: true });
+    } catch (err) {
+      const msg = err?.message || 'Failed to merge PR';
+      if (typeof onToast === 'function') {
+        onToast(`Merge failed (${prLabel}): ${msg.replace(/^(\d{3}):\s*/, '')}`, 'error', 7000);
+      } else {
+        console.warn('Merge failed:', msg);
+      }
+    } finally {
+      setMergingDetail(false);
+    }
+  }, [projectId, selectedNumber, mergingDetail, detail, onToast, loadDetail]);
+
+  const handleMergeFromList = useCallback(
+    async (prNumber) => {
+      if (!projectId || bulkResolving || mergingFromList != null) return;
+      const pr = pulls.find((p) => p.number === prNumber);
+      if (!pr?.html_url) {
+        if (typeof onToast === 'function') {
+          onToast(`PR #${prNumber}: no GitHub URL.`, 'error', 5000);
+        }
+        return;
+      }
+      if (!mergeButtonState(pr).enabled) return;
+      const prLabel = `PR #${prNumber}`;
+      setMergingFromList(prNumber);
+      try {
+        const res = await api.mergePr(pr.html_url, 'squash');
+        if (typeof onToast === 'function') {
+          onToast(
+            res?.alreadyMerged ? `${prLabel} was already merged.` : `${prLabel} merged.`,
+            'success',
+            5000,
+          );
+        }
+        loadListRef.current({ soft: true });
+      } catch (err) {
+        const msg = err?.message || 'Failed to merge PR';
+        if (typeof onToast === 'function') {
+          onToast(`Merge failed (${prLabel}): ${msg.replace(/^(\d{3}):\s*/, '')}`, 'error', 7000);
+        } else {
+          console.warn('Merge failed:', msg);
+        }
+      } finally {
+        setMergingFromList(null);
+      }
+    },
+    [projectId, pulls, bulkResolving, mergingFromList, onToast],
+  );
+
   const handleResolveFromList = useCallback(
     async (prNumber) => {
       if (!projectId || !resolveAgentId || bulkResolving || resolvingFromList != null) return;
@@ -842,6 +973,8 @@ export default function PullRequestsPage({
           resolving={resolving}
           onNudgeReviewer={handleNudgeReviewer}
           nudgingReviewer={nudgingDetail}
+          onMerge={handleMerge}
+          merging={mergingDetail}
           agentId={resolveAgentId}
           reviewerAgentId={reviewerAgentId}
           spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
@@ -963,10 +1096,12 @@ export default function PullRequestsPage({
                 onOpen={() => handleSelect(pr)}
                 onResolveRow={handleResolveFromList}
                 onNudgeReviewerRow={handleNudgeFromList}
+                onMergeRow={handleMergeFromList}
                 resolveAgentId={resolveAgentId}
                 reviewerAgentId={reviewerAgentId}
                 resolvingThisRow={resolvingFromList === pr.number}
                 nudgingThisRow={nudgingFromList === pr.number}
+                mergingThisRow={mergingFromList === pr.number}
                 bulkResolving={bulkResolving}
                 spawnedSessionId={sessionSpawnedByPr[pr.number] || null}
                 onOpenSession={onOpenSession}

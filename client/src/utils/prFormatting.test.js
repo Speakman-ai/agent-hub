@@ -11,6 +11,7 @@ import {
   summarizeReviews,
   reviewsBadge,
   mergeableBadge,
+  mergeButtonState,
   reviewDecisionListBadge,
   mergePipelineListBadge,
   checkRowStyle,
@@ -453,5 +454,57 @@ describe('reviewStateColor', () => {
   it('null/unknown → gray', () => {
     expect(reviewStateColor(null)).toContain('gray');
     expect(reviewStateColor('PENDING')).toContain('gray');
+  });
+});
+
+describe('mergeButtonState', () => {
+  it('open + mergeable=true → enabled', () => {
+    const s = mergeButtonState({ state: 'open', mergeable: true });
+    expect(s.enabled).toBe(true);
+    expect(typeof s.reason).toBe('string');
+    expect(s.reason.length).toBeGreaterThan(0);
+  });
+
+  it('mergeable=false (conflicts) → disabled with conflict reason', () => {
+    const s = mergeButtonState({ state: 'open', mergeable: false });
+    expect(s.enabled).toBe(false);
+    expect(s.reason).toMatch(/conflict/i);
+  });
+
+  it('mergeable=null (still computing) → disabled with computing reason', () => {
+    const s = mergeButtonState({ state: 'open', mergeable: null });
+    expect(s.enabled).toBe(false);
+    expect(s.reason).toMatch(/computing|refresh/i);
+  });
+
+  it('mergeable undefined → disabled', () => {
+    const s = mergeButtonState({ state: 'open' });
+    expect(s.enabled).toBe(false);
+  });
+
+  it('already merged → disabled even if mergeable=true', () => {
+    const s = mergeButtonState({
+      state: 'closed',
+      merged_at: '2026-04-29T00:00:00Z',
+      mergeable: true,
+    });
+    expect(s.enabled).toBe(false);
+    expect(s.reason).toMatch(/merged/i);
+  });
+
+  it('draft PR → disabled even if mergeable=true', () => {
+    const s = mergeButtonState({ state: 'open', draft: true, mergeable: true });
+    expect(s.enabled).toBe(false);
+    expect(s.reason).toMatch(/draft/i);
+  });
+
+  it('closed PR → disabled', () => {
+    const s = mergeButtonState({ state: 'closed', mergeable: true });
+    expect(s.enabled).toBe(false);
+  });
+
+  it('null PR → disabled', () => {
+    expect(mergeButtonState(null).enabled).toBe(false);
+    expect(mergeButtonState(undefined).enabled).toBe(false);
   });
 });

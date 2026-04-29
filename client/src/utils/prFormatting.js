@@ -123,6 +123,33 @@ export function mergeableBadge(mergeable) {
 }
 
 /**
+ * Decide whether the "Merge" button should be enabled for a PR, plus the
+ * tooltip explaining why if not.
+ *
+ * Merge is only enabled when:
+ *  - the PR is open (not closed/merged/draft)
+ *  - GitHub has finished computing mergeability and reports `mergeable === true`
+ *
+ * `mergeable === null` means GitHub is still computing — we keep the button
+ * disabled with an explanatory tooltip rather than letting the user click and
+ * fail.
+ *
+ * @param {{state?:string, draft?:boolean, merged_at?:string|null,
+ *          mergeable?:boolean|null}} pr
+ * @returns {{enabled:boolean, reason:string}}
+ */
+export function mergeButtonState(pr) {
+  if (!pr) return { enabled: false, reason: 'No PR data' };
+  if (pr.merged_at) return { enabled: false, reason: 'Already merged' };
+  if (pr.draft) return { enabled: false, reason: 'PR is a draft' };
+  const s = (pr.state || '').toLowerCase();
+  if (s && s !== 'open') return { enabled: false, reason: `PR is ${s}` };
+  if (pr.mergeable === true) return { enabled: true, reason: 'Squash and merge this PR' };
+  if (pr.mergeable === false) return { enabled: false, reason: 'PR has merge conflicts' };
+  return { enabled: false, reason: 'GitHub is still computing mergeability — try Refresh' };
+}
+
+/**
  * Aggregate check-runs into pass/fail/pending counts + an overall badge.
  * Mirrors GitHub's "Checks" strip logic.
  * @param {Array<{status?:string, conclusion?:string}>} checks
