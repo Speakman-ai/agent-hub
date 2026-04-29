@@ -569,7 +569,7 @@ export default function Sidebar({
                                           )}
                                         </div>
                                         {/* Archived (soft-deleted) sessions —
-                                            recovery window is 7 days, server
+                                            recovery window is 24 hours, server
                                             enforces the cut-off. Collapsed by
                                             default to keep the sidebar quiet
                                             when nothing is pending recovery. */}

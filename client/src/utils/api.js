@@ -114,7 +114,7 @@ export const api = {
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
   getSessionProgress: (sessionId) => fetchJSON(`/sessions/${sessionId}/progress`),
   deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
-  // Soft-delete recovery — rows within the 7-day window, newest first.
+  // Soft-delete recovery — rows within the 24-hour window, newest first.
   getArchivedSessions: (agentId) => fetchJSON(`/agents/${agentId}/archived-sessions`),
   restoreSession: (sessionId) => fetchJSON(`/sessions/${sessionId}/restore`, { method: 'POST' }),
   clearAllSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),

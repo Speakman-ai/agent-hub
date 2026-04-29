@@ -54,8 +54,9 @@ describe('GET /api/sessions/:sessionId/progress', () => {
   it('retains progress rows when the session is archived (soft-deleted) so restore preserves the panel', async () => {
     // DELETE is now a soft-delete — progress rows are intentionally preserved
     // so `POST /api/sessions/:id/restore` can bring the ProgressPanel back to
-    // its prior state. Hard-delete (project/agent removal or a future purge past
-    // the 7-day window) is what actually drops these rows.
+    // its prior state. Hard-delete (project/agent removal or the hourly
+    // workspace-purge tick past the 24-hour window) is what actually drops
+    // these rows.
     const session = (await createSession()) as { id: string };
     const stmts = getStmts();
     stmts.addSessionProgress.run(session.id, null, 'X', 'started', 1, null);

@@ -6,7 +6,12 @@ import { homedir } from 'os';
 import config from './config.js';
 import type { SessionRow } from './types.js';
 
-const WORKSPACES_ROOT: string = path.join(homedir(), '.agent-hub', 'workspaces');
+/**
+ * Root for all per-session / per-process git clones the workspace manager
+ * creates. Exported so callers (session-purge, tests) can construct or assert
+ * on paths inside this root without re-deriving it.
+ */
+export const WORKSPACES_ROOT: string = path.join(homedir(), '.agent-hub', 'workspaces');
 
 /**
  * Promisified `execFile` — used everywhere in this module instead of
@@ -619,37 +624,112 @@ export async function ensureSessionWorkspace(
   }
 }
 
-export function removeWorkspace(workspacePath: string): void {
-  if (!workspacePath || !existsSync(workspacePath)) return;
+/**
+ * Remove a workspace directory and report whether anything was actually
+ * unlinked. Returns `true` only when `rmSync` ran against an existing path
+ * inside `WORKSPACES_ROOT` and didn't throw. Returns `false` for the three
+ * no-op paths (empty input, missing directory, path outside the managed
+ * root) and for `rmSync` failures, so callers like `session-purge.ts` can
+ * count honest removals instead of attempts.
+ */
+export function removeWorkspace(workspacePath: string): boolean {
+  if (!workspacePath || !existsSync(workspacePath)) return false;
 
   if (!workspacePath.startsWith(WORKSPACES_ROOT)) {
     console.warn(`[Workspace] Refusing to remove path outside managed root: ${workspacePath}`);
-    return;
+    return false;
   }
 
   try {
     rmSync(workspacePath, { recursive: true, force: true });
     console.log(`[Workspace] Removed: ${workspacePath}`);
+    return true;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[Workspace] Failed to remove ${workspacePath}:`, message);
+    return false;
   }
 }
 
+export interface CleanupStaleOpts {
+  /**
+   * Given an 8-char session-id prefix (the suffix of a `session-<prefix>`
+   * directory name), return true if a live or within-recovery-window session
+   * row exists. When true, the directory is preserved. When false (orphan or
+   * past the 24-hour archive window), the directory is removed unconditionally.
+   *
+   * Optional — when omitted, every `session-*` directory is preserved (legacy
+   * behaviour preserved for callers that don't have a DB handle to query).
+   */
+  isSessionRecoverable?: (idPrefix: string) => boolean;
+  /** Override for unit testing — defaults to `Date.now()`. */
+  now?: number;
+}
+
+/**
+ * Reclaim worktree clones inside `~/.agent-hub/workspaces/<projectSlug>/`.
+ *
+ * Two paths:
+ * - **Non-session clones** (`cron-*`, `heartbeat-*`, ad-hoc process clones):
+ *   removed when their mtime is older than `maxAgeMs` (default 24h). They
+ *   regenerate cheaply on the next tick.
+ * - **Session clones** (`session-<prefix>`): preserved only when
+ *   `opts.isSessionRecoverable(prefix)` returns true (i.e. a live or within
+ *   the 24-hour archive window row exists). Anything else — orphans on disk
+ *   without a matching DB row, or rows already hard-deleted by the purge —
+ *   is removed without consulting mtime, since the recovery window is the
+ *   contract, not the file's last-touched time.
+ *
+ * Safety: every removed path is constructed inside `WORKSPACES_ROOT` via
+ * `path.join`, so the implicit prefix check makes it impossible to escape.
+ * The explicit `WORKSPACES_ROOT` guard remains in `removeWorkspace` for
+ * direct callers.
+ */
 export function cleanupStaleWorkspaces(
   projectCwd: string,
   maxAgeMs: number = 24 * 60 * 60 * 1000,
+  opts: CleanupStaleOpts = {},
 ): void {
   const wsDir = path.join(WORKSPACES_ROOT, projectSlug(projectCwd));
   if (!existsSync(wsDir)) return;
 
+  const isSessionRecoverable = opts.isSessionRecoverable;
+  const now = opts.now ?? Date.now();
+
   try {
     const entries = readdirSync(wsDir);
-    const now = Date.now();
     for (const entry of entries) {
-      if (entry.startsWith('session-')) continue;
       const fullPath = path.join(wsDir, entry);
+
+      // Belt-and-braces: the join above already keeps us under WORKSPACES_ROOT,
+      // but a hostile entry (e.g. ".." surfaced by a broken filesystem) would
+      // be rejected here too. Cheap check — keep it.
+      if (!fullPath.startsWith(WORKSPACES_ROOT)) {
+        console.warn(`[Workspace] Skipping path outside managed root: ${fullPath}`);
+        continue;
+      }
+
       try {
+        if (entry.startsWith('session-')) {
+          // Strip the `session-` prefix to get the id-prefix the DB row was
+          // sliced from (`session.id.slice(0, 8)` at create time).
+          //
+          // Default-preserve when the caller didn't pass a recoverability
+          // probe — the JSDoc on `CleanupStaleOpts.isSessionRecoverable`
+          // documents this as the legacy behaviour, and "fail closed on
+          // missing context" matches the rest of the purge module (e.g.
+          // `session-purge.ts` returns true on a DB-lookup error). A future
+          // caller without a DB handle would otherwise silently wipe live
+          // session worktrees on first run.
+          const idPrefix = entry.slice('session-'.length);
+          if (!isSessionRecoverable || isSessionRecoverable(idPrefix)) {
+            continue;
+          }
+          rmSync(fullPath, { recursive: true, force: true });
+          console.log(`[Workspace] Cleaned up orphan session clone: ${entry}`);
+          continue;
+        }
+
         const stat = statSync(fullPath);
         if (now - stat.mtimeMs > maxAgeMs) {
           rmSync(fullPath, { recursive: true, force: true });

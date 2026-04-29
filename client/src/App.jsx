@@ -99,9 +99,9 @@ export default function App() {
     _setActiveAgentId(id);
   }, []);
   const [sessions, setSessions] = useState([]);
-  // Soft-deleted sessions within the 7-day recovery window for the active
+  // Soft-deleted sessions within the 24-hour recovery window for the active
   // agent. Shape: Array<SessionRow & { message_count:number, deleted_at:string }>.
-  // Server filters to 7-day window + newest-first; client just renders.
+  // Server filters to 24h window + newest-first; client just renders.
   const [archivedSessions, setArchivedSessions] = useState([]);
   const [restoringSessionIds, setRestoringSessionIds] = useState(new Set());
   // activeSessionId is persisted per-agent in localStorage under
@@ -1881,7 +1881,7 @@ export default function App() {
     setSessionsListLoading(true);
     let cancelled = false;
 
-    // Fetch archived (soft-deleted within 7-day window) in parallel so the
+    // Fetch archived (soft-deleted within 24h window) in parallel so the
     // sidebar "Archived" section is ready as soon as the live list renders.
     api
       .getArchivedSessions(agentId)

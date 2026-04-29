@@ -876,7 +876,7 @@ function initDb(dataDir: string): void {
   }
 
   // Soft-delete ("archive") column. When set, the session is hidden from the
-  // live `getSessions` list but remains in the DB for up to 7 days so users
+  // live `getSessions` list but remains in the DB for up to 24 hours so users
   // can restore it via POST /api/sessions/:sessionId/restore.
   try {
     db.exec('ALTER TABLE sessions ADD COLUMN deleted_at TEXT DEFAULT NULL');
@@ -1552,21 +1552,41 @@ function initDb(dataDir: string): void {
     restoreArchivedSession: db.prepare(
       "UPDATE sessions SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ? AND deleted_at IS NOT NULL",
     ),
-    // Archived sessions within the 7-day recovery window, newest first.
-    // Rows older than 7 days are excluded so the UI doesn't offer to restore
-    // things that are already past the purge horizon; a follow-up cron can
-    // hard-delete them.
     // All sessions for an agent regardless of archive status. Used by bulk
     // archive endpoints so already-archived rows can be skipped.
     getAllSessionsByAgent: db.prepare(
       'SELECT * FROM sessions WHERE agent_id = ? ORDER BY updated_at DESC',
     ),
+    // Archived sessions within the 24-hour recovery window, newest first.
+    // Rows older than a day are excluded so the UI doesn't offer to restore
+    // things that are already past the purge horizon; the workspace-purge
+    // cron hard-deletes them on its next tick.
     getArchivedSessionsByAgent: db.prepare(
       `SELECT * FROM sessions
        WHERE agent_id = ?
          AND deleted_at IS NOT NULL
-         AND deleted_at >= datetime('now', '-7 days')
+         AND deleted_at >= datetime('now', '-1 day')
        ORDER BY deleted_at DESC`,
+    ),
+    // Sessions whose archive window has expired. The row, the worktree clone,
+    // and any FK-cascading children (messages, progress, delegations,
+    // handoffs, …) get hard-deleted by the hourly session-purge tick. Mirrors
+    // the inverse of `getArchivedSessionsByAgent` (>= -1 day).
+    getExpiredArchivedSessions: db.prepare(
+      `SELECT id, worktree_path FROM sessions
+       WHERE deleted_at IS NOT NULL
+         AND deleted_at < datetime('now', '-1 day')`,
+    ),
+    // Existence probe used by `cleanupStaleWorkspaces` to decide whether a
+    // `session-<prefix>` directory on disk has a live or recoverable row.
+    // The prefix is the same 8-char slice the workspace dir was named after,
+    // so `id LIKE ?||'%'` is a primary-key prefix search. Returns 1 row or
+    // none — callers use `.get()`.
+    getRecoverableSessionByIdPrefix: db.prepare(
+      `SELECT 1 FROM sessions
+       WHERE id LIKE ? || '%'
+         AND (deleted_at IS NULL OR deleted_at >= datetime('now', '-1 day'))
+       LIMIT 1`,
     ),
     touchSession: db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?"),
 

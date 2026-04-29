@@ -491,12 +491,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   // Single-session DELETE is a *soft* delete (archive). The row is marked with
   // `deleted_at` so it disappears from the live sidebar but stays recoverable
-  // via POST /api/sessions/:sessionId/restore for 7 days. We deliberately
+  // via POST /api/sessions/:sessionId/restore for 24 hours. We deliberately
   // leave the worktree on disk so a restore can reattach the same checkout.
   // Bulk `DELETE /api/agents/:agentId/sessions[/inactive]` uses the same
   // soft-delete semantics. Hard removal (DB row + worktree) happens when the
-  // agent or project is deleted, or when a future purge job drops rows past
-  // the 7-day recovery window.
+  // agent or project is deleted, or when the hourly workspace-purge tick in
+  // server/session-purge.ts drops rows past the 24-hour recovery window.
   router.delete('/api/sessions/:sessionId', (req: Request, res: Response) => {
     const sessionId = req.params.sessionId as string;
     const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
@@ -527,7 +527,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json({ ok: true, archived: true });
   });
 
-  // Archived (soft-deleted) sessions for a given agent within the 7-day
+  // Archived (soft-deleted) sessions for a given agent within the 24-hour
   // recovery window, newest first. Powers the sidebar "Archived" section.
   router.get('/api/agents/:agentId/archived-sessions', (req: Request, res: Response) => {
     const rows = stmts.getArchivedSessionsByAgent.all(req.params.agentId) as SessionRow[];

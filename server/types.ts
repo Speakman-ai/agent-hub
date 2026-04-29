@@ -34,7 +34,7 @@ export interface SessionRow {
   cron_id: number | null;
   created_at: string;
   updated_at: string;
-  /** Soft-delete timestamp. NULL = active; non-NULL = archived (hidden from live list, recoverable for 7 days). */
+  /** Soft-delete timestamp. NULL = active; non-NULL = archived (hidden from live list, recoverable for 24 hours). */
   deleted_at: string | null;
   /**
    * Optional legacy SQLite column on upgraded databases from the removed persisted task-plan
@@ -716,6 +716,8 @@ export interface Stmts {
   restoreArchivedSession: Stmt;
   getAllSessionsByAgent: Stmt;
   getArchivedSessionsByAgent: Stmt;
+  getExpiredArchivedSessions: Stmt;
+  getRecoverableSessionByIdPrefix: Stmt;
   touchSession: Stmt;
   updateSessionEngine: Stmt;
   updateSessionModel: Stmt;

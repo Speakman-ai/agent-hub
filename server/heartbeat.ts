@@ -7,6 +7,7 @@ import config, { buildSpawnEnv, defaultModelForEngine, fileConfig } from './conf
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
+import { runWorkspacePurge } from './session-purge.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
@@ -756,6 +757,49 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
       } catch {}
     }
   }
+
+  // Workspace purge — hourly hard-delete of session rows past the 24-hour
+  // archive window + stale-clone sweep across every project's workspace
+  // dir. Hourly (not daily) so the effective worst-case disk retention
+  // stays close to the 24h contract instead of drifting to ~48h. The tick
+  // is cheap when there's nothing to do — `getExpiredArchivedSessions` is
+  // an indexed scan, and `cleanupStaleWorkspaces` is a single readdir per
+  // project — so the higher cadence has negligible overhead. Runs once at
+  // startup (after a 30s grace so the scheduler isn't racing initial DB
+  // writes / project hydration) and on the top of every hour. Wrapped in
+  // `wrapCronTick` for the standard missed-run accounting and never throws
+  // — `runWorkspacePurge` catches its own errors so a single bad row can't
+  // kill the tick.
+  const WORKSPACE_PURGE_SCHEDULE = '0 * * * *';
+  const workspacePurgeTask = cron.schedule(
+    WORKSPACE_PURGE_SCHEDULE,
+    wrapCronTick(() => {
+      try {
+        runWorkspacePurge();
+      } catch (err: unknown) {
+        console.error('[Workspace Purge] Scheduled tick threw:', (err as Error).message);
+      }
+    }, 'system:workspace-purge'),
+    defaultTickOptions({
+      intervalSeconds: estimateIntervalSeconds(WORKSPACE_PURGE_SCHEDULE),
+      name: 'system:workspace-purge',
+    }),
+  );
+  scheduledTasks.set('system:workspace-purge', workspacePurgeTask);
+  console.log(`[Scheduler] Workspace purge scheduled: ${WORKSPACE_PURGE_SCHEDULE}`);
+
+  // One-shot startup pass so a freshly-restarted server reclaims any
+  // backlog accumulated while it was down. Deferred 30s so the rest of
+  // boot (project hydration, in-flight session resume, etc.) settles
+  // first — the purge is read-write and we don't want it competing with
+  // initial WAL pressure.
+  setTimeout(() => {
+    try {
+      runWorkspacePurge();
+    } catch (err: unknown) {
+      console.error('[Workspace Purge] Startup tick threw:', (err as Error).message);
+    }
+  }, 30_000);
 
   const WIKI_SYNC_SCHEDULE = '0 4 * * *';
   const wikiSyncTask = cron.schedule(

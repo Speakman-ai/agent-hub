@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, utimesSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { homedir } from 'os';
@@ -10,8 +10,13 @@ vi.mock('./config.js', () => ({
   default: { defaultCwd: '/tmp' },
 }));
 
-const { getOrCreateProcessWorktree, ensureSessionWorkspace, removeWorkspace, __test } =
-  await import('./worktree.js');
+const {
+  getOrCreateProcessWorktree,
+  ensureSessionWorkspace,
+  removeWorkspace,
+  cleanupStaleWorkspaces,
+  __test,
+} = await import('./worktree.js');
 
 describe('getOrCreateProcessWorktree — cwd validation', () => {
   it('falls back to defaultCwd when cwd does not exist', async () => {
@@ -517,5 +522,74 @@ describe('cloneWithRetry — retry policy with injected runner', () => {
     expect(calls[0].opts).toEqual(opts);
     expect(calls[1].args).toEqual(args);
     expect(calls[1].opts).toEqual(opts);
+  });
+});
+
+describe('cleanupStaleWorkspaces — omitted isSessionRecoverable callback', () => {
+  // Pin the legacy contract: when no recoverability probe is supplied, every
+  // `session-*` directory is preserved unconditionally. This guards against
+  // future callers (without a DB handle) silently nuking live session
+  // worktrees on the first tick. Reviewer-requested regression test for the
+  // "fail closed on missing context" branch in `cleanupStaleWorkspaces`.
+  let projectCwd: string;
+  let workspaceDir: string;
+
+  beforeEach(() => {
+    const slug = `cleanup-omit-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+    projectCwd = path.join(os.tmpdir(), slug);
+    mkdirSync(projectCwd, { recursive: true });
+    // `cleanupStaleWorkspaces` resolves the workspace dir by basename, so this
+    // matches the path it will actually scan.
+    workspaceDir = path.join(homedir(), '.agent-hub', 'workspaces', path.basename(projectCwd));
+    mkdirSync(workspaceDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    try {
+      if (existsSync(workspaceDir)) rmSync(workspaceDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+    try {
+      if (existsSync(projectCwd)) rmSync(projectCwd, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  it('preserves session-* dirs when no isSessionRecoverable callback is supplied', () => {
+    const sessionDir = path.join(workspaceDir, 'session-deadbeef');
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(path.join(sessionDir, 'README'), 'must survive omitted-callback tick\n');
+
+    // No `opts` argument at all — exercises the legacy default-preserve branch.
+    cleanupStaleWorkspaces(projectCwd, 24 * 60 * 60 * 1000);
+
+    expect(existsSync(sessionDir)).toBe(true);
+  });
+
+  it('preserves session-* dirs when opts is passed without isSessionRecoverable', () => {
+    const sessionDir = path.join(workspaceDir, 'session-cafef00d');
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(path.join(sessionDir, 'README'), 'must survive partial-opts tick\n');
+
+    // Opts present but the recoverability probe is omitted — the
+    // `!isSessionRecoverable` branch must still preserve the dir.
+    cleanupStaleWorkspaces(projectCwd, 24 * 60 * 60 * 1000, { now: Date.now() });
+
+    expect(existsSync(sessionDir)).toBe(true);
+  });
+
+  it('still reaps non-session stale clones when the callback is omitted', () => {
+    // Sanity: omitting the callback must not turn into "preserve everything";
+    // `cron-*` / `heartbeat-*` clones should still get the mtime sweep.
+    const cronDir = path.join(workspaceDir, 'cron-stale');
+    mkdirSync(cronDir, { recursive: true });
+    const oldEpoch = Date.now() / 1000 - 25 * 60 * 60;
+    utimesSync(cronDir, oldEpoch, oldEpoch);
+
+    cleanupStaleWorkspaces(projectCwd, 24 * 60 * 60 * 1000);
+
+    expect(existsSync(cronDir)).toBe(false);
   });
 });
