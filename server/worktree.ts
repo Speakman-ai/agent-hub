@@ -131,13 +131,65 @@ function isTransientCloneError(err: unknown): boolean {
 
 type GitRunner = (args: string[], opts?: RunGitOptions) => Promise<string>;
 
-interface CloneRetryOptions {
+interface RetryOptions {
   /** Override the runner (test seam — production path uses `runGit`). */
   runner?: GitRunner;
-  /** Override the post-failure cleanup (test seam). */
-  cleanup?: (cloneDir: string) => void;
   /** Override the inter-attempt delay (test seam — production uses setTimeout). */
   sleep?: (ms: number) => Promise<void>;
+}
+
+interface CloneRetryOptions extends RetryOptions {
+  /** Override the post-failure cleanup (test seam). */
+  cleanup?: (cloneDir: string) => void;
+}
+
+/**
+ * Generic transient-retry loop shared by clone and fetch paths.
+ *
+ * Retries up to `MAX_CLONE_ATTEMPTS` times when the failure stderr matches a
+ * known transient pattern. Bails out immediately on non-transient errors
+ * (auth, repository-not-found, etc.). Between attempts, an optional
+ * `betweenAttempts` hook runs (used by clone to nuke the partial directory).
+ *
+ * Returns the runner's stdout from the successful attempt.
+ */
+async function withTransientRetry(
+  args: string[],
+  opts: RunGitOptions,
+  retryOpts: RetryOptions & {
+    label: 'clone' | 'fetch';
+    betweenAttempts?: () => void;
+  },
+): Promise<string> {
+  const runner = retryOpts.runner ?? runGit;
+  const sleep =
+    retryOpts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_CLONE_ATTEMPTS; attempt++) {
+    try {
+      return await runner(args, opts);
+    } catch (err: unknown) {
+      lastErr = err;
+      const transient = isTransientCloneError(err);
+      if (!transient || attempt === MAX_CLONE_ATTEMPTS) {
+        throw err;
+      }
+
+      retryOpts.betweenAttempts?.();
+
+      const baseDelay = CLONE_RETRY_BASE_MS * Math.pow(3, attempt - 1);
+      const jitter = Math.floor(Math.random() * 250);
+      const delayMs = baseDelay + jitter;
+      const summary = (err instanceof Error ? err.message : String(err)).split('\n')[0];
+      console.warn(
+        `[Workspace] Transient ${retryOpts.label} failure (attempt ${attempt}/${MAX_CLONE_ATTEMPTS}): ${summary}; retrying in ${delayMs}ms`,
+      );
+      await sleep(delayMs);
+    }
+  }
+  // Defensive — loop above always either returns or throws.
+  throw lastErr;
 }
 
 /**
@@ -159,39 +211,41 @@ async function cloneWithRetry(
   cloneDir: string,
   retryOpts: CloneRetryOptions = {},
 ): Promise<void> {
-  const runner = retryOpts.runner ?? runGit;
   const cleanup = retryOpts.cleanup ?? cleanupPartialClone;
-  const sleep =
-    retryOpts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  await withTransientRetry(args, opts, {
+    runner: retryOpts.runner,
+    sleep: retryOpts.sleep,
+    label: 'clone',
+    // Wipe whatever the failed attempt left behind so the next clone
+    // doesn't see "destination path already exists".
+    betweenAttempts: () => cleanup(cloneDir),
+  });
+}
 
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= MAX_CLONE_ATTEMPTS; attempt++) {
-    try {
-      await runner(args, opts);
-      return;
-    } catch (err: unknown) {
-      lastErr = err;
-      const transient = isTransientCloneError(err);
-      if (!transient || attempt === MAX_CLONE_ATTEMPTS) {
-        throw err;
-      }
-
-      // Wipe whatever the failed attempt left behind so the next clone
-      // doesn't see "destination path already exists".
-      cleanup(cloneDir);
-
-      const baseDelay = CLONE_RETRY_BASE_MS * Math.pow(3, attempt - 1);
-      const jitter = Math.floor(Math.random() * 250);
-      const delayMs = baseDelay + jitter;
-      const summary = (err instanceof Error ? err.message : String(err)).split('\n')[0];
-      console.warn(
-        `[Workspace] Transient clone failure (attempt ${attempt}/${MAX_CLONE_ATTEMPTS}): ${summary}; retrying in ${delayMs}ms`,
-      );
-      await sleep(delayMs);
-    }
-  }
-  // Defensive — loop above always either returns or throws.
-  throw lastErr;
+/**
+ * Run `git fetch …` with retry-on-transient-failure.
+ *
+ * Same retry policy as `cloneWithRetry`, but without directory cleanup —
+ * the local clone is intact, only the network fetch failed. Targets the
+ * reuse path in `getOrCreateProcessWorktree` and `ensureSessionWorkspace`,
+ * where a transient `fatal: expected 'packfile'` or HTTP 5xx from GitHub
+ * was previously eaten with a single warn-and-continue.
+ *
+ * Resolves on success, rejects with the final attempt's error if every
+ * retry exhausts the budget. Callers that prefer "log and continue with the
+ * stale tree" semantics should wrap in try/catch (see the existing reuse
+ * sites — they intentionally tolerate fetch failure).
+ */
+async function fetchWithRetry(
+  args: string[],
+  opts: RunGitOptions,
+  retryOpts: RetryOptions = {},
+): Promise<void> {
+  await withTransientRetry(args, opts, {
+    runner: retryOpts.runner,
+    sleep: retryOpts.sleep,
+    label: 'fetch',
+  });
 }
 
 /**
@@ -491,7 +545,7 @@ export async function getOrCreateProcessWorktree(
 
   if (existsSync(cloneDir) && existsSync(path.join(cloneDir, '.git'))) {
     try {
-      await runGit(['fetch', 'origin', '--quiet'], {
+      await fetchWithRetry(['fetch', 'origin', '--quiet'], {
         cwd: cloneDir,
         timeoutMs: FETCH_TIMEOUT_MS,
       });
@@ -572,7 +626,7 @@ export async function ensureSessionWorkspace(
     // work. Agents that want to see merged PRs can `git log origin/<default>`
     // or rebase explicitly.
     try {
-      await runGit(['fetch', 'origin', '--quiet'], {
+      await fetchWithRetry(['fetch', 'origin', '--quiet'], {
         cwd: cloneDir,
         timeoutMs: FETCH_TIMEOUT_MS,
       });
@@ -761,6 +815,7 @@ export const __test = {
   MAX_CLONE_ATTEMPTS,
   CLONE_RETRY_BASE_MS,
   cloneWithRetry,
+  fetchWithRetry,
   isTransientCloneError,
   cleanupPartialClone,
 };

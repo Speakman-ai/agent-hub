@@ -593,3 +593,109 @@ describe('cleanupStaleWorkspaces — omitted isSessionRecoverable callback', () 
     expect(existsSync(cronDir)).toBe(false);
   });
 });
+
+describe('fetchWithRetry — retry policy on the reuse path', () => {
+  const { fetchWithRetry, MAX_CLONE_ATTEMPTS } = __test;
+  const noopSleep = async () => {};
+
+  function makeRunner(outcomes: Array<'ok' | string>) {
+    let i = 0;
+    const calls: Array<{ args: string[]; opts: unknown }> = [];
+    const runner = vi.fn(async (args: string[], opts: unknown) => {
+      const outcome = outcomes[i++];
+      calls.push({ args, opts });
+      if (outcome === 'ok') return '';
+      throw new Error(outcome);
+    });
+    return { runner, calls };
+  }
+
+  it('returns after a single successful fetch (no retry needed)', async () => {
+    const { runner } = makeRunner(['ok']);
+    await fetchWithRetry(
+      ['fetch', 'origin', '--quiet'],
+      { cwd: '/tmp/x', timeoutMs: 30000 },
+      {
+        runner,
+        sleep: noopSleep,
+      },
+    );
+    expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries on transient `fatal: expected 'packfile'` and succeeds on retry", async () => {
+    // This is the exact stderr line that triggered card 3421e0db.
+    const { runner } = makeRunner(["fatal: expected 'packfile'", 'ok']);
+    await fetchWithRetry(
+      ['fetch', 'origin', '--quiet'],
+      { cwd: '/tmp/x', timeoutMs: 30000 },
+      {
+        runner,
+        sleep: noopSleep,
+      },
+    );
+    expect(runner).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries on transient HTTP 500 and succeeds', async () => {
+    const { runner } = makeRunner([
+      'error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500',
+      'ok',
+    ]);
+    await fetchWithRetry(
+      ['fetch', 'origin', '--quiet'],
+      { cwd: '/tmp/x', timeoutMs: 30000 },
+      {
+        runner,
+        sleep: noopSleep,
+      },
+    );
+    expect(runner).toHaveBeenCalledTimes(2);
+  });
+
+  it('exhausts MAX_CLONE_ATTEMPTS and rethrows the last transient error', async () => {
+    const failures: string[] = Array.from(
+      { length: MAX_CLONE_ATTEMPTS },
+      () => "fatal: expected 'packfile'",
+    );
+    const { runner } = makeRunner(failures);
+    await expect(
+      fetchWithRetry(
+        ['fetch', 'origin', '--quiet'],
+        { cwd: '/tmp/x', timeoutMs: 30000 },
+        {
+          runner,
+          sleep: noopSleep,
+        },
+      ),
+    ).rejects.toThrow(/expected 'packfile'/);
+    expect(runner).toHaveBeenCalledTimes(MAX_CLONE_ATTEMPTS);
+  });
+
+  it('does NOT retry on non-transient auth failures', async () => {
+    const { runner } = makeRunner(['fatal: Authentication failed for ...']);
+    await expect(
+      fetchWithRetry(
+        ['fetch', 'origin', '--quiet'],
+        { cwd: '/tmp/x', timeoutMs: 30000 },
+        {
+          runner,
+          sleep: noopSleep,
+        },
+      ),
+    ).rejects.toThrow(/Authentication failed/);
+    expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards args + opts unchanged on every attempt (no directory cleanup involved)', async () => {
+    const { runner, calls } = makeRunner(["fatal: expected 'packfile'", 'ok']);
+    const args = ['fetch', 'origin', '--quiet'];
+    const opts = { cwd: '/some/clone', timeoutMs: 30000 };
+    await fetchWithRetry(args, opts, { runner, sleep: noopSleep });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].args).toEqual(args);
+    expect(calls[0].opts).toEqual(opts);
+    expect(calls[1].args).toEqual(args);
+    expect(calls[1].opts).toEqual(opts);
+  });
+});
