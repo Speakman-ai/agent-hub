@@ -18,7 +18,14 @@ import {
   RemoteRunnerTransport,
   type RunnerTransport,
 } from './runner-transport.js';
-import { getRunnerSender, subscribeToRunner, subscribeToRunnerDisconnect } from './runners-ws.js';
+import type { CapabilityWant } from './runner-dispatcher.js';
+import {
+  getRunnerSender,
+  listActiveRunners,
+  markRunnerUsed,
+  subscribeToRunner,
+  subscribeToRunnerDisconnect,
+} from './runners-ws.js';
 import type { Project } from './types.js';
 
 let cachedLocal: LocalSpawnTransport | null = null;
@@ -34,10 +41,36 @@ export function getRunnerTransport(project: Pick<Project, 'runnerId'>): RunnerTr
       getSender: getRunnerSender,
       subscribe: subscribeToRunner,
       subscribeDisconnect: subscribeToRunnerDisconnect,
+      listActiveRunners,
+      markUsed: markRunnerUsed,
     });
   }
   if (!cachedLocal) cachedLocal = new LocalSpawnTransport();
   return cachedLocal;
+}
+
+/**
+ * Phase 3 — capability-mode transport factory. Each call returns a
+ * fresh `RemoteRunnerTransport` that picks a runner per `spawn()`
+ * based on the supplied `want`. Used by Container Pool dispatch and
+ * any caller that hasn't pinned a specific runnerId on the project.
+ *
+ * Unlike `getRunnerTransport`, the result is NOT cached — the want is
+ * baked into the transport's target, so a different want would need a
+ * different instance. Allocation cost is trivial (one object per
+ * spawn site).
+ */
+export function getRunnerTransportForCapability(want: CapabilityWant): RemoteRunnerTransport {
+  return new RemoteRunnerTransport(
+    { kind: 'capability', want },
+    {
+      getSender: getRunnerSender,
+      subscribe: subscribeToRunner,
+      subscribeDisconnect: subscribeToRunnerDisconnect,
+      listActiveRunners,
+      markUsed: markRunnerUsed,
+    },
+  );
 }
 
 /**

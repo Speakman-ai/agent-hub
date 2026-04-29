@@ -28,6 +28,8 @@ import type {
   RunnerStdinMessage,
   RunnerWorkspaceSpec,
 } from '../shared/runner-protocol.js';
+import type { CapabilityWant, RunnerSnapshot } from './runner-dispatcher.js';
+import { pickRunner } from './runner-dispatcher.js';
 
 // ─── Public types ─────────────────────────────────────────────────────
 
@@ -157,6 +159,22 @@ export interface RemoteRunnerTransportDeps {
    * guarantee for the remote case).
    */
   subscribeDisconnect: (runnerId: string, listener: () => void) => () => void;
+  /**
+   * Phase 3 — snapshot of currently-connected runners for the
+   * capability-aware dispatcher. Required only when the transport is
+   * constructed with a `CapabilityWant` (capability-mode); legacy
+   * pinned-runnerId construction never calls this. Defaults to an
+   * empty array when omitted, which makes capability-mode spawns
+   * fail with `RUNNER_OFFLINE` — fine for tests that don't exercise
+   * that path.
+   */
+  listActiveRunners?: () => RunnerSnapshot[];
+  /**
+   * Phase 3 — stamp `last_used_at` on the runner the dispatcher just
+   * picked. Optional in tests; production wires this to
+   * `markRunnerUsed` so round-robin fairness has a shared signal.
+   */
+  markUsed?: (runnerId: string) => void;
   /** Override the protocol id generator (tests). */
   generateId?: () => string;
   /**
@@ -167,6 +185,20 @@ export interface RemoteRunnerTransportDeps {
    */
   spawnTimeoutMs?: number;
 }
+
+/**
+ * Construction modes for `RemoteRunnerTransport`:
+ *   - `{ runnerId: string }` — legacy pinned mode. The transport always
+ *     dispatches to this runner. Used by `getRunnerTransport(project)`
+ *     when a project has `runnerId` set explicitly.
+ *   - `{ want: CapabilityWant }` — Phase 3 capability mode. The
+ *     transport calls `pickRunner(want, listActiveRunners())` at every
+ *     `spawn()` call to choose a target. No fixed `runnerId` exists
+ *     until a spawn is in flight.
+ */
+export type RemoteRunnerTransportTarget =
+  | { kind: 'pinned'; runnerId: string }
+  | { kind: 'capability'; want: CapabilityWant };
 
 /**
  * Default ack window for `RemoteRunnerTransport.spawn`. Long enough to
@@ -184,23 +216,77 @@ export const DEFAULT_SPAWN_TIMEOUT_MS = 30_000;
  * `LocalSpawnTransport` returns. Stream frames push into a `PassThrough`,
  * `exit` triggers `'close'`, `kill()` sends a `cancel` frame, writes to
  * `stdin` send `stdin` frames.
+ *
+ * Two construction modes (see `RemoteRunnerTransportTarget`):
+ *   - **Pinned** — pass a `runnerId: string`. Legacy single-runner-per
+ *     -project flow.
+ *   - **Capability** — pass a `RemoteRunnerTransportTarget` with
+ *     `kind: 'capability'`. The dispatcher picks a runner per-spawn
+ *     based on what's currently online and the supplied want. This is
+ *     the path the Container Pool uses (Shape C) and what Shape A
+ *     (multiple runners on one machine) needs.
  */
 export class RemoteRunnerTransport implements RunnerTransport {
+  /**
+   * For pinned mode this is the constructor-supplied runnerId. For
+   * capability mode this is set after each successful pick — useful
+   * for tests / observability ("which runner did the dispatcher
+   * actually choose"). `null` until the first spawn in capability
+   * mode, or always-non-null in pinned mode.
+   */
+  private _lastRunnerId: string | null;
+  private readonly target: RemoteRunnerTransportTarget;
+
   constructor(
-    public readonly runnerId: string,
+    target: string | RemoteRunnerTransportTarget,
     private readonly deps: RemoteRunnerTransportDeps,
-  ) {}
+  ) {
+    if (typeof target === 'string') {
+      this.target = { kind: 'pinned', runnerId: target };
+      this._lastRunnerId = target;
+    } else {
+      this.target = target;
+      this._lastRunnerId = target.kind === 'pinned' ? target.runnerId : null;
+    }
+  }
+
+  /** Backwards-compat accessor — returns the pinned runnerId, or the
+   * most-recently-dispatched runnerId in capability mode. `null` only
+   * in capability mode before the first spawn. */
+  get runnerId(): string | null {
+    return this._lastRunnerId;
+  }
+
+  /** Resolve the target runnerId. In pinned mode this is constant; in
+   * capability mode the dispatcher is consulted against the live
+   * registry. Throws `RUNNER_OFFLINE` when no runner qualifies. */
+  private resolveTarget(): string {
+    if (this.target.kind === 'pinned') return this.target.runnerId;
+    const list = this.deps.listActiveRunners?.() ?? [];
+    const picked = pickRunner(this.target.want, list);
+    if (!picked) {
+      const wantStr = JSON.stringify(this.target.want);
+      throw makeError(
+        'RUNNER_OFFLINE',
+        `No runner matches capability want ${wantStr} (registry size=${list.length})`,
+      );
+    }
+    this._lastRunnerId = picked;
+    this.deps.markUsed?.(picked);
+    return picked;
+  }
 
   async spawn(req: SpawnRequest): Promise<ProcessHandle> {
-    const sender = this.deps.getSender(this.runnerId);
+    const targetId = this.resolveTarget();
+    const sender = this.deps.getSender(targetId);
     if (!sender) {
-      throw makeError('RUNNER_OFFLINE', `Runner ${this.runnerId} is offline`);
+      throw makeError('RUNNER_OFFLINE', `Runner ${targetId} is offline`);
     }
     const generateId = this.deps.generateId ?? randomUUID;
     const id = generateId();
     const handle = new RemoteProcessHandle(id, sender);
 
-    const unsubscribe = this.deps.subscribe(this.runnerId, (msg) => {
+    const unsubscribe = this.deps.subscribe(targetId, (msg) => {
       // Drop frames that don't belong to this spawn — the runner can be
       // multiplexing many spawns over one WS.
       if ((msg as { id?: unknown }).id !== id) return;
@@ -213,7 +299,7 @@ export class RemoteRunnerTransport implements RunnerTransport {
     // runner WS dies mid-stream. Without this, the chat session is
     // permanently wedged in the "thinking" state until the user navigates
     // away. See the matching docstring on `RemoteRunnerTransportDeps`.
-    const unsubscribeDisconnect = this.deps.subscribeDisconnect(this.runnerId, () => {
+    const unsubscribeDisconnect = this.deps.subscribeDisconnect(targetId, () => {
       handle._handleDisconnect();
     });
     handle._onTeardown(unsubscribeDisconnect);
@@ -249,7 +335,7 @@ export class RemoteRunnerTransport implements RunnerTransport {
             reject(
               makeError(
                 'SPAWN_FAILED',
-                `Runner ${this.runnerId} did not ack spawn within ${timeoutMs}ms`,
+                `Runner ${targetId} did not ack spawn within ${timeoutMs}ms`,
               ),
             );
           });

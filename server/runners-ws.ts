@@ -22,11 +22,14 @@ import {
   isCompatibleVersion,
   parseRunnerInbound,
   type RunnerAuthErrorMessage,
+  type RunnerCapabilities,
   type RunnerInbound,
   type RunnerPingMessage,
   type RunnerRegisteredMessage,
+  type RunnerRole,
 } from '../shared/runner-protocol.js';
-import { setRunnerStatus, verifyRunnerToken, getRunner } from './runners-store.js';
+import { setRunnerStatus, verifyRunnerToken, getRunner, recordRunnerUse } from './runners-store.js';
+import type { RunnerSnapshot } from './runner-dispatcher.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export const AUTH_TIMEOUT_MS = 5_000;
@@ -49,6 +52,20 @@ interface ActiveRunner {
   lastPongAt: string;
   /** Number of pings sent since the last pong was received. */
   missedPongs: number;
+  /**
+   * Phase 3 — capabilities the runner advertised at auth time.
+   * Defaults to `{ role: 'general' }` for 1.1.x runners that omit
+   * the `role` field. The dispatcher reads `role`/`pr`/`port` here
+   * to route capability-aware spawn requests.
+   */
+  capabilities: RunnerCapabilities;
+  /**
+   * Phase 3 — last time the dispatcher picked this runner. `null`
+   * until the first pick. Updated by `markRunnerUsed`. Persisted to
+   * the DB column of the same name so round-robin survives a server
+   * restart.
+   */
+  lastUsedAt: string | null;
 }
 
 /**
@@ -88,6 +105,50 @@ const runnerSubscribers = new Map<string, Set<(msg: RunnerInbound) => void>>();
  * independent).
  */
 const runnerDisconnectListeners = new Map<string, Set<() => void>>();
+
+/**
+ * Snapshot of currently-connected runners in the shape the dispatcher
+ * expects. Allocated fresh on each call so callers can sort/filter
+ * without worrying about live mutation. Cheap (one allocation per
+ * spawn) and the registry is bounded by physical runner count.
+ */
+export function listActiveRunners(): RunnerSnapshot[] {
+  const out: RunnerSnapshot[] = [];
+  for (const r of activeRunners.values()) {
+    const role = (r.capabilities.role as RunnerRole | undefined) ?? 'general';
+    const snap: RunnerSnapshot = {
+      runnerId: r.runnerId,
+      role,
+      lastUsedAt: r.lastUsedAt,
+    };
+    if (typeof r.capabilities.pr === 'number') snap.pr = r.capabilities.pr;
+    if (typeof r.capabilities.port === 'number') snap.port = r.capabilities.port;
+    out.push(snap);
+  }
+  return out;
+}
+
+/**
+ * Stamp a runner as just-used (in-memory + DB). The dispatcher calls
+ * this immediately after `pickRunner` returns a non-null id so the
+ * next call sees an updated `lastUsedAt` for round-robin fairness. A
+ * runner that has gone offline between the pick and this call is a
+ * no-op — the in-memory entry is missing, the DB write is harmless.
+ */
+export function markRunnerUsed(runnerId: string, now: string = new Date().toISOString()): void {
+  const entry = activeRunners.get(runnerId);
+  if (entry) entry.lastUsedAt = now;
+  // Persist so round-robin survives server restarts. recordRunnerUse
+  // swallows missing-row errors, which is what we want here.
+  try {
+    recordRunnerUse(runnerId, now);
+  } catch (err) {
+    console.warn(
+      `[runner-ws] failed to persist last_used_at for ${runnerId}:`,
+      (err as Error).message,
+    );
+  }
+}
 
 /**
  * Send a JSON-encoded frame to a connected runner. Returns `null` when
@@ -361,11 +422,23 @@ export function handleRunnerConnection(ws: WsClient, _request: IncomingMessage):
       } catch (err) {
         console.warn('[runner-ws] failed to mark runner online:', (err as Error).message);
       }
+      // Phase 3: bucket runners by role for the dispatcher. 1.1.x
+      // runners that omitted `role` land in the `general` bucket so
+      // legacy single-runner-per-org deployments keep working.
+      const caps: RunnerCapabilities = {
+        ...(msg.capabilities ?? {}),
+        role: (msg.capabilities?.role as RunnerRole | undefined) ?? 'general',
+      };
+      // Reuse the runner's persisted lastUsedAt so a brief disconnect
+      // doesn't reset round-robin fairness back to "never picked".
+      const persistedRunner = getRunner(msg.runnerId);
       activeRunners.set(msg.runnerId, {
         ws,
         runnerId: msg.runnerId,
         lastPongAt: new Date().toISOString(),
         missedPongs: 0,
+        capabilities: caps,
+        lastUsedAt: persistedRunner?.lastUsedAt ?? null,
       });
 
       const reg: RunnerRegisteredMessage = {

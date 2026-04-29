@@ -31,11 +31,12 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { handleRunnerConnection, isRunnerWsPath, activeRunners } from '../runners-ws.js';
 import { getDb } from '../db.js';
 import { createRunner } from '../runners-store.js';
-import { getRunnerTransport } from '../runner-transport-select.js';
+import { getRunnerTransport, getRunnerTransportForCapability } from '../runner-transport-select.js';
 import {
   RUNNER_PROTOCOL_VERSION,
   parseRunnerOutbound,
   type RunnerCancelMessage,
+  type RunnerCapabilities,
   type RunnerSpawnMessage,
   type RunnerStdinMessage,
 } from '../../shared/runner-protocol.js';
@@ -87,7 +88,11 @@ interface StubRunner {
   close: () => void;
 }
 
-function startStubRunner(runnerId: string, token: string): StubRunner {
+function startStubRunner(
+  runnerId: string,
+  token: string,
+  capabilityOverrides: Partial<RunnerCapabilities> = {},
+): StubRunner {
   const ws = new WebSocket(baseUrl + '/ws/runner');
   const inbound: StubRunner['inbound'] = [];
   let resolveRegistered!: () => void;
@@ -100,7 +105,11 @@ function startStubRunner(runnerId: string, token: string): StubRunner {
         runnerId,
         token,
         version: RUNNER_PROTOCOL_VERSION,
-        capabilities: { os: 'linux', engines: ['claude-code'] },
+        capabilities: {
+          os: 'linux',
+          engines: ['claude-code'],
+          ...capabilityOverrides,
+        },
       }),
     );
   });
@@ -302,6 +311,125 @@ describe('runner E2E — control plane spawn → runner → streamed exit', () =
     expect(combined).toBe('hello-from-server');
     expect(stdinFrames.at(-1)?.end).toBe(true);
 
+    stub.send({ type: 'exit', id: spawnFrame.id, code: 0, signal: null });
+    stub.close();
+  });
+});
+
+describe('runner E2E — Phase 3 capability-aware dispatcher', () => {
+  it('routes a {role:"pr-preview", pr:685} want to the pr-preview runner over a general runner', async () => {
+    // Two runners online at the same time:
+    //   - g1: role=general (defaulted because legacy 1.1.x runners did not advertise role)
+    //   - p685: role=pr-preview, pr=685 (the slot that owns PR #685)
+    // The capability-mode transport must dispatch to p685.
+    const { runner: g1Row, token: g1Token } = createRunner({
+      orgId: 'default',
+      name: 'general-1',
+    });
+    const { runner: p685Row, token: p685Token } = createRunner({
+      orgId: 'default',
+      name: 'pr-preview-685',
+    });
+    const g1 = startStubRunner(g1Row.id, g1Token, { role: 'general' });
+    const p685 = startStubRunner(p685Row.id, p685Token, { role: 'pr-preview', pr: 685 });
+    await Promise.all([g1.registered, p685.registered]);
+
+    const transport = getRunnerTransportForCapability({ role: 'pr-preview', pr: 685 });
+    const spawnPromise = transport.spawn({
+      engine: 'claude-code',
+      bin: '/x',
+      args: ['--print', 'pr-685'],
+      sessionId: 'session-pr-685',
+    });
+
+    // Wait specifically for p685 to receive the spawn frame — if the
+    // dispatcher mis-routed to g1, this would time out.
+    await waitFor(() => p685.inbound.length > 0);
+    expect(p685.inbound).toHaveLength(1);
+    expect(g1.inbound).toHaveLength(0);
+    expect(transport.runnerId).toBe(p685Row.id);
+
+    const spawnFrame = p685.inbound[0] as RunnerSpawnMessage;
+    p685.send({ type: 'result', id: spawnFrame.id, ok: true, pid: 685 });
+    const handle = await spawnPromise;
+    expect(handle.pid).toBe(685);
+
+    // Clean up.
+    p685.send({ type: 'exit', id: spawnFrame.id, code: 0, signal: null });
+    g1.close();
+    p685.close();
+  });
+
+  it('falls back to a general runner for an unspecified role and round-robins between them', async () => {
+    const { runner: aRow, token: aTok } = createRunner({ orgId: 'default', name: 'a-runner' });
+    const { runner: bRow, token: bTok } = createRunner({ orgId: 'default', name: 'b-runner' });
+    const a = startStubRunner(aRow.id, aTok, { role: 'general' });
+    const b = startStubRunner(bRow.id, bTok, { role: 'general' });
+    await Promise.all([a.registered, b.registered]);
+
+    const t1 = getRunnerTransportForCapability({ role: 'general' });
+    const p1 = t1.spawn({ engine: 'claude-code', bin: '/x', args: [], sessionId: 's1' });
+    await waitFor(() => a.inbound.length + b.inbound.length >= 1);
+    const firstPickRunner = t1.runnerId!;
+    const firstSender = firstPickRunner === aRow.id ? a : b;
+    const otherSender = firstPickRunner === aRow.id ? b : a;
+    const f1 = firstSender.inbound.at(-1) as RunnerSpawnMessage;
+    firstSender.send({ type: 'result', id: f1.id, ok: true, pid: 1 });
+    await p1;
+
+    // Second spawn should land on the OTHER runner — round-robin via
+    // lastUsedAt. The transport-select factory returns a fresh
+    // capability-mode transport each call, so re-call the factory.
+    const t2 = getRunnerTransportForCapability({ role: 'general' });
+    const p2 = t2.spawn({ engine: 'claude-code', bin: '/x', args: [], sessionId: 's2' });
+    await waitFor(() => otherSender.inbound.length >= 1);
+    expect(t2.runnerId).not.toBe(firstPickRunner);
+    const f2 = otherSender.inbound.at(-1) as RunnerSpawnMessage;
+    otherSender.send({ type: 'result', id: f2.id, ok: true, pid: 2 });
+    await p2;
+
+    // Clean up — let both stubs see an exit.
+    firstSender.send({ type: 'exit', id: f1.id, code: 0, signal: null });
+    otherSender.send({ type: 'exit', id: f2.id, code: 0, signal: null });
+    a.close();
+    b.close();
+  });
+
+  it('rejects with RUNNER_OFFLINE when no runner matches the want', async () => {
+    // One general runner online, no pr-preview runner.
+    const { runner, token } = createRunner({ orgId: 'default', name: 'lonely' });
+    const stub = startStubRunner(runner.id, token, { role: 'general' });
+    await stub.registered;
+
+    const transport = getRunnerTransportForCapability({ role: 'pr-preview', pr: 999 });
+    await expect(
+      transport.spawn({ engine: 'claude-code', bin: '/x', args: [], sessionId: 's' }),
+    ).rejects.toMatchObject({ code: 'RUNNER_OFFLINE' });
+
+    stub.close();
+  });
+
+  it('1.1.x-style runners (no role advertised) register as role=general and serve general wants', async () => {
+    // Don't pass a role — simulates a 1.1.x runner that predates the
+    // dispatcher schema. The default-to-general bucketing is what
+    // makes the protocol bump non-breaking.
+    const { runner, token } = createRunner({ orgId: 'default', name: 'legacy-runner' });
+    const stub = startStubRunner(runner.id, token, {}); // no role field
+    await stub.registered;
+
+    const transport = getRunnerTransportForCapability({ role: 'general' });
+    const spawnPromise = transport.spawn({
+      engine: 'claude-code',
+      bin: '/x',
+      args: [],
+      sessionId: 's',
+    });
+    await waitFor(() => stub.inbound.length > 0);
+    expect(transport.runnerId).toBe(runner.id);
+
+    const spawnFrame = stub.inbound[0] as RunnerSpawnMessage;
+    stub.send({ type: 'result', id: spawnFrame.id, ok: true, pid: 1 });
+    await spawnPromise;
     stub.send({ type: 'exit', id: spawnFrame.id, code: 0, signal: null });
     stub.close();
   });

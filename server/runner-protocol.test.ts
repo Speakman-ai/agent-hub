@@ -410,10 +410,87 @@ describe('parseRunnerOutbound — server → runner', () => {
   });
 });
 
-describe('RUNNER_PROTOCOL_VERSION — Phase 2 bump', () => {
-  it('is a 1.x minor bump so 1.0 runners stay compatible', () => {
-    expect(RUNNER_PROTOCOL_VERSION).toBe('1.1.0');
+describe('RUNNER_PROTOCOL_VERSION — Phase 3 bump', () => {
+  it('is a 1.x minor bump so 1.0 / 1.1 runners stay compatible', () => {
+    expect(RUNNER_PROTOCOL_VERSION).toBe('1.2.0');
     expect(isCompatibleVersion('1.0.0', RUNNER_PROTOCOL_VERSION)).toBe(true);
+    expect(isCompatibleVersion('1.1.0', RUNNER_PROTOCOL_VERSION)).toBe(true);
     expect(isCompatibleVersion(RUNNER_PROTOCOL_VERSION, '1.0.0')).toBe(true);
+  });
+});
+
+describe('RunnerCapabilities — Phase 3 role/pr/port fields', () => {
+  it('accepts role/pr/port on the auth frame', () => {
+    const frame = {
+      type: 'auth',
+      runnerId: 'r1',
+      token: 't',
+      version: '1.2.0',
+      capabilities: {
+        engines: ['claude-code'],
+        role: 'pr-preview',
+        pr: 685,
+        port: 8080,
+      },
+    };
+    const parsed = parseRunnerInbound(JSON.stringify(frame));
+    expect(parsed?.type).toBe('auth');
+    if (parsed?.type !== 'auth') return;
+    expect(parsed.capabilities?.role).toBe('pr-preview');
+    expect(parsed.capabilities?.pr).toBe(685);
+    expect(parsed.capabilities?.port).toBe(8080);
+  });
+
+  it('accepts auth frames that omit role (1.1.x backward-compat)', () => {
+    const frame = {
+      type: 'auth',
+      runnerId: 'r1',
+      token: 't',
+      version: '1.1.0',
+      capabilities: { engines: ['claude-code'] },
+    };
+    const parsed = parseRunnerInbound(JSON.stringify(frame));
+    expect(parsed?.type).toBe('auth');
+    if (parsed?.type !== 'auth') return;
+    expect(parsed.capabilities?.role).toBeUndefined();
+  });
+
+  it('drops capabilities with unknown role rather than failing the auth frame', () => {
+    // isCapabilities returns false → auth still parses, capabilities drop to undefined.
+    const frame = {
+      type: 'auth',
+      runnerId: 'r1',
+      token: 't',
+      version: '1.2.0',
+      capabilities: { role: 'gpu-only' },
+    };
+    const parsed = parseRunnerInbound(JSON.stringify(frame));
+    expect(parsed?.type).toBe('auth');
+    if (parsed?.type !== 'auth') return;
+    expect(parsed.capabilities).toBeUndefined();
+  });
+
+  it('rejects negative or non-integer pr / port', () => {
+    const bad = [
+      { capabilities: { role: 'pr-preview', pr: -1 } },
+      { capabilities: { role: 'pr-preview', pr: 1.5 } },
+      { capabilities: { port: 99999 } },
+      { capabilities: { port: -80 } },
+    ];
+    for (const { capabilities } of bad) {
+      const parsed = parseRunnerInbound(
+        JSON.stringify({
+          type: 'auth',
+          runnerId: 'r1',
+          token: 't',
+          version: '1.2.0',
+          capabilities,
+        }),
+      );
+      expect(parsed?.type).toBe('auth');
+      if (parsed?.type !== 'auth') continue;
+      // Bad fields cause the entire capabilities object to drop to undefined.
+      expect(parsed.capabilities).toBeUndefined();
+    }
   });
 });

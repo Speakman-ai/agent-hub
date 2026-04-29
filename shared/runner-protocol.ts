@@ -23,9 +23,31 @@
  *   - Phase 2 is a minor bump: 1.0.x runners continue to work for
  *     ping/pong-only deployments; the server only routes spawn traffic
  *     to runners that advertised `engines` capabilities at handshake.
+ *   - Phase 3 is another minor bump (1.2.0): adds `role`, `pr`, and
+ *     `port` fields to the auth-time capability block so the dispatcher
+ *     can route capability-aware spawn requests (`pr-preview` slots,
+ *     `scaffold` slots, etc.). 1.1.x runners that omit these fields
+ *     register successfully and are bucketed as `role: 'general'`.
  */
 
-export const RUNNER_PROTOCOL_VERSION = '1.1.0';
+export const RUNNER_PROTOCOL_VERSION = '1.2.0';
+
+/**
+ * Roles a runner can advertise. Used by the Phase 3 dispatcher to
+ * route spawn requests to a slot whose role matches the request.
+ *
+ *   - `general` — default catch-all. Normal chat sessions land here.
+ *     1.1.x runners that don't know about `role` are treated as general.
+ *   - `pr-preview` — a runner that owns a per-PR preview environment.
+ *     The auth frame's `pr` field carries the PR number it serves.
+ *   - `scaffold` — a runner that owns a fresh scaffolding workspace
+ *     (used by the new-project wizard's "create from template" flow).
+ *
+ * Kept as a string literal union rather than an enum so additive roles
+ * land as a patch-level protocol bump (no major version churn for
+ * downstream packages that import this module).
+ */
+export type RunnerRole = 'general' | 'pr-preview' | 'scaffold';
 
 // ─── Auth handshake (runner → server, first message) ───────────────────
 
@@ -51,6 +73,16 @@ export interface RunnerCapabilities {
   engines?: string[];
   /** Machine hostname — informational, helps operators identify runners. */
   hostname?: string;
+  /**
+   * Phase 3 dispatcher routing fields (additive, optional). Runners on
+   * 1.1.x that omit `role` are bucketed as `general` server-side.
+   */
+  /** What kind of slot this runner serves. Default `general`. */
+  role?: RunnerRole;
+  /** PR number this runner serves (only meaningful for `role: 'pr-preview'`). */
+  pr?: number;
+  /** Inbound port the runner exposes for HTTP routing (preview proxies). */
+  port?: number;
 }
 
 // ─── Server → runner ───────────────────────────────────────────────────
@@ -501,6 +533,21 @@ function isCapabilities(v: unknown): v is RunnerCapabilities {
     if (!c.engines.every((e) => typeof e === 'string')) return false;
   }
   if (c.hostname !== undefined && typeof c.hostname !== 'string') return false;
+  // Phase 3 fields. Unknown roles are rejected at parse time so a 1.3.x
+  // runner that ships a brand-new role doesn't silently land in a
+  // 1.2.0 server's `general` bucket — better to fail the auth frame and
+  // surface the version mismatch.
+  if (c.role !== undefined) {
+    if (c.role !== 'general' && c.role !== 'pr-preview' && c.role !== 'scaffold') return false;
+  }
+  if (c.pr !== undefined) {
+    if (typeof c.pr !== 'number' || !Number.isInteger(c.pr) || c.pr < 0) return false;
+  }
+  if (c.port !== undefined) {
+    if (typeof c.port !== 'number' || !Number.isInteger(c.port) || c.port < 0 || c.port > 65535) {
+      return false;
+    }
+  }
   return true;
 }
 

@@ -5,7 +5,7 @@ import { POOL_SCHEMA } from './container-pool/schema.js';
 import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
 import { PREVIEW_AUTH_SCHEMA } from './container-pool/preview-auth-schema.js';
 import { PR_ENV_CONFIG_SCHEMA } from './pr-env-schema.js';
-import { RUNNERS_SCHEMA } from './runners-schema.js';
+import { RUNNERS_SCHEMA, RUNNERS_MIGRATION_LAST_USED_AT } from './runners-schema.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 import type { Stmts } from './types.js';
 
@@ -1241,6 +1241,15 @@ function initDb(dataDir: string): void {
   // CLI spawns to over an outbound WebSocket. DDL lives in
   // runners-schema.ts so unit tests can apply identical DDL in isolation.
   db.exec(RUNNERS_SCHEMA);
+
+  // Phase 3 migration — `last_used_at` for dispatcher round-robin
+  // fairness. ALTER ADD COLUMN is idempotent via the try/catch so
+  // re-running `initDb` against an already-migrated DB is a no-op.
+  try {
+    db.exec(RUNNERS_MIGRATION_LAST_USED_AT);
+  } catch (_e) {
+    /* column already exists */
+  }
 
   // Migration: pool_slots gained `last_error TEXT` and `status` CHECK now
   // includes 'failed' (added in #458). SQLite can't ALTER a CHECK constraint

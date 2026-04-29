@@ -26,6 +26,10 @@ export interface RunnerRow {
   capabilities: string; // JSON-encoded RunnerCapabilities
   status: 'offline' | 'online';
   last_seen_at: string | null;
+  /** Phase 3 — last time the dispatcher picked this runner for a spawn.
+   * NULL until the runner has been selected at least once. Used for
+   * round-robin fairness among capability-equivalent runners. */
+  last_used_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -37,6 +41,7 @@ export interface RunnerPublic {
   capabilities: Record<string, unknown>;
   status: 'offline' | 'online';
   lastSeenAt: string | null;
+  lastUsedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -70,9 +75,34 @@ function rowToPublic(row: RunnerRow): RunnerPublic {
     capabilities: caps,
     status: row.status,
     lastSeenAt: row.last_seen_at,
+    lastUsedAt: row.last_used_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+/**
+ * Stamp `last_used_at = now()` on a runner. Called by the dispatcher
+ * each time it selects this runner for a spawn — gives round-robin
+ * picking a fairness signal that survives restarts (the in-memory
+ * `activeRunners` map is recreated on every server boot, but the DB
+ * timestamp persists). Returns `false` if no row matched, otherwise
+ * `true`.
+ *
+ * Tolerant of a missing `last_used_at` column for tests that apply the
+ * pre-Phase-3 schema directly without the migration; the SQLite error
+ * is swallowed and `false` is returned. Production code goes through
+ * `initDb` which always applies the migration.
+ */
+export function recordRunnerUse(id: string, now: string = new Date().toISOString()): boolean {
+  try {
+    const info = getDb()
+      .prepare('UPDATE runners SET last_used_at = ?, updated_at = ? WHERE id = ?')
+      .run(now, now, id);
+    return info.changes > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
