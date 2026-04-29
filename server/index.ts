@@ -54,6 +54,7 @@ import {
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
 import { migrateAuthRecordIfNeeded } from './users-store.js';
+import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { ensureSessionWorkspace } from './worktree.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
@@ -244,6 +245,21 @@ try {
   }
 } catch (err) {
   console.error('[Auth] Failed to migrate legacy auth.json → users table:', err);
+}
+
+// Env-driven auto-provisioning for fresh deploys (Terraform / Docker /
+// SSM bootstrap). When AGENT_HUB_DEFAULT_PASSWORD is set and no
+// auth.json exists yet, create the Owner account from the env vars.
+// No-op on every subsequent boot because auth.json now exists.
+// Top-level await is fine here: tsconfig targets ES2022 + nodenext.
+try {
+  await maybeAutoProvisionOwner();
+} catch (err) {
+  // Only thrown when AGENT_HUB_DEFAULT_PASSWORD=auto and we couldn't
+  // write the credentials file. Re-raising kills boot — the operator
+  // would otherwise have no way to retrieve the generated password.
+  console.error('[Auth] Auto-provision failed fatally:', err);
+  throw err;
 }
 
 initProjects(config.dataDir);

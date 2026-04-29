@@ -64,3 +64,21 @@ variable "agent_hub_trust_proxy" {
   default     = null
   nullable    = true
 }
+
+# ── Default Owner credentials on first launch ──────────────────────────────────
+# When set, the server auto-creates the Owner account on first boot from these
+# env vars (server/auth-bootstrap.ts). After auth.json exists subsequent boots
+# are no-ops, so changing the value later does NOT rotate the password.
+
+variable "agent_hub_default_username" {
+  description = "Username for the auto-provisioned Owner on first boot. Empty/null disables and uses the server's built-in default ('admin'). Validated against the same allowlist as /api/auth/setup: 1–64 chars of [a-zA-Z0-9_.-@]."
+  type        = string
+  default     = "admin"
+}
+
+variable "agent_hub_default_password" {
+  description = "Password used by server/auth-bootstrap.ts to auto-provision the Owner account on first boot. Three modes: empty/null disables auto-provision (operator must hit /api/auth/setup); a literal value (≥12 chars) is used as-is; the keyword `auto` generates a random password and writes it to <dataDir>/initial-credentials.txt (mode 0600) on the instance — retrieve via SSM Session Manager. Idempotent: once auth.json exists, this is ignored."
+  type        = string
+  default     = "auto"
+  sensitive   = true
+}

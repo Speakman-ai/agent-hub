@@ -49,6 +49,15 @@ locals {
     )
   )
 
+  # First-boot Owner credentials (server/auth-bootstrap.ts). Empty values
+  # disable auto-provision and leave the interactive /api/auth/setup flow
+  # as the only path. `agent_hub_default_password = "auto"` instructs the
+  # server to generate a random password and write it to the
+  # initial-credentials.txt file inside the data dir.
+  default_owner_username_trim = trimspace(coalesce(var.agent_hub_default_username, ""))
+  default_owner_password_trim = trimspace(coalesce(var.agent_hub_default_password, ""))
+  emit_default_owner_env      = length(local.default_owner_password_trim) > 0
+
   # Host PM2: small env file
   agent_hub_bootstrap_env = join("\n", concat(
     [
@@ -59,6 +68,12 @@ locals {
       "TRUST_PROXY=${tostring(local.agent_hub_trust_proxy_hops)}",
     ] : [],
     [join("", ["ALLOWED_ORIGINS=", jsonencode(local.agent_hub_cors)])],
+    local.emit_default_owner_env ? [
+      join("", ["AGENT_HUB_DEFAULT_PASSWORD=", jsonencode(local.default_owner_password_trim)]),
+    ] : [],
+    local.emit_default_owner_env && length(local.default_owner_username_trim) > 0 ? [
+      join("", ["AGENT_HUB_DEFAULT_USERNAME=", jsonencode(local.default_owner_username_trim)]),
+    ] : [],
   ))
 
   # Docker: pass-through to container (server/Dockerfile + --env-file)
@@ -81,6 +96,12 @@ locals {
     [join("", ["ALLOWED_ORIGINS=", jsonencode(local.agent_hub_cors)])],
     local.effective_agent_hub_api_key != "" ? [
       join("", ["AGENT_HUB_API_KEY=", jsonencode(local.effective_agent_hub_api_key)]),
+    ] : [],
+    local.emit_default_owner_env ? [
+      join("", ["AGENT_HUB_DEFAULT_PASSWORD=", jsonencode(local.default_owner_password_trim)]),
+    ] : [],
+    local.emit_default_owner_env && length(local.default_owner_username_trim) > 0 ? [
+      join("", ["AGENT_HUB_DEFAULT_USERNAME=", jsonencode(local.default_owner_username_trim)]),
     ] : [],
   ))
 

@@ -65,28 +65,14 @@ import {
   listActiveInvitesForOrg,
   markInviteAccepted,
 } from '../invites-store.js';
+import {
+  sanitizeUsername,
+  sanitizePassword,
+  MIN_PASSWORD_LEN,
+  MAX_PASSWORD_LEN,
+} from '../auth-validation.js';
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
-
-function sanitizeUsername(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  if (trimmed.length < 1 || trimmed.length > 64) return null;
-  if (!/^[a-zA-Z0-9_.\-@]+$/.test(trimmed)) return null;
-  return trimmed;
-}
-
-// Minimum password length for every account. These credentials grant full
-// server control (process spawning, arbitrary shell via CLI), so we
-// follow NIST 800-63B guidance for privileged accounts (≥ 12).
-const MIN_PASSWORD_LEN = 12;
-const MAX_PASSWORD_LEN = 256;
-
-function sanitizePassword(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  if (raw.length < MIN_PASSWORD_LEN || raw.length > MAX_PASSWORD_LEN) return null;
-  return raw;
-}
 
 function issueToken(user: { id: string; username: string }, role: Role, jwtSecret: string) {
   const token = signJwt(user.username, jwtSecret, {

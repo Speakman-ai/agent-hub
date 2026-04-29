@@ -23,3 +23,20 @@ allowed_origins = "AUTO"
 # docker_bootstrap = true   # default: Docker + .env under docker_app_path (default /home/agenthub/agent-hub)
 #
 # When docker_bootstrap is false, minimal user_data only prepares /home/<app_user>/app (no Docker, no .env here).
+
+# ── Default Owner credentials on first launch ────────────────────────────────
+# By default agent_hub_default_password = "auto" — the server generates a random
+# password on first boot and writes it to <dataDir>/initial-credentials.txt
+# (mode 0600). Retrieve via SSM Session Manager:
+#
+#   aws ssm start-session --target i-xxxx
+#   sudo cat /var/lib/agent-hub/data/initial-credentials.txt   # docker
+#   # or for the PM2 path:
+#   sudo cat /home/agenthub/.agent-hub/data/initial-credentials.txt
+#
+# Override with a literal value (≥12 chars) to know the password ahead of time.
+# Set to "" to disable auto-provision and require the interactive
+# /api/auth/setup endpoint instead.
+#
+# agent_hub_default_username = "admin"
+# agent_hub_default_password = "auto"
