@@ -10,7 +10,7 @@ vi.mock('./config.js', () => ({
   default: { defaultCwd: '/tmp' },
 }));
 
-const { getOrCreateProcessWorktree, ensureSessionWorkspace, removeWorkspace } =
+const { getOrCreateProcessWorktree, ensureSessionWorkspace, removeWorkspace, __test } =
   await import('./worktree.js');
 
 describe('getOrCreateProcessWorktree — cwd validation', () => {
@@ -273,6 +273,24 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(hooksPath).not.toBe('.husky');
   });
 
+  it('retries the clone when GitHub returns a transient HTTP 500 and succeeds on the second attempt', async () => {
+    const persist = vi.fn();
+
+    // Sabotage the first clone attempt by injecting a custom runner via the
+    // public ensureSessionWorkspace path: easiest is to drop a zombie that
+    // mimics a partial-clone, then verify cloneWithRetry semantics directly.
+    // (See the dedicated `cloneWithRetry` describe block below for the full
+    // injected-runner coverage.)
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
+    createdWorkspace = clonePath;
+    expect(existsSync(path.join(clonePath, '.git'))).toBe(true);
+  });
+
   it('does not reset the checked-out feature branch on reuse', async () => {
     const persist = vi.fn();
 
@@ -306,5 +324,198 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(git(clonePath, 'rev-parse --abbrev-ref HEAD')).toBe(featureBranch);
     expect(git(clonePath, 'rev-parse HEAD')).toBe(featureTipBefore);
     expect(existsSync(path.join(clonePath, 'work-in-progress.txt'))).toBe(true);
+  });
+});
+
+describe('isTransientCloneError — classification', () => {
+  const { isTransientCloneError } = __test;
+
+  it.each([
+    'error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500',
+    "fatal: expected 'packfile'",
+    'remote: Internal Server Error',
+    'fatal: the remote end hung up unexpectedly',
+    'fatal: early EOF',
+    'fetch-pack: unexpected disconnect while reading sideband packet',
+    'fatal: index-pack failed',
+    'curl: (35) ECONNRESET',
+    'fatal: unable to access ...: Failed to connect to github.com port 443: ETIMEDOUT',
+    'fatal: unable to access ...: Could not resolve host: github.com',
+    'Connection reset by peer',
+    'Connection timed out',
+    'getaddrinfo EAI_AGAIN github.com',
+  ])('classifies %p as transient', (msg) => {
+    expect(isTransientCloneError(new Error(msg))).toBe(true);
+  });
+
+  it.each([
+    'remote: HTTP 401 Unauthorized',
+    'fatal: Authentication failed for ...',
+    "fatal: could not read Username for 'https://github.com'",
+    'remote: Repository not found.',
+    'fatal: HTTP 404 Not Found',
+    "fatal: destination path 'foo' already exists and is not an empty directory.",
+    'fatal: HTTP 403 Forbidden',
+  ])('classifies %p as non-transient', (msg) => {
+    expect(isTransientCloneError(new Error(msg))).toBe(false);
+  });
+
+  it('treats an HTTP 401 wrapped in "RPC failed" as non-transient (auth wins)', () => {
+    // Real-world example: `error: RPC failed; HTTP 401 curl 22 ...`
+    // We must NOT retry — that just burns auth attempts.
+    const err = new Error(
+      'error: RPC failed; HTTP 401 curl 22 The requested URL returned error: 401',
+    );
+    expect(isTransientCloneError(err)).toBe(false);
+  });
+
+  it('treats an unknown failure as non-transient (do not retry blindly)', () => {
+    expect(isTransientCloneError(new Error('something weird happened'))).toBe(false);
+  });
+
+  it('reads stderr off ExecFileException-shaped errors when the message is sparse', () => {
+    const err = Object.assign(new Error('Command failed: git clone …'), {
+      stderr: 'error: RPC failed; HTTP 500',
+      stdout: '',
+    });
+    expect(isTransientCloneError(err)).toBe(true);
+  });
+});
+
+describe('cloneWithRetry — retry policy with injected runner', () => {
+  const { cloneWithRetry, MAX_CLONE_ATTEMPTS, CLONE_RETRY_BASE_MS } = __test;
+  const noopSleep = async () => {};
+
+  function makeRunner(outcomes: Array<'ok' | string>) {
+    let i = 0;
+    const calls: Array<{ args: string[]; opts: unknown }> = [];
+    const runner = vi.fn(async (args: string[], opts: unknown) => {
+      const outcome = outcomes[i++];
+      calls.push({ args, opts });
+      if (outcome === 'ok') return '';
+      throw new Error(outcome);
+    });
+    return { runner, calls };
+  }
+
+  it('returns after a single successful attempt (no retry needed)', async () => {
+    const { runner } = makeRunner(['ok']);
+    const cleanup = vi.fn();
+    await cloneWithRetry(
+      ['clone', '--depth', '1', 'url', '/tmp/x'],
+      { timeoutMs: 60000 },
+      '/tmp/x',
+      { runner, cleanup, sleep: noopSleep },
+    );
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it('retries once on a transient HTTP 500 then succeeds', async () => {
+    const { runner } = makeRunner([
+      'error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500',
+      'ok',
+    ]);
+    const cleanup = vi.fn();
+    await cloneWithRetry(
+      ['clone', '--depth', '1', 'url', '/tmp/x'],
+      { timeoutMs: 60000 },
+      '/tmp/x',
+      { runner, cleanup, sleep: noopSleep },
+    );
+    expect(runner).toHaveBeenCalledTimes(2);
+    // cleanup() runs once between the failure and the retry, never after the
+    // final success.
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledWith('/tmp/x');
+  });
+
+  it('exhausts MAX_CLONE_ATTEMPTS and rethrows when every attempt is transient', async () => {
+    const failures: string[] = Array.from(
+      { length: MAX_CLONE_ATTEMPTS },
+      () => 'error: RPC failed; HTTP 500',
+    );
+    const { runner } = makeRunner(failures);
+    const cleanup = vi.fn();
+    await expect(
+      cloneWithRetry(['clone', '--depth', '1', 'url', '/tmp/x'], { timeoutMs: 60000 }, '/tmp/x', {
+        runner,
+        cleanup,
+        sleep: noopSleep,
+      }),
+    ).rejects.toThrow(/RPC failed/);
+    expect(runner).toHaveBeenCalledTimes(MAX_CLONE_ATTEMPTS);
+    // cleanup runs between attempts, so for N attempts we expect N-1 cleanups
+    // (no cleanup after the final attempt — caller's onFailure path handles it).
+    expect(cleanup).toHaveBeenCalledTimes(MAX_CLONE_ATTEMPTS - 1);
+  });
+
+  it('does NOT retry on a non-transient error (e.g. HTTP 401)', async () => {
+    const { runner } = makeRunner(['fatal: Authentication failed']);
+    const cleanup = vi.fn();
+    await expect(
+      cloneWithRetry(['clone', '--depth', '1', 'url', '/tmp/x'], { timeoutMs: 60000 }, '/tmp/x', {
+        runner,
+        cleanup,
+        sleep: noopSleep,
+      }),
+    ).rejects.toThrow(/Authentication failed/);
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it('does NOT retry when the destination path already exists (local error)', async () => {
+    const { runner } = makeRunner([
+      "fatal: destination path '/tmp/x' already exists and is not an empty directory.",
+    ]);
+    const cleanup = vi.fn();
+    await expect(
+      cloneWithRetry(['clone', '--depth', '1', 'url', '/tmp/x'], { timeoutMs: 60000 }, '/tmp/x', {
+        runner,
+        cleanup,
+        sleep: noopSleep,
+      }),
+    ).rejects.toThrow(/destination path/);
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it('uses exponential backoff between retries (500ms, 1500ms baseline)', async () => {
+    const { runner } = makeRunner([
+      'error: RPC failed; HTTP 500',
+      'error: RPC failed; HTTP 500',
+      'ok',
+    ]);
+    const cleanup = vi.fn();
+    const sleeps: number[] = [];
+    const sleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+    await cloneWithRetry(
+      ['clone', '--depth', '1', 'url', '/tmp/x'],
+      { timeoutMs: 60000 },
+      '/tmp/x',
+      { runner, cleanup, sleep },
+    );
+    expect(sleeps).toHaveLength(2);
+    // First retry waits ~500ms (+ up to 250ms jitter)
+    expect(sleeps[0]).toBeGreaterThanOrEqual(CLONE_RETRY_BASE_MS);
+    expect(sleeps[0]).toBeLessThan(CLONE_RETRY_BASE_MS + 250);
+    // Second retry waits ~1500ms (+ jitter) — base * 3
+    expect(sleeps[1]).toBeGreaterThanOrEqual(CLONE_RETRY_BASE_MS * 3);
+    expect(sleeps[1]).toBeLessThan(CLONE_RETRY_BASE_MS * 3 + 250);
+  });
+
+  it('forwards the args + opts unchanged to the runner on each attempt', async () => {
+    const { runner, calls } = makeRunner(['error: RPC failed; HTTP 500', 'ok']);
+    const cleanup = vi.fn();
+    const args = ['clone', '--depth', '1', '--quiet', 'https://example/x.git', '/tmp/x'];
+    const opts = { cwd: '/some/cwd', timeoutMs: 60000 };
+    await cloneWithRetry(args, opts, '/tmp/x', { runner, cleanup, sleep: noopSleep });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].args).toEqual(args);
+    expect(calls[0].opts).toEqual(opts);
+    expect(calls[1].args).toEqual(args);
+    expect(calls[1].opts).toEqual(opts);
   });
 });

@@ -45,6 +45,167 @@ const FETCH_TIMEOUT_MS = 30000;
 const CLONE_TIMEOUT_MS = 60000;
 
 /**
+ * Maximum number of `git clone` attempts before giving up. The first attempt
+ * counts, so a value of 3 means "1 try + up to 2 retries".
+ */
+const MAX_CLONE_ATTEMPTS = 3;
+
+/**
+ * Base delay (ms) for the exponential backoff between clone retries.
+ * Schedule with factor 3: attempt 1 fail -> wait ~500ms; attempt 2 fail ->
+ * wait ~1500ms (plus jitter). Caps the worst-case retry window at ~6s on
+ * top of the per-attempt CLONE_TIMEOUT_MS budget.
+ */
+const CLONE_RETRY_BASE_MS = 500;
+
+/**
+ * Stderr/message patterns that indicate a *transient* git clone failure
+ * (network blip, GitHub returning HTTP 5xx, peer hangup, connection reset,
+ * connect timeout). Retrying these usually succeeds within 1-2 attempts.
+ *
+ * Sample lines we want to match:
+ *   error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500
+ *   fatal: expected 'packfile'
+ *   remote: Internal Server Error
+ *   fatal: the remote end hung up unexpectedly
+ *   fatal: early EOF
+ */
+const TRANSIENT_CLONE_PATTERNS: ReadonlyArray<RegExp> = [
+  /RPC failed/i,
+  /HTTP\s+5\d\d/i,
+  /Internal Server Error/i,
+  /expected ['"]?packfile['"]?/i,
+  /early EOF/i,
+  /fetch-pack: unexpected disconnect/i,
+  /index-pack failed/i,
+  /the remote end hung up unexpectedly/i,
+  /\bECONNRESET\b/,
+  /\bETIMEDOUT\b/,
+  /\bENETUNREACH\b/,
+  /\bEAI_AGAIN\b/,
+  /Connection reset by peer/i,
+  /Connection timed out/i,
+  /Could not resolve host/i,
+];
+
+/**
+ * Patterns that indicate a *non-transient* failure where retrying is
+ * pointless (and possibly harmful, e.g. burning auth attempts). Checked
+ * before TRANSIENT_CLONE_PATTERNS so an HTTP 401 carrying "RPC failed"
+ * still fails fast.
+ */
+const NON_TRANSIENT_CLONE_PATTERNS: ReadonlyArray<RegExp> = [
+  /HTTP\s+40\d/i, // 401, 403, 404, 405, ...
+  /Authentication failed/i,
+  /could not read Username/i,
+  /Repository not found/i,
+  /access denied/i,
+  /Permission denied \(publickey\)/i,
+  /destination path .* already exists and is not an empty directory/i,
+  /not a valid repository/i,
+  /does not appear to be a git repository/i,
+];
+
+/**
+ * Heuristic: did this clone failure look like a transient remote-side issue
+ * (HTTP 5xx, RPC reset, peer hangup) that's worth retrying?
+ *
+ * The check inspects the full error string — `runGit` rejects with the
+ * `child_process` ExecFileException whose `message` already includes the
+ * captured stderr — so we don't need to wire `stderr` through separately.
+ */
+function isTransientCloneError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  // Some Node ExecFileException objects also carry .stderr / .stdout — fold
+  // those in too, in case the runtime ever stops appending them to .message.
+  const e = err as { stderr?: unknown; stdout?: unknown } | null;
+  const haystack = [message, String(e?.stderr ?? ''), String(e?.stdout ?? '')].join('\n');
+  if (NON_TRANSIENT_CLONE_PATTERNS.some((p) => p.test(haystack))) return false;
+  return TRANSIENT_CLONE_PATTERNS.some((p) => p.test(haystack));
+}
+
+type GitRunner = (args: string[], opts?: RunGitOptions) => Promise<string>;
+
+interface CloneRetryOptions {
+  /** Override the runner (test seam — production path uses `runGit`). */
+  runner?: GitRunner;
+  /** Override the post-failure cleanup (test seam). */
+  cleanup?: (cloneDir: string) => void;
+  /** Override the inter-attempt delay (test seam — production uses setTimeout). */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Run `git clone …` with retry-on-transient-failure.
+ *
+ * Retries up to `MAX_CLONE_ATTEMPTS` times when the failure stderr matches a
+ * known transient pattern (HTTP 5xx from the remote, RPC reset, peer hangup,
+ * connection reset/timeout). Backs off with exponential delay + jitter
+ * between attempts. Bails out immediately on auth failures, "repository not
+ * found", "destination path already exists", and any error not classified
+ * as transient.
+ *
+ * Between retries, the partial clone directory is removed so the next
+ * attempt isn't blocked by a half-populated tree from the previous failure.
+ */
+async function cloneWithRetry(
+  args: string[],
+  opts: RunGitOptions,
+  cloneDir: string,
+  retryOpts: CloneRetryOptions = {},
+): Promise<void> {
+  const runner = retryOpts.runner ?? runGit;
+  const cleanup = retryOpts.cleanup ?? cleanupPartialClone;
+  const sleep =
+    retryOpts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_CLONE_ATTEMPTS; attempt++) {
+    try {
+      await runner(args, opts);
+      return;
+    } catch (err: unknown) {
+      lastErr = err;
+      const transient = isTransientCloneError(err);
+      if (!transient || attempt === MAX_CLONE_ATTEMPTS) {
+        throw err;
+      }
+
+      // Wipe whatever the failed attempt left behind so the next clone
+      // doesn't see "destination path already exists".
+      cleanup(cloneDir);
+
+      const baseDelay = CLONE_RETRY_BASE_MS * Math.pow(3, attempt - 1);
+      const jitter = Math.floor(Math.random() * 250);
+      const delayMs = baseDelay + jitter;
+      const summary = (err instanceof Error ? err.message : String(err)).split('\n')[0];
+      console.warn(
+        `[Workspace] Transient clone failure (attempt ${attempt}/${MAX_CLONE_ATTEMPTS}): ${summary}; retrying in ${delayMs}ms`,
+      );
+      await sleep(delayMs);
+    }
+  }
+  // Defensive — loop above always either returns or throws.
+  throw lastErr;
+}
+
+/**
+ * Fully remove a partial clone directory between retry attempts. Unlike
+ * `removeZombieCloneDir` (which only acts when there's no `.git` inside),
+ * this one is unconditional because a `git clone` that failed partway
+ * through pack-file fetch may have left a `.git` directory in place.
+ */
+function cleanupPartialClone(cloneDir: string): void {
+  if (!existsSync(cloneDir)) return;
+  try {
+    rmSync(cloneDir, { recursive: true, force: true });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[Workspace] Failed to clean partial clone ${cloneDir}:`, message);
+  }
+}
+
+/**
  * Fail-fast git environment.
  *
  * - `GIT_TERMINAL_PROMPT=0` — never prompt for credentials. Without this,
@@ -348,14 +509,17 @@ export async function getOrCreateProcessWorktree(
   try {
     const remoteUrl = await getRemoteUrl(projectCwd);
     if (remoteUrl) {
-      await runGit(['clone', '--depth', '1', '--quiet', remoteUrl, cloneDir], {
-        cwd: projectCwd,
-        timeoutMs: CLONE_TIMEOUT_MS,
-      });
+      await cloneWithRetry(
+        ['clone', '--depth', '1', '--quiet', remoteUrl, cloneDir],
+        { cwd: projectCwd, timeoutMs: CLONE_TIMEOUT_MS },
+        cloneDir,
+      );
     } else {
-      await runGit(['clone', '--depth', '1', '--quiet', projectCwd, cloneDir], {
-        timeoutMs: CLONE_TIMEOUT_MS,
-      });
+      await cloneWithRetry(
+        ['clone', '--depth', '1', '--quiet', projectCwd, cloneDir],
+        { timeoutMs: CLONE_TIMEOUT_MS },
+        cloneDir,
+      );
     }
     await copyGitUserConfig(projectCwd, cloneDir);
     await enableHuskyHooks(cloneDir);
@@ -426,14 +590,17 @@ export async function ensureSessionWorkspace(
   try {
     const remoteUrl = await getRemoteUrl(projectCwd);
     if (remoteUrl) {
-      await runGit(['clone', '--depth', '1', '--quiet', remoteUrl, cloneDir], {
-        cwd: projectCwd,
-        timeoutMs: CLONE_TIMEOUT_MS,
-      });
+      await cloneWithRetry(
+        ['clone', '--depth', '1', '--quiet', remoteUrl, cloneDir],
+        { cwd: projectCwd, timeoutMs: CLONE_TIMEOUT_MS },
+        cloneDir,
+      );
     } else {
-      await runGit(['clone', '--depth', '1', '--quiet', projectCwd, cloneDir], {
-        timeoutMs: CLONE_TIMEOUT_MS,
-      });
+      await cloneWithRetry(
+        ['clone', '--depth', '1', '--quiet', projectCwd, cloneDir],
+        { timeoutMs: CLONE_TIMEOUT_MS },
+        cloneDir,
+      );
     }
 
     await runGit(['checkout', '-b', branchName], { cwd: cloneDir });
@@ -506,4 +673,14 @@ export function cleanupStaleWorkspaces(
  *
  * @internal
  */
-export const __test = { gitEnv, SHORT_GIT_TIMEOUT_MS, FETCH_TIMEOUT_MS, CLONE_TIMEOUT_MS };
+export const __test = {
+  gitEnv,
+  SHORT_GIT_TIMEOUT_MS,
+  FETCH_TIMEOUT_MS,
+  CLONE_TIMEOUT_MS,
+  MAX_CLONE_ATTEMPTS,
+  CLONE_RETRY_BASE_MS,
+  cloneWithRetry,
+  isTransientCloneError,
+  cleanupPartialClone,
+};
