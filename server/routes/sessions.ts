@@ -53,74 +53,124 @@ export function buildTranscript(
     .join('\n\n');
 }
 
+/**
+ * The system prompt + user prompt used for auto-summarization passes.
+ * Exported so tests can assert against the same text without re-deriving it.
+ */
+export const SUMMARIZE_SYSTEM_PROMPT = [
+  'You are a concise summarizer. You will receive a conversation transcript.',
+  'Produce a clear, well-structured summary that captures:',
+  '- Key decisions made',
+  '- Action items and outcomes',
+  '- Important context and technical details',
+  '- Any unresolved questions',
+  'Use markdown formatting. Be thorough but concise — aim for ~20-30% of the original length.',
+  'Do NOT add commentary — just the summary.',
+].join(' ');
+
+export function buildSummarizeUserPrompt(transcript: string): string {
+  return `Summarize this conversation:\n\n${transcript}`;
+}
+
+/**
+ * Build the bin + argv tuple used by summarizeTranscript() to invoke each
+ * supported engine. Extracted as a pure function so tests can assert that
+ * non-interactive flags (e.g. cursor-agent's `--force` to bypass the
+ * Workspace Trust prompt) are wired correctly without spawning a process.
+ *
+ * Why `--force` for cursor-agent: cursor-agent gates non-interactive runs
+ * behind a Workspace Trust prompt unless one of `--trust`, `--yolo`, or `-f`
+ * (alias of `--force`) is passed. Without it the auto-summarize spawn hangs
+ * on the prompt and exits 1, which is the failure mode this helper fixes.
+ * `--force` matches what `server/chat.ts` already passes for cursor-agent
+ * resume so behaviour stays consistent across spawn sites.
+ */
+export function buildSummarizeSpawnArgs(
+  { engine, model }: { engine: string; model?: string },
+  config: AppConfig,
+): { bin: string; args: string[] } {
+  const CLAUDE_BIN = config.claudeBin;
+  const CURSOR_BIN = config.cursorBin;
+  const GEMINI_BIN = config.geminiBin;
+  const DEFAULT_MODEL = config.defaultModel;
+  const systemPrompt = SUMMARIZE_SYSTEM_PROMPT;
+  // The transcript itself is provided by the caller; here we only need a
+  // placeholder positional arg so non-cursor branches keep the same shape.
+  // Callers replace this with the real prompt before spawning.
+  const userPromptPlaceholder = '';
+
+  if (engine === 'cursor-agent') {
+    return {
+      bin: CURSOR_BIN,
+      args: [
+        '--print',
+        '--force',
+        '--model',
+        model || DEFAULT_MODEL,
+        '--system-prompt',
+        systemPrompt,
+        userPromptPlaceholder,
+      ],
+    };
+  }
+  if (engine === 'gemini-cli') {
+    // Gemini CLI doesn't have a --system-prompt flag — concatenate into
+    // the prompt body like we do in slack.ts runAgent().
+    const args: string[] = ['-p', userPromptPlaceholder];
+    if (model && model !== 'auto') {
+      args.push('--model', model);
+    }
+    return { bin: GEMINI_BIN, args };
+  }
+  if (engine === 'codex-cli') {
+    // Codex exec has no `--system-prompt` flag — concatenate into the body.
+    // `--skip-git-repo-check` lets us run outside a git cwd, and
+    // `--sandbox read-only` keeps the summary pass from mutating anything.
+    const args: string[] = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only'];
+    if (model) {
+      args.push('--model', model);
+    }
+    args.push(userPromptPlaceholder);
+    return { bin: config.codexBin, args };
+  }
+  return {
+    bin: CLAUDE_BIN,
+    args: [
+      '--print',
+      '--model',
+      model || DEFAULT_MODEL,
+      '--system-prompt',
+      systemPrompt,
+      userPromptPlaceholder,
+    ],
+  };
+}
+
 export function summarizeTranscript(
   transcript: string,
   { engine, model, cwd }: { engine: string; model?: string; cwd?: string },
   config: AppConfig,
 ): Promise<string> {
-  const CLAUDE_BIN = config.claudeBin;
-  const CURSOR_BIN = config.cursorBin;
-  const DEFAULT_MODEL = config.defaultModel;
-
-  const systemPrompt = [
-    'You are a concise summarizer. You will receive a conversation transcript.',
-    'Produce a clear, well-structured summary that captures:',
-    '- Key decisions made',
-    '- Action items and outcomes',
-    '- Important context and technical details',
-    '- Any unresolved questions',
-    'Use markdown formatting. Be thorough but concise — aim for ~20-30% of the original length.',
-    'Do NOT add commentary — just the summary.',
-  ].join(' ');
-
-  const userPrompt = `Summarize this conversation:\n\n${transcript}`;
+  const systemPrompt = SUMMARIZE_SYSTEM_PROMPT;
+  const userPrompt = buildSummarizeUserPrompt(transcript);
 
   return new Promise((resolve, reject) => {
-    const GEMINI_BIN = config.geminiBin;
     // Engine→bin + args mapping. Each CLI has its own flag conventions, so we
-    // branch rather than force a common shape.
-    let bin: string;
+    // branch rather than force a common shape. The placeholder positional
+    // arg from buildSummarizeSpawnArgs is replaced with the real prompt
+    // (or the system+user concatenation for engines without --system-prompt).
+    const built = buildSummarizeSpawnArgs({ engine, model }, config);
+    const bin = built.bin;
     let args: string[];
-    if (engine === 'cursor-agent') {
-      bin = CURSOR_BIN;
-      args = [
-        '--print',
-        '--model',
-        model || DEFAULT_MODEL,
-        '--system-prompt',
-        systemPrompt,
-        userPrompt,
-      ];
-    } else if (engine === 'gemini-cli') {
-      // Gemini CLI doesn't have a --system-prompt flag — concatenate into
-      // the prompt body like we do in slack.ts runAgent().
-      bin = GEMINI_BIN;
+    if (engine === 'gemini-cli' || engine === 'codex-cli') {
+      // These engines have no --system-prompt; replace the placeholder with
+      // the concatenated system + user body.
       const combined = `${systemPrompt}\n\n${userPrompt}`;
-      args = ['-p', combined];
-      if (model && model !== 'auto') {
-        args.push('--model', model);
-      }
-    } else if (engine === 'codex-cli') {
-      // Codex exec has no `--system-prompt` flag — concatenate into the body.
-      // `--skip-git-repo-check` lets us run outside a git cwd, and
-      // `--sandbox read-only` keeps the summary pass from mutating anything.
-      bin = config.codexBin;
-      const combined = `${systemPrompt}\n\n${userPrompt}`;
-      args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only'];
-      if (model) {
-        args.push('--model', model);
-      }
-      args.push(combined);
+      args = built.args.map((a) => (a === '' ? combined : a));
     } else {
-      bin = CLAUDE_BIN;
-      args = [
-        '--print',
-        '--model',
-        model || DEFAULT_MODEL,
-        '--system-prompt',
-        systemPrompt,
-        userPrompt,
-      ];
+      // claude-code / cursor-agent: replace the placeholder with userPrompt;
+      // the system prompt is already wired via --system-prompt above.
+      args = built.args.map((a) => (a === '' ? userPrompt : a));
     }
 
     let output = '';
