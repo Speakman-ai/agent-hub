@@ -58,6 +58,7 @@ import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { ensureSessionWorkspace } from './worktree.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
+import { uriDecodeGuard, uriErrorHandler } from './uri-error-handler.js';
 import createNoteRoutes from './routes/notes.js';
 import createToolErrorRoutes from './routes/tool-errors.js';
 import createWikiRoutes from './routes/wiki.js';
@@ -345,6 +346,10 @@ app.set('trust proxy', trustProxyValueFromEnv());
 // ./cors-config.ts). The intentionally-public /api/bug-reports endpoint
 // installs its own `Access-Control-Allow-Origin: *` middleware in
 // ./routes/bug-reports.ts, which overrides this one for that route.
+// Reject malformed percent-encoded URLs (e.g. /%c0 from bot scanners)
+// before they reach the router, where Express's `decode_param` would
+// throw an unhandled `URIError`. See ./uri-error-handler.ts.
+app.use(uriDecodeGuard);
 app.use(cors(corsOptions));
 app.use(
   express.json({
@@ -946,6 +951,12 @@ if (CLIENT_DIST && existsSync(CLIENT_DIST)) {
     res.sendFile(path.join(CLIENT_DIST, 'index.html'));
   });
 }
+
+// Final error-handling middleware. Catches URIError raised from inside
+// the router's `decode_param` (defense in depth — `uriDecodeGuard`
+// above should already have rejected these). Other errors fall through
+// to Express's default handler, preserving existing behavior.
+app.use(uriErrorHandler);
 
 export { app, server };
 
