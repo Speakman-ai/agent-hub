@@ -90,12 +90,19 @@ const agentQueues = new Map<string, AgentQueue>();
 let dbStmts: Stmts | null = null;
 let _agentConfigs: EnrichedAgent[] = [];
 
-function loadSlackConfig(): SlackConfig {
+export function loadSlackConfig(
+  configPath: string = path.join(__dirname, 'slack-config.json'),
+): SlackConfig {
   try {
-    const raw = readFileSync(path.join(__dirname, 'slack-config.json'), 'utf-8');
+    const raw = readFileSync(configPath, 'utf-8');
     return JSON.parse(raw) as SlackConfig;
   } catch (err) {
-    console.error('Failed to load slack-config.json:', (err as Error).message);
+    // Missing config is the common case for fresh installs / dev environments
+    // (slack-config.json is gitignored). Stay silent so we don't spam logs.
+    // Only surface non-ENOENT failures (parse errors, EACCES, etc.).
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('Failed to load slack-config.json:', (err as Error).message);
+    }
     return { accounts: [] };
   }
 }
