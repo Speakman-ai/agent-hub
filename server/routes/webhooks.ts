@@ -29,6 +29,7 @@ import {
 } from '../reviewer-analyze-phase-timer.js';
 import { getProjectMode } from '../project-mode.js';
 import type {
+  AppConfig,
   RouteDeps,
   Stmts,
   BroadcastFn,
@@ -2179,6 +2180,67 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
   return router;
 }
 
+// ─── Webhook timeout resolution ─────────────────────────────────
+
+/**
+ * Resolve the timeout (in ms) to apply to a webhook-dispatched Claude run.
+ *
+ * Lookup order (most-specific wins):
+ *   1. `webhookEventTimeoutMs[event.action]` — e.g. `pull_request_review.submitted`
+ *   2. `webhookEventTimeoutMs[event]`        — e.g. `pull_request_review`
+ *   3. `webhookTimeoutMs`                    — webhook-wide fallback
+ *   4. `defaultTimeoutMs`                    — server-wide last resort
+ *
+ * Pulled out so it's unit-testable (no network / db / spawn coupling) and so
+ * the resolution rule can be documented in one place. The `pull_request_review.submitted`
+ * timeout used to silently inherit `defaultTimeoutMs` (5–15min depending on
+ * config), which timed out before the review prompt could finish on real PRs.
+ */
+export function resolveWebhookTimeoutMs(
+  event: string,
+  action: string,
+  cfg: Pick<AppConfig, 'webhookEventTimeoutMs' | 'webhookTimeoutMs' | 'defaultTimeoutMs'>,
+): number {
+  const map = cfg.webhookEventTimeoutMs || {};
+  const eventKey = action ? `${event}.${action}` : event;
+  const specific = map[eventKey];
+  if (typeof specific === 'number' && Number.isFinite(specific) && specific > 0) {
+    return specific;
+  }
+  const generic = map[event];
+  if (typeof generic === 'number' && Number.isFinite(generic) && generic > 0) {
+    return generic;
+  }
+  if (
+    typeof cfg.webhookTimeoutMs === 'number' &&
+    Number.isFinite(cfg.webhookTimeoutMs) &&
+    cfg.webhookTimeoutMs > 0
+  ) {
+    return cfg.webhookTimeoutMs;
+  }
+  return cfg.defaultTimeoutMs;
+}
+
+/**
+ * Trim a stream buffer to a [head, tail] preview suitable for logging
+ * without dumping multi-MB stdout into PM2 logs. Returns the original
+ * string verbatim when it already fits; otherwise produces a marker that
+ * shows the first/last `slice` chars and the elided length.
+ */
+function previewStream(buf: string, slice = 200): string {
+  if (!buf) return '';
+  // `slice * 2 + 32` ≈ "head + tail + the elision marker". When the input
+  // is only a handful of chars longer than head+tail, the `…[N chars
+  // elided]…` line itself is bigger than what we'd be eliding, so just
+  // print the buffer verbatim. The 32-char fudge covers the marker text
+  // ("…[", "chars elided]…", and the literal digits of N up to ~999).
+  if (buf.length <= slice * 2 + 32) return buf;
+  const head = buf.slice(0, slice).replace(/\s+$/g, '');
+  const tail = buf.slice(-slice).replace(/^\s+/g, '');
+  const elided = buf.length - slice * 2;
+  return `${head}\n…[${elided} chars elided]…\n${tail}`;
+}
+
 // ─── Background Processing Entry Point (called by webhook-worker) ───
 
 /**
@@ -2198,12 +2260,23 @@ export async function processWebhookEvent(
   row: WebhookEventRow,
 ): Promise<{ kanbanHandled: boolean; handlerRan: boolean; logId?: number }> {
   const { stmts, broadcast, getProjects } = deps;
-  const runClaudeFn = deps.runClaude as (
+  // Note: the third parameter of `runClaude` is `systemPrompt` (we pass
+  // `undefined` here — the prompt body carries everything). Earlier
+  // revisions of this file mis-named it `model`, which is a separate field
+  // that lives inside the options bag.
+  //
+  // We use the `detailed: true` overload so timeouts and non-zero exits
+  // surface partial stdout/stderr that we can log for debugging — the
+  // historical "Timed out after 5 minutes" PM2 entries discarded that
+  // signal completely (heartbeat.ts only attaches stdout/stderr to the
+  // rejected error in detailed mode).
+  type DetailedClaudeResult = { stdout: string; stderr: string; code: number | null };
+  const runClaudeDetailed = deps.runClaude as (
     prompt: string,
     cwd: string,
-    model?: string,
-    opts?: { timeoutMs: number },
-  ) => Promise<string>;
+    systemPrompt?: string,
+    opts?: { timeoutMs: number; detailed: true },
+  ) => Promise<DetailedClaudeResult>;
 
   const webhookConfig = stmts.getWebhookConfig.get(row.webhook_config_id) as
     | WebhookConfigRow
@@ -2322,28 +2395,104 @@ export async function processWebhookEvent(
   const project = projects.find((p) => p.id === webhookConfig.project_id);
   const cwd = project?.cwd || config.defaultCwd;
 
+  const timeoutMs = resolveWebhookTimeoutMs(event, action, config);
+
+  // `handlerError`, when non-null at the end of this block, is rethrown so
+  // the worker marks the webhook_events row as 'error'. We track it
+  // explicitly (rather than relying on outer-catch fall-through) because
+  // the non-zero-CLI-exit path has its own bespoke logging + DB write and
+  // must not also trip the timeout/spawn-error preview logic below.
+  let handlerError: Error | null = null;
+
   try {
-    const result = await runClaudeFn(fullPrompt, cwd, undefined, {
-      timeoutMs: config.defaultTimeoutMs,
+    const detailed = await runClaudeDetailed(fullPrompt, cwd, undefined, {
+      timeoutMs,
+      detailed: true,
     });
 
     const durationMs = Date.now() - startTime;
-    stmts.updateWebhookLog.run('success', result.substring(0, 10000), durationMs, logId);
-    console.log(`[Webhook] ${eventKey} on ${repoFullName} completed (${durationMs}ms)`);
+    const result = detailed.stdout || detailed.stderr || '(empty response)';
+    // Detailed-mode runClaude resolves on `close` regardless of exit code
+    // (heartbeat.ts:244-251). The non-detailed overload used to *reject*
+    // when `code !== 0 && !output`, which routed CLI failures (auth
+    // errors, internal CLI panics, malformed prompt rejections) into the
+    // catch block below. We have to preserve that exit-code → 'error'
+    // semantic ourselves now, otherwise webhook_logs.status flips green
+    // for runs the CLI itself reported as failed and any UI/alert filtering
+    // on `status = 'error'` stops seeing them.
+    const status: 'success' | 'error' = detailed.code === 0 ? 'success' : 'error';
+    stmts.updateWebhookLog.run(status, result.substring(0, 10000), durationMs, logId);
+    if (status === 'success') {
+      console.log(
+        `[Webhook] ${eventKey} on ${repoFullName} completed (exit=${detailed.code ?? 'null'}, ${durationMs}ms, stdout=${detailed.stdout.length}b, stderr=${detailed.stderr.length}b)`,
+      );
+    } else {
+      console.error(
+        `[Webhook] ${eventKey} on ${repoFullName} failed (exit=${detailed.code ?? 'null'}, ${durationMs}ms, stdout=${detailed.stdout.length}b, stderr=${detailed.stderr.length}b)`,
+      );
+      // Same head/tail preview rationale as the timeout/spawn-error branch
+      // below — surface what the CLI actually emitted so PM2 logs make the
+      // failure self-diagnosing instead of a bare exit code.
+      if (detailed.stdout) {
+        console.error(
+          `[Webhook] ${eventKey} on ${repoFullName} stdout (${detailed.stdout.length}b):\n${previewStream(detailed.stdout)}`,
+        );
+      }
+      if (detailed.stderr) {
+        console.error(
+          `[Webhook] ${eventKey} on ${repoFullName} stderr (${detailed.stderr.length}b):\n${previewStream(detailed.stderr)}`,
+        );
+      }
+      handlerError = new Error(
+        `Claude CLI exited with code ${detailed.code ?? 'null'}: ${(detailed.stderr || detailed.stdout || '').slice(0, 500) || '(empty)'}`,
+      );
+    }
 
     broadcast({
       type: 'webhook_event',
       webhookConfigId: webhookConfig.id,
       event: eventKey,
       repo: repoFullName,
-      status: 'success',
+      status,
       logId,
     });
   } catch (err: unknown) {
     const durationMs = Date.now() - startTime;
     const msg = err instanceof Error ? err.message : String(err);
+    // The `detailed: true` overload of runClaude attaches `.stdout` /
+    // `.stderr` to the rejected error when the spawn timed out (see
+    // heartbeat.ts:222-234). Surface a head/tail preview so PM2 logs
+    // capture what the CLI actually produced before the SIGTERM — this
+    // is the diagnostic that disambiguates the three failure hypotheses
+    // for `pull_request_review.submitted` timeouts:
+    //   1. long-running review prompt → stdout shows partial analysis
+    //   2. CLI hung waiting for input → stdout is empty/short, stderr quiet
+    //   3. lost stream / no terminal event → both buffers empty
+    const errStdout =
+      typeof (err as { stdout?: unknown }).stdout === 'string'
+        ? ((err as { stdout: string }).stdout as string)
+        : '';
+    const errStderr =
+      typeof (err as { stderr?: unknown }).stderr === 'string'
+        ? ((err as { stderr: string }).stderr as string)
+        : '';
+    const stdoutPreview = previewStream(errStdout);
+    const stderrPreview = previewStream(errStderr);
     stmts.updateWebhookLog.run('error', msg, durationMs, logId);
-    console.error(`[Webhook] ${eventKey} on ${repoFullName} failed:`, msg);
+    console.error(
+      `[Webhook] ${eventKey} on ${repoFullName} failed (${durationMs}ms, timeoutMs=${timeoutMs}): ${msg}`,
+    );
+    if (errStdout) {
+      console.error(
+        `[Webhook] ${eventKey} on ${repoFullName} stdout (${errStdout.length}b):\n${stdoutPreview}`,
+      );
+    }
+    if (errStderr) {
+      console.error(
+        `[Webhook] ${eventKey} on ${repoFullName} stderr (${errStderr.length}b):\n${stderrPreview}`,
+      );
+    }
+    handlerError = err instanceof Error ? err : new Error(msg);
 
     broadcast({
       type: 'webhook_event',
@@ -2353,10 +2502,13 @@ export async function processWebhookEvent(
       status: 'error',
       logId,
     });
-    // Re-throw so the worker records an 'error' row status with our message.
-    throw err instanceof Error ? err : new Error(msg);
   }
 
+  // Single throw point: the worker uses thrown exceptions to mark the
+  // webhook_events queue row as 'error'. Both the non-zero-CLI-exit path
+  // and the timeout/spawn-error path funnel through `handlerError` so we
+  // never double-write webhook_logs or double-broadcast.
+  if (handlerError) throw handlerError;
   return { kanbanHandled, handlerRan: true, logId };
 }
 

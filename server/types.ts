@@ -1345,6 +1345,20 @@ export interface AppConfig {
   docsTimeoutMs: number;
   slackTimeoutMs: number;
   conferenceTimeoutMs: number;
+  /**
+   * Fallback timeout (ms) for webhook-dispatched Claude runs. Falls back to
+   * `defaultTimeoutMs` when unset. Use `webhookEventTimeoutMs` to override
+   * per-event (e.g. `pull_request_review.submitted` typically needs longer
+   * than a 5-minute push autofix).
+   */
+  webhookTimeoutMs: number;
+  /**
+   * Per-event timeout (ms) overrides for webhook-dispatched Claude runs.
+   * Keys are either the bare event name (e.g. `pull_request_review`) or
+   * `event.action` (e.g. `pull_request_review.submitted`); the more specific
+   * key wins. See `resolveWebhookTimeoutMs` in `routes/webhooks.ts`.
+   */
+  webhookEventTimeoutMs: Record<string, number>;
   publicUrl: string | null;
   defaultReviewer: string | null;
   botGithubToken: string | null;

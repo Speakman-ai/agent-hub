@@ -30,6 +30,8 @@ function makeConfig(): AppConfig {
     docsTimeoutMs: 1000,
     slackTimeoutMs: 1000,
     conferenceTimeoutMs: 1000,
+    webhookTimeoutMs: 1000,
+    webhookEventTimeoutMs: {},
     publicUrl: null,
     defaultReviewer: null,
     botGithubToken: null,

@@ -192,6 +192,18 @@ const config: AppConfig = {
   docsTimeoutMs: resolveInt(null, 'docsTimeoutMs', 10 * 60 * 1000),
   slackTimeoutMs: resolveInt(null, 'slackTimeoutMs', 5 * 60 * 1000),
   conferenceTimeoutMs: resolveInt(null, 'conferenceTimeoutMs', 10 * 60 * 1000),
+  // Webhook-dispatched Claude runs default to a longer ceiling than other
+  // call sites because review/CI handlers often run a full PR analysis
+  // (gh pr view + diff fetch + multi-file reasoning) that legitimately
+  // exceeds defaultTimeoutMs. Override per-event via webhookEventTimeoutMs.
+  webhookTimeoutMs: resolveInt(null, 'webhookTimeoutMs', 20 * 60 * 1000),
+  webhookEventTimeoutMs: (fileConfig.webhookEventTimeoutMs as
+    | Record<string, number>
+    | undefined) ?? {
+    // Review handlers run the full PR review prompt (gh diff + analysis).
+    // 20 min covers the median; the worker will still kill at this bound.
+    'pull_request_review.submitted': 20 * 60 * 1000,
+  },
 
   // ── GitHub ─────────────────────────────────────────────────────
   publicUrl: resolve('AGENT_HUB_PUBLIC_URL', 'publicUrl', null),
