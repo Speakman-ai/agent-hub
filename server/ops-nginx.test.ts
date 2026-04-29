@@ -24,11 +24,12 @@ const CONF = readFileSync(CONF_PATH, 'utf8');
  * block exists.
  */
 function extractLocation(prefix: string): string | null {
-  // Match `location <prefix>` (with either exact match or prefix match flags),
-  // then find the matching closing brace by counting depth. This tolerates
-  // the nested `map`/`log_format`/`server` blocks around the target.
+  // Match `location <prefix>` (with either exact match `=`, prefix-no-regex
+  // `^~`, or plain prefix), then find the matching closing brace by counting
+  // depth. This tolerates the nested `map`/`log_format`/`server` blocks
+  // around the target.
   const header = new RegExp(
-    `location\\s+\\^?~?\\s*${prefix.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\s*\\{`,
+    `location\\s+(?:=\\s+|\\^?~?\\s*)${prefix.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\s*\\{`,
   );
   const m = CONF.match(header);
   if (!m || m.index === undefined) return null;
@@ -77,5 +78,53 @@ describe('ops/nginx/agent-hub.conf', () => {
     // The server-level header remains the default for SPA + API + WS + /uploads/.
     // Only /design-files/ opts out (by declaring its own add_header set).
     expect(CONF).toMatch(/add_header\s+X-Frame-Options\s+"DENY"\s+always;/);
+  });
+
+  describe('runner control-channel WS — /ws/runner', () => {
+    it('defines a dedicated /ws/runner location block', () => {
+      expect(extractLocation('/ws/runner')).not.toBeNull();
+    });
+
+    it('uses an exact `=` match so it wins over the catch-all /ws prefix', () => {
+      // We rely on `location = /ws/runner` having higher priority than the
+      // longest-prefix `location /ws` block; if someone changes it back to a
+      // plain prefix match the priority semantics flip and this test is the
+      // canary.
+      expect(CONF).toMatch(/location\s+=\s+\/ws\/runner\s*\{/);
+    });
+
+    it('proxies to the Express upstream on 3051', () => {
+      const body = extractLocation('/ws/runner');
+      expect(body).not.toBeNull();
+      expect(body!).toMatch(/proxy_pass\s+http:\/\/127\.0\.0\.1:3051/);
+    });
+
+    it('sets the WebSocket upgrade headers required for HTTP/1.1 protocol switch', () => {
+      const body = extractLocation('/ws/runner');
+      expect(body).not.toBeNull();
+      expect(body!).toMatch(/proxy_http_version\s+1\.1/);
+      expect(body!).toMatch(/proxy_set_header\s+Upgrade\s+\$http_upgrade/);
+      expect(body!).toMatch(/proxy_set_header\s+Connection\s+\$connection_upgrade/);
+    });
+
+    it('keeps the connection open long enough that the runner protocol owns liveness (>=24h)', () => {
+      // Runners have their own 30s ping / ~90s staleness detection in
+      // server/runners-ws.ts. nginx must not close idle sockets earlier than
+      // that or we'll see spurious reconnect storms. Match the chat /ws
+      // timeout (86400s = 24h).
+      const body = extractLocation('/ws/runner');
+      expect(body).not.toBeNull();
+      expect(body!).toMatch(/proxy_read_timeout\s+86400s/);
+      expect(body!).toMatch(/proxy_send_timeout\s+86400s/);
+    });
+
+    it('logs to a dedicated runner access log with the standard (non-sanitized) format', () => {
+      // Unlike chat /ws, runner WS does not carry a JWT in the query string —
+      // auth is in the first JSON frame — so we can use the normal log format.
+      // A separate log file makes ops review of runner connections easier.
+      const body = extractLocation('/ws/runner');
+      expect(body).not.toBeNull();
+      expect(body!).toMatch(/access_log\s+\/var\/log\/nginx\/agent-hub-runner-ws\.log\s+main_rest/);
+    });
   });
 });
