@@ -145,6 +145,217 @@ describe('SetupWizard — local mode (regression)', () => {
   });
 });
 
+describe('SetupWizard — Step 3 Claude credential gate', () => {
+  // Helper: set up a fetch mock that routes by URL substring.
+  // Routes return JSON Response objects so the component's
+  // `await res.json()` works the same as in production.
+  function jsonResponse(body, status = 200) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Walk the wizard from Welcome (step 1) → Org (step 2) → Configure (step 3).
+  // Defaults to local-mode org so Step 3 actually mounts.
+  async function advanceToStep3() {
+    createOrg.mockResolvedValue({ id: 'org-test' });
+    // Welcome → Org
+    await advanceToOrgStep();
+    // Org → Configure
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    });
+    await waitFor(() => expect(screen.getByText(/Configure Your Tools/i)).toBeInTheDocument());
+  }
+
+  it('disables Continue when no creds are configured (a)', async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (typeof url === 'string' && url.includes('/config/claude-auth')) {
+        return jsonResponse({
+          oauth: { loggedIn: false },
+          apiKey: { configured: false },
+          oauthToken: { configured: false },
+          activeMethod: null,
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <SetupWizard
+        setupStatus={{ engines: { 'claude-code': { available: true, path: '/usr/bin/claude' } } }}
+        onComplete={() => {}}
+      />,
+    );
+    await advanceToStep3();
+
+    // Wait until the GET resolves and the credentials card renders the
+    // "Required" pill (not the loading spinner).
+    await waitFor(() =>
+      expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/Required/i),
+    );
+
+    const continueBtn = screen.getByRole('button', { name: /save & continue/i });
+    expect(continueBtn).toBeDisabled();
+  });
+
+  it('enables Continue after saving an API key (b)', async () => {
+    let apiKeyConfigured = false;
+    const fetchMock = vi.fn(async (url, opts) => {
+      const u = String(url);
+      if (u.includes('/config/claude-auth/api-key')) {
+        apiKeyConfigured = true;
+        const body = JSON.parse(opts.body);
+        return jsonResponse({ ok: true, masked: `…${body.apiKey.slice(-4)}` });
+      }
+      if (u.includes('/config/claude-auth/oauth-token')) {
+        return jsonResponse({ ok: true });
+      }
+      if (u.includes('/config/claude-auth')) {
+        return jsonResponse({
+          oauth: { loggedIn: false },
+          apiKey: { configured: apiKeyConfigured, source: 'config' },
+          oauthToken: { configured: false },
+          activeMethod: apiKeyConfigured ? 'api-key' : null,
+        });
+      }
+      if (u.includes('/setup/configure')) return jsonResponse({ ok: true });
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <SetupWizard
+        setupStatus={{ engines: { 'claude-code': { available: true, path: '/usr/bin/claude' } } }}
+        onComplete={() => {}}
+      />,
+    );
+    await advanceToStep3();
+    await waitFor(() =>
+      expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/Required/i),
+    );
+
+    // API Key tab is active by default — paste + save.
+    const keyInput = screen.getByPlaceholderText(/sk-ant-api03/i);
+    fireEvent.change(keyInput, { target: { value: 'sk-ant-api03-fake-test-key-1234' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /save api key/i }));
+    });
+
+    // POST hit
+    expect(
+      fetchMock.mock.calls.some(
+        ([u, init]) => String(u).includes('/config/claude-auth/api-key') && init?.method === 'POST',
+      ),
+    ).toBe(true);
+
+    // After re-fetch, success state shown and Continue enabled.
+    await waitFor(() =>
+      expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/API key configured/i),
+    );
+    expect(screen.getByRole('button', { name: /save & continue/i })).not.toBeDisabled();
+  });
+
+  it('enables Continue after saving a setup token (c)', async () => {
+    let tokenConfigured = false;
+    const fetchMock = vi.fn(async (url, opts) => {
+      const u = String(url);
+      if (u.includes('/config/claude-auth/oauth-token')) {
+        tokenConfigured = true;
+        const body = JSON.parse(opts.body);
+        // Server collapses whitespace; assert here that the client did too.
+        expect(body.oauthToken).not.toMatch(/\s/);
+        return jsonResponse({ ok: true, masked: `…${body.oauthToken.slice(-4)}` });
+      }
+      if (u.includes('/config/claude-auth')) {
+        return jsonResponse({
+          oauth: { loggedIn: false },
+          apiKey: { configured: false },
+          oauthToken: {
+            configured: tokenConfigured,
+            source: 'config',
+            masked: tokenConfigured ? '…wxyz' : null,
+          },
+          activeMethod: tokenConfigured ? 'oauth' : null,
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <SetupWizard
+        setupStatus={{ engines: { 'claude-code': { available: true, path: '/usr/bin/claude' } } }}
+        onComplete={() => {}}
+      />,
+    );
+    await advanceToStep3();
+    await waitFor(() =>
+      expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/Required/i),
+    );
+
+    // Switch to setup-token tab.
+    fireEvent.click(screen.getByRole('button', { name: /setup token/i }));
+
+    // Paste a token with whitespace (simulating a multi-line terminal paste).
+    const tokenInput = screen.getByPlaceholderText(/sk-ant-oat01/i);
+    fireEvent.change(tokenInput, {
+      target: { value: 'sk-ant-oat01-\n  fake\ttoken-wxyz' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /save setup token/i }));
+    });
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([u, init]) =>
+          String(u).includes('/config/claude-auth/oauth-token') && init?.method === 'POST',
+      ),
+    ).toBe(true);
+
+    await waitFor(() =>
+      // The pill text varies with `activeMethod` ("OAuth active" vs "Setup
+      // token configured") but both render the masked-trailing-4. Assert on
+      // the mask — that's the unambiguous signal that the GET re-fetch saw
+      // the new token.
+      expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/…wxyz/),
+    );
+    expect(screen.getByRole('button', { name: /save & continue/i })).not.toBeDisabled();
+  });
+
+  it('enables Continue without typing when GET reports apiKey already configured (d)', async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (typeof url === 'string' && url.includes('/config/claude-auth')) {
+        return jsonResponse({
+          oauth: { loggedIn: false },
+          apiKey: { configured: true, source: 'env' },
+          oauthToken: { configured: false },
+          activeMethod: 'api-key',
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <SetupWizard
+        setupStatus={{ engines: { 'claude-code': { available: true, path: '/usr/bin/claude' } } }}
+        onComplete={() => {}}
+      />,
+    );
+    await advanceToStep3();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/API key configured/i),
+    );
+    // No tab UI shown when already configured.
+    expect(screen.queryByPlaceholderText(/sk-ant-api03/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /save & continue/i })).not.toBeDisabled();
+  });
+});
+
 describe('SetupWizard — web build hides the Connection Mode toggle', () => {
   // The web client is *served by* the Agent Hub server it talks to, so a
   // Local/Remote toggle is incoherent here: there is no other server it

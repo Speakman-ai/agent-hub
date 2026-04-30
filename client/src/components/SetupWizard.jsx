@@ -1,5 +1,16 @@
-import { useState } from 'react';
-import { Bot, Rocket, Monitor, Cloud, Loader2, Plug } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import {
+  Bot,
+  Rocket,
+  Monitor,
+  Cloud,
+  Loader2,
+  Plug,
+  Key,
+  Terminal,
+  CheckCircle2,
+  AlertCircle,
+} from 'lucide-react';
 import { getApiBase, getAuthHeaders, saveConnectionConfig } from '../utils/connection.js';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs.js';
 import { testConnection } from '../utils/connection.js';
@@ -106,6 +117,116 @@ export default function SetupWizard({ onComplete, setupStatus }) {
 
   const [claudePath, setClaudePath] = useState(claudeEngine.path || '');
   const [claudeEnabled, setClaudeEnabled] = useState(claudeEngine.available || false);
+
+  // Step 3 — Claude credential gate. The CLI binary path alone isn't enough
+  // for first-run users: every spawned `claude` invocation needs an API key
+  // or a setup-token (or an existing CLI OAuth login) or it 401s on the
+  // very first agent message. We fetch /api/config/claude-auth on Step 3
+  // mount and block "Save & Continue" until at least one credential source
+  // is configured. Remote-mode wizards never reach Step 3 (they navigate
+  // away during Step 2), but we still skip the gate defensively.
+  const [authState, setAuthState] = useState(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState(null);
+  const [credTab, setCredTab] = useState('apiKey');
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [apiKeySaving, setApiKeySaving] = useState(false);
+  const [apiKeyStatus, setApiKeyStatus] = useState(null);
+  const [oauthTokenInput, setOauthTokenInput] = useState('');
+  const [oauthTokenSaving, setOauthTokenSaving] = useState(false);
+  const [oauthTokenStatus, setOauthTokenStatus] = useState(null);
+
+  const fetchClaudeAuth = async () => {
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      const res = await fetch(`${getApiBase()}/config/claude-auth`, {
+        headers: { ...getAuthHeaders() },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setAuthState(data);
+    } catch (err) {
+      setAuthError(err.message || 'Failed to load Claude auth status');
+      setAuthState(null);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (step === 3 && orgMode !== 'remote') {
+      fetchClaudeAuth();
+    }
+    // We intentionally re-run when entering Step 3 so that retries / coming
+    // back from Step 4 always reflect the freshest server state.
+  }, [step, orgMode]);
+
+  const credsConfigured = !!(
+    authState?.apiKey?.configured ||
+    authState?.oauthToken?.configured ||
+    authState?.oauth?.loggedIn
+  );
+
+  const handleSaveApiKey = async () => {
+    const trimmed = apiKeyInput.trim();
+    if (!trimmed) return;
+    setApiKeySaving(true);
+    setApiKeyStatus(null);
+    try {
+      const res = await fetch(`${getApiBase()}/config/claude-auth/api-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ apiKey: trimmed }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(err.error || `Save failed: ${res.status}`);
+      }
+      const result = await res.json().catch(() => ({}));
+      setApiKeyStatus({
+        type: 'success',
+        msg: result.masked ? `Saved: ${result.masked}` : 'Saved',
+      });
+      setApiKeyInput('');
+      await fetchClaudeAuth();
+    } catch (err) {
+      setApiKeyStatus({ type: 'error', msg: err.message });
+    } finally {
+      setApiKeySaving(false);
+    }
+  };
+
+  const handleSaveOauthToken = async () => {
+    // Terminal-wrapped `claude setup-token` output may contain newlines
+    // inside the token; collapse all whitespace before validating + sending.
+    const collapsed = oauthTokenInput.trim().replace(/\s+/g, '');
+    if (!collapsed) return;
+    setOauthTokenSaving(true);
+    setOauthTokenStatus(null);
+    try {
+      const res = await fetch(`${getApiBase()}/config/claude-auth/oauth-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ oauthToken: collapsed }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(err.error || `Save failed: ${res.status}`);
+      }
+      const result = await res.json().catch(() => ({}));
+      setOauthTokenStatus({
+        type: 'success',
+        msg: result.masked ? `Saved: ${result.masked}` : 'Saved',
+      });
+      setOauthTokenInput('');
+      await fetchClaudeAuth();
+    } catch (err) {
+      setOauthTokenStatus({ type: 'error', msg: err.message });
+    } finally {
+      setOauthTokenSaving(false);
+    }
+  };
 
   const handleOrgContinue = async () => {
     if (!orgName.trim()) return;
@@ -454,6 +575,168 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               </p>
             )}
 
+            {/* Claude credentials gate — API key OR setup-token OR a prior
+                CLI OAuth login. First-run users hit this; if any of the
+                three is already configured (e.g. ANTHROPIC_API_KEY env var),
+                the success pill is shown and Continue is unblocked without
+                further input. */}
+            {claudeEnabled && (
+              <div
+                className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3"
+                data-testid="claude-credentials"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-white text-sm">Sign in to Claude</span>
+                  {authLoading ? (
+                    <span className="flex items-center gap-1.5 text-xs text-gray-400">
+                      <Loader2 size={12} className="animate-spin" /> Loading
+                    </span>
+                  ) : credsConfigured ? (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CheckCircle2 size={12} />{' '}
+                      {authState?.activeMethod === 'oauth'
+                        ? 'OAuth active'
+                        : authState?.apiKey?.configured
+                          ? 'API key configured'
+                          : 'Setup token configured'}
+                      {authState?.oauthToken?.masked ? ` (${authState.oauthToken.masked})` : ''}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-yellow-400">Required</span>
+                  )}
+                </div>
+
+                {!credsConfigured && (
+                  <>
+                    <p className="text-xs text-gray-500">
+                      Agent Hub spawns the Claude CLI for every chat — without a key or setup-token,
+                      the first message will 401. Pick one:
+                    </p>
+                    <div className="flex gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setCredTab('apiKey')}
+                        className={`flex-1 py-1.5 px-2 rounded-md border transition-colors flex items-center justify-center gap-1.5 ${
+                          credTab === 'apiKey'
+                            ? 'border-blue-500 bg-blue-500/10 text-blue-300'
+                            : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+                        }`}
+                      >
+                        <Key size={12} /> API Key
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCredTab('oauthToken')}
+                        className={`flex-1 py-1.5 px-2 rounded-md border transition-colors flex items-center justify-center gap-1.5 ${
+                          credTab === 'oauthToken'
+                            ? 'border-blue-500 bg-blue-500/10 text-blue-300'
+                            : 'border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600'
+                        }`}
+                      >
+                        <Terminal size={12} /> Setup token
+                      </button>
+                    </div>
+
+                    {credTab === 'apiKey' && (
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-gray-400">
+                          Anthropic API key
+                        </label>
+                        <input
+                          type="password"
+                          value={apiKeyInput}
+                          onChange={(e) => {
+                            setApiKeyInput(e.target.value);
+                            setApiKeyStatus(null);
+                          }}
+                          placeholder="sk-ant-api03-..."
+                          autoComplete="off"
+                          data-1p-ignore
+                          data-lpignore="true"
+                          className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSaveApiKey}
+                          disabled={!apiKeyInput.trim() || apiKeySaving}
+                          className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          {apiKeySaving ? <Loader2 size={12} className="animate-spin" /> : null}
+                          {apiKeySaving ? 'Saving…' : 'Save API key'}
+                        </button>
+                        {apiKeyStatus && (
+                          <div
+                            className={`flex items-center gap-1.5 text-xs ${
+                              apiKeyStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+                            }`}
+                          >
+                            {apiKeyStatus.type === 'success' ? (
+                              <CheckCircle2 size={12} />
+                            ) : (
+                              <AlertCircle size={12} />
+                            )}
+                            <span>{apiKeyStatus.msg}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {credTab === 'oauthToken' && (
+                      <div className="space-y-2">
+                        <label className="block text-xs font-medium text-gray-400">
+                          Setup token from <code className="text-gray-300">claude setup-token</code>
+                        </label>
+                        <input
+                          type="password"
+                          value={oauthTokenInput}
+                          onChange={(e) => {
+                            setOauthTokenInput(e.target.value);
+                            setOauthTokenStatus(null);
+                          }}
+                          placeholder="sk-ant-oat01-..."
+                          autoComplete="off"
+                          data-1p-ignore
+                          data-lpignore="true"
+                          className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSaveOauthToken}
+                          disabled={!oauthTokenInput.trim().replace(/\s+/g, '') || oauthTokenSaving}
+                          className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          {oauthTokenSaving ? <Loader2 size={12} className="animate-spin" /> : null}
+                          {oauthTokenSaving ? 'Saving…' : 'Save setup token'}
+                        </button>
+                        {oauthTokenStatus && (
+                          <div
+                            className={`flex items-center gap-1.5 text-xs ${
+                              oauthTokenStatus.type === 'success'
+                                ? 'text-emerald-400'
+                                : 'text-red-400'
+                            }`}
+                          >
+                            {oauthTokenStatus.type === 'success' ? (
+                              <CheckCircle2 size={12} />
+                            ) : (
+                              <AlertCircle size={12} />
+                            )}
+                            <span>{oauthTokenStatus.msg}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {authError && (
+                  <div className="text-xs text-red-400 flex items-center gap-1.5">
+                    <AlertCircle size={12} /> {authError}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Error */}
             {error && (
               <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-sm text-red-300">
@@ -471,7 +754,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               </button>
               <button
                 onClick={handleSaveAndContinue}
-                disabled={!claudeEnabled || saving}
+                disabled={!claudeEnabled || saving || (!credsConfigured && orgMode !== 'remote')}
                 className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {saving && (
