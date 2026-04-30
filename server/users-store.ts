@@ -83,6 +83,108 @@ export function updateUserPassword(id: string, passwordHash: string): void {
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
 }
 
+// ── Per-user Claude credentials ─────────────────────────────────────
+//
+// Each user may attach an Anthropic API key and/or a `claude setup-token`
+// OAuth bearer. `buildSpawnEnv` prefers the session owner's values when
+// present, falling back to the host-wide `config.json`. Storing on the
+// users row mirrors the existing GitHub OAuth columns; encryption at rest
+// is tracked as a follow-up.
+
+export interface UserClaudeAuth {
+  anthropicApiKey: string | null;
+  claudeCodeOAuthToken: string | null;
+  claudeCodeOAuthExpiresAt: string | null;
+  updatedAt: string | null;
+}
+
+interface UserClaudeAuthRow {
+  anthropic_api_key: string | null;
+  claude_code_oauth_token: string | null;
+  claude_code_oauth_expires_at: string | null;
+  claude_auth_updated_at: string | null;
+}
+
+/** Returns the user's stored Claude credentials, or null when the user does not exist. */
+export function getUserClaudeAuth(userId: string): UserClaudeAuth | null {
+  const db = getOrgsDb();
+  const row = db
+    .prepare(
+      `SELECT anthropic_api_key, claude_code_oauth_token, claude_code_oauth_expires_at, claude_auth_updated_at
+       FROM users WHERE id = ?`,
+    )
+    .get(userId) as UserClaudeAuthRow | undefined;
+  if (!row) return null;
+  return {
+    anthropicApiKey: row.anthropic_api_key ?? null,
+    claudeCodeOAuthToken: row.claude_code_oauth_token ?? null,
+    claudeCodeOAuthExpiresAt: row.claude_code_oauth_expires_at ?? null,
+    updatedAt: row.claude_auth_updated_at ?? null,
+  };
+}
+
+/**
+ * Patch the user's Claude credentials. Only fields explicitly present
+ * in `patch` are written. Pass an empty string to clear a field; pass
+ * `undefined` to leave it untouched.
+ *
+ * Returns the post-update row, or null if the user does not exist.
+ */
+export function setUserClaudeAuth(
+  userId: string,
+  patch: {
+    anthropicApiKey?: string | null;
+    claudeCodeOAuthToken?: string | null;
+    claudeCodeOAuthExpiresAt?: string | null;
+  },
+): UserClaudeAuth | null {
+  const db = getOrgsDb();
+  const existing = getUserClaudeAuth(userId);
+  if (!existing) return null;
+
+  const next = {
+    anthropic_api_key:
+      patch.anthropicApiKey === undefined
+        ? existing.anthropicApiKey
+        : normalizeStoredCredential(patch.anthropicApiKey),
+    claude_code_oauth_token:
+      patch.claudeCodeOAuthToken === undefined
+        ? existing.claudeCodeOAuthToken
+        : normalizeStoredCredential(patch.claudeCodeOAuthToken),
+    claude_code_oauth_expires_at:
+      patch.claudeCodeOAuthExpiresAt === undefined
+        ? existing.claudeCodeOAuthExpiresAt
+        : patch.claudeCodeOAuthExpiresAt || null,
+    claude_auth_updated_at: new Date().toISOString(),
+  };
+
+  db.prepare(
+    `UPDATE users
+     SET anthropic_api_key = ?, claude_code_oauth_token = ?, claude_code_oauth_expires_at = ?, claude_auth_updated_at = ?
+     WHERE id = ?`,
+  ).run(
+    next.anthropic_api_key,
+    next.claude_code_oauth_token,
+    next.claude_code_oauth_expires_at,
+    next.claude_auth_updated_at,
+    userId,
+  );
+
+  return {
+    anthropicApiKey: next.anthropic_api_key,
+    claudeCodeOAuthToken: next.claude_code_oauth_token,
+    claudeCodeOAuthExpiresAt: next.claude_code_oauth_expires_at,
+    updatedAt: next.claude_auth_updated_at,
+  };
+}
+
+/** Empty / whitespace-only strings collapse to null so the UI clear-field path works. */
+function normalizeStoredCredential(raw: string | null): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
 /**
  * One-shot migration from the Phase-1/2 `auth.json` singleton to the
  * Phase-3 users + memberships tables. Safe to call on every boot:

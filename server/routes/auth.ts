@@ -47,6 +47,8 @@ import {
   updateUserPassword,
   countUsers,
   migrateAuthRecordIfNeeded,
+  getUserClaudeAuth,
+  setUserClaudeAuth,
 } from '../users-store.js';
 import {
   createMembership,
@@ -97,6 +99,23 @@ export const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 min
 export const LOGIN_RATE_LIMIT_MAX = 10;
 export const INVITE_ACCEPT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 h
 export const INVITE_ACCEPT_RATE_LIMIT_MAX = 5;
+
+/**
+ * Render a credential for the UI without leaking the secret. Returns
+ * `null` for empty inputs so the client can simply check truthiness to
+ * decide whether the field is configured.
+ *
+ * Format: keep the recognisable prefix up to the first `-` (or first 8
+ * chars when no `-`) plus a fixed `…` marker. Never echo the raw value.
+ */
+export function maskCredential(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const dash = trimmed.indexOf('-', 8);
+  const prefix = dash > 0 ? trimmed.slice(0, dash + 1) : trimmed.slice(0, 8);
+  return `${prefix}…`;
+}
 
 export interface AuthRoutesOptions {
   /** Override login limiter. Tests pass tiny windows to exercise 429s quickly. */
@@ -416,6 +435,82 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       authConfigured: !!record,
       role,
       orgId: authedReq.authOrgId ?? null,
+    });
+  });
+
+  // ── Per-user Claude credentials ────────────────────────────────
+  //
+  // Each authenticated user may attach their own ANTHROPIC_API_KEY and
+  // CLAUDE_CODE_OAUTH_TOKEN. When set, `buildSpawnEnv` injects the
+  // session owner's values instead of the host-wide config — see
+  // `server/config.ts::buildSpawnEnv`. Tokens are returned masked so
+  // the page can display "configured" status without leaking secrets;
+  // only the metadata (length, prefix, expiry, updatedAt) round-trips.
+  router.get('/api/auth/me/claude-auth', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const stored = getUserClaudeAuth(authedReq.authUserId);
+    if (!stored) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    res.json({
+      anthropicApiKey: maskCredential(stored.anthropicApiKey),
+      claudeCodeOAuthToken: maskCredential(stored.claudeCodeOAuthToken),
+      claudeCodeOAuthExpiresAt: stored.claudeCodeOAuthExpiresAt,
+      updatedAt: stored.updatedAt,
+      hostConfigFallback: {
+        anthropicApiKey: !!config.anthropicApiKey,
+        claudeCodeOAuthToken: !!config.claudeCodeOAuthToken,
+      },
+    });
+  });
+
+  router.put('/api/auth/me/claude-auth', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const body = (req.body ?? {}) as {
+      anthropicApiKey?: string | null;
+      claudeCodeOAuthToken?: string | null;
+      claudeCodeOAuthExpiresAt?: string | null;
+    };
+    // Whitelist fields to prevent stray JSON keys from reaching the DB.
+    const patch: {
+      anthropicApiKey?: string | null;
+      claudeCodeOAuthToken?: string | null;
+      claudeCodeOAuthExpiresAt?: string | null;
+    } = {};
+    if (Object.prototype.hasOwnProperty.call(body, 'anthropicApiKey')) {
+      patch.anthropicApiKey = body.anthropicApiKey ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'claudeCodeOAuthToken')) {
+      patch.claudeCodeOAuthToken = body.claudeCodeOAuthToken ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'claudeCodeOAuthExpiresAt')) {
+      patch.claudeCodeOAuthExpiresAt = body.claudeCodeOAuthExpiresAt ?? null;
+    }
+    const updated = setUserClaudeAuth(authedReq.authUserId, patch);
+    if (!updated) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    res.json({
+      anthropicApiKey: maskCredential(updated.anthropicApiKey),
+      claudeCodeOAuthToken: maskCredential(updated.claudeCodeOAuthToken),
+      claudeCodeOAuthExpiresAt: updated.claudeCodeOAuthExpiresAt,
+      updatedAt: updated.updatedAt,
+      // Mirror GET so a client can re-render the "falling back to host"
+      // hint without an extra round-trip after save.
+      hostConfigFallback: {
+        anthropicApiKey: !!config.anthropicApiKey,
+        claudeCodeOAuthToken: !!config.claudeCodeOAuthToken,
+      },
     });
   });
 

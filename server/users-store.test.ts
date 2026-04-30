@@ -24,6 +24,8 @@ const {
   deleteUser,
   updateUserPassword,
   migrateAuthRecordIfNeeded,
+  getUserClaudeAuth,
+  setUserClaudeAuth,
 } = await import('./users-store.js');
 const { getMembershipRole, createMembership, listMembershipsForUser } =
   await import('./memberships-store.js');
@@ -153,5 +155,65 @@ describe('users-store — migration from auth.json', () => {
     expect(user).not.toBeNull();
     expect(getMembershipRole(user!.id, 'default')).toBe('Owner');
     expect(getMembershipRole(user!.id, 'team-b')).toBe('Owner');
+  });
+});
+
+describe('users-store — per-user Claude credentials', () => {
+  beforeEach(() => freshDb());
+
+  it('returns null Claude auth on a fresh user (columns nullable)', () => {
+    const u = createUser({ username: 'alice', passwordHash: 'h' });
+    const auth = getUserClaudeAuth(u.id);
+    expect(auth).not.toBeNull();
+    expect(auth!.anthropicApiKey).toBeNull();
+    expect(auth!.claudeCodeOAuthToken).toBeNull();
+    expect(auth!.claudeCodeOAuthExpiresAt).toBeNull();
+    expect(auth!.updatedAt).toBeNull();
+  });
+
+  it('round-trips both credentials and stamps updatedAt', () => {
+    const u = createUser({ username: 'bob', passwordHash: 'h' });
+    const updated = setUserClaudeAuth(u.id, {
+      anthropicApiKey: 'sk-ant-api03-bob',
+      claudeCodeOAuthToken: 'sk-ant-oat01-bob',
+      claudeCodeOAuthExpiresAt: '2030-01-01T00:00:00Z',
+    });
+    expect(updated).not.toBeNull();
+    expect(updated!.anthropicApiKey).toBe('sk-ant-api03-bob');
+    expect(updated!.claudeCodeOAuthToken).toBe('sk-ant-oat01-bob');
+    expect(updated!.claudeCodeOAuthExpiresAt).toBe('2030-01-01T00:00:00Z');
+    expect(updated!.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    const reread = getUserClaudeAuth(u.id);
+    expect(reread!.anthropicApiKey).toBe('sk-ant-api03-bob');
+    expect(reread!.claudeCodeOAuthToken).toBe('sk-ant-oat01-bob');
+  });
+
+  it('partial patch leaves other fields untouched', () => {
+    const u = createUser({ username: 'carol', passwordHash: 'h' });
+    setUserClaudeAuth(u.id, {
+      anthropicApiKey: 'sk-ant-api03-carol',
+      claudeCodeOAuthToken: 'sk-ant-oat01-carol',
+    });
+    setUserClaudeAuth(u.id, { anthropicApiKey: 'sk-ant-api03-carol-rotated' });
+    const auth = getUserClaudeAuth(u.id);
+    expect(auth!.anthropicApiKey).toBe('sk-ant-api03-carol-rotated');
+    expect(auth!.claudeCodeOAuthToken).toBe('sk-ant-oat01-carol');
+  });
+
+  it('empty string clears the field; whitespace-only also clears', () => {
+    const u = createUser({ username: 'dan', passwordHash: 'h' });
+    setUserClaudeAuth(u.id, { anthropicApiKey: 'sk-ant-api03-dan' });
+    expect(getUserClaudeAuth(u.id)!.anthropicApiKey).toBe('sk-ant-api03-dan');
+    setUserClaudeAuth(u.id, { anthropicApiKey: '' });
+    expect(getUserClaudeAuth(u.id)!.anthropicApiKey).toBeNull();
+    setUserClaudeAuth(u.id, { anthropicApiKey: 'sk-ant-api03-dan2' });
+    setUserClaudeAuth(u.id, { anthropicApiKey: '   ' });
+    expect(getUserClaudeAuth(u.id)!.anthropicApiKey).toBeNull();
+  });
+
+  it('returns null for an unknown user id', () => {
+    expect(getUserClaudeAuth('does-not-exist')).toBeNull();
+    expect(setUserClaudeAuth('does-not-exist', { anthropicApiKey: 'x' })).toBeNull();
   });
 });

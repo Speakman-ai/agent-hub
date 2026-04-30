@@ -12,6 +12,8 @@ import { getMemoryContext, appendDailyNote, reconcileMemoryAfterSession } from '
 import { collectSkillsFromDir, DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
+import { getSessionOwner } from './session-ownership.js';
+import { getUserClaudeAuth } from './users-store.js';
 import type { DelegationResult } from './delegation.js';
 import {
   detectHandoffBlock,
@@ -1803,7 +1805,49 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     }
 
     const spawnEnv: NodeJS.ProcessEnv = (() => {
-      const base = buildSpawnEnv(config);
+      // Per-user Claude auth: when the session has a recorded owner with
+      // their own ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, those win
+      // over the host config. Falsy / missing fields fall back to the
+      // host config so unconfigured users keep working transparently.
+      let userOverride: {
+        anthropicApiKey?: string | null;
+        claudeCodeOAuthToken?: string | null;
+      } | null = null;
+      try {
+        const ownerId = getSessionOwner(sessionId);
+        if (ownerId) {
+          const userAuth = getUserClaudeAuth(ownerId);
+          if (userAuth && (userAuth.anthropicApiKey || userAuth.claudeCodeOAuthToken)) {
+            userOverride = {
+              anthropicApiKey: userAuth.anthropicApiKey,
+              claudeCodeOAuthToken: userAuth.claudeCodeOAuthToken,
+            };
+          }
+        }
+      } catch (err) {
+        // Per-user auth is best-effort; the host config remains the
+        // safety net so a lookup failure can never block a spawn. Emit
+        // a TOOL_ERROR-shaped line so this failure mode is observable
+        // in server logs — a user who deliberately set their own key
+        // and then silently ran under the host's identity is exactly
+        // what we want to catch in production. See
+        // plugin/skills/agent-hub/references/errors.md for the format.
+        const summary = (err as Error).message
+          .replace(/[\r\n|]+/g, ' ')
+          .trim()
+          .slice(0, 200);
+        const meta = JSON.stringify({
+          v: 2,
+          sev: 'soft',
+          resolution: 'recovered',
+          session: sessionId,
+          tags: ['per-user-claude-auth', 'spawn'],
+        });
+        console.error(
+          `TOOL_ERROR | ${new Date().toISOString()} | per-user-claude-auth | spawn lookup | error | ${summary} | ${meta}`,
+        );
+      }
+      const base = buildSpawnEnv(config, { userOverride });
       // Reviewer agents post formal GitHub reviews via the bot identity so they
       // bypass GitHub's "can't review your own PR" rule for human-author PRs.
       if (config.botGithubToken && agent.role === 'reviewer') {

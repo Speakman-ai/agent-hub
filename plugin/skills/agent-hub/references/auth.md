@@ -16,6 +16,7 @@ Back to [SKILL.md](../SKILL.md).
 - [API key resolution for scripts](#api-key-resolution-for-scripts)
 - [Config locations](#config-locations)
 - [Endpoints at a glance](#endpoints-at-a-glance)
+- [Per-user Claude credentials](#per-user-claude-credentials)
 - [JWT `uid` claim & pre-migration fallback](#jwt-uid-claim--pre-migration-fallback)
 - [Rate limiting — `trust proxy` is coupled to the proxy topology](#rate-limiting--trust-proxy-is-coupled-to-the-proxy-topology)
 
@@ -77,10 +78,53 @@ Prefix everything with `/api/auth`. All require auth unless flagged
 | `POST /invites`, `GET /invites`, `DELETE …`    | Admin        | invite lifecycle                         |
 | `GET  /invites/:token`                         | **public**   | preview invite before accepting          |
 | `POST /invites/:token/accept`                  | **public**   | redeem invite (per-IP rate-limited)      |
+| `GET  /me/claude-auth`                         | any          | masked per-user Claude credentials       |
+| `PUT  /me/claude-auth`                         | any          | upsert per-user Claude credentials       |
 | `POST /logout`                                 | any          | revoke session                           |
 
 Public paths live in `PUBLIC_PATHS` / `PUBLIC_PREFIXES` (`server/auth.ts`);
 everything else falls through `authMiddleware`.
+
+## Per-user Claude credentials
+
+`GET` / `PUT /api/auth/me/claude-auth` let an authenticated user attach
+their own Anthropic credentials to their user row. When Agent Hub spawns
+a Claude Code session, `buildSpawnEnv` (`server/config.ts`) prefers the
+**session owner's** credentials over the host-wide `config.json`. This
+keeps multi-user installs from coalescing onto a single Anthropic
+identity / rate-limit bucket.
+
+**Precedence is per-field, not per-user.** For each of
+`ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`, the resolver picks:
+
+1. **User value** — `users.anthropic_api_key` / `users.claude_code_oauth_token`
+   on the session-owner row, when truthy.
+2. **Host value** — `config.anthropicApiKey` / `config.claudeCodeOAuthToken`
+   from `~/.agent-hub/data/config.json`.
+3. **Unset** — neither layer has a value; the CLI inherits whatever
+   ambient env the operator's shell provides.
+
+A user who only sets `anthropicApiKey` still falls back to the host's
+OAuth token (and vice-versa). Single-tenant deploys that never write
+per-user values are byte-for-bit identical to the pre-Phase-3 behavior.
+
+**Endpoint shape.**
+
+| Field                       | `GET`                                          | `PUT`                                                                                |
+| --------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `anthropicApiKey`           | masked (`sk-ant-api03-…`) or `null`            | accepts string or `null`; empty string clears                                        |
+| `claudeCodeOAuthToken`      | masked or `null`                               | accepts string or `null`; empty string clears                                        |
+| `claudeCodeOAuthExpiresAt`  | ISO-8601 string or `null`                      | accepts string or `null`                                                             |
+| `updatedAt`                 | last-write timestamp                           | last-write timestamp                                                                 |
+| `hostConfigFallback`        | `{ anthropicApiKey, claudeCodeOAuthToken }` (booleans) — does the host have a fallback? | same shape — clients can re-render the "falling back to host" hint after save        |
+
+`PUT` whitelists exactly those three fields via
+`Object.prototype.hasOwnProperty.call`; stray keys are ignored, never
+forwarded to the DB. Both endpoints return `401` when `authUserId` is
+missing (apiKey-only callers + local-bundled-server bypass) and `404`
+when the user row is unknown. Encryption-at-rest is tracked as a
+follow-up — credentials currently sit on the users row in plaintext,
+mirroring the existing `github_user_token` precedent.
 
 ## JWT `uid` claim & pre-migration fallback
 

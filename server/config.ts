@@ -331,7 +331,35 @@ export function normalizeClaudeSetupToken(raw: string): string | null {
   return collapsed.length > 0 ? collapsed : null;
 }
 
-export function buildSpawnEnv(cfg: AppConfig = config): NodeJS.ProcessEnv {
+/**
+ * Per-spawn override applied on top of the host-wide `AppConfig`. Used
+ * to inject a session owner's personal Claude credentials so each user
+ * spawns `claude` under their own identity. Any present field wins over
+ * the host config; absent fields fall through.
+ */
+export interface SpawnEnvOverride {
+  /** Anthropic API key (raw `sk-ant-api03-…`). Empty / whitespace = no override. */
+  anthropicApiKey?: string | null;
+  /** `claude setup-token` OAuth bearer. Empty / whitespace = no override. */
+  claudeCodeOAuthToken?: string | null;
+}
+
+export interface BuildSpawnEnvOptions {
+  /** Per-user override; takes precedence over `cfg` for the matching fields. */
+  userOverride?: SpawnEnvOverride | null;
+}
+
+/** Treat null / undefined / empty / whitespace-only as "not provided". */
+function presentString(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const trimmed = v.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function buildSpawnEnv(
+  cfg: AppConfig = config,
+  opts: BuildSpawnEnvOptions = {},
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   // Merge the login-shell PATH into the spawn env so newly-installed CLIs
   // (aws, gh, etc.) are visible without restarting the server. See
@@ -340,14 +368,22 @@ export function buildSpawnEnv(cfg: AppConfig = config): NodeJS.ProcessEnv {
   // Hub config must win over the server process env: spreading `process.env` would keep a stale
   // ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN after the user clears keys in Settings or switches
   // to OAuth-only — Anthropic then prefers the API key and breaks Bearer/OAuth with 401.
-  if (cfg.anthropicApiKey) {
-    env.ANTHROPIC_API_KEY = cfg.anthropicApiKey;
+  //
+  // Precedence for the two Claude credential vars (per-user → host →
+  // unset). Each field is resolved independently so a user that has
+  // only an API key still inherits the host's OAuth token, and vice
+  // versa.
+  const override = opts.userOverride ?? null;
+  const anthropicApiKey =
+    presentString(override?.anthropicApiKey) ?? presentString(cfg.anthropicApiKey);
+  if (anthropicApiKey) {
+    env.ANTHROPIC_API_KEY = anthropicApiKey;
   } else {
     delete env.ANTHROPIC_API_KEY;
   }
-  const oauthToken = cfg.claudeCodeOAuthToken
-    ? normalizeClaudeSetupToken(cfg.claudeCodeOAuthToken)
-    : null;
+  const rawOauth =
+    presentString(override?.claudeCodeOAuthToken) ?? presentString(cfg.claudeCodeOAuthToken);
+  const oauthToken = rawOauth ? normalizeClaudeSetupToken(rawOauth) : null;
   if (oauthToken) {
     env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
   } else {

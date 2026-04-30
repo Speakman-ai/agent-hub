@@ -198,6 +198,26 @@ export function initOrgsDb(): void {
     }
   }
 
+  // Per-user Claude credentials. Lets each Agent Hub user attach their
+  // own Anthropic API key or `claude setup-token` OAuth bearer; spawn
+  // env (`buildSpawnEnv`) prefers the session owner's values and falls
+  // back to the host-wide config.json. Stored as nullable plain TEXT to
+  // match the existing GitHub-OAuth columns above; an at-rest encryption
+  // pass is tracked as a follow-up.
+  const userClaudeColumns: Array<{ name: string; ddl: string }> = [
+    { name: 'anthropic_api_key', ddl: 'TEXT' },
+    { name: 'claude_code_oauth_token', ddl: 'TEXT' },
+    { name: 'claude_code_oauth_expires_at', ddl: 'TEXT' },
+    { name: 'claude_auth_updated_at', ddl: 'TEXT' },
+  ];
+  for (const col of userClaudeColumns) {
+    try {
+      orgsDb.prepare(`SELECT ${col.name} FROM users LIMIT 1`).get();
+    } catch {
+      orgsDb.exec(`ALTER TABLE users ADD COLUMN ${col.name} ${col.ddl}`);
+    }
+  }
+
   orgsStmts = {
     getAll: orgsDb.prepare('SELECT * FROM orgs ORDER BY position ASC, created_at ASC'),
     getById: orgsDb.prepare('SELECT * FROM orgs WHERE id = ?'),
