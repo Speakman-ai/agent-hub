@@ -16,6 +16,7 @@ import CronSchedulePicker from './CronSchedulePicker.jsx';
 import AgentAvatar from './AgentAvatar.jsx';
 import AccountSection from './AccountSection.jsx';
 import GithubConnectionSection from './GithubConnectionSection.jsx';
+import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
 import PoolSection from './PoolSection.jsx';
@@ -1995,8 +1996,11 @@ export function GitHubSection({ onProjectsChange }) {
       <div>
         <h3 className="text-lg font-semibold mb-1">GitHub Settings</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Sign in with your personal GitHub account, then connect a GitHub App for project-level PR
-          review automation. Per-project repo links live on the{' '}
+          Three independent pieces: <span className="text-gray-300">your GitHub account</span>{' '}
+          (sign-in for PR actions), <span className="text-gray-300">an OAuth App</span>{' '}
+          (server-wide; powers &ldquo;Sign in with GitHub&rdquo; without PATs), and{' '}
+          <span className="text-gray-300">a GitHub App</span> (the reviewer bot for formal PR
+          reviews). Per-project repo links live on the{' '}
           <span className="text-gray-300">Projects</span> tab.
         </p>
       </div>
@@ -2005,12 +2009,16 @@ export function GitHubSection({ onProjectsChange }) {
           alongside the App + per-project tabs that depend on it. */}
       <GithubConnectionSection />
 
+      {/* Server-level OAuth App credentials (separate from the GitHub App). */}
+      <PersonalOAuthConfigSection />
+
       {/* GitHub App */}
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <h4 className="text-sm font-medium text-gray-300">GitHub App</h4>
+        <h4 className="text-sm font-medium text-gray-300">GitHub App (Reviewer Bot)</h4>
         <p className="text-xs text-gray-500">
-          One-time setup — connect a GitHub App for PR reviews, auto-merging, and webhook
-          management.
+          One-time setup for the reviewer-bot identity. Posts formal PR reviews, manages webhooks,
+          and (optionally) auto-merges. <strong>Not required</strong> for personal sign-in or
+          per-user PR actions — those use the OAuth App above (or a personal access token).
         </p>
 
         {!appStatus?.configured ? (

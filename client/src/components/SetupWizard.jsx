@@ -14,8 +14,16 @@ import {
 import { getApiBase, getAuthHeaders, saveConnectionConfig } from '../utils/connection.js';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs.js';
 import { testConnection } from '../utils/connection.js';
+import GithubConnectionSection from './GithubConnectionSection.jsx';
+import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 
-const STEP_LABELS = ['Welcome', 'Organization', 'Configure Claude', 'First Project'];
+const STEP_LABELS = [
+  'Welcome',
+  'Organization',
+  'Configure Claude',
+  'Connect GitHub',
+  'First Project',
+];
 
 function StepIndicator({ currentStep }) {
   return (
@@ -785,8 +793,47 @@ export default function SetupWizard({ onComplete, setupStatus }) {
           </div>
         )}
 
-        {/* Step 4: Create First Project */}
+        {/* Step 4: Connect GitHub (optional) */}
         {step === 4 && (
+          <div className="space-y-5">
+            <div className="text-center mb-2">
+              <h1 className="text-xl font-bold text-white mb-1">Connect GitHub</h1>
+              <p className="text-gray-400 text-sm">
+                Link your GitHub account so Agent Hub can list, merge, and comment on your PRs as
+                you. Each user signs in with their own GitHub identity. You can skip this and set it
+                up later from Settings.
+              </p>
+            </div>
+
+            {/* Optional: register an OAuth App so "Sign in with GitHub" works
+                without falling back to a PAT. Skipped by users who don't run
+                the server (the section already shows a Configured state if
+                someone else set it up). */}
+            <PersonalOAuthConfigSection />
+
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+              <GithubConnectionSection embedded />
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setStep(3)}
+                className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
+              >
+                Back
+              </button>
+              <button
+                onClick={() => setStep(5)}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 5: Create First Project */}
+        {step === 5 && (
           <div className="text-center space-y-6">
             <div className="text-gray-300">
               <Rocket size={48} />

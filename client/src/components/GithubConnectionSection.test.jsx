@@ -61,7 +61,7 @@ describe('GithubConnectionSection', () => {
     expect(screen.getByRole('button', { name: /disconnect/i })).toBeInTheDocument();
   });
 
-  it('shows a warning when the server has no OAuth credentials configured', async () => {
+  it('falls back to a personal access token when the server has no OAuth credentials', async () => {
     fetchMock.mockResolvedValueOnce(
       respond({ connected: false, login: null, serverConfigured: false }),
     );
@@ -70,12 +70,11 @@ describe('GithubConnectionSection', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/GitHub OAuth is not configured on this server/i),
+        screen.getByRole('button', { name: /Paste a personal access token/i }),
       ).toBeInTheDocument();
     });
-    // Button should be disabled since server can't complete the flow.
-    const btn = screen.getByRole('button', { name: /Sign in with GitHub/i });
-    expect(btn).toBeDisabled();
+    // OAuth button is hidden (server can't complete that flow); the PAT button takes its place.
+    expect(screen.queryByRole('button', { name: /Sign in with GitHub/i })).toBeNull();
   });
 
   it('disconnects and refetches status on click', async () => {
@@ -104,5 +103,70 @@ describe('GithubConnectionSection', () => {
     expect(confirmSpy).toHaveBeenCalled();
     // status + delete + status = 3 calls
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('saves a personal access token via POST /auth/github/connect-token', async () => {
+    fetchMock
+      // initial status
+      .mockResolvedValueOnce(respond({ connected: false, login: null, serverConfigured: false }))
+      // POST connect-token
+      .mockResolvedValueOnce(respond({ ok: true, login: 'speakmanra' }))
+      // refetch status after save
+      .mockResolvedValueOnce(
+        respond({
+          connected: true,
+          login: 'speakmanra',
+          connectedAt: '2026-04-30T00:00:00.000Z',
+          serverConfigured: false,
+        }),
+      );
+
+    render(<GithubConnectionSection />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /Paste a personal access token/i }),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Paste a personal access token/i }));
+
+    const input = await screen.findByTestId('github-pat-input');
+    fireEvent.change(input, { target: { value: 'ghp_abc123' } });
+    fireEvent.click(screen.getByRole('button', { name: /save token/i }));
+
+    await waitFor(() => expect(screen.getByText('@speakmanra')).toBeInTheDocument());
+
+    // The POST call carries the token in the JSON body.
+    const postCall = fetchMock.mock.calls.find((c) => c[0] === '/api/auth/github/connect-token');
+    expect(postCall).toBeDefined();
+    expect(postCall[1].method).toBe('POST');
+    expect(JSON.parse(postCall[1].body)).toEqual({ token: 'ghp_abc123' });
+  });
+
+  it('surfaces a server-side rejection of an invalid token', async () => {
+    fetchMock
+      .mockResolvedValueOnce(respond({ connected: false, login: null, serverConfigured: false }))
+      .mockResolvedValueOnce(
+        respond({ error: 'Invalid GitHub token (GitHub rejected it)' }, { ok: false, status: 400 }),
+      );
+
+    render(<GithubConnectionSection />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /Paste a personal access token/i }),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Paste a personal access token/i }));
+
+    const input = await screen.findByTestId('github-pat-input');
+    fireEvent.change(input, { target: { value: 'ghp_bogus' } });
+    fireEvent.click(screen.getByRole('button', { name: /save token/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/invalid github token/i)).toBeInTheDocument();
+    });
+    // Still on the input step — token didn't clear, no transition to "connected".
+    expect(screen.queryByText(/connected as/i)).toBeNull();
   });
 });

@@ -291,6 +291,7 @@ const config: AppConfig = {
   defaultReviewer: resolve('AGENT_HUB_DEFAULT_REVIEWER', 'defaultReviewer', null),
   botGithubToken: resolve('AGENT_HUB_BOT_GITHUB_TOKEN', 'botGithubToken', null),
   githubApp: (fileConfig.githubApp as AppConfig['githubApp']) || null,
+  personalOAuth: (fileConfig.personalOAuth as AppConfig['personalOAuth']) || null,
 
   // ── Auth ───────────────────────────────────────────────────────
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),

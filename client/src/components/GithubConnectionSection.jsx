@@ -1,23 +1,40 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Loader2, GitPullRequest, ExternalLink, CheckCircle2, AlertCircle } from 'lucide-react';
+import {
+  Loader2,
+  GitPullRequest,
+  ExternalLink,
+  CheckCircle2,
+  AlertCircle,
+  Key,
+} from 'lucide-react';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
 
 /**
  * GithubConnectionSection — "Sign in with GitHub" UI.
  *
  * Calls:
- *   GET    /api/auth/github/status    — whether the caller is linked
- *   GET    /api/auth/github/start     — returns the authorize URL to redirect to
- *   DELETE /api/auth/github           — disconnect
+ *   GET    /api/auth/github/status        — whether the caller is linked
+ *   GET    /api/auth/github/start         — returns the authorize URL to redirect to
+ *   POST   /api/auth/github/connect-token — paste a PAT (works without server OAuth config)
+ *   DELETE /api/auth/github               — disconnect
+ *
+ * Two paths to connect:
+ *   1. OAuth (preferred when server has githubApp.clientId/clientSecret)
+ *   2. Personal Access Token paste (always works — used during setup, in
+ *      local-only Electron installs, and any time the server hasn't been
+ *      configured with a GitHub App yet).
  *
  * Does NOT interact with the GitHub App install flow — that's a separate
  * per-project concern covered on the project settings page.
  */
-export default function GithubConnectionSection() {
+export default function GithubConnectionSection({ embedded = false } = {}) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [tokenSaving, setTokenSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -60,8 +77,11 @@ export default function GithubConnectionSection() {
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         if (body.code === 'github_oauth_not_configured') {
+          // Pivot to the PAT path automatically — the user can still
+          // sign in without OAuth credentials being configured.
+          setShowTokenInput(true);
           throw new Error(
-            'The server is missing GitHub OAuth credentials. Add a `clientId` and `clientSecret` under `githubApp` in config.json.',
+            'OAuth is not configured on this server. Use a personal access token instead.',
           );
         }
         throw new Error(body.error || `GET /auth/github/start → ${res.status}`);
@@ -72,6 +92,31 @@ export default function GithubConnectionSection() {
       setError(err.message || String(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleSaveToken = async () => {
+    const token = tokenInput.trim();
+    if (!token) return;
+    setTokenSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`${getApiBase()}/auth/github/connect-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ token }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `POST /auth/github/connect-token → ${res.status}`);
+      }
+      setTokenInput('');
+      setShowTokenInput(false);
+      await load();
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setTokenSaving(false);
     }
   };
 
@@ -93,9 +138,11 @@ export default function GithubConnectionSection() {
     }
   };
 
+  const containerClass = embedded ? '' : 'bg-gray-800 rounded-xl p-4';
+
   if (loading) {
     return (
-      <div className="bg-gray-800 rounded-xl p-4">
+      <div className={containerClass}>
         <div className="flex items-center gap-2 text-sm text-gray-400">
           <Loader2 size={14} className="animate-spin" />
           Loading GitHub connection…
@@ -108,18 +155,27 @@ export default function GithubConnectionSection() {
   const serverConfigured = status?.serverConfigured !== false;
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4">
-      <h4 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
-        <GitPullRequest size={14} /> GitHub Account
-      </h4>
+    <div className={containerClass}>
+      {!embedded && (
+        <h4 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
+          <GitPullRequest size={14} /> GitHub Account
+        </h4>
+      )}
 
-      {!serverConfigured && (
+      {!serverConfigured && !connected && !showTokenInput && (
         <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded p-2 mb-3 flex items-start gap-2">
           <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
           <span>
-            GitHub OAuth is not configured on this server. Add <code>clientId</code> and{' '}
-            <code>clientSecret</code> under <code>githubApp</code> in config.json to enable "Sign in
-            with GitHub".
+            OAuth is not configured on this server, but you can still sign in by pasting a{' '}
+            <a
+              href="https://github.com/settings/tokens?type=beta"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-amber-200"
+            >
+              personal access token
+            </a>
+            .
           </span>
         </div>
       )}
@@ -166,15 +222,91 @@ export default function GithubConnectionSection() {
             Link your GitHub account so Agent Hub can list your PRs and merge/close/comment as you.
             No repo install required — just sign in.
           </p>
-          <button
-            onClick={handleConnect}
-            disabled={busy || !serverConfigured}
-            className="flex items-center gap-2 text-sm bg-[#24292f] hover:bg-[#1c2024] disabled:opacity-50 text-white px-4 py-2 rounded-lg transition-colors"
-          >
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <GitPullRequest size={14} />}
-            Sign in with GitHub
-            <ExternalLink size={12} className="opacity-60" />
-          </button>
+
+          {showTokenInput ? (
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-gray-400">
+                Personal access token
+              </label>
+              <input
+                type="password"
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                placeholder="ghp_… or github_pat_…"
+                autoComplete="off"
+                data-1p-ignore
+                data-lpignore="true"
+                data-testid="github-pat-input"
+                className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
+              />
+              <p className="text-[11px] text-gray-500 leading-relaxed">
+                Generate one at{' '}
+                <a
+                  href="https://github.com/settings/tokens?type=beta"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-gray-300"
+                >
+                  github.com/settings/tokens
+                </a>
+                . A fine-grained token with read access to your repositories is enough for PR
+                listing; add <code>contents:write</code> + <code>pull_requests:write</code> if you
+                want merge/comment to work.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveToken}
+                  disabled={!tokenInput.trim() || tokenSaving}
+                  className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  {tokenSaving && <Loader2 size={12} className="animate-spin" />}
+                  {tokenSaving ? 'Saving…' : 'Save token'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTokenInput(false);
+                    setTokenInput('');
+                    setError(null);
+                  }}
+                  disabled={tokenSaving}
+                  className="text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-200 px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {serverConfigured && (
+                <button
+                  onClick={handleConnect}
+                  disabled={busy}
+                  className="flex items-center gap-2 text-sm bg-[#24292f] hover:bg-[#1c2024] disabled:opacity-50 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  {busy ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <GitPullRequest size={14} />
+                  )}
+                  Sign in with GitHub
+                  <ExternalLink size={12} className="opacity-60" />
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setShowTokenInput(true);
+                  setError(null);
+                }}
+                disabled={busy}
+                className="flex items-center gap-2 text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                <Key size={14} />
+                {serverConfigured ? 'Use a token instead' : 'Paste a personal access token'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

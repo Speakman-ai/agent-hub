@@ -45,10 +45,28 @@ interface GithubOAuthState {
   returnTo?: string;
 }
 
+/**
+ * Resolve OAuth credentials for the personal "Sign in with GitHub" flow.
+ *
+ * Order of precedence:
+ *   1. `config.personalOAuth` — the standalone OAuth App. This is the
+ *      decoupled identity: registering it does NOT require creating or
+ *      installing a GitHub App. New installs should put credentials here.
+ *   2. `config.githubApp.clientId/clientSecret` — back-compat fallback for
+ *      installs that completed the App-manifest flow before the split,
+ *      where the same App registration was used for both reviewer and
+ *      personal sign-in. Returns null if neither has both fields.
+ */
 function getOAuthCredentials(config: AppConfig): { clientId: string; clientSecret: string } | null {
+  const personal = config.personalOAuth;
+  if (personal?.clientId && personal?.clientSecret) {
+    return { clientId: personal.clientId, clientSecret: personal.clientSecret };
+  }
   const app = config.githubApp;
-  if (!app?.clientId || !app?.clientSecret) return null;
-  return { clientId: app.clientId, clientSecret: app.clientSecret };
+  if (app?.clientId && app?.clientSecret) {
+    return { clientId: app.clientId, clientSecret: app.clientSecret };
+  }
+  return null;
 }
 
 /**
@@ -340,6 +358,60 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
     if (!uid) return res.status(401).json({ error: 'Not authenticated' });
     deleteGithubConnection(uid);
     return res.json({ ok: true });
+  });
+
+  // ── PAT (Personal Access Token) sign-in ─────────────────────────
+  // Alternative to OAuth for installs that don't have githubApp.clientId
+  // configured (no public URL, local-only Electron, fresh setup wizard
+  // before any GitHub App exists). The user generates a fine-grained or
+  // classic PAT at github.com/settings/tokens, pastes it, we validate it
+  // against /user, and store it per-user in the same `users` columns the
+  // OAuth flow uses. PATs don't have a refresh-token contract, so we
+  // store a far-future expiry that bypasses the refresh path in
+  // getActiveAccessToken; if/when the PAT expires upstream, GitHub
+  // returns 401 to the consumer (PR list etc.) and the user reconnects.
+  router.post('/api/auth/github/connect-token', async (req: Request, res: Response) => {
+    const uid = resolveOAuthUserId(req);
+    if (!uid) return res.status(401).json({ error: 'Not authenticated' });
+
+    const tokenRaw = (req.body as { token?: string } | undefined)?.token;
+    const token = typeof tokenRaw === 'string' ? tokenRaw.trim() : '';
+    if (!token) {
+      return res.status(400).json({ error: 'token is required' });
+    }
+
+    try {
+      const userInfo = await fetchUserInfo({ accessToken: token });
+      const nowMs = Date.now();
+      // ~100 years out — the schema's NOT-NULL constraint on these cols
+      // is satisfied with a sentinel that getActiveAccessToken will see
+      // as "way beyond the refresh safety window" and return the token
+      // directly without attempting a refresh.
+      const farFuture = new Date(nowMs + 100 * 365 * 24 * 60 * 60 * 1000).toISOString();
+      upsertGithubConnection({
+        userId: uid,
+        login: userInfo.login,
+        accessToken: token,
+        tokenExpiresAt: farFuture,
+        // Mirror the access token into the refresh slot as a sentinel —
+        // we never call refreshUserToken for PAT connections (no OAuth
+        // creds are required because the token itself is long-lived),
+        // but the column is NOT NULL.
+        refreshToken: token,
+        refreshExpiresAt: farFuture,
+      });
+      return res.json({ ok: true, login: userInfo.login });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const firstLine = msg.split('\n')[0];
+      // 401 from GitHub means "bad token" — surface that explicitly so
+      // the UI can say "invalid token" instead of a generic 502.
+      if (firstLine.includes('(401)') || firstLine.includes('Bad credentials')) {
+        return res.status(400).json({ error: 'Invalid GitHub token (GitHub rejected it)' });
+      }
+      console.warn(`[github-oauth] connect-token failed: ${firstLine}`);
+      return res.status(502).json({ error: firstLine });
+    }
   });
 
   return router;

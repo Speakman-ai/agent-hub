@@ -12,7 +12,14 @@ import {
   buildAppManifest,
   clearTokenCache,
 } from '../github-app.js';
-import type { RouteDeps, AppConfig, GitHubAppConfig, Project, Stmts } from '../types.js';
+import type {
+  RouteDeps,
+  AppConfig,
+  GitHubAppConfig,
+  PersonalOAuthConfig,
+  Project,
+  Stmts,
+} from '../types.js';
 import { refreshShellPath, getCachedShellPath } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { parseCursorStatusJson } from '../cursor-auth-parse.js';
@@ -26,6 +33,7 @@ interface FileConfig {
   geminiBin?: string;
   codexBin?: string;
   githubApp?: GitHubAppConfig;
+  personalOAuth?: PersonalOAuthConfig;
   [key: string]: unknown;
 }
 
@@ -275,6 +283,12 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             installations: config.githubApp.installations || [],
           }
         : null,
+      personalOAuth: config.personalOAuth
+        ? {
+            configured: !!(config.personalOAuth.clientId && config.personalOAuth.clientSecret),
+            clientId: config.personalOAuth.clientId || null,
+          }
+        : { configured: false, clientId: null },
       botGithubToken: config.botGithubToken ? '••••••••' : '',
       botGithubTokenSet: !!config.botGithubToken,
       botGithubUser: getGhBotUser() || null,
@@ -432,6 +446,75 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     } catch (err: unknown) {
       res.status(500).json({ error: (err as Error).message });
     }
+  });
+
+  // ─── Personal GitHub OAuth App ─────────────────────────────────────────────
+  // Decoupled from the GitHub App (which is reviewer-bot-only). This is the
+  // OAuth App registration users sign in with for personal-identity actions
+  // (push, open PRs, query repos as themselves). Never installed; just an
+  // OAuth client_id / client_secret pair.
+
+  router.get('/api/config/personal-oauth', (_req: Request, res: Response) => {
+    const personal = config.personalOAuth;
+    const configured = !!(personal?.clientId && personal?.clientSecret);
+    res.json({
+      configured,
+      clientId: personal?.clientId || null,
+    });
+  });
+
+  router.put('/api/config/personal-oauth', (req: Request, res: Response) => {
+    const { clientId, clientSecret } = req.body as {
+      clientId?: unknown;
+      clientSecret?: unknown;
+    };
+    if (typeof clientId !== 'string' || !clientId.trim()) {
+      return res.status(400).json({ error: 'clientId is required' });
+    }
+    if (typeof clientSecret !== 'string' || !clientSecret.trim()) {
+      return res.status(400).json({ error: 'clientSecret is required' });
+    }
+
+    const personalOAuth: PersonalOAuthConfig = {
+      clientId: clientId.trim(),
+      clientSecret: clientSecret.trim(),
+    };
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    fileConfig.personalOAuth = personalOAuth;
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    config.personalOAuth = personalOAuth;
+    console.log(`[Personal OAuth] Configured (clientId: ${personalOAuth.clientId})`);
+
+    res.json({
+      ok: true,
+      configured: true,
+      clientId: personalOAuth.clientId,
+    });
+  });
+
+  router.delete('/api/config/personal-oauth', (_req: Request, res: Response) => {
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    delete fileConfig.personalOAuth;
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    config.personalOAuth = null;
+    console.log('[Personal OAuth] Configuration removed');
+
+    res.json({ ok: true });
   });
 
   // ─── GitHub App Setup (Manifest Flow) ──────────────────────────────────────

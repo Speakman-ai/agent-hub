@@ -36,6 +36,7 @@ function makeConfig(): AppConfig {
     defaultReviewer: null,
     botGithubToken: null,
     githubApp: null,
+    personalOAuth: null,
     apiKey: null,
     anthropicApiKey: null,
     claudeCodeOAuthToken: null,

@@ -446,3 +446,107 @@ describe('DELETE /api/auth/github', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('POST /api/auth/github/connect-token', () => {
+  beforeEach(() => freshEnv());
+
+  it('401s when unauthenticated', async () => {
+    const app = makeApp(buildDeps());
+    const res = await request(app)
+      .post('/api/auth/github/connect-token')
+      .send({ token: 'ghp_xxx' });
+    expect(res.status).toBe(401);
+  });
+
+  it('400s when token is missing', async () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const app = makeApp(buildDeps(), { authUserId: user.id });
+    const res = await request(app).post('/api/auth/github/connect-token').send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('400s when token is empty string', async () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const app = makeApp(buildDeps(), { authUserId: user.id });
+    const res = await request(app).post('/api/auth/github/connect-token').send({ token: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('persists the PAT under the caller and returns the login', async () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    mockFetchUser.mockResolvedValueOnce({
+      id: 7,
+      login: 'speakmanra',
+      name: null,
+      avatar_url: null,
+      email: null,
+    });
+    const app = makeApp(buildDeps(), { authUserId: user.id });
+    const res = await request(app)
+      .post('/api/auth/github/connect-token')
+      .send({ token: 'ghp_realPAT' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, login: 'speakmanra' });
+
+    const stored = getGithubConnection(user.id);
+    expect(stored?.login).toBe('speakmanra');
+    expect(stored?.accessToken).toBe('ghp_realPAT');
+    // PATs use a far-future expiry — must be > now + a year so the active
+    // token resolver returns it directly without trying to refresh.
+    expect(Date.parse(stored!.tokenExpiresAt) - Date.now()).toBeGreaterThan(
+      365 * 24 * 60 * 60 * 1000,
+    );
+  });
+
+  it('returns 400 with a friendly message when GitHub rejects the token', async () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    mockFetchUser.mockRejectedValueOnce(
+      new Error('GitHub /user fetch failed (401): Bad credentials'),
+    );
+    const app = makeApp(buildDeps(), { authUserId: user.id });
+    const res = await request(app)
+      .post('/api/auth/github/connect-token')
+      .send({ token: 'ghp_bogus' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/invalid github token/i);
+  });
+
+  it('works under local-org bypass (lazily provisions the synthetic user)', async () => {
+    mockFetchUser.mockResolvedValueOnce({
+      id: 1,
+      login: 'localuser',
+      name: null,
+      avatar_url: null,
+      email: null,
+    });
+    const app = makeApp(buildDeps(), {
+      authLocalOrgBypass: true,
+      authOrgId: 'default',
+    });
+    const res = await request(app)
+      .post('/api/auth/github/connect-token')
+      .send({ token: 'ghp_local' });
+    expect(res.status).toBe(200);
+    expect(res.body.login).toBe('localuser');
+  });
+
+  it('works even when server-side OAuth creds are not configured (key benefit of PAT path)', async () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    mockFetchUser.mockResolvedValueOnce({
+      id: 1,
+      login: 'pat-user',
+      name: null,
+      avatar_url: null,
+      email: null,
+    });
+    // No githubApp configured — OAuth flow would 503 here, but PAT flow works.
+    const app = makeApp(buildDeps({ config: { githubApp: null } }), {
+      authUserId: user.id,
+    });
+    const res = await request(app)
+      .post('/api/auth/github/connect-token')
+      .send({ token: 'ghp_xxx' });
+    expect(res.status).toBe(200);
+    expect(getGithubConnection(user.id)?.login).toBe('pat-user');
+  });
+});

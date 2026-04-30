@@ -155,11 +155,17 @@ async function callApp<T>(config: AppConfig, owner: string, path: string): Promi
 export async function resolveUserToken(req: Request, config: AppConfig): Promise<string | null> {
   const areq = req as AuthenticatedRequest;
   if (!areq.authUserId) return null;
+  // Prefer the standalone OAuth App; fall back to the GitHub App's
+  // OAuth credentials for back-compat with installs that completed the
+  // App-manifest flow before the personal/reviewer split.
+  const personal = config.personalOAuth;
   const app = config.githubApp;
   const creds =
-    app?.clientId && app?.clientSecret
-      ? { clientId: app.clientId, clientSecret: app.clientSecret }
-      : null;
+    personal?.clientId && personal?.clientSecret
+      ? { clientId: personal.clientId, clientSecret: personal.clientSecret }
+      : app?.clientId && app?.clientSecret
+        ? { clientId: app.clientId, clientSecret: app.clientSecret }
+        : null;
   return getActiveAccessToken(areq.authUserId, creds);
 }
 

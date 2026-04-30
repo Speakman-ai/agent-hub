@@ -1319,10 +1319,39 @@ export interface GitHubAppConfig {
   appSlug?: string;
   privateKey: string;
   webhookSecret?: string;
+  /**
+   * @deprecated Prefer `AppConfig.personalOAuth` for user-to-server OAuth.
+   * GitHub Apps can issue user tokens via these credentials, but the App
+   * is conceptually the *reviewer-bot* identity (installable on repos),
+   * not the personal-sign-in identity. Older installs that completed the
+   * App-manifest flow before the split keep working: github-oauth.ts
+   * falls back to `githubApp.clientId/Secret` when `personalOAuth` is
+   * unset. New installs should register a standalone OAuth App at
+   * github.com/settings/applications/new and put its credentials under
+   * `personalOAuth` instead.
+   */
   clientId?: string;
+  /** @deprecated See clientId. */
   clientSecret?: string;
   installationId?: number;
   installations?: Array<{ id: number; account: string; accountType: string }>;
+}
+
+/**
+ * Standalone GitHub OAuth App credentials — the personal-sign-in identity.
+ *
+ * Distinct from `GitHubAppConfig` (which is for the installable reviewer
+ * bot). A user does NOT need to create or install a GitHub App to sign
+ * in with their GitHub account — they only need a `client_id`/`client_secret`
+ * from a plain OAuth App registration at github.com/settings/applications/new.
+ *
+ * The reviewer feature is the only thing that genuinely needs a GitHub
+ * App; everything else (PR list, push, comment, merge, open PR) is
+ * user-to-server and goes through this OAuth App.
+ */
+export interface PersonalOAuthConfig {
+  clientId: string;
+  clientSecret: string;
 }
 
 export interface AppConfig {
@@ -1360,6 +1389,14 @@ export interface AppConfig {
   defaultReviewer: string | null;
   botGithubToken: string | null;
   githubApp: GitHubAppConfig | null;
+  /**
+   * Standalone OAuth App credentials for personal "Sign in with GitHub".
+   * Decoupled from `githubApp` so users can link their GitHub identity
+   * without creating or installing the reviewer-bot App. When unset,
+   * `github-oauth.ts` falls back to `githubApp.clientId/Secret` for
+   * back-compat with installs that completed the manifest flow first.
+   */
+  personalOAuth: PersonalOAuthConfig | null;
   apiKey: string | null;
   anthropicApiKey: string | null;
   /** From `claude setup-token`; applied as CLAUDE_CODE_OAUTH_TOKEN on spawns. */
