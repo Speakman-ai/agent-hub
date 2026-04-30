@@ -562,23 +562,79 @@ export function resolveSlashSkill(
 // ─── PR title / body formatting ─────────────────────────────────────
 
 /**
+ * Reject commit subjects that don't describe meaningful work — fixup/squash
+ * markers, "wip", purely-mechanical lint/format/typo commits. These are not
+ * useful as PR titles even if they are the only commits on the branch.
+ */
+const GENERIC_COMMIT_PATTERNS: RegExp[] = [
+  /^(wip|tmp|temp)\b/i,
+  // fixup!/squash!/amend! markers — `\b` after `!` doesn't fire (non-word
+  // boundary), so anchor on the optional space directly.
+  /^(fixup|squash|amend)!\s/i,
+  // Conventional-commit-style "fix typo" / "chore: format" / "test: lint" etc.
+  /^(fix|chore|style|test|docs|build|ci)(\(.*\))?:\s*(typo|typos|lint|format|formatting|whitespace|tidy|cleanup|cleanups)\b/i,
+  // Non-prefixed mechanical commits ("fix typo", "fix lint", "tidy imports").
+  /^(fix|update)\s+(typo|typos|lint|format|formatting|whitespace|imports?|test\s+name)\b/i,
+  /^(tidy|cleanup|format(ting)?|prettier|eslint)\b/i,
+  /^merge\s+(branch|pull request|remote)/i,
+  /^revert\s+/i,
+];
+
+function isGenericCommitSubject(subject: string): boolean {
+  return GENERIC_COMMIT_PATTERNS.some((re) => re.test(subject));
+}
+
+/**
+ * Pick the most descriptive commit subject from a branch's commit list to use
+ * as the PR title. Returns null if every commit looks generic / non-descriptive
+ * (in which case the caller should fall back to the card / session title).
+ *
+ * Commits are expected newest-first (the order `git log main..HEAD` returns).
+ * We prefer the newest non-generic subject — it usually reflects the final
+ * shape of the change after any fixups.
+ */
+export function pickPrTitleFromCommits(commits: string[] | undefined): string | null {
+  if (!commits) return null;
+  for (const raw of commits) {
+    const subject = (raw ?? '').trim();
+    if (!subject) continue;
+    if (isGarbageTitle(subject)) continue;
+    if (isGenericCommitSubject(subject)) continue;
+    return subject;
+  }
+  return null;
+}
+
+/**
  * Turn a raw commit/card title into a clean PR title.
  *
+ * - When `commits` is supplied and contains at least one descriptive commit
+ *   subject, that subject wins — commit messages describe what was *done*,
+ *   while card / session titles often capture what was *asked* (and may be a
+ *   long problem statement that gets truncated mid-word at the 70-char cap).
+ * - Otherwise falls back to `rawTitle`.
  * - Collapses whitespace, trims trailing punctuation.
  * - Sentence-cases the first letter (unless it's already uppercased).
  * - Hard-caps at 70 chars, preferring a word boundary and appending an
  *   ellipsis (`…`) rather than `...` mid-word.
  */
-export function buildPrTitle(rawTitle: string): string {
-  const normalized = (rawTitle ?? '').replace(/\s+/g, ' ').trim();
+export function buildPrTitle(rawTitle: string, commits?: string[]): string {
+  const fromCommit = pickPrTitleFromCommits(commits);
+  const source = fromCommit ?? rawTitle;
+  const normalized = (source ?? '').replace(/\s+/g, ' ').trim();
   if (!normalized) return 'Untitled change';
 
   // Strip trailing punctuation/whitespace (GitHub convention: no period).
   let t = normalized.replace(/[.!?:;,\s]+$/, '');
 
   // Sentence-case the first letter if it's a lowercase ASCII letter. Leave
-  // existing capitalization alone for acronyms / scoped prefixes like `fix:`.
-  if (/^[a-z]/.test(t)) {
+  // existing capitalization alone for acronyms / scoped prefixes like `Fix:`,
+  // and preserve lowercase Conventional Commits prefixes (feat:, fix:,
+  // chore:, docs:, refactor:, test:, build:, ci:, perf:, style:, revert:)
+  // since the spec — and most repos following it — expect lowercase.
+  const CONVENTIONAL_COMMIT =
+    /^(feat|fix|chore|docs|refactor|test|build|ci|perf|style|revert)(\(.+?\))?!?:\s/i;
+  if (/^[a-z]/.test(t) && !CONVENTIONAL_COMMIT.test(t)) {
     t = t.charAt(0).toUpperCase() + t.slice(1);
   }
 
@@ -604,11 +660,16 @@ export interface PrBodyInput {
  * Render a clean, readable PR body:
  *
  *   ## Summary
- *   <card description OR "Task completed by <agent>.">
+ *   <commit subject(s) when present — describes what was DONE>
+ *   <else card description — describes what was ASKED>
+ *   <else "Task completed by <agent>.">
  *
- *   ## Commits   (only when >1 commit — one commit is already the title)
+ *   ## Commits   (only when >1 commit — one commit is already the summary)
  *   - commit subject
  *   - ...
+ *
+ *   ## Original task   (only when commits drove the summary AND a card description exists)
+ *   <card description, indented as a quote>
  *
  *   ## Files changed   (only when a diffstat is available)
  *   ```
@@ -627,14 +688,31 @@ export function buildPrBody(input: PrBodyInput): string {
   const { card, agentName, commits, diffStat } = input;
   const sections: string[] = [];
 
-  // Summary — card description if we have one, else a generic marker.
+  // Summary — prefer the agent's commit subject(s) over the card description.
+  // Commit subjects describe what was *done*; card descriptions describe what
+  // was *asked* — and the card description is preserved below as origin
+  // context. Falls back to the card description, then to a generic marker.
+  const commitList = (commits ?? []).map((c) => c.trim()).filter(Boolean);
+  const cardDescription = card?.description?.trim() || '';
+  const commitDrivenSummary = commitList.length > 0;
+  let summary: string;
+  if (commitList.length === 1) {
+    summary = commitList[0];
+  } else if (commitList.length > 1) {
+    // For multi-commit branches the bulleted ## Commits section below renders
+    // the full list; here in Summary we surface a one-line lede so the PR is
+    // skimmable. Prefer the most recent (newest-first) descriptive subject.
+    summary = pickPrTitleFromCommits(commitList) ?? commitList[0];
+  } else if (cardDescription) {
+    summary = cardDescription;
+  } else {
+    summary = `Task completed by ${agentName}.`;
+  }
   sections.push('## Summary');
-  const summary = card?.description?.trim() || `Task completed by ${agentName}.`;
   sections.push(summary);
 
   // Commits — only list when there's more than one, otherwise the single
-  // commit subject is already the PR title and listing it is noise.
-  const commitList = (commits ?? []).filter((c) => c.trim());
+  // commit subject is already the summary and listing it is noise.
   if (commitList.length > 1) {
     sections.push('');
     sections.push('## Commits');
@@ -644,6 +722,16 @@ export function buildPrBody(input: PrBodyInput): string {
     if (commitList.length > MAX_COMMITS) {
       sections.push(`- …and ${commitList.length - MAX_COMMITS} more`);
     }
+  }
+
+  // Original task — preserve the card description (problem statement) as
+  // origin context, but only when commits already drove the Summary above.
+  // Without this, the long user-prose card description would either be the
+  // Summary (wrong — it's the problem, not the solution) or be lost entirely.
+  if (commitDrivenSummary && cardDescription) {
+    sections.push('');
+    sections.push('## Original task');
+    sections.push(cardDescription);
   }
 
   // Files changed — render the git diff --stat output verbatim in a code
@@ -1109,11 +1197,13 @@ async function commitPushAndCreatePR(
       );
     }
 
-    const prTitle = buildPrTitle(commitTitle);
     const [commits, diffStat] = await Promise.all([
       collectCommitSubjects(effectiveCwd),
       collectDiffStat(effectiveCwd),
     ]);
+    // Pass commits into buildPrTitle so the agent's actual commit subject(s)
+    // win over the card / session title — see buildPrTitle JSDoc for why.
+    const prTitle = buildPrTitle(commitTitle, commits);
     const prBody = buildPrBody({
       card,
       agentName: agent.name,

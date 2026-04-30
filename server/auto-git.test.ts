@@ -1898,6 +1898,50 @@ describe('buildPrTitle', () => {
     expect(prTitle).not.toMatch(/\d{1,2}:\d{2}/);
     expect(prTitle).not.toMatch(/ — /);
   });
+
+  // ─── Commit-subject preference (regression for PR #718) ──────────────
+  // PR #718 had excellent commit subjects ("feat: per-user GitHub login via
+  // PAT + setup-wizard step") but the PR title was the truncated user
+  // request used as the kanban card title ("Need a way to login to github.
+  // Also need to do this during s"). buildPrTitle must prefer the commit
+  // subject when one is available so PR titles describe the *change*, not
+  // the original problem statement.
+
+  it('prefers a descriptive commit subject over the card / session title', () => {
+    const cardTitle = 'Need a way to login to github. Also need to do this during s';
+    const commits = ['feat: per-user GitHub login via PAT + setup-wizard step'];
+    expect(buildPrTitle(cardTitle, commits)).toBe(
+      'feat: per-user GitHub login via PAT + setup-wizard step',
+    );
+  });
+
+  it('uses the newest descriptive commit when multiple are present', () => {
+    const cardTitle = 'Some long question from the user';
+    const commits = [
+      'feat: decouple personal GitHub OAuth from the GitHub App',
+      'feat: per-user GitHub login via PAT + setup-wizard step',
+    ];
+    expect(buildPrTitle(cardTitle, commits)).toBe(
+      'feat: decouple personal GitHub OAuth from the GitHub App',
+    );
+  });
+
+  it('skips generic commit subjects (wip, fixup!, "chore: format") and tries the next', () => {
+    const cardTitle = 'Fallback card title';
+    const commits = ['wip: still poking at this', 'fixup! earlier work', 'feat: add export button'];
+    expect(buildPrTitle(cardTitle, commits)).toBe('feat: add export button');
+  });
+
+  it('falls back to the card / session title when every commit looks generic', () => {
+    const cardTitle = 'Add export button to dashboard';
+    const commits = ['wip', 'chore: format', 'fix typo'];
+    expect(buildPrTitle(cardTitle, commits)).toBe('Add export button to dashboard');
+  });
+
+  it('falls back to the card / session title when commits is empty / undefined', () => {
+    expect(buildPrTitle('Add dark mode support', [])).toBe('Add dark mode support');
+    expect(buildPrTitle('Add dark mode support', undefined)).toBe('Add dark mode support');
+  });
 });
 
 describe('buildPrBody', () => {
@@ -1914,7 +1958,7 @@ describe('buildPrBody', () => {
     expect(body).not.toContain('## Files changed');
   });
 
-  it('uses the card description as the summary when present', () => {
+  it('uses the card description as the summary when no commits are available', () => {
     const card = {
       id: 'c1',
       description: 'Fix the login crash when email is empty',
@@ -1923,22 +1967,51 @@ describe('buildPrBody', () => {
     expect(body).toContain('## Summary');
     expect(body).toContain('Fix the login crash when email is empty');
     expect(body).not.toContain(`Task completed by ${agentName}.`);
+    // No commits → no "## Original task" duplication of the description.
+    expect(body).not.toContain('## Original task');
+  });
+
+  it('prefers the commit subject for Summary over the card description (regression for PR #718)', () => {
+    const card = {
+      id: 'c1',
+      description: 'Need a way to login to github. Also need to do this during setup.',
+    } as never;
+    const body = buildPrBody({
+      agentName,
+      card,
+      commits: ['feat: per-user GitHub login via PAT + setup-wizard step'],
+    });
+    // Summary is the commit subject (what was done).
+    expect(body).toMatch(/## Summary\nfeat: per-user GitHub login via PAT \+ setup-wizard step/);
+    // Card description preserved as origin context.
+    expect(body).toContain('## Original task');
+    expect(body).toContain('Need a way to login to github. Also need to do this during setup.');
   });
 
   it('omits the Commits section when only one commit is present', () => {
     const body = buildPrBody({ agentName, commits: ['Fix login'] });
     expect(body).not.toContain('## Commits');
+    // The single commit IS the Summary.
+    expect(body).toMatch(/## Summary\nFix login/);
   });
 
-  it('lists commits when there are multiple, newest first', () => {
+  it('lists commits when there are multiple, with a one-line lede in Summary', () => {
     const body = buildPrBody({
       agentName,
       commits: ['Fix null pointer', 'Add regression test', 'Tidy imports'],
     });
+    // Summary picks the most recent descriptive subject.
+    expect(body).toMatch(/## Summary\nFix null pointer/);
+    // ## Commits lists every subject for full visibility.
     expect(body).toContain('## Commits');
     expect(body).toContain('- Fix null pointer');
     expect(body).toContain('- Add regression test');
     expect(body).toContain('- Tidy imports');
+  });
+
+  it('omits "## Original task" when no card description is present', () => {
+    const body = buildPrBody({ agentName, commits: ['Fix login crash'] });
+    expect(body).not.toContain('## Original task');
   });
 
   it('caps the commit list at 20 entries with an overflow note', () => {
