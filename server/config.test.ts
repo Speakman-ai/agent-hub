@@ -226,3 +226,115 @@ describe('config.ts — cursor-agent model merge (config.json load path)', () =>
     expect(mod.default.engineDefaultModels['cursor-agent']).toBe('composer-2');
   });
 });
+
+describe('config.ts — CLI binary auto-detection (pickBin)', () => {
+  // Use an isolated tmp data dir so a developer's local
+  // ~/.agent-hub/data/config.json overrides cannot influence these tests.
+  function freshDataDir(label: string): string {
+    return path.join(
+      os.tmpdir(),
+      `agent-hub-pickbin-${label}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+  }
+
+  it('findBinaryInDirs returns the first existing path.join(dir, name)', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('finddirs');
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-finddirs-'));
+    const dirA = path.join(tmpRoot, 'a');
+    const dirB = path.join(tmpRoot, 'b');
+    fs.mkdirSync(dirA, { recursive: true });
+    fs.mkdirSync(dirB, { recursive: true });
+    fs.writeFileSync(path.join(dirB, 'mybin'), '#!/bin/sh\n', { mode: 0o755 });
+
+    const mod = await import('./config.js');
+    expect(mod.findBinaryInDirs('mybin', [dirA, dirB])).toBe(path.join(dirB, 'mybin'));
+    expect(mod.findBinaryInDirs('mybin', [dirA])).toBeNull();
+    // Empty/falsy dirs are skipped without throwing.
+    expect(mod.findBinaryInDirs('mybin', ['', dirB])).toBe(path.join(dirB, 'mybin'));
+
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('pickBin honors a valid env override above everything else', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('envwins');
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-envwins-'));
+    const envBin = path.join(tmpRoot, 'env-claude');
+    const onPathDir = path.join(tmpRoot, 'pathdir');
+    fs.mkdirSync(onPathDir, { recursive: true });
+    fs.writeFileSync(envBin, '#!/bin/sh\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(onPathDir, 'claude'), '#!/bin/sh\n', { mode: 0o755 });
+
+    process.env.MY_TEST_BIN = envBin;
+    process.env.PATH = `${onPathDir}:${process.env.PATH ?? ''}`;
+
+    const mod = await import('./config.js');
+    expect(mod.pickBin('claude', 'MY_TEST_BIN', 'claudeBin', '/should/not/use')).toBe(envBin);
+
+    delete process.env.MY_TEST_BIN;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('pickBin falls back to PATH walk when env/config are unset', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('pathwalk');
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-pathwalk-'));
+    const pathDir = path.join(tmpRoot, 'pathdir');
+    fs.mkdirSync(pathDir, { recursive: true });
+    const expected = path.join(pathDir, 'walkbin');
+    fs.writeFileSync(expected, '#!/bin/sh\n', { mode: 0o755 });
+
+    delete process.env.MY_WALKBIN;
+    process.env.PATH = `${pathDir}:${process.env.PATH ?? ''}`;
+
+    const mod = await import('./config.js');
+    expect(mod.pickBin('walkbin', 'MY_WALKBIN', 'walkbinBin', '/should/not/use')).toBe(expected);
+
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('pickBin returns the static fallback when nothing is found anywhere', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('fallback');
+
+    delete process.env.NEVER_BIN;
+    // Use a binary name guaranteed not to exist on PATH or in common dirs.
+    const garbageName = `nonexistent-binary-${Math.random().toString(36).slice(2)}`;
+    const fallback = '/var/lib/should-not-exist';
+
+    const mod = await import('./config.js');
+    expect(mod.pickBin(garbageName, 'NEVER_BIN', 'neverBin', fallback)).toBe(fallback);
+  });
+
+  it('pickBin warns and continues searching when a configured path no longer exists', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('staleconfig');
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-staleconfig-'));
+    const pathDir = path.join(tmpRoot, 'pathdir');
+    fs.mkdirSync(pathDir, { recursive: true });
+    const realBin = path.join(pathDir, 'gemini');
+    fs.writeFileSync(realBin, '#!/bin/sh\n', { mode: 0o755 });
+
+    process.env.STALE_BIN = '/this/path/does/not/exist/gemini';
+    process.env.PATH = `${pathDir}:${process.env.PATH ?? ''}`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const mod = await import('./config.js');
+    expect(mod.pickBin('gemini', 'STALE_BIN', 'geminiBin', '/should/not/use')).toBe(realBin);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('geminiBin'));
+
+    warn.mockRestore();
+    delete process.env.STALE_BIN;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+});

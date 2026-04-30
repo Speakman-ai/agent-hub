@@ -148,26 +148,78 @@ const mergedEngineDefaultModelsRaw =
 const mergedEngineDefaultModels = { ...mergedEngineDefaultModelsRaw };
 
 /**
- * Prefer a real `claude` on disk. Many installs land at ~/.local/bin/claude (pip/npm)
- * while config.json still points at /usr/local/bin/claude or Homebrew paths that
- * don't exist on this machine — OAuth then runs the wrong binary or nothing useful.
+ * Common install directories used as the last-resort search list when a binary
+ * is not on $PATH. Covers the typical landing spots for per-user installers
+ * (pip/npm/bun), Homebrew (Apple Silicon and Intel), and legacy /usr/local.
  */
-function pickClaudeBin(): string {
-  const envBin = process.env.CLAUDE_BIN?.trim();
-  const fileBin =
-    typeof fileConfig.claudeBin === 'string' ? (fileConfig.claudeBin as string).trim() : '';
+const COMMON_BIN_DIRS: string[] = [
+  path.join(HOME, '.local', 'bin'),
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  path.join(HOME, '.bun', 'bin'),
+  path.join(HOME, '.npm-global', 'bin'),
+];
+
+/**
+ * Walk `dirs` in order and return the first `path.join(dir, name)` that exists
+ * on disk. Exported for unit tests.
+ */
+export function findBinaryInDirs(name: string, dirs: readonly string[]): string | null {
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const candidate = path.join(dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Resolve a CLI binary path with auto-detection.
+ *
+ * Priority:
+ *   1. Environment variable (`envKey`) if set and the path exists
+ *   2. `config.json` value (`fileKey`) if set and the path exists
+ *   3. PATH walk — every dir in the merged spawn PATH (login-shell + process)
+ *   4. Common install directories (~/.local/bin, /opt/homebrew/bin, etc.)
+ *   5. `staticFallback` — the historical default; what we hand back even if
+ *      nothing exists, so downstream code surfaces a meaningful "not found"
+ *      error instead of an empty string.
+ *
+ * A configured-but-missing env/config value emits a warning and continues with
+ * the search instead of returning the broken path. This is important on fresh
+ * machines where the user's existing config.json points at a path that no
+ * longer exists (e.g. /usr/local/bin/claude vs the new ~/.local/bin/claude).
+ *
+ * Exported for unit tests (the production call sites are all in this file).
+ */
+export function pickBin(
+  binaryName: string,
+  envKey: string,
+  fileKey: string,
+  staticFallback: string,
+): string {
+  const envBin = process.env[envKey]?.trim();
+  const rawFileBin = fileConfig[fileKey];
+  const fileBin = typeof rawFileBin === 'string' ? rawFileBin.trim() : '';
   const candidate = envBin || fileBin || '';
   if (candidate && existsSync(candidate)) return candidate;
-  if (candidate && !existsSync(candidate)) {
-    console.warn(`[config] claudeBin "${candidate}" not found — using first existing default`);
+  if (candidate) {
+    console.warn(
+      `[config] ${fileKey} "${candidate}" not found — searching PATH and common dirs for "${binaryName}"`,
+    );
   }
-  const localUser = path.join(HOME, '.local', 'bin', 'claude');
-  if (existsSync(localUser)) return localUser;
-  const brewArm = '/opt/homebrew/bin/claude';
-  if (existsSync(brewArm)) return brewArm;
-  const legacy = '/usr/local/bin/claude';
-  if (existsSync(legacy)) return legacy;
-  return localUser;
+  // PATH walk — covers anything reachable via the merged spawn PATH, which
+  // already includes the login-shell PATH (so newly installed CLIs like a
+  // freshly `npm i -g @google/gemini-cli` are visible without a server
+  // restart, modulo the shell-path cache).
+  const pathDirs = resolveSpawnPath(process.env.PATH).split(path.delimiter);
+  const onPath = findBinaryInDirs(binaryName, pathDirs);
+  if (onPath) return onPath;
+  // Common install dirs — last-ditch probe in case PATH is unusually sparse
+  // (minimal Docker images, systemd units with empty PATH, etc.).
+  const onCommon = findBinaryInDirs(binaryName, COMMON_BIN_DIRS);
+  if (onCommon) return onCommon;
+  return staticFallback;
 }
 const cursorAllowed = mergedEngineValidModels['cursor-agent'] || [];
 if (!cursorAllowed.includes(mergedEngineDefaultModels['cursor-agent'])) {
@@ -180,19 +232,25 @@ const config: AppConfig = {
   host: resolve('AGENT_HUB_HOST', 'host', '0.0.0.0') as string,
 
   // ── CLI binary paths ───────────────────────────────────────────
-  // cursorBin default tracks the path used by Cursor's official per-user
-  // installer (https://cursor.com/install), which drops a symlink at
-  // $HOME/.local/bin/agent. Aligning the default here means a fresh box
-  // with just the installer run (and no config.json override) works out
-  // of the box — no sudo symlink into /usr/local/bin required.
-  claudeBin: pickClaudeBin(),
-  cursorBin: resolve(
-    'CURSOR_BIN',
-    'cursorBin',
-    path.join(HOME, '.local', 'bin', 'agent'),
-  ) as string,
-  geminiBin: resolve('GEMINI_BIN', 'geminiBin', '/usr/local/bin/gemini') as string,
-  codexBin: resolve('CODEX_BIN', 'codexBin', '/usr/local/bin/codex') as string,
+  // All four engines auto-detect via `pickBin`: env override → config.json →
+  // PATH walk → common install dirs → static fallback. The static fallbacks
+  // below match the historical defaults so existing config.json files keep
+  // working unchanged.
+  //
+  // cursorBin uses the binary name "agent" (not "cursor") because Cursor's
+  // official per-user installer (https://cursor.com/install) drops a symlink
+  // at $HOME/.local/bin/agent. The static fallback also tracks that path so
+  // a fresh box with just the installer run works out of the box — no sudo
+  // symlink into /usr/local/bin required.
+  claudeBin: pickBin(
+    'claude',
+    'CLAUDE_BIN',
+    'claudeBin',
+    path.join(HOME, '.local', 'bin', 'claude'),
+  ),
+  cursorBin: pickBin('agent', 'CURSOR_BIN', 'cursorBin', path.join(HOME, '.local', 'bin', 'agent')),
+  geminiBin: pickBin('gemini', 'GEMINI_BIN', 'geminiBin', '/usr/local/bin/gemini'),
+  codexBin: pickBin('codex', 'CODEX_BIN', 'codexBin', '/usr/local/bin/codex'),
 
   // ── Directories ────────────────────────────────────────────────
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME) as string,
