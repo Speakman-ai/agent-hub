@@ -1,11 +1,14 @@
 import { Router, Request, Response } from 'express';
-import { execSync, spawn, ChildProcess } from 'child_process';
+import { execSync, spawn, ChildProcess, exec } from 'child_process';
+import { promisify } from 'util';
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
 import { buildSpawnEnv } from '../config.js';
+
+const execAsync = promisify(exec);
 import type {
   RouteDeps,
   Agent,
@@ -384,6 +387,112 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     if (!project) return res.status(404).json({ error: 'Project not found' });
     res.json(project);
   });
+
+  // ─── Branch listing for the PR base-branch picker ─────────────────
+  //
+  // Cards can override the PR base branch (via `pr_base_branch`). The card
+  // configuration UI needs to list every branch the project's git remote
+  // knows about — including feature branches that don't exist locally — so
+  // users can target stacked / dependent PRs.
+  //
+  // Strategy: shell out to `git ls-remote --heads origin` from the project
+  // cwd. This works for any GitHub-connected project whose repo is checked
+  // out at `project.cwd`, regardless of whether the GitHub App is installed.
+  // The result is cached briefly per-project to avoid hammering the remote
+  // when the picker re-opens.
+  interface BranchListEntry {
+    name: string;
+    isDefault: boolean;
+  }
+  interface BranchCacheEntry {
+    branches: BranchListEntry[];
+    fetchedAt: number;
+  }
+  const BRANCH_CACHE_TTL_MS = 30_000;
+  const branchCache = new Map<string, BranchCacheEntry>();
+
+  router.get(
+    '/api/projects/:projectId/branches',
+    async (req: Request, res: Response): Promise<void> => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      if (!project.cwd || !existsSync(project.cwd)) {
+        res.status(400).json({ error: 'Project cwd is missing or does not exist on disk' });
+        return;
+      }
+
+      const force = req.query.refresh === '1' || req.query.refresh === 'true';
+      const cached = branchCache.get(project.id);
+      if (!force && cached && Date.now() - cached.fetchedAt < BRANCH_CACHE_TTL_MS) {
+        res.json({ branches: cached.branches, cached: true });
+        return;
+      }
+
+      try {
+        // Confirm there's a git remote first so we return a clean error
+        // instead of letting `ls-remote` produce a cryptic stderr.
+        try {
+          await execAsync('git remote get-url origin', {
+            cwd: project.cwd,
+            timeout: 5000,
+          });
+        } catch {
+          res.status(400).json({
+            error: 'Project has no `origin` git remote configured',
+            branches: [],
+          });
+          return;
+        }
+
+        const { stdout } = await execAsync('git ls-remote --heads origin', {
+          cwd: project.cwd,
+          timeout: 15_000,
+          maxBuffer: 5 * 1024 * 1024,
+        });
+
+        // Lines look like: "<sha>\trefs/heads/<branch-name>"
+        const branchNames: string[] = [];
+        for (const line of stdout.split('\n')) {
+          const match = line.match(/^[0-9a-f]{40,}\trefs\/heads\/(.+)$/);
+          if (match) branchNames.push(match[1].trim());
+        }
+        branchNames.sort((a, b) => a.localeCompare(b));
+
+        // Resolve the default branch so the UI can flag it. Reuse the same
+        // ordering as `auto-git.ts#resolveDefaultBranch`: origin/HEAD, then
+        // local main / master.
+        let defaultBranch: string | null = null;
+        try {
+          const { stdout: headOut } = await execAsync('git symbolic-ref refs/remotes/origin/HEAD', {
+            cwd: project.cwd,
+            timeout: 5000,
+          });
+          defaultBranch = headOut.trim().replace('refs/remotes/origin/', '') || null;
+        } catch {
+          for (const candidate of ['main', 'master']) {
+            if (branchNames.includes(candidate)) {
+              defaultBranch = candidate;
+              break;
+            }
+          }
+        }
+
+        const branches: BranchListEntry[] = branchNames.map((name) => ({
+          name,
+          isDefault: name === defaultBranch,
+        }));
+        branchCache.set(project.id, { branches, fetchedAt: Date.now() });
+        res.json({ branches, defaultBranch, cached: false });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[projects] branch listing failed for ${project.id}: ${msg}`);
+        res.status(500).json({ error: `Failed to list branches: ${msg}`, branches: [] });
+      }
+    },
+  );
 
   router.post('/api/projects', (req: Request, res: Response) => {
     const projects = getProjects();

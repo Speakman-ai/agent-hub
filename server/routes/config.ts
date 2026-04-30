@@ -117,6 +117,7 @@ interface KanbanImportData {
     created_by?: string;
     position?: number;
     epic_id?: string;
+    pr_base_branch?: string | null;
   }>;
   epics?: Array<{
     id: string;
@@ -1397,6 +1398,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
               card.pr_url || null,
               newEpicId,
               importAssignModel,
+              card.pr_base_branch ?? null,
               newCardId,
             );
           }

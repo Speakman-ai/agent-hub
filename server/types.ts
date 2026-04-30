@@ -361,6 +361,12 @@ export interface KanbanCardRow {
   /** Specialist agent id chosen by triage. runAutonomousLoop prefers this
    *  agent when it has an open slot; falls back to round-robin otherwise. */
   suggested_assignee?: string | null;
+  /** Optional override for the PR base branch at auto-PR creation time.
+   *  NULL/absent = use repo default (current behaviour). When set, the
+   *  auto-PR flow opens the PR with `--base <pr_base_branch>`. If the chosen
+   *  branch no longer exists at PR-open time, the server falls back to the
+   *  default and posts an explanatory comment on the card. */
+  pr_base_branch?: string | null;
   created_at: string;
   updated_at: string;
 }

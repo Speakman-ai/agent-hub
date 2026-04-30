@@ -1007,6 +1007,17 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN suggested_assignee TEXT DEFAULT NULL');
   }
 
+  // Optional per-card override of the PR base branch. NULL = use repo default
+  // (current behaviour). Any string is the explicit base branch the auto-PR
+  // flow should target via `gh pr create --base <branch>`. The server falls
+  // back to the default branch with an explanatory card comment if the chosen
+  // base no longer exists at PR-open time.
+  try {
+    db.prepare('SELECT pr_base_branch FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN pr_base_branch TEXT DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
   } catch {
@@ -2077,7 +2088,7 @@ function initDb(dataDir: string): void {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     updateKanbanCard: db.prepare(
-      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, assign_model = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, assign_model = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     moveKanbanCard: db.prepare(
       `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`,

@@ -1321,6 +1321,60 @@ async function commitPushAndCreatePR(
       );
     };
 
+    // ── PR base-branch override ─────────────────────────────────────
+    //
+    // Cards may override the PR base via `card.pr_base_branch` (e.g. for
+    // stacked PRs). When set, validate the branch still exists on `origin`
+    // before passing it to `gh pr create --base`. If it doesn't, fall back
+    // to the repo default and post an explanatory comment on the card so
+    // the user can see why their override didn't apply.
+    let resolvedBaseBranch: string | null = null;
+    let baseBranchFellBack = false;
+    let baseBranchFallbackReason: string | null = null;
+    const requestedBase = card?.pr_base_branch?.trim();
+    // Defensive re-validation of the persisted value before we hand it to
+    // `gh`. The PUT route already enforces this regex, but we don't want a
+    // hand-edited DB row to escape into a spawned argv.
+    const isSafeBranch = (s: string) => /^[A-Za-z0-9._/-]+$/.test(s);
+
+    if (requestedBase && isSafeBranch(requestedBase)) {
+      try {
+        const { stdout: lsOut } = await execAsync(
+          `git ls-remote --heads origin ${JSON.stringify(requestedBase)}`,
+          { cwd: effectiveCwd, timeout: 10_000 },
+        );
+        if (lsOut.trim()) {
+          resolvedBaseBranch = requestedBase;
+        } else {
+          baseBranchFellBack = true;
+          baseBranchFallbackReason = `branch "${requestedBase}" no longer exists on origin`;
+        }
+      } catch (err: unknown) {
+        baseBranchFellBack = true;
+        baseBranchFallbackReason = `branch lookup failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
+    } else if (requestedBase && !isSafeBranch(requestedBase)) {
+      baseBranchFellBack = true;
+      baseBranchFallbackReason = `persisted base branch "${requestedBase}" failed validation; ignored`;
+    }
+
+    if (baseBranchFellBack && card) {
+      const defaultBranch = (await resolveDefaultBranch(effectiveCwd)) ?? '(repo default)';
+      const note = `Configured PR base branch override was not used — falling back to **${defaultBranch}**. Reason: ${baseBranchFallbackReason}.`;
+      try {
+        d.stmts.createKanbanCardComment.run(crypto.randomUUID(), card.id, 'Agent Hub', note);
+        d.broadcast({ type: 'kanban_update', projectId: project.id });
+      } catch (commentErr: unknown) {
+        const msg = commentErr instanceof Error ? commentErr.message : String(commentErr);
+        console.warn(`[auto-commit] Failed to post base-branch fallback comment: ${msg}`);
+      }
+      console.warn(
+        `[auto-commit] PR base branch override ignored for card ${card.id}: ${baseBranchFallbackReason}`,
+      );
+    }
+
     try {
       const createArgs = [
         'pr',
@@ -1332,6 +1386,9 @@ async function commitPushAndCreatePR(
         '--body',
         prBody,
       ];
+      if (resolvedBaseBranch) {
+        createArgs.push('--base', resolvedBaseBranch);
+      }
       if (validReviewer) {
         createArgs.push('--reviewer', validReviewer);
       }

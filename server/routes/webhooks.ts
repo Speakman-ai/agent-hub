@@ -621,6 +621,7 @@ export function dispatchReviewFeedback(
       card.pr_url,
       card.epic_id,
       card.assign_model,
+      card.pr_base_branch ?? null,
       card.id,
     );
 

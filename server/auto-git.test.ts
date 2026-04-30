@@ -2413,3 +2413,213 @@ describe('runShellCommandStreaming — output byte cap', () => {
     expect(caught).not.toBeInstanceOf(CheckCommandFailedError);
   });
 });
+
+describe('autoCommitAndPR — pr_base_branch override', () => {
+  // The card may carry an explicit `pr_base_branch` for stacked / dependent
+  // PRs. When set and the branch still exists on origin, the auto-PR flow
+  // must pass `--base <branch>` to `gh pr create`. When the branch has been
+  // deleted between selection and PR-open time, the flow must fall back to
+  // the repo default (no `--base` arg) and post an explanatory comment on
+  // the card so the user understands why their override didn't apply.
+  const mockBroadcast = vi.fn();
+
+  function makeAutonomousStmtsWithCard(card: Record<string, unknown>) {
+    return {
+      getKanbanCardBySession: { get: vi.fn(() => card) },
+      getSession: { get: vi.fn(() => ({ name: 'Test session' })) },
+      setCardPrUrl: { run: vi.fn() },
+      getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-review', name: 'Review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      moveKanbanCard: { run: vi.fn() },
+      updateKanbanCard: { run: vi.fn() },
+      updateSessionChangesReady: { run: vi.fn() },
+      clearSessionChangesReady: { run: vi.fn() },
+      addMessage: { run: vi.fn() },
+      getMessageById: { get: vi.fn() },
+      createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
+      createKanbanCardComment: { run: vi.fn() },
+    } as Record<string, unknown>;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('appends --base to gh pr create when card.pr_base_branch exists on origin', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeAutonomousStmtsWithCard({
+      id: 'card-stacked',
+      title: 'Stacked PR card',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 1,
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+      pr_base_branch: 'feature/parent-branch',
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        // Branch exists on origin → ls-remote returns a SHA + ref
+        if (cmd.includes('git ls-remote --heads origin'))
+          return ok('a'.repeat(40) + '\trefs/heads/feature/parent-branch\n');
+        if (cmd.startsWith('gh pr view')) return fail('no pull requests found');
+        if (cmd.startsWith('gh pr create')) return ok('https://github.com/test/repo/pull/123\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-stacked', 'agent-1', project, agent, '/worktree', '');
+
+    const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(ghCreateCalls).toHaveLength(1);
+    expect(ghCreateCalls[0]).toContain('--base feature/parent-branch');
+  });
+
+  it('falls back to default base + posts a card comment when override no longer exists', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeAutonomousStmtsWithCard({
+      id: 'card-deleted-base',
+      title: 'Stacked PR — base deleted',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 1,
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+      pr_base_branch: 'feature/since-deleted',
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        // Branch is gone — empty stdout means `gh pr create --base` would fail.
+        if (cmd.includes('git ls-remote --heads origin')) return ok('');
+        if (cmd.startsWith('gh pr view')) return fail('no pull requests found');
+        if (cmd.startsWith('gh pr create')) return ok('https://github.com/test/repo/pull/124\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-fallback', 'agent-1', project, agent, '/worktree', '');
+
+    const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(ghCreateCalls).toHaveLength(1);
+    // Fallback to repo default → no --base arg
+    expect(ghCreateCalls[0]).not.toContain('--base');
+
+    // Explanatory comment must be posted on the card.
+    const commentRun = (stmts.createKanbanCardComment as { run: ReturnType<typeof vi.fn> }).run;
+    expect(commentRun).toHaveBeenCalledTimes(1);
+    const commentArgs = commentRun.mock.calls[0] as unknown[];
+    // Args: id, cardId, author, content
+    expect(commentArgs[1]).toBe('card-deleted-base');
+    expect(String(commentArgs[3])).toMatch(/feature\/since-deleted/);
+    expect(String(commentArgs[3])).toMatch(/falling back/i);
+  });
+
+  it('no --base arg and no fallback comment when card has no pr_base_branch', async () => {
+    const execCalls: string[] = [];
+    const stmts = makeAutonomousStmtsWithCard({
+      id: 'card-no-override',
+      title: 'No base override',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 1,
+      dispatched_by_autonomous: 1,
+      epic_id: null,
+      pr_base_branch: null,
+    });
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        if (cmd.startsWith('gh pr view')) return fail('no pull requests found');
+        if (cmd.startsWith('gh pr create')) return ok('https://github.com/test/repo/pull/125\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-no-override', 'agent-1', project, agent, '/worktree', '');
+
+    const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(ghCreateCalls).toHaveLength(1);
+    expect(ghCreateCalls[0]).not.toContain('--base');
+
+    // No ls-remote --heads call needed when there's no override
+    const lsRemoteCalls = execCalls.filter((c) => c.includes('git ls-remote --heads origin'));
+    expect(lsRemoteCalls).toHaveLength(0);
+
+    // No fallback comment on the happy path
+    const commentRun = (stmts.createKanbanCardComment as { run: ReturnType<typeof vi.fn> }).run;
+    expect(commentRun).not.toHaveBeenCalled();
+  });
+});

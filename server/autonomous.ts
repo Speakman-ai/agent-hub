@@ -319,6 +319,7 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
           card.pr_url,
           card.epic_id,
           card.assign_model,
+          card.pr_base_branch ?? null,
           card.id,
         );
         d.stmts.moveKanbanCard.run(card.column_id, card.position, card.id);
@@ -380,6 +381,7 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
         card.pr_url,
         card.epic_id,
         card.assign_model,
+        card.pr_base_branch ?? null,
         card.id,
       );
       d.stmts.moveKanbanCard.run(inProgressColId || card.column_id, 0, card.id);
@@ -540,6 +542,7 @@ export async function runTriageBatchForProject(
         card.pr_url,
         card.epic_id,
         card.assign_model,
+        card.pr_base_branch ?? null,
         card.id,
       );
 
@@ -566,6 +569,7 @@ export async function runTriageBatchForProject(
             card.pr_url,
             card.epic_id,
             card.assign_model,
+            card.pr_base_branch ?? null,
             card.id,
           );
         } catch {

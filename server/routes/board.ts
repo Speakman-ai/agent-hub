@@ -245,6 +245,31 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const hasAssignModel = 'assignModel' in body || 'assign_model' in body;
     const assignModel = (body.assignModel ?? body.assign_model) as string | null | undefined;
 
+    const hasPrBaseBranch = 'prBaseBranch' in body || 'pr_base_branch' in body;
+    const prBaseBranchRaw = (body.prBaseBranch ?? body.pr_base_branch) as string | null | undefined;
+    // Normalize: trim, treat empty string as null (clear the override).
+    // Reject obviously invalid branch names so we don't persist values that
+    // would cause `gh pr create --base` to fail at PR-open time.
+    let prBaseBranch: string | null | undefined = prBaseBranchRaw;
+    if (hasPrBaseBranch) {
+      if (prBaseBranchRaw == null || String(prBaseBranchRaw).trim() === '') {
+        prBaseBranch = null;
+      } else {
+        const trimmed = String(prBaseBranchRaw).trim();
+        // Permissive but safe: GitHub branch names allow most printable chars
+        // but disallow whitespace, control chars, and a handful of refspec
+        // sentinels. Block the obvious shell-injection vectors here so a bad
+        // value can't reach the spawned `gh` argv.
+        if (!/^[A-Za-z0-9._/-]+$/.test(trimmed)) {
+          return res.status(400).json({
+            error:
+              'Invalid pr_base_branch: must contain only letters, digits, dots, dashes, underscores, and slashes',
+          });
+        }
+        prBaseBranch = trimmed;
+      }
+    }
+
     // FK pre-flight: a non-null epicId must reference an existing epic on
     // the same board, otherwise the UPDATE throws an opaque
     // `SqliteError: FOREIGN KEY constraint failed`.
@@ -280,6 +305,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           ? String(assignModel).trim()
           : null
         : card.assign_model,
+      hasPrBaseBranch ? (prBaseBranch ?? null) : (card.pr_base_branch ?? null),
       req.params.cardId,
     );
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
@@ -403,6 +429,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         card.pr_url,
         card.epic_id,
         trimmedOverride,
+        card.pr_base_branch ?? null,
         req.params.cardId,
       );
       stmts.moveKanbanCard.run(inProgressColumnId, 0, req.params.cardId);
@@ -490,6 +517,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         card.pr_url,
         card.epic_id,
         null,
+        card.pr_base_branch ?? null,
         req.params.cardId,
       );
 
