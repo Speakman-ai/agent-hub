@@ -26,6 +26,7 @@ import { parseCursorStatusJson } from '../cursor-auth-parse.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
 import { normalizeCronModel } from './crons.js';
+import { normalizeOAuthExpiresAtMs } from '../oauth-expiry.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -182,7 +183,7 @@ function hasClaudeOauth(): boolean {
     };
     if (!raw?.claudeAiOauth) return false;
     const expiresAt = raw.claudeAiOauth.expiresAt;
-    if (typeof expiresAt === 'number') return Date.now() < expiresAt;
+    if (typeof expiresAt === 'number') return Date.now() < normalizeOAuthExpiresAtMs(expiresAt);
     // Missing expiresAt: some tooling may omit it while OAuth is still valid; we
     // still treat that as unauthenticated here so the models list stays conservative.
     return false;

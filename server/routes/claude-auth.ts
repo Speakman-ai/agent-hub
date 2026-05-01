@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 import type { RouteDeps, AppConfig } from '../types.js';
 import config, { buildSpawnEnv, normalizeClaudeSetupToken } from '../config.js';
+import { normalizeOAuthExpiresAtMs } from '../oauth-expiry.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -102,7 +103,7 @@ export function parseCredentialsFileContent(rawText: string | null): ParsedCrede
   let loggedIn = false;
   if (bundle) {
     if (typeof bundle.expiresAt === 'number') {
-      loggedIn = Date.now() < bundle.expiresAt;
+      loggedIn = Date.now() < normalizeOAuthExpiresAtMs(bundle.expiresAt);
     } else {
       loggedIn = Object.keys(bundle as object).length > 0;
     }
@@ -123,9 +124,13 @@ export function parseCredentialsFileContent(rawText: string | null): ParsedCrede
 
   let tokenInfo: Record<string, unknown> | null = null;
   if (bundle) {
+    const rawExp = bundle.expiresAt;
     tokenInfo = {
-      expiresAt: bundle.expiresAt,
-      expired: bundle.expiresAt ? Date.now() > bundle.expiresAt : null,
+      expiresAt: typeof rawExp === 'number' ? normalizeOAuthExpiresAtMs(rawExp) : rawExp,
+      expired:
+        rawExp && typeof rawExp === 'number'
+          ? Date.now() > normalizeOAuthExpiresAtMs(rawExp)
+          : null,
       scopes: bundle.scopes || [],
       subscriptionType: bundle.subscriptionType || null,
       rateLimitTier: bundle.rateLimitTier || null,

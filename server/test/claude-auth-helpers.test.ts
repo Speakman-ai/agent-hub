@@ -33,6 +33,15 @@ describe('parseCredentialsFileContent', () => {
     expect(parseCredentialsFileContent('   ').oauth.loggedIn).toBe(false);
   });
 
+  it('parses claudeAiOauth with future expiresAt in Unix seconds (CLI-style)', () => {
+    const futureSec = Math.floor(Date.now() / 1000) + 3600;
+    const json = JSON.stringify({ claudeAiOauth: { expiresAt: futureSec } });
+    const r = parseCredentialsFileContent(json);
+    expect(r.oauth.loggedIn).toBe(true);
+    expect(r.tokenInfo?.expiresAt).toBe(futureSec * 1000);
+    expect(r.tokenInfo?.expired).toBe(false);
+  });
+
   it('parses claudeAiOauth with future expiresAt', () => {
     const future = Date.now() + 86400000;
     const json = JSON.stringify({ claudeAiOauth: { expiresAt: future } });
