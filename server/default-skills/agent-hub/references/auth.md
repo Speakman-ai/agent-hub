@@ -114,9 +114,20 @@ per-user values are byte-for-bit identical to the pre-Phase-3 behavior.
 | --------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `anthropicApiKey`           | masked (`sk-ant-api03-…`) or `null`            | accepts string or `null`; empty string clears                                        |
 | `claudeCodeOAuthToken`      | masked or `null`                               | accepts string or `null`; empty string clears                                        |
-| `claudeCodeOAuthExpiresAt`  | ISO-8601 string or `null`                      | accepts string or `null`                                                             |
+| `claudeCodeOAuthExpiresAt`  | normalised ISO-8601 string or `null`           | accepts ISO-8601 _or_ a numeric string in Unix seconds / epoch ms; server normalises |
+| `claudeCodeOAuthExpired`    | server-computed boolean (`null` when no expiry stored) | not accepted — derived from `claudeCodeOAuthExpiresAt`                       |
 | `updatedAt`                 | last-write timestamp                           | last-write timestamp                                                                 |
 | `hostConfigFallback`        | `{ anthropicApiKey, claudeCodeOAuthToken }` (booleans) — does the host have a fallback? | same shape — clients can re-render the "falling back to host" hint after save        |
+
+Both endpoints route the stored expiry through `parseClaudeOAuthExpiry`
+(`server/oauth-expiry.ts`), which uses the same seconds-vs-ms threshold
+helper as the host-config path (`hasClaudeOauth` /
+`parseCredentialsFileContent`). Numeric values below `1e12` are treated
+as Unix seconds and promoted to ms before any `Date.now()` comparison.
+The UI should render expiry chips from the server-computed
+`claudeCodeOAuthExpired` boolean rather than recomputing
+`Date.now() > expiresAt` against a possibly un-normalised numeric
+string. Mirrors the fix landed for the host-config path in PR #723.
 
 `PUT` whitelists exactly those three fields via
 `Object.prototype.hasOwnProperty.call`; stray keys are ignored, never

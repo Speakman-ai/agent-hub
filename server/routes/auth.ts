@@ -73,6 +73,7 @@ import {
   MIN_PASSWORD_LEN,
   MAX_PASSWORD_LEN,
 } from '../auth-validation.js';
+import { parseClaudeOAuthExpiry } from '../oauth-expiry.js';
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
 
@@ -457,10 +458,19 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(404).json({ error: 'User not found' });
       return;
     }
+    // Normalise the stored expiry through the same seconds-vs-ms helper the
+    // host-config path uses (`server/routes/claude-auth.ts`), so a value
+    // written as JWT-style Unix seconds doesn't render as "Expired" in the
+    // UI for the next ~55 years. Returning a normalised ISO string plus a
+    // server-computed `claudeCodeOAuthExpired` boolean lets the UI render
+    // the chip without doing its own `Date.now() > expiresAt` comparison
+    // against an un-normalised value.
+    const expiry = parseClaudeOAuthExpiry(stored.claudeCodeOAuthExpiresAt);
     res.json({
       anthropicApiKey: maskCredential(stored.anthropicApiKey),
       claudeCodeOAuthToken: maskCredential(stored.claudeCodeOAuthToken),
-      claudeCodeOAuthExpiresAt: stored.claudeCodeOAuthExpiresAt,
+      claudeCodeOAuthExpiresAt: expiry ? expiry.iso : stored.claudeCodeOAuthExpiresAt,
+      claudeCodeOAuthExpired: expiry ? expiry.expired : null,
       updatedAt: stored.updatedAt,
       hostConfigFallback: {
         anthropicApiKey: !!config.anthropicApiKey,
@@ -500,10 +510,17 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(404).json({ error: 'User not found' });
       return;
     }
+    // Same normalisation as GET so the UI can re-render the expiry chip
+    // immediately on save without waiting for a follow-up GET. Without
+    // this, a client that PUTs Unix-seconds expiry would see the raw
+    // value echoed back and recompute `expired` against an un-normalised
+    // numeric string — the exact bug PR #723 fixed for the host path.
+    const expiryAfter = parseClaudeOAuthExpiry(updated.claudeCodeOAuthExpiresAt);
     res.json({
       anthropicApiKey: maskCredential(updated.anthropicApiKey),
       claudeCodeOAuthToken: maskCredential(updated.claudeCodeOAuthToken),
-      claudeCodeOAuthExpiresAt: updated.claudeCodeOAuthExpiresAt,
+      claudeCodeOAuthExpiresAt: expiryAfter ? expiryAfter.iso : updated.claudeCodeOAuthExpiresAt,
+      claudeCodeOAuthExpired: expiryAfter ? expiryAfter.expired : null,
       updatedAt: updated.updatedAt,
       // Mirror GET so a client can re-render the "falling back to host"
       // hint without an extra round-trip after save.

@@ -258,3 +258,119 @@ describe('PUT /api/auth/me/claude-auth', () => {
     expect(getUserClaudeAuth(owner.id)?.anthropicApiKey).toBeNull();
   });
 });
+
+// ── Expiry normalisation parity with the host-config path ─────────────
+//
+// Regression for the user-visible bug "Auth UI keeps showing token
+// expired when it is not". Before this fix, the per-user route echoed
+// `claudeCodeOAuthExpiresAt` verbatim — so a value stored in JWT-style
+// Unix seconds (~1.7e9) would compare against `Date.now()` (~1.7e12) on
+// the client and render as "Expired" for ~55 years. The host-config
+// path was already running its expiry through
+// `normalizeOAuthExpiresAtMs` (PR #723); the per-user path now does the
+// same and additionally returns a server-computed `expired` boolean so
+// the UI doesn't have to recompute the comparison.
+describe('GET /api/auth/me/claude-auth — expiry normalisation', () => {
+  it('reports expired:false for a future expiry stored as Unix seconds', async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+    const futureSec = Math.floor(Date.now() / 1000) + 3600;
+
+    await supertest(app)
+      .put('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ claudeCodeOAuthExpiresAt: String(futureSec) });
+
+    const res = await supertest(app)
+      .get('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.claudeCodeOAuthExpired).toBe(false);
+    // Server should have promoted the stored seconds into a normalised
+    // ISO string before responding so the client doesn't re-derive the
+    // unit from an ambiguous numeric string.
+    expect(typeof res.body.claudeCodeOAuthExpiresAt).toBe('string');
+    expect(Date.parse(res.body.claudeCodeOAuthExpiresAt)).toBe(futureSec * 1000);
+  });
+
+  it('reports expired:false for a future expiry stored as epoch ms', async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+    const futureMs = Date.now() + 86_400_000; // +24h
+
+    await supertest(app)
+      .put('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ claudeCodeOAuthExpiresAt: String(futureMs) });
+
+    const res = await supertest(app)
+      .get('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.claudeCodeOAuthExpired).toBe(false);
+    expect(Date.parse(res.body.claudeCodeOAuthExpiresAt)).toBe(futureMs);
+  });
+
+  it('reports expired:false for a future expiry stored as ISO 8601', async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+    const futureMs = Date.now() + 3_600_000;
+    const iso = new Date(futureMs).toISOString();
+
+    await supertest(app)
+      .put('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ claudeCodeOAuthExpiresAt: iso });
+
+    const res = await supertest(app)
+      .get('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.claudeCodeOAuthExpired).toBe(false);
+    expect(res.body.claudeCodeOAuthExpiresAt).toBe(iso);
+  });
+
+  it('reports expired:true for a past expiry stored as Unix seconds', async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+    const pastSec = Math.floor(Date.now() / 1000) - 3600;
+
+    await supertest(app)
+      .put('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ claudeCodeOAuthExpiresAt: String(pastSec) });
+
+    const res = await supertest(app)
+      .get('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.claudeCodeOAuthExpired).toBe(true);
+  });
+
+  it('returns null expired flag when no expiry is stored', async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+
+    const res = await supertest(app)
+      .get('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.claudeCodeOAuthExpired).toBeNull();
+    expect(res.body.claudeCodeOAuthExpiresAt).toBeNull();
+  });
+
+  it('PUT response mirrors the GET shape — clients can render without a follow-up fetch', async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+    const futureSec = Math.floor(Date.now() / 1000) + 7200;
+
+    const res = await supertest(app)
+      .put('/api/auth/me/claude-auth')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ claudeCodeOAuthExpiresAt: String(futureSec) });
+    expect(res.status).toBe(200);
+    expect(res.body.claudeCodeOAuthExpired).toBe(false);
+    expect(typeof res.body.claudeCodeOAuthExpiresAt).toBe('string');
+    expect(Date.parse(res.body.claudeCodeOAuthExpiresAt)).toBe(futureSec * 1000);
+  });
+});
