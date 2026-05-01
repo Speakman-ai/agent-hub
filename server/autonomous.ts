@@ -186,7 +186,13 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
     }
     return;
   }
-  const perAgentLimit = Math.max(1, Math.ceil(epic.autonomous_max_concurrent / agentCount));
+  // Per-agent cap = epic-wide cap. Any single agent may absorb up to the
+  // epic's `autonomous_max_concurrent` cards in flight at once — there is no
+  // implicit `ceil(max_concurrent / agentCount)` partition that previously
+  // forced each agent to ~1 card when agentCount > max_concurrent. The
+  // epic-wide ceiling (`slotsAvailable`, computed below from In Progress +
+  // Review card counts) remains the only global gate on dispatch volume.
+  const perAgentLimit = epic.autonomous_max_concurrent;
 
   interface AgentSlot {
     agent: Agent;
@@ -195,9 +201,11 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   }
 
   const agentsWithSlots: AgentSlot[] = assignableAgents
-    .map((a) => ({ agent: a, active: agentSessionCounts.get(a.id) || 0, slots: 0 }))
-    .filter((a) => a.active < perAgentLimit)
-    .map((a) => ({ ...a, slots: perAgentLimit - a.active }));
+    .map((a) => {
+      const active = agentSessionCounts.get(a.id) || 0;
+      return { agent: a, active, slots: Math.max(0, perAgentLimit - active) };
+    })
+    .filter((a) => a.slots > 0);
   if (agentsWithSlots.length === 0) return;
 
   const cols = d.stmts.getKanbanColumns.all(boardData.board.id) as Array<{
@@ -229,8 +237,10 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   //     pool here so a card labelled "lead" doesn't accidentally land on
   //     the lead via id/role-match.
   //   - The lead's slot count comes from `agentSlotsCopy` if it's already
-  //     in the assignable pool, otherwise from a synthetic single slot so
-  //     the lead can absorb overflow on subAgents-scoped projects too.
+  //     in the assignable pool, otherwise from a synthetic per-agent cap so
+  //     the lead can absorb overflow on subAgents-scoped projects too. The
+  //     synthetic cap mirrors `perAgentLimit` (= epic.autonomous_max_concurrent)
+  //     so a fallback lead isn't artificially capped at one overflow card.
   const lead = pickLead(project);
   const slotsByAgentId = new Map<string, number>();
   for (const slot of agentSlotsCopy) {
@@ -238,7 +248,7 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   }
   const routingPool = agentSlotsCopy.map((s) => s.agent).filter((a) => !lead || a.id !== lead.id);
   if (lead && !slotsByAgentId.has(lead.id)) {
-    slotsByAgentId.set(lead.id, 1);
+    slotsByAgentId.set(lead.id, perAgentLimit);
   }
 
   while (assigned < slotsAvailable && assigned < dispatchable.length) {

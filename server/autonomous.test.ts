@@ -764,8 +764,11 @@ describe('runAutonomousLoop — label routing', () => {
   });
 
   it('falls back to the lead when the matching specialist is out of slots', async () => {
-    // perAgentLimit = ceil(3/2) = 2. dev-1 already has 2 active sessions, so
-    // the frontend label can't be honored → spillover to the lead.
+    // Per-agent cap now equals epic.autonomous_max_concurrent (= 3). When
+    // hub-frontend already has 3 active sessions it has zero remaining slots
+    // for this tick, so the frontend label can't be honored → spillover to
+    // the project lead. (Previously this test exercised the old implicit
+    // `ceil(max_concurrent / agentCount)` partition, which is gone.)
     const card = makeCard({ labels: 'frontend' });
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
@@ -774,7 +777,7 @@ describe('runAutonomousLoop — label routing', () => {
       getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
     });
     stmts.getSession.get.mockImplementation((sid: string) => {
-      if (sid === 'busy-1' || sid === 'busy-2') {
+      if (sid === 'busy-1' || sid === 'busy-2' || sid === 'busy-3') {
         return { agent_id: 'hub-frontend' } as SessionRow;
       }
       return undefined;
@@ -793,6 +796,7 @@ describe('runAutonomousLoop — label routing', () => {
       new Map<string, unknown>([
         ['busy-1', {}],
         ['busy-2', {}],
+        ['busy-3', {}],
       ]),
     );
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
@@ -802,6 +806,43 @@ describe('runAutonomousLoop — label routing', () => {
 
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
     expect(stmts.createSession.run.mock.calls[0][1]).toBe('hub-lead');
+  });
+
+  it('lets a single specialist absorb multiple cards in one tick (agentCount > max_concurrent)', async () => {
+    // Regression: previously `perAgentLimit = ceil(max_concurrent / agentCount)`
+    // would compute `ceil(3/4) = 1` here, so hub-frontend could only take
+    // one of the three eligible frontend cards in a tick — the remaining
+    // two would fall through to the lead. With the per-agent cap now equal
+    // to the epic-wide cap, hub-frontend can absorb all three.
+    const c1 = makeCard({ id: 'c1', title: 'FE 1', labels: 'frontend' });
+    const c2 = makeCard({ id: 'c2', title: 'FE 2', labels: 'frontend', position: 1 });
+    const c3 = makeCard({ id: 'c3', title: 'FE 3', labels: 'frontend', position: 2 });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) }, // max_concurrent = 3
+      getEligibleAutonomousCards: { all: vi.fn(() => [c1, c2, c3]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [c1, c2, c3]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [
+          { id: 'hub-lead', name: 'Lead', role: 'lead', engine: 'claude-code' },
+          { id: 'hub-frontend', name: 'Frontend', role: 'sub', engine: 'claude-code' },
+          { id: 'hub-backend', name: 'Backend', role: 'sub', engine: 'claude-code' },
+          { id: 'hub-mobile', name: 'Mobile', role: 'sub', engine: 'claude-code' },
+        ],
+      }),
+    );
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(3);
+    expect(stmts.createSession.run.mock.calls[0][1]).toBe('hub-frontend');
+    expect(stmts.createSession.run.mock.calls[1][1]).toBe('hub-frontend');
+    expect(stmts.createSession.run.mock.calls[2][1]).toBe('hub-frontend');
   });
 
   it('routes multiple cards to the same specialist when labels match', async () => {
