@@ -5,6 +5,7 @@ import { defaultModelForEngine } from '../config.js';
 import type {
   RouteDeps,
   Stmts,
+  AgentLookup,
   KanbanBoardRow,
   KanbanColumnRow,
   KanbanCardRow,
@@ -31,6 +32,36 @@ interface BoardData {
 interface EnrichedCard extends KanbanCardRow {
   blockers: KanbanBlockerLink[];
   blocks: KanbanBlockerLink[];
+}
+
+/**
+ * Defense-in-depth: when a card-create / card-update payload carries a
+ * `session_id` that points at an *intake-role* agent's session, drop it.
+ *
+ * Background: the `agent-hub-intake` flow (bug-report intake, autonomous-mode
+ * triage, etc.) spawns ephemeral sessions whose only job is to *file* a
+ * ticket for the user — they never go on to *do* the work themselves. If
+ * such a session stamps its own `session_id` on the card it just created,
+ * the server treats the card as implicitly assigned, the UI hides the
+ * Assignee dropdown, and the autonomous dispatcher refuses to pick the
+ * card up because it's "already linked to a live session". The result is
+ * a backlog of frozen tickets that can never be worked on.
+ *
+ * Returns true when the supplied `sessionId` resolves to an intake-role
+ * agent's session and the caller should therefore strip both `session_id`
+ * and (optionally) `assignee` before persisting. A null/unknown session
+ * always returns false — we never strip when we can't prove intent.
+ */
+function isIntakeOwnedSession(
+  stmts: Stmts,
+  findAgent: (agentId: string) => AgentLookup | null,
+  sessionId: string | null | undefined,
+): boolean {
+  if (!sessionId) return false;
+  const session = stmts.getSession.get(sessionId) as { agent_id?: string } | undefined;
+  if (!session?.agent_id) return false;
+  const lookup = findAgent(session.agent_id);
+  return lookup?.agent.role === 'intake';
 }
 
 export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
@@ -185,6 +216,23 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const maxPos =
       existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
     const id = uuidv4();
+
+    // Defense-in-depth: an intake-role agent's session must never be
+    // stamped on a card it files for someone else (see `isIntakeOwnedSession`
+    // for the full rationale). Strip both `session_id` and `assignee` when
+    // the calling session resolves to an intake agent — the UI's Assignee
+    // dropdown and the autonomous dispatcher both rely on these being null
+    // for a freshly-filed ticket.
+    let effectiveSessionId: string | null = sessionId || null;
+    let effectiveAssignee: string | null = assignee || null;
+    if (effectiveSessionId && isIntakeOwnedSession(stmts, findAgent, effectiveSessionId)) {
+      console.log(
+        `[Board] Stripping session_id/assignee on card create — session ${effectiveSessionId} belongs to an intake-role agent`,
+      );
+      effectiveSessionId = null;
+      effectiveAssignee = null;
+    }
+
     stmts.createKanbanCard.run(
       id,
       columnId,
@@ -192,9 +240,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       title,
       description || null,
       priority || 'medium',
-      assignee || null,
+      effectiveAssignee,
       labels || null,
-      sessionId || null,
+      effectiveSessionId,
       githubIssueUrl || null,
       createdBy || null,
       null,
@@ -280,7 +328,23 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
     }
 
-    const nextAssignee = hasAssignee ? (assignee ?? null) : card.assignee;
+    // Defense-in-depth (matches POST /board/cards): if the client is
+    // setting `session_id` to an intake-role agent's session, strip it.
+    // Only fires when the new value is non-null — explicit clears are
+    // honored verbatim.
+    let effectiveSessionId: string | null | undefined = sessionId;
+    let effectiveAssignee: string | null | undefined = assignee;
+    if (hasSessionId && sessionId && isIntakeOwnedSession(stmts, findAgent, sessionId)) {
+      console.log(
+        `[Board] Stripping session_id/assignee on card update — session ${sessionId} belongs to an intake-role agent`,
+      );
+      effectiveSessionId = null;
+      // Also drop the assignee being set in the same payload, since intake
+      // agents shouldn't pin themselves as assignee on tickets they file.
+      if (hasAssignee) effectiveAssignee = null;
+    }
+
+    const nextAssignee = hasAssignee ? (effectiveAssignee ?? null) : card.assignee;
     if (hasAssignModel) {
       const normalized =
         assignModel != null && String(assignModel).trim() ? String(assignModel).trim() : null;
@@ -294,9 +358,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       title ?? card.title,
       hasDescription ? (description ?? null) : card.description,
       priority ?? card.priority,
-      hasAssignee ? (assignee ?? null) : card.assignee,
+      hasAssignee ? (effectiveAssignee ?? null) : card.assignee,
       hasLabels ? (labels ?? null) : card.labels,
-      hasSessionId ? (sessionId ?? null) : card.session_id,
+      hasSessionId ? (effectiveSessionId ?? null) : card.session_id,
       hasGithubIssueUrl ? (githubIssueUrl ?? null) : card.github_issue_url,
       hasPrUrl ? (prUrl ?? null) : card.pr_url,
       hasEpicId ? (epicId ?? null) : card.epic_id,
