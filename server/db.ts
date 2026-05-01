@@ -2293,69 +2293,12 @@ function initDb(dataDir: string): void {
       `UPDATE kanban_cards SET autonomous_iterations = 0, updated_at = datetime('now') WHERE id = ?`,
     ),
 
-    // Triage — applied atomically by server/triage.ts handleTriageResult after
-    // the intake agent emits a valid <agenthub:triage> block. Description is
-    // refined-in-place; suggested_assignee becomes the dispatch hint that
-    // runAutonomousLoop honors when picking an agent. triaged_at doubles as
-    // the dispatch-gate (NULL = skip until triaged).
-    setCardTriage: db.prepare(
-      // Clearing `assignee` and `session_id` is intentional: the triage
-      // session held the card while triage ran (assignee=intake's name,
-      // session_id=triage session). Once the triage block applies, the card
-      // is handed back to the dispatcher with `triaged_at` set + a non-null
-      // `suggested_assignee` so runAutonomousLoop picks it up on the next
-      // pass and routes it to the chosen specialist.
-      `UPDATE kanban_cards
-       SET description = ?,
-           labels = ?,
-           suggested_assignee = ?,
-           triaged_by = ?,
-           triaged_at = strftime('%s', 'now') * 1000,
-           assignee = NULL,
-           session_id = NULL,
-           updated_at = datetime('now')
-       WHERE id = ?`,
-    ),
-    clearCardTriage: db.prepare(
-      `UPDATE kanban_cards
-       SET triaged_at = NULL,
-           triaged_by = NULL,
-           suggested_assignee = NULL,
-           updated_at = datetime('now')
-       WHERE id = ?`,
-    ),
-    /** Pulls cards in the same eligibility window as getEligibleAutonomousCards
-     *  but BEFORE the triage gate — used by runOneShotTriagePass to spawn
-     *  intake sessions for cards that haven't been triaged yet. */
-    getUntriagedAutonomousCards: db.prepare(
-      `SELECT c.* FROM kanban_cards c
-       JOIN kanban_columns col ON c.column_id = col.id
-       WHERE c.epic_id = ? AND col.name IN ('Backlog', 'To Do')
-       AND (c.assignee IS NULL OR c.assignee = '')
-       AND c.triaged_at IS NULL
-       AND c.autonomous_iterations < ?
-       ORDER BY
-         CASE col.name WHEN 'To Do' THEN 0 WHEN 'Backlog' THEN 1 ELSE 2 END,
-         c.position ASC`,
-    ),
-    /** Pulls cards already locked to an in-flight triage session. A card is
-     *  in-flight when it sits in Backlog/To Do, has assignee = triage agent
-     *  name, holds a non-null session_id, and has not yet been triaged
-     *  (triaged_at IS NULL). The caller cross-references session_id against
-     *  activeProcesses to filter out stale locks from crashed sessions, then
-     *  uses the surviving count to enforce TRIAGE_MAX_CONCURRENT across the
-     *  whole project — NOT just within a single tick. This is the counterpart
-     *  query to getUntriagedAutonomousCards: that one excludes locked cards
-     *  (assignee IS NULL); this one selects them. */
-    getInFlightTriageCards: db.prepare(
-      `SELECT c.id, c.session_id FROM kanban_cards c
-       JOIN kanban_columns col ON c.column_id = col.id
-       WHERE c.epic_id = ?
-         AND c.assignee = ?
-         AND c.session_id IS NOT NULL
-         AND c.triaged_at IS NULL
-         AND col.name IN ('Backlog', 'To Do')`,
-    ),
+    // NOTE: The legacy triage gate (setCardTriage / clearCardTriage /
+    // getUntriagedAutonomousCards / getInFlightTriageCards) was removed
+    // when autonomous dispatch switched to label-based routing. The
+    // `triaged_at`, `triaged_by`, and `suggested_assignee` columns remain
+    // on `kanban_cards` for backward-compat with existing rows, but the
+    // dispatch path no longer reads or writes them. See server/routing.ts.
 
     // Webhook configs
     getWebhookConfigs: db.prepare('SELECT * FROM webhook_configs ORDER BY created_at DESC'),

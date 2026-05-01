@@ -27,7 +27,6 @@ import {
   describeCloseCardReason,
   handleCardAutoClose,
 } from './card-auto-close.js';
-import { detectTriageBlock, describeTriageMalformedReason, applyTriageResult } from './triage.js';
 import {
   detectSkillBlock as detectSkillInvokeBlock,
   handleSkillInvoke,
@@ -2255,13 +2254,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let finalContent = rawFinalContent;
       const closeCardDetection = detectCloseCardBlock(rawFinalContent);
       const closeTask = closeCardDetection.task;
-      // Triage routing — when an intake/lead agent finishes a triage session
-      // it emits a single <agenthub:triage> block with the chosen specialist,
-      // refined description, AC, and labels. Apply runs alongside close-card.
-      // Detection is roster-blind; resolveTriageAssignee in applyTriageResult
-      // validates `assignee` against the project's specialist agents.
-      const triageDetection = detectTriageBlock(rawFinalContent);
-      const triageTask = triageDetection.task;
       const handoffDetection = enrichedAgent ? detectHandoffBlock(rawFinalContent) : null;
       // The operator-controlled `delegationEnabled === false` flag is the
       // first thing we check after the stream closes: a disabled lead should
@@ -2847,88 +2839,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           });
         } catch (err) {
           console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
-        }
-      }
-
-      // Triage block — same hook point. Best-effort: a malformed/unknown-
-      // assignee triage logs and surfaces a system message, but does not
-      // disrupt the rest of the post-stream pipeline. The card stays
-      // un-triaged (triaged_at remains null) so the next dispatch pass can
-      // retry triage rather than dispatch the card without routing info.
-      if (triageDetection.present && !triageTask && triageDetection.reason) {
-        const sysId = uuidv4();
-        const body = `**Triage block rejected:** ${describeTriageMalformedReason(triageDetection.reason)}.\n\nThe linked kanban card was **not** triaged.`;
-        try {
-          stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
-          stmts.touchSession.run(sessionId);
-          const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
-            id: sysId,
-            session_id: sessionId,
-            role: 'system' as const,
-            content: body,
-            engine: null,
-            model: null,
-            attachments: null,
-            metadata: null,
-            created_at: new Date().toISOString(),
-          };
-          broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-        } catch (err: unknown) {
-          const m = err instanceof Error ? err.message : String(err);
-          console.warn(`[Triage] failed to persist malformed-block notice: ${m}`);
-        }
-      }
-
-      if (triageTask) {
-        try {
-          const projectId =
-            (project as Project & { id?: string }).id ||
-            (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
-            '';
-          const outcome = applyTriageResult(sessionId, triageTask, {
-            stmts: stmts as Stmts,
-            broadcast,
-            projectId,
-            triagedByAgentId: agent.id,
-            projectAgents: project.agents || [],
-          });
-          if (!outcome.ok) {
-            console.warn(
-              `[Triage] Apply failed for session ${sessionId}: ${outcome.reason}${outcome.detail ? ` (${outcome.detail})` : ''}`,
-            );
-            if (outcome.reason === 'unknown_assignee') {
-              const sysId = uuidv4();
-              const body = `**Triage block rejected:** \`assignee\` "${outcome.detail}" is not a valid specialist on this project. The linked kanban card was **not** triaged.`;
-              try {
-                stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
-                stmts.touchSession.run(sessionId);
-                const insertedMessage = (stmts.getMessageById.get(sysId) as
-                  | MessageRow
-                  | undefined) ?? {
-                  id: sysId,
-                  session_id: sessionId,
-                  role: 'system' as const,
-                  content: body,
-                  engine: null,
-                  model: null,
-                  attachments: null,
-                  metadata: null,
-                  created_at: new Date().toISOString(),
-                };
-                broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-              } catch {
-                /* best-effort */
-              }
-            }
-          } else {
-            // Triage success → kick the dispatcher so the freshly-triaged
-            // card can be picked up immediately if a specialist slot is open.
-            if (autonomousProjects.size > 0) {
-              setTimeout(() => tryAutonomousDispatch(), 1000);
-            }
-          }
-        } catch (err) {
-          console.error('[Triage] Unexpected error:', (err as Error).message);
         }
       }
 

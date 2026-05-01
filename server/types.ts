@@ -352,14 +352,14 @@ export interface KanbanCardRow {
   dispatched_by_autonomous: number;
   /** Optional model id chosen at assign time; null/absent means use agent + engine defaults. */
   assign_model?: string | null;
-  /** Epoch-ms timestamp set when an intake/lead agent emits a valid
-   *  <agenthub:triage> block for this card. NULL = not yet triaged, in which
-   *  case autonomous dispatch skips it (see runAutonomousLoop). */
+  /** @deprecated Triage gating is gone — autonomous dispatch now routes
+   *  by labels with a lead fallback. The column remains for backward-compat
+   *  with existing rows but is no longer written by the dispatch path. */
   triaged_at?: number | null;
-  /** Agent id that produced the triage. */
+  /** @deprecated See `triaged_at`. Retained for migration safety. */
   triaged_by?: string | null;
-  /** Specialist agent id chosen by triage. runAutonomousLoop prefers this
-   *  agent when it has an open slot; falls back to round-robin otherwise. */
+  /** @deprecated Replaced by label-based routing in `server/routing.ts`.
+   *  Existing values are preserved but no longer consulted by dispatch. */
   suggested_assignee?: string | null;
   /** Optional override for the PR base branch at auto-PR creation time.
    *  NULL/absent = use repo default (current behaviour). When set, the
@@ -979,10 +979,6 @@ export interface Stmts {
   getEligibleAutonomousCards: Stmt;
   incrementCardIterations: Stmt;
   resetCardIterations: Stmt;
-  setCardTriage: Stmt;
-  clearCardTriage: Stmt;
-  getUntriagedAutonomousCards: Stmt;
-  getInFlightTriageCards: Stmt;
 
   // Webhook configs
   getWebhookConfigs: Stmt;

@@ -35,7 +35,6 @@ vi.mock('./session-ownership.js', () => ({
 const {
   initAutonomous,
   runAutonomousLoop,
-  runTriageBatchForProject,
   tryAutonomousDispatch,
   scheduleAutonomousEpic,
   autonomousProjects,
@@ -64,15 +63,6 @@ interface MockStmts {
   // empty so existing tests don't have to know about this edge).
   getBlockersForBoard: { all: Mock };
   getBlockersForCard: { all: Mock };
-  // Triage routing (server/triage.ts) — only called when the project has a
-  // role:'intake' or role:'lead' agent. Default empty so existing tests
-  // continue to pass without opting into triage.
-  getUntriagedAutonomousCards: { all: Mock };
-  // Project-wide in-flight triage cap. Returns cards whose assignee is the
-  // triage agent name and whose triage session is still live. The spawner
-  // intersects these with activeProcesses to filter stale locks. Default
-  // empty so triage spawns up to the cap on a freshly-enabled epic.
-  getInFlightTriageCards: { all: Mock };
 }
 
 function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
@@ -89,8 +79,6 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
     createKanbanCardComment: { run: vi.fn() },
     getBlockersForBoard: { all: vi.fn(() => []) },
     getBlockersForCard: { all: vi.fn(() => []) },
-    getUntriagedAutonomousCards: { all: vi.fn(() => []) },
-    getInFlightTriageCards: { all: vi.fn(() => []) },
     ...overrides,
   };
 }
@@ -164,10 +152,7 @@ function makeCard(overrides: Partial<KanbanCardRow> = {}): KanbanCardRow {
     priority: 'medium',
     labels: '',
     github_issue_url: null,
-    // Default to "already triaged" so existing dispatch tests aren't gated
-    // by the new triage routing layer. Tests that exercise the triage gate
-    // (gating, routing, runOneShotTriagePass) explicitly pass triaged_at: null.
-    triaged_at: 1700000000000,
+    triaged_at: null,
     triaged_by: null,
     suggested_assignee: null,
     ...overrides,
@@ -422,7 +407,10 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
   });
 
   it('respects lead.subAgents config when set', async () => {
-    const card = makeCard();
+    // Card carries label "dev-2" so the routing layer prefers the specialist
+    // over the lead fallback. With subAgents=['dev-2'], dev-1 is filtered out
+    // of the routing pool, so only dev-2 (or the lead fallback) can be picked.
+    const card = makeCard({ labels: 'dev-2' });
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
       getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
@@ -713,165 +701,43 @@ describe('isPrMergeDirty', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  runAutonomousLoop — triage gating
+//  runAutonomousLoop — label-based routing
 //
-//  When the project has an intake (or lead) agent, untriaged eligible cards
-//  must NOT be dispatched to specialists — they're routed to triage first.
-//  Already-triaged cards (default `triaged_at: 1700000000000` from `makeCard`)
-//  flow through normally. Projects with neither role bypass the gate.
+//  Triage is gone. Cards now dispatch to the first specialist whose
+//  id/role/name/id-tail matches a label on the card. When no label matches,
+//  the project lead picks the card up (and can `<handoff>` if it would
+//  rather route the work).
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('runAutonomousLoop — triage gating', () => {
-  it('skips dispatch for untriaged cards when an intake agent exists', async () => {
-    const card = makeCard({ triaged_at: null });
+describe('runAutonomousLoop — label routing', () => {
+  it('routes a card to the specialist whose id-tail matches a label', async () => {
+    const card = makeCard({ labels: 'frontend' });
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
       getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
       getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
       getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
-      // runTriageBatchForProject will read this when triage spawns; return
-      // empty so we don't accidentally exercise spawning here.
-      getUntriagedAutonomousCards: { all: vi.fn(() => []) },
     });
     const deps = makeDeps(stmts);
     deps.findProject.mockReturnValue(
       makeProject({
         agents: [
-          { id: 'intake-1', name: 'Intake', role: 'intake', engine: 'claude-code' },
-          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
-          { id: 'dev-2', name: 'Dev Two', role: 'sub', engine: 'claude-code' },
+          { id: 'hub-frontend', name: 'Frontend', role: 'sub', engine: 'claude-code' },
+          { id: 'hub-backend', name: 'Backend', role: 'sub', engine: 'claude-code' },
         ],
       }),
     );
-    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
-    initAutonomous(deps as never);
-
-    await runAutonomousLoop('proj-1');
-
-    // No specialist dispatch — the card was gated.
-    expect(stmts.incrementCardIterations.run).not.toHaveBeenCalled();
-    expect(stmts.moveKanbanCard.run).not.toHaveBeenCalled();
-    // Triage batch was invoked — it queried the untriaged statement.
-    expect(stmts.getUntriagedAutonomousCards.all).toHaveBeenCalled();
-  });
-
-  it('falls back to lead agent for triage when no intake exists', async () => {
-    const card = makeCard({ triaged_at: null });
-    const stmts = makeStmts({
-      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
-      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
-      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
-      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
-      getUntriagedAutonomousCards: { all: vi.fn(() => []) },
-    });
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(
-      makeProject({
-        agents: [
-          { id: 'lead-1', name: 'Lead', role: 'lead', engine: 'claude-code' },
-          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
-        ],
-      }),
-    );
-    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
-    initAutonomous(deps as never);
-
-    await runAutonomousLoop('proj-1');
-
-    // Card gated; triage routed to lead.
-    expect(stmts.incrementCardIterations.run).not.toHaveBeenCalled();
-    expect(stmts.getUntriagedAutonomousCards.all).toHaveBeenCalled();
-  });
-
-  it('bypasses the gate entirely when project has no intake or lead', async () => {
-    // No intake, no lead → triage disabled; even untriaged cards dispatch.
-    const card = makeCard({ triaged_at: null });
-    const stmts = makeStmts({
-      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
-      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
-      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
-      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
-    });
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(makeProject()); // default: dev-1 + dev-2 only
-    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
-    initAutonomous(deps as never);
-
-    await runAutonomousLoop('proj-1');
-
-    expect(stmts.incrementCardIterations.run).toHaveBeenCalledWith('card-1');
-    expect(stmts.getUntriagedAutonomousCards.all).not.toHaveBeenCalled();
-  });
-
-  it('dispatches triaged cards while skipping untriaged in the same epic', async () => {
-    const triaged = makeCard({ id: 'triaged-card', title: 'Triaged work' });
-    const untriaged = makeCard({
-      id: 'untriaged-card',
-      title: 'Needs triage',
-      position: 1,
-      triaged_at: null,
-    });
-    const stmts = makeStmts({
-      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
-      getEligibleAutonomousCards: { all: vi.fn(() => [triaged, untriaged]) },
-      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
-      getKanbanCardsByEpic: { all: vi.fn(() => [triaged, untriaged]) },
-      getUntriagedAutonomousCards: { all: vi.fn(() => []) },
-    });
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(
-      makeProject({
-        agents: [
-          { id: 'intake-1', name: 'Intake', role: 'intake', engine: 'claude-code' },
-          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
-          { id: 'dev-2', name: 'Dev Two', role: 'sub', engine: 'claude-code' },
-        ],
-      }),
-    );
-    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
-    initAutonomous(deps as never);
-
-    await runAutonomousLoop('proj-1');
-
-    // Only the triaged card got dispatched.
-    expect(stmts.incrementCardIterations.run).toHaveBeenCalledTimes(1);
-    expect(stmts.incrementCardIterations.run).toHaveBeenCalledWith('triaged-card');
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  runAutonomousLoop — assignee routing
-//
-//  When triage tags a card with `suggested_assignee`, dispatch must prefer
-//  that agent over round-robin. When the suggestion doesn't match any
-//  assignable agent, dispatch falls back to round-robin without throwing.
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe('runAutonomousLoop — suggested_assignee routing', () => {
-  it('routes a card with suggested_assignee to that agent (over round-robin)', async () => {
-    // Round-robin starts at index 0 (dev-1). The suggestion targets dev-2,
-    // so without routing the card would land on dev-1. With routing, dev-2.
-    const card = makeCard({ suggested_assignee: 'dev-2' });
-    const stmts = makeStmts({
-      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
-      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
-      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
-      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
-    });
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(makeProject());
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
     initAutonomous(deps as never);
 
     await runAutonomousLoop('proj-1');
 
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
-    const sessionArgs = stmts.createSession.run.mock.calls[0];
-    expect(sessionArgs[1]).toBe('dev-2');
+    expect(stmts.createSession.run.mock.calls[0][1]).toBe('hub-frontend');
   });
 
-  it('falls back to round-robin when suggested_assignee matches no assignable agent', async () => {
-    const card = makeCard({ suggested_assignee: 'ghost-agent' });
+  it('falls back to the project lead when no label matches', async () => {
+    const card = makeCard({ labels: 'mobile' });
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
       getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
@@ -879,41 +745,50 @@ describe('runAutonomousLoop — suggested_assignee routing', () => {
       getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
     });
     const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(makeProject());
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [
+          { id: 'hub-lead', name: 'Lead', role: 'lead', engine: 'claude-code' },
+          { id: 'hub-frontend', name: 'Frontend', role: 'sub', engine: 'claude-code' },
+          { id: 'hub-backend', name: 'Backend', role: 'sub', engine: 'claude-code' },
+        ],
+      }),
+    );
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
     initAutonomous(deps as never);
 
     await runAutonomousLoop('proj-1');
 
-    // Round-robin from idx 0 → dev-1.
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
-    const sessionArgs = stmts.createSession.run.mock.calls[0];
-    expect(sessionArgs[1]).toBe('dev-1');
+    expect(stmts.createSession.run.mock.calls[0][1]).toBe('hub-lead');
   });
 
-  it('falls back to round-robin when suggested_assignee has no open slots', async () => {
-    // dev-1 already has perAgentLimit (=2) active sessions, so even though
-    // the card prefers dev-1 it must spill to dev-2.
-    const card = makeCard({ suggested_assignee: 'dev-1' });
-    const epicHigh = {
-      ...ACTIVE_EPIC,
-      autonomous_max_concurrent: 4,
-    } as KanbanEpicRow;
+  it('falls back to the lead when the matching specialist is out of slots', async () => {
+    // perAgentLimit = ceil(3/2) = 2. dev-1 already has 2 active sessions, so
+    // the frontend label can't be honored → spillover to the lead.
+    const card = makeCard({ labels: 'frontend' });
     const stmts = makeStmts({
-      getAutonomousEpic: { get: vi.fn(() => epicHigh) },
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
       getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
       getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
       getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
     });
-    // Mark dev-1 as already saturated (2 active sessions = perAgentLimit).
     stmts.getSession.get.mockImplementation((sid: string) => {
       if (sid === 'busy-1' || sid === 'busy-2') {
-        return { agent_id: 'dev-1' } as SessionRow;
+        return { agent_id: 'hub-frontend' } as SessionRow;
       }
       return undefined;
     });
     const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(makeProject());
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [
+          { id: 'hub-lead', name: 'Lead', role: 'lead', engine: 'claude-code' },
+          { id: 'hub-frontend', name: 'Frontend', role: 'sub', engine: 'claude-code' },
+          { id: 'hub-backend', name: 'Backend', role: 'sub', engine: 'claude-code' },
+        ],
+      }),
+    );
     deps.getActiveProcesses.mockReturnValue(
       new Map<string, unknown>([
         ['busy-1', {}],
@@ -926,220 +801,35 @@ describe('runAutonomousLoop — suggested_assignee routing', () => {
     await runAutonomousLoop('proj-1');
 
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
-    const sessionArgs = stmts.createSession.run.mock.calls[0];
-    expect(sessionArgs[1]).toBe('dev-2');
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  runTriageBatchForProject — intake spawning + concurrency cap
-//
-//  Verifies the per-project triage spawner: it picks intake (or lead),
-//  pulls the untriaged set, locks each card with assignee=intake.name +
-//  session_id, kicks handleChat with a seed prompt, and respects
-//  TRIAGE_MAX_CONCURRENT. No-op when the project has no intake/lead.
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe('runTriageBatchForProject', () => {
-  it('no-ops when the project has no intake or lead agent', async () => {
-    const card = makeCard({ triaged_at: null });
-    const stmts = makeStmts({
-      getUntriagedAutonomousCards: { all: vi.fn(() => [card]) },
-    });
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(makeProject()); // sub agents only
-    initAutonomous(deps as never);
-
-    await runTriageBatchForProject('proj-1', ACTIVE_EPIC);
-
-    expect(stmts.getUntriagedAutonomousCards.all).not.toHaveBeenCalled();
-    expect(stmts.createSession.run).not.toHaveBeenCalled();
-    expect(deps.handleChat).not.toHaveBeenCalled();
+    expect(stmts.createSession.run.mock.calls[0][1]).toBe('hub-lead');
   });
 
-  it('spawns one intake session per untriaged card and locks the card', async () => {
-    const c1 = makeCard({ id: 'c1', title: 'Card One', triaged_at: null });
-    const c2 = makeCard({ id: 'c2', title: 'Card Two', triaged_at: null });
+  it('routes multiple cards to the same specialist when labels match', async () => {
+    const c1 = makeCard({ id: 'c1', title: 'FE one', labels: 'frontend' });
+    const c2 = makeCard({ id: 'c2', title: 'FE two', labels: 'frontend', position: 1 });
+    const epicHigh = { ...ACTIVE_EPIC, autonomous_max_concurrent: 4 } as KanbanEpicRow;
     const stmts = makeStmts({
-      getUntriagedAutonomousCards: { all: vi.fn(() => [c1, c2]) },
+      getAutonomousEpic: { get: vi.fn(() => epicHigh) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [c1, c2]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [c1, c2]) },
     });
     const deps = makeDeps(stmts);
     deps.findProject.mockReturnValue(
       makeProject({
         agents: [
-          { id: 'intake-1', name: 'Intake', role: 'intake', engine: 'claude-code' },
-          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
+          { id: 'hub-frontend', name: 'Frontend', role: 'sub', engine: 'claude-code' },
+          { id: 'hub-backend', name: 'Backend', role: 'sub', engine: 'claude-code' },
         ],
       }),
     );
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
     initAutonomous(deps as never);
 
-    await runTriageBatchForProject('proj-1', ACTIVE_EPIC);
+    await runAutonomousLoop('proj-1');
 
-    // Two intake sessions created, each tied to intake-1.
     expect(stmts.createSession.run).toHaveBeenCalledTimes(2);
-    expect(stmts.createSession.run.mock.calls[0][1]).toBe('intake-1');
-    expect(stmts.createSession.run.mock.calls[1][1]).toBe('intake-1');
-
-    // Each card was locked: assignee=Intake, session_id=<created session id>.
-    expect(stmts.updateKanbanCard.run).toHaveBeenCalledTimes(2);
-    const firstUpdate = stmts.updateKanbanCard.run.mock.calls[0];
-    // updateKanbanCard signature: (title, description, priority, assignee, labels, session_id, ...)
-    expect(firstUpdate[3]).toBe('Intake');
-    expect(typeof firstUpdate[5]).toBe('string'); // session id
-
-    // handleChat was called twice with a seed prompt.
-    expect(deps.handleChat).toHaveBeenCalledTimes(2);
-    const chatArgs = deps.handleChat.mock.calls[0][1] as { agentId: string; content: string };
-    expect(chatArgs.agentId).toBe('intake-1');
-    expect(chatArgs.content).toContain('Card One');
-  });
-
-  it('respects TRIAGE_MAX_CONCURRENT (caps at 3 spawns per pass)', async () => {
-    // 5 untriaged cards; only 3 should be spawned in one pass.
-    const cards = Array.from({ length: 5 }, (_, i) =>
-      makeCard({ id: `c${i}`, title: `Card ${i}`, position: i, triaged_at: null }),
-    );
-    const stmts = makeStmts({
-      getUntriagedAutonomousCards: { all: vi.fn(() => cards) },
-    });
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(
-      makeProject({
-        agents: [
-          { id: 'intake-1', name: 'Intake', role: 'intake', engine: 'claude-code' },
-          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
-        ],
-      }),
-    );
-    initAutonomous(deps as never);
-
-    await runTriageBatchForProject('proj-1', ACTIVE_EPIC);
-
-    expect(stmts.createSession.run).toHaveBeenCalledTimes(3);
-    expect(deps.handleChat).toHaveBeenCalledTimes(3);
-  });
-
-  it('counts in-flight triage sessions toward the project-wide cap', async () => {
-    // Production SQL `getUntriagedAutonomousCards` filters on assignee IS
-    // NULL, so locked-and-in-flight cards never appear in that result set.
-    // The cap is enforced via the dedicated `getInFlightTriageCards` query,
-    // intersected with activeProcesses to ignore stale locks. Here we have
-    // 2 live triage sessions already running and 5 untriaged cards waiting
-    // — only one new session should spawn (3 - 2 in-flight = 1 slot).
-    const fresh = Array.from({ length: 5 }, (_, i) =>
-      makeCard({ id: `fresh-${i}`, title: `Fresh ${i}`, position: i, triaged_at: null }),
-    );
-    const stmts = makeStmts({
-      getUntriagedAutonomousCards: { all: vi.fn(() => fresh) },
-      getInFlightTriageCards: {
-        all: vi.fn(() => [
-          { id: 'locked-1', session_id: 'triage-sid-1' },
-          { id: 'locked-2', session_id: 'triage-sid-2' },
-        ]),
-      },
-    });
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(
-      makeProject({
-        agents: [
-          { id: 'intake-1', name: 'Intake', role: 'intake', engine: 'claude-code' },
-          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
-        ],
-      }),
-    );
-    deps.getActiveProcesses.mockReturnValue(
-      new Map<string, unknown>([
-        ['triage-sid-1', {}],
-        ['triage-sid-2', {}],
-      ]),
-    );
-    initAutonomous(deps as never);
-
-    await runTriageBatchForProject('proj-1', ACTIVE_EPIC);
-
-    // 1 slot available — only one fresh card spawns.
-    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
-    expect(deps.handleChat).toHaveBeenCalledTimes(1);
-    expect(stmts.getInFlightTriageCards.all).toHaveBeenCalledWith(ACTIVE_EPIC.id, 'Intake');
-    const chatArgs = deps.handleChat.mock.calls[0][1] as { content: string };
-    expect(chatArgs.content).toContain('Fresh 0');
-  });
-
-  it('ignores stale in-flight locks whose triage session is no longer running', async () => {
-    // A card may still hold assignee=triage / session_id=… in the DB after
-    // its triage session crashed. Those rows show up in
-    // getInFlightTriageCards but their session_id is absent from
-    // activeProcesses; they MUST NOT count toward the cap.
-    const fresh = Array.from({ length: 4 }, (_, i) =>
-      makeCard({ id: `fresh-${i}`, title: `Fresh ${i}`, position: i, triaged_at: null }),
-    );
-    const stmts = makeStmts({
-      getUntriagedAutonomousCards: { all: vi.fn(() => fresh) },
-      getInFlightTriageCards: {
-        all: vi.fn(() => [
-          { id: 'stale-1', session_id: 'crashed-sid' },
-          { id: 'stale-2', session_id: 'also-crashed' },
-        ]),
-      },
-    });
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(
-      makeProject({
-        agents: [
-          { id: 'intake-1', name: 'Intake', role: 'intake', engine: 'claude-code' },
-          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
-        ],
-      }),
-    );
-    // No live processes — both stale locks should be filtered out.
-    deps.getActiveProcesses.mockReturnValue(new Map<string, unknown>());
-    initAutonomous(deps as never);
-
-    await runTriageBatchForProject('proj-1', ACTIVE_EPIC);
-
-    // Stale locks ignored → full cap of 3 slots available.
-    expect(stmts.createSession.run).toHaveBeenCalledTimes(3);
-    expect(deps.handleChat).toHaveBeenCalledTimes(3);
-  });
-
-  it('returns early when the cap is fully consumed by live triage sessions', async () => {
-    // 3 live triage sessions already running, more untriaged cards waiting:
-    // the spawner must early-return without creating new sessions.
-    const fresh = Array.from({ length: 5 }, (_, i) =>
-      makeCard({ id: `fresh-${i}`, title: `Fresh ${i}`, position: i, triaged_at: null }),
-    );
-    const stmts = makeStmts({
-      getUntriagedAutonomousCards: { all: vi.fn(() => fresh) },
-      getInFlightTriageCards: {
-        all: vi.fn(() => [
-          { id: 'l1', session_id: 's1' },
-          { id: 'l2', session_id: 's2' },
-          { id: 'l3', session_id: 's3' },
-        ]),
-      },
-    });
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(
-      makeProject({
-        agents: [
-          { id: 'intake-1', name: 'Intake', role: 'intake', engine: 'claude-code' },
-          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
-        ],
-      }),
-    );
-    deps.getActiveProcesses.mockReturnValue(
-      new Map<string, unknown>([
-        ['s1', {}],
-        ['s2', {}],
-        ['s3', {}],
-      ]),
-    );
-    initAutonomous(deps as never);
-
-    await runTriageBatchForProject('proj-1', ACTIVE_EPIC);
-
-    expect(stmts.createSession.run).not.toHaveBeenCalled();
-    expect(deps.handleChat).not.toHaveBeenCalled();
+    expect(stmts.createSession.run.mock.calls[0][1]).toBe('hub-frontend');
+    expect(stmts.createSession.run.mock.calls[1][1]).toBe('hub-frontend');
   });
 });
