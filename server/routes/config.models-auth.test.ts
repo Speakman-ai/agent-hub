@@ -92,4 +92,68 @@ describe('GET /api/config/models — authenticated engine contract', () => {
       if (existsSync(fixture)) unlinkSync(fixture);
     }
   });
+
+  it('treats a saved claude setup-token as Claude auth even without API key or CLI OAuth', async () => {
+    // Snapshot env so other tests inheriting credentials don't decide this case.
+    const savedApiKeyEnv = process.env.ANTHROPIC_API_KEY;
+    const savedOauthEnv = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+
+    const before = await request.get('/api/config/claude-auth').expect(200);
+    const hadApiKey = !!before.body?.apiKey?.configured;
+    const hadToken = !!before.body?.oauthToken?.configured;
+
+    // Drop API key + setup token to baseline so the only Claude auth signal we
+    // toggle is `claudeCodeOAuthToken`. `hasClaudeOauth()` reads ~/.claude on
+    // disk; if a real OAuth login exists in the dev's home dir this assertion
+    // flips early — the negative-case skip below covers that.
+    await request.post('/api/config/claude-auth/api-key').send({ apiKey: '' }).expect(200);
+    await request.post('/api/config/claude-auth/oauth-token').send({ oauthToken: '' }).expect(200);
+
+    const baseline = await request.get('/api/config/models').expect(200);
+    const hostHasOtherClaudeAuth = baseline.body.engineAuth['claude-code'] === true;
+
+    try {
+      await request
+        .post('/api/config/claude-auth/oauth-token')
+        .send({ oauthToken: 'sk-ant-oat01-test-fixture' })
+        .expect(200);
+
+      const res = await request.get('/api/config/models').expect(200);
+      const body = res.body as {
+        engineAuth: { 'claude-code': boolean };
+        engineValidModels: { 'claude-code': string[] };
+      };
+      expect(body.engineAuth['claude-code']).toBe(true);
+      expect(body.engineValidModels['claude-code'].length).toBeGreaterThan(0);
+
+      if (!hostHasOtherClaudeAuth) {
+        // Removing the setup token should now flip Claude back to unauthenticated —
+        // proves the setup token (not some unrelated source) is what enabled it.
+        await request
+          .post('/api/config/claude-auth/oauth-token')
+          .send({ oauthToken: '' })
+          .expect(200);
+        const after = await request.get('/api/config/models').expect(200);
+        expect(after.body.engineAuth['claude-code']).toBe(false);
+        expect(after.body.engineValidModels['claude-code']).toEqual([]);
+      }
+    } finally {
+      if (!hadToken) {
+        await request
+          .post('/api/config/claude-auth/oauth-token')
+          .send({ oauthToken: '' })
+          .catch(() => {});
+      }
+      if (!hadApiKey) {
+        await request
+          .post('/api/config/claude-auth/api-key')
+          .send({ apiKey: '' })
+          .catch(() => {});
+      }
+      if (savedApiKeyEnv !== undefined) process.env.ANTHROPIC_API_KEY = savedApiKeyEnv;
+      if (savedOauthEnv !== undefined) process.env.CLAUDE_CODE_OAUTH_TOKEN = savedOauthEnv;
+    }
+  });
 });

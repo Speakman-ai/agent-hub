@@ -772,7 +772,7 @@ function ClaudeAuthSection() {
                 <span className="text-gray-300 font-mono capitalize">{apiKeySource}</span>
               </>
             )}
-            {auth?.token?.expiresAt && (
+            {auth?.token?.expiresAt && !apiKeyConfigured && !oauthTokenConfigured && (
               <>
                 <span className="text-gray-500">Token Expires</span>
                 <span className={`font-mono ${tokenExpired ? 'text-red-400' : 'text-gray-300'}`}>

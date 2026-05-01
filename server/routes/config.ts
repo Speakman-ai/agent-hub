@@ -306,9 +306,15 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
   });
 
   router.get('/api/config/models', async (_req: Request, res: Response) => {
+    // `claudeCodeOAuthToken` is the `claude setup-token` bearer; `buildSpawnEnv` exports it as
+    // `CLAUDE_CODE_OAUTH_TOKEN`, so a configured setup token is a valid auth source even when the
+    // CLI's `~/.claude/.credentials.json` OAuth login is missing or expired. Without this, the
+    // engine picker hides Claude despite Settings showing the token saved.
     const claudeAuthenticated = !!(
       config.anthropicApiKey ||
       process.env.ANTHROPIC_API_KEY ||
+      config.claudeCodeOAuthToken ||
+      process.env.CLAUDE_CODE_OAUTH_TOKEN ||
       hasClaudeOauth()
     );
     const geminiAuthenticated = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
