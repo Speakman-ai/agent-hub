@@ -109,37 +109,33 @@ describe('session-ownership helpers', () => {
   });
 });
 
-describe('userOwnsSession — strict mode (auth enabled)', () => {
+describe('userOwnsSession — apiKey-only legacy mode', () => {
   beforeEach(() => {
     getDb().exec('DELETE FROM sessions');
     resetOrgOwnerCache();
   });
 
-  it('only the recorded owner may act on a row when an apiKey is configured', () => {
-    // Flip the apiKey to enable strict-mode ownership. We restore it
-    // afterwards so other tests stay in the no-auth bypass branch.
+  it('every authenticated caller passes when apiKey is set but no auth.json exists', () => {
+    // Regression for the prod 404 bug: PR a08fccc started gating every
+    // `/api/sessions/:sessionId/*` route on `userOwnsSession`, but an
+    // install that upgraded from the apiKey-only era has no `auth.json`
+    // and an empty `users` table. The apiKey middleware authorizes the
+    // caller as `Owner`, but `resolveOwnerUserId` had nothing to map to
+    // — `getOrgOwnerUserId()` returned null because the `users` table
+    // was empty — so the predicate returned false and every session
+    // route 404'd. The test harness leaves `auth.json` absent and
+    // `users` empty, which exactly mirrors that prod state.
     const previous = config.apiKey;
     config.apiKey = 'test-key';
     try {
       const id = seedSession();
       setSessionOwner(id, 'creator');
-      expect(userOwnsSession({ authUserId: 'creator' }, id)).toBe(true);
-      expect(userOwnsSession({ authUserId: 'snooper' }, id)).toBe(false);
-      expect(userOwnsSession(undefined, id)).toBe(false);
-    } finally {
-      config.apiKey = previous;
-    }
-  });
+      expect(userOwnsSession({ authUserId: 'anyone' }, id)).toBe(true);
+      expect(userOwnsSession(undefined, id)).toBe(true);
 
-  it('NULL-owner rows are treated as belonging to the org owner', () => {
-    const previous = config.apiKey;
-    config.apiKey = 'test-key';
-    try {
-      const id = seedSession();
-      // No setSessionOwner — owner_user_id stays NULL (legacy row).
-      // With no users in orgs.db, getOrgOwnerUserId() returns null and
-      // every caller is rejected (callerId === null path).
-      expect(userOwnsSession({ authUserId: 'anyone' }, id)).toBe(false);
+      const legacyNullOwner = seedSession();
+      expect(userOwnsSession({ authUserId: 'anyone' }, legacyNullOwner)).toBe(true);
+      expect(userOwnsSession(undefined, legacyNullOwner)).toBe(true);
     } finally {
       config.apiKey = previous;
     }

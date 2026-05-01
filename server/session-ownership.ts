@@ -169,6 +169,18 @@ export function userOwnsSession(req: OwnerResolvable | undefined, sessionId: str
   // This mirrors `authMiddleware`'s no-auth bypass so ownership doesn't
   // gate routes that auth itself doesn't.
   if (isAuthDisabled()) return true;
+  // apiKey-only legacy mode: an `apiKey` is configured but per-user JWT
+  // auth has never been set up (`auth.json` does not exist and the
+  // `users` table is empty). The apiKey middleware already authorized
+  // this caller and stamped them as `Owner`; with no per-user identity
+  // model in place there is nobody to scope ownership against, so
+  // ownership must be permissive. Without this branch every
+  // `/api/sessions/:sessionId/*` request 404s on prod installs that
+  // upgraded from the apiKey-only era: `resolveOwnerUserId` returns
+  // null (no users) and the `if (!callerId)` path below rejects the
+  // call. Once `/api/auth/setup` runs, `getAuthRecord()` is non-null
+  // and we fall through to strict enforcement.
+  if (!getAuthRecord()) return true;
   const owner = getSessionOwner(sessionId);
   const callerId = resolveOwnerUserId(req);
   if (!callerId) return false;
