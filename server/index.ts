@@ -316,6 +316,7 @@ function ensureWorktree(
   projectCwd: string,
   agentId: string,
   installCommand: string | null,
+  prBaseBranch?: string | null,
 ): Promise<string> {
   return ensureSessionWorkspace(
     session,
@@ -353,6 +354,7 @@ function ensureWorktree(
         );
       }
     },
+    prBaseBranch ?? null,
   );
 }
 

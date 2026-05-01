@@ -194,6 +194,7 @@ export interface ChatHandlerDeps {
     projectCwd: string,
     agentId: string,
     installCommand: string | null,
+    prBaseBranch?: string | null,
   ) => Promise<string>;
   drainQueue: (sessionId: string) => void;
   handleDelegation: (
@@ -1478,6 +1479,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
     // Same cwd as the later `spawn` (worktree path when isolation is on) so
     // `cursor-agent create-chat` and `--resume` agree on repo root / `.cursor`.
+    let sessionPrBase: string | null = null;
+    try {
+      const cardForWorktree = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
+        | KanbanCardRow
+        | undefined;
+      const rawBase = cardForWorktree?.pr_base_branch;
+      sessionPrBase = typeof rawBase === 'string' && rawBase.trim() !== '' ? rawBase.trim() : null;
+    } catch {
+      sessionPrBase = null;
+    }
+
     let effectiveCwd: string = project.cwd;
     if (
       session!.use_worktree &&
@@ -1490,6 +1502,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         project.cwd,
         agentId,
         (project as ProjectWithCommands).commands?.install || null,
+        sessionPrBase,
       );
       session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (session) {

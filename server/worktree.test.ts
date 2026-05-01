@@ -296,6 +296,38 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(existsSync(path.join(clonePath, '.git'))).toBe(true);
   });
 
+  it('positions a fresh session clone on kanban pr_base_branch when set', async () => {
+    const persist = vi.fn();
+
+    git(sourceRepo, 'checkout -b feature/stack-base');
+    writeFileSync(path.join(sourceRepo, 'from_stack.txt'), 'stack line\n');
+    git(sourceRepo, 'add from_stack.txt');
+    git(sourceRepo, 'commit -m "stack commit"');
+    git(sourceRepo, 'push -u origin feature/stack-base');
+
+    git(sourceRepo, 'checkout main');
+    writeFileSync(path.join(sourceRepo, 'from_main.txt'), 'main line\n');
+    git(sourceRepo, 'add from_main.txt');
+    git(sourceRepo, 'commit -m "main only"');
+    git(sourceRepo, 'push origin main');
+
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+      null,
+      undefined,
+      'feature/stack-base',
+    );
+    createdWorkspace = clonePath;
+
+    expect(existsSync(path.join(clonePath, 'from_stack.txt'))).toBe(true);
+    expect(existsSync(path.join(clonePath, 'from_main.txt'))).toBe(false);
+    const branch = git(clonePath, 'rev-parse --abbrev-ref HEAD');
+    expect(branch.startsWith('agent-hub/')).toBe(true);
+  });
+
   it('does not reset the checked-out feature branch on reuse', async () => {
     const persist = vi.fn();
 

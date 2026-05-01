@@ -419,6 +419,16 @@ async function getDefaultBranch(cwd: string): Promise<string> {
   }
 }
 
+/** Remote branch tip to sync a process/session clone to (kanban `pr_base_branch` or repo default). */
+async function resolveSyncBranch(
+  projectCwd: string,
+  override: string | null | undefined,
+): Promise<string> {
+  const trimmed = override?.trim();
+  if (trimmed) return trimmed;
+  return getDefaultBranch(projectCwd);
+}
+
 function detectInstallCommand(dir: string): string | null {
   if (existsSync(path.join(dir, 'bun.lockb')) || existsSync(path.join(dir, 'bun.lock')))
     return 'bun install --frozen-lockfile';
@@ -526,6 +536,8 @@ export async function getOrCreateProcessWorktree(
   projectCwd: string,
   processKey: string,
   installCommand?: string | null,
+  /** Optional `origin/<branch>` tip to reset/sync to (e.g. kanban `pr_base_branch`). */
+  syncBaseBranch?: string | null,
 ): Promise<string> {
   if (!existsSync(projectCwd)) {
     const fallback = config.defaultCwd || homedir();
@@ -549,8 +561,15 @@ export async function getOrCreateProcessWorktree(
         cwd: cloneDir,
         timeoutMs: FETCH_TIMEOUT_MS,
       });
-      const defaultBranch = await getDefaultBranch(projectCwd);
-      await runGit(['reset', '--hard', `origin/${defaultBranch}`], { cwd: cloneDir });
+      const syncBranch = await resolveSyncBranch(projectCwd, syncBaseBranch);
+      await fetchWithRetry(
+        ['fetch', 'origin', `${syncBranch}:refs/remotes/origin/${syncBranch}`, '--depth', '1'],
+        {
+          cwd: cloneDir,
+          timeoutMs: FETCH_TIMEOUT_MS,
+        },
+      );
+      await runGit(['reset', '--hard', `origin/${syncBranch}`], { cwd: cloneDir });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[Workspace] Sync failed for "${safeName}", reusing as-is:`, message);
@@ -581,6 +600,23 @@ export async function getOrCreateProcessWorktree(
       );
     }
     await copyGitUserConfig(projectCwd, cloneDir);
+    const syncBranch = await resolveSyncBranch(projectCwd, syncBaseBranch);
+    try {
+      await fetchWithRetry(
+        ['fetch', 'origin', `${syncBranch}:refs/remotes/origin/${syncBranch}`, '--depth', '1'],
+        {
+          cwd: cloneDir,
+          timeoutMs: FETCH_TIMEOUT_MS,
+        },
+      );
+      await runGit(['reset', '--hard', `origin/${syncBranch}`], { cwd: cloneDir });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[Workspace] Could not sync new process clone to origin/${syncBranch}, using clone default:`,
+        message,
+      );
+    }
     await enableHuskyHooks(cloneDir);
     setupDependencies(projectCwd, cloneDir, installCommand ?? null);
     console.log(`[Workspace] Created clone: ${cloneDir}`);
@@ -602,6 +638,8 @@ export async function ensureSessionWorkspace(
   persistFn: PersistFn,
   installCommand?: string | null,
   onFailure?: OnFailureFn,
+  /** When set (e.g. kanban `pr_base_branch`), the session branch is created from `origin/<branch>` instead of the repo default after shallow clone. */
+  prBaseBranch?: string | null,
 ): Promise<string> {
   if (session.worktree_path && existsSync(session.worktree_path)) {
     return session.worktree_path;
@@ -660,6 +698,25 @@ export async function ensureSessionWorkspace(
         { timeoutMs: CLONE_TIMEOUT_MS },
         cloneDir,
       );
+    }
+
+    const base = prBaseBranch?.trim();
+    if (base) {
+      try {
+        await fetchWithRetry(
+          ['fetch', 'origin', `${base}:refs/remotes/origin/${base}`, '--depth', '1'],
+          {
+            cwd: cloneDir,
+            timeoutMs: FETCH_TIMEOUT_MS,
+          },
+        );
+        await runGit(['reset', '--hard', `origin/${base}`], { cwd: cloneDir });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[Workspace] Failed to position session clone on origin/${base}:`, message);
+        onFailure?.(session.id, message);
+        return projectCwd;
+      }
     }
 
     await runGit(['checkout', '-b', branchName], { cwd: cloneDir });
