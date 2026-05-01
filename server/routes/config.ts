@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import { exec, execFile } from 'child_process';
@@ -133,12 +133,22 @@ interface KanbanImportData {
 interface ProjectExportData {
   version: number;
   type: string;
+  // The export endpoint serializes the entire project record (id, name, cwd,
+  // ahw, color, agents, commands, leadAgent, subAgents, …). The merge-into-
+  // existing path only consumes a subset, but the create-from-export path
+  // needs id/name/cwd to seed a brand-new project, so the type lists those
+  // explicitly.
   project?: {
+    id?: string;
+    name?: string;
+    cwd?: string;
+    ahw?: string;
     agents?: unknown[];
     color?: string;
     leadAgent?: string;
     subAgents?: string[];
     commands?: Record<string, string>;
+    [key: string]: unknown;
   };
   crons?: CronImportData[];
   rooms?: RoomImportData[];
@@ -254,6 +264,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     serverDir,
     ensureReviewerAgents,
     broadcast,
+    getProjectDataDir,
   } = deps;
   const router = Router();
 
@@ -1124,6 +1135,307 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
   });
 
+  // Internal helper shared by both import endpoints. Walks the v3 export and
+  // merges each section into `targetProject`. Returns the per-section result
+  // map exposed to clients. Caller is responsible for resolving the target
+  // project (existing-by-id for the per-project endpoint, freshly created for
+  // the no-id endpoint) and for sending the HTTP response — keeping IO out of
+  // here means the helper is easy to unit-test in isolation.
+  function runProjectImport(
+    targetProject: Project,
+    data: ProjectExportData,
+  ): Record<string, string | boolean> {
+    const targetProjectId = targetProject.id;
+    const results: Record<string, string | boolean> = {
+      project: false,
+      crons: false,
+      rooms: false,
+      webhooks: false,
+      wiki: false,
+      kanban: false,
+    };
+
+    if (data.project) {
+      (targetProject as Record<string, unknown>).agents =
+        data.project.agents || (targetProject as Record<string, unknown>).agents;
+      targetProject.color = data.project.color || targetProject.color;
+      (targetProject as Record<string, unknown>).leadAgent =
+        data.project.leadAgent || (targetProject as Record<string, unknown>).leadAgent;
+      (targetProject as Record<string, unknown>).subAgents =
+        data.project.subAgents || (targetProject as Record<string, unknown>).subAgents;
+      if (data.project.commands)
+        (targetProject as Record<string, unknown>).commands = data.project.commands;
+      saveProjects();
+      results.project = true;
+    }
+
+    if (Array.isArray(data.crons)) {
+      const existingCrons = stmts.getCrons.all() as Array<{ name: string }>;
+      const existingNames = new Set(existingCrons.map((c) => c.name));
+      let imported = 0;
+      for (const c of data.crons) {
+        if (existingNames.has(c.name)) continue;
+        // Validate `model` against the cron API allowlist so a stale or
+        // hand-crafted export can't smuggle an unknown id into the DB
+        // and crash the CLI at run time. An invalid id falls back to
+        // null (engine default) instead of failing the whole import.
+        let importedModel: string | null = null;
+        try {
+          importedModel = normalizeCronModel(c.model);
+        } catch {
+          importedModel = null;
+        }
+        stmts.createCron.run(
+          c.name,
+          c.schedule,
+          c.prompt,
+          targetProject.cwd,
+          c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
+          targetProject.id || null,
+          typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
+          c.notify_on_run ? 1 : 0,
+          importedModel,
+        );
+        imported++;
+      }
+      results.crons = `${imported} new, ${data.crons.length - imported} skipped`;
+    }
+
+    if (Array.isArray(data.rooms)) {
+      const existingRooms = stmts.getRooms.all() as Array<{ name: string }>;
+      const existingNames = new Set(existingRooms.map((r) => r.name));
+      let imported = 0;
+      for (const r of data.rooms) {
+        if (existingNames.has(r.name)) continue;
+        const roomId = uuidv4();
+        stmts.createProjectRoom.run(roomId, r.name, targetProjectId);
+        if (r.max_turns) stmts.updateRoomMaxTurns.run(r.max_turns, roomId);
+        if (Array.isArray(r.agents)) {
+          for (const ra of r.agents) {
+            stmts.addRoomAgent.run(roomId, ra.agentId || ra.agent_id, roomId);
+          }
+        }
+        imported++;
+      }
+      results.rooms = `${imported} new, ${data.rooms.length - imported} skipped`;
+    }
+
+    if (Array.isArray(data.webhooks)) {
+      const existing = stmts.getWebhookConfigsByProject.all(targetProjectId) as Array<{
+        repo_url: string;
+      }>;
+      const existingRepos = new Set(existing.map((w) => w.repo_url));
+      let imported = 0;
+      for (const w of data.webhooks) {
+        if (existingRepos.has(w.repo_url)) continue;
+        const secret = w.secret && !w.secret.includes('REDACTED') ? w.secret : uuidv4();
+        stmts.createWebhookConfig.run(
+          targetProjectId,
+          w.repo_url,
+          secret,
+          w.events || '{}',
+          w.enabled ? 1 : 0,
+          typeof w.author_allowlist === 'string' ? w.author_allowlist : '[]',
+        );
+        imported++;
+      }
+      results.webhooks = `${imported} new, ${data.webhooks.length - imported} skipped`;
+    }
+
+    if (Array.isArray(data.wiki)) {
+      let imported = 0,
+        updated = 0;
+      for (const page of data.wiki) {
+        const existing = stmts.getWikiPage.get(targetProjectId, page.slug) as
+          | Record<string, unknown>
+          | undefined;
+        if (existing) {
+          stmts.updateWikiPage.run(
+            page.title,
+            page.content,
+            page.category || 'general',
+            page.updated_by || 'import',
+            targetProjectId,
+            page.slug,
+          );
+          updated++;
+        } else {
+          stmts.createWikiPage.run(
+            uuidv4(),
+            targetProjectId,
+            page.title,
+            page.slug,
+            page.content || '',
+            page.category || 'general',
+            page.updated_by || 'import',
+          );
+          imported++;
+        }
+      }
+      results.wiki = `${imported} new, ${updated} updated`;
+    }
+
+    if (data.kanban) {
+      let existingBoard = stmts.getKanbanBoard.get(targetProjectId) as { id: string } | undefined;
+      let boardId: string;
+      let boardCreated = false;
+      const colIdMap: Record<string, string> = {};
+
+      if (existingBoard) {
+        boardId = existingBoard.id;
+        const existingCols = stmts.getKanbanColumns.all(boardId) as Array<{
+          id: string;
+          name: string;
+        }>;
+        for (const col of existingCols) {
+          const matchingImported = (data.kanban.columns || []).find(
+            (c) => c.name.toLowerCase() === col.name.toLowerCase(),
+          );
+          if (matchingImported) colIdMap[matchingImported.id] = col.id;
+        }
+        for (const col of data.kanban.columns || []) {
+          if (!colIdMap[col.id]) {
+            const newColId = uuidv4();
+            colIdMap[col.id] = newColId;
+            stmts.createKanbanColumn.run(
+              newColId,
+              boardId,
+              col.name,
+              col.position,
+              col.color || null,
+            );
+          }
+        }
+      } else {
+        boardId = uuidv4();
+        stmts.createKanbanBoard.run(
+          boardId,
+          targetProjectId,
+          data.kanban.board?.name || `${targetProject.name} Board`,
+        );
+        boardCreated = true;
+        for (const col of data.kanban.columns || []) {
+          const newColId = uuidv4();
+          colIdMap[col.id] = newColId;
+          stmts.createKanbanColumn.run(
+            newColId,
+            boardId,
+            col.name,
+            col.position,
+            col.color || null,
+          );
+        }
+      }
+
+      const epicIdMap: Record<string, string> = {};
+      const existingEpics = stmts.getKanbanEpics.all(boardId) as Array<{
+        id: string;
+        name: string;
+      }>;
+      const existingEpicNames = new Set(existingEpics.map((e) => e.name.toLowerCase()));
+      let epicsImported = 0;
+      for (const epic of data.kanban.epics || []) {
+        if (existingEpicNames.has(epic.name.toLowerCase())) {
+          const existing = existingEpics.find(
+            (e) => e.name.toLowerCase() === epic.name.toLowerCase(),
+          );
+          if (existing) epicIdMap[epic.id] = existing.id;
+          continue;
+        }
+        const newEpicId = uuidv4();
+        epicIdMap[epic.id] = newEpicId;
+        stmts.createKanbanEpic.run(
+          newEpicId,
+          boardId,
+          epic.name,
+          epic.description || '',
+          epic.color || '#6b7280',
+          epic.position || 0,
+        );
+        epicsImported++;
+      }
+
+      const existingCards = stmts.getKanbanCards.all(boardId) as Array<{ title: string }>;
+      const existingCardTitles = new Set(existingCards.map((c) => c.title.toLowerCase()));
+      let cardsImported = 0,
+        cardsSkipped = 0;
+      for (const card of data.kanban.cards || []) {
+        if (existingCardTitles.has(card.title.toLowerCase())) {
+          cardsSkipped++;
+          continue;
+        }
+        const newCardId = uuidv4();
+        const newColId = colIdMap[card.column_id];
+        if (!newColId) continue;
+        const newEpicId = card.epic_id ? epicIdMap[card.epic_id] || null : null;
+        const importAssignModelRaw = (card as { assign_model?: string | null }).assign_model;
+        let importAssignModel =
+          typeof importAssignModelRaw === 'string' && importAssignModelRaw.trim()
+            ? importAssignModelRaw.trim()
+            : null;
+        if (importAssignModel) {
+          const assigneeForModel =
+            typeof card.assignee === 'string' && card.assignee.trim() ? card.assignee.trim() : null;
+          const v = validateKanbanAssignModel(
+            importAssignModel,
+            targetProject,
+            assigneeForModel,
+            config,
+          );
+          if (!v.ok) importAssignModel = null;
+        }
+        stmts.createKanbanCard.run(
+          newCardId,
+          newColId,
+          boardId,
+          card.title,
+          card.description || '',
+          card.priority || 'medium',
+          card.assignee || '',
+          card.labels || '',
+          null,
+          card.github_issue_url || null,
+          card.created_by || 'import',
+          importAssignModel,
+          card.position || 0,
+        );
+        if (newEpicId) {
+          stmts.updateKanbanCard.run(
+            card.title,
+            card.description || '',
+            card.priority || 'medium',
+            card.assignee || null,
+            card.labels || null,
+            null,
+            card.github_issue_url || null,
+            card.pr_url || null,
+            newEpicId,
+            importAssignModel,
+            card.pr_base_branch ?? null,
+            newCardId,
+          );
+        }
+        const cardComments = data.kanban.comments?.[card.id];
+        if (cardComments?.length) {
+          for (const comment of cardComments) {
+            stmts.createKanbanCardComment.run(
+              uuidv4(),
+              newCardId,
+              comment.author || 'import',
+              comment.content,
+            );
+          }
+        }
+        cardsImported++;
+      }
+      results.kanban = boardCreated
+        ? `Board created with ${data.kanban.columns?.length || 0} columns, ${cardsImported} cards, ${epicsImported} epics`
+        : `Merged: ${cardsImported} new cards, ${cardsSkipped} skipped, ${epicsImported} new epics`;
+    }
+
+    return results;
+  }
+
   router.post('/api/projects/:projectId/import', (req: Request, res: Response) => {
     try {
       const data = req.body as ProjectExportData;
@@ -1138,298 +1450,96 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       const targetProject = projects.find((p) => p.id === targetProjectId);
       if (!targetProject) return res.status(404).json({ error: 'Target project not found' });
 
-      const results: Record<string, string | boolean> = {
-        project: false,
-        crons: false,
-        rooms: false,
-        webhooks: false,
-        wiki: false,
-        kanban: false,
-      };
-
-      if (data.project) {
-        (targetProject as Record<string, unknown>).agents =
-          data.project.agents || (targetProject as Record<string, unknown>).agents;
-        targetProject.color = data.project.color || targetProject.color;
-        (targetProject as Record<string, unknown>).leadAgent =
-          data.project.leadAgent || (targetProject as Record<string, unknown>).leadAgent;
-        (targetProject as Record<string, unknown>).subAgents =
-          data.project.subAgents || (targetProject as Record<string, unknown>).subAgents;
-        if (data.project.commands)
-          (targetProject as Record<string, unknown>).commands = data.project.commands;
-        saveProjects();
-        results.project = true;
-      }
-
-      if (Array.isArray(data.crons)) {
-        const existingCrons = stmts.getCrons.all() as Array<{ name: string }>;
-        const existingNames = new Set(existingCrons.map((c) => c.name));
-        let imported = 0;
-        for (const c of data.crons) {
-          if (existingNames.has(c.name)) continue;
-          // Validate `model` against the cron API allowlist so a stale or
-          // hand-crafted export can't smuggle an unknown id into the DB
-          // and crash the CLI at run time. An invalid id falls back to
-          // null (engine default) instead of failing the whole import.
-          let importedModel: string | null = null;
-          try {
-            importedModel = normalizeCronModel(c.model);
-          } catch {
-            importedModel = null;
-          }
-          stmts.createCron.run(
-            c.name,
-            c.schedule,
-            c.prompt,
-            targetProject.cwd,
-            c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
-            targetProject.id || null,
-            typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
-            c.notify_on_run ? 1 : 0,
-            importedModel,
-          );
-          imported++;
-        }
-        results.crons = `${imported} new, ${data.crons.length - imported} skipped`;
-      }
-
-      if (Array.isArray(data.rooms)) {
-        const existingRooms = stmts.getRooms.all() as Array<{ name: string }>;
-        const existingNames = new Set(existingRooms.map((r) => r.name));
-        let imported = 0;
-        for (const r of data.rooms) {
-          if (existingNames.has(r.name)) continue;
-          const roomId = uuidv4();
-          stmts.createProjectRoom.run(roomId, r.name, targetProjectId);
-          if (r.max_turns) stmts.updateRoomMaxTurns.run(r.max_turns, roomId);
-          if (Array.isArray(r.agents)) {
-            for (const ra of r.agents) {
-              stmts.addRoomAgent.run(roomId, ra.agentId || ra.agent_id, roomId);
-            }
-          }
-          imported++;
-        }
-        results.rooms = `${imported} new, ${data.rooms.length - imported} skipped`;
-      }
-
-      if (Array.isArray(data.webhooks)) {
-        const existing = stmts.getWebhookConfigsByProject.all(targetProjectId) as Array<{
-          repo_url: string;
-        }>;
-        const existingRepos = new Set(existing.map((w) => w.repo_url));
-        let imported = 0;
-        for (const w of data.webhooks) {
-          if (existingRepos.has(w.repo_url)) continue;
-          const secret = w.secret && !w.secret.includes('REDACTED') ? w.secret : uuidv4();
-          stmts.createWebhookConfig.run(
-            targetProjectId,
-            w.repo_url,
-            secret,
-            w.events || '{}',
-            w.enabled ? 1 : 0,
-            typeof w.author_allowlist === 'string' ? w.author_allowlist : '[]',
-          );
-          imported++;
-        }
-        results.webhooks = `${imported} new, ${data.webhooks.length - imported} skipped`;
-      }
-
-      if (Array.isArray(data.wiki)) {
-        let imported = 0,
-          updated = 0;
-        for (const page of data.wiki) {
-          const existing = stmts.getWikiPage.get(targetProjectId, page.slug) as
-            | Record<string, unknown>
-            | undefined;
-          if (existing) {
-            stmts.updateWikiPage.run(
-              page.title,
-              page.content,
-              page.category || 'general',
-              page.updated_by || 'import',
-              targetProjectId,
-              page.slug,
-            );
-            updated++;
-          } else {
-            stmts.createWikiPage.run(
-              uuidv4(),
-              targetProjectId,
-              page.title,
-              page.slug,
-              page.content || '',
-              page.category || 'general',
-              page.updated_by || 'import',
-            );
-            imported++;
-          }
-        }
-        results.wiki = `${imported} new, ${updated} updated`;
-      }
-
-      if (data.kanban) {
-        let existingBoard = stmts.getKanbanBoard.get(targetProjectId) as { id: string } | undefined;
-        let boardId: string;
-        let boardCreated = false;
-        const colIdMap: Record<string, string> = {};
-
-        if (existingBoard) {
-          boardId = existingBoard.id;
-          const existingCols = stmts.getKanbanColumns.all(boardId) as Array<{
-            id: string;
-            name: string;
-          }>;
-          for (const col of existingCols) {
-            const matchingImported = (data.kanban.columns || []).find(
-              (c) => c.name.toLowerCase() === col.name.toLowerCase(),
-            );
-            if (matchingImported) colIdMap[matchingImported.id] = col.id;
-          }
-          for (const col of data.kanban.columns || []) {
-            if (!colIdMap[col.id]) {
-              const newColId = uuidv4();
-              colIdMap[col.id] = newColId;
-              stmts.createKanbanColumn.run(
-                newColId,
-                boardId,
-                col.name,
-                col.position,
-                col.color || null,
-              );
-            }
-          }
-        } else {
-          boardId = uuidv4();
-          stmts.createKanbanBoard.run(
-            boardId,
-            targetProjectId,
-            data.kanban.board?.name || `${targetProject.name} Board`,
-          );
-          boardCreated = true;
-          for (const col of data.kanban.columns || []) {
-            const newColId = uuidv4();
-            colIdMap[col.id] = newColId;
-            stmts.createKanbanColumn.run(
-              newColId,
-              boardId,
-              col.name,
-              col.position,
-              col.color || null,
-            );
-          }
-        }
-
-        const epicIdMap: Record<string, string> = {};
-        const existingEpics = stmts.getKanbanEpics.all(boardId) as Array<{
-          id: string;
-          name: string;
-        }>;
-        const existingEpicNames = new Set(existingEpics.map((e) => e.name.toLowerCase()));
-        let epicsImported = 0;
-        for (const epic of data.kanban.epics || []) {
-          if (existingEpicNames.has(epic.name.toLowerCase())) {
-            const existing = existingEpics.find(
-              (e) => e.name.toLowerCase() === epic.name.toLowerCase(),
-            );
-            if (existing) epicIdMap[epic.id] = existing.id;
-            continue;
-          }
-          const newEpicId = uuidv4();
-          epicIdMap[epic.id] = newEpicId;
-          stmts.createKanbanEpic.run(
-            newEpicId,
-            boardId,
-            epic.name,
-            epic.description || '',
-            epic.color || '#6b7280',
-            epic.position || 0,
-          );
-          epicsImported++;
-        }
-
-        const existingCards = stmts.getKanbanCards.all(boardId) as Array<{ title: string }>;
-        const existingCardTitles = new Set(existingCards.map((c) => c.title.toLowerCase()));
-        let cardsImported = 0,
-          cardsSkipped = 0;
-        for (const card of data.kanban.cards || []) {
-          if (existingCardTitles.has(card.title.toLowerCase())) {
-            cardsSkipped++;
-            continue;
-          }
-          const newCardId = uuidv4();
-          const newColId = colIdMap[card.column_id];
-          if (!newColId) continue;
-          const newEpicId = card.epic_id ? epicIdMap[card.epic_id] || null : null;
-          const importAssignModelRaw = (card as { assign_model?: string | null }).assign_model;
-          let importAssignModel =
-            typeof importAssignModelRaw === 'string' && importAssignModelRaw.trim()
-              ? importAssignModelRaw.trim()
-              : null;
-          if (importAssignModel) {
-            const assigneeForModel =
-              typeof card.assignee === 'string' && card.assignee.trim()
-                ? card.assignee.trim()
-                : null;
-            const v = validateKanbanAssignModel(
-              importAssignModel,
-              targetProject,
-              assigneeForModel,
-              config,
-            );
-            if (!v.ok) importAssignModel = null;
-          }
-          stmts.createKanbanCard.run(
-            newCardId,
-            newColId,
-            boardId,
-            card.title,
-            card.description || '',
-            card.priority || 'medium',
-            card.assignee || '',
-            card.labels || '',
-            null,
-            card.github_issue_url || null,
-            card.created_by || 'import',
-            importAssignModel,
-            card.position || 0,
-          );
-          if (newEpicId) {
-            stmts.updateKanbanCard.run(
-              card.title,
-              card.description || '',
-              card.priority || 'medium',
-              card.assignee || null,
-              card.labels || null,
-              null,
-              card.github_issue_url || null,
-              card.pr_url || null,
-              newEpicId,
-              importAssignModel,
-              card.pr_base_branch ?? null,
-              newCardId,
-            );
-          }
-          const cardComments = data.kanban.comments?.[card.id];
-          if (cardComments?.length) {
-            for (const comment of cardComments) {
-              stmts.createKanbanCardComment.run(
-                uuidv4(),
-                newCardId,
-                comment.author || 'import',
-                comment.content,
-              );
-            }
-          }
-          cardsImported++;
-        }
-        results.kanban = boardCreated
-          ? `Board created with ${data.kanban.columns?.length || 0} columns, ${cardsImported} cards, ${epicsImported} epics`
-          : `Merged: ${cardsImported} new cards, ${cardsSkipped} skipped, ${epicsImported} new epics`;
-      }
-
+      const results = runProjectImport(targetProject, data);
       res.json({ message: 'Project import complete.', results });
     } catch (err: unknown) {
       console.error('Project import failed:', (err as Error).message);
+      res.status(500).json({ error: 'Import failed: ' + (err as Error).message });
+    }
+  });
+
+  // Create-from-export: no target project required. The export itself supplies
+  // id/name/cwd/color/agents — we materialize a fresh project record (and its
+  // data dir on disk) and then run the same merge logic the per-project
+  // endpoint uses. If the exported id is already taken on this instance we
+  // generate a unique slug-based id rather than 409ing, so a user can drop in
+  // an export from their own machine onto a hub that already has a project
+  // with the same id.
+  router.post('/api/projects/import', (req: Request, res: Response) => {
+    try {
+      const data = req.body as ProjectExportData;
+      if (!data || data.version !== 3 || data.type !== 'project') {
+        return res
+          .status(400)
+          .json({ error: 'Invalid project export — expected version 3 with type "project"' });
+      }
+      if (!data.project) {
+        return res.status(400).json({
+          error:
+            'Export is missing the `project` block — cannot create a new project without it. ' +
+            'Use POST /api/projects/:projectId/import to merge into an existing project instead.',
+        });
+      }
+
+      const projects = getProjects();
+      const idValid = /^[a-zA-Z0-9-]+$/;
+      const slugify = (s: string): string =>
+        s
+          .toLowerCase()
+          .replace(/[^a-z0-9-]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 64) || 'imported';
+
+      const desiredId =
+        data.project.id && idValid.test(data.project.id)
+          ? data.project.id
+          : slugify(data.project.name || data.project.id || 'imported');
+
+      let projectId = desiredId;
+      if (projects.find((p) => p.id === projectId)) {
+        // Collision — append a short suffix until we find a free id. Bounded
+        // attempts so a totally unhinged backing store can't hang the request.
+        for (let i = 0; i < 100; i++) {
+          const candidate = `${desiredId}-${Math.random().toString(36).slice(2, 6)}`;
+          if (!projects.find((p) => p.id === candidate)) {
+            projectId = candidate;
+            break;
+          }
+        }
+        if (projects.find((p) => p.id === projectId)) {
+          return res.status(500).json({ error: 'Could not allocate a unique project id' });
+        }
+      }
+
+      const dataDir = getProjectDataDir(projectId);
+      const cwd =
+        data.project.cwd && typeof data.project.cwd === 'string'
+          ? data.project.cwd
+          : config.defaultCwd;
+
+      const newProject: Project = {
+        id: projectId,
+        name: data.project.name || projectId,
+        cwd,
+        ahw: dataDir,
+        color: data.project.color || '#6b7280',
+        agents: [],
+      };
+
+      mkdirSync(dataDir, { recursive: true });
+      mkdirSync(path.join(dataDir, 'agents'), { recursive: true });
+      mkdirSync(path.join(dataDir, 'skills'), { recursive: true });
+      mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
+
+      projects.push(newProject);
+      saveProjects();
+
+      const results = runProjectImport(newProject, data);
+      res
+        .status(201)
+        .json({ message: 'Project created from export.', project: newProject, results });
+    } catch (err: unknown) {
+      console.error('Project create-from-import failed:', (err as Error).message);
       res.status(500).json({ error: 'Import failed: ' + (err as Error).message });
     }
   });

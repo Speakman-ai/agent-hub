@@ -5962,6 +5962,10 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
   const [importError, setImportError] = useState(null);
   const [preview, setPreview] = useState(null);
   const [importTargetId, setImportTargetId] = useState('');
+  // Default the import flow to "create a new project" — that's the natural
+  // first-run case and removes the hidden requirement that a target project
+  // must already exist before you can drop in an export file.
+  const [importMode, setImportMode] = useState('new'); // 'new' | 'existing'
 
   const handleExport = async () => {
     if (!selectedProjectId) return;
@@ -6020,12 +6024,16 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
   };
 
   const handleImport = async () => {
-    if (!preview || !importTargetId) return;
+    if (!preview) return;
+    if (importMode === 'existing' && !importTargetId) return;
     setImporting(true);
     setImportError(null);
     setImportResult(null);
     try {
-      const result = await api.importProject(importTargetId, preview);
+      const result =
+        importMode === 'new'
+          ? await api.importProjectAsNew(preview)
+          : await api.importProject(importTargetId, preview);
       setImportResult(result);
       setPreview(null);
       if (onAgentsChange) onAgentsChange();
@@ -6041,6 +6049,7 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
     setImportResult(null);
     setImportError(null);
     setImportTargetId('');
+    setImportMode('new');
   };
 
   return (
@@ -6048,7 +6057,8 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
       <h3 className="text-lg font-semibold mb-4">Export / Import Project</h3>
       <p className="text-sm text-gray-400 mb-6">
         Export a project with its agents, kanban board, wiki, crons, rooms, and webhooks. Import
-        into an existing project on another instance to replicate your setup.
+        creates the project on a new instance — or merge into an existing project to layer the
+        export's data on top.
       </p>
 
       {/* Export */}
@@ -6081,8 +6091,9 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
       <div className="bg-gray-800/50 rounded-lg p-4">
         <h4 className="font-medium mb-3">Import Project</h4>
         <p className="text-sm text-gray-400 mb-3">
-          Upload a project export file. Agents and settings are overwritten; crons, rooms, wiki, and
-          webhooks are merged. Kanban boards are only created if no board exists yet.
+          Upload a project export file. By default the export creates a brand-new project with all
+          its data. Switch to “Merge into existing” to layer the export onto a project that already
+          exists — agents and settings are overwritten; crons, rooms, wiki, and webhooks are merged.
         </p>
 
         {!preview && (
@@ -6128,25 +6139,62 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
             </div>
 
             <div className="mb-3">
-              <label className="block text-sm text-gray-400 mb-1">Import into project:</label>
-              <select
-                value={importTargetId}
-                onChange={(e) => setImportTargetId(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
-              >
-                <option value="">Select target project...</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+              <label className="block text-sm text-gray-400 mb-1">Import target:</label>
+              <div className="flex flex-col gap-2 mb-2">
+                <label className="flex items-start gap-2 text-sm text-gray-200 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="import-mode"
+                    value="new"
+                    checked={importMode === 'new'}
+                    onChange={() => setImportMode('new')}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="block">Create a new project from this export</span>
+                    <span className="block text-xs text-gray-500">
+                      Uses the exported id when free; allocates a unique id on collision.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-sm text-gray-200 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="import-mode"
+                    value="existing"
+                    checked={importMode === 'existing'}
+                    onChange={() => setImportMode('existing')}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="block">Merge into an existing project</span>
+                    <span className="block text-xs text-gray-500">
+                      Overwrites agents/settings; merges crons, rooms, wiki, webhooks.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {importMode === 'existing' && (
+                <select
+                  value={importTargetId}
+                  onChange={(e) => setImportTargetId(e.target.value)}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                >
+                  <option value="">Select target project...</option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div className="flex gap-2">
               <button
                 onClick={handleImport}
-                disabled={importing || !importTargetId}
+                disabled={importing || (importMode === 'existing' && !importTargetId)}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 disabled:text-gray-400 text-white rounded-lg text-sm font-medium transition-colors"
               >
                 {importing ? 'Importing...' : 'Import'}

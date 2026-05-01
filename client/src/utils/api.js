@@ -499,6 +499,10 @@ export const api = {
   exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),
   importProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}/import`, { method: 'POST', body: JSON.stringify(data) }),
+  // Create-from-export: server materializes a brand-new project using the
+  // export's project block and runs the same merge logic as importProject.
+  importProjectAsNew: (data) =>
+    fetchJSON('/projects/import', { method: 'POST', body: JSON.stringify(data) }),
 
   // Legacy full-instance export/import
   exportConfig: () => fetchJSON('/config/export'),
