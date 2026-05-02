@@ -319,6 +319,30 @@ variable "pr_env_preview_subdomain" {
   }
 }
 
+variable "cert_renewal_email" {
+  description = <<-DESC
+    Contact email registered with Let's Encrypt for the wildcard cert issued by
+    `certbot certonly --dns-route53` on first boot when `enable_pr_env_host_nginx
+    = true`. Lets Encrypt sends expiration warnings to this address. Required
+    when `enable_pr_env_host_nginx = true`; ignored otherwise. The hard error is
+    enforced as a precondition on `aws_instance.app` (main.tf), so missing email
+    fails `terraform plan` with a helpful message rather than failing at boot.
+  DESC
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    # Loose email shape check — single `@`, dot-containing domain, no whitespace.
+    # Belt-and-suspenders so a stray newline or empty string isn't accepted.
+    # The cross-variable "required when pr_env_enabled" check lives on the
+    # aws_instance.app precondition (main.tf) since variable validation cannot
+    # reference other variables until Terraform 1.9, and we still pin >= 1.5.
+    condition     = var.cert_renewal_email == null || can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.cert_renewal_email))
+    error_message = "cert_renewal_email must look like an email address (e.g. ops@example.com) or be null when enable_pr_env_host_nginx = false."
+  }
+}
+
 variable "enable_pr_env_host_nginx" {
   description = <<-DESC
     Default-off scaffolding for per-PR preview environments. When true, instance user-data:

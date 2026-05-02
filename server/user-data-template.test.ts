@@ -75,6 +75,8 @@ const RENDER_VARS_BASE = {
   ssm_deb_url: 'https://example.invalid/ssm.deb',
   pr_env_base_nginx_conf: 'include /etc/nginx/sites-enabled/agent-hub-pr-*.conf;',
   config_json_b64: '',
+  pr_env_preview_host: '',
+  cert_renewal_email: '',
 };
 
 /**
@@ -410,6 +412,77 @@ describe('agent-hub-user-data.tftpl', () => {
       });
     });
 
+    // ── First-boot wildcard cert issuance (PR 4 of the PR-envs series) ──
+    //
+    // After PRs 1+2+3 land, this PR makes the EC2 issue a wildcard cert via
+    // certbot --dns-route53 on first boot when one is not already present on
+    // disk. The IAM role attached in PR 1 already has Route 53 perms, so
+    // certbot's dns-route53 plugin picks them up via EC2 metadata creds — no
+    // AWS_ACCESS_KEY_ID needed in the env. Renewal is owned by the Hub server
+    // (server/container-pool/cert-renewal-heartbeat.ts), so no system cron
+    // entry is needed in user-data.
+    describe('first-boot wildcard cert issuance', () => {
+      const previewHost = 'preview.agent-hub.example.com';
+      const renewalEmail = 'ops@example.com';
+      const r = renderTemplate(tpl, {
+        ...RENDER_VARS_BASE,
+        pr_env_enabled: true,
+        pr_env_preview_host: previewHost,
+        cert_renewal_email: renewalEmail,
+      });
+
+      it('invokes certbot certonly with --dns-route53 for the wildcard hostname', () => {
+        expect(r).toMatch(/certbot certonly\b/);
+        expect(r).toContain('--dns-route53');
+        // Wildcard SAN gates per-PR previews like pr-123.preview.<host>.
+        expect(r).toContain(`-d "*.${previewHost}"`);
+        // Email registered with Let's Encrypt for expiration notices.
+        expect(r).toContain(`-m "${renewalEmail}"`);
+        // --non-interactive + --agree-tos are required for unattended issuance.
+        expect(r).toContain('--non-interactive');
+        expect(r).toContain('--agree-tos');
+      });
+
+      it('pins the cert lineage name so the on-disk path matches Tier-3 nginx.certPath', () => {
+        // Without --cert-name, certbot derives the lineage from the first -d
+        // argument (`*.<host>`), producing a non-deterministic on-disk path.
+        // The Tier-3 config.json hard-codes /etc/letsencrypt/live/<host>/...
+        // so the lineage name MUST equal `pr_env_preview_host` exactly.
+        expect(r).toContain(`--cert-name "${previewHost}"`);
+      });
+
+      it('guards on existence of fullchain.pem so re-applies are idempotent', () => {
+        // Lets Encrypt enforces 5 duplicate certs per week. Re-running
+        // user-data (e.g. an unrelated TF change that triggers replacement)
+        // must skip reissuance when the cert is already on disk.
+        expect(r).toMatch(
+          new RegExp(
+            `if \\[ ! -f "/etc/letsencrypt/live/${previewHost.replace(/\./g, '\\.')}/fullchain\\.pem" \\]; then`,
+          ),
+        );
+      });
+
+      it('does not configure a system cron for renewal (the Hub heartbeat owns renewal)', () => {
+        // Daily renewal is owned by server/container-pool/cert-renewal-heartbeat.ts.
+        // A `certbot renew` system cron would race with the heartbeat and is
+        // explicitly out of scope for this PR.
+        expect(r, 'no `certbot renew` system cron in user-data').not.toMatch(/\bcertbot\s+renew\b/);
+        // Belt and suspenders: no /etc/cron.d/certbot-renew or systemd timer
+        // entries either.
+        expect(r).not.toMatch(/\/etc\/cron\.d\/certbot/);
+        expect(r).not.toMatch(/certbot\.timer/);
+      });
+
+      it('does not export AWS_ACCESS_KEY_ID — boto3 picks up creds via EC2 metadata', () => {
+        // The IAM role attached to the instance (PR 1) carries Route 53
+        // perms; the dns-route53 plugin reads them via boto3's IMDS provider.
+        // Exporting AWS_ACCESS_KEY_ID in user-data would mean we're shipping
+        // long-lived creds we shouldn't have.
+        expect(r).not.toMatch(/AWS_ACCESS_KEY_ID/);
+        expect(r).not.toMatch(/AWS_SECRET_ACCESS_KEY/);
+      });
+    });
+
     it('keeps the base-vhost write path and per-PR include glob in the same directory', () => {
       // Reviewer-requested cross-file consistency check. If the user-data
       // ever writes the base file into one directory while the base file's
@@ -462,6 +535,17 @@ describe('agent-hub-user-data.tftpl', () => {
       expect(rendered).not.toContain('/var/run/docker.sock:/var/run/docker.sock');
       expect(rendered).not.toContain('--add-host host.docker.internal:host-gateway');
       expect(rendered).not.toMatch(/DOCKER_SOCK_GID=/);
+    });
+
+    it('does not invoke certbot at all (regression guard for PR 4)', () => {
+      // The first-boot wildcard cert issuance (PR 4) must be entirely gated
+      // on pr_env_enabled. With the flag off, no certbot invocation, no
+      // /etc/letsencrypt path reference, no Let's Encrypt email leakage.
+      expect(rendered, 'certbot must not run when pr_env_enabled = false').not.toMatch(
+        /\bcertbot certonly\b/,
+      );
+      expect(rendered).not.toContain('--dns-route53');
+      expect(rendered).not.toContain('/etc/letsencrypt/live/');
     });
 
     it('does not write the Tier-3 prEnv config.json (regression guard for PR 3)', () => {

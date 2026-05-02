@@ -83,6 +83,36 @@ visudo -cf /etc/sudoers.d/agenthub-pr-env >/dev/null
 # Validate the dropped config and reload so the new include takes effect
 # immediately, instead of waiting for the next reboot or unrelated reload.
 nginx -t && systemctl reload nginx
+
+# ── First-boot wildcard cert issuance (certbot --dns-route53) ──────────────
+# Issue a wildcard cert for *.${pr_env_preview_host} on first boot if one is
+# not already on disk. The IAM role attached to this instance (PR 1 of the
+# series) already has Route 53 perms; certbot's dns-route53 plugin reads them
+# from EC2 instance metadata via boto3, so no static access key needs to be
+# exported into the env.
+#
+# `--cert-name ${pr_env_preview_host}` pins the lineage directory name so the
+# resulting cert lands at /etc/letsencrypt/live/${pr_env_preview_host}/ —
+# matching the certPath/keyPath values written into the Tier-3 config.json
+# above and consumed by the per-PR nginx fragments at runtime. Without
+# --cert-name, certbot would name the lineage after the first -d argument
+# (`*.<host>`), producing an unpredictable on-disk path.
+#
+# Idempotent: the existence check below skips reissuance on every reboot or
+# user-data re-run, which is critical because Let's Encrypt enforces a
+# 5-duplicate-certificates-per-week rate limit. Daily renewal is owned by the
+# Hub server itself (server/container-pool/cert-renewal-heartbeat.ts) — no
+# system cron entry needed here.
+if [ ! -f "/etc/letsencrypt/live/${pr_env_preview_host}/fullchain.pem" ]; then
+  certbot certonly \
+    --dns-route53 \
+    --non-interactive \
+    --agree-tos \
+    --cert-name "${pr_env_preview_host}" \
+    -d "*.${pr_env_preview_host}" \
+    -m "${cert_renewal_email}" \
+    || echo "WARN: certbot --dns-route53 failed at first boot; per-PR vhosts will be unavailable until the cert is issued. Check cloud-init logs and Route 53 IAM perms." >&2
+fi
 %{ endif ~}
 
 %{ if use_ecr_pull }

@@ -276,4 +276,18 @@ resource "aws_instance" "app" {
   tags = {
     Name = "${var.project_name}-sandbox"
   }
+
+  lifecycle {
+    # PR-env first-boot wildcard cert: certbot --dns-route53 needs a contact
+    # email to register with Let's Encrypt. Without it the bootstrap would
+    # silently skip cert issuance (or fail at runtime), leaving host nginx
+    # missing /etc/letsencrypt/live/<previewHost>/{fullchain,privkey}.pem and
+    # the per-PR vhost broken. Surface this at plan time instead.
+    precondition {
+      condition = !var.enable_pr_env_host_nginx || (
+        var.cert_renewal_email != null && trimspace(var.cert_renewal_email) != ""
+      )
+      error_message = "enable_pr_env_host_nginx = true requires cert_renewal_email to be set (e.g. cert_renewal_email = \"ops@example.com\"). The address is registered with Let's Encrypt for expiration notices when certbot --dns-route53 issues the wildcard cert at first boot."
+    }
+  }
 }

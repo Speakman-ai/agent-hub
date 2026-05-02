@@ -199,6 +199,13 @@ locals {
       pr_env_enabled         = var.enable_pr_env_host_nginx
       pr_env_base_nginx_conf = local.pr_env_base_nginx_conf
       config_json_b64        = local.pr_env_config_json_b64
+      # PR-env first-boot wildcard cert (certbot --dns-route53). The hostname
+      # passed here is the resolved cert lineage name (matches
+      # pr_env_config.nginx.{certPath,keyPath}). The email is the Let's Encrypt
+      # registration contact; it is required at plan time when
+      # enable_pr_env_host_nginx = true (precondition on aws_instance.app).
+      pr_env_preview_host = local.pr_env_preview_host_resolved
+      cert_renewal_email  = var.cert_renewal_email != null ? trimspace(var.cert_renewal_email) : ""
     }
   )
 }
