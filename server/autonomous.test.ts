@@ -343,6 +343,78 @@ describe('runAutonomousLoop — dispatch', () => {
       1,
     );
   });
+
+  it('uses card assign_model when it is valid for the assignee engine (takes precedence over epic model)', async () => {
+    const card = makeCard({ assign_model: 'claude-haiku-4-6' });
+    const epicWithModel = {
+      ...ACTIVE_EPIC,
+      autonomous_model: 'claude-opus-4-7',
+    } as KanbanEpicRow;
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epicWithModel) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    deps.getConfig.mockReturnValue({
+      engineValidModels: {
+        'claude-code': ['claude-haiku-4-6', 'claude-opus-4-7', 'claude-sonnet-4-6'],
+      },
+    } as never);
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // Card-level assign_model wins over epic-level autonomous_model
+    expect(stmts.createSession.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-1',
+      'Build feature',
+      'claude-code',
+      'claude-haiku-4-6',
+      1,
+      0,
+      1,
+    );
+  });
+
+  it('falls back to epic autonomous_model when card assign_model is not valid for the engine', async () => {
+    const card = makeCard({ assign_model: 'gpt-99-ultra' });
+    const epicWithModel = {
+      ...ACTIVE_EPIC,
+      autonomous_model: 'claude-sonnet-4-6',
+    } as KanbanEpicRow;
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epicWithModel) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    deps.getConfig.mockReturnValue({
+      engineValidModels: { 'claude-code': ['claude-sonnet-4-6', 'claude-opus-4-7'] },
+    } as never);
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // Invalid card assign_model falls back to epic autonomous_model
+    expect(stmts.createSession.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-1',
+      'Build feature',
+      'claude-code',
+      'claude-sonnet-4-6',
+      1,
+      0,
+      1,
+    );
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
