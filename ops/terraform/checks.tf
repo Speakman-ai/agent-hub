@@ -25,3 +25,15 @@ check "agent_hub_bootstrap_source" {
     error_message = "When bootstrap_agent_hub = true, set either (a) agent_hub_image_uri to a container image like public.ecr.aws/h9t4v7h0/agent-hub:main — recommended — or (b) agent_hub_git_url to a non-empty https:// clone URL."
   }
 }
+
+# Early-warning surface for the PR-env wildcard cert. The hard error lives on
+# aws_acm_certificate.pr_env_wildcard's preconditions (alb.tf), which halt
+# `terraform plan`. This `check` block additionally surfaces the same advice
+# when only lookup_route53_zone_in_this_account is wired (no explicit zone id),
+# so operators see one consolidated message in plan output.
+check "pr_env_wildcard_requires_zone" {
+  assert {
+    condition     = !var.enable_pr_env_wildcard_cert || local.has_route53_zone
+    error_message = "enable_pr_env_wildcard_cert = true requires a discoverable Route 53 zone for base_domain. Set route53_zone_id directly, or set lookup_route53_zone_in_this_account = true so the zone for base_domain is resolved in this account."
+  }
+}

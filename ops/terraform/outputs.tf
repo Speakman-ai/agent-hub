@@ -76,3 +76,23 @@ output "ec2_docker_howto" {
     2) sudo -u ${var.app_user} bash -lc "cd ${var.docker_app_path} && docker compose up -d --build"
   EOT
 }
+
+# --- PR Envs ------------------------------------------------------------------
+# Surfaced for downstream PRs (host nginx config, per-PR DNS automation) to
+# reference without having to re-derive locals. Null when the relevant feature
+# flag is off or the inputs are insufficient.
+
+output "pr_env_wildcard_cert_arn" {
+  description = "Validated ACM certificate ARN for *.<pr_env_preview_subdomain>.<alb_fqdn>, present when enable_pr_env_wildcard_cert = true. Consumed by host nginx (NOT attached to the ALB listener)."
+  value       = one(aws_acm_certificate_validation.pr_env_wildcard[*].certificate_arn)
+}
+
+output "pr_env_route53_zone_id" {
+  description = "Hosted zone ID used by PR-env DNS automation. Equals local.route53_zone_id_effective (the zone for base_domain), or null when no zone is discoverable."
+  value       = local.route53_zone_id_effective
+}
+
+output "pr_env_preview_host" {
+  description = "Suffix for per-PR preview hostnames: <pr-id>.<this>. Equals <pr_env_preview_subdomain>.<alb_fqdn>; null when alb_fqdn cannot be composed."
+  value       = local.pr_env_preview_host
+}

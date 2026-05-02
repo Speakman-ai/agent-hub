@@ -289,3 +289,32 @@ variable "target_group_name_override" {
   default     = null
   nullable    = true
 }
+
+# --- PR Envs (host nginx wildcard + Route 53 IAM for DNS-01 ACME) ------------
+#
+# Default-disabled scaffolding for per-PR preview environments. PR 1 of the
+# series only adds the wildcard ACM cert and a Route 53 inline policy on the
+# EC2 instance role; later PRs wire up the host nginx fan-out + per-PR DNS.
+
+variable "enable_pr_env_wildcard_cert" {
+  description = "If true, issue a wildcard ACM certificate for *.<pr_env_preview_subdomain>.<alb_fqdn> and DNS-validate it via Route 53. The cert is intended for host nginx to terminate TLS on per-PR preview hostnames; it is NOT attached to the ALB listener. Requires a discoverable Route 53 zone (route53_zone_id or lookup_route53_zone_in_this_account)."
+  type        = bool
+  default     = false
+}
+
+variable "enable_pr_env_route53_iam" {
+  description = "If true, attach an inline policy to the EC2 SSM instance role granting route53:ChangeResourceRecordSets / ListResourceRecordSets on the hosted zone for base_domain plus route53:GetChange. Lets the instance create per-PR DNS records (and DNS-01 ACME challenges) under the discovered zone. Requires enable_instance_ssm = true and a discoverable Route 53 zone."
+  type        = bool
+  default     = false
+}
+
+variable "pr_env_preview_subdomain" {
+  description = "Single DNS label used to namespace per-PR preview hostnames under the canonical Agent Hub hostname: <pr-id>.<pr_env_preview_subdomain>.<alb_fqdn>. The wildcard ACM cert (when enable_pr_env_wildcard_cert = true) covers *.<pr_env_preview_subdomain>.<alb_fqdn>. Must be a single label (no dots) so downstream PRs can compose per-PR hostnames as <pr-id>.<this>.<alb_fqdn> without ambiguity. Lowercase letters, digits, hyphens; not starting/ending with hyphen; ≤63 chars."
+  type        = string
+  default     = "preview"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", var.pr_env_preview_subdomain))
+    error_message = "pr_env_preview_subdomain must be a single DNS label: lowercase letters, digits, and hyphens; cannot start or end with a hyphen; cannot contain dots; must be 1–63 characters."
+  }
+}

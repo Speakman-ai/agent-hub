@@ -259,3 +259,59 @@ resource "aws_route53_record" "agenthub" {
     }
   }
 }
+
+# --- PR Envs: wildcard ACM cert for *.<pr_env_preview_subdomain>.<alb_fqdn> --
+#
+# Issued for host nginx to terminate TLS on per-PR preview hostnames such as
+# `pr-123.preview.agenthub.ryan.dev.surveytracker.io`. NOT attached to the ALB
+# listener — the ALB only fronts the canonical Agent Hub host. Default-disabled
+# (gated on var.enable_pr_env_wildcard_cert) so existing stacks plan as 0
+# changes until they opt in.
+
+locals {
+  pr_env_preview_host = local.alb_fqdn != null ? "${var.pr_env_preview_subdomain}.${local.alb_fqdn}" : null
+}
+
+resource "aws_acm_certificate" "pr_env_wildcard" {
+  count = var.enable_pr_env_wildcard_cert ? 1 : 0
+
+  domain_name       = "*.${local.pr_env_preview_host}"
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+
+    precondition {
+      condition     = local.has_route53_zone
+      error_message = "enable_pr_env_wildcard_cert = true requires a discoverable Route 53 zone for base_domain. Set route53_zone_id, or set lookup_route53_zone_in_this_account = true so DNS-01 validation records can be written."
+    }
+
+    precondition {
+      condition     = local.alb_fqdn != null
+      error_message = "enable_pr_env_wildcard_cert = true requires alb_fqdn to resolve. Set public_fqdn (preferred) or set name + dns_subdomain + base_domain so the wildcard host *.<pr_env_preview_subdomain>.<alb_fqdn> can be composed."
+    }
+  }
+
+  tags = {
+    Name = "${var.project_name}-pr-env-wildcard"
+  }
+}
+
+resource "aws_route53_record" "pr_env_wildcard_cert_validation" {
+  for_each = var.enable_pr_env_wildcard_cert ? {
+    for dvo in aws_acm_certificate.pr_env_wildcard[0].domain_validation_options : dvo.domain_name => dvo
+  } : {}
+
+  zone_id = local.route53_zone_id_effective
+  name    = each.value.resource_record_name
+  type    = each.value.resource_record_type
+  ttl     = 60
+  records = [each.value.resource_record_value]
+}
+
+resource "aws_acm_certificate_validation" "pr_env_wildcard" {
+  count = var.enable_pr_env_wildcard_cert ? 1 : 0
+
+  certificate_arn         = aws_acm_certificate.pr_env_wildcard[0].arn
+  validation_record_fqdns = [for r in aws_route53_record.pr_env_wildcard_cert_validation : r.fqdn]
+}
