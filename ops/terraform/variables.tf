@@ -318,3 +318,26 @@ variable "pr_env_preview_subdomain" {
     error_message = "pr_env_preview_subdomain must be a single DNS label: lowercase letters, digits, and hyphens; cannot start or end with a hyphen; cannot contain dots; must be 1–63 characters."
   }
 }
+
+variable "enable_pr_env_host_nginx" {
+  description = <<-DESC
+    Default-off scaffolding for per-PR preview environments. When true, instance user-data:
+      - installs host nginx + certbot + python3-certbot-dns-route53
+      - drops a base vhost at /etc/nginx/conf.d/agent-hub-pr-base.conf that includes
+        /etc/nginx/conf.d/agent-hub-pr-*.conf so the Hub can fan out per-PR fragments
+      - writes a narrow sudoers.d allowlist for the app user
+        (/usr/sbin/nginx -t, /bin/systemctl reload nginx, /usr/bin/certbot)
+      - runs the Hub container with the host docker socket bind-mounted
+        (-v /var/run/docker.sock:/var/run/docker.sock, --group-add matching the host's
+        docker GID, --add-host host.docker.internal:host-gateway)
+      - opens an SG ingress range 3100-3999 from 127.0.0.1/32 (loopback-only marker;
+        these ports are reverse-proxied via host nginx and never ALB-exposed)
+
+    WARNING: enabling this gives the Hub container root-equivalent access to the host
+    via the docker socket. Acceptable for trusted single-tenant Hub deployments only.
+    Triggers an instance replacement on apply (user-data change) — schedule a
+    maintenance window.
+  DESC
+  type        = bool
+  default     = false
+}

@@ -117,24 +117,35 @@ locals {
   docker_bootstrap_env_b64 = (local.use_docker_bootstrap || local.use_ecr_pull) ? base64encode(local.docker_bootstrap_env) : ""
   data_root_for_docker     = "/var/lib/agent-hub"
 
+  # PR-env mode: pre-render the base nginx fragment (no per-template-vars yet,
+  # but routing through templatefile() keeps the door open for future
+  # interpolations and matches the convention used by every other on-host file
+  # written from this module).
+  pr_env_base_nginx_conf = templatefile(
+    "${path.module}/templates/pr-env-base-nginx.conf.tftpl",
+    {}
+  )
+
   user_data_templated = templatefile(
     "${path.module}/agent-hub-user-data.tftpl",
     {
-      node_major           = var.node_major_version
-      app_user             = var.app_user
-      bootstrap            = var.bootstrap_agent_hub
-      use_ecr_pull         = local.use_ecr_pull
-      use_docker_bootstrap = local.use_docker_bootstrap
-      use_pm2_bootstrap    = local.use_pm2_bootstrap
-      data_root_for_docker = local.data_root_for_docker
-      app_port             = tostring(var.agent_hub_target_port)
-      git_url              = local.git_url_for_bootstrap
-      git_ref              = var.agent_hub_git_ref
-      repo_dir             = "/home/${var.app_user}/${var.agent_hub_repo_basename}"
-      env_b64              = local.agent_hub_bootstrap_env_b64
-      docker_env_b64       = local.docker_bootstrap_env_b64
-      image_uri            = local.agent_hub_image_uri_trim
-      ssm_deb_url          = "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb"
+      node_major             = var.node_major_version
+      app_user               = var.app_user
+      bootstrap              = var.bootstrap_agent_hub
+      use_ecr_pull           = local.use_ecr_pull
+      use_docker_bootstrap   = local.use_docker_bootstrap
+      use_pm2_bootstrap      = local.use_pm2_bootstrap
+      data_root_for_docker   = local.data_root_for_docker
+      app_port               = tostring(var.agent_hub_target_port)
+      git_url                = local.git_url_for_bootstrap
+      git_ref                = var.agent_hub_git_ref
+      repo_dir               = "/home/${var.app_user}/${var.agent_hub_repo_basename}"
+      env_b64                = local.agent_hub_bootstrap_env_b64
+      docker_env_b64         = local.docker_bootstrap_env_b64
+      image_uri              = local.agent_hub_image_uri_trim
+      ssm_deb_url            = "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb"
+      pr_env_enabled         = var.enable_pr_env_host_nginx
+      pr_env_base_nginx_conf = local.pr_env_base_nginx_conf
     }
   )
 }

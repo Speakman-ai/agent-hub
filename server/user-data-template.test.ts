@@ -4,6 +4,79 @@ import { fileURLToPath } from 'url';
 import { describe, it, expect } from 'vitest';
 
 /**
+ * Minimal Terraform template-string renderer covering the subset used by
+ * agent-hub-user-data.tftpl: `${name}` variable substitution and
+ * `%{ if EXPR ~}` … [`%{ else ~}` …] `%{ endif ~}` boolean conditionals
+ * (with optional whitespace-strip `~`). Compound expressions (`A || B`,
+ * `A && B`, `!A`) evaluate against the supplied vars by mapping
+ * identifiers → JS values; unknown identifiers fall through to `false`.
+ *
+ * This isn't a full HCL implementation — it's just enough to let us
+ * exercise the pr_env_enabled branch end-to-end inside a Vitest fixture
+ * without shelling out to `terraform console`.
+ */
+function evalExpr(expr: string, vars: Record<string, unknown>): boolean {
+  const jsExpr = expr.replace(/\b([a-zA-Z_]\w*)\b/g, (token) => {
+    if (token === 'true' || token === 'false' || token === 'null') return token;
+    return JSON.stringify(vars[token] ?? false);
+  });
+  return Boolean(Function(`return (${jsExpr});`)());
+}
+
+function renderTemplate(tpl: string, vars: Record<string, unknown>): string {
+  // Iteratively collapse the innermost %{ if … } … %{ endif } blocks first,
+  // so nested conditionals (the bootstrap → use_ecr_pull → pr_env_enabled
+  // chain inside the runscript heredoc) are evaluated outermost-last.
+  const ifInner =
+    /%\{(~?)\s*if\s+([^}]*?)\s*(~?)\}((?:(?!%\{~?\s*(?:if|endif)\b)[\s\S])*?)%\{(~?)\s*endif\s*(~?)\}/;
+  let prev = '';
+  while (prev !== tpl) {
+    prev = tpl;
+    tpl = tpl.replace(ifInner, (_m, _lstrip1, expr, rstrip1, body, lstrip2, _rstrip2) => {
+      const val = evalExpr(expr as string, vars);
+      const elseRe = /%\{(~?)\s*else\s*(~?)\}/;
+      const elseMatch = elseRe.exec(body as string);
+      let trueBranch = body as string;
+      let falseBranch = '';
+      if (elseMatch) {
+        trueBranch = (body as string).slice(0, elseMatch.index);
+        falseBranch = (body as string).slice(elseMatch.index + elseMatch[0].length);
+      }
+      let chosen = val ? trueBranch : falseBranch;
+      if (rstrip1 === '~') chosen = chosen.replace(/^[ \t]*\n?/, '');
+      if (lstrip2 === '~') chosen = chosen.replace(/\n?[ \t]*$/, '');
+      return chosen;
+    });
+  }
+  return tpl.replace(/\$\{(\w+)\}/g, (_m, name) => {
+    if (name in vars) {
+      const v = vars[name];
+      return v === undefined || v === null ? '' : String(v);
+    }
+    return '';
+  });
+}
+
+const RENDER_VARS_BASE = {
+  node_major: 22,
+  app_user: 'agenthub',
+  bootstrap: true,
+  use_ecr_pull: true,
+  use_docker_bootstrap: false,
+  use_pm2_bootstrap: false,
+  data_root_for_docker: '/var/lib/agent-hub',
+  app_port: '3051',
+  git_url: 'https://github.com/example/agent-hub.git',
+  git_ref: 'main',
+  repo_dir: '/home/agenthub/agent-hub',
+  env_b64: '',
+  docker_env_b64: '',
+  image_uri: 'public.ecr.aws/example/agent-hub:main',
+  ssm_deb_url: 'https://example.invalid/ssm.deb',
+  pr_env_base_nginx_conf: 'include /etc/nginx/sites-enabled/agent-hub-pr-*.conf;',
+};
+
+/**
  * Regression guard for ops/terraform/agent-hub-user-data.tftpl.
  *
  * Context: the ECS-optimized Amazon Linux 2023 AMI ships `curl-minimal`
@@ -55,5 +128,194 @@ describe('agent-hub-user-data.tftpl', () => {
     );
     expect(matches, 'expected 1000:1000 install -d in both bootstrap branches').not.toBeNull();
     expect(matches!.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // ── PR-env mode (pr_env_enabled) ──────────────────────────────────────────
+  //
+  // The pr_env_enabled flag opts the host into per-PR preview environment
+  // bootstrap: install host nginx + certbot, drop a base vhost that
+  // includes per-PR fragments, write a narrow sudoers.d allowlist, and run
+  // the Hub container with the host docker socket bind-mounted plus
+  // host.docker.internal mapped to host-gateway. Default-disabled
+  // scaffolding for the per-PR preview environments series.
+  describe('pr_env_enabled = true', () => {
+    const rendered = renderTemplate(tpl, { ...RENDER_VARS_BASE, pr_env_enabled: true });
+
+    it('installs host nginx, certbot, and the python3-certbot-dns-route53 plugin', () => {
+      // Package name is `python3-certbot-dns-route53` on both AL2023 (`dnf`)
+      // and Ubuntu (`apt`); the shorter `python3-certbot-route53` does NOT
+      // exist in either repo and would trip `set -e` at bootstrap. Guard the
+      // exact name so a future copy-paste doesn't silently brick cloud-init.
+      expect(rendered).toMatch(/\$PKG_INSTALL\s+nginx\s+certbot\s+python3-certbot-dns-route53\b/);
+      // The bad name may appear in an explanatory comment ("don't use this");
+      // what we forbid is it being passed to `$PKG_INSTALL`. Find every
+      // PKG_INSTALL line and assert none of them contain it.
+      const installLines = rendered.match(/^\s*\$PKG_INSTALL\b.*$/gm) ?? [];
+      for (const line of installLines) {
+        expect(line, 'must NOT install the (non-existent) shorter package').not.toMatch(
+          /\bpython3-certbot-route53\b/,
+        );
+      }
+    });
+
+    it('drops the base nginx vhost in /etc/nginx/conf.d/ (the dir AL2023 actually loads)', () => {
+      // AL2023's stock /etc/nginx/nginx.conf includes /etc/nginx/conf.d/*.conf
+      // but NOT /etc/nginx/sites-enabled/*. Anything we drop in sites-enabled
+      // sits unused. Assert the production-correct path here.
+      expect(rendered).toContain('/etc/nginx/conf.d/agent-hub-pr-base.conf');
+      expect(rendered, 'sites-enabled is Debian-only; must not be the load path').not.toContain(
+        '/etc/nginx/sites-enabled/agent-hub-pr-base.conf',
+      );
+      // And the include glob inside the base file MUST match the directory we
+      // write per-PR fragments to — otherwise the Hub control plane can drop
+      // fragments that nginx silently ignores. This is the assertion the
+      // reviewer explicitly asked for.
+      expect(rendered).toMatch(/include\s+\/etc\/nginx\/conf\.d\/agent-hub-pr-\*\.conf/);
+    });
+
+    it('runs `nginx -t && systemctl reload nginx` after writing the base file', () => {
+      // Without an explicit reload, the include only takes effect at the next
+      // reboot or unrelated reload. Ensure the bootstrap surface is complete.
+      expect(rendered).toMatch(/nginx -t && systemctl reload nginx/);
+    });
+
+    it('writes a narrow sudoers.d allowlist for the app user', () => {
+      // App user (rendered from ${app_user}) gets exactly three NOPASSWD entries.
+      expect(rendered).toContain('/etc/sudoers.d/agenthub-pr-env');
+      expect(rendered).toMatch(/agenthub ALL=\(root\) NOPASSWD: \/usr\/sbin\/nginx -t\b/);
+      expect(rendered).toMatch(/agenthub ALL=\(root\) NOPASSWD: \/bin\/systemctl reload nginx\b/);
+      expect(rendered).toMatch(/agenthub ALL=\(root\) NOPASSWD: \/usr\/bin\/certbot\b/);
+      // Belt and suspenders: validate-via-visudo and 0440 perms must be present.
+      expect(rendered).toMatch(/visudo -cf \/etc\/sudoers\.d\/agenthub-pr-env/);
+      expect(rendered).toMatch(/chmod 0440 \/etc\/sudoers\.d\/agenthub-pr-env/);
+    });
+
+    it('refuses to widen the sudoers allowlist to shell-escape-friendly binaries', () => {
+      // Defense-in-depth: explicitly assert no shell, awk, perl, find, or
+      // package-manager binary is granted NOPASSWD. If a future PR adds one,
+      // this test fails loudly so the security review is forced.
+      const sudoersBlock = rendered.match(
+        /\/etc\/sudoers\.d\/agenthub-pr-env <<SUDOERS([\s\S]*?)SUDOERS/,
+      );
+      expect(sudoersBlock, 'sudoers heredoc must be present').not.toBeNull();
+      const body = sudoersBlock![1]!;
+      const forbidden = [
+        'bash',
+        'sh',
+        'zsh',
+        'awk',
+        'perl',
+        'python',
+        'find',
+        'dnf',
+        'apt',
+        'docker',
+      ];
+      for (const bad of forbidden) {
+        expect(body, `sudoers must not allow ${bad}`).not.toMatch(
+          new RegExp(`NOPASSWD:\\s+\\S*${bad}\\b`, 'i'),
+        );
+      }
+    });
+
+    it('binds the host docker socket and adds host.docker.internal to the runscript', () => {
+      expect(rendered).toContain('-v /var/run/docker.sock:/var/run/docker.sock');
+      // Group-add resolves the host docker GID dynamically via stat -c %g.
+      // Note: the runscript heredoc is unquoted, so the source contains
+      // `\$(stat ...)` literally (the backslash defers `$` expansion until
+      // bash later runs the script, not when cat writes it).
+      expect(rendered).toMatch(/DOCKER_SOCK_GID=\\\$\(stat -c %g \/var\/run\/docker\.sock\)/);
+      expect(rendered).toMatch(/--group-add\s+"\\\$DOCKER_SOCK_GID"/);
+      // Host-gateway lets the container reach host nginx for healthchecks.
+      expect(rendered).toContain('--add-host host.docker.internal:host-gateway');
+    });
+
+    it('aborts the runscript if the docker socket GID is missing or root (no silent --group-add 0)', () => {
+      // Earlier revision used `|| echo 0` as a fallback, which silently
+      // produced a container that bind-mounted the socket but couldn't use
+      // it. The current bootstrap MUST refuse to start in that case so
+      // systemd's Restart=always doesn't mask the real bug. Assert both:
+      //   - no `|| echo 0` fallback in the stat invocation
+      //   - explicit error path that exits non-zero
+      expect(rendered, 'must not silently fall back to GID 0').not.toMatch(
+        /stat -c %g \/var\/run\/docker\.sock[^\n)]*\|\|\s*echo\s*0/,
+      );
+      expect(rendered).toMatch(/Refusing to start with --group-add 0/);
+      expect(rendered).toMatch(/exit 1/);
+    });
+
+    it('still picks up image updates on systemd-managed restart', () => {
+      // The systemd unit + pull-on-start loop are unchanged by pr_env_enabled
+      // — confirm both still render so the redeploy-on-reboot guarantee holds.
+      expect(rendered).toMatch(/agenthub-server\.service/);
+      // Same `\$` deferral as above — match the literal backslash-dollar.
+      expect(rendered).toMatch(/docker pull --quiet "\\\$IMAGE_URI"/);
+    });
+
+    it('keeps the base-vhost write path and per-PR include glob in the same directory', () => {
+      // Reviewer-requested cross-file consistency check. If the user-data
+      // ever writes the base file into one directory while the base file's
+      // include glob points at another, the Hub control plane will silently
+      // drop fragments nginx never loads. Read both source files directly
+      // (independent of the test renderer) and assert agreement.
+      const baseTplPath = resolve(
+        here,
+        '..',
+        'ops',
+        'terraform',
+        'templates',
+        'pr-env-base-nginx.conf.tftpl',
+      );
+      const baseTpl = readFileSync(baseTplPath, 'utf8');
+
+      const writeMatch = tpl.match(/cat >(\/etc\/nginx\/[^/]+)\/agent-hub-pr-base\.conf/);
+      expect(writeMatch, 'user-data must `cat >` the base file under /etc/nginx').not.toBeNull();
+      const writeDir = writeMatch![1]!;
+
+      const includeMatch = baseTpl.match(/include\s+(\/etc\/nginx\/[^/]+)\/agent-hub-pr-\*\.conf/);
+      expect(includeMatch, 'base sub-template must declare an include glob').not.toBeNull();
+      const includeDir = includeMatch![1]!;
+
+      expect(includeDir, 'include glob dir must match the write dir').toBe(writeDir);
+      // Belt-and-suspenders: surface the actual directory in the assertion
+      // message if a future regression flips one of them to sites-enabled.
+      expect(writeDir).toBe('/etc/nginx/conf.d');
+    });
+  });
+
+  describe('pr_env_enabled = false (regression guard)', () => {
+    const rendered = renderTemplate(tpl, { ...RENDER_VARS_BASE, pr_env_enabled: false });
+
+    it('does not install nginx, certbot, or the dns-route53 plugin', () => {
+      expect(rendered).not.toMatch(/\$PKG_INSTALL\s+nginx\s+certbot/);
+      expect(rendered).not.toContain('python3-certbot-dns-route53');
+    });
+
+    it('does not drop the base nginx vhost or sudoers.d allowlist', () => {
+      expect(rendered).not.toContain('/etc/nginx/conf.d/agent-hub-pr-base.conf');
+      expect(rendered).not.toContain('/etc/sudoers.d/agenthub-pr-env');
+      // Also assert the explicit reload doesn't run when the flag is off —
+      // otherwise we'd reload nginx on every boot of an instance that never
+      // had any agent-hub-pr-*.conf written to disk.
+      expect(rendered).not.toMatch(/nginx -t && systemctl reload nginx/);
+    });
+
+    it('does not bind the host docker socket or add host-gateway', () => {
+      expect(rendered).not.toContain('/var/run/docker.sock:/var/run/docker.sock');
+      expect(rendered).not.toContain('--add-host host.docker.internal:host-gateway');
+      expect(rendered).not.toMatch(/DOCKER_SOCK_GID=/);
+    });
+
+    it('still installs the minimum package set and renders the unchanged runscript', () => {
+      // Sanity check: the rest of the template still renders normally when
+      // the new flag is off — the install line and `docker run` invocation
+      // for the ECR-pull branch are unchanged from pre-PR-2 behaviour.
+      expect(rendered).toMatch(/\$PKG_INSTALL\s+ca-certificates\s+git\b/);
+      // `\$REPO_DIR` is intentionally left as `\$` in the unquoted runscript
+      // heredoc so bash expands it at runtime, not at user-data render time.
+      expect(rendered).toMatch(
+        /exec docker run --rm --name agenthub-server[\s\S]*?--env-file "\\\$REPO_DIR\/\.env"/,
+      );
+    });
   });
 });

@@ -34,6 +34,57 @@ fi
 $PKG_UPDATE
 $PKG_INSTALL ca-certificates git
 
+%{ if pr_env_enabled ~}
+# ── PR-env mode: host nginx + certbot for per-PR preview environments ──────
+# Host nginx terminates TLS (using the wildcard ACM cert provisioned by PR 1
+# via certbot DNS-01 against Route 53) and reverse-proxies to per-PR
+# containers listening on 3100-3999 on the host loopback. The Hub control
+# plane drops one fragment per active PR into
+# /etc/nginx/conf.d/agent-hub-pr-*.conf and triggers `nginx -t` +
+# `systemctl reload nginx` via the narrow sudoers.d allowlist below.
+#
+# Package note: the certbot Route 53 DNS plugin is `python3-certbot-dns-route53`
+# on both AL2023 (`dnf`) and Ubuntu (`apt`). The shorter name
+# `python3-certbot-route53` does not exist in either repo and trips `set -e`,
+# so the literal package name below MUST stay in sync with the AWS-published
+# tutorial. See: https://docs.aws.amazon.com/linux/al2023/ug/SSL-on-amazon-linux-2023.html
+$PKG_INSTALL nginx certbot python3-certbot-dns-route53
+systemctl enable --now nginx
+
+# Base vhost: include /etc/nginx/conf.d/agent-hub-pr-*.conf so the Hub can
+# drop per-PR fragments without rewriting the main config. We write to
+# /etc/nginx/conf.d/ (NOT /etc/nginx/sites-enabled/) because that is the
+# directory included by AL2023's stock nginx.conf and by Ubuntu's. The
+# Debian-style sites-available/sites-enabled split is NOT pulled in by
+# AL2023's default config, so files dropped there sit on disk and are
+# silently never loaded.
+install -d -m 0755 /etc/nginx/conf.d
+cat >/etc/nginx/conf.d/agent-hub-pr-base.conf <<'NGINXBASE'
+${pr_env_base_nginx_conf}
+NGINXBASE
+
+# sudoers.d allowlist — narrow set of binaries the Hub container needs to
+# reload nginx and run certbot. Heredoc delimiter is unquoted so Terraform
+# expands ${app_user} at plan time (the file written to disk contains the
+# concrete user, not the literal placeholder).
+#
+# WARNING: do NOT widen this allowlist to include shells, package managers,
+# or any binary with shell-escape ability (find -exec, awk system(), perl
+# -e, etc.). Each entry is matched as a fully-qualified command + literal
+# argument prefix; sudoers will refuse other invocations.
+cat >/etc/sudoers.d/agenthub-pr-env <<SUDOERS
+${app_user} ALL=(root) NOPASSWD: /usr/sbin/nginx -t
+${app_user} ALL=(root) NOPASSWD: /bin/systemctl reload nginx
+${app_user} ALL=(root) NOPASSWD: /usr/bin/certbot
+SUDOERS
+chmod 0440 /etc/sudoers.d/agenthub-pr-env
+visudo -cf /etc/sudoers.d/agenthub-pr-env >/dev/null
+
+# Validate the dropped config and reload so the new include takes effect
+# immediately, instead of waiting for the next reboot or unrelated reload.
+nginx -t && systemctl reload nginx
+%{ endif ~}
+
 %{ if use_ecr_pull }
 # ── ECR pull path ───────────────────────────────────────────────────────────
 # Docker is preinstalled on the ECS-optimized AL2023 AMI. Just make sure it's
@@ -140,11 +191,45 @@ for i in 1 2 3; do
 done
 
 docker rm -f agenthub-server 2>/dev/null || true
+%{ if pr_env_enabled ~}
+# PR-env mode: bind-mount the host docker socket into the container so the
+# Hub can spin up per-PR preview containers, and add --add-host so the
+# container can reach the host nginx (which terminates TLS for the wildcard
+# preview hostname) over the gateway interface. --group-add gives the
+# container's `node` user (uid/gid 1000) supplementary access to the host's
+# docker GID — the GID is host-distro-specific (commonly 999 on AL2023, can
+# differ on Ubuntu) so we resolve it dynamically at runtime.
+#
+# Fail loudly if the socket is missing or unreadable. Earlier revisions
+# fell back to `|| echo 0`, which silently set --group-add 0 (root group)
+# on every restart and produced a container that bind-mounts the socket
+# but cannot actually use it — set -e + Restart=always then masked the
+# real bug behind a green systemd unit. Surface it instead: if the socket
+# isn't there, this whole feature is broken and the operator needs to
+# know.
+#
+# WARNING: this gives the Hub container root-equivalent access to the host.
+# Acceptable for trusted single-tenant Hub deployments only.
+DOCKER_SOCK_GID=\$(stat -c %g /var/run/docker.sock)
+if [ -z "\$DOCKER_SOCK_GID" ] || [ "\$DOCKER_SOCK_GID" = "0" ]; then
+  echo "ERROR: /var/run/docker.sock GID resolved to '\$DOCKER_SOCK_GID' (missing or root). Refusing to start with --group-add 0; install Docker on the host or disable enable_pr_env_host_nginx." >&2
+  exit 1
+fi
+exec docker run --rm --name agenthub-server \
+  -p "\$APP_PORT:3051" \
+  -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "\$DOCKER_SOCK_GID" \
+  --add-host host.docker.internal:host-gateway \
+  --env-file "\$REPO_DIR/.env" \
+  "\$IMAGE_URI"
+%{ else ~}
 exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
   --env-file "\$REPO_DIR/.env" \
   "\$IMAGE_URI"
+%{ endif ~}
 RUNSCRIPT
 chmod 0755 /usr/local/bin/agenthub-server-run.sh
 

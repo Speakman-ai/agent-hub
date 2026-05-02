@@ -184,6 +184,24 @@ resource "aws_security_group" "instance" {
     cidr_blocks = var.web_cidr_blocks
   }
 
+  # PR-env mode: per-PR preview containers bind to host ports in 3100-3999
+  # and are reverse-proxied by host nginx on 80/443 — they are NEVER exposed
+  # via the ALB. The 127.0.0.1/32 source CIDR is documentation-only since
+  # AWS security groups don't filter loopback traffic; the rule's job is to
+  # make the port range visible in `terraform plan`/`describe-security-groups`
+  # output as "yes, this range is intentionally used by the host" without
+  # actually opening anything externally.
+  dynamic "ingress" {
+    for_each = var.enable_pr_env_host_nginx ? [1] : []
+    content {
+      description = "PR-env preview containers (host-local; reverse-proxied via host nginx)"
+      from_port   = 3100
+      to_port     = 3999
+      protocol    = "tcp"
+      cidr_blocks = ["127.0.0.1/32"]
+    }
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

@@ -1,0 +1,19 @@
+# Base PR-env nginx fragment.
+#
+# Rendered by Terraform's templatefile() and dropped on the host as
+# /etc/nginx/conf.d/agent-hub-pr-base.conf when
+# `enable_pr_env_host_nginx = true`. Its only job is to include per-PR
+# fragments — the Hub control plane writes one vhost per active PR to
+# /etc/nginx/conf.d/agent-hub-pr-*.conf and reloads nginx via the
+# narrow sudoers allowlist defined in user-data.
+#
+# IMPORTANT: this directory MUST match the directory the user-data
+# template writes to (/etc/nginx/conf.d/). AL2023's stock nginx.conf
+# includes conf.d/ but NOT sites-enabled/; the regression test in
+# server/user-data-template.test.ts asserts the include glob and the
+# write path agree.
+#
+# Per-PR fragments are responsible for their own server { ... } blocks,
+# TLS cert paths (issued by certbot DNS-01 against the wildcard zone),
+# and proxy_pass targets in the 3100-3999 host-port range.
+include /etc/nginx/conf.d/agent-hub-pr-*.conf;
