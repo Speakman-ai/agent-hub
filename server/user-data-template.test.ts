@@ -74,6 +74,37 @@ const RENDER_VARS_BASE = {
   image_uri: 'public.ecr.aws/example/agent-hub:main',
   ssm_deb_url: 'https://example.invalid/ssm.deb',
   pr_env_base_nginx_conf: 'include /etc/nginx/sites-enabled/agent-hub-pr-*.conf;',
+  config_json_b64: '',
+};
+
+/**
+ * PrEnv Tier-3 config fixture used by the config_json_b64 tests below.
+ * Mirrors the shape Terraform's locals-agent-hub.tf builds when
+ * `enable_pr_env_host_nginx = true`. Kept in the test (rather than imported
+ * from server/container-pool/pr-env-runtime.ts) because we want the test to
+ * fail loudly if either side drifts away from this shape — schema drift is
+ * exactly the bug class this fixture is meant to catch.
+ */
+const PR_ENV_FIXTURE_HOST = 'preview.agent-hub.example.com';
+const PR_ENV_FIXTURE = {
+  prEnv: {
+    enabled: true,
+    previewHost: PR_ENV_FIXTURE_HOST,
+    previewBaseUrl: `https://${PR_ENV_FIXTURE_HOST}`,
+    prodDbPath: '/data/agent-hub.db',
+    prEnvDataDir: '/data/pr-env-databases',
+    envFilesDir: '/data/pr-env-envfiles',
+    nginx: {
+      sitesAvailableDir: '/etc/nginx/conf.d',
+      sitesEnabledDir: '/etc/nginx/conf.d',
+      certPath: `/etc/letsencrypt/live/${PR_ENV_FIXTURE_HOST}/fullchain.pem`,
+      keyPath: `/etc/letsencrypt/live/${PR_ENV_FIXTURE_HOST}/privkey.pem`,
+      certHome: '/etc/letsencrypt',
+      previewHost: PR_ENV_FIXTURE_HOST,
+    },
+    portRange: { min: 3100, max: 3999 },
+    route53: { hostedZoneId: 'Z123EXAMPLE' },
+  },
 };
 
 /**
@@ -252,6 +283,133 @@ describe('agent-hub-user-data.tftpl', () => {
       expect(rendered).toMatch(/docker pull --quiet "\\\$IMAGE_URI"/);
     });
 
+    // ── Tier-3 prEnv config.json write (PR 3 of the PR-envs series) ─────
+    //
+    // When pr_env_enabled = true, terraform passes a base64-encoded JSON
+    // blob (the prEnv block) into the template via `config_json_b64`. The
+    // user-data must decode it and write it to the canonical Agent Hub
+    // dataDir on first boot, with mode 0600 + ownership matching whichever
+    // user the running server reads files as. The runtime resolver in
+    // server/container-pool/pr-env-runtime.ts picks DB → file → env-var per
+    // field, so populating only Tier-3 here is the intended "operator fills
+    // in Tier-1+2 via Settings UI after first boot" path.
+    describe('Tier-3 prEnv config.json write', () => {
+      const fixtureJson = JSON.stringify(PR_ENV_FIXTURE);
+      const fixtureB64 = Buffer.from(fixtureJson, 'utf8').toString('base64');
+
+      it('writes the decoded JSON to $DATA_ROOT/data/config.json under Docker bootstrap', () => {
+        const r = renderTemplate(tpl, {
+          ...RENDER_VARS_BASE,
+          pr_env_enabled: true,
+          use_ecr_pull: true,
+          use_docker_bootstrap: false,
+          use_pm2_bootstrap: false,
+          config_json_b64: fixtureB64,
+        });
+
+        // Path resolution: dataDir is bind-mounted at $DATA_ROOT/data → /data
+        // in the container. The host file MUST be 1000:1000 (the container's
+        // `node` user uid) so the bind-mount preserves a readable owner.
+        expect(r).toContain('PR_ENV_CONFIG_DIR="$DATA_ROOT/data"');
+        expect(r).toContain('PR_ENV_CONFIG_OWNER="1000:1000"');
+        // Same `printf | base64 -d` pattern as the .env write.
+        expect(r).toContain(`printf '%s' "${fixtureB64}"`);
+        expect(r).toContain('base64 -d > "$PR_ENV_CONFIG_DIR/config.json"');
+        // Strict 0600 — config.json may, in the future, contain Tier-2
+        // secrets if the file-only path is ever revived. Belt-and-suspenders.
+        expect(r).toMatch(/chmod 600 "\$PR_ENV_CONFIG_DIR\/config\.json"/);
+        expect(r).toMatch(/install -d -m 0755 "\$PR_ENV_CONFIG_DIR"/);
+      });
+
+      it('writes to /home/${app_user}/.agent-hub/data under PM2 bootstrap', () => {
+        const r = renderTemplate(tpl, {
+          ...RENDER_VARS_BASE,
+          pr_env_enabled: true,
+          use_ecr_pull: false,
+          use_docker_bootstrap: false,
+          use_pm2_bootstrap: true,
+          config_json_b64: fixtureB64,
+        });
+        // PM2 mode reads ~/.agent-hub/data/config.json directly off disk;
+        // no bind-mount, so the owner is the operator user, not 1000:1000.
+        expect(r).toContain('PR_ENV_CONFIG_DIR="/home/agenthub/.agent-hub/data"');
+        expect(r).toContain('PR_ENV_CONFIG_OWNER="agenthub:agenthub"');
+        // Docker-mode owner must NOT leak into the PM2 path.
+        expect(r).not.toContain('PR_ENV_CONFIG_OWNER="1000:1000"');
+      });
+
+      it('decoded config_json_b64 contains every field readPrEnvConfig() needs at runtime', () => {
+        // Schema-match assertion. Ground truth: the field set
+        // server/container-pool/pr-env-runtime.ts checks in `missing` (the
+        // Tier-3 paths it refuses to start without, ignoring Tier-1+2 fields
+        // that arrive via the DB). If a future PR drops a key from the
+        // Terraform locals block, this test fails at the `expect` line that
+        // names the missing field — not at obscure cloud-init runtime.
+        const decoded = JSON.parse(Buffer.from(fixtureB64, 'base64').toString('utf8'));
+        expect(decoded).toHaveProperty('prEnv');
+        const block = decoded.prEnv as Record<string, unknown>;
+        expect(block.enabled).toBe(true);
+        expect(typeof block.previewHost).toBe('string');
+        expect(typeof block.previewBaseUrl).toBe('string');
+        expect((block.previewBaseUrl as string).startsWith('https://')).toBe(true);
+        expect(typeof block.prodDbPath).toBe('string');
+        expect(typeof block.prEnvDataDir).toBe('string');
+        expect(typeof block.envFilesDir).toBe('string');
+
+        const nginx = block.nginx as Record<string, unknown>;
+        expect(nginx).toBeTypeOf('object');
+        for (const key of [
+          'sitesAvailableDir',
+          'sitesEnabledDir',
+          'certPath',
+          'keyPath',
+          'certHome',
+          'previewHost',
+        ] as const) {
+          expect(nginx[key], `nginx.${key} missing from Tier-3 fixture`).toBeTypeOf('string');
+          expect((nginx[key] as string).length, `nginx.${key} empty`).toBeGreaterThan(0);
+        }
+
+        const portRange = block.portRange as Record<string, number>;
+        expect(portRange).toBeTypeOf('object');
+        expect(portRange.min).toBe(3100);
+        expect(portRange.max).toBe(3999);
+
+        const route53 = block.route53 as Record<string, unknown>;
+        expect(route53).toBeTypeOf('object');
+        expect(typeof route53.hostedZoneId).toBe('string');
+
+        // Tier-1+2 fields MUST NOT be in the file block — they live in the
+        // encrypted SQLite row. Asserting their absence keeps a future
+        // refactor from accidentally re-writing creds to disk in plaintext.
+        expect(block.repoFullName, 'Tier-1 repoFullName must NOT be in Tier-3').toBeUndefined();
+        expect(block.github, 'Tier-2 github creds must NOT be in Tier-3').toBeUndefined();
+        expect(
+          block.certRenewalLive,
+          'Tier-1 certRenewalLive must NOT be in Tier-3',
+        ).toBeUndefined();
+        // route53 has Tier-3 (hostedZoneId only) — accessKeyId/secretAccessKey are Tier-2.
+        expect(route53.accessKeyId, 'Tier-2 r53 access key must NOT be in Tier-3').toBeUndefined();
+        expect(route53.secretAccessKey, 'Tier-2 r53 secret must NOT be in Tier-3').toBeUndefined();
+      });
+
+      it('skips the write when config_json_b64 is empty (defensive guard)', () => {
+        // Belt-and-suspenders for the locals.tf path that emits "" when the
+        // feature is off but somehow still passes pr_env_enabled=true (e.g.
+        // a partial revert). The `if [ -n … ]` guard means no config.json
+        // ever appears with an empty body.
+        const r = renderTemplate(tpl, {
+          ...RENDER_VARS_BASE,
+          pr_env_enabled: true,
+          config_json_b64: '',
+        });
+        // The dir setup + guard still appear, but the printf line shouldn't
+        // execute against an empty payload at runtime — we encode that via
+        // the literal `if [ -n "" ]` shell guard surviving render.
+        expect(r).toMatch(/if \[ -n "" \]; then/);
+      });
+    });
+
     it('keeps the base-vhost write path and per-PR include glob in the same directory', () => {
       // Reviewer-requested cross-file consistency check. If the user-data
       // ever writes the base file into one directory while the base file's
@@ -304,6 +462,15 @@ describe('agent-hub-user-data.tftpl', () => {
       expect(rendered).not.toContain('/var/run/docker.sock:/var/run/docker.sock');
       expect(rendered).not.toContain('--add-host host.docker.internal:host-gateway');
       expect(rendered).not.toMatch(/DOCKER_SOCK_GID=/);
+    });
+
+    it('does not write the Tier-3 prEnv config.json (regression guard for PR 3)', () => {
+      // Symmetric guard for the config.json write added in PR 3 of this
+      // series. With pr_env_enabled = false the entire block must be
+      // gone — no PR_ENV_CONFIG_DIR shell var, no chmod against config.json.
+      expect(rendered).not.toContain('PR_ENV_CONFIG_DIR=');
+      expect(rendered).not.toContain('PR_ENV_CONFIG_OWNER=');
+      expect(rendered).not.toMatch(/config\.json/);
     });
 
     it('still installs the minimum package set and renders the unchanged runscript', () => {

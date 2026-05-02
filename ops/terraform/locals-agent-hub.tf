@@ -126,6 +126,58 @@ locals {
     {}
   )
 
+  # PR-env Tier-3 (host paths) config block written to the canonical Agent
+  # Hub `<dataDir>/config.json` at first boot. Tier-1 (general) and Tier-2
+  # (encrypted credentials — GitHub App, Route 53 IAM keys, repoFullName,
+  # certRenewalLive) live in the SQLite `pr_env_config` row instead and are
+  # entered via Settings → PR Environments after first boot. The runtime
+  # resolver in `server/container-pool/pr-env-runtime.ts` merges DB → file →
+  # env-var-override per-field, so leaving Tier-1+2 absent here is the
+  # intentional "operator fills in via UI" path.
+  #
+  # The hostname is composed exactly the way alb.tf composes
+  # `local.pr_env_preview_host` for the wildcard ACM cert (PR 1 of this
+  # series), so the cert and the runtime config agree on the same name.
+  # Inside the container, the dataDir is bind-mounted at /data, which is
+  # why prodDbPath/prEnvDataDir/envFilesDir all anchor at /data here.
+  pr_env_preview_host_resolved = (
+    var.enable_pr_env_host_nginx && local.alb_fqdn != null
+    ? "${var.pr_env_preview_subdomain}.${local.alb_fqdn}"
+    : ""
+  )
+  pr_env_route53_hosted_zone_id = (
+    var.enable_pr_env_host_nginx && local.route53_zone_id_effective != null
+    ? local.route53_zone_id_effective
+    : ""
+  )
+  pr_env_config = var.enable_pr_env_host_nginx ? {
+    prEnv = {
+      enabled        = true
+      previewHost    = local.pr_env_preview_host_resolved
+      previewBaseUrl = "https://${local.pr_env_preview_host_resolved}"
+      prodDbPath     = "/data/agent-hub.db"
+      prEnvDataDir   = "/data/pr-env-databases"
+      envFilesDir    = "/data/pr-env-envfiles"
+      nginx = {
+        sitesAvailableDir = "/etc/nginx/conf.d"
+        sitesEnabledDir   = "/etc/nginx/conf.d"
+        certPath          = "/etc/letsencrypt/live/${local.pr_env_preview_host_resolved}/fullchain.pem"
+        keyPath           = "/etc/letsencrypt/live/${local.pr_env_preview_host_resolved}/privkey.pem"
+        certHome          = "/etc/letsencrypt"
+        previewHost       = local.pr_env_preview_host_resolved
+      }
+      portRange = {
+        min = 3100
+        max = 3999
+      }
+      route53 = {
+        hostedZoneId = local.pr_env_route53_hosted_zone_id
+      }
+    }
+  } : null
+  pr_env_config_json     = local.pr_env_config != null ? jsonencode(local.pr_env_config) : ""
+  pr_env_config_json_b64 = local.pr_env_config_json != "" ? base64encode(local.pr_env_config_json) : ""
+
   user_data_templated = templatefile(
     "${path.module}/agent-hub-user-data.tftpl",
     {
@@ -146,6 +198,7 @@ locals {
       ssm_deb_url            = "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb"
       pr_env_enabled         = var.enable_pr_env_host_nginx
       pr_env_base_nginx_conf = local.pr_env_base_nginx_conf
+      config_json_b64        = local.pr_env_config_json_b64
     }
   )
 }

@@ -139,6 +139,41 @@ fi
 REPO_DIR="${repo_dir}"
 DATA_ROOT="${data_root_for_docker}"
 
+%{ if pr_env_enabled ~}
+# ── Tier-3 prEnv config (host-only paths) ──────────────────────────────────
+# Writes the operator-not-UI-editable portion of the PR-env config (preview
+# hostname, host-side data/files dirs, nginx paths, port range, Route 53
+# zone) to the canonical Agent Hub `<dataDir>/config.json` on first boot.
+# The server's runtime resolver
+# (server/container-pool/pr-env-runtime.ts) merges these file-block values
+# with the encrypted Tier-1+2 fields it reads from SQLite (GitHub App
+# creds, Route 53 IAM keys, repoFullName, certRenewalLive) — which the
+# operator enters via Settings → PR Environments after first boot. Same
+# `printf | base64 -d` pattern as the .env writes below so the
+# render-time secrecy contract (b64 over the wire, mode 0600 on disk) is
+# uniform across every templated file.
+%{ if use_ecr_pull || use_docker_bootstrap ~}
+# Docker bootstrap: dataDir is bind-mounted at $DATA_ROOT/data → /data in
+# the container. Owner must be 1000:1000 to match the container's `node`
+# user (uid 1000) — same convention as the data + uploads dirs created
+# in each branch below.
+PR_ENV_CONFIG_DIR="$DATA_ROOT/data"
+PR_ENV_CONFIG_OWNER="1000:1000"
+%{ else ~}
+# PM2 bootstrap: dataDir is the host operator user's home — server reads
+# ~/.agent-hub/data/config.json directly off disk.
+PR_ENV_CONFIG_DIR="/home/${app_user}/.agent-hub/data"
+PR_ENV_CONFIG_OWNER="${app_user}:${app_user}"
+%{ endif ~}
+install -d -m 0755 "$PR_ENV_CONFIG_DIR"
+if [ -n "${config_json_b64}" ]; then
+  umask 077
+  printf '%s' "${config_json_b64}" | base64 -d > "$PR_ENV_CONFIG_DIR/config.json"
+  chown "$PR_ENV_CONFIG_OWNER" "$PR_ENV_CONFIG_DIR/config.json"
+  chmod 600 "$PR_ENV_CONFIG_DIR/config.json"
+fi
+%{ endif ~}
+
 %{ if use_ecr_pull ~}
 # ── ECR pull branch ─────────────────────────────────────────────────────────
 # No git clone, no docker build. Just pull the tagged image and run it.
