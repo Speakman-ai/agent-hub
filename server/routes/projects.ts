@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { execSync, spawn, ChildProcess, exec } from 'child_process';
+import { execSync, execFileSync, spawn, ChildProcess, exec } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
@@ -7,6 +7,15 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
 import { buildSpawnEnv } from '../config.js';
+import {
+  classifyCloneUrl,
+  buildAuthenticatedUrl,
+  redactToken,
+  SSH_NOT_SUPPORTED_MESSAGE,
+} from '../clone-url-auth.js';
+import { getActiveAccessToken } from '../github-connections-store.js';
+import { getUserByUsername, createUser } from '../users-store.js';
+import type { AuthenticatedRequest } from '../auth.js';
 
 const execAsync = promisify(exec);
 import type {
@@ -191,6 +200,36 @@ function normalizeCheckHealMaxRounds(value: unknown): number | undefined {
 const CHECK_HEAL_MAX_ROUNDS_INVALID =
   'checkHealMaxRounds must be an integer between 1 and 5 (inclusive), or null or empty string to clear';
 
+/**
+ * Resolve the user id whose GitHub credentials should be used for a
+ * clone. Mirrors `resolveOAuthUserId` in routes/github-oauth.ts:
+ *
+ *   1. Real JWT caller → `authUserId` is set, use it directly.
+ *   2. Local-mode bypass → synthesize / load the singleton `local-<orgId>`
+ *      user so the credentials saved via the local-mode connect-token
+ *      flow are reachable from this route too.
+ *   3. apiKey path or unauth → null. Public repos still clone fine;
+ *      private clones simply fall back to the existing "auth required"
+ *      error path. We do NOT use the apiKey as a proxy for any
+ *      particular user identity.
+ */
+function resolveCloneUserId(req: Request): string | null {
+  const areq = req as AuthenticatedRequest;
+  if (areq.authUserId) return areq.authUserId;
+  if (areq.authLocalOrgBypass && areq.authOrgId) {
+    const username = `local-${areq.authOrgId}`;
+    try {
+      const existing = getUserByUsername(username);
+      if (existing) return existing.id;
+      const created = createUser({ username, passwordHash: '' });
+      return created.id;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 export default function createProjectRoutes(deps: RouteDeps): Router {
   const {
     stmts,
@@ -211,9 +250,19 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
 
   const router = Router();
 
-  router.post('/api/projects/clone', (req: Request, res: Response) => {
+  router.post('/api/projects/clone', async (req: Request, res: Response) => {
     const { url, targetDir } = req.body as { url?: string; targetDir?: string };
     if (!url) return res.status(400).json({ error: 'url is required' });
+
+    // ── Classify the URL up front so we can fail fast on SSH ───────
+    // SSH cloning needs a known_hosts entry + a registered key, neither
+    // of which we can guarantee in Docker-deployed Hubs. Surface a
+    // pointed message instead of letting git error with the cryptic
+    // `Host key verification failed` line.
+    const parsed = classifyCloneUrl(url);
+    if (parsed.kind === 'github-ssh') {
+      return res.status(400).json({ error: SSH_NOT_SUPPORTED_MESSAGE });
+    }
 
     const repoName =
       url
@@ -236,10 +285,55 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       });
     }
 
-    const proc: ChildProcess = spawn('git', ['clone', '--progress', url, clonePath], {
+    // ── Resolve a user OAuth/PAT token for github-https URLs ───────
+    // The connect-token endpoint stores both OAuth and PAT credentials
+    // in the same `users.github_user_token` column, so this single
+    // lookup covers both flows. For non-github or already-authenticated
+    // URLs we leave `spawnUrl` equal to `url` and skip the rewrite.
+    let spawnUrl = url;
+    let injectedToken: string | null = null;
+    if (parsed.kind === 'github-https') {
+      try {
+        const userId = resolveCloneUserId(req);
+        if (userId) {
+          const personal = config.personalOAuth;
+          const app = config.githubApp;
+          const creds =
+            personal?.clientId && personal?.clientSecret
+              ? { clientId: personal.clientId, clientSecret: personal.clientSecret }
+              : app?.clientId && app?.clientSecret
+                ? { clientId: app.clientId, clientSecret: app.clientSecret }
+                : null;
+          const token = await getActiveAccessToken(userId, creds);
+          if (token) {
+            spawnUrl = buildAuthenticatedUrl(parsed, token);
+            injectedToken = token;
+          }
+        }
+      } catch (err) {
+        // Token lookup is best-effort: a missing orgs.db, a dead
+        // refresh token, or a transient OAuth failure must not block
+        // public-repo clones. Fall through with the original URL and
+        // let git surface the auth error if the repo turns out to be
+        // private.
+        console.warn(
+          `[clone] Token lookup failed, falling back to unauthenticated clone: ${
+            (err as Error).message?.split('\n')[0]
+          }`,
+        );
+      }
+    }
+
+    // Pass the spawn URL via argv. We deliberately keep the `cwd`
+    // unchanged from the parent so any GIT_* env vars the operator
+    // set continue to apply, and we redact the token from any string
+    // that gets broadcast or logged.
+    const proc: ChildProcess = spawn('git', ['clone', '--progress', spawnUrl, clonePath], {
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+
+    const safeForBroadcast = (text: string): string => redactToken(text, injectedToken);
 
     let stderrBuf = '';
     proc.stderr!.on('data', (chunk: Buffer) => {
@@ -249,36 +343,78 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed) {
-          broadcast({ type: 'clone-progress', cloneId, message: trimmed });
+          broadcast({ type: 'clone-progress', cloneId, message: safeForBroadcast(trimmed) });
         }
       }
     });
 
     proc.stdout!.on('data', (chunk: Buffer) => {
       const text = chunk.toString().trim();
-      if (text) broadcast({ type: 'clone-progress', cloneId, message: text });
+      if (text) broadcast({ type: 'clone-progress', cloneId, message: safeForBroadcast(text) });
     });
 
     proc.on('error', (err: Error) => {
-      broadcast({ type: 'clone-error', cloneId, error: `Failed to start git: ${err.message}` });
+      broadcast({
+        type: 'clone-error',
+        cloneId,
+        error: `Failed to start git: ${safeForBroadcast(err.message)}`,
+      });
     });
 
     proc.on('close', (code: number | null) => {
       if (code === 0) {
+        // Strip the token from the cloned repo's git config so it
+        // doesn't persist on disk. We rewrite back to the user's
+        // original URL string verbatim — that round-trip is the
+        // promise of the clone wizard.
+        if (injectedToken) {
+          try {
+            // execFileSync (no shell) is required here: both `clonePath`
+            // (derived from a request-controlled `targetDir` via
+            // `mkdirSync(..., { recursive: true })`, which doesn't
+            // filter shell metachars) and `url` reach this call. Running
+            // them through `sh -c` — even quoted with JSON.stringify —
+            // would still expand `$(...)`, backticks, and `$VAR` because
+            // those are evaluated inside double quotes. argv-style
+            // execution sidesteps the shell entirely.
+            execFileSync('git', ['-C', clonePath, 'remote', 'set-url', 'origin', url], {
+              stdio: 'ignore',
+            });
+          } catch (err) {
+            // Non-fatal: the repo is cloned and usable. Worst case
+            // the user sees the tokenized URL in `git remote -v`
+            // until they re-set it. Log so this is debuggable —
+            // redacted in case git echoed the rewritten URL into its
+            // error message before failing.
+            const raw = (err as Error).message ?? String(err);
+            console.warn(
+              `[clone] Failed to scrub token from origin remote: ${safeForBroadcast(raw)}`,
+            );
+          }
+        }
         broadcast({ type: 'clone-complete', cloneId, path: clonePath, repoName });
       } else {
         let errorMsg = `git clone exited with code ${code}`;
-        if (stderrBuf.includes('Permission denied') || stderrBuf.includes('publickey')) {
-          errorMsg = 'SSH key authentication failed. Check your SSH keys or use an HTTPS URL.';
-        } else if (stderrBuf.includes('Authentication failed') || stderrBuf.includes('403')) {
+        const safeStderr = safeForBroadcast(stderrBuf);
+        if (stderrBuf.includes('Host key verification failed')) {
+          errorMsg = SSH_NOT_SUPPORTED_MESSAGE;
+        } else if (stderrBuf.includes('Permission denied') || stderrBuf.includes('publickey')) {
           errorMsg =
-            'Authentication failed. For private repos, use SSH or configure a GitHub token.';
+            'SSH key authentication failed. Use the HTTPS URL form and connect your GitHub account in Settings → GitHub.';
+        } else if (
+          stderrBuf.includes('could not read Username') ||
+          stderrBuf.includes('Authentication failed') ||
+          stderrBuf.includes('403')
+        ) {
+          errorMsg = injectedToken
+            ? 'Authentication failed. Your connected GitHub account may not have access to this repo, or the token has expired — try reconnecting in Settings → GitHub.'
+            : 'Authentication required for this repo. Connect your GitHub account in Settings → GitHub and try again.';
         } else if (stderrBuf.includes('not found') || stderrBuf.includes('404')) {
           errorMsg = 'Repository not found. Check the URL and your access permissions.';
         } else if (stderrBuf.includes('already exists')) {
           errorMsg = `Directory already exists: ${clonePath}`;
         }
-        broadcast({ type: 'clone-error', cloneId, error: errorMsg });
+        broadcast({ type: 'clone-error', cloneId, error: errorMsg, stderr: safeStderr });
       }
     });
 
@@ -297,6 +433,9 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
 
     proc.on('close', () => clearTimeout(timeout));
 
+    // Echo the original URL back to the caller (never the tokenized
+    // form). The client tracks the clone via `cloneId` over the
+    // WebSocket from this point.
     res.json({ cloneId, repoName, clonePath });
   });
 
