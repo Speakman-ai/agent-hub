@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'f
 import { v4 as uuidv4 } from 'uuid';
 import { DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import type { BroadcastFn, Stmts } from './types.js';
+import { extractJsonFromTagBody } from './action-block-parsing.js';
 
 const PER_REFERENCE_BYTE_CAP = 8 * 1024;
 const TOTAL_REFERENCES_BYTE_CAP = 32 * 1024;
@@ -110,9 +111,11 @@ export function parseSkillBlock(raw: string): SkillInvokeTask | SkillInvokeMalfo
   const tagMatch = raw.match(/<agenthub:skill>\s*([\s\S]*?)\s*<\/agenthub:skill>/i);
   const payload = (tagMatch ? tagMatch[1] : raw).trim();
 
+  // Tolerate fenced/prose-wrapped/multi-line bodies — see action-block-parsing.ts.
+  const normalized = extractJsonFromTagBody(payload);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(payload);
+    parsed = normalized === null ? JSON.parse(payload) : JSON.parse(normalized);
   } catch (err) {
     return {
       error: 'malformed',

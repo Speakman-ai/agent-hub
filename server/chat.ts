@@ -34,6 +34,7 @@ import {
   parseSkillBlock,
 } from './skill-invoke.js';
 import { routeSkillFromMessage } from './skill-router.js';
+import { extractJsonFromTagBody } from './action-block-parsing.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -891,9 +892,11 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       detail: `ReAct block JSON exceeds ${MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES} byte cap`,
     };
   }
+  // Tolerate fenced/prose-wrapped/multi-line bodies — see action-block-parsing.ts.
+  const normalized = extractJsonFromTagBody(payload);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(payload);
+    parsed = normalized === null ? JSON.parse(payload) : JSON.parse(normalized);
   } catch (err) {
     return { error: 'malformed', detail: `Invalid JSON: ${(err as Error).message}` };
   }

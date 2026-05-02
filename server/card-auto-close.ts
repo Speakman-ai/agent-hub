@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { Stmts, BroadcastFn, KanbanCardRow, KanbanColumnRow } from './types.js';
+import { extractJsonFromTagBody } from './action-block-parsing.js';
 
 // ─── Kanban card auto-close — `<agenthub:close-card>` block protocol ─────────
 //
@@ -100,21 +101,26 @@ export function detectCloseCardBlock(text: string): CloseCardDetectionResult {
   }
   const match = text.match(/<agenthub:close-card>\s*([\s\S]*?)\s*<\/agenthub:close-card>/);
   if (!match) return { present: false, task: null, reason: null, rawBody: null };
+  const rawBody = match[1] ?? '';
+  // Tolerate fenced wrappers (```json ... ```), prose before/after the JSON
+  // payload, and raw newlines inside string values. Each of those used to
+  // hard-fail with a silent `invalid-json` before reaching the typed
+  // validation gate. See `action-block-parsing.ts`.
+  const normalized = extractJsonFromTagBody(rawBody);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(match[1]);
+    parsed = normalized === null ? JSON.parse(rawBody) : JSON.parse(normalized);
   } catch {
-    return { present: true, task: null, reason: 'invalid-json', rawBody: match[1] ?? '' };
+    return { present: true, task: null, reason: 'invalid-json', rawBody };
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { present: true, task: null, reason: 'not-object', rawBody: match[1] ?? '' };
+    return { present: true, task: null, reason: 'not-object', rawBody };
   }
   const obj = parsed as Record<string, unknown>;
 
   const rawReason = typeof obj.reason === 'string' ? obj.reason.trim().toLowerCase() : '';
   let reason: CloseCardReason | null = null;
-  if (!rawReason)
-    return { present: true, task: null, reason: 'missing-reason', rawBody: match[1] ?? '' };
+  if (!rawReason) return { present: true, task: null, reason: 'missing-reason', rawBody };
   if (rawReason === 'duplicate') reason = 'duplicate';
   else if (
     rawReason === 'already-done' ||
@@ -123,14 +129,13 @@ export function detectCloseCardBlock(text: string): CloseCardDetectionResult {
     rawReason === 'done'
   )
     reason = 'already-done';
-  if (!reason)
-    return { present: true, task: null, reason: 'invalid-reason', rawBody: match[1] ?? '' };
+  if (!reason) return { present: true, task: null, reason: 'invalid-reason', rawBody };
 
   const note = typeof obj.note === 'string' ? obj.note.trim() : '';
   if (typeof obj.note !== 'string') {
-    return { present: true, task: null, reason: 'missing-note', rawBody: match[1] ?? '' };
+    return { present: true, task: null, reason: 'missing-note', rawBody };
   }
-  if (!note) return { present: true, task: null, reason: 'empty-note', rawBody: match[1] ?? '' };
+  if (!note) return { present: true, task: null, reason: 'empty-note', rawBody };
 
   const duplicateOfCardIdRaw =
     typeof obj.duplicateOfCardId === 'string'
@@ -143,7 +148,7 @@ export function detectCloseCardBlock(text: string): CloseCardDetectionResult {
   const task: CloseCardTask = duplicateOfCardId
     ? { reason, note, duplicateOfCardId }
     : { reason, note };
-  return { present: true, task, reason: null, rawBody: match[1] ?? '' };
+  return { present: true, task, reason: null, rawBody };
 }
 
 export function describeCloseCardReason(reason: CloseCardMalformedReason): string {

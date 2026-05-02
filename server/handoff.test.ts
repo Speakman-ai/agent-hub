@@ -91,6 +91,60 @@ describe('parseHandoffBlock', () => {
     const result = parseHandoffBlock(text);
     expect(result).toEqual({ toAgent: 'hub-backend', note: 'go' });
   });
+
+  // ─── Robustness: action-block parser shape variants ────────────────────
+  // Regression coverage for the "action blocks sometimes only print, don't
+  // execute" bug. The empirical trigger that broke this very session's
+  // first handoff was a literal newline inside the `note` JSON string.
+
+  it('tolerates a ```json ... ``` fence wrapping the JSON inside the tag', () => {
+    const text =
+      '<handoff>\n```json\n{"toAgent":"hub-backend","note":"do the thing"}\n```\n</handoff>';
+    expect(parseHandoffBlock(text)).toEqual({
+      toAgent: 'hub-backend',
+      note: 'do the thing',
+    });
+  });
+
+  it('tolerates a bare ``` fence (no language hint) inside the tag', () => {
+    const text = '<handoff>\n```\n{"toAgent":"hub-backend","note":"do the thing"}\n```\n</handoff>';
+    expect(parseHandoffBlock(text)).toEqual({
+      toAgent: 'hub-backend',
+      note: 'do the thing',
+    });
+  });
+
+  it('tolerates lead-in prose before the JSON object inside the tag', () => {
+    const text =
+      '<handoff>\nHere\'s the payload:\n{"toAgent":"hub-backend","note":"go"}\n</handoff>';
+    expect(parseHandoffBlock(text)).toEqual({
+      toAgent: 'hub-backend',
+      note: 'go',
+    });
+  });
+
+  it('tolerates raw newlines inside the note string (empirical handoff failure)', () => {
+    // This is the exact shape that previously failed for this session's
+    // handoff with reason='invalid-json'. Without normalization, JSON.parse
+    // rejects literal \x0A inside a string per RFC 8259 §7.
+    const text =
+      '<handoff>\n{"toAgent":"hub-backend","note":"Pick up the card.\nDetails follow.\nMore details."}\n</handoff>';
+    const result = parseHandoffBlock(text);
+    expect(result).not.toBeNull();
+    expect(result!.toAgent).toBe('hub-backend');
+    expect(result!.note).toBe('Pick up the card.\nDetails follow.\nMore details.');
+  });
+
+  it('tolerates fenced + multi-line note combined', () => {
+    const text = `<handoff>
+\`\`\`json
+{"toAgent":"hub-backend","note":"line one
+line two"}
+\`\`\`
+</handoff>`;
+    const result = parseHandoffBlock(text);
+    expect(result).toEqual({ toAgent: 'hub-backend', note: 'line one\nline two' });
+  });
 });
 
 describe('detectHandoffBlock — distinguishes absent vs malformed', () => {

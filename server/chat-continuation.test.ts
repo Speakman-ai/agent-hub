@@ -116,6 +116,37 @@ describe('ReAct block parse', () => {
       expect(parsed.detail).toMatch(/exceeds maximum of 12/);
     }
   });
+
+  // ─── Robustness: action-block parser shape variants ────────────────────
+  // Regression coverage for the "action blocks sometimes only print, don't
+  // execute" bug. Each of these shapes used to return malformed/invalid-JSON.
+
+  it('tolerates a ```json ... ``` fence wrapping the JSON inside the tag', () => {
+    const text =
+      '<agenthub:react>\n```json\n{"actions":[{"tool":"wiki","query":"kanban"}]}\n```\n</agenthub:react>';
+    const parsed = parseReActBlock(text);
+    expect(parsed).not.toMatchObject({ error: 'malformed' });
+    if (!('error' in parsed)) {
+      expect(parsed.actions).toEqual([{ tool: 'wiki', query: 'kanban' }]);
+    }
+  });
+
+  it('tolerates lead-in prose before the JSON object', () => {
+    const text =
+      '<agenthub:react>\nNeed to look up wiki:\n{"actions":[{"tool":"wiki","query":"handoff"}]}\n</agenthub:react>';
+    const parsed = parseReActBlock(text);
+    expect(parsed).not.toMatchObject({ error: 'malformed' });
+  });
+
+  it('tolerates raw newlines inside string values (multi-line query)', () => {
+    const text =
+      '<agenthub:react>{"actions":[{"tool":"wiki","query":"kanban\nstreaming\nparity"}]}</agenthub:react>';
+    const parsed = parseReActBlock(text);
+    expect(parsed).not.toMatchObject({ error: 'malformed' });
+    if (!('error' in parsed)) {
+      expect(parsed.actions[0]).toEqual({ tool: 'wiki', query: 'kanban\nstreaming\nparity' });
+    }
+  });
 });
 
 describe('UTF-8 safe clipping', () => {

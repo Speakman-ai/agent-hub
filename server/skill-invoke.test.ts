@@ -99,6 +99,32 @@ describe('skill-invoke', () => {
         error: 'malformed',
       });
     });
+
+    // ─── Robustness: action-block parser shape variants ────────────────
+    // Regression coverage for the "action blocks sometimes only print"
+    // bug. Each of these used to return malformed/invalid-JSON and the
+    // skill never loaded.
+
+    it('tolerates a ```json ... ``` fence wrapping the JSON inside the tag', () => {
+      const text =
+        '<agenthub:skill>\n```json\n{"name":"kanban","reason":"need card ops"}\n```\n</agenthub:skill>';
+      expect(parseSkillBlock(text)).toEqual({ name: 'kanban', reason: 'need card ops' });
+    });
+
+    it('tolerates lead-in prose before the JSON object', () => {
+      const text = '<agenthub:skill>\nLoading skill:\n{"name":"kanban"}\n</agenthub:skill>';
+      expect(parseSkillBlock(text)).toEqual({ name: 'kanban' });
+    });
+
+    it('tolerates raw newlines inside the reason string', () => {
+      const text =
+        '<agenthub:skill>{"name":"kanban","reason":"need it because\nof these card ops"}</agenthub:skill>';
+      const result = parseSkillBlock(text);
+      expect(result).toEqual({
+        name: 'kanban',
+        reason: 'need it because\nof these card ops',
+      });
+    });
   });
 
   describe('loadSkillBody', () => {

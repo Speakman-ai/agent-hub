@@ -182,6 +182,26 @@ after the closing tag is dropped). Parsing lives in `server/chat.ts` and
 dispatch in `server/delegation.ts` + `server/handoff.ts`. All targets must
 be listed as sub-agents of the emitter (same project).
 
+**Payload normalization (tolerant pre-pass).** All action-block parsers
+(`<delegate>`, `<handoff>`, `<agenthub:close-card>`, `<agenthub:skill>`,
+`<agenthub:react>`) route the raw tag body through
+`server/action-block-parsing.ts#extractJsonFromTagBody` before
+`JSON.parse`. The helper:
+
+1. Strips an outer markdown fence (`` ```json … ``` ``) if the body is
+   wrapped in one.
+2. Slices the first balanced JSON object/array, skipping any lead-in
+   prose between the opening tag and the JSON.
+3. Re-encodes raw control characters (`\n`, `\r`, `\t`, `\f`, `\b`)
+   that appear **inside JSON string values** — RFC 8259 §7 forbids
+   them, but agents emit them often, especially in `note` fields.
+
+If the helper returns `null`, the parser falls back to a direct
+`JSON.parse` on the raw body so genuinely malformed payloads still hit
+the existing **invalid-json** rejection gates (which persist a system
+message back to the session). The pre-pass is purely additive — every
+shape that parsed before still parses now.
+
 ### `<delegate>` — parallel one-shot sub-agents
 
 Spawn one or more sub-agents in parallel as fresh CLI processes. Each

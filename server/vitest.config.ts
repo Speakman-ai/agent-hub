@@ -21,6 +21,12 @@ export default defineConfig({
     sequence: { concurrent: false },
     fileParallelism: false,
     testTimeout: 15000,
+    // Server initialization (index.ts import) takes longer than vitest's
+    // default hookTimeout of 10 s on cold starts (DB init, skill sync, etc.)
+    // causing beforeAll hooks in isolated test runs to fail. 30 s matches
+    // the explicit 60 s override used by the oldest test file (api.test.ts)
+    // and keeps isolated runs stable without inflating the full-suite wall time.
+    hookTimeout: 30000,
     env: {
       AGENT_HUB_TEST_MODE: '1',
       AGENT_HUB_PORT: '0',

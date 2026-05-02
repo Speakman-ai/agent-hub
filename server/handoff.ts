@@ -17,6 +17,7 @@ import type {
 import { buildPrTitle } from './auto-git.js';
 import { defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { inheritOwnerFromSession } from './session-ownership.js';
+import { extractJsonFromTagBody } from './action-block-parsing.js';
 
 // ─── Session handoff — `<handoff>` block protocol ────────────────────────────
 //
@@ -269,9 +270,13 @@ export function detectHandoffBlock(text: string): HandoffDetectionResult {
   if (!match) return { present: false, task: null, reason: null, rawBody: null };
 
   const rawBody = match[1] ?? '';
+  // Tolerate fenced wrappers, prose around the JSON, and raw newlines
+  // inside string values (the empirical bug that prevented this very
+  // session's first handoff from delivering). See action-block-parsing.ts.
+  const normalized = extractJsonFromTagBody(rawBody);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(rawBody);
+    parsed = normalized === null ? JSON.parse(rawBody) : JSON.parse(normalized);
   } catch {
     return { present: true, task: null, reason: 'invalid-json', rawBody };
   }

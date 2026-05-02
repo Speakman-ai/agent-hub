@@ -87,6 +87,41 @@ describe('parseCloseCardBlock', () => {
 <agenthub:close-card>{"reason":"already-done","note":"second"}</agenthub:close-card>`;
     expect(parseCloseCardBlock(text)?.note).toBe('first');
   });
+
+  // ─── Robustness: action-block parser shape variants ────────────────────
+  // Regression coverage for the "action blocks sometimes only print, don't
+  // execute" bug — parsers used to choke when the agent wrapped the JSON in
+  // a markdown fence, lead-in prose, or emitted multi-line strings with raw
+  // newlines. The shared `extractJsonFromTagBody` helper now tolerates these.
+
+  it('tolerates a ```json ... ``` fence wrapping the JSON inside the tag', () => {
+    const text =
+      '<agenthub:close-card>\n```json\n{"reason":"duplicate","note":"covered by 5c8f"}\n```\n</agenthub:close-card>';
+    expect(parseCloseCardBlock(text)).toEqual({
+      reason: 'duplicate',
+      note: 'covered by 5c8f',
+    });
+  });
+
+  it('tolerates a bare ``` ... ``` fence (no language hint) inside the tag', () => {
+    const text =
+      '<agenthub:close-card>\n```\n{"reason":"already-done","note":"shipped"}\n```\n</agenthub:close-card>';
+    expect(parseCloseCardBlock(text)?.reason).toBe('already-done');
+  });
+
+  it('tolerates lead-in prose before the JSON object inside the tag', () => {
+    const text =
+      '<agenthub:close-card>\nHere is the payload:\n{"reason":"duplicate","note":"x"}\n</agenthub:close-card>';
+    expect(parseCloseCardBlock(text)).toEqual({ reason: 'duplicate', note: 'x' });
+  });
+
+  it('tolerates raw newlines inside string values (the empirical handoff bug)', () => {
+    const text =
+      '<agenthub:close-card>{"reason":"duplicate","note":"line one\nline two\nline three"}</agenthub:close-card>';
+    const result = parseCloseCardBlock(text);
+    expect(result).not.toBeNull();
+    expect(result!.note).toBe('line one\nline two\nline three');
+  });
 });
 
 describe('pickDoneColumn', () => {

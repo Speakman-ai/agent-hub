@@ -14,6 +14,7 @@ import {
 } from './delegation-state.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { applyAssistantTextChunkForDelegationKickoff } from './delegation-kickoff-buffer.js';
+import { extractJsonFromTagBody } from './action-block-parsing.js';
 
 export interface DelegationDeps {
   stmts: Stmts;
@@ -115,9 +116,11 @@ export function detectDelegateBlock(text: string): DelegateDetectionResult {
   if (!match) return { present: false, tasks: null, reason: null, rawBody: null };
 
   const rawBody = match[1] ?? '';
+  // Tolerate fenced/prose-wrapped/multi-line bodies — see action-block-parsing.ts.
+  const normalizedJson = extractJsonFromTagBody(rawBody);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(rawBody);
+    parsed = normalizedJson === null ? JSON.parse(rawBody) : JSON.parse(normalizedJson);
   } catch {
     return { present: true, tasks: null, reason: 'invalid-json', rawBody };
   }

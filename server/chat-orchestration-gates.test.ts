@@ -184,3 +184,47 @@ describe('detectDelegateBlock — missing-contract-fields reason', () => {
     expect(detection.tasks).toEqual([fullTask]);
   });
 });
+
+// ─── Robustness: action-block parser shape variants ────────────────────────
+// Regression coverage for the "action blocks sometimes only print, don't
+// execute" bug. Each of these shapes used to choke `parseDelegateBlock` and
+// leave the lead unable to dispatch sub-agent work.
+
+describe('parseDelegateBlock — tolerant of fenced/prose/multi-line bodies', () => {
+  const fullTask = {
+    agentId: 'sub-1',
+    task: 'Do something',
+    owner: 'lead',
+    scope: 'server',
+    expectedArtifact: 'PR',
+    deadline: 'today',
+    returnFormat: 'summary',
+  };
+
+  it('tolerates a ```json ... ``` fence wrapping the JSON inside the tag', () => {
+    const text = `<delegate>\n\`\`\`json\n${JSON.stringify([fullTask])}\n\`\`\`\n</delegate>`;
+    const tasks = parseDelegateBlock(text);
+    expect(tasks).not.toBeNull();
+    expect(tasks).toHaveLength(1);
+    expect(tasks![0].agentId).toBe('sub-1');
+  });
+
+  it('tolerates lead-in prose before the JSON array', () => {
+    const text = `<delegate>\nHere are the tasks:\n${JSON.stringify([fullTask])}\n</delegate>`;
+    expect(parseDelegateBlock(text)).not.toBeNull();
+  });
+
+  it('tolerates raw newlines inside string values (e.g. multi-line task description)', () => {
+    const taskWithMultilineString = {
+      ...fullTask,
+      task: 'Step one.\nStep two.\nStep three.',
+    };
+    // Hand-craft the body so the newlines are real \x0A bytes (JSON.stringify
+    // would have already escaped them).
+    const body = `[{"agentId":"sub-1","task":"Step one.\nStep two.\nStep three.","owner":"lead","scope":"server","expectedArtifact":"PR","deadline":"today","returnFormat":"summary"}]`;
+    const text = `<delegate>${body}</delegate>`;
+    const tasks = parseDelegateBlock(text);
+    expect(tasks).not.toBeNull();
+    expect(tasks![0].task).toBe(taskWithMultilineString.task);
+  });
+});
