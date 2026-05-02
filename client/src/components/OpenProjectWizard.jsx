@@ -133,7 +133,12 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
   const [analysisError, setAnalysisError] = useState(null);
 
   // Step 3 state — GitHub
-  const [ghStatus, setGhStatus] = useState(null); // { authenticated, user, scopes }
+  // ghStatus shape: { authenticated, user, scopes, source: 'gh-cli' | 'oauth' | 'pat' | null,
+  //                   serverConfigured: boolean, error?: string }
+  // `source` records which auth path the wizard accepted so the green pill can
+  // label "via PAT" / "via OAuth" / "via gh CLI". `serverConfigured` mirrors
+  // `/api/auth/github/status` and gates the "Sign in with GitHub" button.
+  const [ghStatus, setGhStatus] = useState(null);
   const [ghLoading, setGhLoading] = useState(false);
   const [repoInfo, setRepoInfo] = useState(null); // { hasRemote, owner, repo, url }
   const [repoOwner, setRepoOwner] = useState('');
@@ -141,6 +146,16 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
   const [testResult, setTestResult] = useState(null); // { ok, repoInfo } or { ok: false, error }
   const [testing, setTesting] = useState(false);
   const [skipGitHub, setSkipGitHub] = useState(false);
+
+  // Inline PAT entry — mirrors GithubConnectionSection.jsx so users without
+  // shell access (the only case where `gh auth login` was unrunnable) can
+  // authenticate without leaving the wizard.
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [tokenSaving, setTokenSaving] = useState(false);
+  const [tokenError, setTokenError] = useState(null);
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [oauthError, setOauthError] = useState(null);
 
   // Step 4 state
   const [selectedAgents, setSelectedAgents] = useState({});
@@ -317,16 +332,74 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
     setGhStatus(null);
     setRepoInfo(null);
     setTestResult(null);
+    setTokenError(null);
+    setOauthError(null);
     try {
-      // Check gh auth status
-      const statusRes = await fetch(`${getApiBase()}/github/status`, {
-        headers: getAuthHeaders(),
-      });
-      const status = await statusRes.json();
-      setGhStatus(status);
+      // Check both auth sources in parallel:
+      //   /api/github/status       — host `gh` CLI (operator-level)
+      //   /api/auth/github/status  — per-user OAuth or PAT (UI-managed)
+      // The wizard treats the user as authenticated if EITHER reports
+      // connected. `gh` CLI wins the source label only when no per-user
+      // connection is present, since per-user auth is what we'd push the
+      // user toward configuring next time.
+      const [cliRes, userRes] = await Promise.all([
+        fetch(`${getApiBase()}/github/status`, {
+          headers: getAuthHeaders(),
+        }).catch(() => null),
+        fetch(`${getApiBase()}/auth/github/status`, {
+          headers: getAuthHeaders(),
+        }).catch(() => null),
+      ]);
 
-      // Detect repo from directory
-      if (status.authenticated && path) {
+      let cliStatus = null;
+      if (cliRes && cliRes.ok) {
+        cliStatus = await cliRes.json().catch(() => null);
+      }
+      let userStatus = null;
+      if (userRes && userRes.ok) {
+        userStatus = await userRes.json().catch(() => null);
+      }
+
+      const userConnected = !!userStatus?.connected;
+      const cliConnected = !!cliStatus?.authenticated;
+      const serverConfigured = userStatus?.serverConfigured !== false;
+
+      let merged;
+      if (userConnected) {
+        // Per-user connection takes precedence — that's the identity the
+        // server actually uses for PR list / merge / comment actions.
+        // The status endpoint does not currently distinguish OAuth from PAT
+        // in its response, so we surface a single 'github' source label and
+        // let downstream code refine if/when that field is added.
+        merged = {
+          authenticated: true,
+          user: userStatus.login || cliStatus?.user || null,
+          scopes: cliStatus?.scopes || [],
+          source: 'github',
+          serverConfigured,
+        };
+      } else if (cliConnected) {
+        merged = {
+          authenticated: true,
+          user: cliStatus.user,
+          scopes: cliStatus.scopes || [],
+          source: 'gh-cli',
+          serverConfigured,
+        };
+      } else {
+        merged = {
+          authenticated: false,
+          user: null,
+          scopes: [],
+          source: null,
+          serverConfigured,
+          error: cliStatus?.error || userStatus?.error || 'Not authenticated with GitHub',
+        };
+      }
+      setGhStatus(merged);
+
+      // Detect repo from directory whenever we have any auth.
+      if (merged.authenticated && path) {
         const repoRes = await fetch(`${getApiBase()}/github/detect-repo`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -340,11 +413,74 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
         }
       }
     } catch {
-      setGhStatus({ authenticated: false, error: 'Failed to check GitHub status' });
+      setGhStatus({
+        authenticated: false,
+        user: null,
+        scopes: [],
+        source: null,
+        serverConfigured: true,
+        error: 'Failed to check GitHub status',
+      });
     } finally {
       setGhLoading(false);
     }
   }, [path]);
+
+  const handleStartOAuth = useCallback(async () => {
+    setOauthBusy(true);
+    setOauthError(null);
+    try {
+      const returnTo = window.location.pathname + window.location.search + window.location.hash;
+      const res = await fetch(
+        `${getApiBase()}/auth/github/start?returnTo=${encodeURIComponent(returnTo)}`,
+        { headers: getAuthHeaders() },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (body.code === 'github_oauth_not_configured') {
+          // Pivot to PAT path automatically — the user can still sign in
+          // without OAuth credentials being configured on the server.
+          setShowTokenInput(true);
+          throw new Error(
+            'GitHub OAuth is not configured on this server. Use a personal access token instead.',
+          );
+        }
+        throw new Error(body.error || `GET /auth/github/start → ${res.status}`);
+      }
+      const body = await res.json();
+      window.location.href = body.authorizeUrl;
+    } catch (err) {
+      setOauthError(err.message || String(err));
+    } finally {
+      setOauthBusy(false);
+    }
+  }, []);
+
+  const handleSaveToken = useCallback(async () => {
+    const token = tokenInput.trim();
+    if (!token) return;
+    setTokenSaving(true);
+    setTokenError(null);
+    try {
+      const res = await fetch(`${getApiBase()}/auth/github/connect-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ token }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `POST /auth/github/connect-token → ${res.status}`);
+      }
+      setTokenInput('');
+      setShowTokenInput(false);
+      // Re-run detection so the green pill picks up the new connection.
+      await detectGitHub();
+    } catch (err) {
+      setTokenError(err.message || String(err));
+    } finally {
+      setTokenSaving(false);
+    }
+  }, [tokenInput, detectGitHub]);
 
   const testGitHubConnection = useCallback(async () => {
     if (!repoOwner || !repoName) return;
@@ -1116,8 +1252,14 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
                       className={`text-sm font-medium ${ghStatus?.authenticated ? 'text-emerald-300' : 'text-gray-300'}`}
                     >
                       {ghStatus?.authenticated
-                        ? `Authenticated as ${ghStatus.user}`
-                        : 'GitHub CLI not authenticated'}
+                        ? `Authenticated as ${ghStatus.user}${
+                            ghStatus.source === 'github'
+                              ? ' (via your GitHub account)'
+                              : ghStatus.source === 'gh-cli'
+                                ? ' (via gh CLI)'
+                                : ''
+                          }`
+                        : 'Not connected to GitHub'}
                     </span>
                   </div>
                   {ghStatus?.authenticated && ghStatus.scopes?.length > 0 && (
@@ -1133,20 +1275,112 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
                     </div>
                   )}
                   {!ghStatus?.authenticated && (
-                    <div className="mt-2 pl-4">
-                      <p className="text-xs text-gray-500 mb-2">
-                        Run{' '}
-                        <code className="bg-gray-900 px-1.5 py-0.5 rounded text-gray-300">
-                          gh auth login
-                        </code>{' '}
-                        in your terminal to authenticate, then click Retry.
+                    <div className="mt-3 pl-4 space-y-3">
+                      <p className="text-xs text-gray-400 leading-relaxed">
+                        Connect a GitHub account so Agent Hub can list your PRs and merge, close, or
+                        comment as you. No CLI required.
                       </p>
-                      <button
-                        onClick={detectGitHub}
-                        className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
-                      >
-                        Retry Detection
-                      </button>
+
+                      {showTokenInput ? (
+                        <div className="space-y-2">
+                          <label className="block text-xs font-medium text-gray-400">
+                            Personal access token
+                          </label>
+                          <input
+                            type="password"
+                            value={tokenInput}
+                            onChange={(e) => setTokenInput(e.target.value)}
+                            placeholder="ghp_… or github_pat_…"
+                            autoComplete="off"
+                            data-1p-ignore
+                            data-lpignore="true"
+                            data-testid="github-pat-input"
+                            className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
+                          />
+                          <p className="text-[11px] text-gray-500 leading-relaxed">
+                            Generate one at{' '}
+                            <a
+                              href="https://github.com/settings/tokens?type=beta"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline hover:text-gray-300"
+                            >
+                              github.com/settings/tokens
+                            </a>
+                            . A fine-grained token with read access to your repositories is enough
+                            for PR listing; add <code>contents:write</code> +{' '}
+                            <code>pull_requests:write</code> if you want merge/comment to work.
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={handleSaveToken}
+                              disabled={!tokenInput.trim() || tokenSaving}
+                              className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                            >
+                              {tokenSaving && <Spinner size={3} />}
+                              {tokenSaving ? 'Saving…' : 'Save token'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTokenInput(false);
+                                setTokenInput('');
+                                setTokenError(null);
+                              }}
+                              disabled={tokenSaving}
+                              className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-200 text-xs px-3 py-1.5 rounded-lg transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                          {tokenError && (
+                            <p className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/30 rounded p-2">
+                              {tokenError}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {ghStatus?.serverConfigured !== false && (
+                            <button
+                              type="button"
+                              onClick={handleStartOAuth}
+                              disabled={oauthBusy}
+                              className="bg-[#24292f] hover:bg-[#1c2024] disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+                            >
+                              {oauthBusy && <Spinner size={3} />}
+                              Sign in with GitHub
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowTokenInput(true);
+                              setTokenError(null);
+                            }}
+                            disabled={oauthBusy}
+                            className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+                          >
+                            {ghStatus?.serverConfigured === false
+                              ? 'Paste a personal access token'
+                              : 'Use a personal access token'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={detectGitHub}
+                            disabled={oauthBusy}
+                            className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+                          >
+                            Retry Detection
+                          </button>
+                        </div>
+                      )}
+                      {oauthError && (
+                        <p className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/30 rounded p-2">
+                          {oauthError}
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>
