@@ -7,6 +7,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 vi.mock('../utils/auth.js', () => ({
   hasRole: vi.fn(),
   getUserRole: vi.fn(),
+  logout: vi.fn(async () => {}),
 }));
 
 vi.mock('../utils/connection.js', () => ({
@@ -15,11 +16,13 @@ vi.mock('../utils/connection.js', () => ({
 }));
 
 import AccountSection, { roleOptionsFor } from './AccountSection.jsx';
-import { hasRole, getUserRole } from '../utils/auth.js';
+import { hasRole, getUserRole, logout } from '../utils/auth.js';
 
 beforeEach(() => {
   hasRole.mockReset();
   getUserRole.mockReset();
+  logout.mockReset();
+  logout.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -55,6 +58,48 @@ describe('roleOptionsFor', () => {
     expect(roleOptionsFor('User')).toEqual([]);
     expect(roleOptionsFor(null)).toEqual([]);
     expect(roleOptionsFor(undefined)).toEqual([]);
+  });
+});
+
+describe('AccountSection — Log out button', () => {
+  it('renders a Log out button next to the current user and calls logout() on click', async () => {
+    hasRole.mockReturnValue(false);
+    getUserRole.mockReturnValue('User');
+
+    mockFetchSequence([jsonResponse({ user: { id: 'u-self', username: 'plain', role: 'User' } })]);
+
+    // jsdom's reload is non-configurable; stub location with a writable shim.
+    const reload = vi.fn();
+    const originalLocation = window.location;
+    delete window.location;
+    window.location = { ...originalLocation, reload };
+
+    try {
+      render(<AccountSection />);
+      const btn = await screen.findByRole('button', { name: /log out/i });
+      expect(btn).toBeInTheDocument();
+
+      fireEvent.click(btn);
+
+      await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
+      expect(logout).toHaveBeenCalledWith({ baseUrl: '/api' });
+      await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+    } finally {
+      window.location = originalLocation;
+    }
+  });
+
+  it('hides the Log out button when no user is loaded', async () => {
+    hasRole.mockReturnValue(false);
+    getUserRole.mockReturnValue(null);
+
+    // /auth/me returns no user (e.g. token expired between status probe and load)
+    mockFetchSequence([jsonResponse({ user: null })]);
+
+    render(<AccountSection />);
+    await waitFor(() => expect(screen.getByText(/not authenticated/i)).toBeInTheDocument());
+
+    expect(screen.queryByRole('button', { name: /log out/i })).toBeNull();
   });
 });
 

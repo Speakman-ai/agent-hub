@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, Plus, Trash2, Users, X } from 'lucide-react';
+import { Loader2, LogOut, Plus, Trash2, Users, X } from 'lucide-react';
 import RoleBadge from './RoleBadge.jsx';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
-import { hasRole, getUserRole } from '../utils/auth.js';
+import { hasRole, getUserRole, logout } from '../utils/auth.js';
 
 const ALL_ROLES = ['Owner', 'Admin', 'User'];
 
@@ -34,6 +34,21 @@ export default function AccountSection() {
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [rowErrors, setRowErrors] = useState({});
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const handleLogout = useCallback(async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await logout({ baseUrl: getApiBase() });
+    } catch {
+      /* logout is best-effort; the local token is dropped regardless */
+    }
+    // Reload so the AuthGate re-evaluates and surfaces the login screen.
+    if (typeof window !== 'undefined' && window.location?.reload) {
+      window.location.reload();
+    }
+  }, [loggingOut]);
 
   const loadUsers = useCallback(async () => {
     const usersRes = await fetch(`${getApiBase()}/auth/users`, {
@@ -138,7 +153,21 @@ export default function AccountSection() {
   return (
     <div className="space-y-6">
       <div className="bg-gray-800 rounded-xl p-4">
-        <h4 className="text-sm font-medium text-gray-300 mb-3">Your account</h4>
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <h4 className="text-sm font-medium text-gray-300">Your account</h4>
+          {me && (
+            <button
+              type="button"
+              onClick={handleLogout}
+              disabled={loggingOut}
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-50"
+              aria-label="Log out"
+            >
+              {loggingOut ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
+              Log out
+            </button>
+          )}
+        </div>
         {me ? (
           <div className="flex items-center gap-3">
             <span className="font-mono text-sm text-white">{me.username}</span>
