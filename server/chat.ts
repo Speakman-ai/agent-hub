@@ -39,6 +39,7 @@ import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-rer
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
+import { ensureSpawnCwd } from './spawn-cwd.js';
 import {
   detectSessionIdInUseError,
   buildSessionIdInUseRecoveryMessage,
@@ -1886,6 +1887,34 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
     const chainStartedAtMs = msg._chainStartedAtMs ?? Date.now();
 
+    // Pre-spawn cwd guard. Node's child_process.spawn reports ENOENT against
+    // the *command* when the cwd doesn't exist, which historically surfaced
+    // as the misleading "binary not found at <bin>" error even though the bin
+    // itself was fine. Catch this case up front: auto-create the directory
+    // when possible (recoverable) or fail with a precise, actionable message.
+    const ensureCwd = ensureSpawnCwd(effectiveCwd);
+    if (ensureCwd.status === 'auto-created') {
+      console.warn(`[chat] auto-created missing cwd for session ${sessionId}: ${effectiveCwd}`);
+    } else if (ensureCwd.status === 'failed') {
+      const errText =
+        `Working directory does not exist and could not be created: ${effectiveCwd}. ` +
+        `Update the project's "cwd" in Settings or create the directory. ` +
+        `(${ensureCwd.reason})`;
+      console.error(`[chat] ${errText}`);
+      saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+      broadcast({
+        type: 'error',
+        messageId: assistantMsgId,
+        sessionId,
+        error: errText,
+      });
+      try {
+        stmts.deleteActiveTask.run(sessionId);
+      } catch {}
+      drainQueue(sessionId);
+      return;
+    }
+
     const cliTurnStartMs = Date.now();
     const proc = spawn(bin, args, {
       cwd: effectiveCwd,
@@ -3112,8 +3141,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               ? 'codexBin'
               : 'claudeBin';
       const errnoCode = (err as NodeJS.ErrnoException).code;
-      const hint =
-        errnoCode === 'ENOENT'
+      // Node reports ENOENT against the command when *either* the binary or
+      // the cwd is missing. Re-check the cwd here so the user gets an
+      // actionable message instead of being misdirected to the bin path.
+      const cwdMissing = errnoCode === 'ENOENT' && !existsSync(effectiveCwd);
+      const hint = cwdMissing
+        ? ` — working directory does not exist: ${effectiveCwd}. Update the project's "cwd" in Settings or create the directory.`
+        : errnoCode === 'ENOENT'
           ? ` — binary not found at ${bin}. Update ${configKey} in Settings or ~/.agent-hub/data/config.json.`
           : errnoCode === 'EACCES'
             ? ` — ${bin} is not executable. Update ${configKey} or chmod +x it.`

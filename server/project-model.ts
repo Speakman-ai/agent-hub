@@ -60,6 +60,24 @@ function hydrateProjects(): void {
   for (const p of projects) {
     p.ahw = getProjectDataDir(p.id);
   }
+  warnOnMissingProjectCwds();
+}
+
+// Surface projects whose `cwd` doesn't exist on this host/container at boot.
+// We don't auto-create here — chat.ts has a lazy pre-spawn ensure step that
+// is the actual self-heal — but logging at startup makes misconfigurations
+// (e.g. host-style paths inside an ECR container) visible immediately
+// instead of only failing on the user's first chat turn.
+function warnOnMissingProjectCwds(): void {
+  for (const p of projects) {
+    if (!p.cwd) continue;
+    if (!existsSync(p.cwd)) {
+      console.warn(
+        `[project-model] project "${p.id}" cwd does not exist: ${p.cwd} ` +
+          `(will be auto-created on first chat spawn; update projects.json or Settings → Project to silence)`,
+      );
+    }
+  }
 }
 
 // ─── Persistence ────────────────────────────────────────────────────
