@@ -195,7 +195,9 @@ function runAgent(
       }
       // see claude-cli-args.ts
       args.push(...disableNativeSkillToolArgs());
-      args.push(userMessage);
+      // `--` terminates option parsing so the variadic `--disallowed-tools <tools...>`
+      // doesn't swallow the trailing positional prompt (Claude CLI 2.x).
+      args.push('--', userMessage);
       bin = CLAUDE_BIN;
     }
 

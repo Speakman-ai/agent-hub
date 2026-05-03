@@ -348,6 +348,9 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
           roomSystemPrompt,
           // see claude-cli-args.ts
           ...disableNativeSkillToolArgs(),
+          // `--` terminates option parsing so the variadic `--disallowed-tools <tools...>`
+          // doesn't swallow the trailing positional prompt (Claude CLI 2.x).
+          '--',
           userPrompt,
         ];
 

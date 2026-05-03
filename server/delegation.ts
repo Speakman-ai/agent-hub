@@ -224,6 +224,9 @@ function buildDelegateCliSpec(
           subPrompt,
           // see claude-cli-args.ts
           ...disableNativeSkillToolArgs(),
+          // `--` terminates option parsing so the variadic `--disallowed-tools <tools...>`
+          // doesn't swallow the trailing positional prompt (Claude CLI 2.x).
+          '--',
           taskText,
         ],
         engine: 'claude-code',
@@ -999,6 +1002,9 @@ export async function synthesizeResults(
           engineSessionId || sessionId,
           // see claude-cli-args.ts
           ...disableNativeSkillToolArgs(),
+          // `--` terminates option parsing so the variadic `--disallowed-tools <tools...>`
+          // doesn't swallow the trailing positional prompt (Claude CLI 2.x).
+          '--',
           synthesisPrompt,
         ];
       }

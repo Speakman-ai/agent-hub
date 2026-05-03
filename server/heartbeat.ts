@@ -208,7 +208,9 @@ export function runClaude(
     }
     // see claude-cli-args.ts
     args.push(...disableNativeSkillToolArgs());
-    args.push(prompt);
+    // `--` terminates option parsing so the variadic `--disallowed-tools <tools...>`
+    // doesn't swallow the trailing positional prompt (Claude CLI 2.x).
+    args.push('--', prompt);
 
     let output = '';
     let errorOutput = '';

@@ -173,6 +173,24 @@ loads exclusively through `<agenthub:skill>` (or the `skill` action inside
 `<agenthub:react>`) is the documented gateway and the only one that
 works. Bash, WebFetch, and the rest of the tool surface are untouched.
 
+**Argv-ordering gotcha (Claude CLI 2.x).** `--disallowed-tools <tools...>`
+is **variadic** in Commander.js — it keeps consuming bare positionals
+until it hits another `--option` or a `--` end-of-options separator. So
+`--print … --disallowed-tools Skill <prompt>` is parsed as
+`disallowed-tools = ["Skill", "<prompt>"]` with **zero** positional prompt
+and the CLI exits with `Error: Input must be provided either through
+stdin or as a prompt argument when using --print`. Spawn sites whose
+argv ends with a bare positional prompt (heartbeat / memory / slack /
+room-chat / `<delegate>` sub-agent fan-out / `<delegate>` synthesis)
+**must** insert `'--'` between `disableNativeSkillToolArgs()` and the
+prompt push. Sites that already have an intervening `--option` (e.g.
+`--session-id`/`--resume` between the helper call and the prompt — chat
+session, design-multi-engine) are safe without `'--'` because the next
+flag terminates the variadic. The
+`server/claude-cli-args.test.ts` regression test source-greps every
+occurrence of `disableNativeSkillToolArgs()` in the bare-prompt files
+and pins each one independently.
+
 ## Delegation to sub-agents
 
 Lead agents coordinate with sub-agents by emitting **fenced JSON blocks**

@@ -35,6 +35,31 @@
  * Args to pass alongside the rest of the Claude CLI invocation in order to
  * disable Claude Code's native `Skill` tool. Returns a fresh array on each
  * call so callers can safely mutate it.
+ *
+ * ⚠ Argv ordering caveat
+ * ─────────────────────────
+ * `--disallowed-tools` is documented as `--disallowed-tools <tools...>` —
+ * the trailing `<tools...>` makes it **variadic** in Commander.js (Claude
+ * CLI 2.x). A variadic option keeps consuming bare positionals until it
+ * hits another `--option` or a `--` end-of-options separator. So this:
+ *
+ *     --print … --disallowed-tools Skill <prompt>
+ *
+ * is parsed as `disallowed-tools = ["Skill", "<prompt>"]` with **zero**
+ * positional prompt, and the CLI exits with:
+ *
+ *     Error: Input must be provided either through stdin or as a prompt
+ *     argument when using --print
+ *
+ * Two safe placements for callers:
+ *   1. Put another flag (e.g. `--session-id <id>`, `--resume <id>`)
+ *      between `disableNativeSkillToolArgs()` and the prompt — the next
+ *      `--option` terminates variadic consumption.
+ *   2. Insert a `--` end-of-options separator immediately before the
+ *      positional prompt.
+ *
+ * Bare-prompt call sites (heartbeat/memory/slack/room-chat/delegation
+ * fan-out) use option (2). See those files for the inline comments.
  */
 export function disableNativeSkillToolArgs(): string[] {
   return ['--disallowed-tools', 'Skill'];

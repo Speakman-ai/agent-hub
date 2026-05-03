@@ -71,6 +71,67 @@ describe('Claude spawn args include --disallowed-tools Skill', () => {
     },
   );
 
+  // Regression for "Input must be provided either through stdin or as a
+  // prompt argument when using --print" — Claude CLI 2.x parses
+  // `--disallowed-tools <tools...>` as variadic, so a bare positional
+  // prompt placed immediately after `--disallowed-tools Skill` gets
+  // swallowed as a second disallowed-tool value. Spawn sites that emit a
+  // bare positional prompt (no `--session-id`/`--resume` between the
+  // disallowed-tools pair and the prompt) MUST insert a `--`
+  // end-of-options separator first.
+  //
+  // Source-level pin: every file in `bareTrailingPromptSites` must
+  // include the `'--'` separator near its `disableNativeSkillToolArgs()`
+  // call. The check is intentionally fuzzy (substring search) so cosmetic
+  // edits don't break it; the separator just needs to land between the
+  // disallowed-tools push and the prompt push.
+  const bareTrailingPromptSites: Array<{ file: string; reason: string }> = [
+    { file: 'heartbeat.ts', reason: 'runClaude — heartbeats / crons / webhooks' },
+    { file: 'memory.ts', reason: 'memory reconciliation' },
+    { file: 'slack.ts', reason: 'Slack one-shot' },
+    { file: 'room-chat.ts', reason: 'conference room replies' },
+    { file: 'delegation.ts', reason: '<delegate> sub-agent fan-out (claude-code default)' },
+  ];
+
+  it.each(bareTrailingPromptSites)(
+    '$file inserts `--` end-of-options before the trailing positional prompt ($reason)',
+    ({ file }) => {
+      const src = readFileSync(path.join(__dirname, file), 'utf-8');
+      // Some modules (e.g. delegation.ts) call `disableNativeSkillToolArgs()`
+      // at multiple spawn sites — sub-agent fan-out AND synthesis. Every
+      // occurrence whose argv ends with a bare positional prompt must have
+      // a `'--'` separator between the helper call and the prompt push, or
+      // Claude CLI's variadic `--disallowed-tools <tools...>` will swallow
+      // the prompt and fail with "Input must be provided…". Walk every
+      // occurrence and pin each one independently — the previous version
+      // of this test only checked the first match per file and would miss
+      // a regression at any second/third call site.
+      const needle = 'disableNativeSkillToolArgs()';
+      const occurrences: number[] = [];
+      let cursor = src.indexOf(needle);
+      while (cursor !== -1) {
+        occurrences.push(cursor);
+        cursor = src.indexOf(needle, cursor + 1);
+      }
+      expect(
+        occurrences.length,
+        `${file} should call disableNativeSkillToolArgs()`,
+      ).toBeGreaterThan(0);
+      occurrences.forEach((idx, occurrenceIndex) => {
+        // Find the chunk of source from the disallowed-tools call to the
+        // next 6 lines — that's where the prompt push lives.
+        const window = src.slice(idx, idx + 600);
+        expect(
+          window.includes("'--'") || window.includes('"--"'),
+          `${file} occurrence #${occurrenceIndex + 1} (offset ${idx}) must push a '--' ` +
+            `end-of-options separator before the bare positional prompt; otherwise ` +
+            `--disallowed-tools <tools...> swallows the prompt and Claude CLI fails ` +
+            `with "Input must be provided either through stdin or as a prompt argument".`,
+        ).toBe(true);
+      });
+    },
+  );
+
   // Behavioural pin for the one path that exposes a pure args-builder we
   // can call directly. The other six are covered by the source-level
   // grep above plus their own existing prompt-structure tests.
