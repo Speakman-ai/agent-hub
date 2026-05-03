@@ -199,17 +199,28 @@ function buildArgs(
 
 function buildEnv(client: 'acme.sh' | 'certbot', deps: CertRenewalDeps): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  // Clear ambient AWS session/profile vars that could conflict with the
-  // explicit creds we're about to set — e.g. an IAM role on the host
-  // may have AWS_SESSION_TOKEN which the SDK would prefer over our keys.
-  delete env.AWS_SESSION_TOKEN;
-  delete env.AWS_PROFILE;
-  delete env.AWS_DEFAULT_PROFILE;
-  // Both clients read AWS creds from env vars. Keep them here rather
-  // than on argv so `ps auxe` doesn't leak them.
-  env.AWS_ACCESS_KEY_ID = deps.route53.accessKeyId;
-  env.AWS_SECRET_ACCESS_KEY = deps.route53.secretAccessKey;
-  if (client === 'acme.sh') {
+  const hasExplicitCreds = !!(deps.route53.accessKeyId && deps.route53.secretAccessKey);
+  if (hasExplicitCreds) {
+    // Explicit creds path. Clear ambient AWS session/profile vars that could
+    // conflict with the static creds we're about to set — e.g. an IAM role
+    // on the host may have AWS_SESSION_TOKEN which the SDK would prefer
+    // over our keys. Keep the creds in env (not argv) so `ps auxe` doesn't
+    // leak them.
+    delete env.AWS_SESSION_TOKEN;
+    delete env.AWS_PROFILE;
+    delete env.AWS_DEFAULT_PROFILE;
+    env.AWS_ACCESS_KEY_ID = deps.route53.accessKeyId;
+    env.AWS_SECRET_ACCESS_KEY = deps.route53.secretAccessKey;
+  }
+  // No explicit creds → leave AWS_* env alone so the AWS SDK / botocore
+  // default credential chain takes over (env → shared config → IAM Role
+  // via IMDSv2 on EC2). Operators running the Terraform module get the
+  // correct policy attached to the instance role automatically; this is
+  // the supported "let infra do it" path.
+  if (client === 'acme.sh' && deps.route53.hostedZoneId) {
+    // acme.sh's dns_aws plugin can short-circuit zone discovery when the
+    // operator sets AWS_HOSTED_ZONE_ID. Always safe to set; it's a
+    // routing parameter, not a credential.
     env.AWS_HOSTED_ZONE_ID = deps.route53.hostedZoneId;
   }
   return env;

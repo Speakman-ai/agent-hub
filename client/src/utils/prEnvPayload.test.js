@@ -1,21 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import {
-  MASK,
-  SECRET_FIELDS,
-  buildPrEnvSavePayload,
-  validatePrEnvForm,
-  isMaskValue,
-} from './prEnvPayload.js';
+import { buildPrEnvSavePayload, validatePrEnvForm } from './prEnvPayload.js';
 
 /**
- * The mask-preservation contract is the single most error-prone invariant in
- * this settings page: if we accidentally re-post `••••••••` as the new secret
- * value we'd encrypt the sentinel at rest and silently nuke real credentials.
- * These tests pin the contract.
+ * Pin the contract: the UI no longer ships GitHub App or Route 53
+ * credentials. Those are sourced from infrastructure (`config.githubApp`
+ * for the registered Reviewer App, AWS SDK default chain / IMDSv2 for
+ * Route 53). Anything in the form that resembles a credential field must
+ * be dropped from the outgoing PUT payload — silent re-posting of stale
+ * Tier 2 values would override the inherited identity.
  */
 
 /** A form state mirroring GET output after the user loaded the page but has not edited. */
-function maskedLoadedForm() {
+function loadedForm() {
   return {
     enabled: true,
     repoFullName: 'acme/widgets',
@@ -24,66 +20,54 @@ function maskedLoadedForm() {
     certRenewalLive: true,
     portRangeMin: 8000,
     portRangeMax: 8999,
-    githubAppId: '123456',
-    githubInstallationId: '7890',
-    githubPrivateKey: MASK, // unchanged — must not be re-sent
-    route53AccessKeyId: 'AKIA...',
-    route53SecretAccessKey: MASK, // unchanged — must not be re-sent
-    route53HostedZoneId: 'Z0123',
   };
 }
 
-describe('isMaskValue', () => {
-  it('returns true only for the mask sentinel', () => {
-    expect(isMaskValue(MASK)).toBe(true);
-    expect(isMaskValue('')).toBe(false);
-    expect(isMaskValue('abc')).toBe(false);
-    expect(isMaskValue(undefined)).toBe(false);
-    expect(isMaskValue(null)).toBe(false);
-  });
-});
+const TIER2_KEYS = [
+  'githubAppId',
+  'githubInstallationId',
+  'githubPrivateKey',
+  'route53AccessKeyId',
+  'route53SecretAccessKey',
+  'route53HostedZoneId',
+];
 
-describe('buildPrEnvSavePayload — mask preservation', () => {
-  it('drops masked secrets so the server preserves the stored values', () => {
-    const payload = buildPrEnvSavePayload(maskedLoadedForm());
-    for (const secret of SECRET_FIELDS) {
-      expect(payload, `must not include untouched masked ${secret}`).not.toHaveProperty(secret);
+describe('buildPrEnvSavePayload — Tier 2 inheritance from infrastructure', () => {
+  it('does not include any Tier 2 credential fields, even if present on the form', () => {
+    // Even if a stale form somehow holds these (e.g. legacy state, test fixture),
+    // the payload builder must drop them.
+    const stale = {
+      ...loadedForm(),
+      githubAppId: '123',
+      githubInstallationId: '7890',
+      githubPrivateKey: 'pk',
+      route53AccessKeyId: 'AKIA',
+      route53SecretAccessKey: 'sekret',
+      route53HostedZoneId: 'Z0123',
+    };
+    const payload = buildPrEnvSavePayload(stale);
+    for (const k of TIER2_KEYS) {
+      expect(payload, `must not include Tier 2 field ${k}`).not.toHaveProperty(k);
     }
   });
 
-  it('includes non-secret Tier 2 fields even when unchanged', () => {
-    const payload = buildPrEnvSavePayload(maskedLoadedForm());
-    expect(payload.githubAppId).toBe('123456');
-    expect(payload.githubInstallationId).toBe('7890');
-    expect(payload.route53AccessKeyId).toBe('AKIA...');
-    expect(payload.route53HostedZoneId).toBe('Z0123');
-  });
-
-  it('includes a secret when the user replaces the mask with a real value', () => {
-    const form = {
-      ...maskedLoadedForm(),
-      githubPrivateKey: '-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----',
-    };
-    const payload = buildPrEnvSavePayload(form);
-    expect(payload.githubPrivateKey).toContain('BEGIN RSA PRIVATE KEY');
-    // Unchanged sibling secret still preserved:
-    expect(payload).not.toHaveProperty('route53SecretAccessKey');
-  });
-
-  it('includes an empty string when the user explicitly clears a secret', () => {
-    const form = { ...maskedLoadedForm(), route53SecretAccessKey: '' };
-    const payload = buildPrEnvSavePayload(form);
-    expect(payload).toHaveProperty('route53SecretAccessKey', '');
+  it('includes Tier 1 string and boolean fields verbatim', () => {
+    const payload = buildPrEnvSavePayload(loadedForm());
+    expect(payload.repoFullName).toBe('acme/widgets');
+    expect(payload.previewHost).toBe('*.preview.example.com');
+    expect(payload.previewBaseUrl).toBe('https://pr-{{number}}.preview.example.com');
+    expect(payload.enabled).toBe(true);
+    expect(payload.certRenewalLive).toBe(true);
   });
 
   it('coerces port range strings into numbers, empty → null', () => {
-    const form = { ...maskedLoadedForm(), portRangeMin: '9000', portRangeMax: '9100' };
+    const form = { ...loadedForm(), portRangeMin: '9000', portRangeMax: '9100' };
     expect(buildPrEnvSavePayload(form)).toMatchObject({
       portRangeMin: 9000,
       portRangeMax: 9100,
     });
 
-    const cleared = { ...maskedLoadedForm(), portRangeMin: '', portRangeMax: '' };
+    const cleared = { ...loadedForm(), portRangeMin: '', portRangeMax: '' };
     expect(buildPrEnvSavePayload(cleared)).toMatchObject({
       portRangeMin: null,
       portRangeMax: null,
@@ -92,7 +76,7 @@ describe('buildPrEnvSavePayload — mask preservation', () => {
 
   it('always includes the enabled and certRenewalLive booleans', () => {
     const off = buildPrEnvSavePayload({
-      ...maskedLoadedForm(),
+      ...loadedForm(),
       enabled: false,
       certRenewalLive: false,
     });
@@ -104,7 +88,7 @@ describe('buildPrEnvSavePayload — mask preservation', () => {
 describe('validatePrEnvForm', () => {
   it('rejects a half-set port range', () => {
     const errs = validatePrEnvForm({
-      ...maskedLoadedForm(),
+      ...loadedForm(),
       portRangeMin: 8000,
       portRangeMax: '',
     });
@@ -113,7 +97,7 @@ describe('validatePrEnvForm', () => {
 
   it('rejects max < min', () => {
     const errs = validatePrEnvForm({
-      ...maskedLoadedForm(),
+      ...loadedForm(),
       portRangeMin: 9000,
       portRangeMax: 8000,
     });
@@ -121,11 +105,11 @@ describe('validatePrEnvForm', () => {
   });
 
   it('rejects enabling without a repo configured', () => {
-    const errs = validatePrEnvForm({ ...maskedLoadedForm(), repoFullName: '', enabled: true });
+    const errs = validatePrEnvForm({ ...loadedForm(), repoFullName: '', enabled: true });
     expect(errs.some((e) => /repo/i.test(e))).toBe(true);
   });
 
-  it('accepts a fully valid masked-load form', () => {
-    expect(validatePrEnvForm(maskedLoadedForm())).toEqual([]);
+  it('accepts a fully valid form', () => {
+    expect(validatePrEnvForm(loadedForm())).toEqual([]);
   });
 });

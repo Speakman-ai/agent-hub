@@ -26,7 +26,7 @@ import {
   MASK,
   type PrEnvConfigWrite,
 } from '../pr-env-store.js';
-import type { RouteDeps } from '../types.js';
+import type { GitHubAppConfig, RouteDeps } from '../types.js';
 
 interface ValidateCheck {
   name: string;
@@ -165,35 +165,60 @@ async function defaultCheckGithubApp(
 /**
  * Call Route53's `GetHostedZone` via the AWS CLI — shells out rather than
  * pulling in the AWS SDK so we keep the dependency surface small and can
- * capture stderr verbatim. Uses a private env so creds don't leak into
- * the host `process.env`.
+ * capture stderr verbatim.
+ *
+ * When `accessKeyId` and `secretAccessKey` are both empty, the spawned
+ * `aws` CLI inherits `process.env` and uses the default credential chain
+ * (env → shared config → IAM Role via IMDSv2). This is the supported
+ * "let infra do it" path — operators running the Terraform module get
+ * the correct Route 53 policy attached to the EC2 instance role
+ * automatically. `hostedZoneId` is still required because it tells the
+ * CLI which zone to describe; it's a routing parameter, not a credential.
  */
 async function defaultCheckRoute53(
   accessKeyId: string,
   secretAccessKey: string,
   hostedZoneId: string,
 ): Promise<ValidateCheck> {
-  if (!accessKeyId || !secretAccessKey || !hostedZoneId) {
+  if (!hostedZoneId) {
     return {
       name: 'route53',
       pass: false,
-      message: 'accessKeyId, secretAccessKey, and hostedZoneId are all required.',
+      message: 'hostedZoneId is required.',
     };
   }
+  // Reject partial credentials — "AKIA without secret" silently breaks at
+  // runtime. Either both keys, or both empty (default chain / IMDS).
+  if (!!accessKeyId !== !!secretAccessKey) {
+    return {
+      name: 'route53',
+      pass: false,
+      message:
+        'Set both accessKeyId and secretAccessKey, or leave both empty to use the AWS SDK default chain (IMDS).',
+    };
+  }
+  const useExplicitCreds = !!accessKeyId && !!secretAccessKey;
   return new Promise((resolve) => {
     let stderr = '';
+    const baseEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      // Route53 is a global (non-regional) service but the SDK insists.
+      AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION || 'us-east-1',
+    };
+    if (useExplicitCreds) {
+      baseEnv.AWS_ACCESS_KEY_ID = accessKeyId;
+      baseEnv.AWS_SECRET_ACCESS_KEY = secretAccessKey;
+      // Clear ambient session/profile so static creds aren't shadowed.
+      delete baseEnv.AWS_SESSION_TOKEN;
+      delete baseEnv.AWS_PROFILE;
+      delete baseEnv.AWS_DEFAULT_PROFILE;
+    }
     const proc = spawn(
       'aws',
       ['route53', 'get-hosted-zone', '--id', hostedZoneId, '--output', 'json'],
       {
         stdio: ['ignore', 'ignore', 'pipe'],
-        env: {
-          ...process.env,
-          AWS_ACCESS_KEY_ID: accessKeyId,
-          AWS_SECRET_ACCESS_KEY: secretAccessKey,
-          // Route53 is a global (non-regional) service but the SDK insists.
-          AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION || 'us-east-1',
-        },
+        env: baseEnv,
       },
     );
     proc.stderr?.on('data', (b) => (stderr += String(b)));
@@ -206,7 +231,12 @@ async function defaultCheckRoute53(
     );
     proc.on('close', (code) => {
       if (code === 0) {
-        resolve({ name: 'route53', pass: true, message: `Hosted zone ${hostedZoneId} reachable.` });
+        const credsLabel = useExplicitCreds ? 'explicit creds' : 'instance role / default chain';
+        resolve({
+          name: 'route53',
+          pass: true,
+          message: `Hosted zone ${hostedZoneId} reachable (${credsLabel}).`,
+        });
       } else {
         resolve({
           name: 'route53',
@@ -228,12 +258,22 @@ export interface PrEnvSettingsDeps {
    * store module falls back to the module-level `getDb()` singleton.
    */
   getDb?: () => Database.Database;
+  /**
+   * Override the registered Reviewer App config for tests. Production
+   * sources this from `routeDeps.config.githubApp`; tests inject a fixture
+   * directly so they don't have to construct a full `AppConfig`.
+   */
+  getReviewerApp?: () => GitHubAppConfig | null;
 }
 
 export default function createPrEnvSettingsRoutes(
-  _routeDeps: RouteDeps,
+  routeDeps: RouteDeps,
   extra: PrEnvSettingsDeps = {},
 ): Router {
+  const resolveReviewerApp = (): GitHubAppConfig | null => {
+    if (extra.getReviewerApp) return extra.getReviewerApp();
+    return routeDeps?.config?.githubApp ?? null;
+  };
   const router = Router();
   const adapters: Required<ValidateAdapters> = {
     checkDocker: extra.adapters?.checkDocker ?? defaultCheckDocker,
@@ -338,10 +378,17 @@ export default function createPrEnvSettingsRoutes(
       return v;
     };
 
+    // GitHub App fields fall back to the registered Reviewer App
+    // (`config.githubApp`) when both the incoming payload and the saved
+    // row are empty. Same App, same permission set — the operator no
+    // longer needs to register a second App just for PR Environments.
+    const reviewerApp = resolveReviewerApp();
+    const reviewerInstallationId =
+      reviewerApp?.installationId != null ? String(reviewerApp.installationId) : '';
     const repoInputs = {
-      appId: pickStr('githubAppId'),
-      installationId: pickStr('githubInstallationId'),
-      privateKey: pickStr('githubPrivateKey'),
+      appId: pickStr('githubAppId') || (reviewerApp?.appId ?? ''),
+      installationId: pickStr('githubInstallationId') || reviewerInstallationId,
+      privateKey: pickStr('githubPrivateKey') || (reviewerApp?.privateKey ?? ''),
       route53AccessKeyId: pickStr('route53AccessKeyId'),
       route53SecretAccessKey: pickStr('route53SecretAccessKey'),
       route53HostedZoneId: pickStr('route53HostedZoneId'),

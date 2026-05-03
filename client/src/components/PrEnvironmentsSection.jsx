@@ -2,25 +2,15 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   GitBranch,
   Globe,
-  Key,
-  Cloud,
   AlertTriangle,
   CheckCircle2,
   XCircle,
   Loader2,
   RefreshCw,
-  Eye,
-  EyeOff,
-  ShieldAlert,
+  Info,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
-import {
-  MASK,
-  SECRET_FIELDS,
-  buildPrEnvSavePayload,
-  validatePrEnvForm,
-  isMaskValue,
-} from '../utils/prEnvPayload.js';
+import { buildPrEnvSavePayload, validatePrEnvForm } from '../utils/prEnvPayload.js';
 
 const EMPTY_FORM = {
   enabled: false,
@@ -30,12 +20,6 @@ const EMPTY_FORM = {
   certRenewalLive: false,
   portRangeMin: '',
   portRangeMax: '',
-  githubAppId: '',
-  githubInstallationId: '',
-  githubPrivateKey: '',
-  route53AccessKeyId: '',
-  route53SecretAccessKey: '',
-  route53HostedZoneId: '',
 };
 
 /** Map masked server state into form state (null/undefined → '' for controlled inputs). */
@@ -49,12 +33,6 @@ function hydrateForm(server) {
     certRenewalLive: !!server.certRenewalLive,
     portRangeMin: server.portRangeMin ?? '',
     portRangeMax: server.portRangeMax ?? '',
-    githubAppId: server.githubAppId ?? '',
-    githubInstallationId: server.githubInstallationId ?? '',
-    githubPrivateKey: server.githubPrivateKey ?? '', // '' or MASK
-    route53AccessKeyId: server.route53AccessKeyId ?? '',
-    route53SecretAccessKey: server.route53SecretAccessKey ?? '', // '' or MASK
-    route53HostedZoneId: server.route53HostedZoneId ?? '',
   };
 }
 
@@ -68,18 +46,23 @@ const CHECK_LABELS = {
 /**
  * PR environments settings UI.
  *
- * Covers Tier 1 (general) and Tier 2 (credentials) fields from
- * `server/pr-env-schema.ts`. Tier 3 (host paths — nginx dirs, prodDbPath, etc.)
- * stays in `~/.agent-hub/data/config.json` by design.
+ * Covers Tier 1 (general) settings only. GitHub App credentials are
+ * inherited from the registered Reviewer App (`config.githubApp`); Route 53
+ * credentials come from the AWS SDK default credential chain (IAM Role via
+ * IMDSv2 on EC2). Both are infrastructure-managed (Terraform), so neither
+ * is editable here — see `ops/terraform/locals-agent-hub.tf` for the
+ * Tier-3 `prEnv` block written into `<dataDir>/config.json` at first
+ * boot, and `ops/terraform/ssm-iam.tf` for the Route 53 IAM policy
+ * attached to the EC2 instance role.
+ *
+ * Tier 3 (host paths — nginx dirs, prodDbPath, hostedZoneId) likewise
+ * stays in `<dataDir>/config.json` by design.
  *
  * Behaviors:
- * - GET returns secrets as the mask sentinel `••••••••` when set, '' when unset.
- *   The UI displays a locked read-only input for masked secrets with an "Edit"
- *   button that clears the field so the user can type a new value. Save skips
- *   masked secrets so the server preserves them.
- * - Validate hits `/api/settings/pr-env/validate` and renders the 4 per-check
- *   results (docker / nginx / github-app / route53). The saved DB row is the
- *   source of truth server-side, plus any transient edits in the current form.
+ * - Validate hits `/api/settings/pr-env/validate` and renders the 4
+ *   per-check results (docker / nginx / github-app / route53). The
+ *   github-app + route53 checks use the inherited credentials when the
+ *   PR-env-specific fields are blank.
  * - Enable toggle is gated: disabled until either (a) a prior save succeeded
  *   AND validation passes, or (b) the user explicitly overrides via the
  *   "Enable without validation" checkbox (rare — surfaces a warning).
@@ -87,7 +70,7 @@ const CHECK_LABELS = {
 export default function PrEnvironmentsSection() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
-  const [server, setServer] = useState(null);
+  const [, setServer] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState(null); // 'saved' | 'error' | null
@@ -95,8 +78,6 @@ export default function PrEnvironmentsSection() {
   const [validating, setValidating] = useState(false);
   const [validateResult, setValidateResult] = useState(null); // { ok, checks: [...] } | null
   const [validateError, setValidateError] = useState(null);
-  const [editingSecret, setEditingSecret] = useState({}); // { [fieldName]: true }
-  const [showSecret, setShowSecret] = useState({});
   const [overrideGate, setOverrideGate] = useState(false);
 
   const load = useCallback(async () => {
@@ -105,7 +86,6 @@ export default function PrEnvironmentsSection() {
       const data = await api.getPrEnvSettings();
       setServer(data);
       setForm(hydrateForm(data));
-      setEditingSecret({});
     } catch (err) {
       setLoadError(err.message || 'Failed to load PR-env settings');
     } finally {
@@ -123,22 +103,6 @@ export default function PrEnvironmentsSection() {
 
   const setField = (k, v) => setForm((prev) => ({ ...prev, [k]: v }));
 
-  const startEditSecret = (field) => {
-    // Clear the masked value so the user can type a fresh secret.
-    setEditingSecret((prev) => ({ ...prev, [field]: true }));
-    setField(field, '');
-  };
-
-  const cancelEditSecret = (field) => {
-    // Restore to server-provided masked/empty value.
-    setEditingSecret((prev) => {
-      const next = { ...prev };
-      delete next[field];
-      return next;
-    });
-    setField(field, server?.[field] ?? '');
-  };
-
   const handleSave = async () => {
     if (clientErrors.length > 0) return;
     setSaving(true);
@@ -148,9 +112,8 @@ export default function PrEnvironmentsSection() {
       const updated = await api.updatePrEnvSettings(payload);
       setServer(updated);
       setForm(hydrateForm(updated));
-      setEditingSecret({});
       setSaveStatus('saved');
-      // Any save invalidates the last validation result — creds may have changed.
+      // Any save invalidates the last validation result — settings may have changed.
       setValidateResult(null);
       setTimeout(() => setSaveStatus(null), 2500);
     } catch (err) {
@@ -223,17 +186,22 @@ export default function PrEnvironmentsSection() {
         </p>
       </div>
 
-      {/* Backup warning — loss of the key file = loss of all stored secrets. */}
-      <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4">
+      {/* Inherited-credentials notice. PR Envs reuses infrastructure-managed
+          credentials — nothing to enter here. */}
+      <div
+        className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4"
+        data-testid="prenv-inherited-creds-notice"
+      >
         <div className="flex items-start gap-3">
-          <ShieldAlert size={18} className="text-amber-400 shrink-0 mt-0.5" />
-          <div className="text-xs text-amber-100/90 space-y-1.5">
-            <p className="font-medium text-amber-300">Back up the secret key</p>
+          <Info size={18} className="text-blue-400 shrink-0 mt-0.5" />
+          <div className="text-xs text-blue-100/90 space-y-1.5">
+            <p className="font-medium text-blue-300">Credentials come from infrastructure</p>
             <p>
-              Credentials are AES-256-GCM encrypted at rest using
-              <code className="mx-1 text-amber-200">&lt;dataDir&gt;/pr-env-secret.key</code>. If
-              that file is lost, every stored secret becomes unrecoverable and must be re-entered.
-              Include it in your backup routine alongside the SQLite DB.
+              GitHub App credentials are inherited from the registered Reviewer App, and Route 53
+              access is provided by the EC2 instance role (IMDSv2). Both are managed by Terraform —
+              see <code className="text-blue-200">ops/terraform/locals-agent-hub.tf</code> and{' '}
+              <code className="text-blue-200">ops/terraform/ssm-iam.tf</code>. Neither needs to be
+              entered here.
             </p>
           </div>
         </div>
@@ -372,116 +340,6 @@ export default function PrEnvironmentsSection() {
         </label>
       </div>
 
-      {/* ── Tier 2 — GitHub App ───────────────────────────────────────────── */}
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <div className="flex items-center gap-2">
-          <Key size={14} className="text-gray-400" />
-          <h4 className="text-sm font-medium text-gray-200">GitHub App credentials</h4>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className={labelClass} htmlFor="prenv-gh-app-id">
-              App ID
-            </label>
-            <input
-              id="prenv-gh-app-id"
-              value={form.githubAppId}
-              onChange={(e) => setField('githubAppId', e.target.value)}
-              className={inputClass}
-              placeholder="123456"
-            />
-          </div>
-          <div>
-            <label className={labelClass} htmlFor="prenv-gh-installation-id">
-              Installation ID
-            </label>
-            <input
-              id="prenv-gh-installation-id"
-              value={form.githubInstallationId}
-              onChange={(e) => setField('githubInstallationId', e.target.value)}
-              className={inputClass}
-              placeholder="7890123"
-            />
-          </div>
-        </div>
-
-        <SecretField
-          label="Private key (PEM)"
-          id="prenv-gh-private-key"
-          field="githubPrivateKey"
-          value={form.githubPrivateKey}
-          serverValue={server?.githubPrivateKey ?? ''}
-          editing={!!editingSecret.githubPrivateKey}
-          showPlain={!!showSecret.githubPrivateKey}
-          onChange={(v) => setField('githubPrivateKey', v)}
-          onStartEdit={() => startEditSecret('githubPrivateKey')}
-          onCancelEdit={() => cancelEditSecret('githubPrivateKey')}
-          onToggleShow={() =>
-            setShowSecret((prev) => ({
-              ...prev,
-              githubPrivateKey: !prev.githubPrivateKey,
-            }))
-          }
-          multiline
-          placeholder={'-----BEGIN RSA PRIVATE KEY-----\n…'}
-        />
-      </div>
-
-      {/* ── Tier 2 — Route53 ──────────────────────────────────────────────── */}
-      <div className="bg-gray-800 rounded-xl p-4 space-y-4">
-        <div className="flex items-center gap-2">
-          <Cloud size={14} className="text-gray-400" />
-          <h4 className="text-sm font-medium text-gray-200">Route53 credentials</h4>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className={labelClass} htmlFor="prenv-r53-access-key">
-              Access key ID
-            </label>
-            <input
-              id="prenv-r53-access-key"
-              value={form.route53AccessKeyId}
-              onChange={(e) => setField('route53AccessKeyId', e.target.value)}
-              className={inputClass}
-              placeholder="AKIA…"
-            />
-          </div>
-          <div>
-            <label className={labelClass} htmlFor="prenv-r53-zone">
-              Hosted zone ID
-            </label>
-            <input
-              id="prenv-r53-zone"
-              value={form.route53HostedZoneId}
-              onChange={(e) => setField('route53HostedZoneId', e.target.value)}
-              className={inputClass}
-              placeholder="Z0123456789ABCDEFGHIJ"
-            />
-          </div>
-        </div>
-
-        <SecretField
-          label="Secret access key"
-          id="prenv-r53-secret-access-key"
-          field="route53SecretAccessKey"
-          value={form.route53SecretAccessKey}
-          serverValue={server?.route53SecretAccessKey ?? ''}
-          editing={!!editingSecret.route53SecretAccessKey}
-          showPlain={!!showSecret.route53SecretAccessKey}
-          onChange={(v) => setField('route53SecretAccessKey', v)}
-          onStartEdit={() => startEditSecret('route53SecretAccessKey')}
-          onCancelEdit={() => cancelEditSecret('route53SecretAccessKey')}
-          onToggleShow={() =>
-            setShowSecret((prev) => ({
-              ...prev,
-              route53SecretAccessKey: !prev.route53SecretAccessKey,
-            }))
-          }
-        />
-      </div>
-
       {/* ── Client-side errors ────────────────────────────────────────────── */}
       {clientErrors.length > 0 && (
         <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-xs text-red-300 space-y-1">
@@ -536,112 +394,6 @@ export default function PrEnvironmentsSection() {
             setValidateError(null);
           }}
         />
-      )}
-    </div>
-  );
-}
-
-/**
- * A text field that respects the mask-preservation convention:
- *   - If `serverValue` is the mask sentinel and the user hasn't clicked Edit,
- *     render a read-only masked value with an "Edit" button.
- *   - Once editing, render a normal input (with show/hide for the plaintext)
- *     and a "Cancel" button that restores the mask.
- * This is the main place the "don't re-send ••••••••" invariant becomes
- * visible in the UI.
- */
-function SecretField({
-  label,
-  id,
-  field,
-  value,
-  serverValue,
-  editing,
-  showPlain,
-  onChange,
-  onStartEdit,
-  onCancelEdit,
-  onToggleShow,
-  multiline = false,
-  placeholder = '',
-}) {
-  const isMasked = isMaskValue(serverValue) && !editing;
-  const hasStoredValue = serverValue && serverValue.length > 0;
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="block text-xs text-gray-400" htmlFor={id}>
-          {label}
-        </label>
-        <div className="flex items-center gap-2 text-[11px]">
-          {!isMasked && hasStoredValue && editing && (
-            <button
-              type="button"
-              onClick={onCancelEdit}
-              className="text-gray-400 hover:text-gray-200"
-            >
-              Cancel
-            </button>
-          )}
-          {isMasked && (
-            <button
-              type="button"
-              onClick={onStartEdit}
-              className="text-blue-400 hover:text-blue-300"
-              aria-label={`Edit ${label}`}
-            >
-              Edit
-            </button>
-          )}
-          {!isMasked && !multiline && value && (
-            <button
-              type="button"
-              onClick={onToggleShow}
-              className="text-gray-500 hover:text-gray-300 flex items-center gap-1"
-              aria-label={showPlain ? 'Hide secret' : 'Show secret'}
-            >
-              {showPlain ? <EyeOff size={11} /> : <Eye size={11} />}
-              {showPlain ? 'Hide' : 'Show'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {isMasked ? (
-        <input
-          id={id}
-          value={MASK}
-          readOnly
-          disabled
-          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 font-mono opacity-70 cursor-not-allowed"
-          aria-readonly="true"
-          data-testid={`prenv-secret-masked-${field}`}
-        />
-      ) : multiline ? (
-        <textarea
-          id={id}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          rows={6}
-          placeholder={placeholder}
-          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-          data-testid={`prenv-secret-input-${field}`}
-        />
-      ) : (
-        <input
-          id={id}
-          type={showPlain ? 'text' : 'password'}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-          data-testid={`prenv-secret-input-${field}`}
-        />
-      )}
-
-      {!isMasked && !hasStoredValue && (
-        <p className="text-[11px] text-gray-600 mt-1">Not configured.</p>
       )}
     </div>
   );
@@ -711,6 +463,3 @@ export function ValidateResults({ result, error, onDismiss }) {
     </div>
   );
 }
-
-// Re-export secret constants for tests that don't want to reach into utils.
-export { SECRET_FIELDS, MASK };

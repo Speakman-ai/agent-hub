@@ -24,6 +24,17 @@ import { PortPool, PORT_POOL_SCHEMA } from './port-pool.js';
 import type { ComposeRunner, FsOps, PrEnvBuilderDeps } from './pr-env-builder.js';
 import type { NginxFsOps, NginxRunner } from './nginx-writer.js';
 import type { PrEnvConfigRow } from '../pr-env-store.js';
+import type { GitHubAppConfig } from '../types.js';
+
+/**
+ * Subset of `AppConfig` that PR-env runtime cares about. We accept this
+ * narrow shape (rather than `AppConfig`) so the heartbeat / webhook callers
+ * can pass `{ githubApp }` without dragging the full config dependency
+ * graph into a unit-test fake.
+ */
+export interface PrEnvAppConfigRef {
+  githubApp: GitHubAppConfig | null;
+}
 
 // ─── Shared runtime config ────────────────────────────────────────────────
 
@@ -112,7 +123,24 @@ function resolvePreviewBaseUrl(
  *   1. env vars (for CI/dev overrides)
  *   2. DB row (Tier-1/Tier-2 UI-owned fields) — AUTHORITATIVE once present
  *   3. config.json `prEnv` block (legacy; preserved for pre-migration compat)
- *   4. built-in defaults
+ *   4. `appConfig.githubApp` for GitHub App fields ONLY — the registered
+ *      Reviewer App is reused as PR-env's webhook identity, since both
+ *      need the same `pull_requests:write` / `contents:write` /
+ *      `checks:write` / `statuses:write` permission set. Operators no
+ *      longer need to register a second App just for PR Environments.
+ *   5. built-in defaults
+ *
+ * Route 53 access keys are OPTIONAL: when both `accessKeyId` and
+ * `secretAccessKey` are empty after the precedence above, the cert-renewal
+ * client falls back to the AWS SDK's default credential chain (env →
+ * shared config → IAM Role / IMDSv2 on EC2). On instances launched by the
+ * `ops/terraform/` module the EC2 role already has the required Route 53
+ * policy, so leaving these fields blank is the supported "let infra do
+ * it" path. `hostedZoneId` is still required because the cert client
+ * needs to know which zone to write the DNS-01 record into — it's a
+ * routing parameter, not a credential, and is sourced from
+ * `prEnv.route53.hostedZoneId` in `config.json` (Tier-3, written by
+ * Terraform at first boot).
  *
  * Boolean fields (`enabled`, `certRenewalLive`) follow strict precedence
  * — not OR-composition. Once a DB row exists, its value wins over the file
@@ -127,6 +155,7 @@ export function readPrEnvConfig(
   fileConfig: Record<string, unknown> | undefined,
   env: NodeJS.ProcessEnv = process.env,
   dbRow: PrEnvConfigRow | null = null,
+  appConfig: PrEnvAppConfigRef | null = null,
 ): PrEnvRuntimeConfig | null {
   const envFlag = env.AGENT_HUB_PR_ENV_ENABLED === 'true';
   const fileBlock = (fileConfig?.prEnv as Partial<PrEnvRuntimeConfig> | undefined) ?? {};
@@ -150,17 +179,32 @@ export function readPrEnvConfig(
     fallback = '',
   ): string => envVal || dbVal || fileVal || fallback;
 
+  // GitHub App fields fall back to the registered Reviewer App
+  // (`appConfig.githubApp`) when env / DB / file are all empty. Same App,
+  // same permission set — no need to register a second App just for PR
+  // Environments. `installationId` in `GitHubAppConfig` is `number`; coerce
+  // to string here so the rest of the runtime treats it uniformly.
+  const reviewerApp = appConfig?.githubApp ?? null;
+  const reviewerAppInstallationId =
+    reviewerApp?.installationId != null ? String(reviewerApp.installationId) : '';
   const github = {
-    appId: pick(env.PR_ENV_GITHUB_APP_ID, dbRow?.githubAppId, fileBlock.github?.appId),
+    appId: pick(
+      env.PR_ENV_GITHUB_APP_ID,
+      dbRow?.githubAppId,
+      fileBlock.github?.appId,
+      reviewerApp?.appId ?? '',
+    ),
     installationId: pick(
       env.PR_ENV_GITHUB_INSTALLATION_ID,
       dbRow?.githubInstallationId,
       fileBlock.github?.installationId,
+      reviewerAppInstallationId,
     ),
     privateKey: pick(
       env.PR_ENV_GITHUB_PRIVATE_KEY,
       dbRow?.githubPrivateKey,
       fileBlock.github?.privateKey,
+      reviewerApp?.privateKey ?? '',
     ),
   };
 
@@ -212,10 +256,22 @@ export function readPrEnvConfig(
   if (!github.installationId)
     missing.push('PR_ENV_GITHUB_INSTALLATION_ID / prEnv.github.installationId');
   if (!github.privateKey) missing.push('PR_ENV_GITHUB_PRIVATE_KEY / prEnv.github.privateKey');
-  if (!route53.accessKeyId)
-    missing.push('PR_ENV_ROUTE53_ACCESS_KEY_ID / prEnv.route53.accessKeyId');
-  if (!route53.secretAccessKey)
-    missing.push('PR_ENV_ROUTE53_SECRET_ACCESS_KEY / prEnv.route53.secretAccessKey');
+  // Route53 access keys are intentionally optional — when both are empty
+  // the cert-renewal client falls back to the AWS SDK default chain
+  // (IMDSv2 on EC2). Operators running the Terraform module get the
+  // correct IAM policy attached to the instance role automatically. Only
+  // partial-credentials are rejected here, since "AKIA without secret"
+  // would silently break in production.
+  if (!!route53.accessKeyId !== !!route53.secretAccessKey) {
+    missing.push(
+      'PR_ENV_ROUTE53_ACCESS_KEY_ID + PR_ENV_ROUTE53_SECRET_ACCESS_KEY ' +
+        '(set both, or leave both empty to use the AWS SDK default chain / IMDS)',
+    );
+  }
+  // hostedZoneId is required regardless — it tells certbot-dns-route53
+  // which zone to write the DNS-01 record into. Sourced from
+  // `prEnv.route53.hostedZoneId` in `config.json` (Tier-3, written by
+  // Terraform at first boot) on a default EC2 install.
   if (!route53.hostedZoneId)
     missing.push('PR_ENV_ROUTE53_HOSTED_ZONE_ID / prEnv.route53.hostedZoneId');
   if (!nginx.certPath) missing.push('PR_ENV_NGINX_CERT_PATH / prEnv.nginx.certPath');

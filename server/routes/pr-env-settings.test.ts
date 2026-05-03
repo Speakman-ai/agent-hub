@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import createPrEnvSettingsRoutes from './pr-env-settings.js';
+import type { GitHubAppConfig } from '../types.js';
 import {
   PR_ENV_CONFIG_SCHEMA,
   MASK,
@@ -227,6 +228,117 @@ describe('POST /api/settings/pr-env/validate', () => {
     const docker = res.body.checks.find((c: { name: string }) => c.name === 'docker');
     expect(docker.pass).toBe(false);
     expect(docker.message).toBe('boom');
+  });
+
+  it('falls back to the registered Reviewer App when github fields are blank', async () => {
+    // No row written, no payload supplied → all github fields would be
+    // empty under the old behaviour. With the Reviewer-App fallback,
+    // the registered `config.githubApp` is used as the validate identity.
+    const reviewerApp: GitHubAppConfig = {
+      appId: 'reviewer-app',
+      installationId: 5544332211,
+      privateKey: 'reviewer-pk',
+    };
+    const seen: { appId?: string; privateKey?: string; installationId?: string } = {};
+    const reviewerInjectedApp = express();
+    reviewerInjectedApp.use(express.json());
+    reviewerInjectedApp.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        getReviewerApp: () => reviewerApp,
+        adapters: {
+          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
+          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+          checkGithubApp: async (appId, privateKey, installationId) => {
+            seen.appId = appId;
+            seen.privateKey = privateKey;
+            seen.installationId = installationId;
+            return { name: 'github-app', pass: true, message: 'ok' };
+          },
+          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
+        },
+      }),
+    );
+    await supertest(reviewerInjectedApp).post('/api/settings/pr-env/validate').send({}).expect(200);
+    expect(seen.appId).toBe('reviewer-app');
+    // installationId is a number in GitHubAppConfig, but stringified for the validate adapter.
+    expect(seen.installationId).toBe('5544332211');
+    expect(seen.privateKey).toBe('reviewer-pk');
+  });
+
+  it('saved github fields take precedence over the Reviewer App fallback', async () => {
+    writePrEnvConfig(
+      {
+        githubAppId: 'saved-app',
+        githubInstallationId: 'saved-inst',
+        githubPrivateKey: 'saved-pk',
+      },
+      db,
+    );
+    const reviewerApp: GitHubAppConfig = {
+      appId: 'reviewer-app',
+      installationId: 5544332211,
+      privateKey: 'reviewer-pk',
+    };
+    const seen: { appId?: string; privateKey?: string; installationId?: string } = {};
+    const overrideApp = express();
+    overrideApp.use(express.json());
+    overrideApp.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        getReviewerApp: () => reviewerApp,
+        adapters: {
+          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
+          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+          checkGithubApp: async (appId, privateKey, installationId) => {
+            seen.appId = appId;
+            seen.privateKey = privateKey;
+            seen.installationId = installationId;
+            return { name: 'github-app', pass: true, message: 'ok' };
+          },
+          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
+        },
+      }),
+    );
+    await supertest(overrideApp).post('/api/settings/pr-env/validate').send({}).expect(200);
+    expect(seen.appId).toBe('saved-app');
+    expect(seen.installationId).toBe('saved-inst');
+    expect(seen.privateKey).toBe('saved-pk');
+  });
+
+  it('Route 53 check passes empty access keys through to the adapter', async () => {
+    // The default-chain / IMDS path: empty keys mean "use the AWS SDK
+    // default credential chain". The route layer must not silently fill
+    // them in from somewhere — the cert-renewal client is the one that
+    // decides whether to inject env vars or fall through.
+    writePrEnvConfig({ route53HostedZoneId: 'Z-only-zone' }, db);
+    const seen: { accessKeyId?: string; secretAccessKey?: string; hostedZoneId?: string } = {};
+    const r53App = express();
+    r53App.use(express.json());
+    r53App.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        adapters: {
+          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
+          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+          checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
+          checkRoute53: async (accessKeyId, secretAccessKey, hostedZoneId) => {
+            seen.accessKeyId = accessKeyId;
+            seen.secretAccessKey = secretAccessKey;
+            seen.hostedZoneId = hostedZoneId;
+            return {
+              name: 'route53',
+              pass: true,
+              message: 'Hosted zone reachable (instance role / default chain).',
+            };
+          },
+        },
+      }),
+    );
+    await supertest(r53App).post('/api/settings/pr-env/validate').send({}).expect(200);
+    expect(seen.accessKeyId).toBe('');
+    expect(seen.secretAccessKey).toBe('');
+    expect(seen.hostedZoneId).toBe('Z-only-zone');
   });
 
   it('passes saved secrets to adapters when payload has MASK', async () => {

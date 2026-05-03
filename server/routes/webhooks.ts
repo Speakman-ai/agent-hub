@@ -1395,7 +1395,7 @@ function handleKanbanWebhookEvent(
       stmts,
       getBuilderDeps: () =>
         getPrEnvBuilderDeps(
-          readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow()),
+          readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config),
           getDb(),
         ),
     };

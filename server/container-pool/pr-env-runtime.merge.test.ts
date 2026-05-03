@@ -5,8 +5,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readPrEnvConfig } from './pr-env-runtime.js';
+import { readPrEnvConfig, type PrEnvAppConfigRef } from './pr-env-runtime.js';
 import type { PrEnvConfigRow } from '../pr-env-store.js';
+import type { GitHubAppConfig } from '../types.js';
 
 const REQUIRED_NON_UI_ENV = {
   PR_ENV_PROD_DB: '/db/prod.db',
@@ -188,5 +189,151 @@ describe('readPrEnvConfig — merge DB row', () => {
       row,
     );
     expect(result).not.toBeNull();
+  });
+});
+
+// ─── Reviewer-App reuse for GitHub fields ────────────────────────────────
+
+/**
+ * Same Reviewer App as `config.githubApp` is reused as the PR-env webhook
+ * identity — operators no longer need to register a second App. The fallback
+ * is the lowest-priority source: env > DB > file > appConfig.githubApp.
+ *
+ * `installationId` in `GitHubAppConfig` is typed as `number`; the runtime
+ * coerces to string to match the rest of the pipeline.
+ */
+const REVIEWER_APP: GitHubAppConfig = {
+  appId: 'reviewer-app-id',
+  installationId: 99887766,
+  privateKey: 'reviewer-pk',
+  webhookSecret: 'whsec',
+};
+
+const APP_CONFIG_REF: PrEnvAppConfigRef = { githubApp: REVIEWER_APP };
+
+/** A minimal DB row that enables the feature but leaves all github + r53 fields empty. */
+const ENABLED_BLANK_ROW: PrEnvConfigRow = {
+  enabled: true,
+  repoFullName: 'acme/from-db',
+  previewHost: 'preview.db.example.com',
+  previewBaseUrl: 'https://db.example.com',
+  certRenewalLive: false,
+  portRangeMin: null,
+  portRangeMax: null,
+  githubAppId: '',
+  githubInstallationId: '',
+  githubPrivateKey: '',
+  route53AccessKeyId: '',
+  route53SecretAccessKey: '',
+  route53HostedZoneId: 'Z-from-db',
+};
+
+describe('readPrEnvConfig — Reviewer-App fallback for GitHub fields', () => {
+  it('uses appConfig.githubApp when env, DB, and file github fields are all empty', () => {
+    const result = readPrEnvConfig({}, REQUIRED_NON_UI_ENV, ENABLED_BLANK_ROW, APP_CONFIG_REF);
+    expect(result).not.toBeNull();
+    expect(result!.github.appId).toBe('reviewer-app-id');
+    // installationId is `number` on GitHubAppConfig but `string` on the runtime config.
+    expect(result!.github.installationId).toBe('99887766');
+    expect(result!.github.privateKey).toBe('reviewer-pk');
+  });
+
+  it('DB github fields override appConfig.githubApp (precedence guard)', () => {
+    const populatedRow: PrEnvConfigRow = {
+      ...ENABLED_BLANK_ROW,
+      githubAppId: 'db-app',
+      githubInstallationId: 'db-inst',
+      githubPrivateKey: 'db-pk',
+    };
+    const result = readPrEnvConfig({}, REQUIRED_NON_UI_ENV, populatedRow, APP_CONFIG_REF);
+    expect(result!.github.appId).toBe('db-app');
+    expect(result!.github.installationId).toBe('db-inst');
+    expect(result!.github.privateKey).toBe('db-pk');
+  });
+
+  it('env overrides appConfig.githubApp (highest precedence intact)', () => {
+    const result = readPrEnvConfig(
+      {},
+      { ...REQUIRED_NON_UI_ENV, PR_ENV_GITHUB_APP_ID: 'env-app' },
+      ENABLED_BLANK_ROW,
+      APP_CONFIG_REF,
+    );
+    expect(result!.github.appId).toBe('env-app');
+    // Other fields still come from the reviewer-app fallback.
+    expect(result!.github.installationId).toBe('99887766');
+    expect(result!.github.privateKey).toBe('reviewer-pk');
+  });
+
+  it('throws the same misconfig error when appConfig is null and DB github fields are empty', () => {
+    // Defends against a regression where a missing `appConfig` arg silently
+    // injects empty github creds into the runtime — surface failure early.
+    expect(() => readPrEnvConfig({}, REQUIRED_NON_UI_ENV, ENABLED_BLANK_ROW, null)).toThrow(
+      /PR_ENV_GITHUB_APP_ID/,
+    );
+  });
+
+  it('file-block github fields beat appConfig (file > appConfig)', () => {
+    const result = readPrEnvConfig(
+      {
+        prEnv: {
+          github: { appId: 'file-app', installationId: 'file-inst', privateKey: 'file-pk' },
+        },
+      },
+      REQUIRED_NON_UI_ENV,
+      ENABLED_BLANK_ROW,
+      APP_CONFIG_REF,
+    );
+    expect(result!.github.appId).toBe('file-app');
+    expect(result!.github.installationId).toBe('file-inst');
+    expect(result!.github.privateKey).toBe('file-pk');
+  });
+});
+
+// ─── Route 53: empty access keys → AWS SDK default chain ─────────────────
+
+describe('readPrEnvConfig — Route 53 access keys are optional (default-chain / IMDS)', () => {
+  it('does not throw when both Route 53 access keys are empty and hostedZoneId is set', () => {
+    // The cert-renewal client falls back to the AWS SDK default chain
+    // (IMDSv2) at run-time. Config-load must not block this path.
+    const result = readPrEnvConfig({}, REQUIRED_NON_UI_ENV, ENABLED_BLANK_ROW, APP_CONFIG_REF);
+    expect(result).not.toBeNull();
+    expect(result!.route53.accessKeyId).toBe('');
+    expect(result!.route53.secretAccessKey).toBe('');
+    expect(result!.route53.hostedZoneId).toBe('Z-from-db');
+  });
+
+  it('still throws when hostedZoneId is missing (it is a routing param, not a credential)', () => {
+    const noZoneRow: PrEnvConfigRow = { ...ENABLED_BLANK_ROW, route53HostedZoneId: '' };
+    expect(() => readPrEnvConfig({}, REQUIRED_NON_UI_ENV, noZoneRow, APP_CONFIG_REF)).toThrow(
+      /PR_ENV_ROUTE53_HOSTED_ZONE_ID/,
+    );
+  });
+
+  it('rejects partial credentials (AKIA without secret)', () => {
+    const partialRow: PrEnvConfigRow = {
+      ...ENABLED_BLANK_ROW,
+      route53AccessKeyId: 'AKIA-LONELY',
+      route53SecretAccessKey: '',
+    };
+    expect(() => readPrEnvConfig({}, REQUIRED_NON_UI_ENV, partialRow, APP_CONFIG_REF)).toThrow(
+      /ACCESS_KEY_ID \+ PR_ENV_ROUTE53_SECRET_ACCESS_KEY/,
+    );
+  });
+
+  it('rejects partial credentials (secret without AKIA)', () => {
+    const partialRow: PrEnvConfigRow = {
+      ...ENABLED_BLANK_ROW,
+      route53AccessKeyId: '',
+      route53SecretAccessKey: 'lonely-secret',
+    };
+    expect(() => readPrEnvConfig({}, REQUIRED_NON_UI_ENV, partialRow, APP_CONFIG_REF)).toThrow(
+      /ACCESS_KEY_ID \+ PR_ENV_ROUTE53_SECRET_ACCESS_KEY/,
+    );
+  });
+
+  it('accepts both keys set explicitly (legacy path)', () => {
+    const result = readPrEnvConfig({}, REQUIRED_NON_UI_ENV, FULL_DB_ROW, APP_CONFIG_REF);
+    expect(result!.route53.accessKeyId).toBe('db-akia');
+    expect(result!.route53.secretAccessKey).toBe('db-secret');
   });
 });

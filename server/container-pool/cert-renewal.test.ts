@@ -101,6 +101,75 @@ describe('renewCertsDryRun (acme.sh)', () => {
   });
 });
 
+// ─── empty creds → AWS SDK default chain (IMDSv2) ────────────────────────
+
+describe('renewCertsDryRun — empty Route 53 keys delegate to default chain', () => {
+  /**
+   * When `accessKeyId` and `secretAccessKey` are both blank, we let the
+   * subprocess inherit AWS_* from `process.env` so the AWS SDK / botocore
+   * default credential chain (env → shared config → IAM Role via IMDSv2)
+   * takes over. On EC2 instances launched by `ops/terraform/`, the role
+   * already has the correct Route 53 policy, so this is the supported
+   * "let infra do it" path.
+   */
+  const EMPTY_CREDS_DEPS: Omit<CertRenewalDeps, 'runner'> = {
+    route53: {
+      accessKeyId: '',
+      secretAccessKey: '',
+      hostedZoneId: 'Z1ABCD1234',
+    },
+    wildcardDomain: '*.preview.agenthub.dev',
+    certHome: '/var/lib/agent-hub/acme',
+  };
+
+  it('does not inject AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY when keys are empty', async () => {
+    // Make sure nothing in the host env is shadowing our assertion.
+    const origAccess = process.env.AWS_ACCESS_KEY_ID;
+    const origSecret = process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    try {
+      const runner = makeFakeRunner([{ code: 0, stdout: '', stderr: '' }]);
+      await renewCertsDryRun({ ...EMPTY_CREDS_DEPS, runner });
+      const env = runner.calls[0].env;
+      // The cert-renewal module spreads process.env into the spawn env;
+      // when keys are empty it must NOT explicitly set AWS_ACCESS_KEY_ID.
+      // (If it did, the SDK would prefer empty static creds over the
+      // instance-role profile and the call would fail with InvalidClientTokenId.)
+      expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
+      expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    } finally {
+      if (origAccess !== undefined) process.env.AWS_ACCESS_KEY_ID = origAccess;
+      if (origSecret !== undefined) process.env.AWS_SECRET_ACCESS_KEY = origSecret;
+    }
+  });
+
+  it('preserves ambient AWS_SESSION_TOKEN when keys are empty (default chain needs it)', async () => {
+    // Critical for IMDSv2: the EC2 metadata service issues a session token,
+    // and the SDK propagates AWS_SESSION_TOKEN through to subprocesses. If
+    // we cleared it (as the explicit-creds path does), the chain breaks.
+    const origToken = process.env.AWS_SESSION_TOKEN;
+    process.env.AWS_SESSION_TOKEN = 'imds-session-token';
+    try {
+      const runner = makeFakeRunner([{ code: 0, stdout: '', stderr: '' }]);
+      await renewCertsDryRun({ ...EMPTY_CREDS_DEPS, runner });
+      expect(runner.calls[0].env.AWS_SESSION_TOKEN).toBe('imds-session-token');
+    } finally {
+      if (origToken !== undefined) process.env.AWS_SESSION_TOKEN = origToken;
+      else delete process.env.AWS_SESSION_TOKEN;
+    }
+  });
+
+  it('still sets AWS_HOSTED_ZONE_ID for acme.sh when keys are empty', async () => {
+    // Hosted-zone id is a routing parameter, not a credential — acme.sh
+    // uses it to short-circuit zone discovery whether we're on static
+    // creds or the default chain.
+    const runner = makeFakeRunner([{ code: 0, stdout: '', stderr: '' }]);
+    await renewCertsDryRun({ ...EMPTY_CREDS_DEPS, runner });
+    expect(runner.calls[0].env.AWS_HOSTED_ZONE_ID).toBe('Z1ABCD1234');
+  });
+});
+
 // ─── failure paths ───────────────────────────────────────────────────────
 
 describe('renewCerts — error path', () => {

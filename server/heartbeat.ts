@@ -833,7 +833,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
         runCertRenewalHeartbeat({
           getConfig: () => {
             try {
-              return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow());
+              return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config);
             } catch (err) {
               console.error('[cert-renewal] config read failed:', (err as Error).message);
               return null;
@@ -869,7 +869,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
           allocator: reaperAllocator,
           getConfig: () => {
             try {
-              return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow());
+              return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config);
             } catch (err) {
               console.error('[reaper] config read failed:', (err as Error).message);
               return null;

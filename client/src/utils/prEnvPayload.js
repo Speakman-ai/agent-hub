@@ -1,19 +1,21 @@
 /**
  * PR-env settings save-payload helpers.
  *
- * The backend PUT is partial-preserving: any secret field equal to the mask
- * sentinel is left untouched server-side. On the client we mirror the
- * convention so the UI can post the whole form back without tracking which
- * secrets the user actually edited.
+ * Tier 2 (credentials) fields are no longer surfaced in the UI — GitHub
+ * App credentials are inherited from the registered Reviewer App
+ * (`config.githubApp`) and Route 53 access comes from the AWS SDK default
+ * credential chain (IAM Role via IMDSv2 on EC2). Both are infrastructure-
+ * managed (Terraform). The client now only sends Tier 1 fields plus the
+ * port range; the server's PUT handler still accepts the credential keys
+ * so the migration path (clearing a stored secret via `''`) keeps
+ * working, but the UI never sends them.
  *
- * Extracted from the React component to make the mask-preservation logic
+ * Extracted from the React component to make the form→payload logic
  * cheaply unit-testable without rendering.
  */
 
+/** The mask sentinel used by GETs. Kept exported for legacy test helpers. */
 export const MASK = '••••••••';
-
-/** Field names whose values are AES-GCM encrypted at rest and returned masked. */
-export const SECRET_FIELDS = ['githubPrivateKey', 'route53SecretAccessKey'];
 
 /** Tier 1 (general) string fields. */
 export const TIER1_STRING_FIELDS = ['repoFullName', 'previewHost', 'previewBaseUrl'];
@@ -21,33 +23,16 @@ export const TIER1_STRING_FIELDS = ['repoFullName', 'previewHost', 'previewBaseU
 /** Tier 1 boolean fields. */
 export const TIER1_BOOL_FIELDS = ['enabled', 'certRenewalLive'];
 
-/** Tier 2 (credentials) string fields — plaintext on the wire, encrypted at rest. */
-export const TIER2_STRING_FIELDS = [
-  'githubAppId',
-  'githubInstallationId',
-  'githubPrivateKey',
-  'route53AccessKeyId',
-  'route53SecretAccessKey',
-  'route53HostedZoneId',
-];
-
-/**
- * True iff `value` is the mask sentinel. Used to decide whether the user
- * actually edited a secret field or if they left the masked value in place.
- */
-export function isMaskValue(value) {
-  return value === MASK;
-}
-
 /**
  * Build a PUT payload from the current form state.
  *
  * Rules:
- *   - Mask sentinel for secrets → drop from payload (server preserves existing value).
- *   - Empty string for secrets → send as '' (explicit clear).
- *   - Non-secret string fields → always include (cheap; no preservation needed).
+ *   - Tier 1 string fields → always include (server treats '' as "clear").
  *   - Booleans → always include.
- *   - portRangeMin/Max → both included together if either is set, otherwise both null.
+ *   - portRangeMin/Max → both included together; '' / null / undefined → null (clear).
+ *   - Tier 2 (credentials) → not sent at all. Inherited server-side from
+ *     `config.githubApp` (GitHub App) and the AWS SDK default chain
+ *     (Route 53). Editing those is an infrastructure / Terraform concern.
  */
 export function buildPrEnvSavePayload(form) {
   const payload = {};
@@ -57,16 +42,6 @@ export function buildPrEnvSavePayload(form) {
   }
   for (const k of TIER1_BOOL_FIELDS) {
     payload[k] = !!form[k];
-  }
-  for (const k of TIER2_STRING_FIELDS) {
-    const v = form[k];
-    if (SECRET_FIELDS.includes(k)) {
-      // Drop masked secrets so the server preserves whatever it already has.
-      if (v === undefined || v === null || isMaskValue(v)) continue;
-      payload[k] = v;
-    } else {
-      payload[k] = v ?? '';
-    }
   }
 
   // Port range: always send together. Empty string → null (clear).
