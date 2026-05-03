@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, LogOut, Plus, Trash2, Users, X } from 'lucide-react';
+import { Copy, Key, Loader2, LogOut, Plus, Trash2, Users, X } from 'lucide-react';
 import RoleBadge from './RoleBadge.jsx';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { hasRole, getUserRole, logout } from '../utils/auth.js';
@@ -183,6 +183,8 @@ export default function AccountSection() {
           while they're the only one.
         </p>
       </div>
+
+      {me && <ApiKeysSection />}
 
       {users !== null && (
         <div className="bg-gray-800 rounded-xl p-4">
@@ -398,6 +400,348 @@ function AddUserModal({ callerRole, onClose, onCreated }) {
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function formatRelative(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return iso;
+  const diff = Date.now() - t;
+  if (diff < 0) return new Date(iso).toLocaleString();
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+/**
+ * Per-user API keys panel — exported for direct testing without
+ * mounting the whole AccountSection tree.
+ */
+export function ApiKeysSection() {
+  const [keys, setKeys] = useState(null);
+  const [error, setError] = useState(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [rowErrors, setRowErrors] = useState({});
+
+  const loadKeys = useCallback(async () => {
+    try {
+      const res = await fetch(`${getApiBase()}/auth/keys`, { headers: getAuthHeaders() });
+      if (!res.ok) {
+        if (res.status === 401) {
+          // Not authenticated — caller is using the legacy global apiKey
+          // path which has no per-user identity. Just hide the panel.
+          setKeys([]);
+          return;
+        }
+        throw new Error(`GET /auth/keys → ${res.status}`);
+      }
+      const body = await res.json();
+      setKeys(body.keys || []);
+    } catch (err) {
+      setError(err.message || String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    loadKeys();
+  }, [loadKeys]);
+
+  const handleRevoke = async (key) => {
+    if (
+      !window.confirm(
+        `Revoke API key "${key.name}"? Any client using this key will immediately lose access.`,
+      )
+    ) {
+      return;
+    }
+    setRowErrors((prev) => ({ ...prev, [key.id]: null }));
+    try {
+      const res = await fetch(`${getApiBase()}/auth/keys/${key.id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setRowErrors((prev) => ({
+          ...prev,
+          [key.id]: body.error || `DELETE /auth/keys → ${res.status}`,
+        }));
+        return;
+      }
+      await loadKeys();
+    } catch (err) {
+      setRowErrors((prev) => ({ ...prev, [key.id]: err.message || String(err) }));
+    }
+  };
+
+  // Hide the panel entirely on the legacy global-apiKey auth path
+  // (no per-user identity, server returned 401 above and we set [] —
+  // distinguishing here would require an extra round-trip to /auth/me
+  // which the parent already did, so we just render the section if the
+  // parent decided to mount us at all).
+  return (
+    <div className="bg-gray-800 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <Key size={14} /> API Keys
+        </h4>
+        <button
+          type="button"
+          onClick={() => setShowCreateModal(true)}
+          className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500 text-white"
+          aria-label="Generate API key"
+        >
+          <Plus size={12} /> Generate
+        </button>
+      </div>
+      {error && (
+        <div
+          role="alert"
+          className="mb-3 text-[11px] text-red-300 bg-red-500/10 border border-red-500/30 rounded px-2 py-1"
+        >
+          {error}
+        </div>
+      )}
+      {keys === null ? (
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Loader2 size={12} className="animate-spin" /> Loading keys…
+        </div>
+      ) : keys.length === 0 ? (
+        <p className="text-xs text-gray-500">
+          No API keys yet. Generate one to use Agent Hub from scripts, CI, or remote Electron
+          clients.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {keys.map((k) => {
+            const rowError = rowErrors[k.id];
+            return (
+              <li key={k.id} className="border border-gray-700 rounded px-3 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-white truncate">{k.name}</div>
+                    <div className="text-[11px] text-gray-500 font-mono">{k.prefix}…</div>
+                    <div className="text-[11px] text-gray-500 mt-1 flex flex-wrap gap-x-3">
+                      <span>Created {formatRelative(k.createdAt)}</span>
+                      <span>Last used {k.lastUsedAt ? formatRelative(k.lastUsedAt) : 'never'}</span>
+                      {k.expiresAt && (
+                        <span>Expires {new Date(k.expiresAt).toLocaleDateString()}</span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRevoke(k)}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-red-500/40 text-red-300 hover:bg-red-500/10"
+                    aria-label={`Revoke ${k.name}`}
+                  >
+                    <Trash2 size={12} /> Revoke
+                  </button>
+                </div>
+                {rowError && (
+                  <div
+                    role="alert"
+                    className="mt-2 text-[11px] text-red-300 bg-red-500/10 border border-red-500/30 rounded px-2 py-1"
+                  >
+                    {rowError}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <p className="text-[11px] text-gray-500 mt-3 leading-relaxed">
+        API keys grant your full access to this org. Use{' '}
+        <code className="text-gray-400">Authorization: Bearer ahub_…</code> on REST calls or{' '}
+        <code className="text-gray-400">?apiKey=ahub_…</code> on WebSocket handshakes.
+      </p>
+
+      {showCreateModal && (
+        <CreateApiKeyModal
+          onClose={() => setShowCreateModal(false)}
+          onCreated={async () => {
+            await loadKeys();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreateApiKeyModal({ onClose, onCreated }) {
+  const [name, setName] = useState('');
+  const [expiresInDays, setExpiresInDays] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [created, setCreated] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      const body = { name: name.trim() };
+      if (expiresInDays.trim()) {
+        body.expiresInDays = Number(expiresInDays);
+      }
+      const res = await fetch(`${getApiBase()}/auth/keys`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        setError(errBody.error || `POST /auth/keys → ${res.status}`);
+        setBusy(false);
+        return;
+      }
+      const responseBody = await res.json();
+      setCreated(responseBody);
+      setBusy(false);
+      // Refresh parent list so the new key shows immediately on close.
+      await onCreated();
+    } catch (err) {
+      setError(err.message || String(err));
+      setBusy(false);
+    }
+  };
+
+  const handleCopy = async () => {
+    if (!created?.token) return;
+    try {
+      await navigator.clipboard.writeText(created.token);
+      setCopied(true);
+    } catch {
+      setError('Copy failed — select the token manually.');
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      role="dialog"
+      aria-label={created ? 'API key created' : 'Generate API key'}
+    >
+      <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 w-full max-w-md shadow-xl">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-medium text-white">
+            {created ? 'API key created' : 'Generate API key'}
+          </h3>
+          {!created && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-200"
+              aria-label="Close generate-key dialog"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </div>
+
+        {created ? (
+          <div className="space-y-3">
+            <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded p-2">
+              This token will only be shown once. Copy it now and store it somewhere safe.
+            </div>
+            <div className="font-mono text-xs text-white bg-gray-800 border border-gray-700 rounded p-2 break-all select-all">
+              {created.token}
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="inline-flex items-center gap-1 px-3 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500 text-white"
+              >
+                <Copy size={12} /> {copied ? 'Copied!' : 'Copy token'}
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-3 py-1 text-xs rounded border border-gray-700 text-gray-300 hover:bg-gray-800"
+              >
+                I&apos;ve copied it
+              </button>
+            </div>
+            {error && (
+              <div
+                role="alert"
+                className="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded p-2"
+              >
+                {error}
+              </div>
+            )}
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit}>
+            <label className="block text-xs text-gray-400 mb-1" htmlFor="apikey-name">
+              Name
+            </label>
+            <input
+              id="apikey-name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="My CI server"
+              maxLength={100}
+              required
+              autoComplete="off"
+              className="w-full mb-3 px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded text-white"
+            />
+
+            <label className="block text-xs text-gray-400 mb-1" htmlFor="apikey-expires">
+              Expires in (days, optional)
+            </label>
+            <input
+              id="apikey-expires"
+              type="number"
+              min="1"
+              max="3650"
+              value={expiresInDays}
+              onChange={(e) => setExpiresInDays(e.target.value)}
+              placeholder="Leave blank for no expiry"
+              className="w-full mb-3 px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded text-white"
+            />
+
+            {error && (
+              <div
+                role="alert"
+                className="mb-3 text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded p-2"
+              >
+                {error}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-3 py-1 text-xs rounded border border-gray-700 text-gray-300 hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={busy || !name.trim()}
+                className="inline-flex items-center gap-1 px-3 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50"
+              >
+                {busy ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                Generate
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { getAuthRecord } from './auth-store.js';
 import { getActiveOrgId } from './orgs.js';
 import { getUserById, getUserByUsername } from './users-store.js';
 import { getMembershipRole } from './memberships-store.js';
+import { verifyApiKey as verifyUserApiKey } from './api-keys-store.js';
 import type { Role } from './roles.js';
 
 /**
@@ -71,8 +72,10 @@ export function isLocalBundledServer(): boolean {
 export interface AuthenticatedRequest extends Request {
   /** Subject (username) when the caller used a JWT. */
   authUser?: string;
-  /** Stable user id resolved from the JWT (Phase 3). Absent on apiKey path. */
+  /** Stable user id resolved from the JWT or per-user API key (Phase 3). Absent on the legacy global apiKey path. */
   authUserId?: string;
+  /** True when the caller used a per-user API key (`ahub_*`) — distinct from the global apiKey break-glass. */
+  authViaUserApiKey?: boolean;
   /** Active org id at the time the request was authenticated. */
   authOrgId?: string;
   /** True when the caller used the apiKey fallback. */
@@ -258,6 +261,55 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     }
   }
 
+  // ── Then try per-user API keys (`ahub_*`) ──────────────────────
+  // Distinct from the legacy global apiKey: each `ahub_*` token is owned
+  // by a single user and grants that user's membership-derived role,
+  // not Owner. Accept the token from either Authorization: Bearer or
+  // the X-API-Key header so scripts can use whichever is more convenient.
+  {
+    const candidate = extractBearerToken(req) ?? extractApiKey(req);
+    if (candidate && candidate.startsWith('ahub_')) {
+      try {
+        const verified = verifyUserApiKey(candidate);
+        if (verified) {
+          const user = getUserById(verified.userId);
+          if (!user) {
+            res.status(401).json({ error: 'API key user no longer exists.' });
+            return;
+          }
+          let orgId = '';
+          try {
+            orgId = getActiveOrgId();
+          } catch {
+            // orgs.db not initialized — leave unset, downstream handlers
+            // that need orgId will 403 on their own.
+          }
+          const role = orgId ? getMembershipRole(verified.userId, orgId) : null;
+          if (orgId && !role) {
+            res.status(403).json({ error: 'You are not a member of this org.' });
+            return;
+          }
+          authedReq.authUser = user.username;
+          authedReq.authUserId = user.id;
+          authedReq.authOrgId = orgId;
+          authedReq.authRole = role ?? 'User';
+          authedReq.authViaUserApiKey = true;
+          next();
+          return;
+        }
+        // Invalid `ahub_*` token: reject explicitly rather than falling
+        // through. A client with a clearly-shaped key that doesn't
+        // match should get a 401, not silently fall back to the global
+        // apiKey check (which would leak whether the global is set).
+        res.status(401).json({ error: 'Invalid API key.' });
+        return;
+      } catch {
+        // orgs.db not initialized in some test paths — fall through to
+        // the legacy global apiKey check.
+      }
+    }
+  }
+
   // ── Then fall back to the legacy X-API-Key ─────────────────────
   if (apiKey) {
     const provided = extractApiKey(req);
@@ -349,6 +401,35 @@ export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
           orgId: resolved.orgId,
           role: resolved.role,
         };
+      }
+    }
+  }
+  // Per-user API key (`ahub_*`) over WS — accepted via ?apiKey= or ?token=.
+  {
+    const candidate = url.searchParams.get('token') || url.searchParams.get('apiKey') || '';
+    if (candidate.startsWith('ahub_')) {
+      try {
+        const verified = verifyUserApiKey(candidate);
+        if (verified) {
+          const user = getUserById(verified.userId);
+          if (!user) return { ok: false, reason: 'unknown-user' };
+          let orgId = '';
+          try {
+            orgId = getActiveOrgId();
+          } catch {}
+          const role = orgId ? getMembershipRole(verified.userId, orgId) : null;
+          if (orgId && !role) return { ok: false, reason: 'no-membership' };
+          return {
+            ok: true,
+            subject: user.username,
+            userId: user.id,
+            orgId,
+            role: role ?? 'User',
+          };
+        }
+        return { ok: false, reason: 'unauthenticated' };
+      } catch {
+        // orgs.db unavailable — fall through to global apiKey check.
       }
     }
   }

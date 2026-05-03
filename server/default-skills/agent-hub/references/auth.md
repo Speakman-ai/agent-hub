@@ -14,6 +14,7 @@ Back to [SKILL.md](../SKILL.md).
 - [Role hierarchy](#role-hierarchy)
 - [Sole-Owner protection](#sole-owner-protection)
 - [API key resolution for scripts](#api-key-resolution-for-scripts)
+- [Per-user API keys (`ahub_*`)](#per-user-api-keys-ahub_)
 - [Config locations](#config-locations)
 - [Endpoints at a glance](#endpoints-at-a-glance)
 - [Per-user Claude credentials](#per-user-claude-credentials)
@@ -51,6 +52,65 @@ Every wrapper under `scripts/` resolves the key through
 All wrappers send the resolved key as `x-api-key: <key>` and treat a
 missing key as a recoverable error, not a fatal one.
 
+## Per-user API keys (`ahub_*`)
+
+Long-lived programmatic credentials owned by an individual user. Use
+these when a script, CI job, or remote Electron client needs stable
+credentials without re-logging in or sharing the global break-glass
+secret.
+
+**Distinct from the two other auth surfaces:**
+
+| Mechanism                       | Lifetime         | Identity                         | Revocable individually |
+| ------------------------------- | ---------------- | -------------------------------- | ---------------------- |
+| JWT (`/api/auth/login`)         | 7 days           | The user who logged in           | No (logout = client drop) |
+| `AGENT_HUB_API_KEY` (global)    | Until rotated    | None — forced Owner role         | No                     |
+| `ahub_*` per-user API key       | Until revoked    | The owning user's membership role| **Yes**                |
+
+**Token format.** `ahub_<43 url-safe base64 chars>` (32 bytes of CSPRNG
+entropy). The first 12 chars (`ahub_xxxxxx`) are stored unhashed in the
+`prefix` column and used for indexed lookup; the full token is stored
+as a SHA-256 hash. Plaintext is **only ever returned by `POST
+/api/auth/keys`** at creation; the `GET` endpoint never echoes it.
+
+**How to send the token.** Either header is accepted on REST:
+
+```
+Authorization: Bearer ahub_<token>
+X-API-Key: ahub_<token>
+```
+
+WebSocket handshake accepts the token as `?token=ahub_…` or
+`?apiKey=ahub_…` (browsers can't set headers on `new WebSocket(...)`).
+
+**Endpoints.**
+
+| Endpoint                  | Method | Purpose                                            |
+| ------------------------- | ------ | -------------------------------------------------- |
+| `/api/auth/keys`          | POST   | Create a key. Body: `{ name, expiresInDays? }`. Returns `{ id, name, token, prefix, createdAt, expiresAt }` — `token` shown ONCE. |
+| `/api/auth/keys`          | GET    | List the caller's active keys. Never includes the plaintext token or hash. |
+| `/api/auth/keys/:id`      | DELETE | Soft-revoke. 404 if the key isn't owned by the caller. |
+
+**Authorization model.** Auth via an `ahub_*` key resolves to the
+**owning user's membership-derived role** in the active org — same as a
+JWT. This is intentionally narrower than the global `AGENT_HUB_API_KEY`,
+which forces Owner; per-user keys never escalate privilege.
+
+**Limits & guardrails.**
+
+- Max 50 active keys per user (revoke an old one to free a slot).
+- `expiresInDays` accepts 1–3650; `null`/omitted = never expires.
+- `last_used_at` is updated at most once per minute per key (debounced)
+  so high-RPS callers don't generate a write storm.
+
+**Electron note.** Electron desktop continues to use JWT — `ahub_*` keys
+are intended for non-browser clients (CLI, CI, remote shells) that want
+stable credentials. A future Electron settings UI may surface them too.
+
+**Schema.** `api_keys(id, user_id FK, name, token_hash, prefix,
+created_at, last_used_at, revoked_at, expires_at)` on `orgs.db`. Indexed
+on `user_id` and `prefix`. See `server/api-keys-store.ts`.
+
 ## Config locations
 
 - **Primary**: `~/.agent-hub/data/config.json` — port, CLI binary paths
@@ -80,6 +140,9 @@ Prefix everything with `/api/auth`. All require auth unless flagged
 | `POST /invites/:token/accept`                  | **public**   | redeem invite (per-IP rate-limited)      |
 | `GET  /me/claude-auth`                         | any          | masked per-user Claude credentials       |
 | `PUT  /me/claude-auth`                         | any          | upsert per-user Claude credentials       |
+| `POST /keys`                                   | any          | create per-user `ahub_*` API key (token returned ONCE) |
+| `GET  /keys`                                   | any          | list caller's active API keys (no token) |
+| `DELETE /keys/:id`                             | any          | revoke an API key the caller owns        |
 | `POST /logout`                                 | any          | revoke session                           |
 
 Public paths live in `PUBLIC_PATHS` / `PUBLIC_PREFIXES` (`server/auth.ts`);

@@ -117,6 +117,28 @@ export function initOrgsDb(): void {
       accepted_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_invites_org ON invites(org_id);
+
+    -- ── Per-user API keys (long-lived programmatic credentials) ────
+    -- Distinct from JWTs (session tokens, 7-day TTL) and from the
+    -- legacy global AGENT_HUB_API_KEY (Owner-role break-glass shared
+    -- across the deployment). Each row is owned by a single user and
+    -- can be revoked individually; the plaintext token is only ever
+    -- returned by POST /api/auth/keys at creation time, then stored
+    -- as a SHA-256 hash. Auth via these keys grants the owning user's
+    -- membership-derived role in the active org, NOT Owner.
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id            TEXT PRIMARY KEY,
+      user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name          TEXT NOT NULL,
+      token_hash    TEXT NOT NULL UNIQUE,
+      prefix        TEXT NOT NULL,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      last_used_at  TEXT,
+      revoked_at    TEXT,
+      expires_at    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);
   `);
 
   // Migration: earlier Phase 3 commits created `invites` with FKs that had

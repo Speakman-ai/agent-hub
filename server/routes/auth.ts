@@ -74,6 +74,7 @@ import {
   MAX_PASSWORD_LEN,
 } from '../auth-validation.js';
 import { parseClaudeOAuthExpiry } from '../oauth-expiry.js';
+import { createApiKey, listApiKeys, revokeApiKey, countApiKeysForUser } from '../api-keys-store.js';
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
 
@@ -530,6 +531,110 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       },
     });
   });
+
+  // ──────────────────────────────────────────────────────────────
+  //  Per-user API keys
+  // ──────────────────────────────────────────────────────────────
+  //
+  // Long-lived programmatic credentials owned by an individual user.
+  // Distinct from JWTs (7-day session tokens) and from the global
+  // AGENT_HUB_API_KEY break-glass. Use cases: scripts, CI, remote
+  // Electron clients that need stable creds without re-logging in.
+  //
+  //   POST   /api/auth/keys        create a new key — token in response ONCE
+  //   GET    /api/auth/keys        list active keys for the caller (no token)
+  //   DELETE /api/auth/keys/:id    revoke (soft delete)
+  //
+  // Generation is rate-limited to MAX_KEYS_PER_USER active keys per user
+  // to prevent runaway accumulation; revoke an old one to make room.
+
+  const MAX_KEYS_PER_USER = 50;
+
+  router.get('/api/auth/keys', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const keys = listApiKeys(authedReq.authUserId).map((k) => ({
+      id: k.id,
+      name: k.name,
+      prefix: k.prefix,
+      createdAt: k.createdAt,
+      lastUsedAt: k.lastUsedAt,
+      expiresAt: k.expiresAt,
+    }));
+    res.json({ keys });
+  });
+
+  router.post('/api/auth/keys', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const body = (req.body ?? {}) as { name?: unknown; expiresInDays?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (name.length === 0 || name.length > 100) {
+      res.status(400).json({ error: 'name must be 1-100 characters' });
+      return;
+    }
+    let expiresInDays: number | null = null;
+    if (body.expiresInDays != null && body.expiresInDays !== '') {
+      const n = Number(body.expiresInDays);
+      if (!Number.isFinite(n) || n < 1 || n > 3650) {
+        res.status(400).json({ error: 'expiresInDays must be between 1 and 3650' });
+        return;
+      }
+      expiresInDays = Math.floor(n);
+    }
+
+    // Cap active keys per user. Revoked keys don't count.
+    const active = listApiKeys(authedReq.authUserId).length;
+    if (active >= MAX_KEYS_PER_USER) {
+      res.status(429).json({
+        error: `Limit of ${MAX_KEYS_PER_USER} active API keys per user. Revoke an existing key first.`,
+      });
+      return;
+    }
+
+    try {
+      const key = createApiKey(authedReq.authUserId, name, expiresInDays);
+      res.status(201).json({
+        id: key.id,
+        name: key.name,
+        token: key.token, // shown ONCE — never returned again
+        prefix: key.prefix,
+        createdAt: key.createdAt,
+        expiresAt: key.expiresAt,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'failed to create API key';
+      res.status(400).json({ error: message });
+    }
+  });
+
+  router.delete('/api/auth/keys/:id', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const { id } = req.params as { id: string };
+    const ok = revokeApiKey(authedReq.authUserId, id);
+    if (!ok) {
+      res.status(404).json({ error: 'API key not found' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  // Lightweight back-door for tests / future audit UI: total key count
+  // (active + revoked) for the caller. Kept un-exported from the route
+  // surface for now; tests import countApiKeysForUser directly. The
+  // _unused_ marker suppresses the lint warning while keeping the symbol
+  // referenced for tree-shaking awareness.
+  void countApiKeysForUser;
 
   // ──────────────────────────────────────────────────────────────
   //  Users — multi-user roster (Phase 3)
