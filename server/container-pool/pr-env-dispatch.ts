@@ -24,9 +24,17 @@ import {
   teardownPrEnv,
   type PrEnvBuilderDeps,
   type PrEnvBuildResult,
+  type PrEnvGithubCreds,
 } from './pr-env-builder.js';
 import { PortPoolExhaustedError } from './port-pool.js';
 import { EnvTemplateError } from './env-template.js';
+import { githubApiRequest } from '../github-app.js';
+import {
+  buildStickyCommentBody,
+  upsertPrStickyComment,
+  type GitHubApiClient,
+  type PrStickyCommentPayload,
+} from './pr-sticky-comment.js';
 
 /**
  * Per-PR build serialization. Two rapid synchronize events for the same PR
@@ -47,6 +55,13 @@ export interface PrEnvDispatchDeps {
    * flag is off, in which case dispatch becomes a silent no-op.
    */
   getBuilderDeps: () => PrEnvBuilderDeps | null;
+  /**
+   * Override the GitHub API client used to upsert the sticky PR
+   * comment. Production wiring is unset → uses the real installation
+   * token via `githubApiRequest`. Tests inject a fake to assert on the
+   * outbound calls without hitting the network.
+   */
+  githubApiClientFactory?: (creds: PrEnvGithubCreds) => GitHubApiClient;
 }
 
 /**
@@ -117,6 +132,12 @@ async function doPrEnvBuild(
         port: result.port,
       });
     }
+    await notifyPrStickyComment(deps, builder, request.repoFullName, request.prNumber, {
+      kind: 'ready',
+      previewUrl: result.previewUrl,
+      port: result.port,
+      commitSha: request.commitSha,
+    });
     return result;
   } catch (err) {
     const message = classifyDispatchError(err);
@@ -127,6 +148,10 @@ async function doPrEnvBuild(
     if (request.card) {
       notifyPrEnvComment(deps.stmts, request.card, { kind: 'failed', reason: message });
     }
+    await notifyPrStickyComment(deps, builder, request.repoFullName, request.prNumber, {
+      kind: 'failed',
+      reason: message,
+    });
     return null;
   }
 }
@@ -154,6 +179,9 @@ export async function dispatchPrEnvTeardown(
     if (request.card) {
       notifyPrEnvComment(deps.stmts, request.card, { kind: 'torndown' });
     }
+    await notifyPrStickyComment(deps, builder, request.repoFullName, request.prNumber, {
+      kind: 'torndown',
+    });
   } catch (err) {
     console.warn(`[pr-env] teardown failed for ${request.repoFullName}#${request.prNumber}`, err);
   }
@@ -201,4 +229,84 @@ function classifyDispatchError(err: unknown): string {
   }
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/**
+ * Default production-shaped GitHub API client backed by the Reviewer
+ * App's installation token. Each call refreshes the token (cached
+ * internally by `getInstallationToken`) and signs the request.
+ */
+function defaultGithubApiClient(creds: PrEnvGithubCreds): GitHubApiClient {
+  return {
+    async get(path) {
+      return githubApiRequest(path, {
+        method: 'GET',
+        appId: creds.appId,
+        privateKey: creds.privateKey,
+        installationId: creds.installationId,
+      });
+    },
+    async post(path, body) {
+      return githubApiRequest(path, {
+        method: 'POST',
+        body: body as Record<string, unknown>,
+        appId: creds.appId,
+        privateKey: creds.privateKey,
+        installationId: creds.installationId,
+      });
+    },
+    async patch(path, body) {
+      return githubApiRequest(path, {
+        method: 'PATCH',
+        body: body as Record<string, unknown>,
+        appId: creds.appId,
+        privateKey: creds.privateKey,
+        installationId: creds.installationId,
+      });
+    },
+  };
+}
+
+/**
+ * Post (or edit) the sticky preview-env comment on the GitHub PR
+ * itself. Best-effort: any error is logged and swallowed so a transient
+ * GitHub API blip doesn't take down the build path. The kanban-card
+ * comment posted by `notifyPrEnvComment` is a separate, internal
+ * surface and is unaffected by failures here.
+ *
+ * Skipped silently when GitHub App creds aren't configured (e.g. in
+ * tests or single-user dev installs without the Reviewer App
+ * installed).
+ */
+export async function notifyPrStickyComment(
+  deps: PrEnvDispatchDeps,
+  builder: PrEnvBuilderDeps,
+  repoFullName: string,
+  prNumber: number,
+  payload: PrStickyCommentPayload,
+): Promise<void> {
+  const creds = builder.github;
+  if (!creds || !creds.appId || !creds.installationId || !creds.privateKey) {
+    return;
+  }
+  const [owner, repo] = repoFullName.split('/');
+  if (!owner || !repo) {
+    console.warn(`[pr-env] sticky-comment: malformed repoFullName "${repoFullName}"`);
+    return;
+  }
+  const factory = deps.githubApiClientFactory ?? defaultGithubApiClient;
+  const client = factory(creds);
+  try {
+    await upsertPrStickyComment(client, {
+      owner,
+      repo,
+      prNumber,
+      body: buildStickyCommentBody(payload),
+    });
+  } catch (err) {
+    console.warn(
+      `[pr-env] sticky-comment upsert failed for ${repoFullName}#${prNumber}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
