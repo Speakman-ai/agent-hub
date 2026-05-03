@@ -429,6 +429,20 @@ export const api = {
       body: JSON.stringify({ enabledEvents }),
     }),
 
+  // PR environments settings (mobile MVP — view masked state, toggle enabled, run validate).
+  // See `mobile/src/components/PrEnvSettingsSection.js` for the UI and
+  // `client/src/utils/api.js` (`getPrEnvSettings` / `updatePrEnvSettings` /
+  // `validatePrEnvSettings`) for the canonical web counterpart. Backend
+  // routes live in `server/routes/pr-env-settings.ts`.
+  getPrEnvSettings: () => fetchJSON('/settings/pr-env'),
+  updatePrEnvSettings: (payload) =>
+    fetchJSON('/settings/pr-env', { method: 'PUT', body: JSON.stringify(payload) }),
+  validatePrEnvSettings: (payload = {}) =>
+    fetchJSON('/settings/pr-env/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   // Wiki
   getWikiPages: (projectId) => fetchJSON(`/projects/${projectId}/wiki`),
   getWikiPage: (projectId, slug) => fetchJSON(`/projects/${projectId}/wiki/${slug}`),
