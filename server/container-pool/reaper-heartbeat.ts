@@ -35,6 +35,43 @@ const PR_ENV_PROJECT_PREFIX = 'agent-hub-pr-';
 export const reaperLock = { running: false };
 
 /**
+ * Latches `true` the first time `docker` spawn returns ENOENT (binary
+ * not in PATH). After that, the production adapters short-circuit to a
+ * no-op so the reaper isn't spamming the log every 3 minutes when
+ * deployed in a runtime image without the docker CLI installed.
+ *
+ * The latch only resets on process restart — a missing CLI is a
+ * deployment-config issue (Dockerfile / socket mount), not a transient
+ * runtime fault, so once-per-process logging is the right cadence.
+ */
+let dockerUnavailable = false;
+
+/**
+ * Sentinel error raised by `runDocker` when the docker binary is
+ * missing. Caller decides whether to gracefully degrade (production
+ * adapters do) or surface (tests assert on it).
+ */
+export class DockerCliMissingError extends Error {
+  constructor(underlying: NodeJS.ErrnoException) {
+    super(`docker CLI not available: ${underlying.message}`);
+    this.name = 'DockerCliMissingError';
+  }
+}
+
+/**
+ * Test hook — reset the per-process docker-unavailable latch so a fresh
+ * test can re-exercise the first-call path. Not used in production.
+ */
+export function __resetDockerUnavailableForTests(): void {
+  dockerUnavailable = false;
+}
+
+/** Test hook — read the latch without exposing it as a mutable export. */
+export function __isDockerUnavailableForTests(): boolean {
+  return dockerUnavailable;
+}
+
+/**
  * Production Docker adapter. Lists compose projects matching the PR-env
  * naming convention via `docker ps --filter label=...`, and invokes
  * `docker compose down` against each one.
@@ -48,13 +85,31 @@ export const reaperLock = { running: false };
  */
 export const defaultDockerOps: ReaperDockerOps = {
   async listPrEnvProjects() {
-    const { stdout } = await runDocker([
-      'ps',
-      '--filter',
-      `label=com.docker.compose.project`,
-      '--format',
-      '{{.Label "com.docker.compose.project"}}',
-    ]);
+    // Latched after the first ENOENT — silently return empty so the
+    // reaper's other passes (eviction, stuck-draining, stale-port) keep
+    // running without each tick logging the same docker-missing warning.
+    if (dockerUnavailable) return [];
+    let stdout: string;
+    try {
+      ({ stdout } = await runDocker([
+        'ps',
+        '--filter',
+        `label=com.docker.compose.project`,
+        '--format',
+        '{{.Label "com.docker.compose.project"}}',
+      ]));
+    } catch (err) {
+      if (err instanceof DockerCliMissingError) {
+        dockerUnavailable = true;
+        console.warn(
+          '[reaper] docker CLI not found in PATH — PR-env orphan-project reaping is disabled ' +
+            'until the runtime is reconfigured (install docker in the image or mount the ' +
+            'docker socket). This message will not repeat until the process restarts.',
+        );
+        return [];
+      }
+      throw err;
+    }
     const seen = new Set<string>();
     const out: Array<{ projectName: string; prNumber: number }> = [];
     for (const line of stdout.split('\n')) {
@@ -70,14 +125,25 @@ export const defaultDockerOps: ReaperDockerOps = {
     return out;
   },
   async composeDown(projectName) {
-    await runDocker([
-      'compose',
-      '--project-name',
-      projectName,
-      'down',
-      '--remove-orphans',
-      '--volumes',
-    ]);
+    // If the CLI's missing, the project can't exist either — the reaper
+    // has nothing to tear down. Silently no-op rather than throw.
+    if (dockerUnavailable) return;
+    try {
+      await runDocker([
+        'compose',
+        '--project-name',
+        projectName,
+        'down',
+        '--remove-orphans',
+        '--volumes',
+      ]);
+    } catch (err) {
+      if (err instanceof DockerCliMissingError) {
+        dockerUnavailable = true;
+        return;
+      }
+      throw err;
+    }
   },
 };
 
@@ -197,7 +263,17 @@ function runDocker(args: readonly string[]): Promise<{ stdout: string; stderr: s
     let stderr = '';
     proc.stdout?.on('data', (b) => (stdout += String(b)));
     proc.stderr?.on('data', (b) => (stderr += String(b)));
-    proc.on('error', reject);
+    proc.on('error', (err) => {
+      // ENOENT here means the docker binary itself wasn't found —
+      // distinct from "docker ran and returned non-zero". Translate to
+      // a typed error so the production adapter can disable itself.
+      const errno = err as NodeJS.ErrnoException;
+      if (errno?.code === 'ENOENT') {
+        reject(new DockerCliMissingError(errno));
+        return;
+      }
+      reject(err);
+    });
     proc.on('close', (code) => {
       if (code === 0) resolve({ stdout, stderr });
       else reject(new Error(`docker ${args.join(' ')} failed (${code}): ${stderr}`));

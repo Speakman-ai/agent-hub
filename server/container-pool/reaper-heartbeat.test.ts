@@ -11,7 +11,7 @@
  */
 
 import Database from 'better-sqlite3';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { POOL_SCHEMA } from './schema.js';
 import { PoolAllocator } from './allocator.js';
 import {
@@ -19,6 +19,9 @@ import {
   reaperLock,
   REAPER_CRON,
   defaultDockerOps,
+  DockerCliMissingError,
+  __resetDockerUnavailableForTests,
+  __isDockerUnavailableForTests,
   type ReaperHeartbeatDeps,
 } from './reaper-heartbeat.js';
 import type { ReaperDockerOps, ReaperGitHubOps } from './reaper.js';
@@ -264,5 +267,90 @@ describe('defaultDockerOps.listPrEnvProjects — parsing', () => {
 
   it('exports a composeDown function', () => {
     expect(typeof defaultDockerOps.composeDown).toBe('function');
+  });
+});
+
+// ─── docker CLI missing — graceful degradation ──────────────────────────────
+
+describe('defaultDockerOps — graceful degradation when docker CLI is missing', () => {
+  // We force ENOENT by temporarily mutating PATH so `spawn('docker', …)`
+  // can't resolve the binary. This is the same failure mode as a runtime
+  // image without docker installed (the symptom we observed in dev).
+  const origPath = process.env.PATH;
+
+  beforeEach(() => {
+    __resetDockerUnavailableForTests();
+    // Use a path that definitely does not contain a `docker` binary.
+    process.env.PATH = '/tmp/__definitely_no_docker_here__';
+  });
+
+  afterEach(() => {
+    process.env.PATH = origPath;
+    __resetDockerUnavailableForTests();
+  });
+
+  it('listPrEnvProjects returns [] (instead of throwing) when docker is missing', async () => {
+    const result = await defaultDockerOps.listPrEnvProjects();
+    expect(result).toEqual([]);
+    expect(__isDockerUnavailableForTests()).toBe(true);
+  });
+
+  it('only logs the docker-missing warning once per process', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await defaultDockerOps.listPrEnvProjects();
+      await defaultDockerOps.listPrEnvProjects();
+      await defaultDockerOps.listPrEnvProjects();
+      const dockerWarnings = warnSpy.mock.calls.filter((c) =>
+        String(c[0] ?? '').includes('docker CLI not found'),
+      );
+      expect(dockerWarnings).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('subsequent listPrEnvProjects calls short-circuit without spawning', async () => {
+    // First call latches the unavailable flag.
+    await defaultDockerOps.listPrEnvProjects();
+    expect(__isDockerUnavailableForTests()).toBe(true);
+
+    // Restore PATH — if we still spawn, it would now succeed (or at
+    // least return a different error). The latch should mean we never
+    // spawn at all, so the result is still [] silently.
+    process.env.PATH = origPath;
+    const start = Date.now();
+    const result = await defaultDockerOps.listPrEnvProjects();
+    const elapsed = Date.now() - start;
+
+    expect(result).toEqual([]);
+    // Skipping the spawn should be fast (<10ms in practice).
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it('composeDown is a silent no-op once docker is known to be unavailable', async () => {
+    await defaultDockerOps.listPrEnvProjects(); // latch the flag
+    process.env.PATH = origPath;
+    // Should not throw and should not spawn.
+    await expect(defaultDockerOps.composeDown('agent-hub-pr-99')).resolves.toBeUndefined();
+  });
+
+  it('composeDown also latches the flag when called first', async () => {
+    // Reset and call composeDown directly (skipping listPrEnvProjects).
+    __resetDockerUnavailableForTests();
+    await expect(defaultDockerOps.composeDown('agent-hub-pr-1')).resolves.toBeUndefined();
+    expect(__isDockerUnavailableForTests()).toBe(true);
+  });
+});
+
+describe('DockerCliMissingError', () => {
+  it('is an Error subclass with the right name', () => {
+    const e = new DockerCliMissingError(
+      Object.assign(new Error('spawn docker ENOENT'), { code: 'ENOENT' }) as NodeJS.ErrnoException,
+    );
+    expect(e).toBeInstanceOf(Error);
+    expect(e.name).toBe('DockerCliMissingError');
+    expect(e.message).toContain('docker CLI not available');
+    expect(e.message).toContain('ENOENT');
   });
 });
