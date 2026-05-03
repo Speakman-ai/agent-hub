@@ -65,6 +65,33 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Docker CLI + Compose v2 plugin (no daemon, no buildx). The runtime
+# container talks to the *host* docker daemon over a bind-mounted
+# /var/run/docker.sock so PR-env orchestration (container-pool, reaper,
+# scaffold-builder) can spin up per-PR preview containers on the host.
+#
+# We install only the CLI + compose plugin — buildx and the daemon
+# would just bloat the image. The CLI's wire protocol is
+# version-skew tolerant against a slightly newer/older host daemon, so
+# we don't pin a specific major. Source from the official Docker apt
+# repo (matches the host's install source on AL2023 / Ubuntu / Debian).
+#
+# WARNING: a mounted docker socket grants the agent-hub container
+# root-equivalent control of the host. The launch script
+# (/usr/local/bin/agenthub-server-run.sh) is what actually performs the
+# bind-mount + group-add; this layer just supplies the binaries needed
+# to use it. Acceptable only for trusted single-tenant Hub deployments.
+RUN install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg \
+      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+ && chmod a+r /etc/apt/keyrings/docker.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+      https://download.docker.com/linux/debian $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" \
+      > /etc/apt/sources.list.d/docker.list \
+ && apt-get update && apt-get install -y --no-install-recommends \
+      docker-ce-cli docker-compose-plugin \
+ && rm -rf /var/lib/apt/lists/*
+
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
