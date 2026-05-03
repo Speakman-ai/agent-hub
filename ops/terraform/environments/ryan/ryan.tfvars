@@ -1,6 +1,6 @@
 # ryan: personal Agent Hub sandbox (dev AWS account, 120569607241).
 #
-# Public URL : https://agenthub.ryan.dev.surveytracker.io
+# Public URL : https://agenthub.dev.surveytracker.io
 # Instance   : ryan-sandbox
 # Access     : SSM Session Manager only (no SSH, no key pair).
 #
@@ -13,7 +13,7 @@ aws_region   = "us-east-2"
 project_name = "ryan"
 name         = "ryan"
 
-public_fqdn = "agenthub.ryan.dev.surveytracker.io"
+public_fqdn = "agenthub.dev.surveytracker.io"
 base_domain = "dev.surveytracker.io"
 
 enable_dedicated_alb                = true
@@ -47,3 +47,22 @@ manage_github_oidc_role = false
 #   sudo cat /home/agenthub/.agent-hub/data/initial-credentials.txt
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
+
+# ── PR Environments (per-PR preview deployments) ────────────────────────────
+# Turning these on triggers EC2 instance replacement: user-data installs
+# nginx + certbot + python3-certbot-dns-route53, drops a sudoers.d allowlist
+# for the app user, mounts /var/run/docker.sock into the Hub container,
+# opens host ports 3100-3999, writes the Tier-3 prEnv block to
+# ~/.agent-hub/data/config.json, and issues a wildcard Let's Encrypt cert
+# for *.preview.agenthub.dev.surveytracker.io on first boot.
+#
+# Tier-1+2 secrets (GitHub App private key, Route53 IAM access keys,
+# repoFullName, certRenewalLive) are intentionally NOT in this file —
+# they're entered post-boot via Settings → PR Environments and stored
+# AES-256-GCM-encrypted in the pr_env_config SQLite row.
+enable_pr_env_wildcard_cert = true
+enable_pr_env_route53_iam   = true
+enable_pr_env_host_nginx    = true
+cert_renewal_email          = "ryanspeakman@mcsteen.com"
+# pr_env_preview_subdomain defaults to "preview" — leaving unset gives
+# the wildcard *.preview.agenthub.dev.surveytracker.io.

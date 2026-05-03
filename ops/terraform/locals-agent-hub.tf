@@ -76,32 +76,43 @@ locals {
     ] : [],
   ))
 
-  # Docker: pass-through to container (server/Dockerfile + --env-file)
+  # Docker: pass-through to container (server/Dockerfile + --env-file).
+  #
+  # IMPORTANT: docker `--env-file` does NOT interpret quotes as delimiters —
+  # `KEY="value"` lands in the container as the literal 7-char value `"value"`
+  # (per docker.com/reference/cli/docker/container/run/#env-file). That broke
+  # AGENT_HUB_DEFAULT_USERNAME validation and skipped Owner auto-provision.
+  # We previously jsonencode'd every value (necessary for the PM2 path above,
+  # which bash-sources the file and therefore strips matching quotes), but
+  # for the docker path we must emit raw KEY=VALUE pairs.
+  #
+  # Newlines are stripped defensively — `--env-file` parses one line per pair
+  # and an embedded \n would silently truncate the value or inject the rest
+  # as an extra (mis-parsed) variable.
+  docker_public_url_value = replace(
+    (var.enable_dedicated_alb && local.alb_fqdn != null) ? "https://${local.alb_fqdn}" : "",
+    "\n", ""
+  )
   docker_bootstrap_env = join("\n", concat(
     [
       "NODE_ENV=production",
       "AGENT_HUB_DATA_DIR=/data",
       "AGENT_HUB_PORT=${tostring(var.agent_hub_target_port)}",
       "AGENT_HUB_HOST=0.0.0.0",
-      join("", [
-        "AGENT_HUB_PUBLIC_URL=",
-        jsonencode(
-          (var.enable_dedicated_alb && local.alb_fqdn != null) ? "https://${local.alb_fqdn}" : ""
-        ),
-      ]),
+      "AGENT_HUB_PUBLIC_URL=${local.docker_public_url_value}",
     ],
     local.agent_hub_trust_proxy_hops > 0 ? [
       "TRUST_PROXY=${tostring(local.agent_hub_trust_proxy_hops)}",
     ] : [],
-    [join("", ["ALLOWED_ORIGINS=", jsonencode(local.agent_hub_cors)])],
+    ["ALLOWED_ORIGINS=${replace(local.agent_hub_cors, "\n", "")}"],
     local.effective_agent_hub_api_key != "" ? [
-      join("", ["AGENT_HUB_API_KEY=", jsonencode(local.effective_agent_hub_api_key)]),
+      "AGENT_HUB_API_KEY=${replace(local.effective_agent_hub_api_key, "\n", "")}",
     ] : [],
     local.emit_default_owner_env ? [
-      join("", ["AGENT_HUB_DEFAULT_PASSWORD=", jsonencode(local.default_owner_password_trim)]),
+      "AGENT_HUB_DEFAULT_PASSWORD=${replace(local.default_owner_password_trim, "\n", "")}",
     ] : [],
     local.emit_default_owner_env && length(local.default_owner_username_trim) > 0 ? [
-      join("", ["AGENT_HUB_DEFAULT_USERNAME=", jsonencode(local.default_owner_username_trim)]),
+      "AGENT_HUB_DEFAULT_USERNAME=${replace(local.default_owner_username_trim, "\n", "")}",
     ] : [],
   ))
 

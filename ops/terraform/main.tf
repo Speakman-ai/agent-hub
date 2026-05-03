@@ -256,20 +256,28 @@ resource "aws_instance" "app" {
     volume_type = var.root_volume_type
   }
 
-  user_data = var.bootstrap_agent_hub ? local.user_data_templated : (
-    var.docker_bootstrap ? templatefile("${path.module}/bootstrap.sh.tftpl", {
-      app_user              = var.app_user
-      node_major_version    = var.node_major_version
-      docker_app_path       = var.docker_app_path
-      web_port              = tostring(var.agent_hub_web_port)
-      agent_hub_api_key_b64 = base64encode(nonsensitive(local.effective_agent_hub_api_key))
-      allowed_b64           = local.allowed_b64
-      public_b64            = local.public_b64
-      use_imds_for_public   = local.use_imds_for_public
-      }) : templatefile("${path.module}/bootstrap-minimal.sh.tftpl", {
-      app_user           = var.app_user
-      node_major_version = var.node_major_version
-  }))
+  # AWS caps EC2 user_data at 16 KiB. Once the PR-envs bootstrap (host nginx +
+  # certbot + sudoers + docker-socket bind + Tier-3 config writer) is enabled,
+  # the rendered template clears 18 KiB raw, blowing through that limit. We
+  # gzip+base64 the payload here — cloud-init detects the gzip magic bytes and
+  # decompresses automatically before executing, buying ~3–5× headroom under
+  # the same 16 KiB ceiling (which is enforced post-decode by AWS).
+  user_data_base64 = base64gzip(
+    var.bootstrap_agent_hub ? local.user_data_templated : (
+      var.docker_bootstrap ? templatefile("${path.module}/bootstrap.sh.tftpl", {
+        app_user              = var.app_user
+        node_major_version    = var.node_major_version
+        docker_app_path       = var.docker_app_path
+        web_port              = tostring(var.agent_hub_web_port)
+        agent_hub_api_key_b64 = base64encode(nonsensitive(local.effective_agent_hub_api_key))
+        allowed_b64           = local.allowed_b64
+        public_b64            = local.public_b64
+        use_imds_for_public   = local.use_imds_for_public
+        }) : templatefile("${path.module}/bootstrap-minimal.sh.tftpl", {
+        app_user           = var.app_user
+        node_major_version = var.node_major_version
+    }))
+  )
 
   user_data_replace_on_change = var.user_data_replace_on_change
 

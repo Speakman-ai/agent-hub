@@ -182,6 +182,16 @@ resource "aws_lb_target_group" "agenthub" {
   tags = {
     Name = "${var.project_name}-ah-tg"
   }
+
+  # The TG name is a hash of project_name + alb_fqdn (see local.target_group_name).
+  # Renaming public_fqdn changes the hash → terraform plans a replacement. Without
+  # create_before_destroy, terraform tries to destroy the TG while the HTTPS
+  # listener's default_action still references it (ResourceInUse 400). Forcing
+  # create-first lets the listener flip to the new TG ARN before the old one is
+  # released.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_lb_target_group_attachment" "agenthub" {

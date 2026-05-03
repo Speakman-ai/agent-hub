@@ -77,6 +77,17 @@ resource "aws_iam_role_policy" "pr_env_route53" {
         Resource = "arn:aws:route53:::hostedzone/${local.route53_zone_id_effective}"
       },
       {
+        # certbot-dns-route53 calls ListHostedZones to auto-discover the zone
+        # that owns the cert's domain. AWS only honors this action with a
+        # Resource of "*" — there is no per-zone scope for the list operation.
+        # Without this, first-boot wildcard cert issuance fails with:
+        #   AccessDenied: ... is not authorized to perform: route53:ListHostedZones
+        Sid      = "DiscoverHostedZoneForCertbot"
+        Effect   = "Allow"
+        Action   = "route53:ListHostedZones"
+        Resource = "*"
+      },
+      {
         Sid      = "PollChangeStatus"
         Effect   = "Allow"
         Action   = "route53:GetChange"
