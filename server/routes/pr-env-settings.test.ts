@@ -37,6 +37,23 @@ function stubRouteDeps(): RouteDeps {
   return {} as unknown as RouteDeps;
 }
 
+/**
+ * Default-pass stubs for every adapter, so individual tests only need to
+ * override the one they care about. Without these, the validate route
+ * would fall through to the production defaults (real Docker, nginx, fs,
+ * GitHub API) inside any hand-rolled test app — flaky and slow.
+ */
+function defaultStubAdapters() {
+  return {
+    checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
+    checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+    checkCert: async () => ({ name: 'cert', pass: true, message: 'ok' }),
+    checkWebhook: async () => ({ name: 'webhook', pass: true, message: 'ok' }),
+    checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
+    checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
+  };
+}
+
 beforeEach(() => {
   keyDir = mkdtempSync(path.join(tmpdir(), 'pr-env-route-'));
   __setPrEnvKeyFilePathForTests(path.join(keyDir, 'key'));
@@ -48,9 +65,12 @@ beforeEach(() => {
   app.use(
     createPrEnvSettingsRoutes(stubRouteDeps(), {
       getDb: () => db,
+      getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
       adapters: {
         checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
         checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+        checkCert: async () => ({ name: 'cert', pass: true, message: 'ok' }),
+        checkWebhook: async () => ({ name: 'webhook', pass: true, message: 'ok' }),
         checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
         checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
       },
@@ -187,7 +207,7 @@ describe('PUT /api/settings/pr-env', () => {
 });
 
 describe('POST /api/settings/pr-env/validate', () => {
-  it('runs all four checks and returns ok when they all pass', async () => {
+  it('runs all six checks and returns ok when required ones pass', async () => {
     writePrEnvConfig(
       {
         route53AccessKeyId: 'AKIA',
@@ -199,8 +219,10 @@ describe('POST /api/settings/pr-env/validate', () => {
     const res = await supertest(app).post('/api/settings/pr-env/validate').send({}).expect(200);
     expect(res.body.ok).toBe(true);
     const names = res.body.checks.map((c: { name: string }) => c.name).sort();
-    expect(names).toEqual(['docker', 'github-app', 'nginx', 'route53']);
+    expect(names).toEqual(['cert', 'docker', 'github-app', 'nginx', 'route53', 'webhook']);
     expect(res.body.checks.every((c: { pass: boolean }) => c.pass)).toBe(true);
+    // Required-set is exposed so the UI knows which rows gate Save.
+    expect(res.body.required.sort()).toEqual(['cert', 'github-app', 'nginx', 'route53', 'webhook']);
   });
 
   it('returns ok: false when any check fails', async () => {
@@ -209,19 +231,20 @@ describe('POST /api/settings/pr-env/validate', () => {
     failApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
         adapters: {
-          checkDocker: async () => ({ name: 'docker', pass: false, message: 'not running' }),
-          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
-          checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
-          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
+          ...defaultStubAdapters(),
+          // `cert` is a required check; flip it (instead of docker, which is
+          // informational) so we exercise the required-set short-circuit.
+          checkCert: async () => ({ name: 'cert', pass: false, message: 'expired' }),
         },
       }),
     );
     const res = await supertest(failApp).post('/api/settings/pr-env/validate').send({}).expect(200);
     expect(res.body.ok).toBe(false);
-    const docker = res.body.checks.find((c: { name: string }) => c.name === 'docker');
-    expect(docker.pass).toBe(false);
-    expect(docker.message).toBe('not running');
+    const cert = res.body.checks.find((c: { name: string }) => c.name === 'cert');
+    expect(cert.pass).toBe(false);
+    expect(cert.message).toBe('expired');
   });
 
   it('catches adapter rejections as failed checks', async () => {
@@ -230,13 +253,12 @@ describe('POST /api/settings/pr-env/validate', () => {
     throwApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
         adapters: {
+          ...defaultStubAdapters(),
           checkDocker: async () => {
             throw new Error('boom');
           },
-          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
-          checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
-          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
         },
       }),
     );
@@ -244,7 +266,8 @@ describe('POST /api/settings/pr-env/validate', () => {
       .post('/api/settings/pr-env/validate')
       .send({})
       .expect(200);
-    expect(res.body.ok).toBe(false);
+    // docker rejection caught; it's informational so ok stays true.
+    expect(res.body.ok).toBe(true);
     const docker = res.body.checks.find((c: { name: string }) => c.name === 'docker');
     expect(docker.pass).toBe(false);
     expect(docker.message).toBe('boom');
@@ -266,16 +289,15 @@ describe('POST /api/settings/pr-env/validate', () => {
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
         getReviewerApp: () => reviewerApp,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
         adapters: {
-          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
-          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+          ...defaultStubAdapters(),
           checkGithubApp: async (appId, privateKey, installationId) => {
             seen.appId = appId;
             seen.privateKey = privateKey;
             seen.installationId = installationId;
             return { name: 'github-app', pass: true, message: 'ok' };
           },
-          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
         },
       }),
     );
@@ -298,16 +320,15 @@ describe('POST /api/settings/pr-env/validate', () => {
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
         getReviewerApp: () => null,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
         adapters: {
-          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
-          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+          ...defaultStubAdapters(),
           checkGithubApp: async (appId, privateKey, installationId) => {
             seen.appId = appId;
             seen.privateKey = privateKey;
             seen.installationId = installationId;
             return { name: 'github-app', pass: false, message: 'no reviewer app' };
           },
-          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
         },
       }),
     );
@@ -329,10 +350,9 @@ describe('POST /api/settings/pr-env/validate', () => {
     r53App.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
         adapters: {
-          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
-          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
-          checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
+          ...defaultStubAdapters(),
           checkRoute53: async (accessKeyId, secretAccessKey, hostedZoneId) => {
             seen.accessKeyId = accessKeyId;
             seen.secretAccessKey = secretAccessKey;
@@ -367,10 +387,9 @@ describe('POST /api/settings/pr-env/validate', () => {
     spyApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
         adapters: {
-          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
-          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
-          checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
+          ...defaultStubAdapters(),
           checkRoute53: async (accessKeyId, secretAccessKey, hostedZoneId) => {
             seen.accessKeyId = accessKeyId;
             seen.secretAccessKey = secretAccessKey;
@@ -387,5 +406,173 @@ describe('POST /api/settings/pr-env/validate', () => {
     expect(seen.accessKeyId).toBe('AKIA');
     expect(seen.secretAccessKey).toBe('the-real-secret');
     expect(seen.hostedZoneId).toBe('Z1');
+  });
+
+  it('threads resolved nginx paths into the cert and nginx adapters', async () => {
+    let certSeenPath = '';
+    let nginxSeen: { sa: string; se: string; bv: string } | null = null;
+    const nginxApp = express();
+    nginxApp.use(express.json());
+    nginxApp.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        getNginxPaths: () => ({
+          certPath: '/etc/letsencrypt/live/preview/fullchain.pem',
+          baseVhostPath: '/etc/nginx/sites-available/agent-hub',
+        }),
+        adapters: {
+          ...defaultStubAdapters(),
+          checkCert: async (certPath) => {
+            certSeenPath = certPath;
+            return { name: 'cert', pass: true, message: 'ok' };
+          },
+          checkNginx: async (sa, se, bv) => {
+            nginxSeen = { sa, se, bv };
+            return { name: 'nginx', pass: true, message: 'ok' };
+          },
+        },
+      }),
+    );
+    await supertest(nginxApp).post('/api/settings/pr-env/validate').send({}).expect(200);
+    expect(certSeenPath).toBe('/etc/letsencrypt/live/preview/fullchain.pem');
+    expect(nginxSeen).not.toBeNull();
+    expect(nginxSeen!.bv).toBe('/etc/nginx/sites-available/agent-hub');
+  });
+
+  it('default webhook check passes when at least one project has an enabled webhook', async () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS webhook_configs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL,
+        repo_url TEXT NOT NULL,
+        secret TEXT NOT NULL,
+        events TEXT NOT NULL DEFAULT '{}',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        author_allowlist TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    db.prepare(
+      `INSERT INTO webhook_configs (project_id, repo_url, secret) VALUES ('p1', 'acme/repo', 's')`,
+    ).run();
+    // No checkWebhook stub → default impl runs against the real DB.
+    const realWebhookApp = express();
+    realWebhookApp.use(express.json());
+    realWebhookApp.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        adapters: {
+          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
+          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+          checkCert: async () => ({ name: 'cert', pass: true, message: 'ok' }),
+          checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
+          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
+          // checkWebhook intentionally omitted to exercise the default factory.
+        },
+      }),
+    );
+    const res = await supertest(realWebhookApp)
+      .post('/api/settings/pr-env/validate')
+      .send({})
+      .expect(200);
+    const wh = res.body.checks.find((c: { name: string }) => c.name === 'webhook');
+    expect(wh.pass).toBe(true);
+    expect(wh.message).toMatch(/1 project/);
+  });
+
+  it('default webhook check fails when no projects have a webhook', async () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS webhook_configs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL,
+        repo_url TEXT NOT NULL,
+        secret TEXT NOT NULL,
+        events TEXT NOT NULL DEFAULT '{}',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        author_allowlist TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    const emptyApp = express();
+    emptyApp.use(express.json());
+    emptyApp.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        adapters: {
+          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
+          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+          checkCert: async () => ({ name: 'cert', pass: true, message: 'ok' }),
+          checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
+          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
+        },
+      }),
+    );
+    const res = await supertest(emptyApp)
+      .post('/api/settings/pr-env/validate')
+      .send({})
+      .expect(200);
+    const wh = res.body.checks.find((c: { name: string }) => c.name === 'webhook');
+    expect(wh.pass).toBe(false);
+    expect(res.body.ok).toBe(false);
+  });
+
+  it('default cert check fails with a remediation hint when path is empty', async () => {
+    const noCertApp = express();
+    noCertApp.use(express.json());
+    noCertApp.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        adapters: {
+          checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
+          checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
+          checkWebhook: async () => ({ name: 'webhook', pass: true, message: 'ok' }),
+          checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
+          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
+          // checkCert omitted → default runs.
+        },
+      }),
+    );
+    const res = await supertest(noCertApp)
+      .post('/api/settings/pr-env/validate')
+      .send({})
+      .expect(200);
+    const cert = res.body.checks.find((c: { name: string }) => c.name === 'cert');
+    expect(cert.pass).toBe(false);
+    expect(cert.message).toMatch(/certPath/);
+  });
+
+  it('docker failure does not flip ok=false because docker is informational', async () => {
+    writePrEnvConfig(
+      {
+        route53AccessKeyId: 'AKIA',
+        route53SecretAccessKey: 'sekret',
+        route53HostedZoneId: 'Z1',
+      },
+      db,
+    );
+    const dockerOnlyFailApp = express();
+    dockerOnlyFailApp.use(express.json());
+    dockerOnlyFailApp.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        adapters: {
+          ...defaultStubAdapters(),
+          checkDocker: async () => ({ name: 'docker', pass: false, message: 'down' }),
+        },
+      }),
+    );
+    const res = await supertest(dockerOnlyFailApp)
+      .post('/api/settings/pr-env/validate')
+      .send({})
+      .expect(200);
+    expect(res.body.ok).toBe(true);
+    const docker = res.body.checks.find((c: { name: string }) => c.name === 'docker');
+    expect(docker.pass).toBe(false);
   });
 });

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   GitBranch,
   Globe,
@@ -8,6 +8,7 @@ import {
   Loader2,
   RefreshCw,
   Info,
+  KeyRound,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { buildPrEnvSavePayload, validatePrEnvForm } from '../utils/prEnvPayload.js';
@@ -38,9 +39,33 @@ function hydrateForm(server) {
 
 const CHECK_LABELS = {
   docker: 'Docker daemon',
-  nginx: 'Nginx sites dirs',
-  'github-app': 'GitHub App',
-  route53: 'Route53 hosted zone',
+  nginx: 'Nginx running + base vhost',
+  cert: 'Wildcard TLS certificate',
+  'github-app': 'Reviewer GitHub App',
+  route53: 'Route 53 IAM',
+  webhook: 'Webhook installed on a repo',
+};
+
+/**
+ * Default required-check set the UI gates Save against. The server is
+ * the source of truth — when the validate response includes a `required`
+ * array, we use that; this constant is the fallback for older servers
+ * (and for tests that stub the API).
+ */
+const DEFAULT_REQUIRED_CHECKS = ['cert', 'nginx', 'github-app', 'route53', 'webhook'];
+
+/** Per-check remediation hint shown next to a failing row. */
+const CHECK_REMEDIATION = {
+  cert: 'Run `certbot certonly --dns-route53 -d "*.<previewHost>"` (or rerun the TF cert workflow), then re-validate.',
+  nginx:
+    'Ensure nginx is running (`systemctl start nginx`) and that the base vhost file exists at the configured path.',
+  'github-app': 'Click "Register Reviewer App" below to walk the GitHub App manifest flow.',
+  route53:
+    'Attach the `route53:ListHostedZones`/`GetHostedZone` policy to the EC2 instance role, or set explicit AWS keys.',
+  webhook:
+    'Open a project, then Settings → GitHub Webhook → Install. PR-env dispatch fires off webhook deliveries.',
+  docker:
+    'Start the Docker daemon (`systemctl start docker`) — required for PR-env container builds.',
 };
 
 /**
@@ -79,6 +104,9 @@ export default function PrEnvironmentsSection() {
   const [validateResult, setValidateResult] = useState(null); // { ok, checks: [...] } | null
   const [validateError, setValidateError] = useState(null);
   const [overrideGate, setOverrideGate] = useState(false);
+  // Tracks the previous `enabled` value so we can fire validation only on
+  // the off→on transition (not on the initial render).
+  const prevEnabledRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -86,6 +114,7 @@ export default function PrEnvironmentsSection() {
       const data = await api.getPrEnvSettings();
       setServer(data);
       setForm(hydrateForm(data));
+      prevEnabledRef.current = !!data?.enabled;
     } catch (err) {
       setLoadError(err.message || 'Failed to load PR-env settings');
     } finally {
@@ -100,6 +129,19 @@ export default function PrEnvironmentsSection() {
   const clientErrors = validatePrEnvForm(form);
   const validationPassed = validateResult?.ok === true;
   const enableGated = !overrideGate && !validationPassed;
+
+  // Required-check set: prefer the server-provided list (forwards-compatible
+  // when we add new prereqs server-side) and fall back to the constant.
+  const requiredChecks =
+    Array.isArray(validateResult?.required) && validateResult.required.length > 0
+      ? validateResult.required
+      : DEFAULT_REQUIRED_CHECKS;
+  const failingRequired = (validateResult?.checks || []).filter(
+    (c) => requiredChecks.includes(c.name) && !c.pass,
+  );
+  const githubAppFailing = (validateResult?.checks || []).some(
+    (c) => c.name === 'github-app' && !c.pass,
+  );
 
   const setField = (k, v) => setForm((prev) => ({ ...prev, [k]: v }));
 
@@ -125,7 +167,7 @@ export default function PrEnvironmentsSection() {
     }
   };
 
-  const handleValidate = async () => {
+  const handleValidate = useCallback(async () => {
     setValidating(true);
     setValidateError(null);
     setValidateResult(null);
@@ -140,6 +182,39 @@ export default function PrEnvironmentsSection() {
     } finally {
       setValidating(false);
     }
+  }, [form]);
+
+  // Auto-validate when the operator flips Enabled on. Only fires on the
+  // off→on transition so we don't spam the endpoint on every render.
+  useEffect(() => {
+    if (loading) return;
+    const prev = prevEnabledRef.current;
+    prevEnabledRef.current = form.enabled;
+    if (form.enabled && !prev) {
+      handleValidate();
+    }
+  }, [form.enabled, loading, handleValidate]);
+
+  // Handle return from the GitHub App manifest flow. The callback redirects to
+  // `/#/settings?githubApp=ready` (hash routing); refresh the panel + run
+  // validation, then strip the param so a hard-refresh doesn't re-trigger.
+  useEffect(() => {
+    if (loading) return;
+    if (typeof window === 'undefined') return;
+    const hash = window.location.hash;
+    const match = hash.match(/[?&]githubApp=(ready|created)/);
+    if (!match) return;
+    handleValidate();
+    const cleanHash = hash.replace(/[?&]githubApp=[^&]*(&message=[^&]*)?/, '').replace(/\?$/, '');
+    window.history.replaceState({}, '', window.location.pathname + cleanHash);
+    // Intentionally only depend on `loading` — running once after first load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
+  const handleRegisterReviewerApp = () => {
+    // The /register route returns an auto-submitting HTML form that POSTs the
+    // manifest to GitHub; navigating there handles the whole manifest flow.
+    window.location.href = '/api/github-app/register';
   };
 
   if (loading) {
@@ -351,6 +426,32 @@ export default function PrEnvironmentsSection() {
         </div>
       )}
 
+      {/* ── Register Reviewer App CTA ────────────────────────────────────── */}
+      {githubAppFailing && (
+        <div
+          className="bg-blue-600/10 border border-blue-500/30 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3"
+          data-testid="prenv-register-app-cta"
+        >
+          <div className="min-w-0">
+            <h4 className="text-sm font-medium text-blue-200 flex items-center gap-2">
+              <KeyRound size={14} /> Reviewer GitHub App not registered
+            </h4>
+            <p className="text-xs text-blue-100/80 mt-1 max-w-xl">
+              Register the App so PR webhooks can authenticate as the bot identity. You'll be
+              redirected to GitHub to confirm the manifest, then sent back here automatically.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleRegisterReviewerApp}
+            data-testid="prenv-register-app-button"
+            className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            <KeyRound size={14} /> Register Reviewer App
+          </button>
+        </div>
+      )}
+
       {/* ── Save + Validate actions ───────────────────────────────────────── */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs">
@@ -364,6 +465,23 @@ export default function PrEnvironmentsSection() {
               <XCircle size={13} /> {saveError || 'Save failed'}
             </span>
           )}
+          {failingRequired.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const first = failingRequired[0];
+                if (!first) return;
+                const el = document.querySelector(`[data-testid="prenv-check-${first.name}"]`);
+                if (el && typeof el.scrollIntoView === 'function') {
+                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+              }}
+              data-testid="prenv-failing-required-link"
+              className="text-amber-400 hover:text-amber-300 underline-offset-2 hover:underline"
+            >
+              Fix: {CHECK_LABELS[failingRequired[0].name] || failingRequired[0].name}
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -376,7 +494,20 @@ export default function PrEnvironmentsSection() {
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || clientErrors.length > 0}
+            disabled={
+              saving ||
+              clientErrors.length > 0 ||
+              validateResult === null ||
+              failingRequired.length > 0
+            }
+            data-testid="prenv-save-button"
+            title={
+              failingRequired.length > 0
+                ? `Fix failing prerequisites first: ${failingRequired
+                    .map((c) => CHECK_LABELS[c.name] || c.name)
+                    .join(', ')}`
+                : ''
+            }
             className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors"
           >
             {saving ? 'Saving…' : 'Save'}
@@ -454,6 +585,14 @@ export function ValidateResults({ result, error, onDismiss }) {
                 <div className="min-w-0">
                   <p className="font-medium">{CHECK_LABELS[check.name] || check.name}</p>
                   <p className="text-[11px] opacity-80 break-words">{check.message}</p>
+                  {!check.pass && CHECK_REMEDIATION[check.name] && (
+                    <p
+                      className="text-[11px] opacity-70 mt-1 italic"
+                      data-testid={`prenv-check-${check.name}-remediation`}
+                    >
+                      → {CHECK_REMEDIATION[check.name]}
+                    </p>
+                  )}
                 </div>
               </li>
             ))}
