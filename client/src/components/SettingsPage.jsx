@@ -23,6 +23,7 @@ import PoolSection from './PoolSection.jsx';
 import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
 import PrEnvProjectWizard from './PrEnvProjectWizard.jsx';
 import IntegrationProviderSection from './IntegrationProviderSection.jsx';
+import IntegrationsSettingsPage from '../pages/IntegrationsSettingsPage.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
@@ -6659,6 +6660,7 @@ const SETTINGS_GROUPS = [
       { id: 'account', iconName: 'UserCircle', text: 'Account' },
       { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
       { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
+      { id: 'integrations', iconName: 'Plug', text: 'Integrations' },
     ],
   },
   {
@@ -6694,7 +6696,7 @@ const SETTINGS_GROUPS = [
   {
     id: 'admin',
     label: 'Admin',
-    tabs: [{ id: 'integrations-provider', iconName: 'Plug', text: 'Integrations' }],
+    tabs: [{ id: 'integrations-provider', iconName: 'Plug', text: 'Integration Provider' }],
   },
 ];
 
@@ -6898,6 +6900,7 @@ export default function SettingsPage({
                 </>
               )}
               {tab === 'logs' && <ServerLogsSection wsRef={wsRef} />}
+              {tab === 'integrations' && <IntegrationsSettingsPage />}
               {tab === 'integrations-provider' && <IntegrationProviderSection />}
             </SettingsErrorBoundary>
           </div>

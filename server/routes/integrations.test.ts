@@ -505,3 +505,25 @@ describe('POST /api/integrations/webhooks/nango', () => {
     expect(userIntegrationsStore.getForUser(ALICE, 'slack')?.status).toBe('CONNECTED');
   });
 });
+
+describe('GET /api/integrations/supported', () => {
+  it('returns the SUPPORTED_INTEGRATIONS catalogue with id/label/description', async () => {
+    const res = await supertest(app).get('/api/integrations/supported').expect(200);
+    expect(Array.isArray(res.body.integrations)).toBe(true);
+    const ids = res.body.integrations.map((i: { id: string }) => i.id);
+    expect(ids).toEqual(
+      expect.arrayContaining(['slack', 'google-mail', 'github', 'notion', 'hubspot']),
+    );
+    for (const i of res.body.integrations) {
+      expect(typeof i.id).toBe('string');
+      expect(typeof i.label).toBe('string');
+      expect(typeof i.description).toBe('string');
+      expect(typeof i.category).toBe('string');
+    }
+    // `providerReady` is a boolean derived from the runtime resolver.
+    // The test orgs.db is empty so it will normally be false; we only
+    // assert the contract (boolean) here since the fake provider is
+    // injected via `getProvider`, separate from the resolver.
+    expect(typeof res.body.providerReady).toBe('boolean');
+  });
+});

@@ -58,6 +58,7 @@ import {
 } from '../integrations/provider.js';
 import { getIntegrationProviderConfig } from '../integration-provider-runtime.js';
 import { getHubInstanceId } from '../integrations/hub-instance.js';
+import { SUPPORTED_INTEGRATIONS } from '../integrations/supported.js';
 import * as userIntegrationsStore from '../user-integrations-store.js';
 
 export interface IntegrationsRoutesDeps {
@@ -120,6 +121,31 @@ export default function createIntegrationsRoutes(
       }
     });
   const resolveHubInstance = extra.getHubInstanceId ?? (() => getHubInstanceId());
+
+  // ── GET /api/integrations/supported ───────────────────────────────
+  // Authenticated but role-agnostic — every user is allowed to see the
+  // catalogue of apps the operator's IntegrationProvider knows how to
+  // connect. Returns a stable JSON shape:
+  //   { integrations: SupportedIntegration[], providerReady: boolean }
+  // `providerReady` is false when no Nango key is configured so the UI
+  // can render a "contact your operator" notice instead of a broken
+  // Connect button.
+  router.get('/api/integrations/supported', (_req: Request, res: Response) => {
+    let providerReady = false;
+    try {
+      const cfg = getIntegrationProviderConfig();
+      // `ok === true` already implies the operator hasn't disabled the
+      // provider — the runtime resolver returns `ok: false, reason: 'disabled'`
+      // for the explicit-off case.
+      providerReady = cfg.ok === true;
+    } catch {
+      providerReady = false;
+    }
+    return res.json({
+      integrations: SUPPORTED_INTEGRATIONS.map((i) => ({ ...i })),
+      providerReady,
+    });
+  });
 
   // ── POST /api/users/:userId/integrations/:app/connect ─────────────
   router.post(

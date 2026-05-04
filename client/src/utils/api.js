@@ -812,6 +812,41 @@ export const api = {
       timeout: 30000,
     }),
 
+  // Per-user integrations — Settings → Integrations page.
+  // The catalogue is driven by SUPPORTED_INTEGRATIONS on the server;
+  // CRUD calls scope to a single user via :userId.
+  getSupportedIntegrations: () => fetchJSON('/integrations/supported'),
+  listUserIntegrations: (userId) => fetchJSON(`/users/${encodeURIComponent(userId)}/integrations`),
+  getUserIntegration: async (userId, app) => {
+    // Fetch directly so a 404 (the "not connected" steady state) becomes
+    // `null` instead of bubbling out as a thrown error — the polling
+    // hook treats null as "still pending or never started".
+    const res = await fetch(
+      `${getApiBase()}/users/${encodeURIComponent(userId)}/integrations/${encodeURIComponent(app)}`,
+      { headers: { ...getAuthHeaders() } },
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+  },
+  connectUserIntegration: (userId, app) =>
+    fetchJSON(
+      `/users/${encodeURIComponent(userId)}/integrations/${encodeURIComponent(app)}/connect`,
+      {
+        method: 'POST',
+        body: JSON.stringify({}),
+        timeout: 30000,
+      },
+    ),
+  disconnectUserIntegration: (userId, app) =>
+    fetch(
+      `${getApiBase()}/users/${encodeURIComponent(userId)}/integrations/${encodeURIComponent(app)}`,
+      { method: 'DELETE', headers: { ...getAuthHeaders() } },
+    ).then((res) => {
+      if (!res.ok && res.status !== 204) throw new Error(`API error: ${res.status}`);
+      return null;
+    }),
+
   // Integration provider (Nango Shared/BYO) — Owner-only.
   // GET reports `hasKey` / `sharedAvailable` instead of the secret itself.
   // PUT is partial-preserving: send `••••••••` to keep the stored secret.
