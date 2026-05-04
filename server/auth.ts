@@ -30,6 +30,10 @@ const PUBLIC_PATHS: readonly string[] = [
   // github.com, so no bearer token is sent. Identity is carried by a
   // signed `state` JWT validated inside the route handler itself.
   '/api/auth/github/callback',
+  // Nango webhook — server-to-server POST from Nango. Identity is
+  // carried by the `X-Nango-Hmac-Sha256` HMAC over the raw body, which
+  // the route handler verifies against the configured webhook secret.
+  '/api/integrations/webhooks/nango',
 ];
 
 /**

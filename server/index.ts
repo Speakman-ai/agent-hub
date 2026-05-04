@@ -111,6 +111,7 @@ import createBugReportRoutes from './routes/bug-reports.js';
 import createAuthRoutes from './routes/auth.js';
 import createPrEnvSettingsRoutes from './routes/pr-env-settings.js';
 import createIntegrationProviderSettingsRoutes from './routes/integration-provider-settings.js';
+import createIntegrationsRoutes from './routes/integrations.js';
 import { migrateFileConfigToDb as migratePrEnvFileToDb } from './pr-env-store.js';
 import { fileConfig as prEnvFileConfig } from './config.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
@@ -665,6 +666,7 @@ app.use(createBugReportRoutes(routeDeps));
 app.use(createAuthRoutes());
 app.use(createPrEnvSettingsRoutes(routeDeps));
 app.use(createIntegrationProviderSettingsRoutes(routeDeps));
+app.use(createIntegrationsRoutes(routeDeps));
 app.use(createGithubOAuthRoutes(routeDeps));
 
 // One-shot migration: copy legacy `config.json` prEnv block into the new
