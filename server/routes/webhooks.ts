@@ -1380,8 +1380,9 @@ function handleKanbanWebhookEvent(
   // `if (!card && …) return false` short-circuit below because PR envs
   // belong to the PR itself, not the optional kanban card — synchronize
   // events on unlinked PRs still need to rebuild. Gated by the
-  // `AGENT_HUB_PR_ENV_ENABLED` feature flag; `getPrEnvBuilderDeps()` returns
-  // null when disabled and the dispatch becomes a no-op.
+  // operator-owned `prEnv.enabled` toggle (DB row → file fallback);
+  // `getPrEnvBuilderDeps()` returns null when disabled and the dispatch
+  // becomes a no-op.
   if (
     event === 'pull_request' &&
     payload.pull_request &&

@@ -154,6 +154,11 @@ function buildRequest(prNumber: number, repo = 'acme/repo', branch = 'feature/x'
 
 // ─── readPrEnvConfig validation ──────────────────────────────────────────
 
+// A minimal file-block that turns the feature on without supplying any of
+// the required fields — used to exercise the "enabled but misconfigured"
+// validation path now that the env-var gate has been removed.
+const ENABLED_FILE_BLOCK_ONLY = { prEnv: { enabled: true } };
+
 describe('readPrEnvConfig — required field validation', () => {
   it('returns null when feature is disabled', () => {
     const result = readPrEnvConfig({}, {});
@@ -161,14 +166,14 @@ describe('readPrEnvConfig — required field validation', () => {
   });
 
   it('throws when enabled but required fields are missing', () => {
-    expect(() =>
-      readPrEnvConfig({}, { AGENT_HUB_PR_ENV_ENABLED: 'true' }, null, { githubApp: null }),
-    ).toThrow(/AGENT_HUB_PR_ENV_ENABLED=true but required config is unset/);
+    expect(() => readPrEnvConfig(ENABLED_FILE_BLOCK_ONLY, {}, null, { githubApp: null })).toThrow(
+      /PR Environments are enabled but required config is unset/,
+    );
   });
 
   it('names all missing fields in the error message', () => {
     try {
-      readPrEnvConfig({}, { AGENT_HUB_PR_ENV_ENABLED: 'true' }, null, { githubApp: null });
+      readPrEnvConfig(ENABLED_FILE_BLOCK_ONLY, {}, null, { githubApp: null });
     } catch (e) {
       const msg = (e as Error).message;
       // GitHub creds come from the registered Reviewer App now — when
@@ -189,11 +194,13 @@ describe('readPrEnvConfig — required field validation', () => {
     throw new Error('expected readPrEnvConfig to throw');
   });
 
-  it('succeeds when all required fields are provided via env + Reviewer App', () => {
+  it('succeeds when all required fields are provided via env + file-block + Reviewer App', () => {
+    // The toggle itself comes from the file-block (legacy pre-migration
+    // path) since there is no env-var override for `enabled` anymore.
+    // Host-path / Route 53 / nginx fields still accept env overrides.
     const result = readPrEnvConfig(
-      {},
+      ENABLED_FILE_BLOCK_ONLY,
       {
-        AGENT_HUB_PR_ENV_ENABLED: 'true',
         PR_ENV_ROUTE53_ACCESS_KEY_ID: 'AKIA',
         PR_ENV_ROUTE53_SECRET_ACCESS_KEY: 'sekret',
         PR_ENV_ROUTE53_HOSTED_ZONE_ID: 'Z123',

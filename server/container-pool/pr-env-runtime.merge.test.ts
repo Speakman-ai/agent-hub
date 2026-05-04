@@ -200,15 +200,19 @@ describe('readPrEnvConfig — merge DB row', () => {
     expect(result!.repoFullName).toBe('acme/file');
   });
 
-  it('env flag forces enabled even when DB row says false', () => {
+  it('no env-var override exists for `enabled` — DB false stays authoritative', () => {
+    // Contract: there is intentionally NO env-var override for the
+    // top-level `enabled` toggle. The legacy hard-override gate was
+    // removed because a "feature on but Settings toggle off" mismatch
+    // confused operators. This test guards against re-introducing one.
     const row: PrEnvConfigRow = { ...FULL_DB_ROW, enabled: false };
     const result = readPrEnvConfig(
-      {},
-      { ...REQUIRED_NON_UI_ENV, AGENT_HUB_PR_ENV_ENABLED: 'true' },
+      { prEnv: { enabled: true } },
+      REQUIRED_NON_UI_ENV,
       row,
       APP_CONFIG_REF,
     );
-    expect(result).not.toBeNull();
+    expect(result).toBeNull();
   });
 
   // ─── Singleton repoFullName is no longer required ──────────────────────

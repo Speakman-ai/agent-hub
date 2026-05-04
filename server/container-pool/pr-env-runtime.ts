@@ -7,10 +7,11 @@
  * filesystem, plus a memoised factory that lazily constructs the
  * `PrEnvBuilderDeps` bundle the webhook handler calls into.
  *
- * Everything is gated behind the feature flag `PR_ENV_BUILDS_ENABLED`
- * (either the `AGENT_HUB_PR_ENV_ENABLED=true` env var or a `prEnv.enabled`
- * field in `config.json`). When disabled, `getPrEnvBuilderDeps()` returns
- * null and the webhook hook becomes a no-op — we don't want an
+ * Everything is gated behind the feature flag `PR_ENV_BUILDS_ENABLED`,
+ * which is sourced from the singleton `pr_env_config` DB row (written by
+ * the Settings UI) with the legacy `prEnv.enabled` field in `config.json`
+ * as a pre-migration fallback. When disabled, `getPrEnvBuilderDeps()`
+ * returns null and the webhook hook becomes a no-op — we don't want an
  * uninstalled compose binary to crash the server on every PR event.
  */
 
@@ -137,7 +138,12 @@ function resolvePreviewBaseUrl(
  * typed runtime config. Returns null if the feature flag isn't on.
  *
  * Precedence (highest → lowest):
- *   1. env vars (for CI/dev overrides)
+ *   1. env vars (for CI/dev overrides) — applies to host-path / Route 53 /
+ *      nginx / cert-renewal-live fields, NOT to `enabled`. The `enabled`
+ *      toggle is operator-owned via the Settings UI; there is intentionally
+ *      no env-var override for it (a separate hard-override gate was
+ *      removed because a "feature on but Settings toggle off" mismatch
+ *      confused operators).
  *   2. DB row (Tier-1/Tier-2 UI-owned fields) — AUTHORITATIVE once present
  *   3. config.json `prEnv` block (legacy; preserved for pre-migration compat)
  *   4. `appConfig.githubApp` for GitHub App fields ONLY — the registered
@@ -159,11 +165,16 @@ function resolvePreviewBaseUrl(
  * `prEnv.route53.hostedZoneId` in `config.json` (Tier-3, written by
  * Terraform at first boot).
  *
- * Boolean fields (`enabled`, `certRenewalLive`) follow strict precedence
- * — not OR-composition. Once a DB row exists, its value wins over the file
+ * The `enabled` flag follows strict precedence: DB (authoritative if a
+ * row exists) → file. Once a DB row exists, its value wins over the file
  * block in both directions, so flipping the UI toggle off actually turns
  * the feature off even if the legacy file block still has `enabled: true`.
- * Env vars remain a hard override for CI/dev unlock.
+ * There is intentionally NO env-var override for `enabled` — operators
+ * should drive the toggle through Settings; a separate env-var gate just
+ * created confusing "toggle on but feature off" misconfigurations.
+ *
+ * `certRenewalLive` retains an env-var override (CI/dev unlock for the
+ * acme dry-run path) on top of the same DB-vs-file precedence.
  *
  * The DB row is optional — callers that don't care about UI-written values
  * can pass `dbRow = null` and behaviour falls back to the pre-UI path.
@@ -174,17 +185,13 @@ export function readPrEnvConfig(
   dbRow: PrEnvConfigRow | null = null,
   appConfig: PrEnvAppConfigRef | null = null,
 ): PrEnvRuntimeConfig | null {
-  const envFlag = env.AGENT_HUB_PR_ENV_ENABLED === 'true';
   const fileBlock = (fileConfig?.prEnv as Partial<PrEnvRuntimeConfig> | undefined) ?? {};
-  // Boolean precedence: env override → DB (authoritative if row exists) → file.
+  // Boolean precedence: DB (authoritative if row exists) → file.
   // `dbRow != null` means the UI has written at least once, so the DB value is
   // canonical — including `false`, which must be able to authoritatively
   // disable the feature even if a legacy file block still says `enabled: true`.
-  const enabled = envFlag
-    ? true
-    : dbRow != null
-      ? dbRow.enabled === true
-      : fileBlock.enabled === true;
+  // There is no env-var override for `enabled` (intentional — see docstring).
+  const enabled = dbRow != null ? dbRow.enabled === true : fileBlock.enabled === true;
   if (!enabled) return null;
 
   // Helper: pick env → DB → file → fallback. Empty strings are treated as
@@ -314,7 +321,7 @@ export function readPrEnvConfig(
   // and the per-project / per-slot path is authoritative.
   if (missing.length > 0) {
     throw new Error(
-      `AGENT_HUB_PR_ENV_ENABLED=true but required config is unset: ${missing.join(', ')}`,
+      `PR Environments are enabled but required config is unset: ${missing.join(', ')}`,
     );
   }
 
