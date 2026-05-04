@@ -10,6 +10,13 @@ interface SkillRouteInput {
   agentId?: string;
   agentSystemPrompt?: string;
   cwd?: string;
+  /**
+   * Project slug (a.k.a. `project.id`) of the session that produced this
+   * message. Used by the project-default rule (e.g. always inject the
+   * `agent-hub` skill in agent-hub project sessions, even when the user's
+   * message doesn't contain a platform tell).
+   */
+  projectSlug?: string;
 }
 
 export interface SkillRouteMatch {
@@ -125,7 +132,10 @@ function builtInScore(
       /\b(agent hub|localhost:3051|\/api\/projects\/|agent_hub_url|agent_hub_api_key|agent_hub_session_id|project_id)\b/i.test(
         message,
       ) ||
-      /<delegate>|<\/delegate>|<handoff>|<\/handoff>|<agenthub:close-card>/i.test(message)
+      /<delegate>|<\/delegate>|<handoff>|<\/handoff>|<agenthub:close-card>/i.test(message) ||
+      /scripts\/(board|wiki|kanban-[a-z-]+|heartbeats|crons|log-tool-error|epics|sessions|resolve-column-id|get-board-state|ah-api|server)\.sh\b/i.test(
+        message,
+      )
     ) {
       return { score: 110, reason: 'Agent Hub platform intent detected' };
     }
@@ -136,14 +146,26 @@ function builtInScore(
   return null;
 }
 
-export function routeSkillFromMessage(input: SkillRouteInput): SkillRouteMatch | null {
-  if (!input.message?.trim()) return null;
-  if (/<agenthub:skill>/i.test(input.message)) return null;
-  if (!Array.isArray(input.skills) || input.skills.length === 0) return null;
+/**
+ * Return ALL matching skills for an input, sorted by descending score
+ * (ties broken by skillId to keep ordering deterministic). Caller is
+ * expected to load every match — this is what powers the "always-on
+ * agent-hub skill in agent-hub project sessions" rule without dropping
+ * the higher-intent kanban / wiki / worktree matches.
+ *
+ * De-duped by skillId: an explicit-trigger match for the same skill
+ * always wins over the project-default match because the latter is
+ * appended only when no candidate for that id already exists.
+ */
+export function routeSkillsFromMessage(input: SkillRouteInput): SkillRouteMatch[] {
+  if (!input.message?.trim()) return [];
+  if (/<agenthub:skill>/i.test(input.message)) return [];
+  if (!Array.isArray(input.skills) || input.skills.length === 0) return [];
 
   const candidates: SkillRouteMatch[] = [];
+  const seen = new Set<string>();
   for (const skill of input.skills) {
-    if (!skill?.id) continue;
+    if (!skill?.id || seen.has(skill.id)) continue;
     const explicit = explicitMentionScore(input.message, skill);
     const builtIn = builtInScore(input, skill.id);
     const score = explicit + (builtIn?.score || 0);
@@ -158,9 +180,36 @@ export function routeSkillFromMessage(input: SkillRouteInput): SkillRouteMatch |
             : builtIn!.reason,
       score,
     });
+    seen.add(skill.id);
   }
 
-  if (candidates.length === 0) return null;
+  // Project-default rule: always load the agent-hub skill in agent-hub
+  // project sessions, even when the user's message contains no platform
+  // tell. Score is intentionally lower than the explicit-trigger score
+  // (110) so explicit user intent for other skills still wins on
+  // ordering. Only append when no candidate for `agent-hub` already
+  // exists — the explicit/built-in branch above is strictly better.
+  if (
+    input.projectSlug === 'agent-hub' &&
+    !seen.has('agent-hub') &&
+    input.skills.some((s) => s?.id === 'agent-hub')
+  ) {
+    candidates.push({
+      skillId: 'agent-hub',
+      reason: 'agent-hub project default',
+      score: 30,
+    });
+  }
+
   candidates.sort((a, b) => b.score - a.score || a.skillId.localeCompare(b.skillId));
-  return candidates[0] || null;
+  return candidates;
+}
+
+/**
+ * Backwards-compatible single-match shim for older call sites and tests.
+ * Returns the highest-scoring match or `null`. New code should call
+ * {@link routeSkillsFromMessage} directly so every matched skill loads.
+ */
+export function routeSkillFromMessage(input: SkillRouteInput): SkillRouteMatch | null {
+  return routeSkillsFromMessage(input)[0] ?? null;
 }

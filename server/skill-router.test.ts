@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { routeSkillFromMessage } from './skill-router.js';
+import { routeSkillFromMessage, routeSkillsFromMessage } from './skill-router.js';
 
 const ALL_SKILLS = [
   { id: 'kanban', name: 'kanban', description: 'Manage board cards' },
@@ -98,5 +98,82 @@ describe('routeSkillFromMessage', () => {
       skills: ALL_SKILLS,
     });
     expect(result).toBeNull();
+  });
+});
+
+describe('routeSkillsFromMessage — multi-match + project default', () => {
+  const SKILLS = [
+    { id: 'agent-hub', name: 'Agent Hub' },
+    { id: 'kanban', name: 'Kanban' },
+    { id: 'wiki-search', name: 'Wiki Search' },
+  ];
+
+  it('(a) injects agent-hub via project-default rule when no platform tell is present', () => {
+    const matches = routeSkillsFromMessage({
+      message: 'fix this bug',
+      skills: SKILLS,
+      projectSlug: 'agent-hub',
+    });
+    const ahMatch = matches.find((m) => m.skillId === 'agent-hub');
+    expect(ahMatch).toBeDefined();
+    expect(ahMatch?.reason).toContain('project default');
+  });
+
+  it('(b) does not inject agent-hub for non-agent-hub projects with no platform tell', () => {
+    const matches = routeSkillsFromMessage({
+      message: 'fix this bug',
+      skills: SKILLS,
+      projectSlug: 'other-project',
+    });
+    expect(matches.find((m) => m.skillId === 'agent-hub')).toBeUndefined();
+  });
+
+  it('(c) returns kanban first by score when both kanban and agent-hub default match', () => {
+    const matches = routeSkillsFromMessage({
+      message: 'create a kanban card',
+      skills: SKILLS,
+      projectSlug: 'agent-hub',
+    });
+    const ids = matches.map((m) => m.skillId);
+    expect(ids).toContain('kanban');
+    expect(ids).toContain('agent-hub');
+    expect(ids[0]).toBe('kanban');
+    const ahMatch = matches.find((m) => m.skillId === 'agent-hub')!;
+    expect(ahMatch.reason).toContain('project default');
+  });
+
+  it('(d) explicit-trigger match for agent-hub wins over project-default (de-dupe keeps higher score)', () => {
+    const matches = routeSkillsFromMessage({
+      message: 'spawn helpers via <delegate>{"toAgent":"x"}</delegate>',
+      skills: SKILLS,
+      projectSlug: 'agent-hub',
+    });
+    const ahMatch = matches.find((m) => m.skillId === 'agent-hub');
+    expect(ahMatch).toBeDefined();
+    expect(ahMatch?.reason).not.toContain('project default');
+    expect(ahMatch?.reason).toContain('Agent Hub platform intent');
+    expect(ahMatch?.score).toBeGreaterThan(30);
+    // De-duped: only one agent-hub entry.
+    expect(matches.filter((m) => m.skillId === 'agent-hub')).toHaveLength(1);
+  });
+
+  it('(e) script-path tell triggers agent-hub even outside the agent-hub project', () => {
+    const matches = routeSkillsFromMessage({
+      message: 'run scripts/board.sh get to inspect the board',
+      skills: SKILLS,
+      projectSlug: 'random',
+    });
+    const ahMatch = matches.find((m) => m.skillId === 'agent-hub');
+    expect(ahMatch).toBeDefined();
+    expect(ahMatch?.reason).toContain('Agent Hub platform intent');
+  });
+
+  it('(f) routeSkillFromMessage shim still returns the highest match for legacy callers', () => {
+    const result = routeSkillFromMessage({
+      message: 'create a kanban card',
+      skills: SKILLS,
+      projectSlug: 'agent-hub',
+    });
+    expect(result?.skillId).toBe('kanban');
   });
 });

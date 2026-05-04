@@ -39,7 +39,7 @@ import {
   loadSkillByName,
   parseSkillBlock,
 } from './skill-invoke.js';
-import { routeSkillFromMessage } from './skill-router.js';
+import { routeSkillsFromMessage } from './skill-router.js';
 import { extractJsonFromTagBody } from './action-block-parsing.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
@@ -1392,16 +1392,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const model: string = session!.model || DEFAULT_MODEL;
     const paths = resolveProjectPaths(project as Project, agent as Agent);
     let routedSkillSuffix = '';
+    const loadedRoutedSkillIds = new Set<string>();
     if (!slashResult && !isAutoContinuation) {
       const availableSkills = listEnabledSkills(agent.id, paths.skillsDir);
-      const routed = routeSkillFromMessage({
+      // Seed the dedupe set from the pending-skill suffix so we don't
+      // re-inject a skill the previous `<agenthub:skill>` block already
+      // queued. The header format is `## Loaded Skill: <skill-id>` —
+      // a best-effort extraction; missing match just means no dedupe.
+      const pendingRaw = session!.pending_skill_context?.trim() || '';
+      if (pendingRaw) {
+        const m = pendingRaw.match(/^## Loaded Skill:\s*([\w.-]+)/m);
+        if (m) loadedRoutedSkillIds.add(m[1]!);
+      }
+      const routedMatches = routeSkillsFromMessage({
         message: content,
         skills: availableSkills,
         agentId: agent.id,
         agentSystemPrompt: agent.systemPrompt || '',
         cwd: session!.worktree_path || project.cwd,
+        projectSlug: project.id,
       });
-      if (routed) {
+      const injections: string[] = [];
+      for (const routed of routedMatches) {
+        if (loadedRoutedSkillIds.has(routed.skillId)) continue;
         const injection = loadSkillByName({
           name: routed.skillId,
           reason: `auto-route: ${routed.reason}`,
@@ -1410,7 +1423,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           stmts: stmts as Stmts,
           broadcast,
         });
-        routedSkillSuffix = `\n\n${injection}`;
+        injections.push(injection);
+        loadedRoutedSkillIds.add(routed.skillId);
+      }
+      if (injections.length > 0) {
+        routedSkillSuffix = `\n\n${injections.join('\n\n')}`;
       }
     }
 
