@@ -292,20 +292,80 @@ variable "target_group_name_override" {
 
 # --- PR Envs (host nginx wildcard + Route 53 IAM for DNS-01 ACME) ------------
 #
-# Default-disabled scaffolding for per-PR preview environments. PR 1 of the
-# series only adds the wildcard ACM cert and a Route 53 inline policy on the
-# EC2 instance role; later PRs wire up the host nginx fan-out + per-PR DNS.
+# `enable_pr_environments` (defaults TRUE) is the single root flag that turns
+# the entire PR-env stack on for new operators. It drives, in concert:
+#   - wildcard ACM cert for *.<pr_env_preview_subdomain>.<alb_fqdn>     (alb.tf)
+#   - Route 53 inline policy on the EC2 SSM instance role               (ssm-iam.tf)
+#   - host nginx + certbot + sudoers + docker-socket bind-mount         (main.tf, user-data)
+#   - SG ingress range 3100-3999                                        (main.tf)
+#   - Tier-3 prEnv block in <dataDir>/config.json                       (locals-agent-hub.tf)
+#
+# The fine-grained flags `enable_pr_env_wildcard_cert`,
+# `enable_pr_env_route53_iam`, and `enable_pr_env_host_nginx` remain as
+# **per-piece overrides** for back-compat and for operators who want to
+# disable a single piece for testing without flipping the whole stack. They
+# are nullable bools defaulting to `null`, which means "follow the parent
+# flag." A non-null value (true OR false) overrides the parent.
+#
+# Effective values are resolved in `locals-agent-hub.tf` as
+# `local.pr_env_wildcard_cert_enabled`, `local.pr_env_route53_iam_enabled`,
+# and `local.pr_env_host_nginx_enabled`. **All resources/checks/templates
+# reference the locals**, never `var.enable_pr_env_*` directly.
+
+variable "enable_pr_environments" {
+  description = <<-DESC
+    Single root flag for the full per-PR preview environment stack. When true
+    (the default), Terraform provisions the wildcard ACM cert, the Route 53
+    write IAM policy on the instance role, the host nginx + certbot bootstrap,
+    the 3100-3999 security-group range, and the Tier-3 prEnv config block —
+    everything required to make per-PR previews work end-to-end after
+    ticking the "PR Environments" checkbox in Settings.
+
+    Flip to false (e.g. `enable_pr_environments = false` in tfvars) to
+    provision a plain Agent Hub host with no PR-env scaffolding. The
+    fine-grained `enable_pr_env_wildcard_cert`, `enable_pr_env_route53_iam`,
+    and `enable_pr_env_host_nginx` variables remain available as per-piece
+    overrides for testing — set them to `true` or `false` to override this
+    parent flag for that one piece.
+
+    Note: enabling host nginx triggers EC2 instance replacement (user-data
+    change). New deployments default-on is fine; existing deployments that
+    were never on PR-envs and don't want to be will set this to false.
+  DESC
+  type        = bool
+  default     = true
+}
 
 variable "enable_pr_env_wildcard_cert" {
-  description = "If true, issue a wildcard ACM certificate for *.<pr_env_preview_subdomain>.<alb_fqdn> and DNS-validate it via Route 53. The cert is intended for host nginx to terminate TLS on per-PR preview hostnames; it is NOT attached to the ALB listener. Requires a discoverable Route 53 zone (route53_zone_id or lookup_route53_zone_in_this_account)."
+  description = <<-DESC
+    Per-piece override for the PR-env wildcard ACM certificate (DNS-validated
+    via Route 53). Defaults to null, meaning "follow `enable_pr_environments`."
+    Set to true or false to override the parent flag for the wildcard cert
+    only — useful when testing each piece of the PR-env stack in isolation.
+    The cert is intended for host nginx to terminate TLS on per-PR preview
+    hostnames and is NOT attached to the ALB listener. Requires a discoverable
+    Route 53 zone (route53_zone_id or lookup_route53_zone_in_this_account)
+    when effectively enabled.
+  DESC
   type        = bool
-  default     = false
+  default     = null
+  nullable    = true
 }
 
 variable "enable_pr_env_route53_iam" {
-  description = "If true, attach an inline policy to the EC2 SSM instance role granting route53:ChangeResourceRecordSets / ListResourceRecordSets on the hosted zone for base_domain plus route53:GetChange. Lets the instance create per-PR DNS records (and DNS-01 ACME challenges) under the discovered zone. Requires enable_instance_ssm = true and a discoverable Route 53 zone."
+  description = <<-DESC
+    Per-piece override for the Route 53 inline policy attached to the EC2 SSM
+    instance role. Defaults to null, meaning "follow `enable_pr_environments`."
+    Set to true or false to override for this piece only. When effectively
+    enabled, grants route53:ChangeResourceRecordSets/ListResourceRecordSets on
+    the hosted zone for base_domain plus route53:GetChange and
+    route53:ListHostedZones, so the instance can create per-PR DNS records
+    (and DNS-01 ACME challenges) under the discovered zone. Requires
+    enable_instance_ssm = true and a discoverable Route 53 zone.
+  DESC
   type        = bool
-  default     = false
+  default     = null
+  nullable    = true
 }
 
 variable "pr_env_preview_subdomain" {
@@ -345,7 +405,12 @@ variable "cert_renewal_email" {
 
 variable "enable_pr_env_host_nginx" {
   description = <<-DESC
-    Default-off scaffolding for per-PR preview environments. When true, instance user-data:
+    Per-piece override for the host nginx + certbot + sudoers + docker-socket
+    bootstrap used by per-PR preview environments. Defaults to null, meaning
+    "follow `enable_pr_environments`." Set to true or false to override for
+    this piece only.
+
+    When effectively enabled, instance user-data:
       - installs host nginx + certbot + python3-certbot-dns-route53
       - drops a base vhost at /etc/nginx/conf.d/agent-hub-pr-base.conf that includes
         /etc/nginx/conf.d/agent-hub-pr-*.conf so the Hub can fan out per-PR fragments
@@ -363,5 +428,6 @@ variable "enable_pr_env_host_nginx" {
     maintenance window.
   DESC
   type        = bool
-  default     = false
+  default     = null
+  nullable    = true
 }

@@ -49,20 +49,21 @@ agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
 
 # ── PR Environments (per-PR preview deployments) ────────────────────────────
-# Turning these on triggers EC2 instance replacement: user-data installs
-# nginx + certbot + python3-certbot-dns-route53, drops a sudoers.d allowlist
-# for the app user, mounts /var/run/docker.sock into the Hub container,
-# opens host ports 3100-3999, writes the Tier-3 prEnv block to
-# ~/.agent-hub/data/config.json, and issues a wildcard Let's Encrypt cert
-# for *.preview.agenthub.dev.surveytracker.io on first boot.
+# `enable_pr_environments` defaults to TRUE — the entire PR-env stack
+# (wildcard ACM cert, Route 53 inline policy, host nginx + certbot,
+# SG ports 3100-3999, Tier-3 prEnv config) is provisioned out of the box.
+# Operators only need to flip the "PR Environments" checkbox in Settings
+# (and enter Tier-1+2 secrets) post-boot to start dispatching previews.
 #
 # Tier-1+2 secrets (GitHub App private key, Route53 IAM access keys,
 # repoFullName, certRenewalLive) are intentionally NOT in this file —
 # they're entered post-boot via Settings → PR Environments and stored
 # AES-256-GCM-encrypted in the pr_env_config SQLite row.
-enable_pr_env_wildcard_cert = true
-enable_pr_env_route53_iam   = true
-enable_pr_env_host_nginx    = true
-cert_renewal_email          = "ryanspeakman@mcsteen.com"
+#
+# Required when the PR-env stack is on: the Let's Encrypt registration email
+# for the wildcard cert. Leave the per-piece `enable_pr_env_*` overrides
+# unset (= null = follow the parent) unless you are intentionally disabling
+# one piece for testing.
+cert_renewal_email = "ryanspeakman@mcsteen.com"
 # pr_env_preview_subdomain defaults to "preview" — leaving unset gives
 # the wildcard *.preview.agenthub.dev.surveytracker.io.

@@ -307,6 +307,42 @@ pm2 logs agent-hub   # Live logs
 pm2 monit            # CPU/memory dashboard
 ```
 
+### Terraform Quickstart (EC2 + ALB + ECR Public)
+
+The `ops/terraform/` module provisions a complete Agent Hub host: VPC, EC2,
+dedicated ALB with TLS, IAM, and (by default) the per-PR preview environment
+stack. To bring up a new environment from scratch:
+
+```bash
+cd ops/terraform
+cp terraform.tfvars.example environments/<env>/<env>.tfvars
+# edit <env>.tfvars: set name, public_fqdn, base_domain, cert_renewal_email
+AWS_PROFILE=<profile> ./scripts/tf-init.sh <env>
+AWS_PROFILE=<profile> terraform apply -var-file=environments/<env>/<env>.tfvars
+```
+
+**PR Environments** are gated by a single root flag, `enable_pr_environments`,
+which **defaults to `true`**. A fresh apply provisions:
+
+- wildcard ACM cert for `*.preview.<your fqdn>` (DNS-01 via Route 53)
+- inline IAM policy on the EC2 SSM role for `route53:ChangeResourceRecordSets`
+- host nginx + certbot + sudoers allowlist + docker-socket bind-mount in
+  user-data
+- security-group ingress range 3100-3999 (host-local only)
+- the Tier-3 `prEnv` block in `<dataDir>/config.json`
+
+After `terraform apply`, log in to the Hub, tick **Settings → PR Environments
+→ Enabled**, and enter the GitHub App / Route 53 IAM credentials (Tier-1+2
+secrets stored AES-256-GCM-encrypted in SQLite). Per-PR previews start
+dispatching automatically.
+
+To opt **out** of the PR-env stack on a host that will never run previews,
+set `enable_pr_environments = false` in tfvars. The fine-grained
+`enable_pr_env_wildcard_cert`, `enable_pr_env_route53_iam`, and
+`enable_pr_env_host_nginx` variables remain as nullable per-piece overrides
+(default `null` = follow the root flag) — set them to `true` or `false` only
+when disabling a single piece for testing.
+
 ## Git Workflow
 
 All feature work uses **worktree-first development**:

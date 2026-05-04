@@ -83,13 +83,23 @@ output "ec2_docker_howto" {
 # flag is off or the inputs are insufficient.
 
 output "pr_env_wildcard_cert_arn" {
-  description = "Validated ACM certificate ARN for *.<pr_env_preview_subdomain>.<alb_fqdn>, present when enable_pr_env_wildcard_cert = true. Consumed by host nginx (NOT attached to the ALB listener)."
+  description = "Validated ACM certificate ARN for *.<pr_env_preview_subdomain>.<alb_fqdn>, present when PR-env wildcard cert is effectively enabled (enable_pr_environments = true, or enable_pr_env_wildcard_cert override = true). Consumed by host nginx (NOT attached to the ALB listener)."
   value       = one(aws_acm_certificate_validation.pr_env_wildcard[*].certificate_arn)
 }
 
 output "pr_env_route53_zone_id" {
   description = "Hosted zone ID used by PR-env DNS automation. Equals local.route53_zone_id_effective (the zone for base_domain), or null when no zone is discoverable."
   value       = local.route53_zone_id_effective
+}
+
+output "pr_env_enabled_effective" {
+  description = "Effective gating for the PR-env stack pieces, after resolving `enable_pr_environments` against the per-piece overrides (`enable_pr_env_wildcard_cert`, `enable_pr_env_route53_iam`, `enable_pr_env_host_nginx`). Each entry is the boolean Terraform actually used to decide whether to provision that piece; useful for CI assertions and operator sanity checks."
+  value = {
+    root_flag     = var.enable_pr_environments
+    wildcard_cert = local.pr_env_wildcard_cert_enabled
+    route53_iam   = local.pr_env_route53_iam_enabled
+    host_nginx    = local.pr_env_host_nginx_enabled
+  }
 }
 
 output "pr_env_preview_host" {

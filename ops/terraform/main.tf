@@ -192,7 +192,7 @@ resource "aws_security_group" "instance" {
   # output as "yes, this range is intentionally used by the host" without
   # actually opening anything externally.
   dynamic "ingress" {
-    for_each = var.enable_pr_env_host_nginx ? [1] : []
+    for_each = local.pr_env_host_nginx_enabled ? [1] : []
     content {
       description = "PR-env preview containers (host-local; reverse-proxied via host nginx)"
       from_port   = 3100
@@ -292,10 +292,10 @@ resource "aws_instance" "app" {
     # missing /etc/letsencrypt/live/<previewHost>/{fullchain,privkey}.pem and
     # the per-PR vhost broken. Surface this at plan time instead.
     precondition {
-      condition = !var.enable_pr_env_host_nginx || (
+      condition = !local.pr_env_host_nginx_enabled || (
         var.cert_renewal_email != null && trimspace(var.cert_renewal_email) != ""
       )
-      error_message = "enable_pr_env_host_nginx = true requires cert_renewal_email to be set (e.g. cert_renewal_email = \"ops@example.com\"). The address is registered with Let's Encrypt for expiration notices when certbot --dns-route53 issues the wildcard cert at first boot."
+      error_message = "PR-env host nginx is enabled (enable_pr_environments = true, or enable_pr_env_host_nginx = true) but cert_renewal_email is unset. Set cert_renewal_email = \"ops@example.com\" — the address is registered with Let's Encrypt for expiration notices when certbot --dns-route53 issues the wildcard cert at first boot. Alternatively, set enable_pr_environments = false (or enable_pr_env_host_nginx = false) to skip host nginx entirely."
     }
   }
 }

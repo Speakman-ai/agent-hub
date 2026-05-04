@@ -1,5 +1,27 @@
 # Bootstrap env + git URL (same Terraform module as alb.tf locals: local.alb_fqdn, etc.)
 locals {
+  # ── PR-env feature gating ───────────────────────────────────────────────────
+  # `enable_pr_environments` (default true) is the single root flag operators
+  # flip in tfvars. The three per-piece variables (`enable_pr_env_*`) are
+  # nullable bool overrides — non-null wins; null means "follow the parent."
+  # Every resource, check, and template MUST reference these locals (never
+  # `var.enable_pr_env_*` directly) so the override semantics stay consistent.
+  pr_env_wildcard_cert_enabled = (
+    var.enable_pr_env_wildcard_cert != null
+    ? var.enable_pr_env_wildcard_cert
+    : var.enable_pr_environments
+  )
+  pr_env_route53_iam_enabled = (
+    var.enable_pr_env_route53_iam != null
+    ? var.enable_pr_env_route53_iam
+    : var.enable_pr_environments
+  )
+  pr_env_host_nginx_enabled = (
+    var.enable_pr_env_host_nginx != null
+    ? var.enable_pr_env_host_nginx
+    : var.enable_pr_environments
+  )
+
   # For random_id count (avoids trimspace on null) and for effective API key.
   agent_hub_api_key_trim = (var.agent_hub_api_key == null ? "" : trimspace(var.agent_hub_api_key))
   # New bootstrap (clone + Docker) or legacy 571 user_data (docker_bootstrap, no app clone in TF)
@@ -152,16 +174,16 @@ locals {
   # Inside the container, the dataDir is bind-mounted at /data, which is
   # why prodDbPath/prEnvDataDir/envFilesDir all anchor at /data here.
   pr_env_preview_host_resolved = (
-    var.enable_pr_env_host_nginx && local.alb_fqdn != null
+    local.pr_env_host_nginx_enabled && local.alb_fqdn != null
     ? "${var.pr_env_preview_subdomain}.${local.alb_fqdn}"
     : ""
   )
   pr_env_route53_hosted_zone_id = (
-    var.enable_pr_env_host_nginx && local.route53_zone_id_effective != null
+    local.pr_env_host_nginx_enabled && local.route53_zone_id_effective != null
     ? local.route53_zone_id_effective
     : ""
   )
-  pr_env_config = var.enable_pr_env_host_nginx ? {
+  pr_env_config = local.pr_env_host_nginx_enabled ? {
     prEnv = {
       enabled        = true
       previewHost    = local.pr_env_preview_host_resolved
@@ -207,14 +229,14 @@ locals {
       docker_env_b64         = local.docker_bootstrap_env_b64
       image_uri              = local.agent_hub_image_uri_trim
       ssm_deb_url            = "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb"
-      pr_env_enabled         = var.enable_pr_env_host_nginx
+      pr_env_enabled         = local.pr_env_host_nginx_enabled
       pr_env_base_nginx_conf = local.pr_env_base_nginx_conf
       config_json_b64        = local.pr_env_config_json_b64
       # PR-env first-boot wildcard cert (certbot --dns-route53). The hostname
       # passed here is the resolved cert lineage name (matches
       # pr_env_config.nginx.{certPath,keyPath}). The email is the Let's Encrypt
       # registration contact; it is required at plan time when
-      # enable_pr_env_host_nginx = true (precondition on aws_instance.app).
+      # local.pr_env_host_nginx_enabled = true (precondition on aws_instance.app).
       pr_env_preview_host = local.pr_env_preview_host_resolved
       cert_renewal_email  = var.cert_renewal_email != null ? trimspace(var.cert_renewal_email) : ""
     }

@@ -33,7 +33,7 @@ check "agent_hub_bootstrap_source" {
 # so operators see one consolidated message in plan output.
 check "pr_env_wildcard_requires_zone" {
   assert {
-    condition     = !var.enable_pr_env_wildcard_cert || local.has_route53_zone
-    error_message = "enable_pr_env_wildcard_cert = true requires a discoverable Route 53 zone for base_domain. Set route53_zone_id directly, or set lookup_route53_zone_in_this_account = true so the zone for base_domain is resolved in this account."
+    condition     = !local.pr_env_wildcard_cert_enabled || local.has_route53_zone
+    error_message = "PR-env wildcard cert is enabled (enable_pr_environments = true, or enable_pr_env_wildcard_cert = true) but no Route 53 zone is discoverable for base_domain. Set route53_zone_id directly, or set lookup_route53_zone_in_this_account = true so the zone for base_domain is resolved in this account. Alternatively set enable_pr_environments = false (or enable_pr_env_wildcard_cert = false) to skip the wildcard cert."
   }
 }

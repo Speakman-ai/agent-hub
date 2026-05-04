@@ -275,7 +275,7 @@ resource "aws_route53_record" "agenthub" {
 # Issued for host nginx to terminate TLS on per-PR preview hostnames such as
 # `pr-123.preview.agenthub.ryan.dev.surveytracker.io`. NOT attached to the ALB
 # listener — the ALB only fronts the canonical Agent Hub host. Default-disabled
-# (gated on var.enable_pr_env_wildcard_cert) so existing stacks plan as 0
+# (gated on local.pr_env_wildcard_cert_enabled) so existing stacks plan as 0
 # changes until they opt in.
 
 locals {
@@ -283,7 +283,7 @@ locals {
 }
 
 resource "aws_acm_certificate" "pr_env_wildcard" {
-  count = var.enable_pr_env_wildcard_cert ? 1 : 0
+  count = local.pr_env_wildcard_cert_enabled ? 1 : 0
 
   domain_name       = "*.${local.pr_env_preview_host}"
   validation_method = "DNS"
@@ -293,12 +293,12 @@ resource "aws_acm_certificate" "pr_env_wildcard" {
 
     precondition {
       condition     = local.has_route53_zone
-      error_message = "enable_pr_env_wildcard_cert = true requires a discoverable Route 53 zone for base_domain. Set route53_zone_id, or set lookup_route53_zone_in_this_account = true so DNS-01 validation records can be written."
+      error_message = "PR-env wildcard cert is enabled (enable_pr_environments = true, or enable_pr_env_wildcard_cert = true) but no Route 53 zone is discoverable for base_domain. Set route53_zone_id, or set lookup_route53_zone_in_this_account = true so DNS-01 validation records can be written. Alternatively set enable_pr_environments = false (or enable_pr_env_wildcard_cert = false) to skip the wildcard cert."
     }
 
     precondition {
       condition     = local.alb_fqdn != null
-      error_message = "enable_pr_env_wildcard_cert = true requires alb_fqdn to resolve. Set public_fqdn (preferred) or set name + dns_subdomain + base_domain so the wildcard host *.<pr_env_preview_subdomain>.<alb_fqdn> can be composed."
+      error_message = "PR-env wildcard cert is enabled (enable_pr_environments = true, or enable_pr_env_wildcard_cert = true) but alb_fqdn does not resolve. Set public_fqdn (preferred) or set name + dns_subdomain + base_domain so the wildcard host *.<pr_env_preview_subdomain>.<alb_fqdn> can be composed. Alternatively set enable_pr_environments = false (or enable_pr_env_wildcard_cert = false) to skip the wildcard cert."
     }
   }
 
@@ -308,7 +308,7 @@ resource "aws_acm_certificate" "pr_env_wildcard" {
 }
 
 resource "aws_route53_record" "pr_env_wildcard_cert_validation" {
-  for_each = var.enable_pr_env_wildcard_cert ? {
+  for_each = local.pr_env_wildcard_cert_enabled ? {
     for dvo in aws_acm_certificate.pr_env_wildcard[0].domain_validation_options : dvo.domain_name => dvo
   } : {}
 
@@ -320,7 +320,7 @@ resource "aws_route53_record" "pr_env_wildcard_cert_validation" {
 }
 
 resource "aws_acm_certificate_validation" "pr_env_wildcard" {
-  count = var.enable_pr_env_wildcard_cert ? 1 : 0
+  count = local.pr_env_wildcard_cert_enabled ? 1 : 0
 
   certificate_arn         = aws_acm_certificate.pr_env_wildcard[0].arn
   validation_record_fqdns = [for r in aws_route53_record.pr_env_wildcard_cert_validation : r.fqdn]

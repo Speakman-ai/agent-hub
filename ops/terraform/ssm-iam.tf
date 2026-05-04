@@ -50,7 +50,7 @@ resource "aws_iam_instance_profile" "ec2_ssm" {
 # ListResourceRecordSets are scoped to the discovered hosted zone for
 # base_domain; route53:GetChange must use change/* (change IDs are dynamic and
 # AWS rejects a hostedzone-scoped resource for that action). Default-disabled
-# via var.enable_pr_env_route53_iam.
+# via local.pr_env_route53_iam_enabled.
 
 resource "aws_iam_role_policy" "pr_env_route53" {
   # Gate on the feature flag only — the lifecycle.precondition blocks below
@@ -59,7 +59,7 @@ resource "aws_iam_role_policy" "pr_env_route53" {
   # silently evaluate to 0 and bypass the preconditions, leaving the operator
   # with a confusing runtime IAM error instead of a plan-time message — same
   # pattern as aws_acm_certificate.pr_env_wildcard in alb.tf.
-  count = var.enable_pr_env_route53_iam ? 1 : 0
+  count = local.pr_env_route53_iam_enabled ? 1 : 0
 
   name = "${var.project_name}-pr-env-route53"
   role = aws_iam_role.ec2_ssm[0].id
@@ -98,13 +98,13 @@ resource "aws_iam_role_policy" "pr_env_route53" {
 
   lifecycle {
     precondition {
-      condition     = !var.enable_pr_env_route53_iam || var.enable_instance_ssm
-      error_message = "enable_pr_env_route53_iam = true requires enable_instance_ssm = true (the inline policy attaches to the SSM EC2 instance role)."
+      condition     = !local.pr_env_route53_iam_enabled || var.enable_instance_ssm
+      error_message = "PR-env Route 53 IAM is enabled (enable_pr_environments = true, or enable_pr_env_route53_iam = true) but enable_instance_ssm = false. The inline policy attaches to the SSM EC2 instance role; set enable_instance_ssm = true, or set enable_pr_environments = false (or enable_pr_env_route53_iam = false) to skip the inline policy."
     }
 
     precondition {
-      condition     = !var.enable_pr_env_route53_iam || local.has_route53_zone
-      error_message = "enable_pr_env_route53_iam = true requires a discoverable Route 53 zone for base_domain. Set route53_zone_id, or set lookup_route53_zone_in_this_account = true."
+      condition     = !local.pr_env_route53_iam_enabled || local.has_route53_zone
+      error_message = "PR-env Route 53 IAM is enabled (enable_pr_environments = true, or enable_pr_env_route53_iam = true) but no Route 53 zone is discoverable for base_domain. Set route53_zone_id, or set lookup_route53_zone_in_this_account = true. Alternatively set enable_pr_environments = false (or enable_pr_env_route53_iam = false) to skip the inline policy."
     }
   }
 }
