@@ -18,6 +18,7 @@ Back to [SKILL.md](../SKILL.md).
 - [Config locations](#config-locations)
 - [Endpoints at a glance](#endpoints-at-a-glance)
 - [Per-user Claude credentials](#per-user-claude-credentials)
+- [Per-user Nango integrations (spawn env)](#per-user-nango-integrations-spawn-env)
 - [JWT `uid` claim & pre-migration fallback](#jwt-uid-claim--pre-migration-fallback)
 - [Rate limiting — `trust proxy` is coupled to the proxy topology](#rate-limiting--trust-proxy-is-coupled-to-the-proxy-topology)
 
@@ -199,6 +200,53 @@ missing (apiKey-only callers + local-bundled-server bypass) and `404`
 when the user row is unknown. Encryption-at-rest is tracked as a
 follow-up — credentials currently sit on the users row in plaintext,
 mirroring the existing `github_user_token` precedent.
+
+## Per-user Nango integrations (spawn env)
+
+When the IntegrationProvider (Nango Cloud / Self-Hosted) is configured
+AND the session owner has connected one or more apps under
+**Settings → Integrations**, Agent Hub injects three env vars at
+spawn time so the agent can call third-party APIs through the proxy
+without hand-rolling auth. Resolution lives in
+`server/spawn-nango-env.ts` and runs inside `buildSpawnEnv`
+(`server/config.ts`) the same way the per-user Claude override does.
+
+| Env var                  | Value                                                                |
+| ------------------------ | -------------------------------------------------------------------- |
+| `NANGO_SECRET_KEY`       | Hub-level Nango secret (Bearer token).                               |
+| `NANGO_PROVIDER_BASE`    | Provider API base URL. Defaults to `https://api.nango.dev` (override for self-hosted). |
+| `NANGO_CONNECTIONS_JSON` | JSON `{ "<app>": "<connection_id>", ... }` — owner-scoped only.      |
+
+**Owner scoping is structural.** `resolveNangoSpawnOverride(ownerId)`
+calls `listForUser(ownerId)` directly, so `NANGO_CONNECTIONS_JSON` can
+only ever contain rows belonging to the session's recorded owner. A
+session never sees another user's connection ids even when the host
+secret is shared. Only rows with `status = 'CONNECTED'` are surfaced
+— PENDING / ERROR / REVOKED rows would hand the agent a connection id
+Nango would reject.
+
+**Sub-agent inheritance.** Sub-agents launched via `<delegate>` /
+`<handoff>` inherit the parent process env, so per-user Nango creds
+propagate naturally — same approach as per-user Claude auth above.
+
+**No-leak discipline.** When the resolver returns `null` (no owner,
+provider unconfigured, or `enabled = false`), `buildSpawnEnv`
+**deletes** the three vars from the spawn env so a stale
+`process.env.NANGO_SECRET_KEY` from the host can never leak through.
+
+**Calling the proxy from a session.** The `scripts/nango-call.mjs`
+helper reads these vars and shells out a proxied request — agents
+should prefer it over hand-rolled `fetch`. Example:
+
+```bash
+scripts/nango-call.mjs --app slack --path chat.postMessage \
+  --method POST --body '{"channel":"C123","text":"hello from agent"}'
+```
+
+It exits `2` when `NANGO_SECRET_KEY` is missing or the requested app
+isn't in `NANGO_CONNECTIONS_JSON`, `1` on a non-2xx upstream
+response, and `3` on transport failure. The secret key is never
+echoed to stdout/stderr.
 
 ## JWT `uid` claim & pre-migration fallback
 
