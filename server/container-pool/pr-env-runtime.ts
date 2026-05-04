@@ -101,10 +101,13 @@ export interface PrEnvRuntimeConfig {
    */
   certRenewalLive?: boolean;
   /**
-   * The GitHub `owner/repo` this pool serves. Used by the reaper to
-   * cross-check PR state on GitHub when a webhook drop is suspected.
-   * Single-repo pools (the current default) set this once; multi-repo
-   * pools would override per-slot via `getRepoForSlot` on the reaper deps.
+   * Optional host-wide GitHub `owner/repo` fallback for the reaper. May be
+   * the empty string in multi-project deployments, where each project
+   * carries its own `githubRepo` on the project record and the reaper
+   * resolves the repo per-slot via `getRepoForSlot`. The legacy
+   * single-tenant singleton (`PR_ENV_REPO_FULL_NAME` /
+   * `prEnv.repoFullName`) is still honoured if present, but is no longer
+   * required at config-load time.
    */
   repoFullName: string;
 }
@@ -302,7 +305,13 @@ export function readPrEnvConfig(
   if (!nginx.certPath) missing.push('PR_ENV_NGINX_CERT_PATH / prEnv.nginx.certPath');
   if (!nginx.keyPath) missing.push('PR_ENV_NGINX_KEY_PATH / prEnv.nginx.keyPath');
   if (!nginx.previewHost) missing.push('PR_ENV_PREVIEW_HOST / prEnv.nginx.previewHost');
-  if (!repoFullName) missing.push('PR_ENV_REPO_FULL_NAME / prEnv.repoFullName');
+  // `repoFullName` is no longer required at config-load time. Multi-project
+  // PR-envs resolve the owning repo per-event from the per-project record
+  // (`projects.githubRepo`), and the reaper resolves slots through
+  // `getRepoForSlot` rather than the singleton. The field stays on the
+  // runtime config as a fallback default for the reaper, but an empty
+  // value is acceptable — it just means there is no host-wide singleton
+  // and the per-project / per-slot path is authoritative.
   if (missing.length > 0) {
     throw new Error(
       `AGENT_HUB_PR_ENV_ENABLED=true but required config is unset: ${missing.join(', ')}`,

@@ -210,6 +210,60 @@ describe('readPrEnvConfig — merge DB row', () => {
     );
     expect(result).not.toBeNull();
   });
+
+  // ─── Singleton repoFullName is no longer required ──────────────────────
+  //
+  // Multi-project PR-envs resolve the owning repo per-event from the
+  // per-project `githubRepo` field on the project record. The host-wide
+  // `PR_ENV_REPO_FULL_NAME` / `prEnv.repoFullName` singleton is preserved
+  // as an optional reaper fallback (`defaultRepoFullName`), but missing /
+  // empty values must NOT block config load.
+
+  it('does not throw when repoFullName is missing from DB row, file block, and env', () => {
+    const noRepoRow: PrEnvConfigRow = { ...FULL_DB_ROW, repoFullName: '' };
+    expect(() => readPrEnvConfig({}, REQUIRED_NON_UI_ENV, noRepoRow, APP_CONFIG_REF)).not.toThrow();
+    const result = readPrEnvConfig({}, REQUIRED_NON_UI_ENV, noRepoRow, APP_CONFIG_REF);
+    expect(result).not.toBeNull();
+    // Field is preserved on the runtime config for reaper compatibility,
+    // even when empty.
+    expect(result!.repoFullName).toBe('');
+  });
+
+  it('does not throw when file-block enables the feature without repoFullName', () => {
+    // dbRow === null means the UI has never written — file block carries
+    // the config. The legacy single-tenant docs always set repoFullName,
+    // but a per-project deployment that omits it must still load.
+    const result = readPrEnvConfig(
+      {
+        prEnv: {
+          enabled: true,
+          previewBaseUrl: 'https://file.example.com',
+          route53: { accessKeyId: 'f-akia', secretAccessKey: 'f-sk', hostedZoneId: 'f-zone' },
+          nginx: { previewHost: 'preview.file.example.com' },
+        },
+      },
+      REQUIRED_NON_UI_ENV,
+      null,
+      APP_CONFIG_REF,
+    );
+    expect(result).not.toBeNull();
+    expect(result!.repoFullName).toBe('');
+  });
+
+  it('still preserves explicit repoFullName from DB / env / file when present', () => {
+    // Sanity check that we removed the validation only — propagation is
+    // unchanged so legacy single-repo deployments keep working.
+    const envResult = readPrEnvConfig(
+      {},
+      { ...REQUIRED_NON_UI_ENV, PR_ENV_REPO_FULL_NAME: 'env/repo' },
+      { ...FULL_DB_ROW, repoFullName: '' },
+      APP_CONFIG_REF,
+    );
+    expect(envResult!.repoFullName).toBe('env/repo');
+
+    const dbResult = readPrEnvConfig({}, REQUIRED_NON_UI_ENV, FULL_DB_ROW, APP_CONFIG_REF);
+    expect(dbResult!.repoFullName).toBe('acme/from-db');
+  });
 });
 
 // ─── Reviewer-App is the sole source for GitHub creds ────────────────────

@@ -176,7 +176,11 @@ describe('readPrEnvConfig — required field validation', () => {
       expect(msg).toContain('PR_ENV_GITHUB_APP_ID');
       expect(msg).toContain('PR_ENV_GITHUB_INSTALLATION_ID');
       expect(msg).toContain('PR_ENV_GITHUB_PRIVATE_KEY');
-      expect(msg).toContain('PR_ENV_REPO_FULL_NAME');
+      // `PR_ENV_REPO_FULL_NAME` is no longer required — multi-project
+      // PR-envs resolve the owning repo per-event from the per-project
+      // `githubRepo` field. The singleton field stays as an optional
+      // reaper fallback only.
+      expect(msg).not.toContain('PR_ENV_REPO_FULL_NAME');
       expect(msg).toContain('PR_ENV_NGINX_CERT_PATH');
       expect(msg).toContain('PR_ENV_PREVIEW_HOST');
       expect(msg).toContain('PR_ENV_ROUTE53_HOSTED_ZONE_ID');
