@@ -1457,6 +1457,18 @@ export async function autoCommitAndPR(
 ): Promise<void> {
   const d = getDeps();
   try {
+    // Tasks-only projects: no GitHub repo configured means no PR lifecycle.
+    // Make this explicit at the top so the no-GitHub case is obvious from
+    // a single read. Downstream checks (`effectiveCwd === project.cwd` and
+    // `git remote -v`) would also reject these, but only after spending
+    // time walking through worktree / card / ad-hoc branching.
+    if (!project.githubRepo) {
+      console.log(
+        `[auto-commit] Session ${sessionId} — skipping (project has no githubRepo, tasks-only)`,
+      );
+      return;
+    }
+
     if (agent.role === 'intake') {
       console.log(`[auto-commit] Session ${sessionId} — skipping (intake agent, no PR)`);
       return;
@@ -1684,6 +1696,17 @@ export async function manualCommitAndPR(
   options: { title?: string; autoMerge?: boolean },
 ): Promise<ManualPrResult> {
   const d = getDeps();
+
+  // Tasks-only projects have no GitHub repo and no PR lifecycle. The "Create
+  // PR" button should never reach this code path (the UI hides it), but a
+  // direct API hit must fail fast with a clear reason.
+  if (!project.githubRepo) {
+    return {
+      ok: false,
+      error: 'This project is not connected to a GitHub repository.',
+      code: 'no_github_repo',
+    };
+  }
 
   const board = d.stmts.getKanbanBoard?.get(project.id) as { id: string } | undefined;
   if (!board) {

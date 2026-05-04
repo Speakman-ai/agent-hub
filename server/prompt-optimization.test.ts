@@ -468,6 +468,48 @@ describe('buildEnrichedPrompt — server owns PR creation', () => {
   });
 });
 
+describe('buildEnrichedPrompt — tasks-only project (no GitHub)', () => {
+  beforeEach(() => {
+    mkdirSync(tmpBase, { recursive: true });
+    mkdirSync(path.join(tmpBase, 'skills'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  it('omits the GitHub-Connected lifecycle block when project has no githubRepo and no git remote', () => {
+    // Tasks-only project: no githubRepo field set, project.cwd is not a git
+    // repo at all (the bare tmpBase). The agent must NOT receive the
+    // "Development Lifecycle — GitHub-Connected Project" block, because
+    // there is no GitHub repo, no branches, no PRs.
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).not.toContain('Development Lifecycle — GitHub-Connected Project');
+    // Likewise, no PR/branch imperatives should leak through.
+    expect(prompt).not.toMatch(/git checkout -b feature/);
+    expect(prompt).not.toMatch(/server will push.*open the PR/i);
+  });
+
+  it('omits the GitHub-Connected lifecycle block in workflow mode with no githubRepo', () => {
+    const prompt = buildEnrichedPrompt(makeProject({ mode: 'workflow' }), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).not.toContain('Development Lifecycle — GitHub-Connected Project');
+  });
+
+  it('still includes the GitHub-Connected lifecycle block when githubRepo is set', () => {
+    // Even without a real git remote on disk, an explicit githubRepo on the
+    // project record should be enough to enable the lifecycle block — this
+    // is the declarative path that does not depend on the working tree.
+    const prompt = buildEnrichedPrompt(makeProject({ githubRepo: 'owner/repo' }), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('Development Lifecycle — GitHub-Connected Project');
+  });
+});
+
 describe('buildEnrichedPrompt — lead agent delegation', () => {
   beforeEach(() => {
     mkdirSync(tmpBase, { recursive: true });

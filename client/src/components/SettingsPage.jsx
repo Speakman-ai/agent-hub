@@ -2556,9 +2556,12 @@ function ProjectsSection({
                     <div className="space-y-2">
                       <label className={labelClass}>Project mode</label>
                       <p className="text-xs text-gray-500">
-                        Dev (default): kanban lifecycle, per-session worktrees, and GitHub PR review
-                        automation. Workflow: work in the project checkout; automated reviewer
-                        dispatch and session PR flows stay off.
+                        <strong>Dev</strong> (default): kanban lifecycle, per-session worktrees, and
+                        GitHub PR review automation. <strong>Workflow</strong>: work in the project
+                        checkout; automated reviewer dispatch and session PR flows stay off. For a{' '}
+                        <strong>tasks-only project</strong> (just wiki, board, sessions, crons,
+                        heartbeats — no git or GitHub), pick <em>Workflow</em> and leave the GitHub
+                        repo field empty.
                       </p>
                       <select
                         value={isWorkflowProject(p) ? 'workflow' : 'dev'}
@@ -2575,8 +2578,8 @@ function ProjectsSection({
                         }}
                         className={inputClass}
                       >
-                        <option value="dev">Dev</option>
-                        <option value="workflow">Workflow</option>
+                        <option value="dev">Dev (GitHub-connected)</option>
+                        <option value="workflow">Workflow / Tasks-only (no PR automation)</option>
                       </select>
                     </div>
 

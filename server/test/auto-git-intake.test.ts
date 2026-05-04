@@ -51,7 +51,7 @@ describe('autoCommitAndPR — intake agent skip', () => {
     await autoCommitAndPR(
       'session-123',
       'agent-intake',
-      { id: 'proj', cwd: '/tmp/proj' } as never,
+      { id: 'proj', cwd: '/tmp/proj', githubRepo: 'test/repo' } as never,
       { id: 'agent-intake', name: 'Ticket Intake', role: 'intake' } as never,
       '/tmp/proj/worktree-1',
       'final content',
@@ -75,7 +75,7 @@ describe('autoCommitAndPR — intake agent skip', () => {
     await autoCommitAndPR(
       'session-456',
       'agent-dev',
-      { id: 'proj', cwd: '/tmp/proj' } as never,
+      { id: 'proj', cwd: '/tmp/proj', githubRepo: 'test/repo' } as never,
       { id: 'agent-dev', name: 'Dev Agent', role: undefined } as never,
       '/tmp/proj/worktree-2',
       'final content',

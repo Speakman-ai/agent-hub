@@ -467,7 +467,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       },
     );
 
-    const project = { id: 'test', cwd: '/repo' } as never;
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'test-agent', role: 'dev' } as never;
 
     await autoCommitAndPR('sess-1', 'agent-1', project, agent, '/worktree', '');
@@ -568,7 +568,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       },
     );
 
-    const project = { id: 'test', cwd: '/repo' } as never;
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'test-agent', role: 'dev' } as never;
 
     await autoCommitAndPR('sess-id', 'agent-1', project, agent, '/worktree', '');
@@ -653,6 +653,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
     const project = {
       id: 'test',
       cwd: '/repo',
+      githubRepo: 'test/repo',
       preCommitCommands: ['npm run verify'],
     } as never;
     const agent = { name: 'test-agent', role: 'dev' } as never;
@@ -742,7 +743,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
         },
       );
 
-      const project = { id: 'test', cwd: '/repo' } as never;
+      const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
       const agent = { name: 'test-agent', role: 'dev' } as never;
 
       await autoCommitAndPR('sess-path-env', 'agent-1', project, agent, '/worktree', '');
@@ -772,7 +773,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       'gh pr view': { error: new Error('no pull requests found') },
     });
 
-    const project = { id: 'test', cwd: '/repo' } as never;
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'test-agent', role: 'dev' } as never;
 
     await autoCommitAndPR('sess-2', 'agent-1', project, agent, '/worktree', '');
@@ -794,7 +795,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       'gh pr view': { error: new Error('no pull requests found') },
     });
 
-    const project = { id: 'test', cwd: '/repo' } as never;
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'test-agent', role: 'dev' } as never;
 
     await autoCommitAndPR('sess-3', 'agent-1', project, agent, '/worktree', '');
@@ -824,7 +825,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       'gh pr view': { stdout: 'https://github.com/test/repo/pull/99\n' },
     });
 
-    const project = { id: 'test', cwd: '/repo' } as never;
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'test-agent', role: 'dev' } as never;
 
     await autoCommitAndPR('sess-4', 'agent-1', project, agent, '/worktree', '');
@@ -874,7 +875,7 @@ describe('autoCommitAndPR — ad-hoc session with existing PR', () => {
       },
     );
 
-    const project = { id: 'test', cwd: '/repo' } as never;
+    const project = { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'Reviewer', role: 'reviewer' } as never;
 
     await autoCommitAndPR('sess-reviewer', 'reviewer-1', project, agent, '/worktree', '');
@@ -984,6 +985,7 @@ describe('commitPushAndCreatePR — existing PR early return re-applies auto-mer
     const project = {
       id: 'proj-1',
       cwd: '/repo',
+      githubRepo: 'test/repo',
       githubWorkflow: { autoMerge: true },
     } as never;
     const agent = { name: 'test-agent', role: 'dev' } as never;
@@ -1011,7 +1013,7 @@ describe('commitPushAndCreatePR — existing PR early return re-applies auto-mer
     });
     mockExecExistingPR('https://github.com/test/repo/pull/78', execCalls);
 
-    const project = { id: 'proj-1', cwd: '/repo' } as never; // no githubWorkflow
+    const project = { id: 'proj-1', cwd: '/repo', githubRepo: 'test/repo' } as never; // no githubWorkflow
     const agent = { name: 'test-agent', role: 'dev' } as never;
 
     await autoCommitAndPR('sess-am-off', 'agent-1', project, agent, '/worktree', '');
@@ -1160,7 +1162,7 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
       execCalls,
     );
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-1', 'agent-1', project, agent, '/worktree', '');
 
@@ -1237,7 +1239,7 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
       execCalls,
     );
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-shell', 'agent-1', project, agent, '/worktree', '');
     await new Promise((r) => setImmediate(r));
@@ -1285,7 +1287,7 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
       execCalls,
     );
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-adhoc', 'agent-1', project, agent, '/worktree', '');
     await new Promise((r) => setImmediate(r));
@@ -1331,7 +1333,7 @@ describe('broadcastAndMove — persists PR-created marker as a system message', 
       execCalls,
     );
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
 
     // Should not throw.
@@ -1431,7 +1433,7 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
     });
     mockExecAdHocStyle(execCalls);
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-manual', 'agent-1', project, agent, '/worktree', '');
 
@@ -1471,7 +1473,7 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
     });
     mockExecAdHocStyle(execCalls);
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-auto', 'agent-1', project, agent, '/worktree', '');
 
@@ -1506,7 +1508,7 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
     });
     mockExecAdHocStyle(execCalls);
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-epic', 'agent-1', project, agent, '/worktree', '');
 
@@ -1539,7 +1541,7 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
     });
     mockExecAdHocStyle(execCalls);
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-epic-manual', 'agent-1', project, agent, '/worktree', '');
 
@@ -1666,7 +1668,7 @@ describe('autoCommitAndPR — nothing_to_publish log severity', () => {
     });
     mockExecCleanWorktreeNoPR();
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-noop', 'agent-1', project, agent, '/repo/.worktrees/x', '');
 
@@ -1703,7 +1705,7 @@ describe('autoCommitAndPR — nothing_to_publish log severity', () => {
     });
     mockExecPushFails(execCalls);
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-push-fail', 'agent-1', project, agent, '/repo/.worktrees/x', '');
 
@@ -1769,7 +1771,7 @@ describe('autoCommitAndPR — nothing_to_publish log severity', () => {
       },
     );
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-adhoc-noop', 'agent-1', project, agent, '/repo/.worktrees/x', '');
 
@@ -2228,7 +2230,7 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
     });
     installPrCreationMock('https://github.com/test/repo/pull/777');
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     const result = await manualCommitAndPR('sess-dup', 'agent-1', project, agent, '/worktree', {});
 
@@ -2257,7 +2259,7 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
     });
     installPrCreationMock('https://github.com/test/repo/pull/888');
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     const result = await manualCommitAndPR('sess-noadhoc', 'agent-1', project, agent, '/worktree', {
       title: 'Fix the thing',
@@ -2320,7 +2322,7 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
       },
     );
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     const result = await manualCommitAndPR(
       'sess-commit-fail',
@@ -2494,7 +2496,7 @@ describe('autoCommitAndPR — pr_base_branch override', () => {
       },
     );
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-stacked', 'agent-1', project, agent, '/worktree', '');
 
@@ -2546,7 +2548,7 @@ describe('autoCommitAndPR — pr_base_branch override', () => {
       },
     );
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-fallback', 'agent-1', project, agent, '/worktree', '');
 
@@ -2606,7 +2608,7 @@ describe('autoCommitAndPR — pr_base_branch override', () => {
       },
     );
 
-    const project = { id: 'p', cwd: '/repo' } as never;
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
     const agent = { name: 'dev', role: 'dev' } as never;
     await autoCommitAndPR('sess-no-override', 'agent-1', project, agent, '/worktree', '');
 
@@ -2621,5 +2623,70 @@ describe('autoCommitAndPR — pr_base_branch override', () => {
     // No fallback comment on the happy path
     const commentRun = (stmts.createKanbanCardComment as { run: ReturnType<typeof vi.fn> }).run;
     expect(commentRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('tasks-only project (no githubRepo) — auto/manual PR are no-ops', () => {
+  // A "tasks-only" project is one with no `githubRepo` set: it has wiki,
+  // kanban, sessions, crons, and heartbeats, but no git/PR lifecycle. Both
+  // the auto-PR babysit (autoCommitAndPR) and the user-clicked manual PR
+  // path (manualCommitAndPR) must short-circuit cleanly when there is no
+  // GitHub repo to push to.
+  const mockBroadcast = vi.fn();
+  const mockStmts = {
+    getKanbanCardBySession: { get: vi.fn(() => undefined) },
+    updateSessionChangesReady: { run: vi.fn() },
+    clearSessionChangesReady: { run: vi.fn() },
+    getKanbanBoard: { get: vi.fn(() => ({ id: 'board-1' })) },
+  } as Record<string, unknown>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    initAutoGit({
+      stmts: mockStmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+    // If anything tries to shell out, fail loudly — a tasks-only project
+    // must not invoke git or gh at all.
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        callback?.(new Error(`unexpected exec in tasks-only project: ${cmd}`), {
+          stdout: '',
+          stderr: '',
+        });
+      },
+    );
+  });
+
+  it('autoCommitAndPR returns immediately when project has no githubRepo', async () => {
+    const project = { id: 'tasks-only', cwd: '/anywhere' } as never;
+    const agent = { name: 'tasker', role: 'dev' } as never;
+    await autoCommitAndPR('sess-tasks', 'agent-1', project, agent, '/worktree', '');
+    // No broadcasts at all — nothing happened.
+    expect(mockBroadcast).not.toHaveBeenCalled();
+  });
+
+  it('manualCommitAndPR returns no_github_repo when project has no githubRepo', async () => {
+    const project = { id: 'tasks-only', cwd: '/anywhere' } as never;
+    const agent = { name: 'tasker', role: 'dev' } as never;
+    const result = await manualCommitAndPR(
+      'sess-tasks',
+      'agent-1',
+      project,
+      agent,
+      '/worktree',
+      {},
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok === false) {
+      expect(result.code).toBe('no_github_repo');
+      expect(result.error).toMatch(/not connected to a GitHub repository/i);
+    }
   });
 });

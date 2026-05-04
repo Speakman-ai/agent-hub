@@ -752,6 +752,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       preCommitCommands,
       checkHealCommands,
       checkHealMaxRounds,
+      mode,
     } = req.body as {
       id?: string;
       name?: string;
@@ -761,12 +762,23 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       preCommitCommands?: unknown;
       checkHealCommands?: unknown;
       checkHealMaxRounds?: unknown;
+      mode?: unknown;
     };
     if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) {
       return res.status(400).json({ error: 'id is required and must be alphanumeric+hyphens' });
     }
     if (findProject(id)) {
       return res.status(409).json({ error: 'Project id already exists' });
+    }
+    // Optional `mode` lets callers create a tasks-only project up front
+    // (`mode: 'workflow'` + no `githubRepo`) without a follow-up PATCH.
+    let createMode: ProjectMode | undefined;
+    if (mode !== undefined && mode !== null && mode !== '') {
+      if (mode === 'dev' || mode === 'workflow') {
+        createMode = mode;
+      } else {
+        return res.status(400).json({ error: 'mode must be "dev", "workflow", or null' });
+      }
     }
     const dataDir = getProjectDataDir(id);
     const project: Project = {
@@ -777,6 +789,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       color: color || '#6b7280',
       agents: [],
     };
+    if (createMode) (project as Record<string, unknown>).mode = createMode;
     if (commands && typeof commands === 'object') {
       (project as Record<string, unknown>).commands = {
         install: commands.install || null,

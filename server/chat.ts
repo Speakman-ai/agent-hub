@@ -592,18 +592,25 @@ The server moves the session's linked card to Done and appends an explanatory co
     prompt += '\n\n' + memoryContext;
   }
 
-  let isGitHubConnected = false;
-  try {
-    // Pipe stderr only (ignore) so prompt tests' temp dirs — not git repos —
-    // do not print "fatal: not a git repository" to the test runner.
-    const remoteOutput = execSync('git remote -v', {
-      cwd: project.cwd,
-      timeout: 5000,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    isGitHubConnected = remoteOutput.includes('github.com');
-  } catch {}
+  // Tasks-only projects (no `githubRepo` field, no git remote) must not get
+  // the GitHub-Connected lifecycle prompt or any PR/branch guidance. We
+  // prefer the declarative `project.githubRepo` field; if it is unset we
+  // fall back to a `git remote -v` probe to preserve historical behavior
+  // for projects that pre-date the field.
+  let isGitHubConnected = Boolean((project as Project).githubRepo);
+  if (!isGitHubConnected) {
+    try {
+      // Pipe stderr only (ignore) so prompt tests' temp dirs — not git repos —
+      // do not print "fatal: not a git repository" to the test runner.
+      const remoteOutput = execSync('git remote -v', {
+        cwd: project.cwd,
+        timeout: 5000,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      isGitHubConnected = remoteOutput.includes('github.com');
+    } catch {}
+  }
 
   // Static instructional blocks — only on first message to save tokens
   if (isFirstMessage) {

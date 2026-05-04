@@ -123,6 +123,44 @@ describe('Projects', () => {
         .expect(400);
       expect(String(res.body.error)).toMatch(/checkHealMaxRounds/i);
     });
+
+    it('creates a tasks-only project (mode=workflow, no githubRepo)', async () => {
+      // The "tasks-only" project shape: no GitHub repo, workflow mode so
+      // session worktrees and PR automation stay off. Must be creatable in
+      // a single POST with `mode: 'workflow'`.
+      const res = await request
+        .post('/api/projects')
+        .send({
+          id: 'tasks-only-proj',
+          name: 'Tasks Only',
+          cwd: '/tmp',
+          mode: 'workflow',
+        })
+        .expect(201);
+      expect(res.body.mode).toBe('workflow');
+      expect(res.body.githubRepo).toBeUndefined();
+    });
+
+    it('rejects POST with an invalid mode value', async () => {
+      const res = await request
+        .post('/api/projects')
+        .send({
+          id: 'bad-mode-proj',
+          name: 'Bad Mode',
+          cwd: '/tmp',
+          mode: 'something-else',
+        })
+        .expect(400);
+      expect(String(res.body.error)).toMatch(/mode/i);
+    });
+
+    it('omits mode when not provided (defaults to dev via getProjectMode)', async () => {
+      const res = await request
+        .post('/api/projects')
+        .send({ id: 'no-mode-proj', name: 'No Mode', cwd: '/tmp' })
+        .expect(201);
+      expect(res.body.mode).toBeUndefined();
+    });
   });
 
   describe('GET /api/projects', () => {
