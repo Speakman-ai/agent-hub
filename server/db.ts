@@ -4,7 +4,7 @@ import config from './config.js';
 import { POOL_SCHEMA } from './container-pool/schema.js';
 import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
 import { PREVIEW_AUTH_SCHEMA } from './container-pool/preview-auth-schema.js';
-import { PR_ENV_CONFIG_SCHEMA } from './pr-env-schema.js';
+import { PR_ENV_CONFIG_SCHEMA, PR_ENV_CONFIG_DROP_LEGACY_GITHUB_COLUMNS } from './pr-env-schema.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 import type { Stmts } from './types.js';
 
@@ -1260,6 +1260,20 @@ function initDb(dataDir: string): void {
   // paths can never drift. The dedicated module exists to break the
   // circular dependency (pr-env-store.ts imports `getDb` from here).
   db.exec(PR_ENV_CONFIG_SCHEMA);
+
+  // Migration: drop legacy GitHub App columns. The dispatcher now reuses
+  // the registered Reviewer App (`AppConfig.githubApp`) so the singleton
+  // no longer carries its own App credentials. Each ALTER is wrapped
+  // because column-not-found is the expected steady-state once a prior
+  // boot already dropped them (or on a fresh install where the new
+  // schema didn't include them in the first place).
+  for (const stmt of PR_ENV_CONFIG_DROP_LEGACY_GITHUB_COLUMNS) {
+    try {
+      db.exec(stmt);
+    } catch (_e) {
+      /* column already gone — expected steady state */
+    }
+  }
 
   // Migration: pool_slots gained `last_error TEXT` and `status` CHECK now
   // includes 'failed' (added in #458). SQLite can't ALTER a CHECK constraint

@@ -296,13 +296,16 @@ export default function createPrEnvSettingsRoutes(
     const body = (req.body ?? {}) as Record<string, unknown>;
     // Validate the payload shape. Unknown keys are ignored.
     const payload: PrEnvConfigWrite = {};
+    // GitHub App fields are deliberately not accepted here — the
+    // dispatcher reuses the registered Reviewer App
+    // (`config.githubApp`) so the PR-env Settings page no longer
+    // carries its own appId / installationId / privateKey inputs.
+    // Unknown keys (including legacy `githubAppId` etc. from old
+    // clients) are silently ignored by the loop below.
     const strKeys = [
       'repoFullName',
       'previewHost',
       'previewBaseUrl',
-      'githubAppId',
-      'githubInstallationId',
-      'githubPrivateKey',
       'route53AccessKeyId',
       'route53SecretAccessKey',
       'route53HostedZoneId',
@@ -378,17 +381,19 @@ export default function createPrEnvSettingsRoutes(
       return v;
     };
 
-    // GitHub App fields fall back to the registered Reviewer App
-    // (`config.githubApp`) when both the incoming payload and the saved
-    // row are empty. Same App, same permission set — the operator no
-    // longer needs to register a second App just for PR Environments.
+    // GitHub App credentials come exclusively from the registered
+    // Reviewer App (`config.githubApp`). The PR-env Settings form no
+    // longer carries appId/installationId/privateKey inputs at all —
+    // the validate path also pulls those three values from the
+    // Reviewer App registration so the operator only configures one
+    // App per install.
     const reviewerApp = resolveReviewerApp();
     const reviewerInstallationId =
       reviewerApp?.installationId != null ? String(reviewerApp.installationId) : '';
     const repoInputs = {
-      appId: pickStr('githubAppId') || (reviewerApp?.appId ?? ''),
-      installationId: pickStr('githubInstallationId') || reviewerInstallationId,
-      privateKey: pickStr('githubPrivateKey') || (reviewerApp?.privateKey ?? ''),
+      appId: reviewerApp?.appId ?? '',
+      installationId: reviewerInstallationId,
+      privateKey: reviewerApp?.privateKey ?? '',
       route53AccessKeyId: pickStr('route53AccessKeyId'),
       route53SecretAccessKey: pickStr('route53SecretAccessKey'),
       route53HostedZoneId: pickStr('route53HostedZoneId'),

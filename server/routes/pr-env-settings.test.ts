@@ -2,9 +2,15 @@
  * Integration tests for the `/api/settings/pr-env` routes (GET, PUT,
  * POST /validate). Each test gets a fresh in-memory SQLite DB and a
  * throwaway encryption key file so state is isolated.
+ *
+ * After the script-mode refactor, GitHub App credentials are NOT stored
+ * in `pr_env_config` and are NOT accepted by PUT — the dispatcher reuses
+ * the registered Reviewer App (`config.githubApp`). Tests that previously
+ * exercised stored github creds were either pivoted to the route53 secret
+ * (for partial-preserving / MASK semantics) or removed (precedence).
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 import supertest from 'supertest';
@@ -63,22 +69,20 @@ describe('GET /api/settings/pr-env', () => {
     const res = await supertest(app).get('/api/settings/pr-env').expect(200);
     expect(res.body.enabled).toBe(false);
     expect(res.body.repoFullName).toBe('');
-    expect(res.body.githubPrivateKey).toBe('');
+    expect(res.body.route53SecretAccessKey).toBe('');
   });
 
   it('masks set secrets', async () => {
     writePrEnvConfig(
       {
-        githubAppId: '123',
-        githubPrivateKey: 'pk',
+        repoFullName: 'acme/repo',
         route53AccessKeyId: 'AKIA',
         route53SecretAccessKey: 'aws-sekret',
       },
       db,
     );
     const res = await supertest(app).get('/api/settings/pr-env').expect(200);
-    expect(res.body.githubAppId).toBe('123');
-    expect(res.body.githubPrivateKey).toBe(MASK);
+    expect(res.body.repoFullName).toBe('acme/repo');
     expect(res.body.route53AccessKeyId).toBe('AKIA');
     expect(res.body.route53SecretAccessKey).toBe(MASK);
     // Plaintext must never appear in the response.
@@ -93,28 +97,47 @@ describe('PUT /api/settings/pr-env', () => {
       .send({
         enabled: true,
         repoFullName: 'acme/repo',
-        githubPrivateKey: 'pk',
+        route53SecretAccessKey: 'sekret',
       })
       .expect(200);
     expect(res.body.enabled).toBe(true);
     expect(res.body.repoFullName).toBe('acme/repo');
-    expect(res.body.githubPrivateKey).toBe(MASK);
+    expect(res.body.route53SecretAccessKey).toBe(MASK);
   });
 
   it('preserves existing secrets when MASK is sent back', async () => {
-    writePrEnvConfig({ githubPrivateKey: 'ORIGINAL' }, db);
+    writePrEnvConfig({ route53SecretAccessKey: 'ORIGINAL' }, db);
     await supertest(app)
       .put('/api/settings/pr-env')
-      .send({ githubPrivateKey: MASK, repoFullName: 'updated/repo' })
+      .send({ route53SecretAccessKey: MASK, repoFullName: 'updated/repo' })
       .expect(200);
     const after = await supertest(app).get('/api/settings/pr-env').expect(200);
     expect(after.body.repoFullName).toBe('updated/repo');
-    expect(after.body.githubPrivateKey).toBe(MASK);
-    // Verify the underlying plaintext is still the original:
+    expect(after.body.route53SecretAccessKey).toBe(MASK);
+    // Verify the underlying ciphertext is still populated:
     const raw = db
-      .prepare('SELECT github_private_key_enc FROM pr_env_config WHERE id = 1')
-      .get() as { github_private_key_enc: string };
-    expect(raw.github_private_key_enc).not.toBe('');
+      .prepare('SELECT route53_secret_access_key_enc FROM pr_env_config WHERE id = 1')
+      .get() as { route53_secret_access_key_enc: string };
+    expect(raw.route53_secret_access_key_enc).not.toBe('');
+  });
+
+  it('silently ignores legacy github.* fields (Reviewer App is sole source)', async () => {
+    // Old clients may still post `githubAppId` / `githubPrivateKey` etc.
+    // The route drops them — those columns no longer exist.
+    const res = await supertest(app)
+      .put('/api/settings/pr-env')
+      .send({
+        repoFullName: 'acme/repo',
+        githubAppId: '123',
+        githubPrivateKey: 'pk',
+        githubInstallationId: '99',
+      })
+      .expect(200);
+    expect(res.body.repoFullName).toBe('acme/repo');
+    // Legacy keys must not appear in the response.
+    expect(res.body.githubAppId).toBeUndefined();
+    expect(res.body.githubPrivateKey).toBeUndefined();
+    expect(res.body.githubInstallationId).toBeUndefined();
   });
 
   it('rejects non-string values for string fields', async () => {
@@ -167,9 +190,6 @@ describe('POST /api/settings/pr-env/validate', () => {
   it('runs all four checks and returns ok when they all pass', async () => {
     writePrEnvConfig(
       {
-        githubAppId: '1',
-        githubInstallationId: '2',
-        githubPrivateKey: 'pk',
         route53AccessKeyId: 'AKIA',
         route53SecretAccessKey: 'sekret',
         route53HostedZoneId: 'Z1',
@@ -230,10 +250,10 @@ describe('POST /api/settings/pr-env/validate', () => {
     expect(docker.message).toBe('boom');
   });
 
-  it('falls back to the registered Reviewer App when github fields are blank', async () => {
-    // No row written, no payload supplied → all github fields would be
-    // empty under the old behaviour. With the Reviewer-App fallback,
-    // the registered `config.githubApp` is used as the validate identity.
+  it('uses the registered Reviewer App as the github-check identity', async () => {
+    // GitHub App creds are sourced exclusively from `config.githubApp`.
+    // The PR-env Settings form no longer carries appId/installationId/
+    // privateKey inputs, and `pr_env_config` no longer stores them.
     const reviewerApp: GitHubAppConfig = {
       appId: 'reviewer-app',
       installationId: 5544332211,
@@ -261,32 +281,23 @@ describe('POST /api/settings/pr-env/validate', () => {
     );
     await supertest(reviewerInjectedApp).post('/api/settings/pr-env/validate').send({}).expect(200);
     expect(seen.appId).toBe('reviewer-app');
-    // installationId is a number in GitHubAppConfig, but stringified for the validate adapter.
+    // installationId is a number on GitHubAppConfig but stringified for the validate adapter.
     expect(seen.installationId).toBe('5544332211');
     expect(seen.privateKey).toBe('reviewer-pk');
   });
 
-  it('saved github fields take precedence over the Reviewer App fallback', async () => {
-    writePrEnvConfig(
-      {
-        githubAppId: 'saved-app',
-        githubInstallationId: 'saved-inst',
-        githubPrivateKey: 'saved-pk',
-      },
-      db,
-    );
-    const reviewerApp: GitHubAppConfig = {
-      appId: 'reviewer-app',
-      installationId: 5544332211,
-      privateKey: 'reviewer-pk',
-    };
+  it('passes empty github creds to the adapter when no Reviewer App is registered', async () => {
+    // Surfaces a misconfiguration: with no Reviewer App and no DB github
+    // creds (which can no longer be set anyway), the github-app check
+    // sees empty strings and the default adapter would fail. We assert
+    // the route doesn't silently substitute anything from elsewhere.
     const seen: { appId?: string; privateKey?: string; installationId?: string } = {};
-    const overrideApp = express();
-    overrideApp.use(express.json());
-    overrideApp.use(
+    const noReviewerApp = express();
+    noReviewerApp.use(express.json());
+    noReviewerApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
-        getReviewerApp: () => reviewerApp,
+        getReviewerApp: () => null,
         adapters: {
           checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
           checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
@@ -294,16 +305,16 @@ describe('POST /api/settings/pr-env/validate', () => {
             seen.appId = appId;
             seen.privateKey = privateKey;
             seen.installationId = installationId;
-            return { name: 'github-app', pass: true, message: 'ok' };
+            return { name: 'github-app', pass: false, message: 'no reviewer app' };
           },
           checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
         },
       }),
     );
-    await supertest(overrideApp).post('/api/settings/pr-env/validate').send({}).expect(200);
-    expect(seen.appId).toBe('saved-app');
-    expect(seen.installationId).toBe('saved-inst');
-    expect(seen.privateKey).toBe('saved-pk');
+    await supertest(noReviewerApp).post('/api/settings/pr-env/validate').send({}).expect(200);
+    expect(seen.appId).toBe('');
+    expect(seen.installationId).toBe('');
+    expect(seen.privateKey).toBe('');
   });
 
   it('Route 53 check passes empty access keys through to the adapter', async () => {
@@ -341,16 +352,16 @@ describe('POST /api/settings/pr-env/validate', () => {
     expect(seen.hostedZoneId).toBe('Z-only-zone');
   });
 
-  it('passes saved secrets to adapters when payload has MASK', async () => {
+  it('passes saved route53 secret to the adapter when payload has MASK', async () => {
     writePrEnvConfig(
       {
-        githubAppId: '1',
-        githubInstallationId: '2',
-        githubPrivateKey: 'the-real-pk',
+        route53AccessKeyId: 'AKIA',
+        route53SecretAccessKey: 'the-real-secret',
+        route53HostedZoneId: 'Z1',
       },
       db,
     );
-    const seen: { appId?: string; privateKey?: string; installationId?: string } = {};
+    const seen: { accessKeyId?: string; secretAccessKey?: string; hostedZoneId?: string } = {};
     const spyApp = express();
     spyApp.use(express.json());
     spyApp.use(
@@ -359,22 +370,22 @@ describe('POST /api/settings/pr-env/validate', () => {
         adapters: {
           checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
           checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
-          checkGithubApp: async (appId, privateKey, installationId) => {
-            seen.appId = appId;
-            seen.privateKey = privateKey;
-            seen.installationId = installationId;
-            return { name: 'github-app', pass: true, message: 'ok' };
+          checkGithubApp: async () => ({ name: 'github-app', pass: true, message: 'ok' }),
+          checkRoute53: async (accessKeyId, secretAccessKey, hostedZoneId) => {
+            seen.accessKeyId = accessKeyId;
+            seen.secretAccessKey = secretAccessKey;
+            seen.hostedZoneId = hostedZoneId;
+            return { name: 'route53', pass: true, message: 'ok' };
           },
-          checkRoute53: async () => ({ name: 'route53', pass: true, message: 'ok' }),
         },
       }),
     );
     await supertest(spyApp)
       .post('/api/settings/pr-env/validate')
-      .send({ githubPrivateKey: MASK }) // UI didn't re-enter — expect saved value
+      .send({ route53SecretAccessKey: MASK }) // UI didn't re-enter — expect saved value
       .expect(200);
-    expect(seen.privateKey).toBe('the-real-pk');
-    expect(seen.appId).toBe('1');
-    expect(seen.installationId).toBe('2');
+    expect(seen.accessKeyId).toBe('AKIA');
+    expect(seen.secretAccessKey).toBe('the-real-secret');
+    expect(seen.hostedZoneId).toBe('Z1');
   });
 });

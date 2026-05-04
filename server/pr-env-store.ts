@@ -51,9 +51,6 @@ export interface PrEnvConfigRow {
   certRenewalLive: boolean;
   portRangeMin: number | null;
   portRangeMax: number | null;
-  githubAppId: string;
-  githubInstallationId: string;
-  githubPrivateKey: string;
   route53AccessKeyId: string;
   route53SecretAccessKey: string;
   route53HostedZoneId: string;
@@ -71,10 +68,6 @@ export interface PrEnvConfigMasked {
   certRenewalLive: boolean;
   portRangeMin: number | null;
   portRangeMax: number | null;
-  githubAppId: string;
-  githubInstallationId: string;
-  /** `MASK` when set, `''` when unset. */
-  githubPrivateKey: string;
   route53AccessKeyId: string;
   /** `MASK` when set, `''` when unset. */
   route53SecretAccessKey: string;
@@ -166,9 +159,6 @@ interface RawRow {
   cert_renewal_live: number;
   port_range_min: number | null;
   port_range_max: number | null;
-  github_app_id: string;
-  github_installation_id: string;
-  github_private_key_enc: string;
   route53_access_key_id: string;
   route53_secret_access_key_enc: string;
   route53_hosted_zone_id: string;
@@ -182,9 +172,6 @@ const EMPTY_ROW: PrEnvConfigRow = {
   certRenewalLive: false,
   portRangeMin: null,
   portRangeMax: null,
-  githubAppId: '',
-  githubInstallationId: '',
-  githubPrivateKey: '',
   route53AccessKeyId: '',
   route53SecretAccessKey: '',
   route53HostedZoneId: '',
@@ -199,9 +186,6 @@ function hydrate(raw: RawRow): PrEnvConfigRow {
     certRenewalLive: raw.cert_renewal_live === 1,
     portRangeMin: raw.port_range_min,
     portRangeMax: raw.port_range_max,
-    githubAppId: raw.github_app_id,
-    githubInstallationId: raw.github_installation_id,
-    githubPrivateKey: raw.github_private_key_enc ? decryptSecret(raw.github_private_key_enc) : '',
     route53AccessKeyId: raw.route53_access_key_id,
     route53SecretAccessKey: raw.route53_secret_access_key_enc
       ? decryptSecret(raw.route53_secret_access_key_enc)
@@ -232,9 +216,6 @@ export function readPrEnvConfigMasked(db: Database.Database = getDb()): PrEnvCon
     certRenewalLive: row.certRenewalLive,
     portRangeMin: row.portRangeMin,
     portRangeMax: row.portRangeMax,
-    githubAppId: row.githubAppId,
-    githubInstallationId: row.githubInstallationId,
-    githubPrivateKey: row.githubPrivateKey ? MASK : '',
     route53AccessKeyId: row.route53AccessKeyId,
     route53SecretAccessKey: row.route53SecretAccessKey ? MASK : '',
     route53HostedZoneId: row.route53HostedZoneId,
@@ -262,11 +243,7 @@ export function writePrEnvConfig(
     const next = partial[key];
     if (next === undefined) return existing[key];
     // Secrets: UI sends MASK for fields the user didn't touch — preserve.
-    if (
-      (key === 'githubPrivateKey' || key === 'route53SecretAccessKey') &&
-      typeof next === 'string' &&
-      next === MASK
-    ) {
+    if (key === 'route53SecretAccessKey' && typeof next === 'string' && next === MASK) {
       return existing[key];
     }
     return next as PrEnvConfigRow[K];
@@ -280,15 +257,11 @@ export function writePrEnvConfig(
     certRenewalLive: pick('certRenewalLive'),
     portRangeMin: pick('portRangeMin'),
     portRangeMax: pick('portRangeMax'),
-    githubAppId: pick('githubAppId'),
-    githubInstallationId: pick('githubInstallationId'),
-    githubPrivateKey: pick('githubPrivateKey'),
     route53AccessKeyId: pick('route53AccessKeyId'),
     route53SecretAccessKey: pick('route53SecretAccessKey'),
     route53HostedZoneId: pick('route53HostedZoneId'),
   };
 
-  const githubPkEnc = merged.githubPrivateKey ? encryptSecret(merged.githubPrivateKey) : '';
   const route53SkEnc = merged.route53SecretAccessKey
     ? encryptSecret(merged.route53SecretAccessKey)
     : '';
@@ -297,10 +270,9 @@ export function writePrEnvConfig(
     `INSERT INTO pr_env_config (
        id, enabled, repo_full_name, preview_host, preview_base_url,
        cert_renewal_live, port_range_min, port_range_max,
-       github_app_id, github_installation_id, github_private_key_enc,
        route53_access_key_id, route53_secret_access_key_enc,
        route53_hosted_zone_id, updated_at
-     ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(id) DO UPDATE SET
        enabled = excluded.enabled,
        repo_full_name = excluded.repo_full_name,
@@ -309,9 +281,6 @@ export function writePrEnvConfig(
        cert_renewal_live = excluded.cert_renewal_live,
        port_range_min = excluded.port_range_min,
        port_range_max = excluded.port_range_max,
-       github_app_id = excluded.github_app_id,
-       github_installation_id = excluded.github_installation_id,
-       github_private_key_enc = excluded.github_private_key_enc,
        route53_access_key_id = excluded.route53_access_key_id,
        route53_secret_access_key_enc = excluded.route53_secret_access_key_enc,
        route53_hosted_zone_id = excluded.route53_hosted_zone_id,
@@ -324,9 +293,6 @@ export function writePrEnvConfig(
     merged.certRenewalLive ? 1 : 0,
     merged.portRangeMin,
     merged.portRangeMax,
-    merged.githubAppId,
-    merged.githubInstallationId,
-    githubPkEnc,
     merged.route53AccessKeyId,
     route53SkEnc,
     merged.route53HostedZoneId,
@@ -348,6 +314,12 @@ interface FilePrEnvBlock {
   previewBaseUrl?: string;
   certRenewalLive?: boolean;
   portRange?: { min?: number; max?: number };
+  /**
+   * Legacy: previously held a per-PR-env GitHub App. Ignored on migration —
+   * the dispatcher reuses the registered Reviewer App
+   * (`AppConfig.githubApp`) as the sole source. Kept in the type so old
+   * `config.json` files don't fail to deserialize.
+   */
   github?: { appId?: string; installationId?: string; privateKey?: string };
   route53?: { accessKeyId?: string; secretAccessKey?: string; hostedZoneId?: string };
   nginx?: { previewHost?: string };
@@ -371,11 +343,12 @@ export function migrateFileConfigToDb(
 
   // Only migrate if the block has at least one non-trivial field — avoids
   // stamping an empty row on an install that touched `prEnv: {}` once.
+  // The legacy `github.*` fields no longer count towards "non-trivial"
+  // because they aren't migrated; carrying them alone shouldn't trigger a
+  // DB write.
   const hasContent =
     !!block.repoFullName ||
     !!block.previewBaseUrl ||
-    !!block.github?.appId ||
-    !!block.github?.privateKey ||
     !!block.route53?.accessKeyId ||
     !!block.nginx?.previewHost;
   if (!hasContent) return false;
@@ -389,9 +362,6 @@ export function migrateFileConfigToDb(
       certRenewalLive: block.certRenewalLive === true,
       portRangeMin: block.portRange?.min ?? null,
       portRangeMax: block.portRange?.max ?? null,
-      githubAppId: block.github?.appId ?? '',
-      githubInstallationId: block.github?.installationId ?? '',
-      githubPrivateKey: block.github?.privateKey ?? '',
       route53AccessKeyId: block.route53?.accessKeyId ?? '',
       route53SecretAccessKey: block.route53?.secretAccessKey ?? '',
       route53HostedZoneId: block.route53?.hostedZoneId ?? '',

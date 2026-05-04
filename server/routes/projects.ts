@@ -201,6 +201,114 @@ const CHECK_HEAL_MAX_ROUNDS_INVALID =
   'checkHealMaxRounds must be an integer between 1 and 5 (inclusive), or null or empty string to clear';
 
 /**
+ * Validate + normalize a `prEnv` PATCH payload.
+ *
+ * Mirrors the client-side `validateForm` in
+ * `client/src/utils/prEnvProjectPayload.js` so the wizard and the
+ * server agree on the contract:
+ *
+ *   - `enabled: false` is a valid standalone payload (clears the rest)
+ *   - when enabled, `startScript` (string) and `internalPort` (1..65535)
+ *     are required
+ *   - optional `setupCommand`, `healthPath` (must start with `/`),
+ *     `dockerfilePath` are passed through trimmed; empty strings are
+ *     stripped so absence is the on-disk representation
+ *
+ * Returns `{ ok: true, value }` on success, or `{ ok: false, error }`
+ * on the first failed field — caller responds with 400 + the message.
+ */
+export interface ValidatedPrEnvConfig {
+  enabled: boolean;
+  startScript?: string;
+  internalPort?: number;
+  setupCommand?: string;
+  healthPath?: string;
+  dockerfilePath?: string;
+}
+
+export function validatePrEnvProjectConfig(
+  raw: unknown,
+): { ok: true; value: ValidatedPrEnvConfig } | { ok: false; error: string } {
+  if (raw === null || raw === undefined) {
+    return { ok: false, error: 'prEnv must be an object' };
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'prEnv must be an object' };
+  }
+  const obj = raw as Record<string, unknown>;
+  const enabled = !!obj.enabled;
+  if (!enabled) {
+    // When the user toggles off, we keep the slot for round-tripping —
+    // dispatch already short-circuits on `!project.prEnv.enabled`.
+    return { ok: true, value: { enabled: false } };
+  }
+
+  const trimStr = (v: unknown): string | undefined => {
+    if (typeof v !== 'string') return undefined;
+    const t = v.trim();
+    return t.length > 0 ? t : undefined;
+  };
+
+  const startScript = trimStr(obj.startScript);
+  if (!startScript) {
+    return { ok: false, error: 'prEnv.startScript is required when enabled' };
+  }
+
+  let internalPort: number | undefined;
+  if (typeof obj.internalPort === 'number' && Number.isFinite(obj.internalPort)) {
+    internalPort = Math.floor(obj.internalPort);
+  } else if (typeof obj.internalPort === 'string' && /^\d+$/.test(obj.internalPort.trim())) {
+    internalPort = parseInt(obj.internalPort.trim(), 10);
+  }
+  if (
+    internalPort === undefined ||
+    !Number.isInteger(internalPort) ||
+    internalPort < 1 ||
+    internalPort > 65535
+  ) {
+    return {
+      ok: false,
+      error: 'prEnv.internalPort must be an integer between 1 and 65535',
+    };
+  }
+
+  const setupCommand = trimStr(obj.setupCommand);
+  const healthPath = trimStr(obj.healthPath);
+  const dockerfilePath = trimStr(obj.dockerfilePath);
+
+  if (healthPath && !healthPath.startsWith('/')) {
+    return { ok: false, error: 'prEnv.healthPath must start with `/`' };
+  }
+
+  // dockerfilePath must be relative to the checkout dir — `docker build`
+  // would just fail otherwise, but a clear field-level error is friendlier
+  // than a downstream `invalid reference format` from Docker. Reject
+  // absolute paths and any segment that escapes the checkout via `..`.
+  if (dockerfilePath) {
+    if (dockerfilePath.startsWith('/')) {
+      return { ok: false, error: 'prEnv.dockerfilePath must be relative to the repo root' };
+    }
+    const normalized = dockerfilePath.replace(/\\/g, '/');
+    if (normalized.split('/').some((seg) => seg === '..')) {
+      return {
+        ok: false,
+        error: 'prEnv.dockerfilePath must not escape the repo root (no `..` segments)',
+      };
+    }
+  }
+
+  const value: ValidatedPrEnvConfig = {
+    enabled: true,
+    startScript,
+    internalPort,
+  };
+  if (setupCommand) value.setupCommand = setupCommand;
+  if (healthPath) value.healthPath = healthPath;
+  if (dockerfilePath) value.dockerfilePath = dockerfilePath;
+  return { ok: true, value };
+}
+
+/**
  * Resolve the user id whose GitHub credentials should be used for a
  * clone. Mirrors `resolveOAuthUserId` in routes/github-oauth.ts:
  *
@@ -796,6 +904,18 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         } else {
           delete (project as Record<string, unknown>).orchestrationBudgets;
         }
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'prEnv')) {
+      const rawPrEnv = (req.body as Record<string, unknown>).prEnv;
+      if (rawPrEnv === null) {
+        delete (project as Record<string, unknown>).prEnv;
+      } else {
+        const result = validatePrEnvProjectConfig(rawPrEnv);
+        if (!result.ok) {
+          return res.status(400).json({ error: result.error });
+        }
+        (project as Record<string, unknown>).prEnv = result.value;
       }
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'mode')) {

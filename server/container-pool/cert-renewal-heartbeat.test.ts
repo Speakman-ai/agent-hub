@@ -26,10 +26,8 @@ function makeLogger() {
 function makeConfig(partial: Partial<PrEnvRuntimeConfig> = {}): PrEnvRuntimeConfig {
   return {
     enabled: true,
-    prodDbPath: '/db.sqlite',
-    prEnvDataDir: '/data',
-    envFilesDir: '/envs',
-    composeTemplatePath: '/tpl.yml',
+    checkoutBaseDir: '/srv/agent-hub/pr-envs',
+    defaultBaseImage: 'node:20',
     previewBaseUrl: 'https://preview.agenthub.dev',
     github: { appId: '1', installationId: '2', privateKey: 'k' },
     route53: {

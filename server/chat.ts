@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { stmts as _stmts } from './db.js';
 import { createStreamParser } from './stream-parser.js';
 import config, { defaultModelForEngine, buildSpawnEnv } from './config.js';
+import { getActualPort } from './server-port.js';
 import { resolveProjectPaths, contextFilePath } from './project-paths.js';
 import { getWikiContext } from './wiki.js';
 import { getMemoryContext, appendDailyNote, reconcileMemoryAfterSession } from './memory.js';
@@ -1873,6 +1874,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         base.AGENT_HUB_API_KEY = config.apiKey;
       }
       base.AGENT_HUB_SESSION_ID = sessionId;
+      // Inject the server URL and project ID so spawned agents can reach the
+      // kanban board, wiki, and other API endpoints without hard-coding
+      // localhost:3051. getActualPort() returns the port the server actually
+      // bound to (important when AGENT_HUB_PORT=0 assigns an ephemeral port).
+      base.AGENT_HUB_URL = `http://localhost:${getActualPort()}`;
+      base.PROJECT_ID = project.id;
       return base;
     })();
 

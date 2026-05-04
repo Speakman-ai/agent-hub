@@ -21,6 +21,7 @@ import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
 import PoolSection from './PoolSection.jsx';
 import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
+import PrEnvProjectWizard from './PrEnvProjectWizard.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
@@ -2225,6 +2226,9 @@ function ProjectsSection({
   // Project delete confirmation (inline toggle pattern)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(null);
 
+  // PR-env wizard target — when set, renders the modal for that project.
+  const [prEnvWizardProject, setPrEnvWizardProject] = useState(null);
+
   useEffect(() => {
     if (!initialExpandedProjectId) {
       lastDeepLinkExpandIdRef.current = null;
@@ -2739,6 +2743,42 @@ function ProjectsSection({
                       )}
                     </div>
 
+                    {/* PR Preview Environment */}
+                    <div className="pt-2 border-t border-gray-800 space-y-2">
+                      <label className={labelClass}>PR Preview Environment</label>
+                      <div className="flex items-center justify-between gap-3 bg-gray-900/40 border border-gray-800 rounded-lg p-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            {p.prEnv?.enabled ? (
+                              <>
+                                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+                                <span className="text-xs text-emerald-300 font-medium">
+                                  Enabled
+                                </span>
+                                <span className="text-xs text-gray-500 font-mono truncate">
+                                  {p.prEnv?.startScript} :{p.prEnv?.internalPort}
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="inline-block w-2 h-2 rounded-full bg-gray-600" />
+                                <span className="text-xs text-gray-500">
+                                  Not configured — auto-build a preview env on every PR.
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => setPrEnvWizardProject(p)}
+                          className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg flex items-center gap-1 flex-shrink-0"
+                        >
+                          <GitBranch size={12} />
+                          {p.prEnv?.enabled ? 'Edit' : 'Configure'}
+                        </button>
+                      </div>
+                    </div>
+
                     {/* Delete Project */}
                     <div className="pt-2 border-t border-gray-800">
                       <button
@@ -2773,6 +2813,17 @@ function ProjectsSection({
           })}
         </div>
       </div>
+      {prEnvWizardProject && (
+        <PrEnvProjectWizard
+          project={prEnvWizardProject}
+          onClose={() => setPrEnvWizardProject(null)}
+          onSaved={() => {
+            setPrEnvWizardProject(null);
+            if (typeof onProjectsChange === 'function') onProjectsChange();
+          }}
+          showToast={showToast}
+        />
+      )}
     </div>
   );
 }

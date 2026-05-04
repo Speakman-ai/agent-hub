@@ -15,16 +15,22 @@
  */
 
 import { promises as fsp } from 'fs';
+import os from 'os';
 import { spawn } from 'child_process';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
-import { buildPrEnvFile } from './env-template.js';
 import { PortPool, PORT_POOL_SCHEMA } from './port-pool.js';
-import type { ComposeRunner, FsOps, PrEnvBuilderDeps } from './pr-env-builder.js';
+import type {
+  ContainerRunner,
+  FsOps,
+  GitOps,
+  PrEnvBuilderDeps,
+  PrEnvGithubCreds,
+} from './pr-env-builder.js';
 import type { NginxFsOps, NginxRunner } from './nginx-writer.js';
 import type { PrEnvConfigRow } from '../pr-env-store.js';
 import type { GitHubAppConfig } from '../types.js';
+import { getInstallationToken } from '../github-app.js';
 
 /**
  * Subset of `AppConfig` that PR-env runtime cares about. We accept this
@@ -40,10 +46,18 @@ export interface PrEnvAppConfigRef {
 
 export interface PrEnvRuntimeConfig {
   enabled: boolean;
-  prodDbPath: string;
-  prEnvDataDir: string;
-  envFilesDir: string;
-  composeTemplatePath: string;
+  /**
+   * Where per-PR working trees live on the host. The builder will place
+   * each PR under `<checkoutBaseDir>/<projectSlug>/pr-<N>/`. Default in
+   * production is `~/.agent-hub/pr-envs`.
+   */
+  checkoutBaseDir: string;
+  /**
+   * Generic base image used when a project's PR-env config has no
+   * Dockerfile path set. Defaults to `node:20` so JS/TS projects work
+   * out of the box.
+   */
+  defaultBaseImage: string;
   previewBaseUrl: string;
   github: {
     appId: string;
@@ -179,38 +193,49 @@ export function readPrEnvConfig(
     fallback = '',
   ): string => envVal || dbVal || fileVal || fallback;
 
-  // GitHub App fields fall back to the registered Reviewer App
-  // (`appConfig.githubApp`) when env / DB / file are all empty. Same App,
-  // same permission set — no need to register a second App just for PR
-  // Environments. `installationId` in `GitHubAppConfig` is `number`; coerce
-  // to string here so the rest of the runtime treats it uniformly.
+  // GitHub App credentials are sourced exclusively from the registered
+  // Reviewer App (`appConfig.githubApp`). The dispatcher posts sticky
+  // comments and exchanges installation tokens under the same App
+  // identity that already files formal PR reviews — one App per install,
+  // one set of permissions. Env-var / DB / file overrides for these
+  // fields were removed in the script-mode refactor (singleton
+  // `pr_env_config` no longer carries them; legacy `config.json`
+  // `prEnv.github.*` blocks are ignored on migration).
+  //
+  // `installationId` on `GitHubAppConfig` is `number`; coerce to string
+  // here so the rest of the runtime treats App creds uniformly.
   const reviewerApp = appConfig?.githubApp ?? null;
   const reviewerAppInstallationId =
     reviewerApp?.installationId != null ? String(reviewerApp.installationId) : '';
   const github = {
-    appId: pick(
-      env.PR_ENV_GITHUB_APP_ID,
-      dbRow?.githubAppId,
-      fileBlock.github?.appId,
-      reviewerApp?.appId ?? '',
-    ),
-    installationId: pick(
-      env.PR_ENV_GITHUB_INSTALLATION_ID,
-      dbRow?.githubInstallationId,
-      fileBlock.github?.installationId,
-      reviewerAppInstallationId,
-    ),
-    privateKey: pick(
-      env.PR_ENV_GITHUB_PRIVATE_KEY,
-      dbRow?.githubPrivateKey,
-      fileBlock.github?.privateKey,
-      reviewerApp?.privateKey ?? '',
-    ),
+    appId: reviewerApp?.appId ?? '',
+    installationId: reviewerAppInstallationId,
+    privateKey: reviewerApp?.privateKey ?? '',
   };
 
-  const prodDbPath = fileBlock.prodDbPath ?? env.PR_ENV_PROD_DB ?? '';
-  const prEnvDataDir = fileBlock.prEnvDataDir ?? env.PR_ENV_DATA_DIR ?? '';
-  const envFilesDir = fileBlock.envFilesDir ?? env.PR_ENV_FILES_DIR ?? '';
+  // Script-mode replacement for the old `prodDbPath / prEnvDataDir /
+  // envFilesDir / composeTemplatePath` quartet. Per-PR working trees
+  // live under a single base dir; the builder namespaces them by
+  // `<projectSlug>/pr-<N>`. There is no longer a copied prod DB, no
+  // rendered .env file, and no canned compose template — every project
+  // brings its own start script (and optional Dockerfile) instead.
+  //
+  // Precedence matches the docstring above: env > file > default.
+  // (No DB tier for these two fields — they're host-paths, not UI-owned.)
+  // Run them through `pick` so an unset (empty-string) file value can't
+  // shadow an env-var override.
+  const checkoutBaseDir = pick(
+    env.PR_ENV_CHECKOUT_BASE_DIR,
+    undefined,
+    fileBlock.checkoutBaseDir,
+    path.join(os.homedir(), '.agent-hub', 'pr-envs'),
+  );
+  const defaultBaseImage = pick(
+    env.PR_ENV_DEFAULT_BASE_IMAGE,
+    undefined,
+    fileBlock.defaultBaseImage,
+    'node:20',
+  );
   const repoFullName = pick(env.PR_ENV_REPO_FULL_NAME, dbRow?.repoFullName, fileBlock.repoFullName);
 
   const route53 = {
@@ -245,13 +270,13 @@ export function readPrEnvConfig(
     certHome: nginxBlock.certHome ?? env.PR_ENV_CERT_HOME ?? '/var/lib/agent-hub/acme',
   };
 
-  // Fail fast: if the feature is on but required paths are missing, the
-  // first webhook event would fail deep inside fs.copyFile('', …) with a
-  // cryptic error. Surface the misconfiguration at config-read time.
+  // Fail fast: if the feature is on but required values are missing,
+  // surface the misconfiguration at config-read time rather than at
+  // first webhook event. The script-mode rewrite drops the
+  // prodDbPath/dataDir/filesDir checks (those resources no longer
+  // exist) and the composeTemplatePath check (per-project Dockerfile
+  // or generic base image takes its place).
   const missing: string[] = [];
-  if (!prodDbPath) missing.push('PR_ENV_PROD_DB / prEnv.prodDbPath');
-  if (!prEnvDataDir) missing.push('PR_ENV_DATA_DIR / prEnv.prEnvDataDir');
-  if (!envFilesDir) missing.push('PR_ENV_FILES_DIR / prEnv.envFilesDir');
   if (!github.appId) missing.push('PR_ENV_GITHUB_APP_ID / prEnv.github.appId');
   if (!github.installationId)
     missing.push('PR_ENV_GITHUB_INSTALLATION_ID / prEnv.github.installationId');
@@ -286,18 +311,8 @@ export function readPrEnvConfig(
 
   return {
     enabled: true,
-    prodDbPath,
-    prEnvDataDir,
-    envFilesDir,
-    composeTemplatePath:
-      fileBlock.composeTemplatePath ??
-      env.PR_ENV_COMPOSE_TEMPLATE ??
-      path.resolve(
-        // Default ships with the repo: server/container-pool/templates/pr-env.compose.yml
-        path.dirname(fileURLToPath(import.meta.url)),
-        'templates',
-        'pr-env.compose.yml',
-      ),
+    checkoutBaseDir,
+    defaultBaseImage,
     previewBaseUrl: resolvePreviewBaseUrl(fileBlock, env, dbRow),
     github: {
       appId: github.appId ?? '',
@@ -342,75 +357,162 @@ function resolvePortRange(
 // ─── Production adapters ──────────────────────────────────────────────────
 
 /**
- * Real filesystem ops. `rm` swallows ENOENT so rollback can be called
- * on partially-built envs without tripping over the files that never
- * got created.
+ * Real directory-only filesystem ops. `rmDir` swallows ENOENT so rollback
+ * can be called on partially-built envs without tripping over directories
+ * that never got created.
  */
 export const realFsOps: FsOps = {
-  async copyFile(src, dest) {
-    await fsp.mkdir(path.dirname(dest), { recursive: true, mode: 0o700 });
-    await fsp.copyFile(src, dest);
-    // DB copy contains prod session data — restrict to owner-only.
-    await fsp.chmod(dest, 0o600);
+  async rmDir(target) {
+    // `force: true` already suppresses ENOENT. Other errors bubble so a
+    // permissions bug in cleanup doesn't silently leak directories.
+    await fsp.rm(target, { recursive: true, force: true });
   },
-  async writeFile(dest, contents) {
-    await fsp.mkdir(path.dirname(dest), { recursive: true, mode: 0o700 });
-    await fsp.writeFile(dest, contents, { encoding: 'utf-8', mode: 0o600 });
-  },
-  async rm(target) {
-    // `force: true` already suppresses ENOENT. Other errors bubble up and
-    // get logged by the rollback layer; we don't want to swallow them
-    // here in case a permissions bug is causing the cleanup to silently
-    // leak files.
-    await fsp.rm(target, { force: true });
+  async mkdirP(target) {
+    await fsp.mkdir(target, { recursive: true, mode: 0o755 });
   },
 };
 
 /**
- * `docker compose` via child_process. `projectName` becomes
- * `--project-name` so concurrent PR envs get their own namespace
- * (containers, networks, volumes).
+ * Real `git` adapter. Synchronize events on an existing checkout do a
+ * `fetch + reset --hard` rather than re-cloning so we keep node_modules
+ * / build caches between PR pushes. The clone token is injected via
+ * `-c http.extraHeader` so it never lands in the repo's reflog.
  */
-export const dockerComposeRunner: ComposeRunner = {
-  async up({ templatePath, envFilePath, projectName }) {
-    await runDockerCompose([
-      '--project-name',
-      projectName,
-      '--file',
-      templatePath,
-      '--env-file',
-      envFilePath,
-      'up',
-      '--detach',
-      '--remove-orphans',
-    ]);
-    return { containerId: undefined };
-  },
-  async down({ templatePath, envFilePath, projectName }) {
-    await runDockerCompose([
-      '--project-name',
-      projectName,
-      '--file',
-      templatePath,
-      '--env-file',
-      envFilePath,
-      'down',
-      '--remove-orphans',
-      '--volumes',
-    ]);
+export const realGitOps: GitOps = {
+  async cloneOrUpdate({ repoFullName, branch, commitSha, checkoutDir, cloneToken }) {
+    const remote = `https://github.com/${repoFullName}.git`;
+    const exists = await dirExists(checkoutDir);
+    const auth = cloneToken
+      ? `Authorization: Basic ${Buffer.from(`x-access-token:${cloneToken}`).toString('base64')}`
+      : null;
+    const headerArgs = auth ? ['-c', `http.extraHeader=${auth}`] : [];
+
+    if (!exists) {
+      await runQuiet('git', [
+        ...headerArgs,
+        'clone',
+        '--depth',
+        '50',
+        '--branch',
+        branch,
+        '--single-branch',
+        remote,
+        checkoutDir,
+      ]);
+    } else {
+      // Fetch latest and reset to either the explicit commit or branch tip.
+      await runQuiet('git', [...headerArgs, '-C', checkoutDir, 'fetch', '--depth', '50', 'origin']);
+    }
+
+    if (commitSha) {
+      await runQuiet('git', ['-C', checkoutDir, 'reset', '--hard', commitSha]);
+    } else if (exists) {
+      await runQuiet('git', ['-C', checkoutDir, 'reset', '--hard', `origin/${branch}`]);
+    }
   },
 };
 
-function runDockerCompose(args: string[]): Promise<void> {
+async function dirExists(p: string): Promise<boolean> {
+  try {
+    const s = await fsp.stat(p);
+    return s.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Real Docker container runner. `build` returns the default base image
+ * unchanged when the project has no Dockerfile (script-mode default
+ * path). `run` publishes hostPort:internalPort, bind-mounts the
+ * checkout to /workspace, exports PORT, and execs setup + start under
+ * `sh -c`. `stop` is `docker rm -f` and is idempotent.
+ */
+export const realDockerContainerRunner: ContainerRunner = {
+  async build({ contextDir, dockerfilePath, imageTag, defaultBaseImage }) {
+    if (!dockerfilePath) {
+      return { imageTag: defaultBaseImage };
+    }
+    await runQuiet('docker', ['build', '--file', dockerfilePath, '--tag', imageTag, contextDir]);
+    return { imageTag };
+  },
+  async run({
+    containerName,
+    imageTag,
+    hostPort,
+    internalPort,
+    checkoutDir,
+    startScript,
+    setupCommand,
+    env: extraEnv,
+  }) {
+    // Compose the in-container command. `sh -c` lets us join a setup
+    // step (e.g. `npm install`) with the long-running start script.
+    const command = setupCommand ? `${setupCommand} && ${startScript}` : startScript;
+    const envArgs: string[] = [`PORT=${internalPort}`];
+    if (extraEnv) {
+      for (const [k, v] of Object.entries(extraEnv)) envArgs.push(`${k}=${v}`);
+    }
+    const args = [
+      'run',
+      '--detach',
+      '--name',
+      containerName,
+      '--publish',
+      `${hostPort}:${internalPort}`,
+      '--volume',
+      `${checkoutDir}:/workspace`,
+      '--workdir',
+      '/workspace',
+      ...envArgs.flatMap((kv) => ['--env', kv]),
+      imageTag,
+      'sh',
+      '-c',
+      command,
+    ];
+    const { stdout } = await runCapture('docker', args);
+    return { containerId: stdout.trim() };
+  },
+  async stop({ containerName }) {
+    // `rm -f` is idempotent on missing containers when paired with the
+    // `|| true` swallow at the runner level — but `docker rm -f` already
+    // exits 0 against a present container and 1 against a missing one,
+    // so we just swallow non-zero exits here.
+    try {
+      await runQuiet('docker', ['rm', '-f', containerName]);
+    } catch {
+      /* no-op — container already gone */
+    }
+  },
+};
+
+function runQuiet(command: string, args: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('docker', ['compose', ...args], { stdio: 'pipe' });
+    const proc = spawn(command, Array.from(args), { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     proc.stderr?.on('data', (b) => (stderr += String(b)));
     proc.on('error', reject);
     proc.on('close', (code) => {
       if (code === 0) resolve();
-      else
-        reject(new Error(`docker compose ${args.join(' ')} failed with code ${code}: ${stderr}`));
+      else reject(new Error(`${command} ${args.join(' ')} failed (exit ${code}): ${stderr}`));
+    });
+  });
+}
+
+function runCapture(
+  command: string,
+  args: readonly string[],
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, Array.from(args), { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout?.on('data', (b) => (stdout += String(b)));
+    proc.stderr?.on('data', (b) => (stderr += String(b)));
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`${command} ${args.join(' ')} failed (exit ${code}): ${stderr}`));
     });
   });
 }
@@ -510,17 +612,16 @@ export function getPrEnvBuilderDeps(
   const portPool = new PortPool(db, { range: runtimeConfig.portRange });
   cached = {
     portPool,
-    compose: dockerComposeRunner,
+    container: realDockerContainerRunner,
+    git: realGitOps,
     fs: realFsOps,
     github: runtimeConfig.github,
+    getCloneToken: defaultGetCloneToken,
     paths: {
-      prodDbPath: runtimeConfig.prodDbPath,
-      prEnvDataDir: runtimeConfig.prEnvDataDir,
-      envFilesDir: runtimeConfig.envFilesDir,
-      composeTemplatePath: runtimeConfig.composeTemplatePath,
+      checkoutBaseDir: runtimeConfig.checkoutBaseDir,
     },
+    defaultBaseImage: runtimeConfig.defaultBaseImage,
     previewBaseUrl: runtimeConfig.previewBaseUrl,
-    renderEnvFile: buildPrEnvFile,
     nginx: {
       writer: {
         fs: realNginxFsOps,
@@ -536,6 +637,17 @@ export function getPrEnvBuilderDeps(
     },
   };
   return cached;
+}
+
+/**
+ * Production clone-token minter — exchanges the Reviewer App's signed
+ * JWT for a short-lived installation token via `getInstallationToken`.
+ * Returns '' for callers without app credentials so the GitOps adapter
+ * can decide whether the public-repo path is acceptable.
+ */
+async function defaultGetCloneToken(creds: PrEnvGithubCreds): Promise<string> {
+  if (!creds.appId || !creds.privateKey || !creds.installationId) return '';
+  return getInstallationToken(creds.appId, creds.privateKey, creds.installationId);
 }
 
 /**

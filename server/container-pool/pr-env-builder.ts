@@ -1,26 +1,31 @@
 /**
- * PR-env builder (W2).
+ * PR-env builder (script-mode).
  *
- * Orchestrates the end-to-end build of a Docker-Compose PR preview env:
+ * Orchestrates the per-PR preview-env lifecycle. Unlike the previous
+ * canned compose-template path, this builder actually runs the PR's code:
  *
- *   1. Allocate a host port from the PR-env port pool (3100–3999).
- *   2. Copy `prod.db` → `pr-<num>.db` so the preview env has an isolated
- *      SQLite file it can mutate without touching production.
- *   3. Render `.env.preview` with the assigned port, DB path, and sandbox
- *      GitHub App credentials.
- *   4. `docker compose up -d` via the injected compose runner, passing
- *      the rendered env file.
+ *   1. Allocate a host port from the PR-env port pool.
+ *   2. Mint a short-lived installation token from the registered Reviewer
+ *      App (private repos need it for the clone).
+ *   3. Clone (or update) the PR's head ref into a per-project working
+ *      directory under `paths.checkoutBaseDir`.
+ *   4. Optionally `docker build` an image from the project's Dockerfile.
+ *      When `dockerfilePath` is null we use the configured
+ *      `defaultBaseImage` (currently `node:20`) and bind-mount the
+ *      checkout — small / dynamic projects don't need a Dockerfile.
+ *   5. Run a container that bind-mounts the checkout, exposes the
+ *      assigned host port → the project-configured `internalPort`,
+ *      injects `PORT=<internalPort>`, and execs the project's start
+ *      script (optionally prefixed with a one-shot setup command, e.g.
+ *      `npm install`).
+ *   6. Emit the per-PR nginx server block + reload, exactly as before.
  *
- * Cleanup-on-failure is the hot path the tests care about (spec §1,
- * card: "Cleanup on failure: release port, delete DB copy, remove
- * .env.preview, compose down."). Every step records what it created so
- * the rollback block can undo precisely the resources that did get
- * created and skip the ones that didn't. A failure during cleanup is
- * logged but never re-raised — the caller sees the original failure.
+ * Cleanup-on-failure walks each created resource in reverse and swallows
+ * its own errors so the caller sees the original failure. `teardownPrEnv`
+ * is the explicit close/merge path and assumes everything was created.
  *
- * Everything that touches disk or Docker goes through injected
- * dependencies so the tests run with in-memory fakes and no real
- * containers.
+ * Every host-touching surface (Docker, git, fs, nginx) goes through
+ * injected dependencies so unit tests run against in-memory fakes.
  */
 
 import path from 'path';
@@ -36,37 +41,72 @@ import {
   reloadNginx,
   type NginxWriterDeps,
 } from './nginx-writer.js';
+import type { PrEnvProjectConfig } from '../types.js';
 
-/** Minimal docker-compose surface the builder needs. */
-export interface ComposeRunner {
+/** Minimal container-runtime surface the builder needs (Docker in prod). */
+export interface ContainerRunner {
   /**
-   * `docker compose -f <templatePath> --env-file <envFilePath> up -d`.
-   * Should resolve on success and reject on any non-zero exit. The
-   * returned containerId (if known) is stashed on the result for the
-   * reaper; callers may return empty string if the compose project
-   * doesn't surface it synchronously.
+   * Build an image from the cloned checkout. When `dockerfilePath` is
+   * null/undefined the runner returns `imageTag = defaultBaseImage`
+   * unchanged — the run step will mount the checkout into `node:20`
+   * (or whatever default the install ships) and rely on the start
+   * script to bring everything up.
    */
-  up(opts: {
-    templatePath: string;
-    envFilePath: string;
-    projectName: string;
-  }): Promise<{ containerId?: string }>;
+  build(opts: {
+    contextDir: string;
+    dockerfilePath: string | null;
+    imageTag: string;
+    defaultBaseImage: string;
+  }): Promise<{ imageTag: string }>;
   /**
-   * `docker compose -f <templatePath> --env-file <envFilePath> down`.
-   * Best-effort — cleanup callers swallow errors. Should still resolve
-   * cleanly if the project is already torn down.
+   * Start a detached container. The runner is expected to:
+   *   - publish `hostPort:internalPort`
+   *   - bind-mount `checkoutDir` → /workspace, set workdir to /workspace
+   *   - inject `PORT=<internalPort>` plus any caller-supplied env
+   *   - exec `setupCommand && startScript` under `sh -c` (setupCommand
+   *     is optional — when omitted, just the start script runs).
    */
-  down(opts: { templatePath: string; envFilePath: string; projectName: string }): Promise<void>;
+  run(opts: {
+    containerName: string;
+    imageTag: string;
+    hostPort: number;
+    internalPort: number;
+    checkoutDir: string;
+    startScript: string;
+    setupCommand?: string;
+    env?: Record<string, string>;
+  }): Promise<{ containerId: string }>;
+  /** `docker rm -f <containerName>` — must not throw if absent. */
+  stop(opts: { containerName: string }): Promise<void>;
 }
 
-/** Minimal filesystem surface the builder needs (injectable for tests). */
+/** Minimal git surface the builder needs (real `git` in prod). */
+export interface GitOps {
+  /**
+   * Clone the PR head ref into `checkoutDir`. If the directory already
+   * exists (synchronize event), the runner is expected to fetch the
+   * latest commit and reset to it instead of re-cloning.
+   *
+   * `cloneToken` is a GitHub installation token usable as an HTTPS
+   * Basic-auth password (`x-access-token:<token>`); the runner is
+   * responsible for not letting it leak into git's reflog or process
+   * args. Pass an empty string for public-repo clones.
+   */
+  cloneOrUpdate(opts: {
+    repoFullName: string;
+    branch: string;
+    commitSha?: string;
+    checkoutDir: string;
+    cloneToken: string;
+  }): Promise<void>;
+}
+
+/** Minimal filesystem surface — directory-only ops, swallows ENOENT. */
 export interface FsOps {
-  /** Copy prod DB → per-PR DB path. */
-  copyFile(src: string, dest: string): Promise<void>;
-  /** Write the rendered env file contents. */
-  writeFile(dest: string, contents: string): Promise<void>;
-  /** Best-effort remove — must not throw on ENOENT. */
-  rm(target: string): Promise<void>;
+  /** Recursive remove. Must not throw on ENOENT. */
+  rmDir(target: string): Promise<void>;
+  /** mkdir -p with parents. */
+  mkdirP(target: string): Promise<void>;
 }
 
 export interface PrEnvBuildRequest {
@@ -74,16 +114,24 @@ export interface PrEnvBuildRequest {
   prNumber: number;
   branch: string;
   commitSha?: string;
+  /** Per-project config (start script, port, optional Dockerfile). */
+  projectConfig: PrEnvProjectConfig;
+  /**
+   * Filesystem-safe project slug used to namespace checkouts and
+   * containers. Dispatcher derives this from the linked Project.id (or
+   * a slugified repoFullName fallback).
+   */
+  projectSlug: string;
 }
 
 export interface PrEnvBuildResult {
   port: number;
   slotId: string;
-  dbPath: string;
-  envFilePath: string;
-  composeProjectName: string;
+  checkoutDir: string;
+  containerName: string;
+  imageTag: string;
   previewUrl: string;
-  /** Whatever the compose runner surfaced, if anything. */
+  /** Whatever the container runtime surfaced. */
   containerId?: string;
 }
 
@@ -95,55 +143,39 @@ export interface PrEnvGithubCreds {
 
 export interface PrEnvBuilderDeps {
   portPool: PortPool;
-  compose: ComposeRunner;
+  container: ContainerRunner;
+  git: GitOps;
   fs: FsOps;
   github: PrEnvGithubCreds;
   /**
-   * Paths + formatting config. `prEnvDataDir` holds per-PR SQLite copies,
-   * `envFilesDir` holds the rendered `.env.preview` files, and
-   * `composeTemplatePath` points at `pr-env.compose.yml`.
+   * Mints a short-lived GitHub installation token for the clone. Tests
+   * pass a fake that returns a fixed string; production wires this to
+   * `getInstallationToken` from the github-app module. Returning `''`
+   * is supported (public-repo path).
    */
+  getCloneToken: (creds: PrEnvGithubCreds) => Promise<string>;
   paths: {
-    prodDbPath: string;
-    prEnvDataDir: string;
-    envFilesDir: string;
-    composeTemplatePath: string;
+    /**
+     * Base dir for per-PR checkouts; the builder places each PR under
+     * `<checkoutBaseDir>/<projectSlug>/pr-<N>/`. Default in production
+     * is `~/.agent-hub/pr-envs`.
+     */
+    checkoutBaseDir: string;
   };
   /**
-   * Base URL used to build the preview URL we advertise back to the PR
-   * comment. The builder appends `/pr-<num>/` — override in tests that
-   * care about exact shape.
+   * Generic image used when `projectConfig.dockerfilePath` is null —
+   * defaults to `node:20` so JS/TS projects work out of the box. Python
+   * / Ruby / etc. supply their own Dockerfile via the wizard.
    */
+  defaultBaseImage: string;
   previewBaseUrl: string;
   /**
-   * Renderer for the `.env.preview` body. Defaults to `buildPrEnvFile`
-   * from `env-template.ts` — injectable so tests can force failures.
-   */
-  renderEnvFile: (values: {
-    repoFullName: string;
-    prNumber: number;
-    slotId: string;
-    hostPort: number;
-    dbPath: string;
-    githubAppId: string;
-    githubInstallationId: string;
-    githubPrivateKey: string;
-    previewUrl: string;
-  }) => string;
-  /**
-   * Nginx wiring. Optional — when omitted (existing tests, or the feature
-   * is gated off at the caller level) the builder skips server-block
-   * emission entirely. When present, the builder writes + reloads the
-   * per-PR server block after compose-up succeeds, and includes a
-   * rollback step so a failed write undoes the partial config.
+   * Optional per-deploy nginx wiring. Same shape as the previous
+   * builder — when present the builder writes a per-PR server block
+   * after the container starts and rolls it back on failure.
    */
   nginx?: {
     writer: NginxWriterDeps;
-    /**
-     * Subset of the template inputs that are fixed per-deploy: host,
-     * cert paths. The PR-specific fields (prNumber, port) are filled in
-     * by the builder.
-     */
     templateDefaults: Pick<PreviewServerBlockInput, 'previewHost' | 'certPath' | 'keyPath'>;
   };
 }
@@ -151,24 +183,33 @@ export interface PrEnvBuilderDeps {
 /** What was created at each step — drives precise rollback on failure. */
 interface BuildAudit {
   portAllocated: boolean;
-  dbCopied: boolean;
-  envWritten: boolean;
-  composeUp: boolean;
+  cloned: boolean;
+  imageBuilt: boolean;
+  containerStarted: boolean;
   nginxWritten: boolean;
 }
 
 /**
- * Resolve deterministic, collision-free paths for a given PR. Separated
- * out so tests can assert exact filenames.
+ * Resolve deterministic, collision-free paths and identifiers for a
+ * given (project, pr) pair. Separated out so tests + dispatcher can
+ * predict exact filenames and container names.
  */
 export function prEnvPaths(
-  baseDir: { prEnvDataDir: string; envFilesDir: string },
+  baseDir: { checkoutBaseDir: string },
+  projectSlug: string,
   prNumber: number,
-): { dbPath: string; envFilePath: string; composeProjectName: string } {
+): { checkoutDir: string; containerName: string; imageTag: string } {
+  // Project ids are validated against /^[a-zA-Z0-9-]+$/ in routes/projects.ts,
+  // so a slug like `MyApp` is legal. Docker repository-name grammar requires
+  // the path component to be lowercase — `docker build --tag agent-hub-pr/MyApp:…`
+  // exits non-zero with `invalid reference format: repository name must be
+  // lowercase`. Container names accept uppercase, but we lowercase here too
+  // so checkout/container/image identifiers stay consistent for a project.
+  const dockerSafeSlug = projectSlug.toLowerCase();
   return {
-    dbPath: path.join(baseDir.prEnvDataDir, `pr-${prNumber}.db`),
-    envFilePath: path.join(baseDir.envFilesDir, `.env.preview.pr-${prNumber}`),
-    composeProjectName: `agent-hub-pr-${prNumber}`,
+    checkoutDir: path.join(baseDir.checkoutBaseDir, projectSlug, `pr-${prNumber}`),
+    containerName: `agent-hub-pr-${dockerSafeSlug}-${prNumber}`,
+    imageTag: `agent-hub-pr/${dockerSafeSlug}:pr-${prNumber}`,
   };
 }
 
@@ -180,60 +221,90 @@ export async function buildPrEnv(
   deps: PrEnvBuilderDeps,
   request: PrEnvBuildRequest,
 ): Promise<PrEnvBuildResult> {
-  const { portPool, compose, fs, github, paths, previewBaseUrl, renderEnvFile } = deps;
-  const { repoFullName, prNumber } = request;
+  const { portPool, container, git, fs, github, paths, previewBaseUrl, getCloneToken } = deps;
+  const { repoFullName, prNumber, branch, commitSha, projectConfig, projectSlug } = request;
 
-  const { dbPath, envFilePath, composeProjectName } = prEnvPaths(paths, prNumber);
-  const slotId = `pr-env-${prNumber}`;
+  const { checkoutDir, containerName, imageTag } = prEnvPaths(paths, projectSlug, prNumber);
+  const slotId = `pr-env-${projectSlug}-${prNumber}`;
   const previewUrl = joinUrl(previewBaseUrl, `pr-${prNumber}`);
+  let resolvedImageTag = imageTag;
 
   const audit: BuildAudit = {
     portAllocated: false,
-    dbCopied: false,
-    envWritten: false,
-    composeUp: false,
+    cloned: false,
+    imageBuilt: false,
+    containerStarted: false,
     nginxWritten: false,
   };
 
   try {
-    // 1. Port. PortPool.allocatePort is idempotent for the same PR, so
-    //    synchronize events don't consume new ports.
+    // 1. Port. Idempotent for the same (repo, pr).
     const port = portPool.allocatePort(repoFullName, prNumber);
     audit.portAllocated = true;
 
-    // 2. DB copy. `prod.db` → `pr-<num>.db` so the preview env can mutate
-    //    freely without touching production data.
-    await fs.copyFile(paths.prodDbPath, dbPath);
-    audit.dbCopied = true;
+    // 2. Clone token. `getCloneToken` may return '' for public repos /
+    //    test fakes; the GitOps fake / real impl decides what to do
+    //    with an empty token.
+    const cloneToken = await getCloneToken(github);
 
-    // 3. Env file. Missing values throw EnvTemplateError — the catch
-    //    below handles the rollback.
-    const body = renderEnvFile({
+    // 3. Clone (or update) the PR head ref.
+    await fs.mkdirP(path.dirname(checkoutDir));
+    await git.cloneOrUpdate({
       repoFullName,
-      prNumber,
-      slotId,
+      branch,
+      commitSha,
+      checkoutDir,
+      cloneToken,
+    });
+    audit.cloned = true;
+
+    // 4. Build image (or pass through the default base image).
+    const dockerfilePath = projectConfig.dockerfilePath?.trim() || null;
+    const builtImage = await container.build({
+      contextDir: checkoutDir,
+      dockerfilePath: dockerfilePath ? path.resolve(checkoutDir, dockerfilePath) : null,
+      imageTag,
+      defaultBaseImage: deps.defaultBaseImage,
+    });
+    resolvedImageTag = builtImage.imageTag;
+    audit.imageBuilt = true;
+
+    // 5. Run container. The runner:
+    //    - publishes hostPort:internalPort
+    //    - bind-mounts the checkout to /workspace
+    //    - exports PORT=internalPort
+    //    - execs `setupCommand && startScript` (or just startScript)
+    //
+    // On `pull_request.synchronize`, dispatchPrEnvBuild chains the new
+    // build onto the previous one — but the previous build leaves a
+    // running, detached container under this exact `containerName`.
+    // Without a stop here, `docker run --name <name>` would fail with
+    // `Conflict. The container name "/<name>" is already in use`. The
+    // `stop` adapter is idempotent (`docker rm -f` exits 0 against an
+    // absent container at the runner level) so calling it on every
+    // build is safe.
+    //
+    // Best-effort: a transient stop failure must not block the new
+    // build — `container.run` will surface the real conflict error if
+    // the previous container is still alive, and that error reaches
+    // rollback through the normal failure path.
+    try {
+      await container.stop({ containerName });
+    } catch (e) {
+      console.warn('[pr-env-builder] pre-run container.stop failed (continuing)', e);
+    }
+    const result = await container.run({
+      containerName,
+      imageTag: resolvedImageTag,
       hostPort: port,
-      dbPath,
-      githubAppId: github.appId,
-      githubInstallationId: github.installationId,
-      githubPrivateKey: github.privateKey,
-      previewUrl,
+      internalPort: projectConfig.internalPort,
+      checkoutDir,
+      startScript: projectConfig.startScript,
+      setupCommand: projectConfig.setupCommand?.trim() || undefined,
     });
-    await fs.writeFile(envFilePath, body);
-    audit.envWritten = true;
+    audit.containerStarted = true;
 
-    // 4. Compose up. The runner may throw (image pull failed, port
-    //    already in use on the host, daemon unreachable, etc.).
-    const result = await compose.up({
-      templatePath: paths.composeTemplatePath,
-      envFilePath,
-      projectName: composeProjectName,
-    });
-    audit.composeUp = true;
-
-    // 5. Nginx server-block emission. Optional — only runs if the deps
-    //    object opted into nginx wiring. If the write or reload fails,
-    //    the rollback unwinds everything above (port/db/env/compose).
+    // 6. Optional nginx wiring (unchanged from the previous builder).
     if (deps.nginx) {
       const nginxBody = renderPreviewServerBlock({
         prNumber,
@@ -252,22 +323,18 @@ export async function buildPrEnv(
     return {
       port,
       slotId,
-      dbPath,
-      envFilePath,
-      composeProjectName,
+      checkoutDir,
+      containerName,
+      imageTag: resolvedImageTag,
       previewUrl,
       containerId: result.containerId,
     };
   } catch (err) {
-    // Rollback in reverse order of creation. Each step swallows its own
-    // errors so a single stuck resource can't hide the original failure.
     await rollback(deps, {
       repoFullName,
       prNumber,
-      envFilePath,
-      dbPath,
-      composeProjectName,
-      templatePath: paths.composeTemplatePath,
+      checkoutDir,
+      containerName,
       audit,
     });
     throw err;
@@ -275,27 +342,29 @@ export async function buildPrEnv(
 }
 
 /**
- * Explicit teardown used on `pull_request.closed` / merged. Unlike the
- * rollback path this runs all four cleanup steps regardless of state
- * because the lifecycle guarantees they were all created.
+ * Explicit teardown used on `pull_request.closed` / merged. Runs every
+ * cleanup step regardless of state because the lifecycle guarantees
+ * they were all created on a successful build.
  */
 export async function teardownPrEnv(
   deps: PrEnvBuilderDeps,
-  request: { repoFullName: string; prNumber: number },
+  request: { repoFullName: string; prNumber: number; projectSlug: string },
 ): Promise<void> {
-  const { dbPath, envFilePath, composeProjectName } = prEnvPaths(deps.paths, request.prNumber);
+  const { checkoutDir, containerName } = prEnvPaths(
+    deps.paths,
+    request.projectSlug,
+    request.prNumber,
+  );
   await rollback(deps, {
     repoFullName: request.repoFullName,
     prNumber: request.prNumber,
-    envFilePath,
-    dbPath,
-    composeProjectName,
-    templatePath: deps.paths.composeTemplatePath,
+    checkoutDir,
+    containerName,
     audit: {
       portAllocated: true,
-      dbCopied: true,
-      envWritten: true,
-      composeUp: true,
+      cloned: true,
+      imageBuilt: true,
+      containerStarted: true,
       nginxWritten: true,
     },
   });
@@ -306,63 +375,46 @@ async function rollback(
   ctx: {
     repoFullName: string;
     prNumber: number;
-    envFilePath: string;
-    dbPath: string;
-    composeProjectName: string;
-    templatePath: string;
+    checkoutDir: string;
+    containerName: string;
     audit: BuildAudit;
   },
 ): Promise<void> {
-  const { portPool, compose, fs } = deps;
+  const { portPool, container, fs } = deps;
 
-  // Nginx cleanup first — if we installed a conf for a compose project
-  // we're about to tear down, routing traffic to a stopped container is
-  // the worst-of-both-worlds state. Attempt regardless of audit flag
-  // because a partial write + symlink can leak even when the final
-  // reload threw. removePreviewConf is idempotent.
+  // 1. Nginx first — point traffic away before tearing down the
+  //    container it routes to. removePreviewConf is idempotent so we
+  //    attempt regardless of the audit flag (a partial write may have
+  //    leaked even if the final reload threw).
   if (deps.nginx) {
     try {
       await removePreviewConf(deps.nginx.writer, {
         filename: previewConfFilename(ctx.prNumber),
       });
-      // removePreviewConf intentionally doesn't reload (batching concern),
-      // but teardown/rollback is a single-PR path — reload now so nginx
-      // stops routing to the about-to-be-stopped container.
       await reloadNginx(deps.nginx.writer);
     } catch (e) {
       console.warn('[pr-env-builder] nginx conf rm during rollback failed', e);
     }
   }
 
-  if (ctx.audit.composeUp) {
-    try {
-      await compose.down({
-        templatePath: ctx.templatePath,
-        envFilePath: ctx.envFilePath,
-        projectName: ctx.composeProjectName,
-      });
-    } catch (e) {
-      console.warn('[pr-env-builder] compose.down during rollback failed', e);
-    }
-  }
-
-  // Always attempt env-file cleanup: if writeFile threw mid-write a
-  // partial file may exist on disk even though audit.envWritten is false.
-  // fs.rm already swallows ENOENT so this is safe when no file landed.
+  // 2. Container. We `stop` regardless of audit.containerStarted: the
+  //    runner's stop is idempotent, and if `run` threw mid-creation
+  //    the container may still exist as a zombie.
   try {
-    await fs.rm(ctx.envFilePath);
+    await container.stop({ containerName: ctx.containerName });
   } catch (e) {
-    console.warn('[pr-env-builder] env-file rm during rollback failed', e);
+    console.warn('[pr-env-builder] container.stop during rollback failed', e);
   }
 
-  if (ctx.audit.dbCopied) {
-    try {
-      await fs.rm(ctx.dbPath);
-    } catch (e) {
-      console.warn('[pr-env-builder] db rm during rollback failed', e);
-    }
+  // 3. Checkout dir. Always attempt cleanup — git may have written a
+  //    partial tree even if `cloneOrUpdate` threw.
+  try {
+    await fs.rmDir(ctx.checkoutDir);
+  } catch (e) {
+    console.warn('[pr-env-builder] checkout rm during rollback failed', e);
   }
 
+  // 4. Port. Only release if we successfully allocated.
   if (ctx.audit.portAllocated) {
     try {
       portPool.releasePort(ctx.repoFullName, ctx.prNumber);

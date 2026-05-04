@@ -1398,6 +1398,10 @@ function handleKanbanWebhookEvent(
           readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config),
           getDb(),
         ),
+      getProjectConfig: () => {
+        if (!project?.prEnv) return null;
+        return { config: project.prEnv, slug: project.id };
+      },
     };
     if (action === 'closed') {
       void dispatchPrEnvTeardown(prEnvDispatchDeps, {

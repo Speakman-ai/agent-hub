@@ -1260,6 +1260,42 @@ export interface GithubWorkflowSettings {
 /** `dev` — full Agent Hub dev experience. `workflow` — workflow-centric; per-session worktrees and PR-review automation are off by default. */
 export type ProjectMode = 'dev' | 'workflow';
 
+/**
+ * Per-project PR-env (preview environment) configuration.
+ *
+ * When `enabled`, opening or pushing to a PR on this project's GitHub repo
+ * triggers a preview env build:
+ *   1. Clone the PR ref into a per-PR working dir on the host.
+ *   2. (Optional) `docker build` against `dockerfilePath` if provided; otherwise
+ *      run the project on the generic base image with a bind-mounted checkout.
+ *   3. Run `setupCommand` once (e.g. `npm install`).
+ *   4. Spawn `startScript` with `PORT=<internalPort>` env, capture logs.
+ *   5. Wire host port from the pool → `internalPort` via nginx; sticky-comment
+ *      the URL on the PR.
+ *
+ * GitHub App credentials reuse the Reviewer App (`AppConfig.githubApp`) — no
+ * separate App registration. Host-level fields (preview host, base URL, port
+ * range, Route 53 zone) live on the singleton `pr_env_config` row.
+ */
+export interface PrEnvProjectConfig {
+  enabled: boolean;
+  /** Shell run once after clone, in the working dir. e.g. `npm install`. Optional. */
+  setupCommand?: string;
+  /** Path to the start script in the repo, relative to repo root. e.g. `./scripts/pr-env.sh`. */
+  startScript: string;
+  /** Port the start script binds to inside the container; nginx maps the host port here. */
+  internalPort: number;
+  /** Optional health-check path; defaults to `/`. */
+  healthPath?: string;
+  /**
+   * Optional path to a Dockerfile (relative to repo root). When set, the builder
+   * `docker build`s this image per PR ref and runs the start script inside it.
+   * When unset, the builder uses a generic base image (Node + Python +
+   * build-essential + git) with the checkout bind-mounted at `/workspace`.
+   */
+  dockerfilePath?: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -1297,6 +1333,12 @@ export interface Project {
    * Shapes match `OrchestrationBudgetsPartial` in `server/orchestration-budgets.ts`.
    */
   orchestrationBudgets?: Record<string, unknown>;
+  /**
+   * Per-project preview-env config. When omitted or `enabled: false`, PR
+   * webhook events on this project's repo are ignored by the PR-env
+   * dispatcher. See {@link PrEnvProjectConfig}.
+   */
+  prEnv?: PrEnvProjectConfig;
   agents: Agent[];
   [key: string]: unknown;
 }

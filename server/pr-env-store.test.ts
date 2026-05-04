@@ -104,7 +104,7 @@ describe('readPrEnvConfigRow / writePrEnvConfig', () => {
     const row = readPrEnvConfigRow(db);
     expect(row.enabled).toBe(false);
     expect(row.repoFullName).toBe('');
-    expect(row.githubPrivateKey).toBe('');
+    expect(row.route53SecretAccessKey).toBe('');
     expect(prEnvConfigRowExists(db)).toBe(false);
   });
 
@@ -118,9 +118,6 @@ describe('readPrEnvConfigRow / writePrEnvConfig', () => {
         certRenewalLive: true,
         portRangeMin: 4000,
         portRangeMax: 4100,
-        githubAppId: '12345',
-        githubInstallationId: '67890',
-        githubPrivateKey: '-----BEGIN KEY-----\nABC\n-----END KEY-----',
         route53AccessKeyId: 'AKIA',
         route53SecretAccessKey: 'sekret',
         route53HostedZoneId: 'Z123',
@@ -132,27 +129,19 @@ describe('readPrEnvConfigRow / writePrEnvConfig', () => {
     expect(row.certRenewalLive).toBe(true);
     expect(row.portRangeMin).toBe(4000);
     expect(row.portRangeMax).toBe(4100);
-    expect(row.githubPrivateKey).toBe('-----BEGIN KEY-----\nABC\n-----END KEY-----');
     expect(row.route53SecretAccessKey).toBe('sekret');
     expect(prEnvConfigRowExists(db)).toBe(true);
   });
 
   it('stores secrets encrypted at rest (not plaintext in DB)', () => {
-    writePrEnvConfig(
-      { githubPrivateKey: 'pk-plaintext', route53SecretAccessKey: 'aws-secret' },
-      db,
-    );
+    writePrEnvConfig({ route53SecretAccessKey: 'aws-secret' }, db);
     const raw = db
-      .prepare(
-        'SELECT github_private_key_enc, route53_secret_access_key_enc FROM pr_env_config WHERE id = 1',
-      )
-      .get() as { github_private_key_enc: string; route53_secret_access_key_enc: string };
-    expect(raw.github_private_key_enc).not.toBe('');
-    expect(raw.github_private_key_enc).not.toContain('pk-plaintext');
+      .prepare('SELECT route53_secret_access_key_enc FROM pr_env_config WHERE id = 1')
+      .get() as { route53_secret_access_key_enc: string };
+    expect(raw.route53_secret_access_key_enc).not.toBe('');
     expect(raw.route53_secret_access_key_enc).not.toContain('aws-secret');
     // Decryption round-trips:
     const row = readPrEnvConfigRow(db);
-    expect(row.githubPrivateKey).toBe('pk-plaintext');
     expect(row.route53SecretAccessKey).toBe('aws-secret');
   });
 });
@@ -161,17 +150,21 @@ describe('masked read', () => {
   it('masks set secrets and leaves unset ones empty', () => {
     writePrEnvConfig(
       {
-        githubAppId: '12345',
-        githubPrivateKey: 'pk',
+        repoFullName: 'acme/repo',
         route53AccessKeyId: 'AKIA',
-        route53SecretAccessKey: '',
+        route53SecretAccessKey: 'sekret',
       },
       db,
     );
     const masked = readPrEnvConfigMasked(db);
-    expect(masked.githubAppId).toBe('12345');
-    expect(masked.githubPrivateKey).toBe(MASK);
+    expect(masked.repoFullName).toBe('acme/repo');
     expect(masked.route53AccessKeyId).toBe('AKIA');
+    expect(masked.route53SecretAccessKey).toBe(MASK);
+  });
+
+  it('leaves unset secret as empty string (distinguishable from MASK)', () => {
+    writePrEnvConfig({ route53AccessKeyId: 'AKIA', route53SecretAccessKey: '' }, db);
+    const masked = readPrEnvConfigMasked(db);
     expect(masked.route53SecretAccessKey).toBe('');
   });
 });
@@ -182,7 +175,6 @@ describe('partial-preserving writes', () => {
       {
         enabled: true,
         repoFullName: 'acme/repo',
-        githubPrivateKey: 'ORIGINAL-PK',
         route53SecretAccessKey: 'ORIGINAL-AWS',
       },
       db,
@@ -193,39 +185,31 @@ describe('partial-preserving writes', () => {
     writePrEnvConfig({ repoFullName: 'acme/other' }, db);
     const row = readPrEnvConfigRow(db);
     expect(row.repoFullName).toBe('acme/other');
-    expect(row.githubPrivateKey).toBe('ORIGINAL-PK'); // preserved
     expect(row.route53SecretAccessKey).toBe('ORIGINAL-AWS');
     expect(row.enabled).toBe(true); // not in payload → kept
   });
 
   it('MASK sentinel preserves existing secret', () => {
-    writePrEnvConfig(
-      {
-        githubPrivateKey: MASK,
-        route53SecretAccessKey: MASK,
-      },
-      db,
-    );
+    writePrEnvConfig({ route53SecretAccessKey: MASK }, db);
     const row = readPrEnvConfigRow(db);
-    expect(row.githubPrivateKey).toBe('ORIGINAL-PK');
     expect(row.route53SecretAccessKey).toBe('ORIGINAL-AWS');
   });
 
   it('empty string explicitly clears a secret', () => {
-    writePrEnvConfig({ githubPrivateKey: '' }, db);
+    writePrEnvConfig({ route53SecretAccessKey: '' }, db);
     const row = readPrEnvConfigRow(db);
-    expect(row.githubPrivateKey).toBe('');
+    expect(row.route53SecretAccessKey).toBe('');
     // The encrypted column should be empty too (not "encrypted empty string")
     const raw = db
-      .prepare('SELECT github_private_key_enc FROM pr_env_config WHERE id = 1')
-      .get() as { github_private_key_enc: string };
-    expect(raw.github_private_key_enc).toBe('');
+      .prepare('SELECT route53_secret_access_key_enc FROM pr_env_config WHERE id = 1')
+      .get() as { route53_secret_access_key_enc: string };
+    expect(raw.route53_secret_access_key_enc).toBe('');
   });
 
   it('non-masked value overwrites secret', () => {
-    writePrEnvConfig({ githubPrivateKey: 'NEW-PK' }, db);
+    writePrEnvConfig({ route53SecretAccessKey: 'NEW-AWS' }, db);
     const row = readPrEnvConfigRow(db);
-    expect(row.githubPrivateKey).toBe('NEW-PK');
+    expect(row.route53SecretAccessKey).toBe('NEW-AWS');
   });
 
   it('singleton enforcement — never creates a second row', () => {
@@ -241,7 +225,7 @@ describe('migrateFileConfigToDb', () => {
   it('no-ops when row already exists', () => {
     writePrEnvConfig({ repoFullName: 'pre-existing/repo' }, db);
     const migrated = migrateFileConfigToDb(
-      { prEnv: { repoFullName: 'file/repo', github: { appId: '99' } } },
+      { prEnv: { repoFullName: 'file/repo', route53: { accessKeyId: 'AKIA' } } },
       db,
     );
     expect(migrated).toBe(false);
@@ -259,7 +243,20 @@ describe('migrateFileConfigToDb', () => {
     expect(prEnvConfigRowExists(db)).toBe(false);
   });
 
-  it('copies Tier-1 + Tier-2 fields into DB row', () => {
+  it('no-ops when only the legacy `github` block is set (creds reuse Reviewer App)', () => {
+    // The legacy `prEnv.github.*` fields are deliberately ignored on
+    // migration — the dispatcher reuses the registered Reviewer App now.
+    // A config.json that only carries `github` and nothing else
+    // shouldn't stamp a row at all.
+    const migrated = migrateFileConfigToDb(
+      { prEnv: { github: { appId: '1', installationId: '2', privateKey: 'pk' } } },
+      db,
+    );
+    expect(migrated).toBe(false);
+    expect(prEnvConfigRowExists(db)).toBe(false);
+  });
+
+  it('copies Tier-1 + Tier-2 fields into DB row (legacy github block ignored)', () => {
     const migrated = migrateFileConfigToDb(
       {
         prEnv: {
@@ -268,6 +265,7 @@ describe('migrateFileConfigToDb', () => {
           previewBaseUrl: 'https://preview.example.com',
           certRenewalLive: true,
           portRange: { min: 3100, max: 3999 },
+          // Legacy block — present in old configs but no longer migrated.
           github: { appId: '1', installationId: '2', privateKey: 'pk' },
           route53: {
             accessKeyId: 'AKIA',
@@ -288,20 +286,18 @@ describe('migrateFileConfigToDb', () => {
     expect(row.certRenewalLive).toBe(true);
     expect(row.portRangeMin).toBe(3100);
     expect(row.portRangeMax).toBe(3999);
-    expect(row.githubAppId).toBe('1');
-    expect(row.githubInstallationId).toBe('2');
-    expect(row.githubPrivateKey).toBe('pk');
+    expect(row.route53AccessKeyId).toBe('AKIA');
     expect(row.route53SecretAccessKey).toBe('sekret');
     expect(row.route53HostedZoneId).toBe('Z1');
   });
 
   it('is idempotent — second call no-ops', () => {
     const a = migrateFileConfigToDb(
-      { prEnv: { repoFullName: 'acme/repo', github: { appId: '1' } } },
+      { prEnv: { repoFullName: 'acme/repo', route53: { accessKeyId: 'AKIA' } } },
       db,
     );
     const b = migrateFileConfigToDb(
-      { prEnv: { repoFullName: 'other/repo', github: { appId: '99' } } },
+      { prEnv: { repoFullName: 'other/repo', route53: { accessKeyId: 'BKIA' } } },
       db,
     );
     expect(a).toBe(true);

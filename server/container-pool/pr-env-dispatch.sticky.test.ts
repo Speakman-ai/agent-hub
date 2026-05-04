@@ -9,54 +9,83 @@
 import Database from 'better-sqlite3';
 import { describe, it, expect, vi } from 'vitest';
 import { PortPool, PORT_POOL_SCHEMA } from './port-pool.js';
-import { type ComposeRunner, type FsOps, type PrEnvBuilderDeps } from './pr-env-builder.js';
-import { buildPrEnvFile } from './env-template.js';
-import { dispatchPrEnvBuild, dispatchPrEnvTeardown } from './pr-env-dispatch.js';
+import {
+  type ContainerRunner,
+  type FsOps,
+  type GitOps,
+  type PrEnvBuilderDeps,
+} from './pr-env-builder.js';
+import {
+  dispatchPrEnvBuild,
+  dispatchPrEnvTeardown,
+  __resetPrEnvDispatchInflightForTests,
+  type PrEnvProjectResolution,
+} from './pr-env-dispatch.js';
 import {
   STICKY_MARKER_START,
   type GitHubApiClient,
   type GitHubIssueComment,
 } from './pr-sticky-comment.js';
+import type { PrEnvProjectConfig } from '../types.js';
+
+const FIXTURE_PROJECT_CONFIG: PrEnvProjectConfig = {
+  enabled: true,
+  startScript: 'npm start',
+  internalPort: 3000,
+  healthPath: '/',
+};
+
+const FIXTURE_PROJECT: PrEnvProjectResolution = {
+  config: FIXTURE_PROJECT_CONFIG,
+  slug: 'acme-repo',
+};
 
 function makeFakeFs(): FsOps {
   return {
-    async copyFile() {},
-    async writeFile() {},
-    async rm() {},
+    async mkdirP() {},
+    async rmDir() {},
   };
 }
 
-function makeFakeCompose(opts: { failUp?: boolean } = {}): ComposeRunner {
+function makeFakeGit(): GitOps {
   return {
-    async up({ projectName }) {
-      if (opts.failUp) throw new Error('compose up failed');
-      return { containerId: `cid-${projectName}` };
-    },
-    async down() {},
+    async cloneOrUpdate() {},
   };
 }
 
-function freshDeps(opts: { failUp?: boolean } = {}) {
+function makeFakeContainer(opts: { failRun?: boolean } = {}): ContainerRunner {
+  return {
+    async build({ imageTag, defaultBaseImage, dockerfilePath }) {
+      return { imageTag: dockerfilePath ? imageTag : defaultBaseImage };
+    },
+    async run({ containerName }) {
+      if (opts.failRun) throw new Error('container run failed');
+      return { containerId: `cid-${containerName}` };
+    },
+    async stop() {},
+  };
+}
+
+function freshDeps(opts: { failRun?: boolean } = {}) {
   const db = new Database(':memory:');
   db.exec(PORT_POOL_SCHEMA);
   const portPool = new PortPool(db, { range: { min: 3100, max: 3105 } });
   const builder: PrEnvBuilderDeps = {
     portPool,
-    compose: makeFakeCompose(opts),
+    container: makeFakeContainer(opts),
+    git: makeFakeGit(),
     fs: makeFakeFs(),
     github: {
       appId: '1',
       installationId: '2',
       privateKey: 'pk',
     },
+    getCloneToken: async () => 'token',
     paths: {
-      prodDbPath: '/srv/prod.db',
-      prEnvDataDir: '/srv/pr-envs',
-      envFilesDir: '/srv/pr-envs/env',
-      composeTemplatePath: '/srv/templates/pr-env.compose.yml',
+      checkoutBaseDir: '/srv/pr-envs',
     },
+    defaultBaseImage: 'node:20',
     previewBaseUrl: 'https://preview.example.com',
-    renderEnvFile: buildPrEnvFile,
   };
   return { builder, db };
 }
@@ -104,6 +133,7 @@ describe('dispatchPrEnvBuild → sticky comment', () => {
         db,
         stmts: stmts as never,
         getBuilderDeps: () => builder,
+        getProjectConfig: () => FIXTURE_PROJECT,
         githubApiClientFactory: () => client,
       },
       { repoFullName: 'acme/repo', prNumber: 12, branch: 'feat/x', commitSha: 'cafebabedeadbeef' },
@@ -136,6 +166,7 @@ describe('dispatchPrEnvBuild → sticky comment', () => {
         db,
         stmts: stmts as never,
         getBuilderDeps: () => builder,
+        getProjectConfig: () => FIXTURE_PROJECT,
         githubApiClientFactory: () => client,
       },
       { repoFullName: 'acme/repo', prNumber: 12, branch: 'feat/x' },
@@ -150,7 +181,7 @@ describe('dispatchPrEnvBuild → sticky comment', () => {
   });
 
   it('upserts a "failed" sticky comment when the build throws', async () => {
-    const { builder, db } = freshDeps({ failUp: true });
+    const { builder, db } = freshDeps({ failRun: true });
     const client = makeRecordingClient({ listResponse: [] });
     const stmts = { createKanbanCardComment: { run: vi.fn() } };
 
@@ -159,6 +190,7 @@ describe('dispatchPrEnvBuild → sticky comment', () => {
         db,
         stmts: stmts as never,
         getBuilderDeps: () => builder,
+        getProjectConfig: () => FIXTURE_PROJECT,
         githubApiClientFactory: () => client,
       },
       { repoFullName: 'acme/repo', prNumber: 12, branch: 'feat/x' },
@@ -168,7 +200,7 @@ describe('dispatchPrEnvBuild → sticky comment', () => {
     expect(post).toBeDefined();
     const body = (post?.body as { body: string }).body;
     expect(body).toContain('build failed');
-    expect(body).toContain('compose up failed');
+    expect(body).toContain('container run failed');
   });
 
   it('swallows GitHub API errors without breaking the build path', async () => {
@@ -183,6 +215,7 @@ describe('dispatchPrEnvBuild → sticky comment', () => {
         db,
         stmts: stmts as never,
         getBuilderDeps: () => builder,
+        getProjectConfig: () => FIXTURE_PROJECT,
         githubApiClientFactory: () => client,
       },
       { repoFullName: 'acme/repo', prNumber: 12, branch: 'feat/x' },
@@ -203,6 +236,7 @@ describe('dispatchPrEnvBuild → sticky comment', () => {
         db,
         stmts: stmts as never,
         getBuilderDeps: () => builder,
+        getProjectConfig: () => FIXTURE_PROJECT,
         githubApiClientFactory: () => client,
       },
       { repoFullName: 'acme/repo', prNumber: 12, branch: 'feat/x' },
@@ -221,11 +255,98 @@ describe('dispatchPrEnvBuild → sticky comment', () => {
         db,
         stmts: stmts as never,
         getBuilderDeps: () => builder,
+        getProjectConfig: () => FIXTURE_PROJECT,
         githubApiClientFactory: () => client,
       },
       { repoFullName: 'no-slash-here', prNumber: 12, branch: 'feat/x' },
     );
 
+    expect(client.calls).toHaveLength(0);
+  });
+
+  it('upserts a "failed" sticky comment when the per-project concurrency cap is exceeded, without consuming a port', async () => {
+    __resetPrEnvDispatchInflightForTests();
+    const { builder, db } = freshDeps();
+    const client = makeRecordingClient({ listResponse: [] });
+    const stmts = { createKanbanCardComment: { run: vi.fn() } };
+
+    // Park one in-flight build to fill the cap=1 slot.
+    let releaseRun!: () => void;
+    const runHold = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const originalRun = builder.container.run.bind(builder.container);
+    builder.container.run = async (args) => {
+      await runHold;
+      return originalRun(args);
+    };
+
+    const dispatchDeps = {
+      db,
+      stmts: stmts as never,
+      getBuilderDeps: () => builder,
+      getProjectConfig: () => FIXTURE_PROJECT,
+      githubApiClientFactory: () => client,
+      maxConcurrentBuildsPerProject: 1,
+    };
+
+    const parked = dispatchPrEnvBuild(dispatchDeps, {
+      repoFullName: 'acme/repo',
+      prNumber: 1,
+      branch: 'a',
+    });
+    // Yield so the parked build registers in inflightByProject and
+    // reserves its port.
+    await Promise.resolve();
+    await Promise.resolve();
+    const portsAfterParked = builder.portPool.allocatedCount();
+
+    // Second PR — over the cap → should reject without ever calling
+    // container.run (still parked) and without allocating a new port.
+    const card = { id: 'card-2' } as never;
+    const rejected = await dispatchPrEnvBuild(dispatchDeps, {
+      repoFullName: 'acme/repo',
+      prNumber: 2,
+      branch: 'b',
+      card,
+    });
+    expect(rejected).toBeNull();
+    expect(builder.portPool.allocatedCount()).toBe(portsAfterParked);
+
+    // A "failed" sticky comment must have been posted to the GitHub PR
+    // for the rejected PR (#2), not the parked one.
+    const post = client.calls.find(
+      (c) => c.method === 'POST' && c.path === '/repos/acme/repo/issues/2/comments',
+    );
+    expect(post).toBeDefined();
+    const body = (post?.body as { body: string }).body;
+    expect(body).toContain('build failed');
+    expect(body).toMatch(/concurrency cap/i);
+
+    // And the kanban card got the same failure surfaced.
+    expect(stmts.createKanbanCardComment.run).toHaveBeenCalledTimes(1);
+
+    releaseRun();
+    await parked;
+  });
+
+  it('skips entirely when no project config is registered for the repo', async () => {
+    const { builder, db } = freshDeps();
+    const client = makeRecordingClient({ listResponse: [] });
+    const stmts = { createKanbanCardComment: { run: vi.fn() } };
+
+    const res = await dispatchPrEnvBuild(
+      {
+        db,
+        stmts: stmts as never,
+        getBuilderDeps: () => builder,
+        getProjectConfig: () => null,
+        githubApiClientFactory: () => client,
+      },
+      { repoFullName: 'acme/repo', prNumber: 12, branch: 'feat/x' },
+    );
+
+    expect(res).toBeNull();
     expect(client.calls).toHaveLength(0);
   });
 });
@@ -245,6 +366,7 @@ describe('dispatchPrEnvTeardown → sticky comment', () => {
         db,
         stmts: stmts as never,
         getBuilderDeps: () => builder,
+        getProjectConfig: () => FIXTURE_PROJECT,
         githubApiClientFactory: () => client,
       },
       { repoFullName: 'acme/repo', prNumber: 12 },

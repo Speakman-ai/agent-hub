@@ -113,6 +113,8 @@ import createPrEnvSettingsRoutes from './routes/pr-env-settings.js';
 import { migrateFileConfigToDb as migratePrEnvFileToDb } from './pr-env-store.js';
 import { fileConfig as prEnvFileConfig } from './config.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
+import type { AddressInfo } from 'net';
+import { setActualPort } from './server-port.js';
 
 import {
   initDelegation,
@@ -992,7 +994,9 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
   console.log(`[shell-path] Captured spawn PATH from ${shellPath.source}`);
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Agent Hub server running on http://localhost:${PORT}`);
+    const actualPort = (server.address() as AddressInfo).port;
+    setActualPort(actualPort);
+    console.log(`Agent Hub server running on http://localhost:${actualPort}`);
     console.log(`Loaded ${getProjects().length} projects, ${allAgents().length} agents`);
 
     const sessionsToResume: ResumeEntry[] = reconcileOrphanedTasks();
