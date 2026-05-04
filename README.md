@@ -321,27 +321,40 @@ AWS_PROFILE=<profile> ./scripts/tf-init.sh <env>
 AWS_PROFILE=<profile> terraform apply -var-file=environments/<env>/<env>.tfvars
 ```
 
-**PR Environments** are gated by a single root flag, `enable_pr_environments`,
-which **defaults to `true`**. A fresh apply provisions:
+### PR Environments — 30-second out-of-box quickstart
 
-- wildcard ACM cert for `*.preview.<your fqdn>` (DNS-01 via Route 53)
-- inline IAM policy on the EC2 SSM role for `route53:ChangeResourceRecordSets`
-- host nginx + certbot + sudoers allowlist + docker-socket bind-mount in
-  user-data
-- security-group ingress range 3100-3999 (host-local only)
-- the Tier-3 `prEnv` block in `<dataDir>/config.json`
+PR Environments (per-PR preview deployments) are **on by default** on a fresh
+`terraform apply`. The full out-of-box contract — including the prereq flow
+diagram, per-prereq remediation, and a troubleshooting matrix — is documented
+in [`docs/architecture/pr-environments-out-of-box-contract.md`](docs/architecture/pr-environments-out-of-box-contract.md)
+(also published to the project wiki as
+**PR Environments — Out of Box Contract**). The short version is three steps:
 
-After `terraform apply`, log in to the Hub, tick **Settings → PR Environments
-→ Enabled**, and enter the GitHub App / Route 53 IAM credentials (Tier-1+2
-secrets stored AES-256-GCM-encrypted in SQLite). Per-PR previews start
-dispatching automatically.
+1. **`terraform apply`** — `enable_pr_environments = true` is the default. A
+   fresh apply provisions the wildcard ACM cert, the Route 53 IAM policy on
+   the EC2 SSM role, host nginx + certbot + the sudoers allowlist + the
+   docker-socket bind-mount, security-group ingress 3100-3999, and the
+   Tier-3 `prEnv` block in `<dataDir>/config.json`. First boot also issues
+   the wildcard Let's Encrypt cert via `certbot --dns-route53`.
+2. **Settings → PR Environments → Register Reviewer App** — the panel runs a
+   prerequisite check (Docker, nginx, wildcard cert, GitHub App, Route 53
+   IAM, webhook). The GitHub App row stays red until you click **Register
+   Reviewer App**, which walks the GitHub App manifest flow and persists
+   `appId`, `installationId`, `privateKey`, `webhookSecret`, and
+   `clientId`/`clientSecret` automatically — no copy-paste of secrets.
+3. **Tick Enable** — the toggle is gated until validation is green. Save,
+   open a PR on a webhook-installed repo, and the first preview URL
+   (`https://pr-<n>.<pr_env_preview_subdomain>.<alb_fqdn>`) comes up
+   automatically.
 
-To opt **out** of the PR-env stack on a host that will never run previews,
-set `enable_pr_environments = false` in tfvars. The fine-grained
-`enable_pr_env_wildcard_cert`, `enable_pr_env_route53_iam`, and
-`enable_pr_env_host_nginx` variables remain as nullable per-piece overrides
-(default `null` = follow the root flag) — set them to `true` or `false` only
-when disabling a single piece for testing.
+**Opt out:** set `enable_pr_environments = false` on hosts that will never
+run previews. The fine-grained `enable_pr_env_wildcard_cert`,
+`enable_pr_env_route53_iam`, and `enable_pr_env_host_nginx` variables remain
+as nullable per-piece overrides (default `null` = follow the root flag) —
+set them to `true` or `false` only when disabling a single piece for
+testing. There is **no separate `AGENT_HUB_PR_ENV_ENABLED` env-var gate**;
+the Settings toggle (DB row, with file-block fallback) is the single source
+of truth.
 
 ## Git Workflow
 
