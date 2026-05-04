@@ -2,10 +2,16 @@ import { describe, it, expect } from 'vitest';
 import {
   extractJsonFromTagBody,
   stripOuterMarkdownFence,
+  stripBlockquotePrefix,
   sliceFirstBalancedJson,
   normalizeControlCharsInsideStrings,
   parseTagBodyAsJson,
 } from './action-block-parsing.js';
+import { detectCloseCardBlock } from './card-auto-close.js';
+import { detectHandoffBlock } from './handoff.js';
+import { detectDelegateBlock } from './delegation.js';
+import { parseSkillBlock } from './skill-invoke.js';
+import { parseReActBlock } from './chat.js';
 
 // ─── extractJsonFromTagBody ─────────────────────────────────────────────
 
@@ -236,5 +242,212 @@ describe('parseTagBodyAsJson', () => {
     // Object with a trailing comma — neither slicing nor newline normalization
     // can rescue this; tracker error path.
     expect(parseTagBodyAsJson('{"a":1,}')).toEqual({ ok: false });
+  });
+});
+
+// ─── stripBlockquotePrefix ──────────────────────────────────────────────
+
+describe('stripBlockquotePrefix', () => {
+  it('strips a `> ` prefix from every non-blank line', () => {
+    expect(stripBlockquotePrefix('> {"a":1,\n> "b":2}')).toBe('{"a":1,\n"b":2}');
+  });
+
+  it('strips a `>` prefix without a trailing space', () => {
+    expect(stripBlockquotePrefix('>line one\n>line two')).toBe('line one\nline two');
+  });
+
+  it('tolerates blank lines without a prefix', () => {
+    expect(stripBlockquotePrefix('> {"a":1,\n\n> "b":2}')).toBe('{"a":1,\n\n"b":2}');
+  });
+
+  it('returns the body unchanged when only some lines carry the prefix', () => {
+    // A blockquote that's not uniform isn't a blockquote — leave it alone so
+    // we don't mangle a JSON string that happens to contain `>` mid-body.
+    const body = '> {"a":1,\nnot-quoted line\n> "b":2}';
+    expect(stripBlockquotePrefix(body)).toBe(body);
+  });
+
+  it('returns the body unchanged when no line carries the prefix', () => {
+    expect(stripBlockquotePrefix('{"a":1}')).toBe('{"a":1}');
+  });
+
+  it('handles indented blockquote markers (whitespace before `>`)', () => {
+    expect(stripBlockquotePrefix('  > {"a":1,\n  > "b":2}')).toBe('{"a":1,\n"b":2}');
+  });
+});
+
+describe('extractJsonFromTagBody — blockquote tolerance', () => {
+  it('parses a body wrapped in a markdown blockquote', () => {
+    const body = '> {"toAgent":"hub-backend","note":"hi"}';
+    const out = extractJsonFromTagBody(body);
+    expect(JSON.parse(out!)).toEqual({ toAgent: 'hub-backend', note: 'hi' });
+  });
+
+  it('parses a multi-line blockquoted body', () => {
+    const body = '> {"toAgent":"hub-backend",\n> "note":"hi"}';
+    const out = extractJsonFromTagBody(body);
+    expect(JSON.parse(out!)).toEqual({ toAgent: 'hub-backend', note: 'hi' });
+  });
+
+  it('parses blockquote + inner code fence + JSON in one go', () => {
+    const body = '> ```json\n> {"toAgent":"hub-backend","note":"hi"}\n> ```';
+    const out = extractJsonFromTagBody(body);
+    expect(JSON.parse(out!)).toEqual({ toAgent: 'hub-backend', note: 'hi' });
+  });
+});
+
+// ─── End-to-end coverage across every action-block detector ────────────────
+//
+// Each detector funnels its raw body through `extractJsonFromTagBody`, so a
+// regression in any of the layered tolerances above can silently break a
+// real action block. These tests pin down the wrapper shapes the parser is
+// expected to swallow per detector — failing here means the user's
+// `<delegate>` / `<handoff>` / `<agenthub:close-card>` / `<agenthub:skill>` /
+// `<agenthub:react>` block stops triggering the host action and just renders
+// as plain text.
+
+describe('detectCloseCardBlock — wrapper-shape tolerance', () => {
+  const valid = '{"reason":"duplicate","note":"x"}';
+
+  it('parses an inner ```json code fence', () => {
+    const text = `<agenthub:close-card>\n\`\`\`json\n${valid}\n\`\`\`\n</agenthub:close-card>`;
+    const r = detectCloseCardBlock(text);
+    expect(r.task).not.toBeNull();
+    expect(r.task!.reason).toBe('duplicate');
+  });
+
+  it('parses an inner unlabeled ``` code fence', () => {
+    const text = `<agenthub:close-card>\n\`\`\`\n${valid}\n\`\`\`\n</agenthub:close-card>`;
+    const r = detectCloseCardBlock(text);
+    expect(r.task).not.toBeNull();
+  });
+
+  it('parses with prose between the tag and the JSON', () => {
+    const text = `<agenthub:close-card>\nHere is the close-card payload:\n${valid}\n</agenthub:close-card>`;
+    const r = detectCloseCardBlock(text);
+    expect(r.task).not.toBeNull();
+  });
+
+  it('parses with a blockquote prefix on every line', () => {
+    const text = `<agenthub:close-card>\n> ${valid}\n</agenthub:close-card>`;
+    const r = detectCloseCardBlock(text);
+    expect(r.task).not.toBeNull();
+  });
+
+  it('still surfaces invalid-json on truly broken bodies', () => {
+    const text = `<agenthub:close-card>\nthis isn't json\n</agenthub:close-card>`;
+    const r = detectCloseCardBlock(text);
+    expect(r.task).toBeNull();
+    expect(r.reason).toBe('invalid-json');
+  });
+});
+
+describe('detectHandoffBlock — wrapper-shape tolerance', () => {
+  const valid = '{"toAgent":"hub-backend","note":"impl the fix"}';
+
+  it('parses an inner ```json code fence', () => {
+    const text = `<handoff>\n\`\`\`json\n${valid}\n\`\`\`\n</handoff>`;
+    const r = detectHandoffBlock(text);
+    expect(r.task).toEqual({ toAgent: 'hub-backend', note: 'impl the fix' });
+  });
+
+  it('parses with prose between the tag and the JSON', () => {
+    const text = `<handoff>\nForwarding to backend:\n${valid}\n</handoff>`;
+    const r = detectHandoffBlock(text);
+    expect(r.task).not.toBeNull();
+  });
+
+  it('parses with a blockquote prefix on every line', () => {
+    const text = `<handoff>\n> ${valid}\n</handoff>`;
+    const r = detectHandoffBlock(text);
+    expect(r.task).not.toBeNull();
+  });
+
+  it('parses with literal newlines inside a string value', () => {
+    // The original failure mode that motivated the parser: a `note` field
+    // that contains a real \n byte. JSON.parse would reject this raw, but
+    // the normalizer escapes it before parsing.
+    const body = '{"toAgent":"hub-backend","note":"first line\nsecond line"}';
+    const text = `<handoff>\n${body}\n</handoff>`;
+    const r = detectHandoffBlock(text);
+    expect(r.task).not.toBeNull();
+    expect(r.task!.note).toBe('first line\nsecond line');
+  });
+});
+
+describe('detectDelegateBlock — wrapper-shape tolerance', () => {
+  const oneTask = JSON.stringify({
+    agentId: 'hub-backend',
+    task: 't',
+    owner: 'o',
+    scope: 's',
+    expectedArtifact: 'e',
+    deadline: 'd',
+    returnFormat: 'r',
+  });
+
+  it('parses an inner ```json code fence', () => {
+    const text = `<delegate>\n\`\`\`json\n[${oneTask}]\n\`\`\`\n</delegate>`;
+    const r = detectDelegateBlock(text);
+    expect(r.tasks).not.toBeNull();
+    expect(r.tasks!.length).toBe(1);
+  });
+
+  it('parses with prose preamble before the array', () => {
+    const text = `<delegate>\nDispatching:\n[${oneTask}]\n</delegate>`;
+    const r = detectDelegateBlock(text);
+    expect(r.tasks).not.toBeNull();
+  });
+
+  it('parses with a blockquote prefix on every line', () => {
+    const text = `<delegate>\n> [${oneTask}]\n</delegate>`;
+    const r = detectDelegateBlock(text);
+    expect(r.tasks).not.toBeNull();
+  });
+});
+
+describe('parseSkillBlock — wrapper-shape tolerance', () => {
+  it('parses an inner ```json code fence', () => {
+    const text = '<agenthub:skill>\n```json\n{"name":"kanban"}\n```\n</agenthub:skill>';
+    const r = parseSkillBlock(text);
+    expect('error' in r).toBe(false);
+    if (!('error' in r)) expect(r.name).toBe('kanban');
+  });
+
+  it('parses with prose preamble', () => {
+    const text =
+      '<agenthub:skill>\nLoading the kanban skill:\n{"name":"kanban"}\n</agenthub:skill>';
+    const r = parseSkillBlock(text);
+    expect('error' in r).toBe(false);
+  });
+
+  it('parses with a blockquote prefix on every line', () => {
+    const text = '<agenthub:skill>\n> {"name":"kanban"}\n</agenthub:skill>';
+    const r = parseSkillBlock(text);
+    expect('error' in r).toBe(false);
+  });
+});
+
+describe('parseReActBlock — wrapper-shape tolerance', () => {
+  it('parses an inner ```json code fence around actions', () => {
+    const text =
+      '<agenthub:react>\n```json\n{"actions":[{"tool":"wiki","query":"foo"}]}\n```\n</agenthub:react>';
+    const r = parseReActBlock(text);
+    expect('error' in r).toBe(false);
+    if (!('error' in r)) expect(r.actions.length).toBe(1);
+  });
+
+  it('parses with prose preamble', () => {
+    const text =
+      '<agenthub:react>\nQuerying wiki:\n{"actions":[{"tool":"wiki","query":"foo"}]}\n</agenthub:react>';
+    const r = parseReActBlock(text);
+    expect('error' in r).toBe(false);
+  });
+
+  it('parses with a blockquote prefix on every line', () => {
+    const text =
+      '<agenthub:react>\n> {"actions":[{"tool":"wiki","query":"foo"}]}\n</agenthub:react>';
+    const r = parseReActBlock(text);
+    expect('error' in r).toBe(false);
   });
 });

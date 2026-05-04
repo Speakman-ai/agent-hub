@@ -35,21 +35,52 @@ export function extractJsonFromTagBody(rawBody: string): string | null {
   let body = rawBody.trim();
   if (!body) return null;
 
-  // Step 1: strip an outer markdown code fence the model may have wrapped
+  // Step 1: strip a markdown blockquote prefix (`> `) from every line if
+  // every non-blank line is so prefixed. Some agents (and the GitHub web
+  // UI when quoting) wrap action blocks in a blockquote, which leaves a
+  // `> ` marker on each line of the JSON body.
+  body = stripBlockquotePrefix(body);
+  if (!body) return null;
+
+  // Step 2: strip an outer markdown code fence the model may have wrapped
   // around the JSON inside the tag. Tolerate ```, ```json, ```javascript, etc.
   body = stripOuterMarkdownFence(body);
   if (!body) return null;
 
-  // Step 2: locate the first balanced JSON value (object or array). This
+  // Step 3: locate the first balanced JSON value (object or array). This
   // skips any leading prose like "Here's the payload:" before the `{`.
   const sliced = sliceFirstBalancedJson(body);
   if (sliced === null) return null;
 
-  // Step 3: normalize raw control characters inside string contexts.
+  // Step 4: normalize raw control characters inside string contexts.
   // JSON.parse rejects literal \n / \r / \t inside string values, so we
   // re-encode them. Outside strings, control chars are harmless to JSON
   // (whitespace) and we leave them alone.
   return normalizeControlCharsInsideStrings(sliced);
+}
+
+/**
+ * If every non-blank line of `body` begins with a markdown blockquote
+ * marker (`>` optionally followed by a single space/tab), strip that
+ * marker from every line and return the unwrapped body. Returns `body`
+ * unchanged when the blockquote prefix isn't uniform — we don't want to
+ * mangle a legitimate JSON string value that happens to contain `>` at
+ * the start of one line.
+ *
+ * Whitespace-only lines are tolerated (they don't need the prefix). At
+ * least one non-blank line must carry the prefix or we no-op.
+ */
+export function stripBlockquotePrefix(body: string): string {
+  if (typeof body !== 'string' || !body.length) return body;
+  const lines = body.split('\n');
+  let sawPrefixedLine = false;
+  for (const line of lines) {
+    if (line.trim() === '') continue;
+    if (!/^[ \t]*>[ \t]?/.test(line)) return body;
+    sawPrefixedLine = true;
+  }
+  if (!sawPrefixedLine) return body;
+  return lines.map((line) => line.replace(/^[ \t]*>[ \t]?/, '')).join('\n');
 }
 
 /**
