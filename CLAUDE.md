@@ -75,21 +75,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 3. **Enriched System Prompts**: Automatically builds prompts from agent config + workspace context files + skills + memory
 4. **Real-time Streaming**: WebSocket-based chat with live response streaming
 5. **SQLite-Backed Persistence**: All sessions, messages, and agent data stored in local SQLite database
-6. **Agent Coordination Protocols**: Lead agents emit structured blocks to route work to sub-agents — `<delegate>` for sync/parallel one-shot helpers, `<handoff>` for async ownership transfer (see below).
-
-### Agent Coordination — `<delegate>` vs `<handoff>`
-
-Both are parsed from assistant output in `server/chat.ts` after the CLI process closes. Both are terminal in the emitting turn.
-
-- **`<delegate>`** (`server/delegation.ts`) — spawn N parallel sub-agent sessions; results are collected and injected back into the lead's next turn. Use for short side-quests whose output you want to synthesize.
-- **`<handoff>`** (`server/handoff.ts`) — **transfer ownership** of the conversation to a single sub-agent. Creates a fresh session for the target; the lead's transcript (tail-50 turns) plus a required `note` are injected into the target's first system prompt via `buildHandoffPromptSection`. Lifecycle stored in the `handoffs` table with states `pending → delivered | failed`. Use when the specialist should take multiple turns or commit/PR.
-
-Block format is JSON-payload, single target for `<handoff>`:
-```
-<handoff>
-{"toAgent": "sub-agent-id", "note": "What's done + what they should do next."}
-</handoff>
-```
+6. **Flat Agent Model**: Agents are dedicated ("full-stack" or specialist) and coordinate via plain chat or conference rooms — there is **no** `<delegate>` / `<handoff>` sub-agent dispatch system. The CLI engines (Claude Code, Cursor) handle their own internal sub-agent orchestration.
 
 ### Database Schema
 
@@ -98,8 +84,7 @@ Block format is JSON-payload, single target for `<handoff>`:
 - **heartbeat_logs**: Scheduled agent check-in results
 - **crons**: Automated task definitions and execution logs
 - **slack_messages**: Slack bot interaction history
-- **delegations**: Parent→child sub-agent session spawns for `<delegate>` blocks
-- **handoffs**: Ownership transfers between agents for `<handoff>` blocks (status: pending/delivered/failed)
+- **delegations** / **handoffs** (legacy): retained for historical data only — the `<delegate>` / `<handoff>` sub-agent system has been removed. New rows are no longer written.
 
 ### File Structure Conventions
 

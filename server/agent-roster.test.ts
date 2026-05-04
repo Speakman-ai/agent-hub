@@ -128,7 +128,10 @@ describe('formatProjectAgentRosterSection', () => {
     expect(s).not.toContain('Valid `<delegate>` targets');
   });
 
-  it('lists only allowlisted peers as valid <delegate> targets', () => {
+  // The <delegate>/<handoff> sub-agent system has been removed. The
+  // `delegateAllowlist` parameter is now ignored; the roster is a flat,
+  // neutral list of peers regardless of any sub-agent configuration.
+  it('ignores the delegateAllowlist argument and lists peers neutrally', () => {
     const s = formatProjectAgentRosterSection(
       [
         { id: 'sub-frontend', name: 'Frontend', role: 'sub' },
@@ -137,40 +140,36 @@ describe('formatProjectAgentRosterSection', () => {
       ],
       ['sub-frontend', 'sub-backend'],
     );
-    expect(s).toContain('### Valid `<delegate>` targets');
+    expect(s).not.toContain('### Valid `<delegate>` targets');
+    expect(s).not.toContain('reachable via `<handoff>`');
+    expect(s).not.toContain('silently dropped by the server');
+    // All peers should still appear in the neutral roster.
     expect(s).toContain('**Frontend** (`sub-frontend`)');
     expect(s).toContain('**Backend** (`sub-backend`)');
-    // Reviewer is a peer but NOT a delegate target — must be present in the
-    // top section but absent from the "Valid delegate targets" list.
-    const delegateSection = s.slice(s.indexOf('### Valid `<delegate>` targets'));
-    expect(delegateSection).not.toContain('**Reviewer**');
-    // And the handoff/chat-only note should appear since there are non-allowlisted peers.
-    expect(s).toContain('reachable via `<handoff>`');
-    expect(s).toContain('silently dropped by the server');
+    expect(s).toContain('**Reviewer** (`reviewer`)');
   });
 
-  it('flags allowlist entries that do not match any peer on the project', () => {
+  it('does not flag orphan allowlist ids (allowlist is ignored)', () => {
     const s = formatProjectAgentRosterSection(
       [{ id: 'sub-frontend', name: 'Frontend', role: 'sub' }],
       ['sub-frontend', 'ghost-agent'],
     );
-    expect(s).toContain('Configured but not on this project');
-    expect(s).toContain('`ghost-agent`');
-    expect(s).not.toContain('`sub-frontend`,'); // non-orphan should not be in the orphan note
+    expect(s).not.toContain('Configured but not on this project');
+    expect(s).not.toContain('`ghost-agent`');
+    expect(s).toContain('**Frontend** (`sub-frontend`)');
   });
 
-  it('warns when the allowlist matches no peer at all', () => {
+  it('emits no allowlist annotation when the allowlist matches no peer', () => {
     const s = formatProjectAgentRosterSection(
       [{ id: 'peer-only', name: 'Peer', role: 'sub' }],
       ['nobody', 'still-nobody'],
     );
-    expect(s).toContain('### Valid `<delegate>` targets');
-    expect(s).toContain('None of your configured sub-agents');
-    expect(s).toContain('`nobody`');
-    expect(s).toContain('`still-nobody`');
+    expect(s).not.toContain('### Valid `<delegate>` targets');
+    expect(s).not.toContain('None of your configured sub-agents');
+    expect(s).toContain('**Peer** (`peer-only`)');
   });
 
-  it('omits the handoff fallback note when every peer is on the allowlist', () => {
+  it('header no longer mentions <handoff> or <delegate>', () => {
     const s = formatProjectAgentRosterSection(
       [
         { id: 'sub-a', name: 'A', role: 'sub' },
@@ -178,8 +177,9 @@ describe('formatProjectAgentRosterSection', () => {
       ],
       ['sub-a', 'sub-b'],
     );
-    expect(s).toContain('### Valid `<delegate>` targets');
-    expect(s).not.toContain('reachable via `<handoff>`');
+    expect(s).not.toContain('<handoff>');
+    expect(s).not.toContain('<delegate>');
+    expect(s).toContain('chat and conference rooms');
   });
 });
 
@@ -235,7 +235,11 @@ describe('buildEnrichedPrompt — project agent roster', () => {
     expect(prompt).not.toContain('## Project agent roster');
   });
 
-  it("propagates the lead's subAgents allowlist into the roster section", () => {
+  it('does not inject a delegate-allowlist section even when subAgents is set', () => {
+    // Sub-agent delegation has been removed. Lead agents with a `subAgents`
+    // list still see the neutral peer roster, but no `### Valid <delegate>
+    // targets` annotation and no `## Delegation` / `## Handoff` prompt
+    // sections.
     mockAllAgents.mockReturnValue([
       enriched({ id: 'lead', name: 'Lead', role: 'lead' }),
       enriched({ id: 'frontend', name: 'Frontend', role: 'sub' }),
@@ -253,11 +257,14 @@ describe('buildEnrichedPrompt — project agent roster', () => {
       }),
     );
 
-    expect(prompt).toContain('### Valid `<delegate>` targets');
+    expect(prompt).not.toContain('### Valid `<delegate>` targets');
+    expect(prompt).not.toContain('## Delegation');
+    expect(prompt).not.toContain('## Handoff');
+    expect(prompt).not.toContain('## Sub-Agents');
+    // Peers are still listed in the neutral roster.
     expect(prompt).toContain('**Frontend** (`frontend`)');
     expect(prompt).toContain('**Backend** (`backend`)');
-    const delegateSection = prompt.slice(prompt.indexOf('### Valid `<delegate>` targets'));
-    expect(delegateSection).not.toContain('**Reviewer**');
+    expect(prompt).toContain('**Reviewer** (`reviewer`)');
   });
 
   it('omits the delegate-allowlist annotation for agents without subAgents', () => {

@@ -334,71 +334,23 @@ export type ProjectAgentRosterPeer = { id: string; name: string; role?: string }
  * Markdown block listing peer agents for injection into the enriched system prompt.
  * Excludes the current agent; empty when there are no peers.
  *
- * When `delegateAllowlist` is provided and non-empty, an additional annotation
- * is appended that calls out which peers are valid `<delegate>` targets for
- * the current (lead) agent. Peers omitted from the allowlist remain reachable
- * via `<handoff>`, chat, and conference rooms — the server's delegation
- * filter (see `server/delegation.ts`) silently drops `<delegate>` blocks
- * whose `agentId` is not on this list, so surfacing the allowlist in the
- * prompt lets the model self-correct without trial-and-error.
- *
- * Passing `undefined` (or an empty array) preserves the legacy section,
- * which is the right call for non-lead agents that have no `subAgents`
- * configured at all.
+ * The `delegateAllowlist` parameter is retained for source compatibility but
+ * is intentionally ignored — the `<delegate>`/`<handoff>` sub-agent system
+ * has been removed. Peers are listed neutrally; agents coordinate via plain
+ * chat or conference rooms, not via dispatched blocks.
  */
 export function formatProjectAgentRosterSection(
   peers: ProjectAgentRosterPeer[],
   delegateAllowlist?: string[],
 ): string {
+  void delegateAllowlist;
   if (peers.length === 0) return '';
   const lines = peers.map((p) => {
     const display = (p.name || '').trim() || p.id;
     const roleBit = p.role ? ` · Role: ${p.role}` : '';
     return `- **${display}** (\`${p.id}\`)${roleBit}`;
   });
-  let section = `\n\n## Project agent roster (same project)\nOther agents on this project you may reference by name or \`id\` in chat, \`<handoff>\`, \`<delegate>\`, and conference rooms:\n${lines.join('\n')}`;
-
-  if (Array.isArray(delegateAllowlist) && delegateAllowlist.length > 0) {
-    const peerIds = new Set(peers.map((p) => p.id));
-    const allowedPeers = peers.filter((p) => delegateAllowlist.includes(p.id));
-    const peerById = new Map(peers.map((p) => [p.id, p]));
-    if (allowedPeers.length > 0) {
-      const allowedLines = allowedPeers.map((p) => {
-        const display = (p.name || '').trim() || p.id;
-        return `- **${display}** (\`${p.id}\`)`;
-      });
-      // Allowlist entries that don't correspond to any peer on this project
-      // (mis-configured `subAgents` in agents.json) are surfaced so the
-      // operator can spot the typo, but they don't get a clickable target.
-      const orphanIds = delegateAllowlist.filter((id) => !peerById.has(id));
-      const orphanNote =
-        orphanIds.length > 0
-          ? `\n_Configured but not on this project (typo in \`subAgents\`?): ${orphanIds
-              .map((id) => `\`${id}\``)
-              .join(', ')}_`
-          : '';
-      const otherPeers = peers.filter((p) => !delegateAllowlist.includes(p.id));
-      const handoffNote =
-        otherPeers.length > 0
-          ? `\n\nOther peers above are reachable via \`<handoff>\`, chat, and conference rooms — but \`<delegate>\` blocks targeting them will be silently dropped by the server.`
-          : '';
-      section += `\n\n### Valid \`<delegate>\` targets\nOnly the following peers are registered as your sub-agents and will receive dispatched \`<delegate>\` work:\n${allowedLines.join(
-        '\n',
-      )}${orphanNote}${handoffNote}`;
-    } else {
-      // Allowlist is configured but matches no peer on this project — likely
-      // a misconfiguration. Tell the model so it doesn't waste a turn
-      // emitting <delegate> blocks that will all be filtered out.
-      const orphanIds = delegateAllowlist.filter((id) => !peerById.has(id));
-      const orphanList = orphanIds.length > 0 ? orphanIds.map((id) => `\`${id}\``).join(', ') : '';
-      void peerIds; // touched purely to keep the symbol locally scoped above
-      section += `\n\n### Valid \`<delegate>\` targets\nNone of your configured sub-agents${
-        orphanList ? ` (${orphanList})` : ''
-      } are registered on this project. \`<delegate>\` blocks will be silently dropped — use \`<handoff>\`, chat, or conference rooms instead until \`subAgents\` is fixed.`;
-    }
-  }
-
-  return section;
+  return `\n\n## Project agent roster (same project)\nOther agents on this project you may reference by name or \`id\` in chat and conference rooms:\n${lines.join('\n')}`;
 }
 
 function peersOnProject(projectId: string, excludeAgentId: string): ProjectAgentRosterPeer[] {
@@ -471,16 +423,10 @@ export function buildEnrichedPrompt(
     undefined;
   const projectMode = getProjectMode(project as Project);
   const promptWorktree = !!(options.useWorktree && projectMode !== 'workflow');
-  // For lead agents, surface their `subAgents` allowlist alongside the
-  // peer roster so the model knows exactly which peers will accept a
-  // `<delegate>` dispatch. The same allowlist is enforced server-side in
-  // `server/delegation.ts` — drift between the prompt and the filter is
-  // exactly what produces silently-dropped delegations.
-  const delegateAllowlist = Array.isArray((agent as AgentWithModel).subAgents)
-    ? ((agent as AgentWithModel).subAgents as string[])
-    : undefined;
+  // The sub-agent delegation system has been removed; the roster is now a
+  // neutral list of project peers without a delegate-allowlist annotation.
   const rosterSection = projectId
-    ? formatProjectAgentRosterSection(peersOnProject(projectId, agent.id), delegateAllowlist)
+    ? formatProjectAgentRosterSection(peersOnProject(projectId, agent.id))
     : '';
   const systemPromptBody = (agent.systemPrompt || '').trim();
   let prompt: string = identityAnchor + rosterSection + systemPromptBody;
@@ -748,44 +694,15 @@ Agent Hub renders a rich picker (radio/checkbox cards with side-by-side previews
 **Answer round-trip** — the user's reply arrives as a normal chat message containing a matching \`agenthub:ask:answer\` fenced block of shape \`{ "askId": "...", "answers": {questionText: value}, "annotations": {questionText: {notes?, preview?}} }\`. For single-select questions \`value\` is a string (the chosen label or free-text from "Other"); for multi-select questions \`value\` is an array of strings. \`askId\` echoes the id of the picker you emitted so you can tie the answer to the original question. Read the answers and continue.`;
   }
 
-  // Incoming handoff (target-side): if this session was created as the
-  // target of a <handoff>, append the HANDOFF FROM section on the first
-  // message so the agent picks up the source's transcript + note. Only
-  // runs on the first message because the source's context is persistent
-  // once read — re-injecting on every turn would bloat the prompt.
-  if (options.sessionId && isFirstMessage) {
-    const getEnrichedAgentForHandoff = options._getEnrichedAgent;
-    if (getEnrichedAgentForHandoff) {
-      const handoffSection = buildHandoffPromptSection(options.sessionId, {
-        stmts,
-        getEnrichedAgent: getEnrichedAgentForHandoff,
-      });
-      if (handoffSection) {
-        prompt += '\n\n' + handoffSection;
-      }
-    }
-  }
-
-  if (agent.role === 'lead' && Array.isArray(agent.subAgents) && agent.subAgents.length > 0) {
-    // Delegation: sub-agent list is dynamic (agents can change), so always include
-    const getEnrichedAgent = options._getEnrichedAgent;
-    if (!getEnrichedAgent) {
-      console.warn(
-        `[chat] Lead agent "${agent.name}" (${agent.id}) is missing _getEnrichedAgent — delegation instructions will be empty`,
-      );
-    }
-    const subAgentDescriptions = agent.subAgents
-      .map((subId) => {
-        const sub = getEnrichedAgent?.(subId);
-        if (!sub) return null;
-        const desc = (sub.systemPrompt || '').split('\n')[0] || 'General agent';
-        return `- **${sub.name}** (\`${sub.id}\`): ${desc}`;
-      })
-      .filter(Boolean)
-      .join('\n');
-
-    if (isFirstMessage) {
-      prompt += `\n\n## Lead Response Contract
+  // The <delegate>/<handoff> sub-agent system has been removed. We no longer
+  // inject HANDOFF FROM transcripts on session start nor any Delegation/
+  // Sub-Agents/Handoff guidance on lead agents. Agents are now flat
+  // ("full-stack" or otherwise dedicated) and coordinate via plain chat or
+  // conference rooms. The Lead Response Contract still applies for any
+  // agent whose `role === 'lead'` because it's a structured-output rule,
+  // not a delegation instruction.
+  if (agent.role === 'lead' && isFirstMessage) {
+    prompt += `\n\n## Lead Response Contract
 For non-trivial execution updates, end with a compact structured block in prose (not JSON) using these headings:
 - \`Goal\`
 - \`Actions taken\`
@@ -793,51 +710,6 @@ For non-trivial execution updates, end with a compact structured block in prose 
 - \`Result\`
 - \`Next step\`
 Do not omit \`Evidence\` or \`Next step\`.`;
-
-      prompt += `\n\n## Delegation
-
-You lead a team of sub-agents. Delegate by including a \`<delegate>\` block:
-\`\`\`
-<delegate>
-[{"agentId":"sub-agent-id","task":"...","owner":"...","scope":"...","expectedArtifact":"...","deadline":"...","returnFormat":"..."}]
-</delegate>
-\`\`\`
-
-Your available sub-agents:
-${subAgentDescriptions}
-
-Guidelines: Delegate only for parallel specialist work. Each task must be self-contained. For simple tasks, just do it directly.
-If the user cancels delegation mid-flight, the server will prompt your next synthesis turn to **finish the delegated work yourself** (you receive each sub-task verbatim).
-**IMPORTANT: Do NOT use the Agent tool for delegation.** Use the \`<delegate>\` block — the server spawns sub-agents as separate CLI processes.
-
-## Handoff
-
-\`<delegate>\` spawns parallel one-shot helpers; \`<handoff>\` transfers ownership. Use \`<handoff>\` at the END of your turn when another agent on your team should take over the work — e.g. you've finished discovery/planning and a specialist should now implement. Your session ends; a fresh session is created for the target agent with your full transcript + a handoff note pre-loaded as context. You will not see the target's reply — the user interacts with them directly.
-
-Format (single target, JSON payload):
-\`\`\`
-<handoff>
-{"toAgent": "sub-agent-id", "note": "Summary of what's done + what they should do next."}
-</handoff>
-\`\`\`
-
-Rules:
-- Handoff is **terminal** in the turn — anything you emit after \`</handoff>\` is dropped.
-- Target must be one of your listed sub-agents (same project).
-- Only \`toAgent\` and \`note\` are parsed. Put evidence of current state and the exact next action **inside \`note\` as prose** — extra top-level keys are silently ignored.
-- Use a meaty \`note\`: file paths with line numbers, linked card id, the exact next action. The transcript comes along for free, but the note is what the target reads first.
-- Prefer \`<handoff>\` over \`<delegate>\` when the specialist will take multiple turns, needs full context, or is expected to commit/PR. Prefer \`<delegate>\` for short parallel side-quests whose results you'll synthesize.`;
-    } else {
-      // On subsequent messages, keep the reminder compact but still state the
-      // full `<delegate>` contract. The first-message prompt already described
-      // it in full; models that drift to `[{"agentId":"…","task":"…"}]` — the
-      // recurring "Delegate block has no entries with the required contract
-      // fields" failure in the UI — do so because the subsequent-turn reminder
-      // used to only say "Delegate via `<delegate>` block" without field
-      // names. Listing every required field every turn makes the short form
-      // immediately recognisable as incomplete.
-      prompt += `\n\n## Sub-Agents\n${subAgentDescriptions}\nDelegate via \`<delegate>\` block (not Agent tool). Each task object MUST include all seven fields: \`agentId\`, \`task\`, \`owner\`, \`scope\`, \`expectedArtifact\`, \`deadline\`, \`returnFormat\`.`;
-    }
   }
 
   const outerOrch = formatOuterOrchestrationPromptAppend(
@@ -1818,18 +1690,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     }
 
     function tryKickoffDelegationFromStream(assistantAccumulated: string): void {
-      if (!enrichedAgent) return;
-      if (agent.role !== 'lead' || !agent.subAgents || agent.subAgents.length === 0) return;
-      if (!assistantAccumulated.includes('<delegate>')) return;
-      // Operator gate (per-agent `delegationEnabled === false`): never kick off
-      // mid-stream when the lead is configured for inline-only completion. The
-      // post-stream branch in `proc.on('close')` is responsible for surfacing
-      // the in-chat nudge — doing it here would race the assistant message
-      // persistence and confuse the message-anchored DelegateCard.
-      if (isDelegationDisabledForAgent(agent)) return;
-      const tasks = parseDelegateBlock(assistantAccumulated);
-      if (!tasks || tasks.length === 0) return;
-      startDelegationOnce(tasks);
+      // Sub-agent delegation has been removed. This function is retained as a
+      // no-op so existing call sites continue to compile while the surrounding
+      // infrastructure is progressively deleted.
+      void assistantAccumulated;
+      return;
     }
 
     if (engine === 'claude-code') {
@@ -2384,22 +2249,23 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let finalContent = rawFinalContent;
       const closeCardDetection = detectCloseCardBlock(rawFinalContent);
       const closeTask = closeCardDetection.task;
-      const handoffDetection = enrichedAgent ? detectHandoffBlock(rawFinalContent) : null;
-      // The operator-controlled `delegationEnabled === false` flag is the
-      // first thing we check after the stream closes: a disabled lead should
-      // ALWAYS produce `delegateTasks = null` regardless of what the model
-      // emitted, so the post-stream "if (delegateTasks)" branch never runs and
-      // synthesis is skipped. The in-chat nudge ("Delegation disabled for
-      // this lead") is emitted later in this same handler so the user can
-      // see exactly what happened.
-      const delegationDisabled = isDelegationDisabledForAgent(agent);
-      const delegateTasks =
-        agent.role === 'lead' &&
-        agent.subAgents &&
-        agent.subAgents.length > 0 &&
-        !delegationDisabled
-          ? parseDelegateBlock(rawFinalContent)
-          : null;
+      // Sub-agent delegation and handoff have been removed. We retain the
+      // local symbols as `null` so the rest of this handler — which still
+      // branches on `handoffDetection` / `delegateTasks` while the rest of
+      // the system is being progressively deleted — compiles and behaves as
+      // if the model had emitted neither a `<delegate>` nor a `<handoff>`
+      // block. Any literal `<delegate>...</delegate>` text the model still
+      // produces is left in the assistant message as inert prose; the
+      // dispatcher will not run.
+      const handoffDetection = null as ReturnType<typeof detectHandoffBlock> | null;
+      const delegationDisabled = false;
+      const delegateTasks = null as ReturnType<typeof parseDelegateBlock> | null;
+      // Platform-wide kill-switch: both systems are globally off. Guards the
+      // malformed-gate and disabled-gate branches below so they behave
+      // consistently instead of giving a misleading "bad JSON shape" nudge
+      // when the real cause is global removal.
+      // TODO(cleanup-card): delete with delegation modules
+      const delegationGloballyOff = true;
       let shouldAutoContinue = false;
       let budgetResult: { ok: boolean; reasons: string[] } = { ok: false, reasons: [] };
       let continuationContextAdded = false;
@@ -3014,8 +2880,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // not run the delegate/synthesize flow for this turn. Per design,
       // <handoff> is terminal: any prose after the closing tag is dropped.
       if (enrichedAgent) {
-        const detection = handoffDetection || detectHandoffBlock(rawFinalContent);
-        if (detection.task) {
+        // No fallback to detectHandoffBlock — handoff dispatch is globally off.
+        // When handoffDetection is null the entire block below is skipped.
+        const detection = handoffDetection;
+        if (detection !== null && detection.task) {
           if (delegationWorkPromise) {
             handleDelegationCancel(sessionId);
             delegationWorkPromise = null;
@@ -3035,7 +2903,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           drainQueue(sessionId);
           return;
         }
-        if (detection.present && detection.reason) {
+        if (detection !== null && detection.present && detection.reason) {
           if (delegationWorkPromise) {
             handleDelegationCancel(sessionId);
             delegationWorkPromise = null;
@@ -3075,10 +2943,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // outcome is the same: nothing spawns.
       const leadHasSubAgents =
         agent.role === 'lead' && !!agent.subAgents && agent.subAgents.length > 0;
-      if (leadHasSubAgents && hasDelegateBlock && delegationDisabled) {
+      if (leadHasSubAgents && hasDelegateBlock && (delegationDisabled || delegationGloballyOff)) {
         const sysId = uuidv4();
-        const body =
-          '**Delegation disabled for this lead.** The `<delegate>` block was ignored — this lead agent is configured to complete work inline. Re-enable delegation in agent settings to use sub-agents, or finish the task yourself.';
+        const body = delegationGloballyOff
+          ? '**Sub-agent delegation has been removed.** The `<delegate>` block was ignored — the delegation/handoff system is no longer active on this platform. Use conference rooms or direct chat to coordinate with other agents.'
+          : '**Delegation disabled for this lead.** The `<delegate>` block was ignored — this lead agent is configured to complete work inline. Re-enable delegation in agent settings to use sub-agents, or finish the task yourself.';
         try {
           stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
           stmts.touchSession.run(sessionId);
@@ -3121,7 +2990,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         });
       }
 
-      if (leadHasSubAgents && hasDelegateBlock && !delegateTasks && !delegationDisabled) {
+      if (
+        leadHasSubAgents &&
+        hasDelegateBlock &&
+        !delegateTasks &&
+        !delegationDisabled &&
+        !delegationGloballyOff
+      ) {
         const sysId = uuidv4();
         const body =
           '**Delegation gate rejected.** `<delegate>` payload must be a JSON array of task objects (or a single task object — it will be coerced to a one-element array). Every task must include `agentId`, `task`, `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`. No delegation was started.';
