@@ -1058,6 +1058,14 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
 
     projects.push(project);
     saveProjects();
+    // Notify connected clients so sidebars / project lists refresh without
+    // a full reload — matches the broadcast already done by the richer
+    // /api/projects/onboard path.
+    try {
+      broadcast({ type: 'projects_updated', reason: 'project-created' });
+    } catch {
+      /* best-effort — broadcast failure must not fail the request */
+    }
     res.status(201).json(project);
   });
 

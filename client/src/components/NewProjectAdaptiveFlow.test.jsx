@@ -85,6 +85,9 @@ describe('NewProjectAdaptiveFlow', () => {
         {...(opts.extraProps || {})}
       />,
     );
+    // step 0 — project-type picker. Choose the code path so we drop into
+    // the existing adaptive questionnaire.
+    fireEvent.click(screen.getByTestId('ptp-code'));
     // step 1 — description
     fireEvent.change(screen.getByTestId('aq-description-input'), {
       target: { value: 'a cool thing' },
@@ -277,5 +280,156 @@ describe('NewProjectAdaptiveFlow', () => {
     });
     expect(provision).toHaveBeenCalledTimes(2);
     expect(subscribe).toHaveBeenCalledWith('ws://y', expect.any(Object));
+  });
+});
+
+describe('NewProjectAdaptiveFlow — project-type picker (step 0)', () => {
+  beforeEach(() => {
+    sessionStorage.removeItem(ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY);
+  });
+  afterEach(() => {
+    sessionStorage.removeItem(ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY);
+    vi.restoreAllMocks();
+  });
+
+  it('renders the type picker as the initial view', () => {
+    render(<NewProjectAdaptiveFlow onClose={vi.fn()} onProjectCreated={vi.fn()} />);
+    expect(screen.getByTestId('project-type-picker')).toBeInTheDocument();
+    expect(screen.getByTestId('ptp-code')).toBeInTheDocument();
+    expect(screen.getByTestId('ptp-workflow')).toBeInTheDocument();
+    // Neither downstream view is mounted yet.
+    expect(screen.queryByTestId('adaptive-questionnaire')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('workflow-project-form')).not.toBeInTheDocument();
+  });
+
+  it('routes to the adaptive questionnaire when the user picks "code"', () => {
+    render(<NewProjectAdaptiveFlow onClose={vi.fn()} onProjectCreated={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ptp-code'));
+    expect(screen.getByTestId('adaptive-questionnaire')).toBeInTheDocument();
+    expect(screen.getByTestId('aq-description-input')).toBeInTheDocument();
+  });
+
+  it('routes to the workflow form when the user picks "workflow"', () => {
+    render(<NewProjectAdaptiveFlow onClose={vi.fn()} onProjectCreated={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ptp-workflow'));
+    expect(screen.getByTestId('workflow-project-form')).toBeInTheDocument();
+    expect(screen.getByTestId('wpf-name-input')).toBeInTheDocument();
+  });
+
+  it('hitting Back from step 1 of the questionnaire returns to the type picker', () => {
+    render(<NewProjectAdaptiveFlow onClose={vi.fn()} onProjectCreated={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ptp-code'));
+    expect(screen.getByTestId('adaptive-questionnaire')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('aq-back'));
+    expect(screen.getByTestId('project-type-picker')).toBeInTheDocument();
+  });
+
+  it('clicking Close on the type picker fires onClose', () => {
+    const onClose = vi.fn();
+    render(<NewProjectAdaptiveFlow onClose={onClose} onProjectCreated={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ptp-close'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('NewProjectAdaptiveFlow — workflow (non-code) submit path', () => {
+  beforeEach(() => {
+    sessionStorage.removeItem(ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY);
+  });
+  afterEach(() => {
+    sessionStorage.removeItem(ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY);
+    vi.restoreAllMocks();
+  });
+
+  it('disables the submit button until a name is entered', () => {
+    const createWorkflowProject = vi.fn();
+    render(
+      <NewProjectAdaptiveFlow
+        onClose={vi.fn()}
+        onProjectCreated={vi.fn()}
+        createWorkflowProject={createWorkflowProject}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('ptp-workflow'));
+    expect(screen.getByTestId('wpf-submit')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('wpf-name-input'), { target: { value: 'Q3 Research' } });
+    expect(screen.getByTestId('wpf-submit')).not.toBeDisabled();
+  });
+
+  it('shows a live slug preview derived from the project name', () => {
+    render(<NewProjectAdaptiveFlow onClose={vi.fn()} onProjectCreated={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ptp-workflow'));
+    fireEvent.change(screen.getByTestId('wpf-name-input'), {
+      target: { value: 'My Research Project!!' },
+    });
+    expect(screen.getByTestId('wpf-slug-preview')).toHaveTextContent('my-research-project');
+  });
+
+  it('submits with mode:"workflow" and routes the host to the kanban view', async () => {
+    const createWorkflowProject = vi
+      .fn()
+      .mockResolvedValue({ id: 'q3-research', mode: 'workflow' });
+    const onProjectCreated = vi.fn();
+    render(
+      <NewProjectAdaptiveFlow
+        onClose={vi.fn()}
+        onProjectCreated={onProjectCreated}
+        createWorkflowProject={createWorkflowProject}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('ptp-workflow'));
+    fireEvent.change(screen.getByTestId('wpf-name-input'), { target: { value: 'Q3 Research' } });
+    fireEvent.change(screen.getByTestId('wpf-description-input'), {
+      target: { value: 'Quarterly findings' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('wpf-submit'));
+    });
+    expect(createWorkflowProject).toHaveBeenCalledWith({
+      name: 'Q3 Research',
+      description: 'Quarterly findings',
+      color: expect.any(String),
+    });
+    await waitFor(() =>
+      expect(onProjectCreated).toHaveBeenCalledWith({
+        projectId: 'q3-research',
+        action: 'task',
+        mode: 'workflow',
+      }),
+    );
+  });
+
+  it('surfaces server-side errors inline without unmounting the form', async () => {
+    const err = Object.assign(new Error('409: Project id already exists'), { status: 409 });
+    const createWorkflowProject = vi.fn().mockRejectedValue(err);
+    const onProjectCreated = vi.fn();
+    render(
+      <NewProjectAdaptiveFlow
+        onClose={vi.fn()}
+        onProjectCreated={onProjectCreated}
+        createWorkflowProject={createWorkflowProject}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('ptp-workflow'));
+    fireEvent.change(screen.getByTestId('wpf-name-input'), { target: { value: 'Existing' } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('wpf-submit'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('wpf-error')).toHaveTextContent(/Project id already exists/);
+    });
+    expect(screen.getByTestId('workflow-project-form')).toBeInTheDocument();
+    expect(onProjectCreated).not.toHaveBeenCalled();
+    // Submit button is re-enabled so the user can rename and retry.
+    expect(screen.getByTestId('wpf-submit')).not.toBeDisabled();
+  });
+
+  it('Back button returns to the type picker without invoking onClose', () => {
+    const onClose = vi.fn();
+    render(<NewProjectAdaptiveFlow onClose={onClose} onProjectCreated={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ptp-workflow'));
+    fireEvent.click(screen.getByTestId('wpf-back'));
+    expect(screen.getByTestId('project-type-picker')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
