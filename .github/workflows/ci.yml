@@ -126,8 +126,38 @@ jobs:
           exit 1
 
   test:
-    name: Test
+    # Fan out the four test suites across runners, and shard the server suite
+    # 3 ways with `vitest run --shard`. The server suite has
+    # `sequence.concurrent: false` and `fileParallelism: false` in
+    # server/vitest.config.ts, so within a single runner files run serially —
+    # sharding across runners is the only way to get real parallelism for it.
+    # We invoke per-package test scripts directly (not root `npm test`), which
+    # bypasses scripts/verify-test-prerequisites.mjs and lets each shard skip
+    # installs it doesn't need.
+    name: Test (${{ matrix.label }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: client
+            label: client
+          - suite: electron
+            label: electron
+          - suite: mobile
+            label: mobile
+          - suite: server
+            shard: 1
+            shards: 3
+            label: server 1/3
+          - suite: server
+            shard: 2
+            shards: 3
+            label: server 2/3
+          - suite: server
+            shard: 3
+            shards: 3
+            label: server 3/3
     steps:
       - uses: actions/checkout@v4
 
@@ -145,10 +175,12 @@ jobs:
           done
           exit 1
 
-      - name: Rebuild native modules
+      - name: Rebuild native modules (server only)
+        if: matrix.suite == 'server'
         run: npm rebuild better-sqlite3
 
       - name: Install server dependencies
+        if: matrix.suite == 'server'
         run: |
           for attempt in 1 2 3 4; do
             (cd server && npm ci --include=dev) && exit 0
@@ -158,6 +190,7 @@ jobs:
           exit 1
 
       - name: Install client dependencies
+        if: matrix.suite == 'client'
         run: |
           for attempt in 1 2 3 4; do
             (cd client && npm ci --include=dev) && exit 0
@@ -167,6 +200,7 @@ jobs:
           exit 1
 
       - name: Install mobile dependencies
+        if: matrix.suite == 'mobile'
         run: |
           for attempt in 1 2 3 4; do
             (cd mobile && npm ci --include=dev) && exit 0
@@ -175,5 +209,20 @@ jobs:
           done
           exit 1
 
-      - name: Run tests
-        run: npm test
+      - name: Run client tests
+        if: matrix.suite == 'client'
+        run: cd client && npm test
+
+      - name: Run electron tests
+        # Electron tests run via `npx vitest run` against electron/ and rely on
+        # vitest from root devDependencies — no separate electron/ install.
+        if: matrix.suite == 'electron'
+        run: cd electron && npx vitest run
+
+      - name: Run mobile tests
+        if: matrix.suite == 'mobile'
+        run: cd mobile && npm test
+
+      - name: Run server tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
+        if: matrix.suite == 'server'
+        run: cd server && npx vitest run --shard=${{ matrix.shard }}/${{ matrix.shards }}
