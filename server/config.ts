@@ -345,9 +345,41 @@ export interface SpawnEnvOverride {
   claudeCodeOAuthToken?: string | null;
 }
 
+/**
+ * Per-spawn Nango integration override. When provided (and `secretKey`
+ * is non-empty), `buildSpawnEnv` injects `NANGO_SECRET_KEY`,
+ * `NANGO_PROVIDER_BASE`, and `NANGO_CONNECTIONS_JSON` into the spawn
+ * env so the agent can hit third-party APIs through the configured
+ * IntegrationProvider proxy without hand-rolling auth.
+ *
+ * `connections` is the per-user map of provider config keys (`slack`,
+ * `google-mail`, …) to Nango connection IDs. The map is owner-scoped at
+ * the call site (`server/chat.ts` resolves it via `listForUser` keyed on
+ * `session.owner_user_id`) so a session can never see another user's
+ * connections, even when the host secret is shared.
+ *
+ * Sub-agent spawns inherit the parent's env, so per-user creds
+ * propagate naturally through `<delegate>` / `<handoff>` (mirrors the
+ * Per-User Claude Auth approach — see `wiki: per-user-claude-auth`).
+ */
+export interface NangoSpawnOverride {
+  /** Provider secret key (Bearer token Nango expects). Empty / whitespace = no override. */
+  secretKey?: string | null;
+  /** Provider API base URL. Defaults to `https://api.nango.dev`. */
+  providerBaseUrl?: string | null;
+  /** Owner's connections — `{ <providerConfigKey>: <connectionId> }`. */
+  connections?: Record<string, string> | null;
+}
+
 export interface BuildSpawnEnvOptions {
   /** Per-user override; takes precedence over `cfg` for the matching fields. */
   userOverride?: SpawnEnvOverride | null;
+  /**
+   * Per-spawn Nango override. Resolved by the call site (chat.ts /
+   * heartbeat / cron) from the session owner's `user_integrations` rows
+   * + the active IntegrationProvider config.
+   */
+  nango?: NangoSpawnOverride | null;
 }
 
 /** Treat null / undefined / empty / whitespace-only as "not provided". */
@@ -402,6 +434,27 @@ export function buildSpawnEnv(
     // variable name works regardless of which the installed CLI version prefers.
     env.OPENAI_API_KEY = cfg.codexApiKey;
     env.CODEX_API_KEY = cfg.codexApiKey;
+  }
+
+  // Nango integration env vars. Only injected when the call site has a
+  // resolved secret key — otherwise we DELETE the vars so a stale
+  // process.env value can't leak into the child (mirrors the
+  // ANTHROPIC_API_KEY discipline above). Sub-agent spawns inherit the
+  // parent's env, so a delegate/handoff downstream of a chat session
+  // sees the same per-user `NANGO_CONNECTIONS_JSON`.
+  const nango = opts.nango ?? null;
+  const nangoSecret = presentString(nango?.secretKey);
+  if (nangoSecret) {
+    env.NANGO_SECRET_KEY = nangoSecret;
+    env.NANGO_PROVIDER_BASE = presentString(nango?.providerBaseUrl) ?? 'https://api.nango.dev';
+    // Always JSON-stringify (even an empty object) so consumers can rely
+    // on `JSON.parse(process.env.NANGO_CONNECTIONS_JSON ?? '{}')` without
+    // a separate "var present" check.
+    env.NANGO_CONNECTIONS_JSON = JSON.stringify(nango?.connections ?? {});
+  } else {
+    delete env.NANGO_SECRET_KEY;
+    delete env.NANGO_PROVIDER_BASE;
+    delete env.NANGO_CONNECTIONS_JSON;
   }
   return env;
 }

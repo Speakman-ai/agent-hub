@@ -20,6 +20,8 @@ import {
   resolveOAuthAppCredentials,
   applyGithubSpawnCredentials,
 } from './spawn-github-credentials.js';
+import { resolveNangoSpawnOverride } from './spawn-nango-env.js';
+import type { NangoSpawnOverride } from './config.js';
 import type { DelegationResult } from './delegation.js';
 import {
   detectHandoffBlock,
@@ -1782,7 +1784,43 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           `TOOL_ERROR | ${new Date().toISOString()} | per-user-claude-auth | spawn lookup | error | ${summary} | ${meta}`,
         );
       }
-      const base = buildSpawnEnv(config, { userOverride });
+      // Per-user Nango integration auth: when the IntegrationProvider
+      // (Nango Cloud / Self-Hosted) is configured AND the session owner
+      // has connected one or more apps, surface the resolved secret +
+      // owner-only connection map as env vars so the agent can call the
+      // proxy without hand-rolling auth. Sub-agent spawns
+      // (`<delegate>` / `<handoff>`) inherit this env so per-user creds
+      // propagate naturally — same approach as Per-User Claude Auth.
+      //
+      // The connection map is owner-scoped INSIDE
+      // `resolveNangoSpawnOverride` (`listForUser(ownerId)`) so
+      // cross-user leakage is structurally impossible: a session can
+      // never see another user's connection ids even when the host
+      // secret is shared.
+      let nangoOverride: NangoSpawnOverride | null = null;
+      try {
+        nangoOverride = resolveNangoSpawnOverride(ownerId);
+      } catch (err) {
+        // Soft failure — fall through with no Nango env. The agent
+        // still spawns; it just can't make integration proxy calls
+        // until the operator fixes the lookup.
+        const summary = (err as Error).message
+          .replace(/[\r\n|]+/g, ' ')
+          .trim()
+          .slice(0, 200);
+        const meta = JSON.stringify({
+          v: 2,
+          sev: 'soft',
+          resolution: 'recovered',
+          session: sessionId,
+          tags: ['per-user-nango', 'spawn'],
+        });
+        console.error(
+          `TOOL_ERROR | ${new Date().toISOString()} | per-user-nango | spawn lookup | error | ${summary} | ${meta}`,
+        );
+      }
+
+      const base = buildSpawnEnv(config, { userOverride, nango: nangoOverride });
       // Reviewer agents post formal GitHub reviews via the bot identity so they
       // bypass GitHub's "can't review your own PR" rule for human-author PRs.
       // Bot wins over the user's own token here even when the user is
