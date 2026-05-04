@@ -811,4 +811,20 @@ export const api = {
       body: JSON.stringify(payload),
       timeout: 30000,
     }),
+
+  // Integration provider (Nango Shared/BYO) — Owner-only.
+  // GET reports `hasKey` / `sharedAvailable` instead of the secret itself.
+  // PUT is partial-preserving: send `••••••••` to keep the stored secret.
+  getIntegrationProviderSettings: () => fetchJSON('/admin/integrations/provider'),
+  updateIntegrationProviderSettings: (payload) =>
+    fetchJSON('/admin/integrations/provider', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  validateIntegrationProviderSettings: (payload = {}) =>
+    fetchJSON('/admin/integrations/provider/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      timeout: 30000,
+    }),
 };

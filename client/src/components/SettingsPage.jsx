@@ -22,6 +22,7 @@ import CursorAuthSection from './CursorAuthSection.jsx';
 import PoolSection from './PoolSection.jsx';
 import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
 import PrEnvProjectWizard from './PrEnvProjectWizard.jsx';
+import IntegrationProviderSection from './IntegrationProviderSection.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
@@ -6690,6 +6691,11 @@ const SETTINGS_GROUPS = [
       { id: 'logs', iconName: 'FileText', text: 'Logs' },
     ],
   },
+  {
+    id: 'admin',
+    label: 'Admin',
+    tabs: [{ id: 'integrations-provider', iconName: 'Plug', text: 'Integrations' }],
+  },
 ];
 
 const SETTINGS_ICONS = {
@@ -6708,6 +6714,7 @@ const SETTINGS_ICONS = {
   HardDrive,
   FileText,
   FolderGit2,
+  Plug,
 };
 
 function SettingsNavItem({ tab, active, onSelect }) {
@@ -6891,6 +6898,7 @@ export default function SettingsPage({
                 </>
               )}
               {tab === 'logs' && <ServerLogsSection wsRef={wsRef} />}
+              {tab === 'integrations-provider' && <IntegrationProviderSection />}
             </SettingsErrorBoundary>
           </div>
         </div>

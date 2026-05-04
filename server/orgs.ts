@@ -3,6 +3,7 @@ import path from 'path';
 import { mkdirSync, existsSync, readFileSync, readdirSync } from 'fs';
 import config from './config.js';
 import type { OrgRow } from './types.js';
+import { INTEGRATION_PROVIDERS_SCHEMA } from './integration-provider-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -140,6 +141,11 @@ export function initOrgsDb(): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);
   `);
+
+  // Integration-provider singleton (Nango Shared/BYO toggle + secrets).
+  // Lives on orgs.db so the same row is visible across all orgs in the
+  // install — Nango credentials are operator-level, not per-org.
+  orgsDb.exec(INTEGRATION_PROVIDERS_SCHEMA);
 
   // Migration: earlier Phase 3 commits created `invites` with FKs that had
   // no ON DELETE action (SQLite's NO ACTION default). With foreign_keys =
