@@ -6,6 +6,7 @@ import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
 import { PREVIEW_AUTH_SCHEMA } from './container-pool/preview-auth-schema.js';
 import { PR_ENV_CONFIG_SCHEMA, PR_ENV_CONFIG_DROP_LEGACY_GITHUB_COLUMNS } from './pr-env-schema.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
+import { WORKTREE_PREVIEWS_SCHEMA } from './preview/preview-schema.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -1398,6 +1399,12 @@ function initDb(dataDir: string): void {
   // Workflow builder (MVP): definitions, steps, and execution rows. DDL is
   // shared with workflows-schema.test.ts via workflows-schema.ts.
   db.exec(WORKFLOWS_SCHEMA);
+
+  // Worktree-preview runtime: per-session preview process tracking, owned
+  // by `server/preview/preview-runtime.ts`. Schema lives alongside the
+  // runtime so the test suite can spin up an in-memory DB without
+  // pulling in the full bootstrap path here.
+  db.exec(WORKTREE_PREVIEWS_SCHEMA);
 
   {
     const wfCols = (db.pragma('table_info(workflows)') as { name: string }[]).map((c) => c.name);
