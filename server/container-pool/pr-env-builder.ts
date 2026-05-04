@@ -301,6 +301,15 @@ export async function buildPrEnv(
       checkoutDir,
       startScript: projectConfig.startScript,
       setupCommand: projectConfig.setupCommand?.trim() || undefined,
+      // Per-project env vars (e.g. AWS credentials, upstream API URLs).
+      // The runner translates these into `docker run --env K=V` pairs
+      // alongside the runner-injected `PORT=<internalPort>`. The
+      // validator already rejects `PORT` and any non-POSIX-name keys,
+      // so we can pass the map through unmodified.
+      env:
+        projectConfig.env && Object.keys(projectConfig.env).length > 0
+          ? projectConfig.env
+          : undefined,
     });
     audit.containerStarted = true;
 

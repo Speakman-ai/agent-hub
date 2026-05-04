@@ -146,4 +146,81 @@ describe('validatePrEnvProjectConfig', () => {
       dockerfilePath: 'docker/preview.Dockerfile',
     });
   });
+
+  describe('env (per-project environment variables)', () => {
+    const base = { enabled: true, startScript: 'npm start', internalPort: 3000 };
+
+    it('accepts an absent / empty env map (omits the field on the value)', () => {
+      const r1 = validatePrEnvProjectConfig({ ...base });
+      expect(r1.ok).toBe(true);
+      if (r1.ok) expect(r1.value.env).toBeUndefined();
+
+      const r2 = validatePrEnvProjectConfig({ ...base, env: {} });
+      expect(r2.ok).toBe(true);
+      if (r2.ok) expect(r2.value.env).toBeUndefined();
+    });
+
+    it('passes through a flat string→string map', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        env: {
+          AWS_ACCESS_KEY_ID: 'AKIATEST',
+          UPSTREAM_API_URL: 'https://api.example.com',
+        },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.env).toEqual({
+        AWS_ACCESS_KEY_ID: 'AKIATEST',
+        UPSTREAM_API_URL: 'https://api.example.com',
+      });
+    });
+
+    it('rejects non-object env (array, string, number)', () => {
+      for (const bad of [[], 'AWS_KEY=x', 42]) {
+        const r = validatePrEnvProjectConfig({ ...base, env: bad });
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error).toMatch(/prEnv\.env/);
+      }
+    });
+
+    it('rejects non-string values (numbers, booleans, nested objects)', () => {
+      for (const bad of [42, true, { nested: 'x' }, null]) {
+        const r = validatePrEnvProjectConfig({ ...base, env: { FOO: bad } });
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error).toMatch(/FOO/);
+      }
+    });
+
+    it('rejects names that are not POSIX-style identifiers', () => {
+      const bad = ['9_LEADS_DIGIT', 'has-dash', 'has.dot', 'has space', ''];
+      for (const key of bad) {
+        const r = validatePrEnvProjectConfig({ ...base, env: { [key]: 'v' } });
+        expect(r.ok).toBe(false);
+      }
+    });
+
+    it('rejects PORT (reserved — runner sets it from internalPort)', () => {
+      const r = validatePrEnvProjectConfig({ ...base, env: { PORT: '4000' } });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/reserved/i);
+    });
+
+    it('rejects more than 64 entries', () => {
+      const env: Record<string, string> = {};
+      for (let i = 0; i < 65; i++) env[`VAR_${i}`] = 'x';
+      const r = validatePrEnvProjectConfig({ ...base, env });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/at most 64/i);
+    });
+
+    it('rejects values longer than 4096 chars', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        env: { LONG: 'x'.repeat(4097) },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/LONG/);
+    });
+  });
 });

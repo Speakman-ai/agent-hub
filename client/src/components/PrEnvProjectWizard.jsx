@@ -11,6 +11,10 @@ import {
   Copy,
   Download,
   Loader2,
+  Plus,
+  Trash2,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import {
@@ -35,7 +39,13 @@ import {
  * list.
  */
 export default function PrEnvProjectWizard({ project, onClose, onSaved, showToast }) {
-  const initialForm = useMemo(() => formFromConfig(project?.prEnv), [project]);
+  const initialForm = useMemo(() => {
+    const form = formFromConfig(project?.prEnv);
+    return {
+      ...form,
+      envRows: form.envRows.map((row) => ({ _id: crypto.randomUUID(), ...row })),
+    };
+  }, [project]);
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(initialForm);
   const [errors, setErrors] = useState({});
@@ -54,6 +64,46 @@ export default function PrEnvProjectWizard({ project, onClose, onSaved, showToas
   const setField = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }));
     if (errors[key]) setErrors((prev) => ({ ...prev, [key]: undefined }));
+    setSaveError(null);
+  };
+
+  // Env-row mutators. We clear *all* env-row errors on any change since
+  // adding/removing a row shifts the index keys (`env.0.key`, ...) and
+  // re-validating happens on Next/Save anyway.
+  const clearEnvErrors = () => {
+    setErrors((prev) => {
+      const next = {};
+      for (const k of Object.keys(prev)) {
+        if (!k.startsWith('env')) next[k] = prev[k];
+      }
+      return next;
+    });
+  };
+  const updateEnvRow = (index, patch) => {
+    setForm((prev) => {
+      const rows = Array.isArray(prev.envRows) ? prev.envRows.slice() : [];
+      rows[index] = { ...(rows[index] || { key: '', value: '' }), ...patch };
+      return { ...prev, envRows: rows };
+    });
+    clearEnvErrors();
+    setSaveError(null);
+  };
+  const addEnvRow = () => {
+    setForm((prev) => {
+      const rows = Array.isArray(prev.envRows) ? prev.envRows.slice() : [];
+      rows.push({ _id: crypto.randomUUID(), key: '', value: '' });
+      return { ...prev, envRows: rows };
+    });
+    clearEnvErrors();
+    setSaveError(null);
+  };
+  const removeEnvRow = (index) => {
+    setForm((prev) => {
+      const rows = Array.isArray(prev.envRows) ? prev.envRows.slice() : [];
+      rows.splice(index, 1);
+      return { ...prev, envRows: rows };
+    });
+    clearEnvErrors();
     setSaveError(null);
   };
 
@@ -189,6 +239,9 @@ export default function PrEnvProjectWizard({ project, onClose, onSaved, showToas
               inputClass={inputClass}
               labelClass={labelClass}
               errorClass={errorClass}
+              onEnvRowChange={updateEnvRow}
+              onEnvRowAdd={addEnvRow}
+              onEnvRowRemove={removeEnvRow}
             />
           )}
           {step === 2 && (
@@ -304,7 +357,17 @@ function Step0Enable({ form, setField }) {
   );
 }
 
-function Step1Runtime({ form, setField, errors, inputClass, labelClass, errorClass }) {
+function Step1Runtime({
+  form,
+  setField,
+  errors,
+  inputClass,
+  labelClass,
+  errorClass,
+  onEnvRowChange,
+  onEnvRowAdd,
+  onEnvRowRemove,
+}) {
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-3">
@@ -320,7 +383,7 @@ function Step1Runtime({ form, setField, errors, inputClass, labelClass, errorCla
       </div>
 
       <div>
-        <label className={labelClass}>Start command / script *</label>
+        <label className={labelClass}>Start command / script location *</label>
         <input
           type="text"
           value={form.startScript}
@@ -328,6 +391,11 @@ function Step1Runtime({ form, setField, errors, inputClass, labelClass, errorCla
           placeholder="npm start, ./scripts/pr-env.sh, node server.js, ..."
           className={inputClass}
         />
+        <p className="text-[11px] text-gray-500 mt-1">
+          A shell command run from the repo root, or a path to a script in the repo (e.g.{' '}
+          <span className="font-mono text-gray-300">./scripts/pr-env.sh</span>). Runs after the
+          optional setup command.
+        </p>
         {errors.startScript && (
           <p className={errorClass}>
             <AlertCircle size={12} />
@@ -385,6 +453,142 @@ function Step1Runtime({ form, setField, errors, inputClass, labelClass, errorCla
           </p>
         )}
       </div>
+
+      <EnvVarsEditor
+        rows={Array.isArray(form.envRows) ? form.envRows : []}
+        errors={errors}
+        labelClass={labelClass}
+        errorClass={errorClass}
+        onChange={onEnvRowChange}
+        onAdd={onEnvRowAdd}
+        onRemove={onEnvRowRemove}
+      />
+    </div>
+  );
+}
+
+/**
+ * Key/value editor for the per-PR container's environment variables.
+ * Mirrors the server-side validator in
+ * `server/routes/projects.ts:validatePrEnvVars` — duplicate / reserved /
+ * malformed keys, oversized values, and over-cap counts surface as
+ * field-level errors on Next/Save.
+ *
+ * Values are masked by default (rendered with `<input type="password">`)
+ * since the typical use case is AWS access keys / DB credentials. The
+ * eye toggle reveals one row at a time so users can verify what they
+ * pasted without exposing every secret on screen.
+ */
+function EnvVarsEditor({ rows, errors, labelClass, errorClass, onChange, onAdd, onRemove }) {
+  const [revealed, setRevealed] = useState(() => new Set());
+  const inputRowClass =
+    'flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-emerald-500 font-mono';
+  const toggleRevealed = (id) => {
+    setRevealed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <div className="border-t border-gray-800 pt-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <label className={labelClass}>Environment variables (optional)</label>
+          <p className="text-[11px] text-gray-500">
+            Passed into the per-PR container as <span className="font-mono">--env KEY=VALUE</span>.
+            Use for things like AWS credentials or upstream API URLs. Names must match{' '}
+            <span className="font-mono">[A-Z_][A-Z0-9_]*</span>;{' '}
+            <span className="font-mono">PORT</span> is reserved. Stored as plaintext in{' '}
+            <span className="font-mono">projects.json</span> on the host — prefer instance-role /
+            SSM for production secrets.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onAdd}
+          className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg flex items-center gap-1 flex-shrink-0"
+        >
+          <Plus size={12} />
+          Add variable
+        </button>
+      </div>
+
+      {rows.length === 0 && (
+        <p className="text-[11px] text-gray-600 italic">
+          No variables yet. Click &ldquo;Add variable&rdquo; to set one.
+        </p>
+      )}
+
+      <div className="space-y-2">
+        {rows.map((row, i) => {
+          const id = row._id ?? i;
+          const keyErr = errors[`env.${i}.key`];
+          const valueErr = errors[`env.${i}.value`];
+          const isRevealed = revealed.has(id);
+          return (
+            <div key={id} className="space-y-1">
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={row.key || ''}
+                  onChange={(e) => onChange(i, { key: e.target.value })}
+                  placeholder="AWS_ACCESS_KEY_ID"
+                  className={inputRowClass}
+                  aria-label={`Variable ${i + 1} name`}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                />
+                <input
+                  type={isRevealed ? 'text' : 'password'}
+                  value={row.value || ''}
+                  onChange={(e) => onChange(i, { value: e.target.value })}
+                  placeholder="AKIA…"
+                  className={inputRowClass}
+                  aria-label={`Variable ${i + 1} value`}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                />
+                <button
+                  type="button"
+                  onClick={() => toggleRevealed(id)}
+                  className="text-gray-400 hover:text-gray-200 p-2 rounded-lg hover:bg-gray-800"
+                  aria-label={isRevealed ? 'Hide value' : 'Show value'}
+                  title={isRevealed ? 'Hide value' : 'Show value'}
+                >
+                  {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRemove(i)}
+                  className="text-red-400 hover:text-red-300 p-2 rounded-lg hover:bg-gray-800"
+                  aria-label={`Remove variable ${i + 1}`}
+                  title="Remove"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+              {(keyErr || valueErr) && (
+                <p className={errorClass}>
+                  <AlertCircle size={12} />
+                  {keyErr || valueErr}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {errors.env && (
+        <p className={errorClass}>
+          <AlertCircle size={12} />
+          {errors.env}
+        </p>
+      )}
     </div>
   );
 }

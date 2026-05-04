@@ -112,6 +112,72 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
     expect(body.prEnv).toEqual({ enabled: false });
   });
 
+  it('persists per-project env vars round-trip through PATCH', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          env: {
+            AWS_ACCESS_KEY_ID: 'AKIATEST',
+            AWS_SECRET_ACCESS_KEY: 'shhh',
+          },
+        },
+      })
+      .expect(200);
+    const body = res.body as { prEnv?: Record<string, unknown> };
+    expect(body.prEnv).toEqual({
+      enabled: true,
+      startScript: 'npm start',
+      internalPort: 3000,
+      env: {
+        AWS_ACCESS_KEY_ID: 'AKIATEST',
+        AWS_SECRET_ACCESS_KEY: 'shhh',
+      },
+    });
+  });
+
+  it('rejects with 400 when env contains a reserved key (PORT)', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          env: { PORT: '9999' },
+        },
+      })
+      .expect(400);
+    const body = res.body as { error: string };
+    expect(body.error).toMatch(/PORT/);
+    expect(body.error).toMatch(/reserved/i);
+  });
+
+  it('rejects with 400 when env contains an invalid key name', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          env: { 'has-dash': 'x' },
+        },
+      })
+      .expect(400);
+    const body = res.body as { error: string };
+    expect(body.error).toMatch(/has-dash/);
+  });
+
   it('clears the prEnv slot when sent as null', async () => {
     const project = await createProject();
     const projectId = project.id as string;

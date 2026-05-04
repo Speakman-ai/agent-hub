@@ -224,6 +224,85 @@ export interface ValidatedPrEnvConfig {
   setupCommand?: string;
   healthPath?: string;
   dockerfilePath?: string;
+  env?: Record<string, string>;
+}
+
+// Caps for the `env` map. The builder ultimately translates these into
+// `docker run --env K=V` arg pairs, so an unbounded payload could blow
+// past the kernel's ARG_MAX. Numbers are deliberately generous for the
+// expected use case (a handful of AWS creds + feature flags) but small
+// enough to surface user error early instead of at dispatch time.
+const PR_ENV_MAX_VARS = 64;
+const PR_ENV_MAX_KEY_LEN = 128;
+const PR_ENV_MAX_VALUE_LEN = 4096;
+// POSIX env var name: leading [A-Za-z_], rest [A-Za-z0-9_]. Keep this
+// strict — Docker accepts arbitrary names but the in-container shell
+// (`sh -c`) cannot dereference names with dots/dashes/spaces, which is
+// almost always a user mistake we should reject up front.
+const PR_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// PORT is reserved — the runner derives it from `internalPort` and
+// passes `PORT=<internalPort>` itself. Letting users override it would
+// silently break the host-port → internal-port mapping.
+const PR_ENV_RESERVED_KEYS = new Set(['PORT']);
+
+/**
+ * Validate the optional `env` map on a per-project PR-env config.
+ * Returns the normalized map on success (or `undefined` when the input
+ * is empty / absent), or an error string on the first failure.
+ */
+function validatePrEnvVars(
+  raw: unknown,
+): { ok: true; value: Record<string, string> | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'prEnv.env must be an object of string→string entries' };
+  }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length === 0) return { ok: true, value: undefined };
+  if (entries.length > PR_ENV_MAX_VARS) {
+    return {
+      ok: false,
+      error: `prEnv.env supports at most ${PR_ENV_MAX_VARS} entries (got ${entries.length})`,
+    };
+  }
+  const out: Record<string, string> = {};
+  for (const [key, val] of entries) {
+    if (typeof key !== 'string' || key.length === 0) {
+      return { ok: false, error: 'prEnv.env keys must be non-empty strings' };
+    }
+    if (key.length > PR_ENV_MAX_KEY_LEN) {
+      return {
+        ok: false,
+        error: `prEnv.env key "${key.slice(0, 32)}…" exceeds ${PR_ENV_MAX_KEY_LEN} chars`,
+      };
+    }
+    if (!PR_ENV_NAME_RE.test(key)) {
+      return {
+        ok: false,
+        error: `prEnv.env key "${key}" must match [A-Za-z_][A-Za-z0-9_]* (POSIX env var name)`,
+      };
+    }
+    if (PR_ENV_RESERVED_KEYS.has(key)) {
+      return {
+        ok: false,
+        error: `prEnv.env key "${key}" is reserved (set by the runner from internalPort)`,
+      };
+    }
+    if (typeof val !== 'string') {
+      return {
+        ok: false,
+        error: `prEnv.env["${key}"] must be a string (got ${typeof val})`,
+      };
+    }
+    if (val.length > PR_ENV_MAX_VALUE_LEN) {
+      return {
+        ok: false,
+        error: `prEnv.env["${key}"] exceeds ${PR_ENV_MAX_VALUE_LEN} chars`,
+      };
+    }
+    out[key] = val;
+  }
+  return { ok: true, value: out };
 }
 
 export function validatePrEnvProjectConfig(
@@ -297,6 +376,9 @@ export function validatePrEnvProjectConfig(
     }
   }
 
+  const envResult = validatePrEnvVars(obj.env);
+  if (!envResult.ok) return { ok: false, error: envResult.error };
+
   const value: ValidatedPrEnvConfig = {
     enabled: true,
     startScript,
@@ -305,6 +387,7 @@ export function validatePrEnvProjectConfig(
   if (setupCommand) value.setupCommand = setupCommand;
   if (healthPath) value.healthPath = healthPath;
   if (dockerfilePath) value.dockerfilePath = dockerfilePath;
+  if (envResult.value) value.env = envResult.value;
   return { ok: true, value };
 }
 

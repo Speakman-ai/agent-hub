@@ -11,6 +11,7 @@
  *     internalPort: number;
  *     healthPath?: string;
  *     dockerfilePath?: string;
+ *     env?: Record<string, string>;
  *   }
  *
  * The wizard collects free-text fields, then we normalize + validate
@@ -22,6 +23,15 @@
  * vitest the same way `humanCron.test.js` is.
  */
 
+// Mirror of the server-side caps in
+// `server/routes/projects.ts:validatePrEnvVars`. Kept in sync by hand —
+// the test suite asserts both ends agree by exercising the boundaries.
+export const PR_ENV_MAX_VARS = 64;
+export const PR_ENV_MAX_KEY_LEN = 128;
+export const PR_ENV_MAX_VALUE_LEN = 4096;
+export const PR_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const PR_ENV_RESERVED_KEYS = new Set(['PORT']);
+
 /** Default empty form state for a brand-new project. */
 export const EMPTY_FORM = Object.freeze({
   enabled: false,
@@ -30,6 +40,11 @@ export const EMPTY_FORM = Object.freeze({
   internalPort: '',
   healthPath: '',
   dockerfilePath: '',
+  // env is an *array* of {key, value} rows in form state — preserves
+  // user typing order and lets duplicates / blank rows exist mid-edit
+  // without rerendering the whole list. `validateForm` collapses it
+  // into the Record<string,string> shape the server expects.
+  envRows: Object.freeze([]),
 });
 
 /**
@@ -38,7 +53,17 @@ export const EMPTY_FORM = Object.freeze({
  * are coerced to strings/booleans the inputs can render directly.
  */
 export function formFromConfig(config) {
-  if (!config || typeof config !== 'object') return { ...EMPTY_FORM };
+  if (!config || typeof config !== 'object') return { ...EMPTY_FORM, envRows: [] };
+  // Hydrate env rows in stable insertion order. Object.entries is
+  // ordered for string keys per spec, so a saved → reopened wizard
+  // shows the same order the user entered.
+  const envRows =
+    config.env && typeof config.env === 'object' && !Array.isArray(config.env)
+      ? Object.entries(config.env).map(([key, value]) => ({
+          key,
+          value: typeof value === 'string' ? value : '',
+        }))
+      : [];
   return {
     enabled: !!config.enabled,
     setupCommand: typeof config.setupCommand === 'string' ? config.setupCommand : '',
@@ -49,6 +74,7 @@ export function formFromConfig(config) {
         : '',
     healthPath: typeof config.healthPath === 'string' ? config.healthPath : '',
     dockerfilePath: typeof config.dockerfilePath === 'string' ? config.dockerfilePath : '',
+    envRows,
   };
 }
 
@@ -114,6 +140,59 @@ export function validateForm(form) {
     }
   }
 
+  // Env-var rows: trim, drop entirely-blank rows, validate names,
+  // reject duplicates / reserved keys / oversized values. Errors are
+  // collected per-row keyed by row index (`env.0.key`, `env.1.value`)
+  // so the UI can highlight the exact input. Stops at the first error
+  // per row but keeps scanning later rows so users see all problems
+  // at once.
+  const envRows = Array.isArray(form.envRows) ? form.envRows : [];
+  const seenKeys = new Set();
+  const env = {};
+  let envCount = 0;
+  for (let i = 0; i < envRows.length; i++) {
+    const row = envRows[i] || {};
+    const rawKey = typeof row.key === 'string' ? row.key.trim() : '';
+    const rawValue = typeof row.value === 'string' ? row.value : '';
+    // A row is "entirely blank" when both fields trim to empty —
+    // covers the user clicking "Add variable" then changing their
+    // mind, including stray whitespace in either input. Values
+    // themselves are NOT trimmed when sent to the server, since
+    // some credentials/tokens can include intentional whitespace.
+    if (!rawKey && rawValue.trim() === '') continue;
+    if (!rawKey) {
+      errors[`env.${i}.key`] = 'Variable name is required.';
+      continue;
+    }
+    if (rawKey.length > PR_ENV_MAX_KEY_LEN) {
+      errors[`env.${i}.key`] = `Variable name exceeds ${PR_ENV_MAX_KEY_LEN} characters.`;
+      continue;
+    }
+    if (!PR_ENV_NAME_RE.test(rawKey)) {
+      errors[`env.${i}.key`] =
+        'Variable name must start with a letter or _ and contain only letters, digits, and _.';
+      continue;
+    }
+    if (PR_ENV_RESERVED_KEYS.has(rawKey)) {
+      errors[`env.${i}.key`] = `"${rawKey}" is reserved (set by Agent Hub from internal port).`;
+      continue;
+    }
+    if (seenKeys.has(rawKey)) {
+      errors[`env.${i}.key`] = `Duplicate variable name "${rawKey}".`;
+      continue;
+    }
+    if (rawValue.length > PR_ENV_MAX_VALUE_LEN) {
+      errors[`env.${i}.value`] = `Value exceeds ${PR_ENV_MAX_VALUE_LEN} characters.`;
+      continue;
+    }
+    seenKeys.add(rawKey);
+    env[rawKey] = rawValue;
+    envCount += 1;
+  }
+  if (envCount > PR_ENV_MAX_VARS) {
+    errors.env = `At most ${PR_ENV_MAX_VARS} environment variables are allowed (got ${envCount}).`;
+  }
+
   if (Object.keys(errors).length > 0) return { ok: false, errors };
 
   const payload = {
@@ -124,6 +203,7 @@ export function validateForm(form) {
   if (setupCommand) payload.setupCommand = setupCommand;
   if (healthPath) payload.healthPath = healthPath;
   if (dockerfilePath) payload.dockerfilePath = dockerfilePath;
+  if (envCount > 0) payload.env = env;
   return { ok: true, payload };
 }
 

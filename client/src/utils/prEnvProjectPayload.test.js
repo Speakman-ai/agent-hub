@@ -31,6 +31,7 @@ describe('prEnvProjectPayload — formFromConfig', () => {
       internalPort: '3000',
       healthPath: '/healthz',
       dockerfilePath: 'docker/preview.Dockerfile',
+      envRows: [],
     });
   });
 
@@ -42,6 +43,40 @@ describe('prEnvProjectPayload — formFromConfig', () => {
     expect(form.setupCommand).toBe('');
     expect(form.healthPath).toBe('');
     expect(form.dockerfilePath).toBe('');
+    expect(form.envRows).toEqual([]);
+  });
+
+  it('hydrates envRows from a saved env Record in insertion order', () => {
+    const form = formFromConfig({
+      enabled: true,
+      startScript: 'npm start',
+      internalPort: 3000,
+      env: {
+        AWS_ACCESS_KEY_ID: 'AKIATEST',
+        UPSTREAM_API_URL: 'https://api.example.com',
+      },
+    });
+    expect(form.envRows).toEqual([
+      { key: 'AWS_ACCESS_KEY_ID', value: 'AKIATEST' },
+      { key: 'UPSTREAM_API_URL', value: 'https://api.example.com' },
+    ]);
+  });
+
+  it('returns an empty envRows when env is missing or non-object', () => {
+    expect(formFromConfig({ enabled: true, startScript: 'x', internalPort: 1 }).envRows).toEqual(
+      [],
+    );
+    expect(
+      formFromConfig({ enabled: true, startScript: 'x', internalPort: 1, env: null }).envRows,
+    ).toEqual([]);
+    expect(
+      formFromConfig({
+        enabled: true,
+        startScript: 'x',
+        internalPort: 1,
+        env: 'AWS_KEY=x',
+      }).envRows,
+    ).toEqual([]);
   });
 
   it('drops a non-finite internalPort to an empty string', () => {
@@ -156,6 +191,105 @@ describe('prEnvProjectPayload — validateForm', () => {
       setupCommand: 'pnpm install',
       healthPath: '/ping',
       dockerfilePath: 'preview.Dockerfile',
+    });
+  });
+
+  describe('env vars', () => {
+    const baseForm = {
+      ...EMPTY_FORM,
+      enabled: true,
+      startScript: 'npm start',
+      internalPort: '3000',
+    };
+
+    it('drops blank rows silently and emits a Record only when at least one row is set', () => {
+      const result = validateForm({
+        ...baseForm,
+        envRows: [
+          { key: '', value: '' },
+          { key: 'AWS_ACCESS_KEY_ID', value: 'AKIATEST' },
+          { key: '', value: '' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.payload.env).toEqual({ AWS_ACCESS_KEY_ID: 'AKIATEST' });
+    });
+
+    it('omits env from the payload entirely when no rows are set', () => {
+      const result = validateForm({
+        ...baseForm,
+        envRows: [
+          { key: '', value: '' },
+          { key: '', value: '   ' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.payload.env).toBeUndefined();
+    });
+
+    it('flags rows with values but no key', () => {
+      const result = validateForm({
+        ...baseForm,
+        envRows: [{ key: '', value: 'AKIA…' }],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.errors['env.0.key']).toMatch(/required/i);
+    });
+
+    it('flags malformed names (dashes, dots, leading digits)', () => {
+      const result = validateForm({
+        ...baseForm,
+        envRows: [
+          { key: 'has-dash', value: 'x' },
+          { key: '9LEADING', value: 'y' },
+        ],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.errors['env.0.key']).toMatch(/letter/i);
+      expect(result.errors['env.1.key']).toMatch(/letter/i);
+    });
+
+    it('flags duplicate names', () => {
+      const result = validateForm({
+        ...baseForm,
+        envRows: [
+          { key: 'AWS_ACCESS_KEY_ID', value: 'one' },
+          { key: 'AWS_ACCESS_KEY_ID', value: 'two' },
+        ],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.errors['env.1.key']).toMatch(/duplicate/i);
+    });
+
+    it('flags PORT as reserved', () => {
+      const result = validateForm({
+        ...baseForm,
+        envRows: [{ key: 'PORT', value: '9999' }],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.errors['env.0.key']).toMatch(/reserved/i);
+    });
+
+    it('flags values longer than 4096 characters', () => {
+      const result = validateForm({
+        ...baseForm,
+        envRows: [{ key: 'BIG', value: 'x'.repeat(4097) }],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.errors['env.0.value']).toMatch(/exceeds/i);
+    });
+
+    it('reports per-row errors instead of stopping at the first', () => {
+      const result = validateForm({
+        ...baseForm,
+        envRows: [
+          { key: 'has-dash', value: 'x' },
+          { key: '', value: 'orphan' },
+        ],
+      });
+      expect(result.ok).toBe(false);
+      expect(result.errors['env.0.key']).toBeTruthy();
+      expect(result.errors['env.1.key']).toBeTruthy();
     });
   });
 });

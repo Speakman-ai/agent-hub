@@ -1294,6 +1294,20 @@ export interface PrEnvProjectConfig {
    * build-essential + git) with the checkout bind-mounted at `/workspace`.
    */
   dockerfilePath?: string;
+  /**
+   * Extra environment variables passed into the per-PR container as
+   * `docker run --env K=V` pairs (e.g. AWS credentials, feature flags,
+   * upstream API URLs). Flat string→string map only — no nested objects.
+   *
+   * `PORT` is set automatically by the runner from `internalPort` and
+   * cannot be overridden here (the validator rejects it).
+   *
+   * Stored as plaintext on disk in `projects.json` today — only put
+   * values here that you'd be comfortable seeing in a config dump on
+   * the host. Real secrets should keep flowing through the
+   * Terraform-managed instance role / SSM / IMDS path.
+   */
+  env?: Record<string, string>;
 }
 
 export interface Project {

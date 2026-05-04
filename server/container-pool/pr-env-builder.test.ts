@@ -310,6 +310,45 @@ describe('buildPrEnv — happy path', () => {
     expect(deps.container.state.runCalls[0]?.setupCommand).toBeUndefined();
   });
 
+  it('passes per-project env vars into container.run as a flat string→string map', async () => {
+    // The runner already accepts an `env` field — this test just guards
+    // the wiring so the field doesn't get dropped at the builder layer.
+    const deps = freshDeps();
+    const req = {
+      ...buildRequest(10),
+      projectConfig: {
+        ...FIXTURE_PROJECT_CONFIG,
+        env: {
+          AWS_ACCESS_KEY_ID: 'AKIATEST',
+          AWS_SECRET_ACCESS_KEY: 'shhh',
+          UPSTREAM_API_URL: 'https://api.example.com',
+        },
+      } as PrEnvProjectConfig,
+    };
+    await buildPrEnv(deps, req);
+    expect(deps.container.state.runCalls[0]?.env).toEqual({
+      AWS_ACCESS_KEY_ID: 'AKIATEST',
+      AWS_SECRET_ACCESS_KEY: 'shhh',
+      UPSTREAM_API_URL: 'https://api.example.com',
+    });
+  });
+
+  it('omits env when project config leaves it empty / undefined', async () => {
+    // Empty objects must not flow through as `--env` in the runner —
+    // pass undefined so the runner can short-circuit cleanly.
+    const deps = freshDeps();
+    const reqEmpty = {
+      ...buildRequest(11),
+      projectConfig: { ...FIXTURE_PROJECT_CONFIG, env: {} } as PrEnvProjectConfig,
+    };
+    await buildPrEnv(deps, reqEmpty);
+    expect(deps.container.state.runCalls[0]?.env).toBeUndefined();
+
+    const deps2 = freshDeps();
+    await buildPrEnv(deps2, buildRequest(12));
+    expect(deps2.container.state.runCalls[0]?.env).toBeUndefined();
+  });
+
   it('is idempotent on synchronize — reuses the existing port', async () => {
     const deps = freshDeps();
     const a = await buildPrEnv(deps, buildRequest(7));
