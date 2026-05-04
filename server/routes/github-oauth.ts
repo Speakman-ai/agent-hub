@@ -34,6 +34,7 @@ import {
   deleteGithubConnection,
 } from '../github-connections-store.js';
 import { createUser, getUserByUsername } from '../users-store.js';
+import { resolveOAuthAppCredentials } from '../spawn-github-credentials.js';
 
 const STATE_TOKEN_TTL_SEC = 10 * 60; // 10 min — plenty for the redirect round-trip
 const STATE_PURPOSE = 'github-oauth';
@@ -46,27 +47,13 @@ interface GithubOAuthState {
 }
 
 /**
- * Resolve OAuth credentials for the personal "Sign in with GitHub" flow.
- *
- * Order of precedence:
- *   1. `config.personalOAuth` — the standalone OAuth App. This is the
- *      decoupled identity: registering it does NOT require creating or
- *      installing a GitHub App. New installs should put credentials here.
- *   2. `config.githubApp.clientId/clientSecret` — back-compat fallback for
- *      installs that completed the App-manifest flow before the split,
- *      where the same App registration was used for both reviewer and
- *      personal sign-in. Returns null if neither has both fields.
+ * Local alias for the canonical OAuth-credentials resolver. Lives in
+ * `spawn-github-credentials.ts` so the spawn-time `chat.ts` path and
+ * these route handlers stay in lockstep on which OAuth App is used to
+ * exchange codes / refresh tokens. See that module for precedence.
  */
 function getOAuthCredentials(config: AppConfig): { clientId: string; clientSecret: string } | null {
-  const personal = config.personalOAuth;
-  if (personal?.clientId && personal?.clientSecret) {
-    return { clientId: personal.clientId, clientSecret: personal.clientSecret };
-  }
-  const app = config.githubApp;
-  if (app?.clientId && app?.clientSecret) {
-    return { clientId: app.clientId, clientSecret: app.clientSecret };
-  }
-  return null;
+  return resolveOAuthAppCredentials(config);
 }
 
 /**

@@ -15,6 +15,11 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { getUserClaudeAuth } from './users-store.js';
+import { getActiveAccessToken } from './github-connections-store.js';
+import {
+  resolveOAuthAppCredentials,
+  applyGithubSpawnCredentials,
+} from './spawn-github-credentials.js';
 import type { DelegationResult } from './delegation.js';
 import {
   detectHandoffBlock,
@@ -1828,7 +1833,32 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
     }
 
-    const spawnEnv: NodeJS.ProcessEnv = (() => {
+    const spawnEnv: NodeJS.ProcessEnv = await (async () => {
+      // The session owner drives BOTH per-user Claude auth (below) AND
+      // per-user GitHub auth (further down). Resolve once so a single DB
+      // miss / lookup failure is reported once, and so a known-null
+      // owner skips both branches cleanly.
+      let ownerId: string | null = null;
+      try {
+        ownerId = getSessionOwner(sessionId);
+      } catch (err) {
+        // Soft failure — log and continue with host-config defaults.
+        const summary = (err as Error).message
+          .replace(/[\r\n|]+/g, ' ')
+          .trim()
+          .slice(0, 200);
+        const meta = JSON.stringify({
+          v: 2,
+          sev: 'soft',
+          resolution: 'recovered',
+          session: sessionId,
+          tags: ['session-owner', 'spawn'],
+        });
+        console.error(
+          `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
+        );
+      }
+
       // Per-user Claude auth: when the session has a recorded owner with
       // their own ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, those win
       // over the host config. Falsy / missing fields fall back to the
@@ -1838,7 +1868,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         claudeCodeOAuthToken?: string | null;
       } | null = null;
       try {
-        const ownerId = getSessionOwner(sessionId);
         if (ownerId) {
           const userAuth = getUserClaudeAuth(ownerId);
           if (userAuth && (userAuth.anthropicApiKey || userAuth.claudeCodeOAuthToken)) {
@@ -1874,8 +1903,46 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const base = buildSpawnEnv(config, { userOverride });
       // Reviewer agents post formal GitHub reviews via the bot identity so they
       // bypass GitHub's "can't review your own PR" rule for human-author PRs.
+      // Bot wins over the user's own token here even when the user is
+      // signed in — the whole point of the reviewer role is to *not* be
+      // the human (so GitHub doesn't reject the review with "can't review
+      // your own PR"). For non-reviewer agents we fall through to the
+      // user's stored GitHub connection below.
       if (config.botGithubToken && agent.role === 'reviewer') {
-        base.GH_TOKEN = config.botGithubToken;
+        applyGithubSpawnCredentials(base, config.botGithubToken);
+      } else {
+        // Per-user GitHub auth: when the session owner has signed in via
+        // Settings → Sign in with GitHub (or pasted a PAT), inject their
+        // token as GH_TOKEN/GITHUB_TOKEN plus a process-scoped git
+        // credential helper so `gh`, `git push`, and `git fetch` against
+        // GitHub HTTPS remotes authenticate as the human at the keyboard
+        // — without leaking that credential into the host's gitconfig.
+        // Best-effort: if the lookup or refresh fails the spawn proceeds
+        // unauthenticated and the user can reconnect from Settings.
+        try {
+          if (ownerId) {
+            const oauthCreds = resolveOAuthAppCredentials(config);
+            const userGhToken = await getActiveAccessToken(ownerId, oauthCreds);
+            if (userGhToken) {
+              applyGithubSpawnCredentials(base, userGhToken);
+            }
+          }
+        } catch (err) {
+          const summary = (err as Error).message
+            .replace(/[\r\n|]+/g, ' ')
+            .trim()
+            .slice(0, 200);
+          const meta = JSON.stringify({
+            v: 2,
+            sev: 'soft',
+            resolution: 'recovered',
+            session: sessionId,
+            tags: ['per-user-github-auth', 'spawn'],
+          });
+          console.error(
+            `TOOL_ERROR | ${new Date().toISOString()} | per-user-github-auth | spawn lookup | error | ${summary} | ${meta}`,
+          );
+        }
       }
       if (config.apiKey) {
         base.AGENT_HUB_API_KEY = config.apiKey;
