@@ -140,6 +140,26 @@ export function initOrgsDb(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);
+
+    -- ── Per-user integration connections (Nango et al.) ─────────────
+    -- One row per (user, app) — e.g. a user's Slack, GitHub-via-Nango,
+    -- or Google Drive connection. The composite primary key enforces
+    -- a single canonical connection per app per user; reconnecting
+    -- replaces the prior row via upsert. Cross-user reads are
+    -- prevented at the query level — every call is parameterised on
+    -- user_id, so even a logical bug can't cross the boundary without
+    -- editing SQL.
+    CREATE TABLE IF NOT EXISTS user_integrations (
+      user_id TEXT NOT NULL,
+      app TEXT NOT NULL,
+      connection_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, app)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_integrations_user ON user_integrations(user_id);
   `);
 
   // Integration-provider singleton (Nango Shared/BYO toggle + secrets).
