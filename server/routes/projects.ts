@@ -225,6 +225,15 @@ export interface ValidatedPrEnvConfig {
   healthPath?: string;
   dockerfilePath?: string;
   env?: Record<string, string>;
+  preview?: ValidatedPrEnvPreviewConfig;
+}
+
+export interface ValidatedPrEnvPreviewConfig {
+  enabled: boolean;
+  startScript?: string;
+  port?: number;
+  captureRoutes?: string[];
+  idleTTL?: number;
 }
 
 // Caps for the `env` map. The builder ultimately translates these into
@@ -305,6 +314,137 @@ function validatePrEnvVars(
   return { ok: true, value: out };
 }
 
+// Preview sub-config caps. Mirrors `PrEnvPreviewConfig` in `server/types.ts`.
+// The wizard / future client-side mirror should re-export the same numbers
+// (Wizard UI work is tracked in card 4 — out of scope here).
+const PR_ENV_PREVIEW_MAX_ROUTES = 10;
+const PR_ENV_PREVIEW_PORT_MIN = 1024;
+const PR_ENV_PREVIEW_PORT_MAX = 65535;
+const PR_ENV_PREVIEW_IDLE_TTL_MIN = 60;
+const PR_ENV_PREVIEW_IDLE_TTL_MAX = 86400;
+
+/**
+ * Validate the optional `preview` sub-object on a per-project PR-env
+ * config. Returns the normalized value on success (or `undefined` when
+ * the input is absent), or an error string on the first failure.
+ *
+ * Note: the parent-`enabled` cross-field check (preview requires the
+ * project's PR-env feature on) lives in `validatePrEnvProjectConfig`,
+ * not here — this helper only validates the sub-object's own fields.
+ */
+function validatePrEnvPreview(
+  raw: unknown,
+): { ok: true; value: ValidatedPrEnvPreviewConfig | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'prEnv.preview must be an object' };
+  }
+  const obj = raw as Record<string, unknown>;
+  const enabled = !!obj.enabled;
+  if (!enabled) {
+    // Mirror the parent: keep the slot for round-tripping when toggled off.
+    return { ok: true, value: { enabled: false } };
+  }
+
+  const trimStr = (v: unknown): string | undefined => {
+    if (typeof v !== 'string') return undefined;
+    const t = v.trim();
+    return t.length > 0 ? t : undefined;
+  };
+
+  const startScript = trimStr(obj.startScript);
+
+  // Port: accept number or numeric string (mirrors `internalPort`).
+  let port: number | undefined;
+  if (obj.port !== undefined && obj.port !== null && obj.port !== '') {
+    if (typeof obj.port === 'number' && Number.isFinite(obj.port)) {
+      port = Math.floor(obj.port);
+    } else if (typeof obj.port === 'string' && /^\d+$/.test(obj.port.trim())) {
+      port = parseInt(obj.port.trim(), 10);
+    } else {
+      return {
+        ok: false,
+        error: `prEnv.preview.port must be an integer between ${PR_ENV_PREVIEW_PORT_MIN} and ${PR_ENV_PREVIEW_PORT_MAX}`,
+      };
+    }
+    if (
+      !Number.isInteger(port) ||
+      port < PR_ENV_PREVIEW_PORT_MIN ||
+      port > PR_ENV_PREVIEW_PORT_MAX
+    ) {
+      return {
+        ok: false,
+        error: `prEnv.preview.port must be an integer between ${PR_ENV_PREVIEW_PORT_MIN} and ${PR_ENV_PREVIEW_PORT_MAX}`,
+      };
+    }
+  }
+
+  // captureRoutes: array of leading-`/` strings, max 10 entries.
+  let captureRoutes: string[] | undefined;
+  if (obj.captureRoutes !== undefined && obj.captureRoutes !== null) {
+    if (!Array.isArray(obj.captureRoutes)) {
+      return { ok: false, error: 'prEnv.preview.captureRoutes must be an array of strings' };
+    }
+    if (obj.captureRoutes.length > PR_ENV_PREVIEW_MAX_ROUTES) {
+      return {
+        ok: false,
+        error: `prEnv.preview.captureRoutes supports at most ${PR_ENV_PREVIEW_MAX_ROUTES} entries (got ${obj.captureRoutes.length})`,
+      };
+    }
+    const out: string[] = [];
+    for (let i = 0; i < obj.captureRoutes.length; i++) {
+      const route = obj.captureRoutes[i];
+      if (typeof route !== 'string') {
+        return {
+          ok: false,
+          error: `prEnv.preview.captureRoutes[${i}] must be a string`,
+        };
+      }
+      const t = route.trim();
+      if (!t.startsWith('/')) {
+        return {
+          ok: false,
+          error: `prEnv.preview.captureRoutes[${i}] must start with \`/\``,
+        };
+      }
+      out.push(t);
+    }
+    if (out.length > 0) captureRoutes = out;
+  }
+
+  // idleTTL: integer seconds in [60, 86400].
+  let idleTTL: number | undefined;
+  if (obj.idleTTL !== undefined && obj.idleTTL !== null && obj.idleTTL !== '') {
+    if (typeof obj.idleTTL === 'number' && Number.isFinite(obj.idleTTL)) {
+      idleTTL = Math.floor(obj.idleTTL);
+    } else if (typeof obj.idleTTL === 'string' && /^\d+$/.test(obj.idleTTL.trim())) {
+      idleTTL = parseInt(obj.idleTTL.trim(), 10);
+    } else {
+      return {
+        ok: false,
+        error: `prEnv.preview.idleTTL must be an integer between ${PR_ENV_PREVIEW_IDLE_TTL_MIN} and ${PR_ENV_PREVIEW_IDLE_TTL_MAX} seconds`,
+      };
+    }
+    if (
+      !Number.isInteger(idleTTL) ||
+      idleTTL < PR_ENV_PREVIEW_IDLE_TTL_MIN ||
+      idleTTL > PR_ENV_PREVIEW_IDLE_TTL_MAX
+    ) {
+      return {
+        ok: false,
+        error: `prEnv.preview.idleTTL must be an integer between ${PR_ENV_PREVIEW_IDLE_TTL_MIN} and ${PR_ENV_PREVIEW_IDLE_TTL_MAX} seconds`,
+      };
+    }
+  }
+
+  const value: ValidatedPrEnvPreviewConfig = { enabled: true };
+  if (startScript) value.startScript = startScript;
+  if (port !== undefined) value.port = port;
+  if (captureRoutes && captureRoutes.length > 0) value.captureRoutes = captureRoutes;
+  if (idleTTL !== undefined) value.idleTTL = idleTTL;
+  return { ok: true, value };
+}
+
 export function validatePrEnvProjectConfig(
   raw: unknown,
 ): { ok: true; value: ValidatedPrEnvConfig } | { ok: false; error: string } {
@@ -317,6 +457,21 @@ export function validatePrEnvProjectConfig(
   const obj = raw as Record<string, unknown>;
   const enabled = !!obj.enabled;
   if (!enabled) {
+    // Cross-field guard: preview requires the parent feature on. Reject
+    // before we silently drop the preview block, so users see a clear
+    // error instead of wondering why their preview config disappeared.
+    if (
+      obj.preview &&
+      typeof obj.preview === 'object' &&
+      !Array.isArray(obj.preview) &&
+      !!(obj.preview as Record<string, unknown>).enabled
+    ) {
+      return {
+        ok: false,
+        error:
+          'prEnv.preview.enabled requires prEnv.enabled (preview cannot run when PR-env is off)',
+      };
+    }
     // When the user toggles off, we keep the slot for round-tripping —
     // dispatch already short-circuits on `!project.prEnv.enabled`.
     return { ok: true, value: { enabled: false } };
@@ -379,6 +534,9 @@ export function validatePrEnvProjectConfig(
   const envResult = validatePrEnvVars(obj.env);
   if (!envResult.ok) return { ok: false, error: envResult.error };
 
+  const previewResult = validatePrEnvPreview(obj.preview);
+  if (!previewResult.ok) return { ok: false, error: previewResult.error };
+
   const value: ValidatedPrEnvConfig = {
     enabled: true,
     startScript,
@@ -388,6 +546,7 @@ export function validatePrEnvProjectConfig(
   if (healthPath) value.healthPath = healthPath;
   if (dockerfilePath) value.dockerfilePath = dockerfilePath;
   if (envResult.value) value.env = envResult.value;
+  if (previewResult.value) value.preview = previewResult.value;
   return { ok: true, value };
 }
 

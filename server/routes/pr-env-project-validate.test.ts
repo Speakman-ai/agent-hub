@@ -223,4 +223,217 @@ describe('validatePrEnvProjectConfig', () => {
       if (!r.ok) expect(r.error).toMatch(/LONG/);
     });
   });
+
+  describe('preview (client-only preview sub-config)', () => {
+    const base = { enabled: true, startScript: 'npm start', internalPort: 3000 };
+
+    it('accepts an absent / empty preview block (omits the field on the value)', () => {
+      const r1 = validatePrEnvProjectConfig({ ...base });
+      expect(r1.ok).toBe(true);
+      if (r1.ok) expect(r1.value.preview).toBeUndefined();
+    });
+
+    it('accepts preview enabled=false standalone (round-trip)', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: false },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.preview).toEqual({ enabled: false });
+    });
+
+    it('accepts a fully-populated preview block', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: {
+          enabled: true,
+          startScript: 'npm run preview',
+          port: 4173,
+          captureRoutes: ['/', '/about'],
+          idleTTL: 600,
+        },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.preview).toEqual({
+        enabled: true,
+        startScript: 'npm run preview',
+        port: 4173,
+        captureRoutes: ['/', '/about'],
+        idleTTL: 600,
+      });
+    });
+
+    it('accepts preview enabled=true with all sub-fields omitted (falls back to parent)', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.preview).toEqual({ enabled: true });
+    });
+
+    it('rejects preview.enabled=true when parent enabled=false', () => {
+      const r = validatePrEnvProjectConfig({
+        enabled: false,
+        preview: { enabled: true },
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error).toMatch(/preview/i);
+      expect(r.error).toMatch(/requires/i);
+    });
+
+    it('allows preview.enabled=false when parent enabled=false (no cross-field error)', () => {
+      const r = validatePrEnvProjectConfig({
+        enabled: false,
+        preview: { enabled: false },
+      });
+      // The disabled-parent path drops the preview entirely (returns
+      // `{ enabled: false }`), but importantly does NOT error.
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value).toEqual({ enabled: false });
+    });
+
+    it('rejects non-object preview', () => {
+      for (const bad of [42, 'nope', true, []]) {
+        const r = validatePrEnvProjectConfig({ ...base, preview: bad });
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error).toMatch(/prEnv\.preview/);
+      }
+    });
+
+    it('rejects a captureRoutes entry without leading /', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, captureRoutes: ['/', 'about'] },
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error).toMatch(/captureRoutes/);
+      expect(r.error).toMatch(/\//);
+    });
+
+    it('rejects a captureRoutes that is not an array', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, captureRoutes: '/not-an-array' },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/captureRoutes/);
+    });
+
+    it('rejects more than 10 captureRoutes', () => {
+      const routes = Array.from({ length: 11 }, (_, i) => `/page-${i}`);
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, captureRoutes: routes },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/at most 10/i);
+    });
+
+    it('accepts exactly 10 captureRoutes (boundary)', () => {
+      const routes = Array.from({ length: 10 }, (_, i) => `/page-${i}`);
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, captureRoutes: routes },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.preview?.captureRoutes).toHaveLength(10);
+    });
+
+    it('rejects a port out of range (low)', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, port: 80 },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/preview\.port/);
+    });
+
+    it('rejects a port out of range (high)', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, port: 70000 },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/preview\.port/);
+    });
+
+    it('coerces a numeric string port to a number', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, port: '4173' },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.preview?.port).toBe(4173);
+    });
+
+    it('rejects a non-integer port string', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, port: '4.5' },
+      });
+      expect(r.ok).toBe(false);
+    });
+
+    it('rejects idleTTL out of range (low)', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, idleTTL: 30 },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/idleTTL/);
+    });
+
+    it('rejects idleTTL out of range (high)', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, idleTTL: 86401 },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/idleTTL/);
+    });
+
+    it('accepts idleTTL boundaries (60, 86400)', () => {
+      for (const ttl of [60, 86400]) {
+        const r = validatePrEnvProjectConfig({
+          ...base,
+          preview: { enabled: true, idleTTL: ttl },
+        });
+        expect(r.ok).toBe(true);
+        if (r.ok) expect(r.value.preview?.idleTTL).toBe(ttl);
+      }
+    });
+
+    it('coerces a numeric string idleTTL', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: { enabled: true, idleTTL: '900' },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.preview?.idleTTL).toBe(900);
+    });
+
+    it('strips empty / whitespace-only optional preview fields', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        preview: {
+          enabled: true,
+          startScript: '   ',
+          captureRoutes: [],
+        },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.preview).toEqual({ enabled: true });
+    });
+  });
 });

@@ -1308,6 +1308,56 @@ export interface PrEnvProjectConfig {
    * Terraform-managed instance role / SSM / IMDS path.
    */
   env?: Record<string, string>;
+  /**
+   * Optional per-project "client-only preview" config. Distinct from the
+   * full PR-env start script so projects with a heavyweight backend can
+   * still ship a quick visual preview (Vite dev server, Storybook, etc.)
+   * without spinning the whole stack. When `enabled` is false (or the
+   * block is omitted) the preview runtime is off — only the regular
+   * PR-env path runs.
+   *
+   * Requires the parent `enabled: true` — a preview is meaningless when
+   * the project's PR-env feature itself is off, and the validator
+   * rejects that combination.
+   */
+  preview?: PrEnvPreviewConfig;
+}
+
+/**
+ * Lightweight preview sub-config attached to {@link PrEnvProjectConfig}.
+ *
+ * Used by the per-PR runner to spawn a *second* (or replacement) command
+ * that serves a client-only preview (Vite dev server, Storybook, static
+ * `npx serve dist`, etc.). Routes listed in `captureRoutes` are
+ * auto-screenshotted by the screenshot worker for the PR description.
+ */
+export interface PrEnvPreviewConfig {
+  /** Master switch. When false (or the block is absent), preview is off. */
+  enabled: boolean;
+  /**
+   * Optional preview-specific start command, relative to repo root.
+   * Falls back to the parent `startScript` when unset — handy for
+   * projects whose normal start script already serves a static preview
+   * but who still want preview-specific routes/idle-TTL tuning.
+   */
+  startScript?: string;
+  /**
+   * Optional preview port. Defaults to the parent `internalPort` when
+   * unset. Same nginx-mapped contract as `internalPort` (1024–65535).
+   */
+  port?: number;
+  /**
+   * Routes to auto-screenshot for the PR description (e.g. `/`,
+   * `/components/Button`). Each entry must start with `/`. Capped at
+   * 10 routes to keep screenshot time bounded per PR.
+   */
+  captureRoutes?: string[];
+  /**
+   * Idle TTL in seconds. After this many seconds with no traffic, the
+   * preview runtime is torn down and re-spawned on the next request.
+   * Defaults to 600 (10 min). Bounded 60–86400 (1 min – 24 h).
+   */
+  idleTTL?: number;
 }
 
 export interface Project {

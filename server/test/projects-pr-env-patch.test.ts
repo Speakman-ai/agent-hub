@@ -178,6 +178,71 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
     expect(body.error).toMatch(/has-dash/);
   });
 
+  it('persists a fully-populated preview block round-trip through PATCH', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          preview: {
+            enabled: true,
+            startScript: 'npm run preview',
+            port: 4173,
+            captureRoutes: ['/', '/about'],
+            idleTTL: 600,
+          },
+        },
+      })
+      .expect(200);
+    const body = res.body as { prEnv?: Record<string, unknown> };
+    expect(body.prEnv).toEqual({
+      enabled: true,
+      startScript: 'npm start',
+      internalPort: 3000,
+      preview: {
+        enabled: true,
+        startScript: 'npm run preview',
+        port: 4173,
+        captureRoutes: ['/', '/about'],
+        idleTTL: 600,
+      },
+    });
+  });
+
+  it('rejects with 400 when preview.enabled=true but parent enabled=false', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ prEnv: { enabled: false, preview: { enabled: true } } })
+      .expect(400);
+    const body = res.body as { error: string };
+    expect(body.error).toMatch(/preview/i);
+    expect(body.error).toMatch(/requires/i);
+  });
+
+  it('rejects with 400 when preview.captureRoutes contains a non-/-prefixed entry', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          preview: { enabled: true, captureRoutes: ['/', 'about'] },
+        },
+      })
+      .expect(400);
+    const body = res.body as { error: string };
+    expect(body.error).toMatch(/captureRoutes/);
+  });
+
   it('clears the prEnv slot when sent as null', async () => {
     const project = await createProject();
     const projectId = project.id as string;
