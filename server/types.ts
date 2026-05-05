@@ -1804,6 +1804,7 @@ export interface RouteDeps {
   ensureDocsAgents: () => void;
   ensureIntakeAgents: () => void;
   ensureReviewerAgents: () => boolean;
+  ensureContextFiles: () => void;
   getClaudeBin: () => string;
   setClaudeBin: (v: string) => void;
   getCursorBin?: () => string;

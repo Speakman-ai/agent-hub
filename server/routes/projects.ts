@@ -16,6 +16,7 @@ import {
 import { getActiveAccessToken } from '../github-connections-store.js';
 import { getUserByUsername, createUser } from '../users-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
+import { getOrCreateBoard } from './board.js';
 import type { AuthenticatedRequest } from '../auth.js';
 
 const execAsync = promisify(exec);
@@ -595,6 +596,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     ensureDocsAgents,
     ensureIntakeAgents,
     ensureReviewerAgents,
+    ensureContextFiles,
     getClaudeBin,
     setClaudeBin,
   } = deps;
@@ -1024,6 +1026,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       checkHealCommands,
       checkHealMaxRounds,
       mode,
+      engine: requestedEngine,
     } = req.body as {
       id?: string;
       name?: string;
@@ -1034,6 +1037,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       checkHealCommands?: unknown;
       checkHealMaxRounds?: unknown;
       mode?: unknown;
+      engine?: unknown;
     };
     if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) {
       return res.status(400).json({ error: 'id is required and must be alphanumeric+hyphens' });
@@ -1049,6 +1053,25 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         createMode = mode;
       } else {
         return res.status(400).json({ error: 'mode must be "dev", "workflow", or null' });
+      }
+    }
+    // Optional `engine` lets workflow callers (Cursor-only installs, etc.)
+    // override the seeded lead agent's engine without a follow-up PATCH.
+    // Currently only consulted in workflow scaffolding below; ignored for
+    // dev mode (the onboard route owns dev agent rosters). Validation is
+    // permissive — the per-engine binary check happens at spawn time.
+    const VALID_ENGINES = ['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli'] as const;
+    let resolvedEngine: (typeof VALID_ENGINES)[number] = 'claude-code';
+    if (requestedEngine !== undefined && requestedEngine !== null && requestedEngine !== '') {
+      if (
+        typeof requestedEngine === 'string' &&
+        (VALID_ENGINES as readonly string[]).includes(requestedEngine)
+      ) {
+        resolvedEngine = requestedEngine as (typeof VALID_ENGINES)[number];
+      } else {
+        return res
+          .status(400)
+          .json({ error: `engine must be one of: ${VALID_ENGINES.join(', ')}` });
       }
     }
     const dataDir = getProjectDataDir(id);
@@ -1087,6 +1110,103 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
 
     projects.push(project);
     saveProjects();
+
+    // Workflow-mode scaffolding — match the shell a dev project gets minus
+    // the GitHub/PR-specific bits. Without this, the wizard lands the user
+    // on a blank page: no kanban columns until they visit /board, no default
+    // agents (so `ensureIntakeAgents` / `ensureProjectRoom` early-return),
+    // and no conference room. We seed the minimum so the project is
+    // immediately usable as a tasks-only workspace.
+    //
+    // Dev-mode (default) projects keep the lean POST behavior — the richer
+    // `POST /api/projects/onboard` route owns dev scaffolding because it
+    // already has an analyzed agent roster + GitHub repo to wire up.
+    if (createMode === 'workflow') {
+      try {
+        // 1. Pre-create the kanban board with default columns so the user
+        //    lands on a structured Backlog → Done view.
+        getOrCreateBoard(stmts, project.id);
+
+        // 2. Seed a single project-coordinator "lead" agent so subsequent
+        //    helpers (intake / room) have an anchor — those helpers
+        //    early-return on `project.agents.length === 0`. Engine
+        //    defaults to claude-code but is overridable via the optional
+        //    `engine` POST field for Cursor-only installs.
+        const leadAgentId = `${project.id}-lead`;
+        if (!findAgent(leadAgentId)) {
+          const leadAgent: Agent = {
+            id: leadAgentId,
+            name: `${project.name} Lead`,
+            engine: resolvedEngine,
+            role: 'lead',
+            color: project.color,
+            systemPrompt: `You are the lead coordinator for the ${project.name} workspace — a non-coding (workflow-mode) project on Agent Hub.
+
+You own:
+- The kanban board (Backlog → Done) at /api/projects/${project.id}/board
+- The wiki at /api/projects/${project.id}/wiki
+- Conversations with collaborators in this workspace's conference room
+- Triaging and routing user requests to the right agent
+
+This workspace has no git repo and no PR automation — your job is planning, organizing, and synthesizing, not shipping code. Use the kanban board to track work, the wiki to capture decisions and reference material, and chat sessions to drive the work forward.`,
+            heartbeat: { enabled: false, interval: '', prompt: '' },
+            subAgents: [],
+          };
+          mkdirSync(path.join(dataDir, 'agents', leadAgentId), { recursive: true });
+          writeFileSync(
+            path.join(dataDir, 'agents', leadAgentId, 'IDENTITY.md'),
+            `# ${project.name} Lead\n\nYou coordinate work in the ${project.name} workspace. You own the kanban board, the wiki, and routing user requests to the right specialist. This is a non-coding workspace — no git repo, no PRs.\n`,
+            'utf-8',
+          );
+          project.agents.push(leadAgent);
+          // No saveProjects() here — `ensureIntakeAgents()` below will save
+          // the lead+intake state in a single write. The initial empty-row
+          // save above keeps crash-safety covered if the helper short-circuits.
+        }
+
+        // 3. Seed the Intake agent (generic, board-only — no git deps) so
+        //    the user can convert natural-language requests into tickets
+        //    out of the box. We deliberately SKIP `ensureDocsAgents` here
+        //    because the docs agent's heartbeat is git-/PR-coupled and
+        //    would fail on a workflow project. We also SKIP
+        //    `ensureReviewerAgents` — it's already gated on `githubRepo`.
+        //
+        // Side-effect note: `ensureIntakeAgents()` iterates ALL projects,
+        // so calling it here also retroactively backfills intake into any
+        // pre-existing project that has agents but no intake. That's the
+        // helper's documented contract (matches `/api/projects/onboard`'s
+        // usage) — flagged for the next reader.
+        ensureIntakeAgents();
+
+        // 4. Defensive save — guarantees the seeded lead row is on disk
+        //    even if `ensureIntakeAgents()` short-circuited (e.g. the
+        //    intake agent already existed on a re-POST scenario). When
+        //    the helper did add an intake agent, this is a redundant but
+        //    cheap second write; the alternative — trusting the helper
+        //    to always save — was fragile across future refactors.
+        saveProjects();
+
+        // 5. Create the project's conference room now that we have agents.
+        ensureProjectRoom(project);
+
+        // 6. Seed the workspace's top-level context files (SOUL.md, AGENTS.md,
+        //    USER.md, TOOLS.md, MEMORY.md). Without this, a freshly-scaffolded
+        //    workflow project's data dir has empty `agents/`, `skills/`,
+        //    `memory/` subdirs but no top-level context files until the next
+        //    server restart — `ensureContextFiles()` is otherwise only
+        //    invoked at startup (`server/index.ts:302`).
+        ensureContextFiles();
+      } catch (err) {
+        // Scaffolding failure is non-fatal — the project row is already
+        // persisted. Log loudly so the operator can investigate, but
+        // return success so the wizard doesn't pretend the project
+        // wasn't created.
+        console.warn(
+          `[POST /api/projects] Workflow scaffolding failed for "${project.id}": ${(err as Error).message}`,
+        );
+      }
+    }
+
     // Notify connected clients so sidebars / project lists refresh without
     // a full reload — matches the broadcast already done by the richer
     // /api/projects/onboard path.

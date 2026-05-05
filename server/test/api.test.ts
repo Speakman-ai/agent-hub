@@ -11,6 +11,12 @@ import {
 
 let request: supertest.Agent;
 
+// Per-test monotonic counter used alongside `Date.now()` for unique
+// project IDs. Plain timestamps would collide if vitest is ever flipped
+// to file-parallel execution (today the suite runs files sequentially,
+// but flagging the seam here keeps these tests safe under any reporter).
+let _uniqueCounter = 0;
+
 beforeAll(async () => {
   request = await getRequest();
 }, 60_000);
@@ -139,6 +145,139 @@ describe('Projects', () => {
         .expect(201);
       expect(res.body.mode).toBe('workflow');
       expect(res.body.githubRepo).toBeUndefined();
+    });
+
+    it('scaffolds a workflow project with board, lead+intake agents, conference room, and context files', async () => {
+      // Workflow projects must land the user on a fully-formed shell — not
+      // a blank canvas. The wizard's `POST /api/projects { mode: 'workflow' }`
+      // call should eagerly initialise:
+      //   - kanban board with the 5 default columns (Backlog → Done)
+      //   - one project-coordinator "lead" agent (so downstream helpers fire)
+      //   - the generic Intake agent (board-only — no git deps)
+      //   - the project's conference room (containing both seeded agents)
+      //   - top-level context files (SOUL.md, AGENTS.md, USER.md, TOOLS.md, MEMORY.md)
+      // and explicitly NOT seed a Docs agent (its heartbeat is git/PR-coupled)
+      // or a Reviewer agent (correctly gated by `githubRepo`).
+      // ID combines `Date.now()` + a per-test counter so the test stays
+      // collision-free even under file-parallel vitest execution.
+      const projectId = `wf-scaffold-${Date.now()}-${++_uniqueCounter}`;
+      const res = await request
+        .post('/api/projects')
+        .send({ id: projectId, name: 'WF Scaffold', cwd: '/tmp', mode: 'workflow' })
+        .expect(201);
+      expect(res.body.mode).toBe('workflow');
+
+      // Board + default columns are present immediately, not lazily on first GET.
+      const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+      const columnNames = (board.body.columns as Array<{ name: string }>).map((c) => c.name);
+      expect(columnNames).toEqual(['Backlog', 'To Do', 'In Progress', 'Review', 'Done']);
+
+      // Project now carries the seeded agents — lead + intake at minimum,
+      // no docs (git-coupled), no reviewer (GitHub-gated).
+      const proj = await request.get(`/api/projects/${projectId}`).expect(200);
+      const agents =
+        (proj.body.agents as Array<{ id: string; role?: string; engine?: string }>) || [];
+      const roles = agents.map((a) => a.role).filter(Boolean);
+      expect(roles).toContain('lead');
+      expect(roles).toContain('intake');
+      expect(roles).not.toContain('docs');
+      expect(roles).not.toContain('reviewer');
+      expect(agents.some((a) => a.id === `${projectId}-lead`)).toBe(true);
+      expect(agents.some((a) => a.id === `${projectId}-intake`)).toBe(true);
+      // Default engine when no override is supplied = claude-code.
+      const lead = agents.find((a) => a.id === `${projectId}-lead`);
+      expect(lead?.engine).toBe('claude-code');
+
+      // Conference room exists for the workspace.
+      const room = await request.get(`/api/projects/${projectId}/room`).expect(200);
+      expect(room.body).toBeTruthy();
+      expect(room.body.project_id).toBe(projectId);
+      const roomAgentIds = (room.body.agents as Array<{ id: string }>).map((a) => a.id);
+      expect(roomAgentIds).toContain(`${projectId}-lead`);
+      expect(roomAgentIds).toContain(`${projectId}-intake`);
+
+      // Top-level context files (`ensureContextFiles`) are seeded immediately,
+      // not deferred to the next server restart.
+      const { existsSync } = await import('fs');
+      const path = await import('path');
+      const dataDir = (proj.body as { ahw: string }).ahw;
+      for (const filename of ['SOUL.md', 'AGENTS.md', 'USER.md', 'TOOLS.md', 'MEMORY.md']) {
+        expect(existsSync(path.join(dataDir, filename))).toBe(true);
+      }
+    });
+
+    it('honours an optional `engine` override on the seeded workflow lead agent', async () => {
+      // Cursor-only installs (or any non-Claude default) should be able to
+      // pass `engine: 'cursor-agent'` on POST and have the seeded lead
+      // agent come up with that engine — no follow-up PATCH required.
+      const projectId = `wf-engine-${Date.now()}-${++_uniqueCounter}`;
+      await request
+        .post('/api/projects')
+        .send({
+          id: projectId,
+          name: 'WF Engine Override',
+          cwd: '/tmp',
+          mode: 'workflow',
+          engine: 'cursor-agent',
+        })
+        .expect(201);
+      const proj = await request.get(`/api/projects/${projectId}`).expect(200);
+      const lead = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
+        (a) => a.id === `${projectId}-lead`,
+      );
+      expect(lead?.engine).toBe('cursor-agent');
+    });
+
+    it('honours `engine: codex-cli` on the seeded workflow lead agent', async () => {
+      // Validates that 'codex-cli' (the canonical identifier used throughout
+      // the server) is accepted — a typo in VALID_ENGINES ('codex') would
+      // reject this with a 400 even though the caller is correct.
+      const projectId = `wf-engine-codex-${Date.now()}-${++_uniqueCounter}`;
+      await request
+        .post('/api/projects')
+        .send({
+          id: projectId,
+          name: 'WF Codex Engine',
+          cwd: '/tmp',
+          mode: 'workflow',
+          engine: 'codex-cli',
+        })
+        .expect(201);
+      const proj = await request.get(`/api/projects/${projectId}`).expect(200);
+      const lead = (proj.body.agents as Array<{ id: string; engine?: string }>).find(
+        (a) => a.id === `${projectId}-lead`,
+      );
+      expect(lead?.engine).toBe('codex-cli');
+    });
+
+    it('rejects an invalid `engine` value with 400', async () => {
+      await request
+        .post('/api/projects')
+        .send({
+          id: `wf-bad-engine-${Date.now()}-${++_uniqueCounter}`,
+          name: 'Bad Engine',
+          cwd: '/tmp',
+          mode: 'workflow',
+          engine: 'not-a-real-engine',
+        })
+        .expect(400);
+    });
+
+    it('does NOT scaffold extra agents for dev-mode projects (lean POST)', async () => {
+      // Regression guard: only `mode: 'workflow'` triggers the eager
+      // scaffold. Dev-mode and unset-mode projects keep their lean POST
+      // behavior — the richer `/api/projects/onboard` route owns dev
+      // scaffolding because it has an analyzed agent roster to wire up.
+      const devId = `dev-no-scaffold-${Date.now()}-${++_uniqueCounter}`;
+      await request
+        .post('/api/projects')
+        .send({ id: devId, name: 'Dev No Scaffold', cwd: '/tmp', mode: 'dev' })
+        .expect(201);
+      const proj = await request.get(`/api/projects/${devId}`).expect(200);
+      expect((proj.body.agents as unknown[]).length).toBe(0);
+      // No conference room (would 404 since `ensureProjectRoom` early-returns
+      // without agents — and we didn't call it).
+      await request.get(`/api/projects/${devId}/room`).expect(404);
     });
 
     it('rejects POST with an invalid mode value', async () => {

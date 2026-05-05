@@ -592,6 +592,7 @@ export const routeDeps: RouteDeps = {
   ensureDocsAgents,
   ensureIntakeAgents,
   ensureReviewerAgents,
+  ensureContextFiles,
   getClaudeBin: () => CLAUDE_BIN,
   setClaudeBin: (v: string) => {
     CLAUDE_BIN = v;
