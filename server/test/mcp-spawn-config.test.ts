@@ -27,7 +27,7 @@ function row(overrides: Partial<McpServerRow>): McpServerRow {
 }
 
 describe('rowToConfig', () => {
-  it('translates a stdio row to {command, args, env, _agentHub}', () => {
+  it('translates a stdio row to {type:"stdio", command, args, env, _agentHub}', () => {
     const cfg = rowToConfig(
       row({
         transport: 'stdio',
@@ -37,6 +37,7 @@ describe('rowToConfig', () => {
       }),
     );
     expect(cfg).toEqual({
+      type: 'stdio',
       command: 'npx',
       args: ['-y', '@notionhq/notion-mcp-server'],
       env: { OPENAPI_MCP_HEADERS: 'token' },
@@ -44,7 +45,7 @@ describe('rowToConfig', () => {
     });
   });
 
-  it('translates an http row to {url, headers, _agentHub} (no command/args)', () => {
+  it('translates an http row to {type:"http", url, headers, _agentHub} (no command/args)', () => {
     const cfg = rowToConfig(
       row({
         transport: 'http',
@@ -53,11 +54,22 @@ describe('rowToConfig', () => {
       }),
     );
     expect(cfg).toEqual({
+      type: 'http',
       url: 'https://mcp.linear.app/sse',
       headers: { Authorization: 'Bearer x' },
       _agentHub: true,
     });
     expect((cfg as McpServerConfig).command).toBeUndefined();
+  });
+
+  // Regression — the absence of `type` made Claude Code's loader default to
+  // stdio, find no `command`, and silently drop the entry. See the wiki page
+  // 'MCP Servers — Per-User Registry' for the failure-mode trail.
+  it('always emits a transport `type` discriminator (regression: missing type drops http servers)', () => {
+    const stdio = rowToConfig(row({ transport: 'stdio', command: 'x' }));
+    const http = rowToConfig(row({ transport: 'http', url: 'https://x/' }));
+    expect(stdio.type).toBe('stdio');
+    expect(http.type).toBe('http');
   });
 
   it('clones env/headers (does not share reference with the row)', () => {

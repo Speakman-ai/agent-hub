@@ -22,10 +22,20 @@
 import type { McpServerConfig } from './types.js';
 import type { McpServerRow } from './mcp-servers-store.js';
 
-/** Convert one decrypted store row into a Claude Code MCP server entry. */
+/**
+ * Convert one decrypted store row into a Claude Code MCP server entry.
+ *
+ * The `type` field is **required** by Claude Code's `.claude/settings.json`
+ * schema for remote (http / sse) servers — without it the loader defaults
+ * to stdio, finds no `command`, and silently drops the entry. We emit it
+ * unconditionally (including for stdio) so the serialized config is
+ * unambiguous regardless of which transport an upstream parser preferred
+ * historically.
+ */
 export function rowToConfig(row: McpServerRow): McpServerConfig {
   if (row.transport === 'stdio') {
     return {
+      type: 'stdio',
       command: row.command,
       args: row.args,
       env: { ...row.env },
@@ -34,6 +44,7 @@ export function rowToConfig(row: McpServerRow): McpServerConfig {
   }
   // http transport
   return {
+    type: 'http',
     url: row.url,
     headers: { ...row.headers },
     _agentHub: true,

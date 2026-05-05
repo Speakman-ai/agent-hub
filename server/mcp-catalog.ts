@@ -84,7 +84,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
         key: 'Authorization',
         label: 'API Key',
         helpText:
-          'Personal API key from Linear → Settings → API. Format: "Bearer lin_api_…". Linear also supports OAuth — see their docs.',
+          'Personal API key from Linear → Settings → API. Paste the raw `lin_api_…` token — Agent Hub adds the `Bearer ` prefix automatically. Linear also supports OAuth.',
         required: true,
         secret: true,
         docsUrl: 'https://linear.app/settings/api',
@@ -123,7 +123,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
         key: 'Authorization',
         label: 'GitHub token',
         helpText:
-          'Personal access token (classic or fine-grained) with the scopes you need. Format: "Bearer ghp_…". Hub already manages a per-user GitHub OAuth connection — paste a token here only if you want a different identity for MCP than the one Agent Hub uses for git push.',
+          'Personal access token (classic or fine-grained) with the scopes you need. Paste the raw `ghp_…` (or fine-grained) token — Agent Hub adds the `Bearer ` prefix automatically. Hub already manages a per-user GitHub OAuth connection; only paste a token here if you want a different identity for MCP than the one Agent Hub uses for git push.',
         required: true,
         secret: true,
         docsUrl: 'https://github.com/settings/tokens',

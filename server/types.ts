@@ -1211,13 +1211,19 @@ export interface HookConfig {
 }
 
 export interface McpServerConfig {
+  /**
+   * Transport discriminator. **Required for remote (http / sse) servers** —
+   * Claude Code's loader otherwise defaults to stdio, finds no `command`,
+   * and silently drops the entry. See docs.claude.com/en/docs/claude-code/mcp.
+   */
+  type?: 'stdio' | 'http' | 'sse';
   command?: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
-  /** HTTP transport: server URL. Claude Code reads `url` + `headers`. */
+  /** HTTP/SSE transport: server URL. Claude Code reads `url` + `headers`. */
   url?: string;
-  /** HTTP transport headers (e.g. `Authorization: Bearer …`). */
+  /** HTTP/SSE transport headers (e.g. `Authorization: Bearer …`). */
   headers?: Record<string, string>;
   /** Marker so Agent Hub can identify and clean up entries it injected. */
   _agentHub?: boolean;

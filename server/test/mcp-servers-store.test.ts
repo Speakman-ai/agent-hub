@@ -16,6 +16,7 @@ import {
   listEnabledMcpServersForUser,
   listMcpServersForUser,
   listMcpServersMaskedForUser,
+  normalizeHttpAuthHeaders,
   readMcpServerRow,
   updateMcpServer,
   __resetMcpServersStoreForTests,
@@ -243,6 +244,120 @@ describe('listing', () => {
     });
     const list = listEnabledMcpServersForUser(userId);
     expect(list.map((r) => r.id)).toEqual([a.id]);
+  });
+});
+
+describe('Authorization header auto-Bearer prefix', () => {
+  describe('normalizeHttpAuthHeaders (pure helper)', () => {
+    it('prepends `Bearer ` to a bare token', () => {
+      expect(normalizeHttpAuthHeaders({ Authorization: 'lin_api_xxx' })).toEqual({
+        Authorization: 'Bearer lin_api_xxx',
+      });
+    });
+
+    it('is idempotent on already-prefixed Bearer tokens (case-insensitive)', () => {
+      expect(normalizeHttpAuthHeaders({ Authorization: 'Bearer abc' })).toEqual({
+        Authorization: 'Bearer abc',
+      });
+      expect(normalizeHttpAuthHeaders({ Authorization: 'bearer abc' })).toEqual({
+        Authorization: 'bearer abc',
+      });
+    });
+
+    it('respects other RFC 7235 schemes (Basic / Token / Digest)', () => {
+      expect(normalizeHttpAuthHeaders({ Authorization: 'Basic dXNlcjpwYXNz' })).toEqual({
+        Authorization: 'Basic dXNlcjpwYXNz',
+      });
+      expect(normalizeHttpAuthHeaders({ Authorization: 'Token abc' })).toEqual({
+        Authorization: 'Token abc',
+      });
+    });
+
+    it('matches the header name case-insensitively (authorization, AUTHORIZATION)', () => {
+      expect(normalizeHttpAuthHeaders({ authorization: 'lin_api_xxx' })).toEqual({
+        authorization: 'Bearer lin_api_xxx',
+      });
+      expect(normalizeHttpAuthHeaders({ AUTHORIZATION: 'lin_api_xxx' })).toEqual({
+        AUTHORIZATION: 'Bearer lin_api_xxx',
+      });
+    });
+
+    it('ignores other header keys', () => {
+      expect(normalizeHttpAuthHeaders({ 'X-API-Key': 'abc' })).toEqual({ 'X-API-Key': 'abc' });
+    });
+
+    it('skips MASK placeholders (so the round-trip in updateMcpServer is safe)', () => {
+      expect(normalizeHttpAuthHeaders({ Authorization: MASK })).toEqual({ Authorization: MASK });
+    });
+
+    it('skips empty values', () => {
+      expect(normalizeHttpAuthHeaders({ Authorization: '' })).toEqual({ Authorization: '' });
+    });
+
+    it('trims surrounding whitespace from bare tokens before prefixing', () => {
+      expect(normalizeHttpAuthHeaders({ Authorization: '  lin_api_xxx  ' })).toEqual({
+        Authorization: 'Bearer lin_api_xxx',
+      });
+    });
+  });
+
+  describe('createMcpServer integration', () => {
+    it('auto-prepends `Bearer ` to a bare token on create (http transport)', () => {
+      const created = createMcpServer({
+        userId,
+        name: 'linear',
+        transport: 'http',
+        url: 'https://mcp.linear.app/mcp',
+        headers: { Authorization: 'lin_api_xxx' },
+      });
+      expect(readMcpServerRow(created.id)?.headers).toEqual({
+        Authorization: 'Bearer lin_api_xxx',
+      });
+    });
+
+    it('does not double-prefix when the user already typed `Bearer …`', () => {
+      const created = createMcpServer({
+        userId,
+        name: 'linear',
+        transport: 'http',
+        url: 'https://mcp.linear.app/mcp',
+        headers: { Authorization: 'Bearer lin_api_xxx' },
+      });
+      expect(readMcpServerRow(created.id)?.headers).toEqual({
+        Authorization: 'Bearer lin_api_xxx',
+      });
+    });
+
+    it('does NOT touch stdio env values (opaque to us)', () => {
+      const created = createMcpServer({
+        userId,
+        name: 'notion',
+        transport: 'stdio',
+        command: 'npx',
+        // Notion expects a JSON string in this env var; do not mangle it.
+        env: { OPENAPI_MCP_HEADERS: '{"Authorization":"abc"}' },
+      });
+      expect(readMcpServerRow(created.id)?.env).toEqual({
+        OPENAPI_MCP_HEADERS: '{"Authorization":"abc"}',
+      });
+    });
+  });
+
+  describe('updateMcpServer integration', () => {
+    it('auto-prepends on update when the user pastes a bare token over a MASK round-trip', () => {
+      const created = createMcpServer({
+        userId,
+        name: 'linear',
+        transport: 'http',
+        url: 'https://mcp.linear.app/mcp',
+        headers: { Authorization: 'Bearer original' },
+      });
+      // User opens the form, types a fresh bare token over the masked value.
+      updateMcpServer(created.id, { headers: { Authorization: 'lin_api_rotated' } });
+      expect(readMcpServerRow(created.id)?.headers).toEqual({
+        Authorization: 'Bearer lin_api_rotated',
+      });
+    });
   });
 });
 

@@ -297,6 +297,34 @@ function validateTransportFields(input: {
   }
 }
 
+/**
+ * Auto-prepend `Bearer ` to bare `Authorization` header values for HTTP MCP
+ * rows. Users paste a Linear PAT (`lin_api_…`) or GitHub token (`ghp_…`)
+ * directly into the Settings form; before this helper they had to type the
+ * `Bearer ` prefix themselves, which was easy to miss and produced a
+ * malformed header that the upstream MCP server silently 401'd on.
+ *
+ * Detection rule: case-insensitive match on the header KEY (`authorization`),
+ * skip empty / `MASK` placeholder values, and skip values that already begin
+ * with a known auth scheme word followed by whitespace (`Bearer`, `Basic`,
+ * `Token`, `Digest`). Anything else gets `Bearer ` prepended.
+ *
+ * Only runs on `http` transport rows — stdio env vars are opaque to us.
+ */
+const KNOWN_AUTH_SCHEMES = /^(bearer|basic|token|digest)\s/i;
+
+export function normalizeHttpAuthHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === 'authorization' && v && v !== MASK && !KNOWN_AUTH_SCHEMES.test(v)) {
+      out[k] = `Bearer ${v.trim()}`;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 export function createMcpServer(
   payload: McpServerCreate,
   db: Database.Database = getOrgsDb(),
@@ -308,7 +336,8 @@ export function createMcpServer(
   const id = genId();
   const args = payload.args ?? [];
   const env = payload.env ?? {};
-  const headers = payload.headers ?? {};
+  const rawHeaders = payload.headers ?? {};
+  const headers = payload.transport === 'http' ? normalizeHttpAuthHeaders(rawHeaders) : rawHeaders;
 
   db.prepare(
     `INSERT INTO mcp_servers (
@@ -348,16 +377,24 @@ export function updateMcpServer(
   const existing = readMcpServerRow(id, db);
   if (!existing) return null;
 
+  const mergedHeaders = partial.headers
+    ? mergeMasked(existing.headers, partial.headers)
+    : existing.headers;
+  const nextTransport = partial.transport ?? existing.transport;
   const next: McpServerRow = {
     ...existing,
     name: partial.name ?? existing.name,
     catalogId: partial.catalogId === undefined ? existing.catalogId : partial.catalogId,
-    transport: partial.transport ?? existing.transport,
+    transport: nextTransport,
     command: partial.command ?? existing.command,
     args: partial.args ?? existing.args,
     url: partial.url ?? existing.url,
     env: partial.env ? mergeMasked(existing.env, partial.env) : existing.env,
-    headers: partial.headers ? mergeMasked(existing.headers, partial.headers) : existing.headers,
+    // Re-normalize on every update so a user editing a row to add a bare
+    // token gets the same auto-`Bearer` UX as a fresh create. mergeMasked
+    // preserves existing values for MASK keys, so this is idempotent for
+    // already-prefixed values.
+    headers: nextTransport === 'http' ? normalizeHttpAuthHeaders(mergedHeaders) : mergedHeaders,
     enabled: partial.enabled === undefined ? existing.enabled : partial.enabled,
   };
 
