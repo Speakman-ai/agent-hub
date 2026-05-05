@@ -15,6 +15,7 @@ import {
 } from '../clone-url-auth.js';
 import { getActiveAccessToken } from '../github-connections-store.js';
 import { getUserByUsername, createUser } from '../users-store.js';
+import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import type { AuthenticatedRequest } from '../auth.js';
 
 const execAsync = promisify(exec);
@@ -742,6 +743,34 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
             );
           }
         }
+        // After the clone lands on disk, sniff the workspace for a
+        // recognised stack so the wizard can pre-populate the
+        // `prEnv.preview` block. The wizard waits for the
+        // `clone-preview-defaults` broadcast (or its absence — we
+        // always send one) before deciding whether to show "We
+        // detected a Vite project — preview is enabled by default" vs
+        // the empty preview form.
+        let detected = null;
+        try {
+          detected = detectPreviewDefaults(clonePath);
+        } catch {
+          /* unknown error → treat as no detection */
+        }
+        broadcast({
+          type: 'clone-preview-defaults',
+          cloneId,
+          path: clonePath,
+          detected: detected
+            ? {
+                stack: detected.stack,
+                startScript: detected.startScript,
+                port: detected.port,
+                captureRoutes: detected.captureRoutes,
+                idleTTL: detected.idleTTL,
+              }
+            : null,
+        });
+
         broadcast({ type: 'clone-complete', cloneId, path: clonePath, repoName });
       } else {
         let errorMsg = `git clone exited with code ${code}`;

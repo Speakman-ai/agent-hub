@@ -21,11 +21,13 @@ import type { RouteDeps, Project } from '../types.js';
 import {
   startProvisioningJob,
   stubExecutor,
+  subscribeToJob,
   type ProvisioningExecutor,
   type ProvisioningPayload,
 } from '../provisioning/orchestrator.js';
 import { createTemplateExecutor } from '../provisioning/template-executor.js';
 import { createGithubExecutor } from '../provisioning/github.js';
+import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 
 /**
  * Injectable executor resolver — tests swap in fakes via this hook.
@@ -108,6 +110,100 @@ function deriveProjectId(payload: ProvisioningPayload, isTaken: (id: string) => 
   const fromDesc = slugify((payload.description || payload.prompt || '').slice(0, 48));
   if (fromDesc) return uniqueProjectId(fromDesc, isTaken);
   return `new-project-${uuidv4().slice(0, 8)}`;
+}
+
+interface PreviewDetectionDeps {
+  jobId: string;
+  projectId: string;
+  workspaceDir: string;
+  project: Project;
+  saveProjects: () => void;
+  broadcast: (msg: Record<string, unknown>) => void;
+}
+
+/**
+ * Subscribe to a provisioning job's event stream and, the first time
+ * the `copy-template` phase reports `ok`, run the preview detector
+ * against the project workspace and write the detected defaults onto
+ * `project.prEnv.preview`.
+ *
+ * Pulled out of the route handler so the test suite can drive it with
+ * a synthetic job and confirm the project mutation independently of
+ * the rest of the provisioning happy path.
+ */
+export function subscribePreviewDetection(deps: PreviewDetectionDeps): () => void {
+  const { jobId, projectId, workspaceDir, project, saveProjects, broadcast } = deps;
+  let applied = false;
+
+  const unsubscribe = subscribeToJob(jobId, (ev) => {
+    if (applied) return;
+    if (ev.type !== 'phase') return;
+    if (ev.phase !== 'copy-template') return;
+    if (ev.status !== 'ok') return;
+    applied = true;
+
+    let detected;
+    try {
+      detected = detectPreviewDefaults(workspaceDir);
+    } catch {
+      detected = null;
+    }
+    if (!detected) {
+      // Unknown stack — leave preview unset; the wizard will surface
+      // empty fields in the final review step. Broadcast a zero-detection
+      // signal so any UI panel watching for the result can clear its
+      // pending spinner.
+      broadcast({
+        type: 'preview-defaults-detected',
+        projectId,
+        jobId,
+        detected: null,
+      });
+      return;
+    }
+
+    // Merge detected defaults into the project. Enable both the parent
+    // prEnv block and preview.  Pre-fill startScript and internalPort from
+    // the detection result so the persisted shape satisfies
+    // validatePrEnvProjectConfig (requires non-empty startScript and
+    // internalPort ∈ [1, 65535] when enabled=true).  Any existing
+    // user-configured values spread over those defaults below.
+    const existingPrEnv = project.prEnv ?? {};
+    project.prEnv = {
+      startScript: detected.startScript,
+      internalPort: detected.port,
+      ...existingPrEnv,
+      enabled: true,
+      preview: {
+        enabled: true,
+        startScript: detected.startScript,
+        port: detected.port,
+        captureRoutes: detected.captureRoutes,
+        idleTTL: detected.idleTTL,
+      },
+    };
+
+    try {
+      saveProjects();
+    } catch {
+      /* best-effort: detection is a UX nicety, not a correctness gate. */
+    }
+
+    broadcast({
+      type: 'preview-defaults-detected',
+      projectId,
+      jobId,
+      detected: {
+        stack: detected.stack,
+        startScript: detected.startScript,
+        port: detected.port,
+        captureRoutes: detected.captureRoutes,
+        idleTTL: detected.idleTTL,
+      },
+    });
+  });
+
+  return unsubscribe ?? (() => {});
 }
 
 function resolveWsBase(req: Request): string {
@@ -211,6 +307,25 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
       projectId,
       executor: executorFactory(deps),
       stmts,
+    });
+
+    // Subscribe to the job so we can auto-bake `prEnv.preview` defaults
+    // into the project as soon as the template tree lands on disk. The
+    // detection helper inspects `<workspace>/package.json` and falls
+    // back to `<workspace>/apps/*/package.json` for monorepos. When it
+    // returns null (unknown stack), the project keeps an unset preview
+    // block and the wizard surfaces empty fields.
+    //
+    // Failures here are swallowed: if detection or projects.json save
+    // fails we don't want to wedge the provisioning job that already
+    // succeeded. Worst case the user configures the preview manually.
+    subscribePreviewDetection({
+      jobId,
+      projectId,
+      workspaceDir: path.join(dataDir, 'workspace'),
+      project,
+      saveProjects,
+      broadcast,
     });
 
     return res.status(201).json({ jobId, wsUrl, projectId });
