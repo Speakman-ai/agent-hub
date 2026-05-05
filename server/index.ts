@@ -320,6 +320,10 @@ function ensureWorktree(
   agentId: string,
   installCommand: string | null,
   prBaseBranch?: string | null,
+  /** Optional `Project.repoUrl` for self-healing auto-clone when `projectCwd` is missing / non-git. */
+  repoUrl?: string | null,
+  /** Project id for error attribution; threaded into worktree errors. */
+  projectId?: string,
 ): Promise<string> {
   return ensureSessionWorkspace(
     session,
@@ -358,6 +362,8 @@ function ensureWorktree(
       }
     },
     prBaseBranch ?? null,
+    repoUrl ?? null,
+    projectId,
   );
 }
 

@@ -42,6 +42,7 @@ import {
   type NginxWriterDeps,
 } from './nginx-writer.js';
 import type { PrEnvProjectConfig } from '../types.js';
+import { resolveSsmRefs } from '../ssm-resolver.js';
 
 /** Minimal container-runtime surface the builder needs (Docker in prod). */
 export interface ContainerRunner {
@@ -293,6 +294,16 @@ export async function buildPrEnv(
     } catch (e) {
       console.warn('[pr-env-builder] pre-run container.stop failed (continuing)', e);
     }
+    // Resolve any `${ssm:/...}` references in the project's env map
+    // before handing it to the runner. Plain string values pass
+    // through unchanged. A failure here (missing param, AccessDenied,
+    // etc.) throws and is caught by the surrounding try/catch, which
+    // walks the rollback path the same as any other build failure.
+    const resolvedEnv =
+      projectConfig.env && Object.keys(projectConfig.env).length > 0
+        ? await resolveSsmRefs(projectConfig.env)
+        : undefined;
+
     const result = await container.run({
       containerName,
       imageTag: resolvedImageTag,
@@ -305,11 +316,10 @@ export async function buildPrEnv(
       // The runner translates these into `docker run --env K=V` pairs
       // alongside the runner-injected `PORT=<internalPort>`. The
       // validator already rejects `PORT` and any non-POSIX-name keys,
-      // so we can pass the map through unmodified.
-      env:
-        projectConfig.env && Object.keys(projectConfig.env).length > 0
-          ? projectConfig.env
-          : undefined,
+      // so we can pass the map through unmodified — except for SSM
+      // references, which are swapped for their decrypted values
+      // immediately above.
+      env: resolvedEnv,
     });
     audit.containerStarted = true;
 

@@ -21,6 +21,11 @@ locals {
     ? var.enable_pr_env_host_nginx
     : var.enable_pr_environments
   )
+  pr_env_ssm_secrets_enabled = (
+    var.enable_pr_env_ssm_secrets != null
+    ? var.enable_pr_env_ssm_secrets
+    : var.enable_pr_environments
+  )
 
   # For random_id count (avoids trimspace on null) and for effective API key.
   agent_hub_api_key_trim = (var.agent_hub_api_key == null ? "" : trimspace(var.agent_hub_api_key))

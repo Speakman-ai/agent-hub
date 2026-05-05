@@ -5,6 +5,8 @@ import path from 'path';
 import { homedir } from 'os';
 import config from './config.js';
 import type { SessionRow } from './types.js';
+import { classifyCloneUrl, buildAuthenticatedUrl, redactToken } from './clone-url-auth.js';
+import { getInstallationToken, resolveInstallationId } from './github-app.js';
 
 /**
  * Root for all per-session / per-process git clones the workspace manager
@@ -532,13 +534,151 @@ function copyFallback(projectCwd: string, destDir: string): string {
   }
 }
 
+/**
+ * Token resolver injected for tests — production calls
+ * {@link defaultResolveInstallationToken} which talks to GitHub.
+ *
+ * Returns the bare installation token string (no `x-access-token:` prefix)
+ * or `null` when no GitHub App installation is configured / matched. The
+ * caller is responsible for redacting this value before logging or
+ * broadcasting; see `redactToken` in `clone-url-auth.ts`.
+ */
+export type InstallationTokenResolver = (repoUrl: string) => Promise<string | null>;
+
+async function defaultResolveInstallationToken(repoUrl: string): Promise<string | null> {
+  const parsed = classifyCloneUrl(repoUrl);
+  if (parsed.kind !== 'github-https' || !parsed.owner) return null;
+  const appCfg = config.githubApp;
+  if (!appCfg || !appCfg.appId || !appCfg.privateKey) return null;
+  const installationId = resolveInstallationId(appCfg, parsed.owner);
+  if (!installationId) return null;
+  return await getInstallationToken(appCfg.appId, appCfg.privateKey, installationId);
+}
+
+/**
+ * Ensure `projectCwd` exists and is a git repo by auto-cloning from
+ * `repoUrl` when missing or non-git. No-op when the path already holds a
+ * git repo, or when `repoUrl` is unset.
+ *
+ * On clone success, the parent of `projectCwd` is created with `mkdir -p`
+ * and the repo is fetched at full depth so subsequent worktree creation
+ * has the history it needs. Failures are surfaced as a clean error
+ * carrying the unauthenticated `repoUrl` and project id — the auth-injected
+ * URL and token are redacted from the message before throwing so they
+ * never reach the WebSocket log or stderr.
+ *
+ * @returns `true` when a clone happened; `false` when nothing was done
+ * (path already a git repo, or repoUrl unset). The boolean is mostly for
+ * tests; production callers can ignore it.
+ */
+export async function ensureProjectRepoCloned(
+  projectCwd: string,
+  repoUrl: string | null | undefined,
+  options: {
+    projectId?: string;
+    resolveToken?: InstallationTokenResolver;
+  } = {},
+): Promise<boolean> {
+  if (!repoUrl) return false;
+
+  // Fast-path — already a healthy git repo, nothing to do.
+  if (existsSync(projectCwd) && (await isGitRepo(projectCwd))) {
+    return false;
+  }
+
+  const parsed = classifyCloneUrl(repoUrl);
+  if (parsed.kind !== 'github-https') {
+    // PATCH validator already rejects SSH / non-github URLs, so this is
+    // belt-and-braces: surface a clean error if a project somehow holds a
+    // bad URL (e.g. legacy row, manual JSON edit) instead of letting `git
+    // clone` blow up with a cryptic message.
+    throw new Error(
+      `Auto-clone failed for project ${options.projectId ?? '<unknown>'}: repoUrl ${repoUrl} is not a supported GitHub HTTPS URL.`,
+    );
+  }
+
+  const resolveToken = options.resolveToken ?? defaultResolveInstallationToken;
+  let token: string | null = null;
+  try {
+    token = await resolveToken(repoUrl);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Token mint failures are non-fatal here — fall through with the
+    // unauthenticated URL so public repos still clone. If the repo is
+    // private, git itself will surface a clear auth failure below and we
+    // re-throw with the un-tokenized URL.
+    console.warn(
+      `[Workspace] Failed to mint installation token for ${repoUrl}: ${message} — falling back to unauthenticated clone`,
+    );
+  }
+
+  const cloneUrl = token ? buildAuthenticatedUrl(parsed, token) : repoUrl;
+
+  // Existing zombie (path exists but not a git repo) → wipe before clone.
+  if (existsSync(projectCwd)) {
+    try {
+      rmSync(projectCwd, { recursive: true, force: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Auto-clone failed for project ${options.projectId ?? '<unknown>'} (${repoUrl}): could not remove non-git directory at ${projectCwd}: ${message}`,
+      );
+    }
+  }
+
+  const parentDir = path.dirname(projectCwd);
+  if (!existsSync(parentDir)) {
+    mkdirSync(parentDir, { recursive: true });
+  }
+
+  try {
+    await cloneWithRetry(
+      ['clone', '--quiet', cloneUrl, projectCwd],
+      { timeoutMs: CLONE_TIMEOUT_MS },
+      projectCwd,
+    );
+  } catch (err: unknown) {
+    // Strip the token from the error message before re-throwing so the
+    // caller / log pipeline never sees the auth-injected URL.
+    const raw = err instanceof Error ? err.message : String(err);
+    const safe = redactToken(raw, token);
+    throw new Error(
+      `Auto-clone failed for project ${options.projectId ?? '<unknown>'} (${repoUrl}): ${safe}`,
+    );
+  }
+
+  console.log(
+    `[Workspace] Auto-cloned project ${options.projectId ?? '<unknown>'} from ${repoUrl} → ${projectCwd}`,
+  );
+  return true;
+}
+
 export async function getOrCreateProcessWorktree(
   projectCwd: string,
   processKey: string,
   installCommand?: string | null,
   /** Optional `origin/<branch>` tip to reset/sync to (e.g. kanban `pr_base_branch`). */
   syncBaseBranch?: string | null,
+  /** Optional auto-clone source for self-healing project workspaces (Project.repoUrl). */
+  repoUrl?: string | null,
+  /** Project id for error attribution; opaque to the worktree code. */
+  projectId?: string,
 ): Promise<string> {
+  // Self-heal: if the project has a `repoUrl` and the cwd is missing or
+  // not a git repo, auto-clone before falling through to the legacy
+  // existsSync fallback. Public-repo / no-token cases are tolerated.
+  if (repoUrl) {
+    try {
+      await ensureProjectRepoCloned(projectCwd, repoUrl, { projectId });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[Workspace] ${message}`);
+      // Fall through — the existing isGitRepo check below will return
+      // projectCwd as-is (legacy non-git fallback) so the session can
+      // still spawn against an empty workspace if that's all we have.
+    }
+  }
+
   if (!existsSync(projectCwd)) {
     const fallback = config.defaultCwd || homedir();
     console.warn(
@@ -640,9 +780,29 @@ export async function ensureSessionWorkspace(
   onFailure?: OnFailureFn,
   /** When set (e.g. kanban `pr_base_branch`), the session branch is created from `origin/<branch>` instead of the repo default after shallow clone. */
   prBaseBranch?: string | null,
+  /** Optional auto-clone source for self-healing project workspaces (Project.repoUrl). */
+  repoUrl?: string | null,
+  /** Project id for error attribution; opaque to the worktree code. */
+  projectId?: string,
 ): Promise<string> {
   if (session.worktree_path && existsSync(session.worktree_path)) {
     return session.worktree_path;
+  }
+
+  // Self-heal: when a `repoUrl` is set and `projectCwd` is missing or not a
+  // git repo, auto-clone the project before continuing. Errors here are
+  // surfaced via `onFailure` (the same channel used by other worktree
+  // failures) so downstream behaviour — falling back to the project cwd
+  // — is unchanged when auto-clone fails.
+  if (repoUrl) {
+    try {
+      await ensureProjectRepoCloned(projectCwd, repoUrl, { projectId });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[Workspace] ${message}`);
+      onFailure?.(session.id, message);
+      return projectCwd;
+    }
   }
 
   if (!(await isGitRepo(projectCwd))) {
@@ -875,4 +1035,5 @@ export const __test = {
   fetchWithRetry,
   isTransientCloneError,
   cleanupPartialClone,
+  defaultResolveInstallationToken,
 };

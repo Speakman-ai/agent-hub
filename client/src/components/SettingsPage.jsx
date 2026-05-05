@@ -2214,9 +2214,12 @@ function ProjectsSection({
   const [modelConfig, setModelConfig] = useState(null);
   const [reviewerModelSaving, setReviewerModelSaving] = useState({});
   const [projectRepos, setProjectRepos] = useState({});
+  const [projectRepoUrls, setProjectRepoUrls] = useState({});
   const [workflowSaved, setWorkflowSaved] = useState({});
   const [repoSaving, setRepoSaving] = useState({});
   const [repoSaveStatus, setRepoSaveStatus] = useState({});
+  const [repoUrlSaving, setRepoUrlSaving] = useState({});
+  const [repoUrlSaveStatus, setRepoUrlSaveStatus] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
   const [detecting, setDetecting] = useState({});
   /** One-shot deep-link expand — do not re-expand on `projects` identity churn after manual collapse. */
@@ -2320,6 +2323,7 @@ function ProjectsSection({
   useEffect(() => {
     const wf = {};
     const repos = {};
+    const repoUrls = {};
     projects.forEach((p) => {
       wf[p.id] = {
         autoMerge: p.githubWorkflow?.autoMerge || false,
@@ -2330,11 +2334,13 @@ function ProjectsSection({
           typeof p.githubWorkflow?.reviewerModel === 'string' ? p.githubWorkflow.reviewerModel : '',
       };
       repos[p.id] = p.githubRepo || '';
+      repoUrls[p.id] = p.repoUrl || '';
       // Fire-and-forget: hydrate allowlist from the webhook API.
       loadAllowlistFor(p.id);
     });
     setProjectWorkflow(wf);
     setProjectRepos(repos);
+    setProjectRepoUrls(repoUrls);
   }, [projects]);
 
   const inputClass =
@@ -2403,6 +2409,26 @@ function ProjectsSection({
       setTimeout(() => setRepoSaveStatus((prev) => ({ ...prev, [projectId]: null })), 3000);
     } finally {
       setRepoSaving((prev) => ({ ...prev, [projectId]: false }));
+    }
+  };
+
+  const saveProjectRepoUrl = async (projectId) => {
+    setRepoUrlSaving((prev) => ({ ...prev, [projectId]: true }));
+    setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: null }));
+    try {
+      const raw = projectRepoUrls[projectId] || '';
+      const trimmed = raw.trim();
+      // Empty string clears the field on the server.
+      await api.updateProject(projectId, { repoUrl: trimmed || null });
+      setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: 'saved' }));
+      setTimeout(() => setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: null })), 2000);
+      if (onProjectsChange) onProjectsChange();
+    } catch (err) {
+      const msg = String(err?.message || err || 'Failed to save');
+      setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: { error: msg } }));
+      setTimeout(() => setRepoUrlSaveStatus((prev) => ({ ...prev, [projectId]: null })), 4000);
+    } finally {
+      setRepoUrlSaving((prev) => ({ ...prev, [projectId]: false }));
     }
   };
 
@@ -2581,6 +2607,48 @@ function ProjectsSection({
                       {repoSaveStatus[p.id] === 'error' && (
                         <span className="text-xs text-red-400">Failed to save</span>
                       )}
+                    </div>
+
+                    {/* Clone URL — used to auto-clone the project workspace
+                        on session spawn when `cwd` is missing or non-git.
+                        Server validates: HTTPS GitHub URLs only. */}
+                    <div className="space-y-2">
+                      <label className={labelClass}>Clone URL (auto-clone source)</label>
+                      <p className="text-xs text-gray-500">
+                        Optional HTTPS GitHub URL (e.g.{' '}
+                        <code className="font-mono">https://github.com/owner/repo.git</code>). When
+                        set, Agent Hub auto-clones the repo into the project{' '}
+                        <code className="font-mono">cwd</code> on session spawn if it's missing or
+                        not a git repo. Authenticates via the registered GitHub App. SSH URLs are
+                        not supported.
+                      </p>
+                      <div className="flex gap-2">
+                        <input
+                          value={projectRepoUrls[p.id] || ''}
+                          onChange={(e) =>
+                            setProjectRepoUrls((prev) => ({ ...prev, [p.id]: e.target.value }))
+                          }
+                          className={inputClass}
+                          placeholder="https://github.com/owner/repo.git"
+                        />
+                        <button
+                          onClick={() => saveProjectRepoUrl(p.id)}
+                          disabled={repoUrlSaving[p.id]}
+                          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap"
+                        >
+                          {repoUrlSaving[p.id] ? 'Saving...' : 'Save'}
+                        </button>
+                      </div>
+                      {repoUrlSaveStatus[p.id] === 'saved' && (
+                        <span className="text-xs text-emerald-400">Saved</span>
+                      )}
+                      {repoUrlSaveStatus[p.id] &&
+                        typeof repoUrlSaveStatus[p.id] === 'object' &&
+                        repoUrlSaveStatus[p.id].error && (
+                          <span className="text-xs text-red-400">
+                            {repoUrlSaveStatus[p.id].error}
+                          </span>
+                        )}
                     </div>
 
                     <div className="space-y-2">

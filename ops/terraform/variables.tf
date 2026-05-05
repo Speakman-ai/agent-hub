@@ -368,6 +368,42 @@ variable "enable_pr_env_route53_iam" {
   nullable    = true
 }
 
+variable "enable_pr_env_ssm_secrets" {
+  description = <<-DESC
+    Per-piece override for the SSM Parameter Store inline policy attached to
+    the EC2 SSM instance role. Defaults to null, meaning "follow
+    `enable_pr_environments`." When effectively enabled, grants
+    ssm:GetParameter / ssm:GetParameters on parameters under
+    `pr_env_ssm_path_prefix` plus kms:Decrypt for the default SSM CMK so
+    SecureString values resolve. Lets operators store secrets like AWS keys
+    or third-party API tokens in SSM Parameter Store and reference them from
+    `prEnv.env` as `$${ssm:/path/to/param}`, instead of pasting plaintext
+    secrets into projects.json. Requires enable_instance_ssm = true.
+  DESC
+  type        = bool
+  default     = null
+  nullable    = true
+}
+
+variable "pr_env_ssm_path_prefix" {
+  description = <<-DESC
+    SSM Parameter Store path prefix authorized for the EC2 SSM instance role
+    when `enable_pr_env_ssm_secrets` is effectively true. The inline policy
+    grants ssm:GetParameter(s) on `arn:aws:ssm:*:*:parameter<prefix>*`. Leading
+    slash required, trailing slash strongly recommended so the wildcard is
+    bounded to a path subtree. Operators referencing secrets from `prEnv.env`
+    must use parameter names that fall inside this subtree (e.g. with prefix
+    `/agent-hub/` you'd reference `$${ssm:/agent-hub/dev/aws-secret-access-key}`).
+  DESC
+  type        = string
+  default     = "/agent-hub/"
+
+  validation {
+    condition     = can(regex("^/.*", var.pr_env_ssm_path_prefix))
+    error_message = "pr_env_ssm_path_prefix must start with a leading slash."
+  }
+}
+
 variable "pr_env_preview_subdomain" {
   description = "Single DNS label used to namespace per-PR preview hostnames under the canonical Agent Hub hostname: <pr-id>.<pr_env_preview_subdomain>.<alb_fqdn>. The wildcard ACM cert (when enable_pr_env_wildcard_cert = true) covers *.<pr_env_preview_subdomain>.<alb_fqdn>. Must be a single label (no dots) so downstream PRs can compose per-PR hostnames as <pr-id>.<this>.<alb_fqdn> without ambiguity. Lowercase letters, digits, hyphens; not starting/ending with hyphen; ≤63 chars."
   type        = string

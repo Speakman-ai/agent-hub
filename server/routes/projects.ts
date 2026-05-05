@@ -256,6 +256,22 @@ const PR_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // silently break the host-port → internal-port mapping.
 const PR_ENV_RESERVED_KEYS = new Set(['PORT']);
 
+// SSM Parameter Store reference syntax — operators can put
+// `${ssm:/path/to/param}` in a value and the pr-env-builder resolves it
+// at build time via `server/ssm-resolver.ts`. The pattern is anchored
+// (^...$) so the *entire* value must be a single reference token.
+//
+// Mixed strings like `prefix-${ssm:/x}` are deliberately out of scope:
+// concatenation invites quoting / escaping surprises, and the common
+// secret use cases (AWS keys, DB passwords) want the full value from
+// SSM anyway. Reject mixed strings here so users see a clear error
+// instead of a half-substituted value reaching the container.
+const SSM_REF_RE = /^\$\{ssm:\/[A-Za-z0-9_./-]+\}$/;
+// A loose check used purely to distinguish "looks like an attempted
+// SSM ref" from "plain literal value" so we can return a more
+// targeted error message for mixed-token attempts.
+const SSM_LIKE_RE = /\$\{ssm:/;
+
 /**
  * Validate the optional `env` map on a per-project PR-env config.
  * Returns the normalized map on success (or `undefined` when the input
@@ -309,6 +325,20 @@ function validatePrEnvVars(
       return {
         ok: false,
         error: `prEnv.env["${key}"] exceeds ${PR_ENV_MAX_VALUE_LEN} chars`,
+      };
+    }
+    // If the value looks like an SSM reference, require it to be a
+    // *full-token* reference. This catches both malformed paths and
+    // mixed literal+ref values up front — both produce a clear error
+    // instead of slipping through and failing later in the resolver.
+    if (SSM_LIKE_RE.test(val) && !SSM_REF_RE.test(val)) {
+      return {
+        ok: false,
+        error:
+          `prEnv.env["${key}"] looks like an SSM reference but is not a ` +
+          `full-token match for \${ssm:/path/to/param}. Mixed literal+ref ` +
+          `values (e.g. "prefix-\${ssm:/x}") are not supported — put the ` +
+          `entire value in SSM, or use a plain literal here.`,
       };
     }
     out[key] = val;
@@ -1328,6 +1358,35 @@ This workspace has no git repo and no PR automation — your job is planning, or
           return res.status(400).json({ error: result.error });
         }
         (project as Record<string, unknown>).prEnv = result.value;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'repoUrl')) {
+      // Accept null / empty string → clear the field. Otherwise must be a
+      // recognised github-https URL. SSH URLs and other hosts are rejected
+      // here so a misconfigured project can't try to auto-clone using a
+      // form we can't authenticate. Reuses `classifyCloneUrl` so the
+      // accepted URL shapes stay in lockstep with `POST /api/projects/clone`.
+      const rawRepoUrl = (req.body as Record<string, unknown>).repoUrl;
+      if (rawRepoUrl === null || rawRepoUrl === '') {
+        delete (project as Record<string, unknown>).repoUrl;
+      } else if (typeof rawRepoUrl !== 'string') {
+        return res.status(400).json({ error: 'repoUrl must be a string, null, or empty' });
+      } else {
+        const trimmed = rawRepoUrl.trim();
+        if (!trimmed) {
+          delete (project as Record<string, unknown>).repoUrl;
+        } else {
+          const parsedRepo = classifyCloneUrl(trimmed);
+          if (parsedRepo.kind === 'github-ssh') {
+            return res.status(400).json({ error: SSH_NOT_SUPPORTED_MESSAGE });
+          }
+          if (parsedRepo.kind !== 'github-https') {
+            return res.status(400).json({
+              error: 'repoUrl must be an HTTPS GitHub URL (https://github.com/owner/repo or .git).',
+            });
+          }
+          (project as Record<string, unknown>).repoUrl = trimmed;
+        }
       }
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'mode')) {

@@ -222,6 +222,49 @@ describe('validatePrEnvProjectConfig', () => {
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toMatch(/LONG/);
     });
+
+    it('accepts a full-token SSM reference value', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        env: { AWS_KEY: '${ssm:/agent-hub/dev/aws-key}' },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.env).toEqual({ AWS_KEY: '${ssm:/agent-hub/dev/aws-key}' });
+    });
+
+    it('accepts SSM ref paths with dots, dashes, slashes, and underscores', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        env: {
+          A: '${ssm:/foo.bar/baz_qux/with-dash/v2}',
+        },
+      });
+      expect(r.ok).toBe(true);
+    });
+
+    it('rejects mixed literal+ref values (out of scope)', () => {
+      const r = validatePrEnvProjectConfig({
+        ...base,
+        env: { MIXED: 'prefix-${ssm:/x}' },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/full-token/i);
+    });
+
+    it('rejects malformed SSM refs (spaces, missing leading slash, empty path)', () => {
+      const bad = [
+        '${ssm:bad path with spaces}',
+        '${ssm:no-leading-slash}',
+        '${ssm:/}',
+        '${ssm:}',
+        '${ssm:/has space}',
+      ];
+      for (const v of bad) {
+        const r = validatePrEnvProjectConfig({ ...base, env: { K: v } });
+        expect(r.ok, `expected reject for ${v}`).toBe(false);
+      }
+    });
   });
 
   describe('preview (client-only preview sub-config)', () => {

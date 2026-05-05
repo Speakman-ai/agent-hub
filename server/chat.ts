@@ -212,6 +212,8 @@ export interface ChatHandlerDeps {
     agentId: string,
     installCommand: string | null,
     prBaseBranch?: string | null,
+    repoUrl?: string | null,
+    projectId?: string,
   ) => Promise<string>;
   drainQueue: (sessionId: string) => void;
   handleDelegation: (
@@ -1427,6 +1429,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         agentId,
         (project as ProjectWithCommands).commands?.install || null,
         sessionPrBase,
+        (project as Project).repoUrl ?? null,
+        project.id,
       );
       session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (session) {

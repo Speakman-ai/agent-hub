@@ -1384,6 +1384,16 @@ export interface Project {
   /** Defaults to dev when omitted (see `getProjectMode` in `project-mode.ts`). */
   mode?: ProjectMode;
   githubRepo?: string;
+  /**
+   * Optional canonical HTTPS GitHub clone URL (e.g.
+   * `https://github.com/owner/repo.git`). When set, the worktree
+   * manager auto-clones the repo into `cwd` on session spawn if
+   * `cwd` is missing or not a git repo. Used to make project records
+   * self-healing across container restarts. SSH URLs and non-GitHub
+   * hosts are rejected by the API validator. Distinct from
+   * `githubRepo` (an `owner/repo` string used by webhook config).
+   */
+  repoUrl?: string | null;
   githubWorkflow?: GithubWorkflowSettings;
   /**
    * Shell commands run in the session worktree cwd after an initial `git add`

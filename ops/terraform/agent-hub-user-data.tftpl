@@ -213,7 +213,13 @@ IMAGE_URI="${image_uri}"
 # Bind mounts preserve *host* ownership, so if we create these dirs as root the
 # container cannot write to them and SQLite fails with SQLITE_CANTOPEN. Create
 # them with numeric 1000:1000 so the first-boot container can open the DB.
-install -d -m 0755 -o 1000 -g 1000 "$DATA_ROOT/data" "$DATA_ROOT/uploads"
+#
+# `projects` holds per-project source checkouts at /home/node/projects/<slug>
+# inside the container. Without this bind-mount the source lives in the
+# container's writable layer and is wiped on every restart — agents then see
+# an empty cwd and silently fail. See `agent-hub-user-data.tftpl` history for
+# the post-mortem.
+install -d -m 0755 -o 1000 -g 1000 "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects"
 
 # Write the .env file — same contract as the docker-build path, same server
 # reads it, so switching bootstrap modes is transparent to the app.
@@ -283,6 +289,7 @@ fi
 exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
+  -v "\$DATA_ROOT/projects:/home/node/projects" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --group-add "\$DOCKER_SOCK_GID" \
   --add-host host.docker.internal:host-gateway \
@@ -292,6 +299,7 @@ exec docker run --rm --name agenthub-server \
 exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
+  -v "\$DATA_ROOT/projects:/home/node/projects" \
   --env-file "\$REPO_DIR/.env" \
   "\$IMAGE_URI"
 %{ endif ~}
@@ -337,8 +345,10 @@ fi
 %{ if use_docker_bootstrap ~}
 # See ECR-pull branch comment: container runs as uid/gid 1000, bind mounts
 # preserve host ownership, so creating these as root would crash-loop on
-# SQLITE_CANTOPEN. Match the image's runtime uid.
-install -d -m 0755 -o 1000 -g 1000 "$DATA_ROOT/data" "$DATA_ROOT/uploads"
+# SQLITE_CANTOPEN. Match the image's runtime uid. `projects` mirrors the
+# ECR-pull branch — per-project source checkouts must persist across
+# container restarts.
+install -d -m 0755 -o 1000 -g 1000 "$DATA_ROOT/data" "$DATA_ROOT/uploads" "$DATA_ROOT/projects"
 if [ -n "${docker_env_b64}" ]; then
   umask 077
   printf '%s' "${docker_env_b64}" | base64 -d > $REPO_DIR/.env
@@ -350,6 +360,7 @@ cd "$REPO_DIR" && DOCKER_BUILDKIT=1 docker build -t agenthub:local -f server/Doc
 cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped \
   -p ${app_port}:3051 \
   -v "$DATA_ROOT/data:/data" -v "$DATA_ROOT/uploads:/app/uploads" \
+  -v "$DATA_ROOT/projects:/home/node/projects" \
   --env-file "$REPO_DIR/.env" \
   agenthub:local
 %{ endif ~}

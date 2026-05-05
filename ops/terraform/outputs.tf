@@ -93,12 +93,13 @@ output "pr_env_route53_zone_id" {
 }
 
 output "pr_env_enabled_effective" {
-  description = "Effective gating for the PR-env stack pieces, after resolving `enable_pr_environments` against the per-piece overrides (`enable_pr_env_wildcard_cert`, `enable_pr_env_route53_iam`, `enable_pr_env_host_nginx`). Each entry is the boolean Terraform actually used to decide whether to provision that piece; useful for CI assertions and operator sanity checks."
+  description = "Effective gating for the PR-env stack pieces, after resolving `enable_pr_environments` against the per-piece overrides (`enable_pr_env_wildcard_cert`, `enable_pr_env_route53_iam`, `enable_pr_env_host_nginx`, `enable_pr_env_ssm_secrets`). Each entry is the boolean Terraform actually used to decide whether to provision that piece; useful for CI assertions and operator sanity checks."
   value = {
     root_flag     = var.enable_pr_environments
     wildcard_cert = local.pr_env_wildcard_cert_enabled
     route53_iam   = local.pr_env_route53_iam_enabled
     host_nginx    = local.pr_env_host_nginx_enabled
+    ssm_secrets   = local.pr_env_ssm_secrets_enabled
   }
 }
 

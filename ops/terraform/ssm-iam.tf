@@ -1,6 +1,10 @@
 # Systems Manager Session Manager: connect without SSH keys.
 # See outputs ssm_start_session_one_liner, ssm_secrets_manager (optional) in outputs.tf
 
+# Region for kms:ViaService scoping in the SSM secrets policy below. Declared
+# here (vs a generic data.tf) because it's the only consumer in this module.
+data "aws_region" "current" {}
+
 resource "aws_iam_role" "ec2_ssm" {
   count = var.enable_instance_ssm ? 1 : 0
 
@@ -105,6 +109,68 @@ resource "aws_iam_role_policy" "pr_env_route53" {
     precondition {
       condition     = !local.pr_env_route53_iam_enabled || local.has_route53_zone
       error_message = "PR-env Route 53 IAM is enabled (enable_pr_environments = true, or enable_pr_env_route53_iam = true) but no Route 53 zone is discoverable for base_domain. Set route53_zone_id, or set lookup_route53_zone_in_this_account = true. Alternatively set enable_pr_environments = false (or enable_pr_env_route53_iam = false) to skip the inline policy."
+    }
+  }
+}
+
+# --- PR Envs: SSM Parameter Store read for `$${ssm:/path}` env-var refs -------
+#
+# Lets operators paste references like `$${ssm:/agent-hub/dev/aws-secret}` into
+# a project's `prEnv.env` block in projects.json (or via the Settings UI) so
+# secrets aren't stored in plaintext on disk. The server resolves the
+# reference at PR-env build time using the EC2 instance role identity — no
+# static AWS credentials needed in the container.
+#
+# Scope: GetParameter/GetParameters on parameters under
+# `pr_env_ssm_path_prefix` (default `/agent-hub/`) so an operator can't
+# inadvertently reference an unrelated parameter from another tenant. The
+# kms:Decrypt grant on the default SSM CMK (`alias/aws/ssm`) is required for
+# SecureString parameter types — without it the resolver gets
+# AccessDeniedException at decrypt time even though the GetParameter call
+# itself returns OK metadata.
+
+resource "aws_iam_role_policy" "pr_env_ssm_secrets" {
+  count = local.pr_env_ssm_secrets_enabled ? 1 : 0
+
+  name = "${var.project_name}-pr-env-ssm-secrets"
+  role = aws_iam_role.ec2_ssm[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadPrEnvSecretParameters"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+        ]
+        Resource = "arn:aws:ssm:*:*:parameter${var.pr_env_ssm_path_prefix}*"
+      },
+      {
+        # Required for SecureString parameter types under the default SSM
+        # CMK. Customer-managed CMKs (alias/<custom>) must be added here
+        # explicitly — operators using a non-default key should override this
+        # policy or extend it via a sibling resource.
+        Sid    = "DecryptDefaultSsmCmk"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "ssm.${data.aws_region.current.name}.amazonaws.com"
+          }
+        }
+      },
+    ]
+  })
+
+  lifecycle {
+    precondition {
+      condition     = !local.pr_env_ssm_secrets_enabled || var.enable_instance_ssm
+      error_message = "PR-env SSM secrets is enabled (enable_pr_environments = true, or enable_pr_env_ssm_secrets = true) but enable_instance_ssm = false. The inline policy attaches to the SSM EC2 instance role; set enable_instance_ssm = true, or set enable_pr_environments = false (or enable_pr_env_ssm_secrets = false) to skip the inline policy."
     }
   }
 }
