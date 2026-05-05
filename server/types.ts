@@ -1215,7 +1215,11 @@ export interface McpServerConfig {
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** HTTP transport: server URL. Claude Code reads `url` + `headers`. */
   url?: string;
+  /** HTTP transport headers (e.g. `Authorization: Bearer …`). */
+  headers?: Record<string, string>;
+  /** Marker so Agent Hub can identify and clean up entries it injected. */
   _agentHub?: boolean;
 }
 

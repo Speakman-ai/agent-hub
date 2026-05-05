@@ -827,54 +827,17 @@ export const api = {
       timeout: 30000,
     }),
 
-  // Per-user integrations — Settings → Integrations page.
-  // The catalogue is driven by SUPPORTED_INTEGRATIONS on the server;
-  // CRUD calls scope to a single user via :userId.
-  getSupportedIntegrations: () => fetchJSON('/integrations/supported'),
-  listUserIntegrations: (userId) => fetchJSON(`/users/${encodeURIComponent(userId)}/integrations`),
-  getUserIntegration: async (userId, app) => {
-    // Fetch directly so a 404 (the "not connected" steady state) becomes
-    // `null` instead of bubbling out as a thrown error — the polling
-    // hook treats null as "still pending or never started".
-    const res = await fetch(
-      `${getApiBase()}/users/${encodeURIComponent(userId)}/integrations/${encodeURIComponent(app)}`,
-      { headers: { ...getAuthHeaders() } },
-    );
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
-    return res.json();
-  },
-  connectUserIntegration: (userId, app) =>
-    fetchJSON(
-      `/users/${encodeURIComponent(userId)}/integrations/${encodeURIComponent(app)}/connect`,
-      {
-        method: 'POST',
-        body: JSON.stringify({}),
-        timeout: 30000,
-      },
-    ),
-  disconnectUserIntegration: (userId, app) =>
-    fetch(
-      `${getApiBase()}/users/${encodeURIComponent(userId)}/integrations/${encodeURIComponent(app)}`,
-      { method: 'DELETE', headers: { ...getAuthHeaders() } },
-    ).then((res) => {
-      if (!res.ok && res.status !== 204) throw new Error(`API error: ${res.status}`);
-      return null;
-    }),
-
-  // Integration provider (Nango Shared/BYO) — Owner-only.
-  // GET reports `hasKey` / `sharedAvailable` instead of the secret itself.
-  // PUT is partial-preserving: send `••••••••` to keep the stored secret.
-  getIntegrationProviderSettings: () => fetchJSON('/admin/integrations/provider'),
-  updateIntegrationProviderSettings: (payload) =>
-    fetchJSON('/admin/integrations/provider', {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    }),
-  validateIntegrationProviderSettings: (payload = {}) =>
-    fetchJSON('/admin/integrations/provider/validate', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-      timeout: 30000,
-    }),
+  // MCP servers (per-user). Replaces the deleted Nango integration surface.
+  // Distinct from the per-agent MCP methods above (`getMcpServers` etc.) —
+  // those manage the agent's template under `/agents/:id/mcp-servers`; these
+  // manage the authenticated user's personal connections under `/mcp-servers`.
+  // Secrets round-trip masked (`••••••••`) so the UI can save partial edits
+  // without re-typing values that haven't changed.
+  getMcpCatalog: () => fetchJSON('/mcp-catalog'),
+  listUserMcpServers: () => fetchJSON('/mcp-servers'),
+  createUserMcpServer: (payload) =>
+    fetchJSON('/mcp-servers', { method: 'POST', body: JSON.stringify(payload) }),
+  updateUserMcpServer: (id, payload) =>
+    fetchJSON(`/mcp-servers/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteUserMcpServer: (id) => fetchJSON(`/mcp-servers/${id}`, { method: 'DELETE' }),
 };

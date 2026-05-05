@@ -22,8 +22,7 @@ import CursorAuthSection from './CursorAuthSection.jsx';
 import PoolSection from './PoolSection.jsx';
 import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
 import PrEnvProjectWizard from './PrEnvProjectWizard.jsx';
-import IntegrationProviderSection from './IntegrationProviderSection.jsx';
-import IntegrationsSettingsPage from '../pages/IntegrationsSettingsPage.jsx';
+import UserMcpServersSection from './McpServersSection.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
@@ -6732,11 +6731,6 @@ const SETTINGS_GROUPS = [
       { id: 'logs', iconName: 'FileText', text: 'Logs' },
     ],
   },
-  {
-    id: 'admin',
-    label: 'Admin',
-    tabs: [{ id: 'integrations-provider', iconName: 'Plug', text: 'Integration Provider' }],
-  },
 ];
 
 const SETTINGS_ICONS = {
@@ -6958,8 +6952,7 @@ export default function SettingsPage({
                 </>
               )}
               {tab === 'logs' && <ServerLogsSection wsRef={wsRef} />}
-              {tab === 'integrations' && <IntegrationsSettingsPage />}
-              {tab === 'integrations-provider' && <IntegrationProviderSection />}
+              {tab === 'integrations' && <UserMcpServersSection />}
             </SettingsErrorBoundary>
           </div>
         </div>

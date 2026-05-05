@@ -15,13 +15,13 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { getUserClaudeAuth } from './users-store.js';
+import { listEnabledMcpServersForUser } from './mcp-servers-store.js';
+import { buildMcpServersMap } from './mcp-spawn-config.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import {
   resolveOAuthAppCredentials,
   applyGithubSpawnCredentials,
 } from './spawn-github-credentials.js';
-import { resolveNangoSpawnOverride } from './spawn-nango-env.js';
-import type { NangoSpawnOverride } from './config.js';
 import type { DelegationResult } from './delegation.js';
 import {
   detectHandoffBlock,
@@ -1714,34 +1714,49 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       return;
     }
 
+    // Resolve the session owner ONCE up front. Drives:
+    //   - Per-user MCP servers merged into the hooks config (below)
+    //   - Per-user Claude auth (spawnEnv block)
+    //   - Per-user GitHub auth (spawnEnv block)
+    // A single DB miss / lookup failure is reported once; a known-null
+    // owner skips all three branches cleanly.
+    let ownerId: string | null = null;
+    try {
+      ownerId = getSessionOwner(sessionId);
+    } catch (err) {
+      const summary = (err as Error).message
+        .replace(/[\r\n|]+/g, ' ')
+        .trim()
+        .slice(0, 200);
+      const meta = JSON.stringify({
+        v: 2,
+        sev: 'soft',
+        resolution: 'recovered',
+        session: sessionId,
+        tags: ['session-owner', 'spawn'],
+      });
+      console.error(
+        `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
+      );
+    }
+
     if (engine === 'claude-code') {
       const isWorktree = effectiveCwd !== project.cwd;
       const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
-      const hasMcpServers = agent.mcpServers && Object.keys(agent.mcpServers).length > 0;
-      if (isWorktree || hasAgentHooks || hasMcpServers) {
-        try {
-          writeHooksConfig(effectiveCwd, sessionId, {
-            agentHooks: agent.hooks,
-            includeSystemHooks: isWorktree,
-            mcpServers: agent.mcpServers,
-          });
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn(`[chat] Failed to write hooks config: ${message}`);
-        }
-      }
-    }
-
-    const spawnEnv: NodeJS.ProcessEnv = await (async () => {
-      // The session owner drives BOTH per-user Claude auth (below) AND
-      // per-user GitHub auth (further down). Resolve once so a single DB
-      // miss / lookup failure is reported once, and so a known-null
-      // owner skips both branches cleanly.
-      let ownerId: string | null = null;
+      // Per-user MCP servers: rows owned by the session owner, enabled = 1.
+      // Merged on top of agent.mcpServers so the human's user-level config
+      // wins on name conflicts (the agent template is just a default).
+      let mergedMcpServers: Record<string, import('./types.js').McpServerConfig> | undefined;
       try {
-        ownerId = getSessionOwner(sessionId);
+        const userMcpRows = ownerId ? listEnabledMcpServersForUser(ownerId) : [];
+        if (
+          (agent.mcpServers && Object.keys(agent.mcpServers).length > 0) ||
+          userMcpRows.length > 0
+        ) {
+          mergedMcpServers = buildMcpServersMap(userMcpRows, agent.mcpServers);
+        }
       } catch (err) {
-        // Soft failure — log and continue with host-config defaults.
+        // Best-effort; the spawn proceeds with agent.mcpServers only.
         const summary = (err as Error).message
           .replace(/[\r\n|]+/g, ' ')
           .trim()
@@ -1751,12 +1766,31 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sev: 'soft',
           resolution: 'recovered',
           session: sessionId,
-          tags: ['session-owner', 'spawn'],
+          tags: ['mcp-servers', 'spawn'],
         });
         console.error(
-          `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
+          `TOOL_ERROR | ${new Date().toISOString()} | mcp-servers | spawn lookup | error | ${summary} | ${meta}`,
         );
+        mergedMcpServers = agent.mcpServers;
       }
+      const hasMcpServers = mergedMcpServers != null && Object.keys(mergedMcpServers).length > 0;
+      if (isWorktree || hasAgentHooks || hasMcpServers) {
+        try {
+          writeHooksConfig(effectiveCwd, sessionId, {
+            agentHooks: agent.hooks,
+            includeSystemHooks: isWorktree,
+            mcpServers: mergedMcpServers,
+          });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[chat] Failed to write hooks config: ${message}`);
+        }
+      }
+    }
+
+    const spawnEnv: NodeJS.ProcessEnv = await (async () => {
+      // ownerId resolved above. The lookup is reused here for per-user
+      // Claude auth (below) and per-user GitHub auth (further down).
 
       // Per-user Claude auth: when the session has a recorded owner with
       // their own ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, those win
@@ -1799,43 +1833,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           `TOOL_ERROR | ${new Date().toISOString()} | per-user-claude-auth | spawn lookup | error | ${summary} | ${meta}`,
         );
       }
-      // Per-user Nango integration auth: when the IntegrationProvider
-      // (Nango Cloud / Self-Hosted) is configured AND the session owner
-      // has connected one or more apps, surface the resolved secret +
-      // owner-only connection map as env vars so the agent can call the
-      // proxy without hand-rolling auth. Sub-agent spawns
-      // (`<delegate>` / `<handoff>`) inherit this env so per-user creds
-      // propagate naturally — same approach as Per-User Claude Auth.
-      //
-      // The connection map is owner-scoped INSIDE
-      // `resolveNangoSpawnOverride` (`listForUser(ownerId)`) so
-      // cross-user leakage is structurally impossible: a session can
-      // never see another user's connection ids even when the host
-      // secret is shared.
-      let nangoOverride: NangoSpawnOverride | null = null;
-      try {
-        nangoOverride = resolveNangoSpawnOverride(ownerId);
-      } catch (err) {
-        // Soft failure — fall through with no Nango env. The agent
-        // still spawns; it just can't make integration proxy calls
-        // until the operator fixes the lookup.
-        const summary = (err as Error).message
-          .replace(/[\r\n|]+/g, ' ')
-          .trim()
-          .slice(0, 200);
-        const meta = JSON.stringify({
-          v: 2,
-          sev: 'soft',
-          resolution: 'recovered',
-          session: sessionId,
-          tags: ['per-user-nango', 'spawn'],
-        });
-        console.error(
-          `TOOL_ERROR | ${new Date().toISOString()} | per-user-nango | spawn lookup | error | ${summary} | ${meta}`,
-        );
-      }
-
-      const base = buildSpawnEnv(config, { userOverride, nango: nangoOverride });
+      const base = buildSpawnEnv(config, { userOverride });
       // Reviewer agents post formal GitHub reviews via the bot identity so they
       // bypass GitHub's "can't review your own PR" rule for human-author PRs.
       // Bot wins over the user's own token here even when the user is

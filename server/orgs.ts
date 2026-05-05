@@ -3,7 +3,7 @@ import path from 'path';
 import { mkdirSync, existsSync, readFileSync, readdirSync } from 'fs';
 import config from './config.js';
 import type { OrgRow } from './types.js';
-import { INTEGRATION_PROVIDERS_SCHEMA } from './integration-provider-schema.js';
+import { MCP_SERVERS_SCHEMA } from './mcp-servers-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -140,32 +140,26 @@ export function initOrgsDb(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);
-
-    -- ── Per-user integration connections (Nango et al.) ─────────────
-    -- One row per (user, app) — e.g. a user's Slack, GitHub-via-Nango,
-    -- or Google Drive connection. The composite primary key enforces
-    -- a single canonical connection per app per user; reconnecting
-    -- replaces the prior row via upsert. Cross-user reads are
-    -- prevented at the query level — every call is parameterised on
-    -- user_id, so even a logical bug can't cross the boundary without
-    -- editing SQL.
-    CREATE TABLE IF NOT EXISTS user_integrations (
-      user_id TEXT NOT NULL,
-      app TEXT NOT NULL,
-      connection_id TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'PENDING',
-      metadata TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (user_id, app)
-    );
-    CREATE INDEX IF NOT EXISTS idx_user_integrations_user ON user_integrations(user_id);
   `);
 
-  // Integration-provider singleton (Nango Shared/BYO toggle + secrets).
-  // Lives on orgs.db so the same row is visible across all orgs in the
-  // install — Nango credentials are operator-level, not per-org.
-  orgsDb.exec(INTEGRATION_PROVIDERS_SCHEMA);
+  // MCP-server registry (per-user). Replaces the deleted Nango integration.
+  // Each row is a Claude Code / Cursor MCP server config that gets injected
+  // into the spawn via `--mcp-config`. Owned by exactly one Hub user;
+  // resolved at spawn time keyed on session.owner_user_id. See
+  // server/mcp-servers-store.ts for the read/write surface.
+  orgsDb.exec(MCP_SERVERS_SCHEMA);
+
+  // Migration: drop the two Nango-era tables. The Nango integration was
+  // ripped out in favour of the MCP-server registry; these tables held
+  // operator-tier OAuth secrets and per-user OAuth `connection_id`s
+  // that have no MCP analogue. Use IF EXISTS so fresh installs are a
+  // no-op. Existing installs that had Nango connections lose them on
+  // boot — there is no migration path because the data shape is wholly
+  // incompatible with the MCP-server replacement.
+  orgsDb.exec(`
+    DROP TABLE IF EXISTS user_integrations;
+    DROP TABLE IF EXISTS integration_providers;
+  `);
 
   // Migration: earlier Phase 3 commits created `invites` with FKs that had
   // no ON DELETE action (SQLite's NO ACTION default). With foreign_keys =
