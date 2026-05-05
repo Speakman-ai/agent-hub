@@ -16,7 +16,7 @@ import { writeHooksConfig } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { getUserClaudeAuth } from './users-store.js';
 import { listEnabledMcpServersForUser } from './mcp-servers-store.js';
-import { buildMcpServersMap } from './mcp-spawn-config.js';
+import { buildMcpServersMap, writeMcpConfigFile } from './mcp-spawn-config.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import {
   resolveOAuthAppCredentials,
@@ -1521,6 +1521,95 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const CURSOR_BIN = getCursorBin();
     const GEMINI_BIN = getGeminiBin();
     const CODEX_BIN = getCodexBin();
+
+    // Resolve the session owner ONCE up front. Drives:
+    //   - Per-user MCP servers merged into the spawn config (just below)
+    //   - Per-session hooks (`writeHooksConfig` further down)
+    //   - Per-user Claude auth (spawnEnv block)
+    //   - Per-user GitHub auth (spawnEnv block)
+    // A single DB miss / lookup failure is reported once; a known-null
+    // owner skips all four branches cleanly.
+    let ownerId: string | null = null;
+    try {
+      ownerId = getSessionOwner(sessionId);
+    } catch (err) {
+      const summary = (err as Error).message
+        .replace(/[\r\n|]+/g, ' ')
+        .trim()
+        .slice(0, 200);
+      const meta = JSON.stringify({
+        v: 2,
+        sev: 'soft',
+        resolution: 'recovered',
+        session: sessionId,
+        tags: ['session-owner', 'spawn'],
+      });
+      console.error(
+        `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
+      );
+    }
+
+    // Per-user MCP servers (claude-code only — cursor/gemini/codex have
+    // their own MCP loading rules and don't take --mcp-config). Resolved
+    // BEFORE the engine arg branch so the Claude branch can append
+    // `--mcp-config` / `--strict-mcp-config` flags. The actual file write
+    // happens just below this block once `effectiveCwd` semantics are in
+    // play; the resolved map is also reused by the hooks-config branch.
+    let mergedMcpServers: Record<string, import('./types.js').McpServerConfig> | undefined;
+    let mcpConfigPath: string | null = null;
+    if (engine === 'claude-code') {
+      try {
+        const userMcpRows = ownerId ? listEnabledMcpServersForUser(ownerId) : [];
+        if (
+          (agent.mcpServers && Object.keys(agent.mcpServers).length > 0) ||
+          userMcpRows.length > 0
+        ) {
+          mergedMcpServers = buildMcpServersMap(userMcpRows, agent.mcpServers);
+        }
+      } catch (err) {
+        // Best-effort; the spawn proceeds with agent.mcpServers only.
+        const summary = (err as Error).message
+          .replace(/[\r\n|]+/g, ' ')
+          .trim()
+          .slice(0, 200);
+        const meta = JSON.stringify({
+          v: 2,
+          sev: 'soft',
+          resolution: 'recovered',
+          session: sessionId,
+          tags: ['mcp-servers', 'spawn'],
+        });
+        console.error(
+          `TOOL_ERROR | ${new Date().toISOString()} | mcp-servers | spawn lookup | error | ${summary} | ${meta}`,
+        );
+        mergedMcpServers = agent.mcpServers;
+      }
+      // Write `.claude/mcp-config.json`. Returns null when there are no
+      // servers to emit; the Claude args branch checks the path before
+      // appending the flag so an empty/missing file never gets passed
+      // to `--mcp-config` (which would, paired with `--strict-mcp-config`,
+      // unintentionally suppress whatever's at higher scopes).
+      try {
+        mcpConfigPath = writeMcpConfigFile(effectiveCwd, mergedMcpServers);
+      } catch (err) {
+        const summary = (err as Error).message
+          .replace(/[\r\n|]+/g, ' ')
+          .trim()
+          .slice(0, 200);
+        const meta = JSON.stringify({
+          v: 2,
+          sev: 'soft',
+          resolution: 'recovered',
+          session: sessionId,
+          tags: ['mcp-servers', 'spawn-write'],
+        });
+        console.error(
+          `TOOL_ERROR | ${new Date().toISOString()} | mcp-config-file | write | error | ${summary} | ${meta}`,
+        );
+        mcpConfigPath = null;
+      }
+    }
+
     let args: string[];
     let bin: string;
     if (engine === 'cursor-agent') {
@@ -1637,6 +1726,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // to it for skills outside the bundled list (see claude-cli-args.ts).
         ...disableNativeSkillToolArgs(),
       ];
+      // Wire per-session MCP config when we wrote one above. `--mcp-config`
+      // is the only documented Claude Code MCP source that fits Agent
+      // Hub's per-session lifecycle; `.claude/settings.json::mcpServers`
+      // is silently ignored by the loader (verified via `claude mcp list`).
+      // `--strict-mcp-config` ensures the agent only sees servers Agent
+      // Hub controls — no surprises from hand-edited `~/.claude.json` or
+      // `.mcp.json` files in the worktree.
+      if (mcpConfigPath) {
+        args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
+      }
       if (isNewEngineSession) {
         args.push('--session-id', sessionId);
       } else {
@@ -1714,72 +1813,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       return;
     }
 
-    // Resolve the session owner ONCE up front. Drives:
-    //   - Per-user MCP servers merged into the hooks config (below)
-    //   - Per-user Claude auth (spawnEnv block)
-    //   - Per-user GitHub auth (spawnEnv block)
-    // A single DB miss / lookup failure is reported once; a known-null
-    // owner skips all three branches cleanly.
-    let ownerId: string | null = null;
-    try {
-      ownerId = getSessionOwner(sessionId);
-    } catch (err) {
-      const summary = (err as Error).message
-        .replace(/[\r\n|]+/g, ' ')
-        .trim()
-        .slice(0, 200);
-      const meta = JSON.stringify({
-        v: 2,
-        sev: 'soft',
-        resolution: 'recovered',
-        session: sessionId,
-        tags: ['session-owner', 'spawn'],
-      });
-      console.error(
-        `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
-      );
-    }
-
     if (engine === 'claude-code') {
       const isWorktree = effectiveCwd !== project.cwd;
       const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
-      // Per-user MCP servers: rows owned by the session owner, enabled = 1.
-      // Merged on top of agent.mcpServers so the human's user-level config
-      // wins on name conflicts (the agent template is just a default).
-      let mergedMcpServers: Record<string, import('./types.js').McpServerConfig> | undefined;
-      try {
-        const userMcpRows = ownerId ? listEnabledMcpServersForUser(ownerId) : [];
-        if (
-          (agent.mcpServers && Object.keys(agent.mcpServers).length > 0) ||
-          userMcpRows.length > 0
-        ) {
-          mergedMcpServers = buildMcpServersMap(userMcpRows, agent.mcpServers);
-        }
-      } catch (err) {
-        // Best-effort; the spawn proceeds with agent.mcpServers only.
-        const summary = (err as Error).message
-          .replace(/[\r\n|]+/g, ' ')
-          .trim()
-          .slice(0, 200);
-        const meta = JSON.stringify({
-          v: 2,
-          sev: 'soft',
-          resolution: 'recovered',
-          session: sessionId,
-          tags: ['mcp-servers', 'spawn'],
-        });
-        console.error(
-          `TOOL_ERROR | ${new Date().toISOString()} | mcp-servers | spawn lookup | error | ${summary} | ${meta}`,
-        );
-        mergedMcpServers = agent.mcpServers;
-      }
-      const hasMcpServers = mergedMcpServers != null && Object.keys(mergedMcpServers).length > 0;
-      if (isWorktree || hasAgentHooks || hasMcpServers) {
+      // MCP server emission moved up: see the `mergedMcpServers` /
+      // `mcpConfigPath` block before the args branch. The hooks-config
+      // file is now strictly about hooks (Stop, format guard, agent
+      // hooks); MCP lives in `.claude/mcp-config.json` paired with the
+      // Claude CLI's `--mcp-config` flag.
+      if (isWorktree || hasAgentHooks) {
         try {
           writeHooksConfig(effectiveCwd, sessionId, {
             agentHooks: agent.hooks,
             includeSystemHooks: isWorktree,
-            mcpServers: mergedMcpServers,
           });
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);

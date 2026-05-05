@@ -5,6 +5,12 @@ import type { AppConfig, HookConfig, HookEntry, McpServerConfig } from './types.
 
 interface ClaudeSettings {
   hooks?: Record<string, SettingsHookEntry[]>;
+  // Retained as an optional field purely so the cleanup pass in
+  // `removeHooksConfig` can still strip stale `_agentHub`-tagged entries
+  // that were written by previous versions. The new write path lives in
+  // `mcp-spawn-config.ts::writeMcpConfigFile()` which emits a separate
+  // `.claude/mcp-config.json` file paired with the Claude CLI's
+  // `--mcp-config` flag — the only documented Claude Code MCP source.
   mcpServers?: Record<string, McpServerConfig>;
   [key: string]: unknown;
 }
@@ -22,7 +28,6 @@ interface SettingsHookItem {
 interface WriteHooksOptions {
   agentHooks?: Record<string, HookConfig[]>;
   includeSystemHooks?: boolean;
-  mcpServers?: Record<string, McpServerConfig>;
 }
 
 function buildHookCommand(sessionId: string): string {
@@ -93,11 +98,9 @@ export function writeHooksConfig(
   sessionId: string,
   options: WriteHooksOptions = {},
 ): void {
-  const { agentHooks, includeSystemHooks = false, mcpServers } = options;
+  const { agentHooks, includeSystemHooks = false } = options;
 
-  const hasMcp = mcpServers != null && Object.keys(mcpServers).length > 0;
-
-  if (!includeSystemHooks && (!agentHooks || Object.keys(agentHooks).length === 0) && !hasMcp) {
+  if (!includeSystemHooks && (!agentHooks || Object.keys(agentHooks).length === 0)) {
     return;
   }
 
@@ -111,6 +114,21 @@ export function writeHooksConfig(
     }
   } catch {
     settings = {};
+  }
+
+  // Migrate stale `mcpServers` blocks written by older versions. Claude
+  // Code never read this field; carrying it forward just leaks a stale
+  // (and credential-bearing) snapshot. New emissions go to
+  // `.claude/mcp-config.json` via `writeMcpConfigFile()`.
+  if (settings.mcpServers) {
+    for (const name of Object.keys(settings.mcpServers)) {
+      if (settings.mcpServers[name]?._agentHub) {
+        delete settings.mcpServers[name];
+      }
+    }
+    if (Object.keys(settings.mcpServers).length === 0) {
+      delete settings.mcpServers;
+    }
   }
 
   if (!settings.hooks) {
@@ -181,24 +199,6 @@ export function writeHooksConfig(
   }
   if (Object.keys(settings.hooks).length === 0) {
     delete settings.hooks;
-  }
-
-  if (hasMcp && mcpServers) {
-    if (!settings.mcpServers) settings.mcpServers = {};
-
-    for (const name of Object.keys(settings.mcpServers)) {
-      if (settings.mcpServers[name]?._agentHub) {
-        delete settings.mcpServers[name];
-      }
-    }
-
-    for (const [name, serverConfig] of Object.entries(mcpServers)) {
-      settings.mcpServers[name] = { ...serverConfig, _agentHub: true };
-    }
-
-    if (Object.keys(settings.mcpServers).length === 0) {
-      delete settings.mcpServers;
-    }
   }
 
   if (!existsSync(claudeDir)) {

@@ -2,25 +2,43 @@
  * Spawn-time helper: turn the session owner's enabled `mcp_servers` rows
  * into the `mcpServers` map Claude Code consumes.
  *
- * Two integration points:
+ * Emission contract (V2 — landed after the post-#778 investigation):
  *
- *   1. `.claude/settings.json` — `writeHooksConfig` (server/hooks.ts) already
- *      writes per-agent MCP servers there. We merge the per-user rows into
- *      the same map so a single config file covers both surfaces. Both
- *      sources are tagged with `_agentHub: true` so the cleanup pass can
- *      strip them without touching anything the user added by hand.
+ *   We write the merged `mcpServers` map to `<cwd>/.claude/mcp-config.json`
+ *   and pair the spawn with `--mcp-config <path> --strict-mcp-config` on
+ *   the Claude Code CLI. This is the only documented Claude Code MCP source
+ *   that fits Agent Hub's lifecycle (per-session, ephemeral, isolated from
+ *   the user's hand-edited `~/.claude.json`).
  *
- *   2. `--mcp-config` flag (future) — Claude Code also accepts a
- *      session-scoped JSON file via this CLI flag. Not used in v1; the
- *      settings.json merge path is sufficient.
+ *   The previous emission path (writing into `.claude/settings.json` under
+ *   the `mcpServers` key) is **not** read by Claude Code — `claude mcp list`
+ *   inside such a worktree reports "No MCP servers configured" even when
+ *   the JSON is structurally perfect. See wiki: "MCP Servers — Per-User
+ *   Registry" for the full failure-mode trail. `writeHooksConfig` retains
+ *   the *cleanup* arm so any old settings.json files written by previous
+ *   versions are migrated on the next spawn.
  *
  * Conflict resolution: per-user rows override per-agent entries with the
  * same `name` key, on the principle that the human at the keyboard
  * outranks the agent template.
  */
 
+import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
+import path from 'path';
 import type { McpServerConfig } from './types.js';
 import type { McpServerRow } from './mcp-servers-store.js';
+
+/**
+ * Subdirectory + filename for the per-session MCP config. Lives alongside
+ * `.claude/settings.json` so cleanup can find both files in one place.
+ */
+export const MCP_CONFIG_SUBDIR = '.claude';
+export const MCP_CONFIG_FILENAME = 'mcp-config.json';
+
+/** Resolve the absolute path to the per-session MCP config file. */
+export function getMcpConfigPath(cwd: string): string {
+  return path.join(cwd, MCP_CONFIG_SUBDIR, MCP_CONFIG_FILENAME);
+}
 
 /**
  * Convert one decrypted store row into a Claude Code MCP server entry.
@@ -71,4 +89,46 @@ export function buildMcpServersMap(
     out[row.name] = rowToConfig(row);
   }
   return out;
+}
+
+/**
+ * Write the merged `mcpServers` map to `<cwd>/.claude/mcp-config.json` in
+ * the shape Claude Code's `--mcp-config` flag expects:
+ *
+ *   { "mcpServers": { ... } }
+ *
+ * Returns the absolute path of the written file so the caller can pass it
+ * straight to `--mcp-config`. Returns `null` when there are no servers to
+ * emit (callers should then skip the flag entirely; passing an empty file
+ * with `--strict-mcp-config` would unintentionally suppress whatever the
+ * agent had configured at higher scopes).
+ */
+export function writeMcpConfigFile(
+  cwd: string,
+  mcpServers: Record<string, McpServerConfig> | undefined,
+): string | null {
+  if (!mcpServers || Object.keys(mcpServers).length === 0) return null;
+  const dir = path.join(cwd, MCP_CONFIG_SUBDIR);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  const filePath = getMcpConfigPath(cwd);
+  const payload = { mcpServers };
+  writeFileSync(filePath, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+  return filePath;
+}
+
+/**
+ * Best-effort cleanup of the per-session MCP config file. Used by session
+ * teardown paths so abandoned worktrees don't leak credentials on disk.
+ */
+export function removeMcpConfigFile(cwd: string): void {
+  const filePath = getMcpConfigPath(cwd);
+  try {
+    if (existsSync(filePath)) {
+      unlinkSync(filePath);
+    }
+  } catch {
+    /* best-effort */
+  }
 }

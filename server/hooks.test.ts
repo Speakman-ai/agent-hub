@@ -195,4 +195,72 @@ describe('writeHooksConfig — PreToolUse format guard', () => {
     );
     expect(hasFormatGuard).toBe(false);
   });
+
+  // --- Regression: Claude Code does not read mcpServers from settings.json. ---
+  // The previous emission path wrote per-user MCP servers into
+  // .claude/settings.json::mcpServers, which the Claude Code loader
+  // silently ignored (verified via `claude mcp list`). The new path lives
+  // in mcp-spawn-config.ts::writeMcpConfigFile() + the CLI's
+  // `--mcp-config` flag. These tests pin the new contract:
+  //   1. writeHooksConfig must not write a `mcpServers` block (its API
+  //      no longer accepts one).
+  //   2. Stale `_agentHub`-tagged blocks left behind by older versions
+  //      get scrubbed on the next write.
+
+  it('never writes mcpServers into settings.json (the API no longer accepts it)', () => {
+    writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
+    const settings = readSettings();
+    expect(settings.mcpServers).toBeUndefined();
+  });
+
+  it('migrates a stale _agentHub-tagged mcpServers block out of settings.json', () => {
+    // Simulate an existing settings.json written by a pre-fix version.
+    const claudeDir = path.join(tmpDir, '.claude');
+    if (!existsSync(claudeDir)) {
+      // mkdirSync needed because writeHooksConfig only creates it on demand.
+      // Easier to just invoke writeHooksConfig once first to seed the dir.
+    }
+    writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
+    const settingsPath = path.join(tmpDir, '.claude', 'settings.json');
+    const seed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    seed.mcpServers = {
+      Linear: {
+        type: 'http',
+        url: 'https://mcp.linear.app/mcp',
+        headers: { Authorization: 'Bearer leaked' },
+        _agentHub: true,
+      },
+      // A user-added entry (no _agentHub tag) must survive the migration.
+      UserAdded: { type: 'stdio', command: 'their-bin' },
+    };
+    writeFileSync(settingsPath, JSON.stringify(seed, null, 2));
+
+    // Re-run writeHooksConfig (e.g. on the next session start). The stale
+    // _agentHub-tagged entry should be scrubbed; user-added entries stay.
+    writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
+    const after = readSettings();
+    expect(after.mcpServers).toBeDefined();
+    expect(after.mcpServers.Linear).toBeUndefined();
+    expect(after.mcpServers.UserAdded).toBeDefined();
+    expect(after.mcpServers.UserAdded.command).toBe('their-bin');
+  });
+
+  it('removes the mcpServers block entirely when migration leaves it empty', () => {
+    writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
+    const settingsPath = path.join(tmpDir, '.claude', 'settings.json');
+    const seed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    seed.mcpServers = {
+      Linear: {
+        type: 'http',
+        url: 'https://x/',
+        headers: {},
+        _agentHub: true,
+      },
+    };
+    writeFileSync(settingsPath, JSON.stringify(seed, null, 2));
+
+    writeHooksConfig(tmpDir, sessionId, { includeSystemHooks: true });
+    const after = readSettings();
+    expect(after.mcpServers).toBeUndefined();
+  });
 });

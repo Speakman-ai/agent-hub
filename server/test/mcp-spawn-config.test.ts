@@ -1,9 +1,22 @@
 /**
- * Unit tests for mcp-spawn-config.ts — row → config translation and the
- * user-row-wins-over-agent-template merge contract.
+ * Unit tests for mcp-spawn-config.ts — row → config translation, the
+ * user-row-wins-over-agent-template merge contract, and the
+ * `.claude/mcp-config.json` emission paired with Claude CLI's
+ * `--mcp-config` flag.
  */
-import { describe, it, expect } from 'vitest';
-import { rowToConfig, buildMcpServersMap } from '../mcp-spawn-config.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import path from 'path';
+import os from 'os';
+import {
+  rowToConfig,
+  buildMcpServersMap,
+  writeMcpConfigFile,
+  removeMcpConfigFile,
+  getMcpConfigPath,
+  MCP_CONFIG_SUBDIR,
+  MCP_CONFIG_FILENAME,
+} from '../mcp-spawn-config.js';
 import type { McpServerRow } from '../mcp-servers-store.js';
 import type { McpServerConfig } from '../types.js';
 
@@ -130,5 +143,104 @@ describe('buildMcpServersMap', () => {
     const userRow = row({ name: '', transport: 'http', url: 'https://x/' });
     const out = buildMcpServersMap([userRow]);
     expect(out).toEqual({});
+  });
+});
+
+describe('writeMcpConfigFile / removeMcpConfigFile', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(os.tmpdir(), 'mcp-config-test-'));
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpDir)) {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('exposes the conventional .claude/mcp-config.json path', () => {
+    expect(MCP_CONFIG_SUBDIR).toBe('.claude');
+    expect(MCP_CONFIG_FILENAME).toBe('mcp-config.json');
+    expect(getMcpConfigPath('/some/cwd')).toBe('/some/cwd/.claude/mcp-config.json');
+  });
+
+  it('writes { mcpServers: {...} } in the shape Claude Code --mcp-config expects', () => {
+    const servers: Record<string, McpServerConfig> = {
+      Linear: {
+        type: 'http',
+        url: 'https://mcp.linear.app/mcp',
+        headers: { Authorization: 'Bearer lin_api_xxx' },
+        _agentHub: true,
+      },
+    };
+    const written = writeMcpConfigFile(tmpDir, servers);
+    expect(written).toBe(path.join(tmpDir, '.claude', 'mcp-config.json'));
+    expect(existsSync(written!)).toBe(true);
+
+    const parsed = JSON.parse(readFileSync(written!, 'utf-8'));
+    // Top-level `mcpServers` key is REQUIRED; this is the shape the
+    // `--mcp-config` flag consumes (see https://code.claude.com/docs/en/mcp).
+    expect(Object.keys(parsed)).toEqual(['mcpServers']);
+    expect(parsed.mcpServers.Linear.type).toBe('http');
+    expect(parsed.mcpServers.Linear.url).toBe('https://mcp.linear.app/mcp');
+    expect(parsed.mcpServers.Linear.headers.Authorization).toBe('Bearer lin_api_xxx');
+  });
+
+  it('returns null and writes nothing when there are no servers', () => {
+    expect(writeMcpConfigFile(tmpDir, undefined)).toBeNull();
+    expect(writeMcpConfigFile(tmpDir, {})).toBeNull();
+    expect(existsSync(path.join(tmpDir, '.claude', 'mcp-config.json'))).toBe(false);
+  });
+
+  it('creates the .claude directory if it does not yet exist', () => {
+    expect(existsSync(path.join(tmpDir, '.claude'))).toBe(false);
+    writeMcpConfigFile(tmpDir, { x: { type: 'stdio', command: 'foo', args: [] } });
+    expect(existsSync(path.join(tmpDir, '.claude'))).toBe(true);
+  });
+
+  it('overwrites a stale config file on subsequent writes (no merge)', () => {
+    const dir = path.join(tmpDir, '.claude');
+    mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'mcp-config.json');
+    writeFileSync(
+      filePath,
+      JSON.stringify({ mcpServers: { Old: { type: 'stdio', command: 'x' } } }),
+    );
+
+    writeMcpConfigFile(tmpDir, {
+      New: { type: 'http', url: 'https://new/', headers: {} },
+    });
+
+    const parsed = JSON.parse(readFileSync(filePath, 'utf-8'));
+    expect(Object.keys(parsed.mcpServers)).toEqual(['New']);
+  });
+
+  it('serializes stdio servers with command/args/env (no url field)', () => {
+    const servers: Record<string, McpServerConfig> = {
+      notion: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', '@notionhq/notion-mcp-server'],
+        env: { OPENAPI_MCP_HEADERS: 'token' },
+        _agentHub: true,
+      },
+    };
+    const written = writeMcpConfigFile(tmpDir, servers);
+    const parsed = JSON.parse(readFileSync(written!, 'utf-8'));
+    expect(parsed.mcpServers.notion.command).toBe('npx');
+    expect(parsed.mcpServers.notion.args).toEqual(['-y', '@notionhq/notion-mcp-server']);
+    expect(parsed.mcpServers.notion.url).toBeUndefined();
+  });
+
+  it('removeMcpConfigFile deletes the file when present and is a no-op when absent', () => {
+    const written = writeMcpConfigFile(tmpDir, {
+      Linear: { type: 'http', url: 'https://x/', headers: {} },
+    });
+    expect(existsSync(written!)).toBe(true);
+    removeMcpConfigFile(tmpDir);
+    expect(existsSync(written!)).toBe(false);
+    // No-op call should not throw.
+    expect(() => removeMcpConfigFile(tmpDir)).not.toThrow();
   });
 });
