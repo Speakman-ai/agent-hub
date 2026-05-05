@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   X,
   ChevronLeft,
@@ -15,12 +15,15 @@ import {
   Trash2,
   Eye,
   EyeOff,
+  Sparkles,
+  PlayCircle,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import {
   formFromConfig,
   validateForm,
   generateDefaultDockerfile,
+  PR_ENV_PREVIEW_IDLE_TTL_PRESETS,
 } from '../utils/prEnvProjectPayload.js';
 
 /**
@@ -38,26 +41,79 @@ import {
  * `onSaved(updatedProject)` so the parent can refresh its project
  * list.
  */
-export default function PrEnvProjectWizard({ project, onClose, onSaved, showToast }) {
+export default function PrEnvProjectWizard({
+  project,
+  onClose,
+  onSaved,
+  showToast,
+  // Optional deep-link hint. When `'preview'`, we open the wizard at
+  // step 2 (Runtime) and scroll/highlight the preview sub-section so
+  // users following the teach-moment from chat land on the right
+  // control without having to hunt.
+  focus = null,
+}) {
   const initialForm = useMemo(() => {
     const form = formFromConfig(project?.prEnv);
+    const previewBase = form.preview || {
+      enabled: false,
+      startScript: '',
+      port: '',
+      captureRoutes: [{ value: '/' }],
+      idleTTL: '600',
+    };
+    const captureRoutes = (
+      Array.isArray(previewBase.captureRoutes) && previewBase.captureRoutes.length > 0
+        ? previewBase.captureRoutes
+        : [{ value: '/' }]
+    ).map((row) => ({ _id: crypto.randomUUID(), ...row }));
     return {
       ...form,
       envRows: form.envRows.map((row) => ({ _id: crypto.randomUUID(), ...row })),
+      preview: { ...previewBase, captureRoutes },
     };
   }, [project]);
-  const [step, setStep] = useState(0);
+  // Honour the deep-link from the preview teach-moment in chat: jump
+  // straight to step 2 (Runtime, where the preview sub-section lives).
+  // Only the initial render reads `focus` — subsequent navigation uses
+  // the regular step buttons so we don't fight user intent.
+  const [step, setStep] = useState(focus === 'preview' ? 1 : 0);
   const [form, setForm] = useState(initialForm);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [dockerfilePreview, setDockerfilePreview] = useState('');
   const [copied, setCopied] = useState(false);
+  // Test-boot affordance state (button on the preview sub-section).
+  // The endpoint is implemented server-side as
+  // `POST /api/projects/:id/preview/test-boot` — we render the
+  // returned screenshot inline so the user can confirm the runtime
+  // boots before they save. Failures surface as a small error blurb
+  // under the button rather than tearing down the wizard.
+  const [testBoot, setTestBoot] = useState({
+    status: 'idle', // 'idle' | 'running' | 'ok' | 'error'
+    screenshotUrl: null,
+    logsTail: null,
+    error: null,
+  });
+  // Ref to the preview sub-section so we can scroll/highlight it when
+  // the wizard is opened with `focus="preview"`.
+  const previewSectionRef = useRef(null);
 
   // Reset preview when the user changes inputs that feed into it.
   useEffect(() => {
     setDockerfilePreview('');
   }, [form.setupCommand, form.startScript, form.internalPort]);
+
+  // Scroll/highlight the preview sub-section when the wizard is opened
+  // via the `?focus=preview` deep-link from the chat teach-moment. The
+  // ref is null until step 2 mounts, so the effect is a no-op on step 0.
+  // Declared before the early return so React sees the same hook order
+  // on every render (rules-of-hooks).
+  useEffect(() => {
+    if (focus !== 'preview' || step !== 1) return;
+    if (!previewSectionRef.current) return;
+    previewSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [focus, step]);
 
   if (!project) return null;
 
@@ -107,6 +163,68 @@ export default function PrEnvProjectWizard({ project, onClose, onSaved, showToas
     setSaveError(null);
   };
 
+  // Preview sub-form mutators. Mirror the env-row pattern — every
+  // mutator clears `saveError` and any preview-keyed validation errors
+  // since indices shift on row add/remove.
+  const clearPreviewErrors = () => {
+    setErrors((prev) => {
+      const next = {};
+      for (const k of Object.keys(prev)) {
+        if (!k.startsWith('preview')) next[k] = prev[k];
+      }
+      return next;
+    });
+  };
+  const setPreviewField = (key, value) => {
+    setForm((prev) => ({
+      ...prev,
+      preview: { ...(prev.preview || {}), [key]: value },
+    }));
+    if (errors[`preview.${key}`]) {
+      setErrors((prev) => ({ ...prev, [`preview.${key}`]: undefined }));
+    }
+    setSaveError(null);
+  };
+  const updateRouteRow = (index, value) => {
+    setForm((prev) => {
+      const rows = Array.isArray(prev.preview?.captureRoutes)
+        ? prev.preview.captureRoutes.slice()
+        : [];
+      rows[index] = { ...(rows[index] || { _id: crypto.randomUUID() }), value };
+      return { ...prev, preview: { ...prev.preview, captureRoutes: rows } };
+    });
+    clearPreviewErrors();
+    setSaveError(null);
+  };
+  const addRouteRow = () => {
+    setForm((prev) => {
+      const rows = Array.isArray(prev.preview?.captureRoutes)
+        ? prev.preview.captureRoutes.slice()
+        : [];
+      rows.push({ _id: crypto.randomUUID(), value: '' });
+      return { ...prev, preview: { ...prev.preview, captureRoutes: rows } };
+    });
+    clearPreviewErrors();
+    setSaveError(null);
+  };
+  const removeRouteRow = (index) => {
+    setForm((prev) => {
+      const rows = Array.isArray(prev.preview?.captureRoutes)
+        ? prev.preview.captureRoutes.slice()
+        : [];
+      rows.splice(index, 1);
+      return {
+        ...prev,
+        preview: {
+          ...prev.preview,
+          captureRoutes: rows.length > 0 ? rows : [{ _id: crypto.randomUUID(), value: '' }],
+        },
+      };
+    });
+    clearPreviewErrors();
+    setSaveError(null);
+  };
+
   const goNext = () => {
     if (step === 1) {
       // Validate step 2 inputs before letting the user move on.
@@ -153,6 +271,33 @@ export default function PrEnvProjectWizard({ project, onClose, onSaved, showToas
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  /**
+   * Trigger a 30-second preview boot via the test-boot endpoint and
+   * surface the returned screenshot inline. This is a "did I configure
+   * it right?" sanity check before save — any failure renders the log
+   * tail so the user can debug without leaving the wizard.
+   */
+  const handleTestBoot = async () => {
+    setTestBoot({ status: 'running', screenshotUrl: null, logsTail: null, error: null });
+    try {
+      const result = await api.testBootPreview(project.id);
+      const ok = (result?.status || 'error') === 'ok';
+      setTestBoot({
+        status: ok ? 'ok' : 'error',
+        screenshotUrl: result?.screenshotUrl || null,
+        logsTail: Array.isArray(result?.logsTail) ? result.logsTail : null,
+        error: ok ? null : result?.error || 'Preview boot did not reach ready',
+      });
+    } catch (err) {
+      setTestBoot({
+        status: 'error',
+        screenshotUrl: null,
+        logsTail: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   };
 
   const handleSave = async () => {
@@ -242,6 +387,14 @@ export default function PrEnvProjectWizard({ project, onClose, onSaved, showToas
               onEnvRowChange={updateEnvRow}
               onEnvRowAdd={addEnvRow}
               onEnvRowRemove={removeEnvRow}
+              setPreviewField={setPreviewField}
+              onRouteChange={updateRouteRow}
+              onRouteAdd={addRouteRow}
+              onRouteRemove={removeRouteRow}
+              previewSectionRef={previewSectionRef}
+              focusPreview={focus === 'preview'}
+              testBoot={testBoot}
+              onTestBoot={handleTestBoot}
             />
           )}
           {step === 2 && (
@@ -367,6 +520,14 @@ function Step1Runtime({
   onEnvRowChange,
   onEnvRowAdd,
   onEnvRowRemove,
+  setPreviewField,
+  onRouteChange,
+  onRouteAdd,
+  onRouteRemove,
+  previewSectionRef,
+  focusPreview,
+  testBoot,
+  onTestBoot,
 }) {
   return (
     <div className="space-y-4">
@@ -463,6 +624,298 @@ function Step1Runtime({
         onAdd={onEnvRowAdd}
         onRemove={onEnvRowRemove}
       />
+
+      <PreviewSubSection
+        sectionRef={previewSectionRef}
+        focusPreview={focusPreview}
+        preview={form.preview || {}}
+        startScriptFallback={form.startScript}
+        portFallback={form.internalPort}
+        errors={errors}
+        inputClass={inputClass}
+        labelClass={labelClass}
+        errorClass={errorClass}
+        setPreviewField={setPreviewField}
+        onRouteChange={onRouteChange}
+        onRouteAdd={onRouteAdd}
+        onRouteRemove={onRouteRemove}
+        testBoot={testBoot}
+        onTestBoot={onTestBoot}
+      />
+    </div>
+  );
+}
+
+/**
+ * "Live previews during chat" sub-section. Sits at the bottom of the
+ * Runtime step so users discover it after they've already configured
+ * the rest of the runtime — preview defaults to *off* and falls back
+ * to the parent runtime's start command + port when a field is left
+ * blank, so an enabled-but-empty preview block is still a sensible
+ * configuration.
+ *
+ * The whole section dims to 60% opacity and disables every input when
+ * `enabled === false` so the toggle is visually authoritative — there
+ * are too many sub-fields to leave them looking interactive when they
+ * have no effect.
+ */
+function PreviewSubSection({
+  sectionRef,
+  focusPreview,
+  preview,
+  startScriptFallback,
+  portFallback,
+  errors,
+  inputClass,
+  labelClass,
+  errorClass,
+  setPreviewField,
+  onRouteChange,
+  onRouteAdd,
+  onRouteRemove,
+  testBoot,
+  onTestBoot,
+}) {
+  const enabled = !!preview.enabled;
+  const captureRoutes = Array.isArray(preview.captureRoutes) ? preview.captureRoutes : [];
+  const startPlaceholder = `falls back to ${(startScriptFallback || '').trim() || '$startScript'}`;
+  const portPlaceholder = `falls back to ${(portFallback || '').trim() || '$internalPort'}`;
+  const ttlValue = String(preview.idleTTL ?? '');
+  return (
+    <div
+      ref={sectionRef}
+      className={`border-t border-gray-800 pt-4 space-y-3 transition-colors ${
+        focusPreview ? 'ring-1 ring-emerald-500/40 rounded-lg p-3 -m-3' : ''
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2">
+          <Sparkles size={16} className="text-emerald-400 mt-0.5" />
+          <div>
+            <h5 className="text-sm font-medium text-gray-100">Live previews during chat</h5>
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              When an agent emits an{' '}
+              <span className="font-mono text-gray-300">&lt;agenthub:preview&gt;</span> block, Agent
+              Hub spins up a per-session worktree preview, screenshots the requested routes, and
+              renders the result inline. Idle previews are reaped automatically.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label="Enable live previews during chat"
+          onClick={() => setPreviewField('enabled', !enabled)}
+          className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+            enabled ? 'bg-emerald-500' : 'bg-gray-600'
+          }`}
+        >
+          <span
+            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+              enabled ? 'translate-x-5' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      </div>
+
+      {!enabled && (
+        <p className="text-[11px] text-gray-600 italic">
+          Toggle on to configure preview-specific start command, port, capture routes, and idle TTL.
+        </p>
+      )}
+
+      <div
+        className={`space-y-3 ${enabled ? '' : 'opacity-60 pointer-events-none select-none'}`}
+        aria-disabled={!enabled}
+      >
+        <div>
+          <label className={labelClass}>Preview start command (optional)</label>
+          <input
+            type="text"
+            value={preview.startScript || ''}
+            onChange={(e) => setPreviewField('startScript', e.target.value)}
+            placeholder={startPlaceholder}
+            className={inputClass}
+            disabled={!enabled}
+          />
+          <p className="text-[11px] text-gray-500 mt-1">
+            Use a different command for the chat preview (e.g.{' '}
+            <span className="font-mono">npm run dev</span>). Falls back to the runtime start command
+            when empty.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Preview port (optional)</label>
+          <input
+            type="number"
+            value={preview.port || ''}
+            onChange={(e) => setPreviewField('port', e.target.value)}
+            placeholder={portPlaceholder}
+            min="1024"
+            max="65535"
+            className={inputClass}
+            disabled={!enabled}
+          />
+          {errors['preview.port'] && (
+            <p className={errorClass}>
+              <AlertCircle size={12} />
+              {errors['preview.port']}
+            </p>
+          )}
+          <p className="text-[11px] text-gray-500 mt-1">
+            Port the preview command listens on. Falls back to the runtime internal port when empty.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Capture routes</label>
+          <p className="text-[11px] text-gray-500 mb-2">
+            Routes the preview iframe can deep-link into and that the screenshot worker captures.
+            Each must start with <span className="font-mono text-gray-300">/</span>.
+          </p>
+          <div className="space-y-2">
+            {captureRoutes.map((row, i) => {
+              const routeErr = errors[`preview.captureRoutes.${i}`];
+              return (
+                <div key={row._id ?? i} className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={row.value || ''}
+                      onChange={(e) => onRouteChange(i, e.target.value)}
+                      placeholder="/dashboard"
+                      className={`flex-1 ${inputClass}`}
+                      aria-label={`Capture route ${i + 1}`}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      disabled={!enabled}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onRouteRemove(i)}
+                      className="text-red-400 hover:text-red-300 p-2 rounded-lg hover:bg-gray-800 disabled:opacity-50"
+                      aria-label={`Remove capture route ${i + 1}`}
+                      title="Remove"
+                      disabled={!enabled}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                  {routeErr && (
+                    <p className={errorClass}>
+                      <AlertCircle size={12} />
+                      {routeErr}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={onRouteAdd}
+            className="mt-2 bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-50"
+            disabled={!enabled}
+          >
+            <Plus size={12} />
+            Add route
+          </button>
+          {errors['preview.captureRoutes'] && (
+            <p className={errorClass}>
+              <AlertCircle size={12} />
+              {errors['preview.captureRoutes']}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label className={labelClass}>Idle TTL</label>
+          <select
+            value={ttlValue}
+            onChange={(e) => setPreviewField('idleTTL', e.target.value)}
+            className={inputClass}
+            disabled={!enabled}
+            aria-label="Idle TTL preset"
+          >
+            {PR_ENV_PREVIEW_IDLE_TTL_PRESETS.map((preset) => (
+              <option key={preset.seconds} value={String(preset.seconds)}>
+                {preset.label}
+              </option>
+            ))}
+            {/* Preserve a saved-but-non-preset value so reopening the
+                wizard doesn't silently overwrite it on the next save. */}
+            {ttlValue &&
+              !PR_ENV_PREVIEW_IDLE_TTL_PRESETS.some((p) => String(p.seconds) === ttlValue) && (
+                <option value={ttlValue}>{`${ttlValue}s (custom)`}</option>
+              )}
+          </select>
+          {errors['preview.idleTTL'] && (
+            <p className={errorClass}>
+              <AlertCircle size={12} />
+              {errors['preview.idleTTL']}
+            </p>
+          )}
+          <p className="text-[11px] text-gray-500 mt-1">
+            How long the preview runtime stays warm without traffic before it&apos;s torn down.
+          </p>
+        </div>
+
+        <div className="border-t border-gray-800 pt-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h6 className="text-xs font-medium text-gray-200">Test it now</h6>
+              <p className="text-[11px] text-gray-500">
+                Boot the preview for 30 seconds with the settings above and screenshot the first
+                capture route. The runtime stops automatically.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onTestBoot}
+              disabled={!enabled || testBoot.status === 'running'}
+              className="bg-emerald-700 hover:bg-emerald-600 disabled:bg-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed text-white text-xs px-3 py-1.5 rounded-lg flex items-center gap-1 flex-shrink-0"
+            >
+              {testBoot.status === 'running' ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <PlayCircle size={12} />
+              )}
+              {testBoot.status === 'running' ? 'Booting…' : 'Test boot'}
+            </button>
+          </div>
+
+          {testBoot.status === 'ok' && testBoot.screenshotUrl && (
+            <div className="mt-3 space-y-2">
+              <div className="text-[11px] text-emerald-400 flex items-center gap-1">
+                <CheckCircle2 size={12} />
+                Preview booted successfully
+              </div>
+              <img
+                src={testBoot.screenshotUrl}
+                alt="Test-boot preview screenshot"
+                className="max-h-48 w-full rounded border border-gray-700 object-contain object-top bg-white"
+              />
+            </div>
+          )}
+
+          {testBoot.status === 'error' && (
+            <div className="mt-3 space-y-2">
+              <p className={errorClass}>
+                <AlertCircle size={12} />
+                {testBoot.error || 'Preview boot failed'}
+              </p>
+              {Array.isArray(testBoot.logsTail) && testBoot.logsTail.length > 0 && (
+                <pre className="bg-black/40 border border-gray-800 rounded-lg p-2 text-[11px] text-gray-300 font-mono max-h-32 overflow-auto whitespace-pre">
+                  {testBoot.logsTail.join('\n')}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

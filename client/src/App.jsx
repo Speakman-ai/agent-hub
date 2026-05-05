@@ -228,6 +228,27 @@ export default function App() {
   const [workflowSidebarBadgeByProject, setWorkflowSidebarBadgeByProject] = useState({});
   /** Deep-link from Workflows → Settings → GitHub: expand this project row (cleared when leaving Settings). */
   const [settingsGithubExpandProjectId, setSettingsGithubExpandProjectId] = useState(null);
+  /**
+   * Deep-link from the chat preview teach-moment: open the PR-env
+   * wizard for this project with `focus="preview"`. Read once on first
+   * render from `window.location.search` (`?focus=preview&prEnvProject=<id>`),
+   * cleared by SettingsPage after the wizard is opened to avoid
+   * re-opening on tab switches.
+   */
+  const [settingsPrEnvWizard, setSettingsPrEnvWizard] = useState(() => {
+    if (typeof window === 'undefined' || !window.location?.search) return null;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const focus = params.get('focus');
+      const projectId = params.get('prEnvProject') || params.get('project');
+      if (focus === 'preview' && projectId) {
+        return { projectId, focus };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  });
   // Threads state
   const [threadsProjectId, setThreadsProjectId] = useState(null);
   const [activeThreadId, setActiveThreadId] = useState(null);
@@ -3111,6 +3132,8 @@ export default function App() {
                   onAgentsChange={refreshAgents}
                   initialTab={currentView.includes(':') ? currentView.split(':')[1] : undefined}
                   initialGithubExpandedProjectId={settingsGithubExpandProjectId}
+                  initialPrEnvWizard={settingsPrEnvWizard}
+                  onClearInitialPrEnvWizard={() => setSettingsPrEnvWizard(null)}
                   onNavigate={(view, extra) => {
                     setCurrentView(view);
                     if (view === 'threads' && extra) {

@@ -39,7 +39,7 @@ describe('PreviewAttachment', () => {
     expect(container.querySelector('iframe')).toBeNull();
   });
 
-  it('renders the unavailable variant with the wizard link', () => {
+  it('renders the unavailable variant with the focus-appended wizard link', () => {
     const event = {
       kind: 'preview_unavailable',
       previewId: '',
@@ -48,10 +48,55 @@ describe('PreviewAttachment', () => {
       agentReason: 'show me the new badge',
     };
     render(<PreviewAttachment event={event} />);
-    expect(screen.getByText(/Preview is not configured/i)).toBeInTheDocument();
+    expect(screen.getByText(/aren\u2019t set up/i)).toBeInTheDocument();
     expect(screen.getByText(/show me the new badge/i)).toBeInTheDocument();
     const link = screen.getByRole('link', { name: /Configure preview/i });
-    expect(link.getAttribute('href')).toBe('/projects/agent-hub/settings/pr-environments');
+    // Wizard URL should always carry `focus=preview` so the wizard
+    // jumps straight to the preview sub-section on open.
+    expect(link.getAttribute('href')).toBe(
+      '/projects/agent-hub/settings/pr-environments?focus=preview',
+    );
+  });
+
+  it('appends focus=preview correctly when wizardUrl already has a query string', () => {
+    const event = {
+      kind: 'preview_unavailable',
+      previewId: '',
+      wizardUrl: '/projects/agent-hub/settings/pr-environments?tab=runtime',
+      unavailableReason: 'no-pr-env',
+    };
+    render(<PreviewAttachment event={event} />);
+    const link = screen.getByRole('link', { name: /Configure preview/i });
+    expect(link.getAttribute('href')).toBe(
+      '/projects/agent-hub/settings/pr-environments?tab=runtime&focus=preview',
+    );
+  });
+
+  it('hides the teach-moment card when the user clicks Skip', () => {
+    const onSkip = vi.fn();
+    const event = {
+      kind: 'preview_unavailable',
+      previewId: '',
+      wizardUrl: '/projects/agent-hub/settings/pr-environments',
+      unavailableReason: 'no-pr-env',
+    };
+    const { container } = render(<PreviewAttachment event={event} onSkip={onSkip} />);
+    fireEvent.click(screen.getByRole('button', { name: /Skip/i }));
+    expect(onSkip).toHaveBeenCalledWith(event);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('routes the Configure click through onConfigure when supplied', () => {
+    const onConfigure = vi.fn();
+    const event = {
+      kind: 'preview_unavailable',
+      previewId: '',
+      wizardUrl: '/projects/agent-hub/settings/pr-environments',
+      unavailableReason: 'no-pr-env',
+    };
+    render(<PreviewAttachment event={event} onConfigure={onConfigure} />);
+    fireEvent.click(screen.getByRole('link', { name: /Configure preview/i }));
+    expect(onConfigure).toHaveBeenCalledWith(event);
   });
 
   it('renders the failed variant with a log tail and Retry click', () => {

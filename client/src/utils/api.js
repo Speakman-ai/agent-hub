@@ -51,6 +51,21 @@ export const api = {
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       return null;
     }),
+  /**
+   * Trigger a 30-second test boot of the project's preview runtime
+   * (PR-env wizard "Test it now" button). Returns
+   * `{ status: 'ok' | 'error', screenshotUrl?, logsTail?, error? }`.
+   * The endpoint is implemented server-side as
+   * `POST /api/projects/:id/preview/test-boot` — used by
+   * `PrEnvProjectWizard.jsx` to render an inline screenshot before the
+   * user saves their preview config.
+   */
+  testBootPreview: (projectId) =>
+    fetchJSON(`/projects/${projectId}/preview/test-boot`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: null,
+    }),
 
   // Hub workflows (manual runs — MVP)
   getProjectWorkflows: (projectId) => fetchJSON(`/projects/${projectId}/workflows`),

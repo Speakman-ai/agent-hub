@@ -15,13 +15,15 @@ import { useState } from 'react';
  * chat view. `onRetry` re-issues the original chat message; `onTouch`
  * pings the runtime so the idle-TTL clock resets.
  */
-export default function PreviewAttachment({ event, onRetry, onTouch }) {
+export default function PreviewAttachment({ event, onRetry, onTouch, onConfigure, onSkip }) {
   const [iframeOpen, setIframeOpen] = useState(false);
 
   if (!event || typeof event !== 'object') return null;
 
   const { kind } = event;
-  if (kind === 'preview_unavailable') return <PreviewUnavailable event={event} />;
+  if (kind === 'preview_unavailable') {
+    return <PreviewUnavailable event={event} onConfigure={onConfigure} onSkip={onSkip} />;
+  }
   if (kind === 'preview_failed') return <PreviewFailed event={event} onRetry={onRetry} />;
 
   // Default: a live preview event.
@@ -94,12 +96,30 @@ export default function PreviewAttachment({ event, onRetry, onTouch }) {
   );
 }
 
-function PreviewUnavailable({ event }) {
+function PreviewUnavailable({ event, onConfigure, onSkip }) {
   const { wizardUrl, unavailableReason, agentReason } = event;
+  const [skipped, setSkipped] = useState(false);
   const headline =
     unavailableReason === 'preview-disabled'
       ? 'Preview is disabled for this project'
-      : 'Preview is not configured for this project';
+      : 'Live previews aren\u2019t set up for this project yet.';
+  // Append `?focus=preview` to the server-supplied wizard URL so the
+  // wizard opens scrolled to the preview sub-section. We tolerate URLs
+  // that already carry a query string.
+  const focusedWizardUrl = wizardUrl
+    ? wizardUrl + (wizardUrl.includes('?') ? '&' : '?') + 'focus=preview'
+    : null;
+  if (skipped) return null;
+  const handleConfigure = (e) => {
+    if (typeof onConfigure === 'function') {
+      e.preventDefault();
+      onConfigure(event);
+    }
+  };
+  const handleSkip = () => {
+    setSkipped(true);
+    if (typeof onSkip === 'function') onSkip(event);
+  };
   return (
     <div className="my-3 rounded-lg border border-amber-700/60 bg-amber-900/20 p-3 text-sm text-amber-100">
       <div className="mb-1 font-medium">{headline}</div>
@@ -116,9 +136,10 @@ function PreviewUnavailable({ event }) {
         requests can boot a live worktree preview here.
       </div>
       <div className="flex gap-2">
-        {wizardUrl && (
+        {focusedWizardUrl && (
           <a
-            href={wizardUrl}
+            href={focusedWizardUrl}
+            onClick={handleConfigure}
             className="rounded bg-amber-700 px-3 py-1 text-xs font-medium text-white hover:bg-amber-600"
           >
             Configure preview
@@ -126,9 +147,10 @@ function PreviewUnavailable({ event }) {
         )}
         <button
           type="button"
+          onClick={handleSkip}
           className="rounded bg-gray-700 px-3 py-1 text-xs font-medium text-white hover:bg-gray-600"
         >
-          Skip
+          Skip — keep going
         </button>
       </div>
     </div>

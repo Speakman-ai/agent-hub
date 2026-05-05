@@ -2202,6 +2202,14 @@ function ProjectsSection({
   showToast,
   /** When set (e.g. deep-link from Workflows page), expand this project card on load. */
   initialExpandedProjectId = null,
+  /**
+   * Deep-link from the chat preview teach-moment:
+   * `{ projectId, focus: 'preview' }`. When set, auto-opens the
+   * PR-env wizard for that project with the preview sub-section in
+   * focus. Cleared via `onClearInitialPrEnvWizard` after use.
+   */
+  initialPrEnvWizard = null,
+  onClearInitialPrEnvWizard,
 }) {
   const [projectWorkflow, setProjectWorkflow] = useState({});
   const [modelConfig, setModelConfig] = useState(null);
@@ -2230,6 +2238,27 @@ function ProjectsSection({
 
   // PR-env wizard target — when set, renders the modal for that project.
   const [prEnvWizardProject, setPrEnvWizardProject] = useState(null);
+  /** Optional focus hint for the wizard (e.g. `'preview'`). Cleared when
+   *  the wizard closes so a manual reopen lands on step 0 again. */
+  const [prEnvWizardFocus, setPrEnvWizardFocus] = useState(null);
+  /** Guards the deep-link auto-open so we run it once per `initialPrEnvWizard` value. */
+  const lastPrEnvDeepLinkRef = useRef(null);
+
+  // Honour the chat → settings preview deep-link. When the URL carries
+  // `?focus=preview&prEnvProject=<id>`, App.jsx populates
+  // `initialPrEnvWizard` and we open the wizard once the matching
+  // project is loaded. We clear App's state via the prop callback so
+  // tab-switching inside Settings doesn't re-trigger the open.
+  useEffect(() => {
+    if (!initialPrEnvWizard?.projectId) return;
+    if (lastPrEnvDeepLinkRef.current === initialPrEnvWizard.projectId) return;
+    const target = projects.find((p) => p.id === initialPrEnvWizard.projectId);
+    if (!target) return;
+    setPrEnvWizardProject(target);
+    setPrEnvWizardFocus(initialPrEnvWizard.focus || null);
+    lastPrEnvDeepLinkRef.current = initialPrEnvWizard.projectId;
+    if (typeof onClearInitialPrEnvWizard === 'function') onClearInitialPrEnvWizard();
+  }, [initialPrEnvWizard, projects, onClearInitialPrEnvWizard]);
 
   useEffect(() => {
     if (!initialExpandedProjectId) {
@@ -2775,7 +2804,12 @@ function ProjectsSection({
                           </div>
                         </div>
                         <button
-                          onClick={() => setPrEnvWizardProject(p)}
+                          onClick={() => {
+                            // Reset deep-link focus on a manual open so
+                            // step 0 (the explainer toggle) is shown.
+                            setPrEnvWizardFocus(null);
+                            setPrEnvWizardProject(p);
+                          }}
                           className="bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg flex items-center gap-1 flex-shrink-0"
                         >
                           <GitBranch size={12} />
@@ -2821,9 +2855,14 @@ function ProjectsSection({
       {prEnvWizardProject && (
         <PrEnvProjectWizard
           project={prEnvWizardProject}
-          onClose={() => setPrEnvWizardProject(null)}
+          focus={prEnvWizardFocus}
+          onClose={() => {
+            setPrEnvWizardProject(null);
+            setPrEnvWizardFocus(null);
+          }}
           onSaved={() => {
             setPrEnvWizardProject(null);
+            setPrEnvWizardFocus(null);
             if (typeof onProjectsChange === 'function') onProjectsChange();
           }}
           showToast={showToast}
@@ -6743,11 +6782,26 @@ export default function SettingsPage({
   initialTab,
   /** When opening Settings → GitHub from Workflows, expand this project's card. */
   initialGithubExpandedProjectId = null,
+  /**
+   * Deep-link from the chat preview teach-moment. When set to
+   * `{ projectId, focus: 'preview' }`, SettingsPage switches to the
+   * Projects tab and forwards the focus into ProjectsSection so it can
+   * auto-open `PrEnvProjectWizard` scrolled to the preview sub-section.
+   */
+  initialPrEnvWizard = null,
+  /** Called once the wizard has consumed the deep-link so the parent
+   *  can clear its state and avoid re-opening on tab switches. */
+  onClearInitialPrEnvWizard,
   onNavigate,
   showToast,
   wsRef,
 }) {
-  const [tab, setTab] = useState(initialTab || 'general');
+  // Honour the preview deep-link by switching to the Projects tab on
+  // first render — the wizard mounts inside ProjectsSection and won't
+  // appear from any other tab.
+  const [tab, setTab] = useState(
+    initialPrEnvWizard?.projectId ? 'projects' : initialTab || 'general',
+  );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // When navigating directly to a specific tab (e.g. from OrgSwitcher)
@@ -6869,7 +6923,11 @@ export default function SettingsPage({
                   projects={projects}
                   onProjectsChange={onAgentsChange}
                   showToast={showToast}
-                  initialExpandedProjectId={initialGithubExpandedProjectId}
+                  initialExpandedProjectId={
+                    initialGithubExpandedProjectId || initialPrEnvWizard?.projectId || null
+                  }
+                  initialPrEnvWizard={initialPrEnvWizard}
+                  onClearInitialPrEnvWizard={onClearInitialPrEnvWizard}
                 />
               )}
               {tab === 'orgs' && <OrganizationsSection />}

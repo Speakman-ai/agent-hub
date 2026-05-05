@@ -32,6 +32,30 @@ export const PR_ENV_MAX_VALUE_LEN = 4096;
 export const PR_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const PR_ENV_RESERVED_KEYS = new Set(['PORT']);
 
+// Mirror of the preview sub-config caps in
+// `server/routes/projects.ts:validatePrEnvPreview`. Kept in sync by hand —
+// the test suite exercises each boundary so a server-side bump that
+// isn't reflected here will surface as a failing wizard test.
+export const PR_ENV_PREVIEW_MAX_ROUTES = 10;
+export const PR_ENV_PREVIEW_PORT_MIN = 1024;
+export const PR_ENV_PREVIEW_PORT_MAX = 65535;
+export const PR_ENV_PREVIEW_IDLE_TTL_MIN = 60;
+export const PR_ENV_PREVIEW_IDLE_TTL_MAX = 86400;
+/**
+ * Idle-TTL preset choices in seconds. The wizard renders these as a
+ * dropdown so users don't have to know about the underlying bounds. Any
+ * other value is still accepted by the server validator (so a future
+ * "custom seconds" input can drop in without churn here).
+ */
+export const PR_ENV_PREVIEW_IDLE_TTL_PRESETS = Object.freeze([
+  { label: '5 minutes', seconds: 300 },
+  { label: '10 minutes', seconds: 600 },
+  { label: '30 minutes', seconds: 1800 },
+  { label: '60 minutes', seconds: 3600 },
+]);
+/** Default idle-TTL when the user hasn't picked one. Matches the wiki's "10 min" suggestion. */
+export const PR_ENV_PREVIEW_DEFAULT_IDLE_TTL = 600;
+
 /** Default empty form state for a brand-new project. */
 export const EMPTY_FORM = Object.freeze({
   enabled: false,
@@ -45,6 +69,20 @@ export const EMPTY_FORM = Object.freeze({
   // without rerendering the whole list. `validateForm` collapses it
   // into the Record<string,string> shape the server expects.
   envRows: Object.freeze([]),
+  // ── preview sub-section ─────────────────────────────────────────────
+  // Mirrors PrEnvPreviewConfig (server/types.ts). Kept flat in form
+  // state so the wizard can render each control off a single key, then
+  // collapsed back into a nested `preview: {…}` payload by validateForm.
+  preview: Object.freeze({
+    enabled: false,
+    startScript: '',
+    port: '',
+    // Capture-routes use the same stable-row pattern as envRows — the
+    // wizard injects a `_id` UUID at hydrate time so React keys survive
+    // reorder/insert/delete without remounting the input.
+    captureRoutes: Object.freeze([{ value: '/' }]),
+    idleTTL: String(PR_ENV_PREVIEW_DEFAULT_IDLE_TTL),
+  }),
 });
 
 /**
@@ -53,7 +91,19 @@ export const EMPTY_FORM = Object.freeze({
  * are coerced to strings/booleans the inputs can render directly.
  */
 export function formFromConfig(config) {
-  if (!config || typeof config !== 'object') return { ...EMPTY_FORM, envRows: [] };
+  if (!config || typeof config !== 'object') {
+    return {
+      ...EMPTY_FORM,
+      envRows: [],
+      preview: {
+        enabled: false,
+        startScript: '',
+        port: '',
+        captureRoutes: [{ value: '/' }],
+        idleTTL: String(PR_ENV_PREVIEW_DEFAULT_IDLE_TTL),
+      },
+    };
+  }
   // Hydrate env rows in stable insertion order. Object.entries is
   // ordered for string keys per spec, so a saved → reopened wizard
   // shows the same order the user entered.
@@ -75,6 +125,44 @@ export function formFromConfig(config) {
     healthPath: typeof config.healthPath === 'string' ? config.healthPath : '',
     dockerfilePath: typeof config.dockerfilePath === 'string' ? config.dockerfilePath : '',
     envRows,
+    preview: previewFormFromConfig(config.preview),
+  };
+}
+
+/**
+ * Hydrate the preview sub-form from a saved `PrEnvPreviewConfig`. Keeps
+ * the wizard rendering even when older projects predate the preview
+ * block (we just fall back to the empty defaults).
+ *
+ * Capture-route rows always include at least one entry — an empty row
+ * is friendlier than a "no rows" empty state for a list whose default
+ * is `["/"]` anyway, and it matches the env-row pattern.
+ */
+function previewFormFromConfig(preview) {
+  if (!preview || typeof preview !== 'object' || Array.isArray(preview)) {
+    return {
+      enabled: false,
+      startScript: '',
+      port: '',
+      captureRoutes: [{ value: '/' }],
+      idleTTL: String(PR_ENV_PREVIEW_DEFAULT_IDLE_TTL),
+    };
+  }
+  const rawRoutes = Array.isArray(preview.captureRoutes) ? preview.captureRoutes : null;
+  const captureRoutes =
+    rawRoutes && rawRoutes.length > 0
+      ? rawRoutes.map((value) => ({ value: typeof value === 'string' ? value : '' }))
+      : [{ value: '/' }];
+  return {
+    enabled: !!preview.enabled,
+    startScript: typeof preview.startScript === 'string' ? preview.startScript : '',
+    port:
+      typeof preview.port === 'number' && Number.isFinite(preview.port) ? String(preview.port) : '',
+    captureRoutes,
+    idleTTL:
+      typeof preview.idleTTL === 'number' && Number.isFinite(preview.idleTTL)
+        ? String(preview.idleTTL)
+        : String(PR_ENV_PREVIEW_DEFAULT_IDLE_TTL),
   };
 }
 
@@ -193,6 +281,13 @@ export function validateForm(form) {
     errors.env = `At most ${PR_ENV_MAX_VARS} environment variables are allowed (got ${envCount}).`;
   }
 
+  // ── preview sub-config ────────────────────────────────────────────
+  // Mirrors `validatePrEnvPreview` in `server/routes/projects.ts`. We
+  // only re-check fields the user actually filled in: an entirely
+  // untouched (or `enabled: false`) preview block falls through with
+  // no payload contribution, matching the server's "absent slot" path.
+  const previewPayload = validatePreviewSubForm(form.preview, errors);
+
   if (Object.keys(errors).length > 0) return { ok: false, errors };
 
   const payload = {
@@ -204,7 +299,102 @@ export function validateForm(form) {
   if (healthPath) payload.healthPath = healthPath;
   if (dockerfilePath) payload.dockerfilePath = dockerfilePath;
   if (envCount > 0) payload.env = env;
+  if (previewPayload) payload.preview = previewPayload;
   return { ok: true, payload };
+}
+
+/**
+ * Validate the preview sub-form and return the payload-shaped object
+ * the server expects under `prEnv.preview`. Errors are mutated onto
+ * `errors` keyed under `preview.<field>` so the wizard can highlight
+ * the offending input. Returns `undefined` when the preview block was
+ * left at its defaults (toggle off, no fields touched) — the server
+ * treats absence and `enabled: false` differently for round-tripping,
+ * so we always emit `{enabled: false}` once the user has flipped the
+ * toggle even briefly.
+ */
+function validatePreviewSubForm(rawPreview, errors) {
+  const preview = rawPreview && typeof rawPreview === 'object' ? rawPreview : null;
+  if (!preview) return undefined;
+  const enabled = !!preview.enabled;
+
+  // Toggle off: round-trip the explicit off state, ignore every other
+  // field. Mirrors the server's "preserve the slot when disabled" rule.
+  if (!enabled) {
+    return { enabled: false };
+  }
+
+  const startScript = typeof preview.startScript === 'string' ? preview.startScript.trim() : '';
+
+  // Port: optional. Empty string falls back to the parent's internalPort
+  // at runtime — we only validate if the user provided a value.
+  let port;
+  const portStr = String(preview.port ?? '').trim();
+  if (portStr) {
+    const n = Number(portStr);
+    if (
+      !Number.isFinite(n) ||
+      !Number.isInteger(n) ||
+      n < PR_ENV_PREVIEW_PORT_MIN ||
+      n > PR_ENV_PREVIEW_PORT_MAX
+    ) {
+      errors['preview.port'] =
+        `Port must be an integer between ${PR_ENV_PREVIEW_PORT_MIN} and ${PR_ENV_PREVIEW_PORT_MAX}.`;
+    } else {
+      port = n;
+    }
+  }
+
+  // Capture routes: drop blank rows, validate each remaining entry, cap
+  // at PR_ENV_PREVIEW_MAX_ROUTES. Errors are keyed by row index so the
+  // chip editor can highlight the bad row.
+  const rows = Array.isArray(preview.captureRoutes) ? preview.captureRoutes : [];
+  const routes = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || {};
+    const raw = typeof row.value === 'string' ? row.value.trim() : '';
+    if (!raw) continue;
+    if (!raw.startsWith('/')) {
+      errors[`preview.captureRoutes.${i}`] = 'Route must start with `/` (e.g. `/dashboard`).';
+      continue;
+    }
+    routes.push(raw);
+  }
+  if (routes.length > PR_ENV_PREVIEW_MAX_ROUTES) {
+    errors['preview.captureRoutes'] =
+      `At most ${PR_ENV_PREVIEW_MAX_ROUTES} capture routes are allowed (got ${routes.length}).`;
+  }
+
+  // Idle TTL: dropdown values are always in-range, but we still bound
+  // here because the wizard could grow a custom-seconds input later.
+  let idleTTL;
+  const ttlStr = String(preview.idleTTL ?? '').trim();
+  if (ttlStr) {
+    const n = Number(ttlStr);
+    if (
+      !Number.isFinite(n) ||
+      !Number.isInteger(n) ||
+      n < PR_ENV_PREVIEW_IDLE_TTL_MIN ||
+      n > PR_ENV_PREVIEW_IDLE_TTL_MAX
+    ) {
+      errors['preview.idleTTL'] =
+        `Idle TTL must be between ${PR_ENV_PREVIEW_IDLE_TTL_MIN} and ${PR_ENV_PREVIEW_IDLE_TTL_MAX} seconds.`;
+    } else {
+      idleTTL = n;
+    }
+  }
+
+  // Bail before building the payload if any preview field errored —
+  // the parent will surface the per-field messages.
+  const hasPreviewErrors = Object.keys(errors).some((k) => k.startsWith('preview.'));
+  if (hasPreviewErrors) return undefined;
+
+  const payload = { enabled: true };
+  if (startScript) payload.startScript = startScript;
+  if (port !== undefined) payload.port = port;
+  if (routes.length > 0) payload.captureRoutes = routes;
+  if (idleTTL !== undefined) payload.idleTTL = idleTTL;
+  return payload;
 }
 
 /**
