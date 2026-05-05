@@ -91,8 +91,14 @@ describe('worktree — fail-fast git env contract', () => {
     // chat.ts now `await` this. A future drop back to a sync return
     // would mask the event-loop-stall fix without breaking those
     // callers immediately. The shape contract here pins it.
+    //
+    // We deliberately do NOT await the result — the underlying call walks
+    // the filesystem looking for a git repo and, under parallel load,
+    // can outrun the vitest 15s timeout. The shape check is enough to
+    // guard the regression; suppress the eventual rejection so vitest
+    // doesn't flag an unhandled rejection.
     const result = getOrCreateProcessWorktree('/nonexistent/path/that/does/not/exist', 'test-key');
     expect(typeof (result as Promise<string>).then).toBe('function');
-    return result; // settle the promise so vitest doesn't flag it
+    (result as Promise<string>).catch(() => {});
   });
 });

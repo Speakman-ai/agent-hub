@@ -1,29 +1,39 @@
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 
-// AGENT_HUB_DATA_DIR / AGENT_HUB_TEST_MODE / AGENT_HUB_PORT are set via
-// `test.env` in vitest.config.ts so they're present before any module
-// loads server/config.ts. Trust that value here; we only use it to create
-// the dir on disk + seed projects.json + arrange teardown.
-const TEST_DATA_DIR: string =
+// Per-FILE isolation. vitest invokes setupFiles before each test file is
+// imported, so by overriding AGENT_HUB_DATA_DIR to a fresh random subdir
+// here, every test file's first import of server/config.ts (which reads
+// the env var at module load) sees a unique on-disk location. This is
+// what lets `pool: 'forks'` + `isolate: true` run in parallel without
+// leaking SQLite databases, projects.json, auth.json, etc. across files.
+//
+// Note: vitest forks reuse OS processes across files within a worker,
+// so process.pid is NOT unique per file. The randomUUID subdir below is.
+//
+// vitest.config.ts seeded AGENT_HUB_DATA_DIR to a per-process base under
+// os.tmpdir() — we nest one more level under it so cleanup is bounded and
+// the safety rail in server/config.ts (which refuses to run tests pointing
+// at the production data dir) still passes.
+const BASE_DIR =
   process.env.AGENT_HUB_DATA_DIR ?? path.join(os.tmpdir(), `agent-hub-test-${process.pid}`);
+const TEST_DATA_DIR = path.join(BASE_DIR, `file-${crypto.randomUUID()}`);
 
-// Hard-fail fast if someone imports setup.ts with the env var pointing at
-// something that looks like a real home-dir data dir — defence in depth on
-// top of the config.ts guard.
+// Defence-in-depth: never let a test write outside os.tmpdir().
 if (!TEST_DATA_DIR.startsWith(os.tmpdir())) {
   throw new Error(
     `[test/setup] AGENT_HUB_DATA_DIR must live under ${os.tmpdir()} for tests. Got: ${TEST_DATA_DIR}`,
   );
 }
 
+// Override BEFORE the test file body imports anything from server/.
+process.env.AGENT_HUB_DATA_DIR = TEST_DATA_DIR;
 delete process.env.AGENT_HUB_API_KEY;
 
 mkdirSync(TEST_DATA_DIR, { recursive: true });
-if (!existsSync(path.join(TEST_DATA_DIR, 'projects.json'))) {
-  writeFileSync(path.join(TEST_DATA_DIR, 'projects.json'), '[]');
-}
+writeFileSync(path.join(TEST_DATA_DIR, 'projects.json'), '[]');
 
 afterAll(() => {
   try {

@@ -18,8 +18,16 @@ export default defineConfig({
     // test run.
     exclude: ['**/node_modules/**', 'provisioning/templates/*/files/**'],
     setupFiles: ['./test/setup.ts'],
+    // File-level parallelism is ON. Each test file gets a fresh random subdir
+    // under TEST_DATA_DIR (set in test/setup.ts before any server module
+    // loads), so SQLite files / projects.json / auth.json / etc. never leak
+    // across files. `isolate: true` (Vitest's default for `pool: 'forks'`)
+    // reloads the module graph per file so config.ts re-reads
+    // AGENT_HUB_DATA_DIR after setup.ts has redirected it. See
+    // `feature/test-suite-slim-down` for the original turn-on PR.
     sequence: { concurrent: false },
-    fileParallelism: false,
+    pool: 'forks',
+    isolate: true,
     testTimeout: 15000,
     // Server initialization (index.ts import) takes longer than vitest's
     // default hookTimeout of 10 s on cold starts (DB init, skill sync, etc.)
