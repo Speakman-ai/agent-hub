@@ -113,6 +113,30 @@ if [ ! -f "/etc/letsencrypt/live/${pr_env_preview_host}/fullchain.pem" ]; then
     -m "${cert_renewal_email}" \
     || echo "WARN: certbot --dns-route53 failed at first boot; per-PR vhosts will be unavailable until the cert is issued. Check cloud-init logs and Route 53 IAM perms." >&2
 fi
+
+# ── Open traversal on /etc/letsencrypt for the containerized PR-env validator ──
+# certbot's default mode on /etc/letsencrypt/{live,archive} is 0700 root:root,
+# which means the Hub container (running as uid 1000) cannot read fullchain.pem
+# even with the read-only bind-mount in agenthub-server-run.sh. The validator's
+# wildcard-cert check then falsely reports "missing".
+#
+# Relax the two parent dirs to 0755 so any uid can traverse and read the public
+# cert chain. Privkey files stay 0600 root:root (certbot's default), so this
+# does NOT expose the private key — only the public-half artifacts that any
+# TLS client on the internet already sees during a handshake.
+#
+# Also drop a deploy-hook that re-applies these perms after every renewal,
+# because certbot resets parent dir modes back to 0700 on renew.
+chmod 0755 /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null || true
+install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
+cat >/etc/letsencrypt/renewal-hooks/deploy/00-relax-traversal.sh <<'HOOK'
+#!/bin/bash
+# Re-relax /etc/letsencrypt/{live,archive} to 0755 after each renewal so the
+# Hub container (uid 1000) can keep reading fullchain.pem through the RO
+# bind-mount. Privkeys stay 0600 root:root.
+chmod 0755 /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null || true
+HOOK
+chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/00-relax-traversal.sh
 %{ endif ~}
 
 %{ if use_ecr_pull }
