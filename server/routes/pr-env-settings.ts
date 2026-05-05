@@ -18,6 +18,7 @@ import { Router, Request, Response } from 'express';
 import { access, constants, readFile } from 'fs/promises';
 import { spawn } from 'child_process';
 import { createSign, X509Certificate } from 'crypto';
+import { Route53Client, GetHostedZoneCommand } from '@aws-sdk/client-route-53';
 import type Database from 'better-sqlite3';
 import {
   readPrEnvConfigMasked,
@@ -276,17 +277,19 @@ async function defaultCheckGithubApp(
 }
 
 /**
- * Call Route53's `GetHostedZone` via the AWS CLI — shells out rather than
- * pulling in the AWS SDK so we keep the dependency surface small and can
- * capture stderr verbatim.
+ * Call Route53's `GetHostedZone` via the AWS SDK.
  *
- * When `accessKeyId` and `secretAccessKey` are both empty, the spawned
- * `aws` CLI inherits `process.env` and uses the default credential chain
- * (env → shared config → IAM Role via IMDSv2). This is the supported
- * "let infra do it" path — operators running the Terraform module get
- * the correct Route 53 policy attached to the EC2 instance role
- * automatically. `hostedZoneId` is still required because it tells the
- * CLI which zone to describe; it's a routing parameter, not a credential.
+ * When `accessKeyId` and `secretAccessKey` are both empty, the SDK's
+ * default credential provider chain resolves through env → shared config
+ * → IAM Role via IMDSv2. This is the supported "let infra do it" path —
+ * operators running the Terraform module get the correct Route 53 policy
+ * attached to the EC2 instance role automatically. `hostedZoneId` is
+ * required because it tells the API which zone to describe.
+ *
+ * Previously this shelled out to the `aws` CLI; that broke containerised
+ * Hub deployments where the binary isn't in the image. The SDK is already
+ * a transitive dependency of the host (the wider Hub uses other AWS SDK
+ * clients) so adding `@aws-sdk/client-route-53` is cheap.
  */
 async function defaultCheckRoute53(
   accessKeyId: string,
@@ -311,54 +314,38 @@ async function defaultCheckRoute53(
     };
   }
   const useExplicitCreds = !!accessKeyId && !!secretAccessKey;
-  return new Promise((resolve) => {
-    let stderr = '';
-    const baseEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      // Route53 is a global (non-regional) service but the SDK insists.
-      AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION || 'us-east-1',
-    };
-    if (useExplicitCreds) {
-      baseEnv.AWS_ACCESS_KEY_ID = accessKeyId;
-      baseEnv.AWS_SECRET_ACCESS_KEY = secretAccessKey;
-      // Clear ambient session/profile so static creds aren't shadowed.
-      delete baseEnv.AWS_SESSION_TOKEN;
-      delete baseEnv.AWS_PROFILE;
-      delete baseEnv.AWS_DEFAULT_PROFILE;
-    }
-    const proc = spawn(
-      'aws',
-      ['route53', 'get-hosted-zone', '--id', hostedZoneId, '--output', 'json'],
-      {
-        stdio: ['ignore', 'ignore', 'pipe'],
-        env: baseEnv,
-      },
-    );
-    proc.stderr?.on('data', (b) => (stderr += String(b)));
-    proc.on('error', (err) =>
-      resolve({
-        name: 'route53',
-        pass: false,
-        message: `aws CLI not available: ${err.message}`,
-      }),
-    );
-    proc.on('close', (code) => {
-      if (code === 0) {
-        const credsLabel = useExplicitCreds ? 'explicit creds' : 'instance role / default chain';
-        resolve({
-          name: 'route53',
-          pass: true,
-          message: `Hosted zone ${hostedZoneId} reachable (${credsLabel}).`,
-        });
-      } else {
-        resolve({
-          name: 'route53',
-          pass: false,
-          message: `aws route53 get-hosted-zone failed (exit ${code}): ${stderr.trim().split('\n')[0] || 'no output'}`,
-        });
-      }
+  try {
+    const client = new Route53Client({
+      // Route 53 is a global service but the SDK still requires a region.
+      region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1',
+      // Only override the credential provider when explicit static keys
+      // are supplied; otherwise fall through to the default chain so the
+      // EC2 instance role / IMDSv2 path works without any ambient env.
+      ...(useExplicitCreds
+        ? {
+            credentials: {
+              accessKeyId,
+              secretAccessKey,
+            },
+          }
+        : {}),
     });
-  });
+    await client.send(new GetHostedZoneCommand({ Id: hostedZoneId }));
+    const credsLabel = useExplicitCreds ? 'explicit creds' : 'instance role / default chain';
+    return {
+      name: 'route53',
+      pass: true,
+      message: `Hosted zone ${hostedZoneId} reachable (${credsLabel}).`,
+    };
+  } catch (err: unknown) {
+    const e = err as { name?: string; message?: string };
+    const tag = e?.name ? `${e.name}: ` : '';
+    return {
+      name: 'route53',
+      pass: false,
+      message: `Route 53 GetHostedZone failed: ${tag}${e?.message ?? String(err)}`,
+    };
+  }
 }
 
 /**

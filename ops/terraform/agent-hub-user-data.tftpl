@@ -286,11 +286,25 @@ if [ -z "\$DOCKER_SOCK_GID" ] || [ "\$DOCKER_SOCK_GID" = "0" ]; then
   echo "ERROR: /var/run/docker.sock GID resolved to '\$DOCKER_SOCK_GID' (missing or root). Refusing to start with --group-add 0; install Docker on the host or disable enable_pr_env_host_nginx." >&2
   exit 1
 fi
+# PR-env validator + per-PR vhost dispatch needs visibility into the host's
+# nginx config, the wildcard cert, and the host PID namespace:
+#   - /etc/nginx       (rw): drop per-PR vhost files into conf.d so the host
+#                            nginx (which already includes conf.d/*.conf via
+#                            the base vhost) picks them up on reload.
+#   - /etc/letsencrypt (ro): the validator confirms the wildcard cert exists
+#                            at the path the per-PR vhosts will reference.
+#   - --pid=host           : the validator runs `pgrep nginx`/`systemctl
+#                            is-active nginx` to confirm the host's nginx is
+#                            up. Without --pid=host the container has its own
+#                            PID namespace and both checks falsely fail.
 exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
   -v "\$DATA_ROOT/projects:/home/node/projects" \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /etc/nginx:/etc/nginx \
+  -v /etc/letsencrypt:/etc/letsencrypt:ro \
+  --pid=host \
   --group-add "\$DOCKER_SOCK_GID" \
   --add-host host.docker.internal:host-gateway \
   --env-file "\$REPO_DIR/.env" \

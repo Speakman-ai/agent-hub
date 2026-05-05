@@ -197,12 +197,19 @@ locals {
       prEnvDataDir   = "/data/pr-env-databases"
       envFilesDir    = "/data/pr-env-envfiles"
       nginx = {
+        # Amazon Linux uses conf.d (no Debian-style sites-available/enabled).
+        # Both fields point at the same dir so the validator and the per-PR
+        # vhost writer agree.
         sitesAvailableDir = "/etc/nginx/conf.d"
         sitesEnabledDir   = "/etc/nginx/conf.d"
-        certPath          = "/etc/letsencrypt/live/${local.pr_env_preview_host_resolved}/fullchain.pem"
-        keyPath           = "/etc/letsencrypt/live/${local.pr_env_preview_host_resolved}/privkey.pem"
-        certHome          = "/etc/letsencrypt"
-        previewHost       = local.pr_env_preview_host_resolved
+        # Base vhost the user-data first-boot script writes (line 62 of
+        # agent-hub-user-data.tftpl). The validator checks this path is
+        # non-empty as proof the OOB nginx wiring landed.
+        baseVhostPath = "/etc/nginx/conf.d/agent-hub-pr-base.conf"
+        certPath      = "/etc/letsencrypt/live/${local.pr_env_preview_host_resolved}/fullchain.pem"
+        keyPath       = "/etc/letsencrypt/live/${local.pr_env_preview_host_resolved}/privkey.pem"
+        certHome      = "/etc/letsencrypt"
+        previewHost   = local.pr_env_preview_host_resolved
       }
       portRange = {
         min = 3100
