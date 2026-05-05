@@ -173,6 +173,14 @@ Hope that helps.`;
     expect(result.task?.target).toBe('client');
   });
 
+  it('accepts target="fullstack" for the draft-PR / PR-env path', () => {
+    const result = detectPreviewBlock(
+      `<agenthub:preview>{"target":"fullstack","route":"/dashboard"}</agenthub:preview>`,
+    );
+    expect(result.present).toBe(true);
+    expect(result.task).toEqual({ target: 'fullstack', route: '/dashboard' });
+  });
+
   it('tolerates a fenced code block inside the tag', () => {
     const result = detectPreviewBlock(
       '<agenthub:preview>\n```json\n' +

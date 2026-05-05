@@ -3,7 +3,7 @@ import type { ChildProcess } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { stmts as _stmts } from './db.js';
+import { getDb, stmts as _stmts } from './db.js';
 import { createStreamParser } from './stream-parser.js';
 import config, { defaultModelForEngine, buildSpawnEnv } from './config.js';
 import { getActualPort } from './server-port.js';
@@ -40,6 +40,8 @@ import {
   describePreviewReason,
   handlePreviewBlock,
 } from './preview/preview-block.js';
+import { handleFullstackPreviewBlock } from './preview/fullstack-preview.js';
+import { readPrEnvConfigRow } from './pr-env-store.js';
 import type { PreviewRuntime } from './preview/preview-runtime.js';
 import {
   detectSkillBlock as detectSkillInvokeBlock,
@@ -2958,19 +2960,101 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
       if (previewDetection.task) {
         const previewTask = previewDetection.task;
-        const previewRuntime = getPreviewRuntime ? getPreviewRuntime() : null;
-        // Fire-and-forget — the chat flow must not block on preview boot.
-        // The handler funnels every outcome (success, unconfigured, failure)
-        // into a broadcast event so the UI gets a final state.
-        void handlePreviewBlock(sessionId, previewTask, {
-          runtime: previewRuntime,
-          broadcast,
-          project,
-          worktreePath: effectiveCwd,
-        }).catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error('[Preview] Unexpected handler error:', message);
-        });
+        // ── Fullstack target → draft-PR + container-pool poll ─────
+        if (previewTask.target === 'fullstack') {
+          const prEnvRow = (() => {
+            try {
+              return readPrEnvConfigRow();
+            } catch {
+              return null;
+            }
+          })();
+          const previewBaseUrl = prEnvRow?.previewBaseUrl ?? '';
+          // Reuse the existing execFile import. argv is fully driven
+          // by the handler (no shell interpolation), so an array form
+          // with `execFile` is the right safety primitive here.
+          const runCmd = (
+            bin: string,
+          ): ((
+            args: readonly string[],
+            cwd: string,
+          ) => Promise<{ stdout: string; stderr: string }>) => {
+            return (args, cwd) =>
+              new Promise((resolve, reject) => {
+                execFile(bin, args as string[], { cwd, timeout: 60_000 }, (err, stdout, stderr) => {
+                  if (err) {
+                    // Surface stderr in the error message so the
+                    // handler can pattern-match (e.g. for the
+                    // "PR already exists" recovery branch).
+                    const e = err as NodeJS.ErrnoException & {
+                      stdout?: string;
+                      stderr?: string;
+                    };
+                    const composed =
+                      (e.message || '') +
+                      (stderr ? '\n' + String(stderr) : '') +
+                      (stdout ? '\n' + String(stdout) : '');
+                    reject(new Error(composed));
+                    return;
+                  }
+                  resolve({ stdout: String(stdout || ''), stderr: String(stderr || '') });
+                });
+              });
+          };
+          void handleFullstackPreviewBlock(sessionId, previewTask, {
+            broadcast,
+            project,
+            worktreePath: effectiveCwd,
+            previewBaseUrl,
+            git: runCmd('git'),
+            gh: runCmd('gh'),
+            getPoolSlotByPrNumber: (prNumber) => {
+              try {
+                const row = getDb()
+                  .prepare(
+                    `SELECT slot_id, class, status, container_id, pr_number
+                       FROM pool_slots
+                      WHERE class = 'pr_env' AND pr_number = ?
+                      ORDER BY started_at DESC
+                      LIMIT 1`,
+                  )
+                  .get(prNumber) as
+                  | {
+                      slot_id: string;
+                      class: 'pr_env';
+                      status: 'free' | 'reserved' | 'busy' | 'draining' | 'failed';
+                      container_id: string | null;
+                      pr_number: number | null;
+                    }
+                  | undefined;
+                return row ?? null;
+              } catch (err) {
+                console.warn(
+                  '[Fullstack Preview] pool_slots query failed:',
+                  err instanceof Error ? err.message : String(err),
+                );
+                return null;
+              }
+            },
+          }).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error('[Fullstack Preview] Unexpected handler error:', message);
+          });
+        } else {
+          const previewRuntime = getPreviewRuntime ? getPreviewRuntime() : null;
+          // Fire-and-forget — the chat flow must not block on preview boot.
+          // The handler funnels every outcome (success, unconfigured, failure)
+          // into a broadcast event so the UI gets a final state.
+          void handlePreviewBlock(sessionId, previewTask, {
+            runtime: previewRuntime,
+            broadcast,
+            project,
+            worktreePath: effectiveCwd,
+          }).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error('[Preview] Unexpected handler error:', message);
+          });
+        }
       }
 
       const runWorktreeAutoCommitAndDrainTail = async (): Promise<void> => {
