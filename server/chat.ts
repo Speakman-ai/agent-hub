@@ -36,6 +36,12 @@ import {
   handleCardAutoClose,
 } from './card-auto-close.js';
 import {
+  detectPreviewBlock,
+  describePreviewReason,
+  handlePreviewBlock,
+} from './preview/preview-block.js';
+import type { PreviewRuntime } from './preview/preview-runtime.js';
+import {
   detectSkillBlock as detectSkillInvokeBlock,
   handleSkillInvoke,
   loadSkillByName,
@@ -225,6 +231,14 @@ export interface ChatHandlerDeps {
     cwd: string,
   ) => Promise<void>;
   parseDelegateBlock: (content: string) => DelegateTask[] | null;
+  /**
+   * Accessor for the per-session preview runtime. Returns `null` when the
+   * runtime has not been wired (e.g. tests of unrelated chat surface or
+   * pre-rollout deploys). The accessor pattern matches `getClaudeBin` /
+   * `getCursorBin` — callers don't need to know whether the runtime was
+   * constructed at process start.
+   */
+  getPreviewRuntime?: () => PreviewRuntime | null;
   autoCommitAndPR: (
     sessionId: string,
     agentId: string,
@@ -896,6 +910,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     handleDelegationCancel,
     synthesizeResults,
     parseDelegateBlock,
+    getPreviewRuntime,
     autoCommitAndPR,
     tryAutonomousDispatch,
   } = deps;
@@ -2287,6 +2302,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let finalContent = rawFinalContent;
       const closeCardDetection = detectCloseCardBlock(rawFinalContent);
       const closeTask = closeCardDetection.task;
+      // `<agenthub:preview>` block — request a per-session worktree
+      // preview. Detected here alongside the other action blocks so the
+      // post-stream hook below can dispatch boot + screenshot async.
+      const previewDetection = detectPreviewBlock(rawFinalContent);
       // Sub-agent delegation and handoff have been removed. We retain the
       // local symbols as `null` so the rest of this handler — which still
       // branches on `handoffDetection` / `delegateTasks` while the rest of
@@ -2874,6 +2893,40 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         } catch (err) {
           console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
         }
+      }
+
+      // ── `<agenthub:preview>` dispatch ───────────────────────────────
+      // Malformed blocks: surface a system message so the agent learns
+      // why the request was dropped — same shape as the close-card gate.
+      if (previewDetection.present && !previewDetection.task && previewDetection.reason) {
+        try {
+          broadcast({
+            type: 'agenthub_preview',
+            kind: 'preview_failed',
+            sessionId,
+            previewId: '',
+            error: `**Preview block rejected:** ${describePreviewReason(previewDetection.reason)}.`,
+            logTail: [],
+          });
+        } catch (err) {
+          console.error('[Preview] Failed to broadcast malformed-block notice:', err);
+        }
+      }
+      if (previewDetection.task) {
+        const previewTask = previewDetection.task;
+        const previewRuntime = getPreviewRuntime ? getPreviewRuntime() : null;
+        // Fire-and-forget — the chat flow must not block on preview boot.
+        // The handler funnels every outcome (success, unconfigured, failure)
+        // into a broadcast event so the UI gets a final state.
+        void handlePreviewBlock(sessionId, previewTask, {
+          runtime: previewRuntime,
+          broadcast,
+          project,
+          worktreePath: effectiveCwd,
+        }).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('[Preview] Unexpected handler error:', message);
+        });
       }
 
       const runWorktreeAutoCommitAndDrainTail = async (): Promise<void> => {
