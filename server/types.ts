@@ -1071,6 +1071,11 @@ export interface Stmts {
   deleteRoomsByProject: Stmt;
   deleteCronsByProject: Stmt;
   deleteSessionsByAgent: Stmt;
+  deleteHeartbeatLogsByAgent: Stmt;
+  deleteSlackMessagesByAgent: Stmt;
+  deleteRoomAgentsByAgent: Stmt;
+  deleteActiveTasksByAgent: Stmt;
+  deleteAgentSkillOverridesByAgent: Stmt;
   getRecentEscalationByTypeAndPr: Stmt;
   getAnyRecentEscalationByTypeAndPr: Stmt;
 

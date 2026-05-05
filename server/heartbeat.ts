@@ -992,6 +992,30 @@ export function rescheduleCron(cronJob: CronRow): void {
   }
 }
 
+/**
+ * Tear down any in-memory heartbeat task for the agent and drop its persisted
+ * `heartbeat_state` row. Used by hard-delete (`DELETE /api/agents/:id`) so a
+ * removed agent can't keep firing scheduled work. Safe to call when no task
+ * exists.
+ */
+export function unscheduleHeartbeat(agentId: string): void {
+  const key = `heartbeat:${agentId}`;
+  const existing = scheduledTasks.get(key);
+  if (existing) {
+    try {
+      existing.stop();
+    } catch {
+      // best-effort — node-cron may already be torn down during shutdown
+    }
+    scheduledTasks.delete(key);
+  }
+  try {
+    stmts.deleteHeartbeatState.run(agentId);
+  } catch {
+    // best-effort — DB may be closed during shutdown
+  }
+}
+
 export function rescheduleHeartbeat(agent: EnrichedAgent): void {
   const key = `heartbeat:${agent.id}`;
   const existing = scheduledTasks.get(key);

@@ -2635,6 +2635,16 @@ function initDb(dataDir: string): void {
     deleteRoomsByProject: db.prepare('DELETE FROM rooms WHERE project_id = ?'),
     deleteCronsByProject: db.prepare('DELETE FROM crons WHERE project_id = ?'),
     deleteSessionsByAgent: db.prepare('DELETE FROM sessions WHERE agent_id = ?'),
+    // Hard-delete: agent is not a DB table, so each child row store needs an
+    // explicit by-agent delete. Sessions cascade messages/delegations/handoffs/
+    // skill_invocations/background_tasks/message_queue automatically.
+    deleteHeartbeatLogsByAgent: db.prepare('DELETE FROM heartbeat_logs WHERE agent_id = ?'),
+    deleteSlackMessagesByAgent: db.prepare('DELETE FROM slack_messages WHERE agent_id = ?'),
+    deleteRoomAgentsByAgent: db.prepare('DELETE FROM room_agents WHERE agent_id = ?'),
+    deleteActiveTasksByAgent: db.prepare('DELETE FROM active_tasks WHERE agent_id = ?'),
+    deleteAgentSkillOverridesByAgent: db.prepare(
+      'DELETE FROM agent_skill_overrides WHERE agent_id = ?',
+    ),
     getRecentEscalationByTypeAndPr: db.prepare(
       `SELECT * FROM escalations WHERE project_id = ? AND type = ? AND pr_number = ? AND acknowledged = 0
        ORDER BY created_at DESC LIMIT 1`,

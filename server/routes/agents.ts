@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import path from 'path';
 import { defaultModelForEngine } from '../config.js';
+import { getDb } from '../db.js';
+import { unscheduleHeartbeat } from '../heartbeat.js';
 import { resolveProjectPaths, contextFilePath, ALL_CONTEXT_FILES } from '../project-paths.js';
 import { updateMemory, getMemoryData } from '../memory.js';
 import { HOOK_EVENTS } from '../hooks.js';
@@ -138,13 +140,61 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     res.status(201).json(getEnrichedAgent(agent.id));
   });
 
+  // Hard-delete an agent. Agents are stored in projects.json (not a DB table)
+  // so there are no FK cascades from an "agents" row — we have to wipe every
+  // child store keyed by agent_id explicitly. Sessions cascade their own
+  // children (messages, delegations, handoffs, skill_invocations,
+  // background_tasks, message_queue, checkpoints). The on-disk workspace
+  // directory at <project.ahw>/agents/<agentId>/ is also removed so a
+  // re-created agent with the same id starts clean.
   router.delete('/api/agents/:agentId', (req: Request, res: Response) => {
     const found = findAgent(req.params.agentId as string);
     if (!found) return res.status(404).json({ error: 'Agent not found' });
     const { project, agent } = found;
-    project.agents = project.agents.filter((a) => a.id !== agent.id);
+    const agentId = agent.id;
+
+    // 1. Stop in-memory heartbeat task + drop heartbeat_state row.
+    try {
+      unscheduleHeartbeat(agentId);
+    } catch (e) {
+      console.error(`[agents] unscheduleHeartbeat(${agentId}) failed:`, e);
+    }
+
+    // 2. Atomically wipe every child row keyed by this agent.
+    try {
+      getDb().transaction(() => {
+        // sessions cascade messages/delegations/handoffs/skill_invocations/
+        // background_tasks/message_queue/checkpoints via FK ON DELETE CASCADE
+        stmts.deleteSessionsByAgent.run(agentId);
+        stmts.deleteHeartbeatLogsByAgent.run(agentId);
+        stmts.deleteSlackMessagesByAgent.run(agentId);
+        stmts.deleteRoomAgentsByAgent.run(agentId);
+        stmts.deleteActiveTasksByAgent.run(agentId);
+        stmts.deleteAgentSkillOverridesByAgent.run(agentId);
+      })();
+    } catch (e) {
+      console.error(`[agents] hard-delete DB cleanup failed for ${agentId}:`, e);
+      return res.status(500).json({ error: 'Failed to clean up agent data' });
+    }
+
+    // 3. Remove the agent from projects.json.
+    project.agents = project.agents.filter((a) => a.id !== agentId);
     saveProjects();
+
+    // 4. Refresh the project room so the participant list drops the agent.
     ensureProjectRoom(project);
+
+    // 5. Best-effort: remove the on-disk agent workspace. Failure here
+    //    shouldn't block the delete — log and continue.
+    try {
+      const agentDir = path.join(project.ahw, 'agents', agentId);
+      if (existsSync(agentDir)) {
+        rmSync(agentDir, { recursive: true, force: true });
+      }
+    } catch (e) {
+      console.error(`[agents] failed to remove workspace for ${agentId}:`, e);
+    }
+
     res.status(204).end();
   });
 
