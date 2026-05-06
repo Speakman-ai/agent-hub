@@ -1,40 +1,30 @@
-import React, { memo } from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import React, { memo, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { colors } from '../theme/colors';
 import { parseDiffLines, shortenPath } from '../utils/diff';
 
+const DIFF_PREVIEW_LINES = 5;
+
 /**
  * DiffView — React Native twin of the web DiffView in SessionTail.jsx.
- *
- * Shows a compact, colorized diff for file-modifying tools:
- *   - Edit: old_string lines as removals (red) and new_string as additions (green).
- *   - Write: all content as additions (green), truncated to keep mobile compact.
- *
- * Renders a small header with the action ("Update" / "Create"), a shortened
- * file path, and +/- line counts. The body is a horizontally-scrolling list
- * of gutter-marked lines so long lines don't force wrapping or truncate the
- * leading indentation.
+ * Preview mode shows a few lines + tap to expand full diff.
  */
 function DiffView({ tool, input }) {
   const { filePath, action, removals, additions } = parseDiffLines(tool, input);
+  const [expanded, setExpanded] = useState(false);
 
   const addedCount = additions.filter((l) => l && l.trim()).length;
   const removedCount = removals.filter((l) => l && l.trim()).length;
+  const totalLines = removals.length + additions.length;
+  const canPreview = totalLines > DIFF_PREVIEW_LINES;
+  const showFull = expanded || !canPreview;
+  const previewLines = additions.length > 0 ? additions : removals;
+  const previewKind = additions.length > 0 ? 'add' : 'remove';
+  const hiddenCount = totalLines - Math.min(previewLines.length, DIFF_PREVIEW_LINES);
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.action}>{action}:</Text>
-        <Text style={styles.path} numberOfLines={1}>
-          {shortenPath(filePath) || '(unknown file)'}
-        </Text>
-        <View style={styles.counts}>
-          {addedCount > 0 && <Text style={styles.addedCount}>+{addedCount}</Text>}
-          {removedCount > 0 && <Text style={styles.removedCount}>-{removedCount}</Text>}
-        </View>
-      </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+  const diffBody = showFull ? (
+    <ScrollView style={styles.fullScroll} nestedScrollEnabled>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled>
         <View>
           {removals.map((line, i) => (
             <View key={`r${i}`} style={styles.removalRow}>
@@ -50,6 +40,55 @@ function DiffView({ tool, input }) {
           ))}
         </View>
       </ScrollView>
+    </ScrollView>
+  ) : (
+    <View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled>
+        <View>
+          {previewLines.slice(0, DIFF_PREVIEW_LINES).map((line, i) => (
+            <View
+              key={`p${i}`}
+              style={previewKind === 'add' ? styles.previewAddRow : styles.previewRemoveRow}
+            >
+              <Text style={previewKind === 'add' ? styles.additionGutter : styles.removalGutter}>
+                {previewKind === 'add' ? '+' : '-'}
+              </Text>
+              <Text style={previewKind === 'add' ? styles.additionText : styles.removalText}>
+                {line || ' '}
+              </Text>
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+      {hiddenCount > 0 ? (
+        <TouchableOpacity
+          style={styles.expandFooter}
+          onPress={() => setExpanded(true)}
+          accessibilityRole="button"
+          testID="diff-view-expand"
+        >
+          <Text style={styles.expandFooterText}>
+            {hiddenCount} more {hiddenCount === 1 ? 'line' : 'lines'} · view all
+          </Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.action}>{action}:</Text>
+        <Text style={styles.path} numberOfLines={1}>
+          {shortenPath(filePath) || '(unknown file)'}
+        </Text>
+        <View style={styles.counts}>
+          {addedCount > 0 && <Text style={styles.addedCount}>+{addedCount}</Text>}
+          {removedCount > 0 && <Text style={styles.removedCount}>-{removedCount}</Text>}
+        </View>
+      </View>
+
+      {diffBody}
     </View>
   );
 }
@@ -76,6 +115,7 @@ const styles = StyleSheet.create({
   counts: { flexDirection: 'row', gap: 4 },
   addedCount: { color: colors.emerald500, fontSize: 10, fontFamily: 'monospace' },
   removedCount: { color: colors.red400, fontSize: 10, fontFamily: 'monospace' },
+  fullScroll: { maxHeight: 256 },
   removalRow: {
     flexDirection: 'row',
     backgroundColor: 'rgba(127, 29, 29, 0.25)',
@@ -89,6 +129,22 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(6, 78, 59, 0.25)',
     borderLeftWidth: 2,
     borderLeftColor: colors.emerald500,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  previewRemoveRow: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(127, 29, 29, 0.15)',
+    borderLeftWidth: 2,
+    borderLeftColor: 'rgba(220, 38, 38, 0.65)',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  previewAddRow: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(6, 78, 59, 0.15)',
+    borderLeftWidth: 2,
+    borderLeftColor: 'rgba(16, 185, 129, 0.6)',
     paddingHorizontal: 6,
     paddingVertical: 1,
   },
@@ -106,6 +162,14 @@ const styles = StyleSheet.create({
   },
   removalText: { color: '#fca5a5', fontFamily: 'monospace', fontSize: 11 },
   additionText: { color: '#6ee7b7', fontFamily: 'monospace', fontSize: 11 },
+  expandFooter: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(17, 24, 39, 0.55)',
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+  },
+  expandFooterText: { fontSize: 10, color: colors.gray500 },
 });
 
 export default memo(DiffView);

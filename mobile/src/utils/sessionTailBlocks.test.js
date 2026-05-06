@@ -1,157 +1,282 @@
 import { describe, it, expect } from 'vitest';
-import { eventsToBlocks, summarizeToolInput } from './sessionTailBlocks.js';
+import { eventsToBlocks, describeTool } from './sessionTailBlocks.js';
 
-const seq = (events) => events.map((event, i) => ({ seq: i, event }));
+const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
 
-describe('eventsToBlocks', () => {
-  it('returns empty array for missing/empty events', () => {
+describe('eventsToBlocks — progress_step handling', () => {
+  it('does not produce unknown blocks for progress_step-only streams', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        { type: 'progress_step', step: 'Gather', status: 'started', startedAt: 1 },
+        { type: 'progress_step', step: 'Gather', status: 'completed', startedAt: 1, finishedAt: 2 },
+      ]),
+    );
+    expect(blocks.filter((b) => b.kind === 'unknown')).toEqual([]);
+    expect(blocks).toEqual([]);
+  });
+
+  it('still renders assistant_text and tool_use around progress_step events', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        { type: 'assistant_text', text: 'Starting review.', partial: false },
+        { type: 'progress_step', step: 'Gather', status: 'started', startedAt: 1 },
+        {
+          type: 'tool_use',
+          id: 't1',
+          tool: 'Bash',
+          input: { command: 'gh pr view' },
+        },
+        { type: 'tool_result', toolUseId: 't1', output: 'ok', isError: false },
+        { type: 'assistant_text', text: 'Done.', partial: false },
+      ]),
+    );
+    expect(blocks.map((b) => b.kind)).toEqual(['text', 'tool', 'text']);
+  });
+});
+
+describe('eventsToBlocks — ExitPlanMode routing', () => {
+  it('routes ExitPlanMode to plan_proposal with paired result', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'tool_use',
+          id: 'exit1',
+          tool: 'ExitPlanMode',
+          input: { plan: '# Refactor\n\n- Step 1' },
+        },
+        {
+          type: 'tool_result',
+          toolUseId: 'exit1',
+          output: 'stay in plan mode',
+          isError: true,
+        },
+      ]),
+    );
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('plan_proposal');
+    expect(blocks[0].use.input.plan).toContain('Refactor');
+    expect(blocks[0].result?.isError).toBe(true);
+  });
+
+  it('emits plan_proposal while result is still streaming', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'tool_use',
+          id: 'exit2',
+          tool: 'ExitPlanMode',
+          input: { plan: 'Short plan.' },
+        },
+      ]),
+    );
+    expect(blocks[0]).toEqual({
+      kind: 'plan_proposal',
+      use: {
+        type: 'tool_use',
+        id: 'exit2',
+        tool: 'ExitPlanMode',
+        input: { plan: 'Short plan.' },
+      },
+      result: undefined,
+    });
+  });
+
+  it('leaves a single Read as a tool block', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        { type: 'tool_use', id: 'r1', tool: 'Read', input: { file_path: '/tmp/x.txt' } },
+      ]),
+    );
+    expect(blocks).toEqual([
+      {
+        kind: 'tool',
+        use: { type: 'tool_use', id: 'r1', tool: 'Read', input: { file_path: '/tmp/x.txt' } },
+        result: undefined,
+      },
+    ]);
+  });
+});
+
+describe('eventsToBlocks — explored coalescer', () => {
+  const read = (id, file) => ({ type: 'tool_use', id, tool: 'Read', input: { file_path: file } });
+  const grep = (id, pattern) => ({ type: 'tool_use', id, tool: 'Grep', input: { pattern } });
+  const ok = (id) => ({ type: 'tool_result', toolUseId: id, output: 'ok', isError: false });
+
+  it('coalesces reads + grep into one explored block', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        read('r1', '/a.ts'),
+        ok('r1'),
+        read('r2', '/b.ts'),
+        ok('r2'),
+        grep('g1', 'foo'),
+        ok('g1'),
+        read('r3', '/c.ts'),
+        ok('r3'),
+      ]),
+    );
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('explored');
+    expect(blocks[0].items).toHaveLength(4);
+  });
+
+  it('breaks burst on assistant_text', () => {
+    const kinds = eventsToBlocks(
+      wrap([
+        read('r1', '/a.ts'),
+        ok('r1'),
+        read('r2', '/b.ts'),
+        ok('r2'),
+        { type: 'assistant_text', text: 'Found the bug.', partial: false },
+        read('r3', '/c.ts'),
+        ok('r3'),
+        read('r4', '/d.ts'),
+        ok('r4'),
+      ]),
+    ).map((b) => b.kind);
+    expect(kinds).toEqual(['explored', 'text', 'explored']);
+  });
+
+  it('errored read does not coalesce into explored', () => {
+    const kinds = eventsToBlocks(
+      wrap([
+        read('r1', '/a.ts'),
+        ok('r1'),
+        read('r2', '/missing.ts'),
+        { type: 'tool_result', toolUseId: 'r2', output: 'ENOENT', isError: true },
+        read('r3', '/c.ts'),
+        ok('r3'),
+      ]),
+    ).map((b) => b.kind);
+    expect(kinds).toEqual(['tool', 'tool', 'tool']);
+  });
+
+  it('non-explore tool breaks the burst', () => {
+    const kinds = eventsToBlocks(
+      wrap([
+        read('r1', '/a.ts'),
+        ok('r1'),
+        read('r2', '/b.ts'),
+        ok('r2'),
+        {
+          type: 'tool_use',
+          id: 'e1',
+          tool: 'Edit',
+          input: { file_path: '/a.ts', old_string: 'x', new_string: 'y' },
+        },
+        ok('e1'),
+        read('r3', '/c.ts'),
+        ok('r3'),
+        read('r4', '/d.ts'),
+        ok('r4'),
+      ]),
+    ).map((b) => b.kind);
+    expect(kinds).toEqual(['explored', 'tool', 'explored']);
+  });
+
+  it('routes TodoWrite to todos block', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'tool_use',
+          id: 't1',
+          tool: 'TodoWrite',
+          input: {
+            todos: [
+              { content: 'Write tests', status: 'completed' },
+              { content: 'Wire up UI', status: 'in_progress' },
+            ],
+          },
+        },
+        ok('t1'),
+      ]),
+    );
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('todos');
+  });
+});
+
+describe('eventsToBlocks — misc', () => {
+  it('returns [] for missing/empty input', () => {
     expect(eventsToBlocks(undefined)).toEqual([]);
     expect(eventsToBlocks([])).toEqual([]);
   });
 
-  it('discriminates subagent tools (Task, Agent) from regular tools', () => {
+  it('pairs tool_result and hides orphans', () => {
     const blocks = eventsToBlocks(
-      seq([
+      wrap([
         { type: 'tool_use', id: 't1', tool: 'Bash', input: { command: 'ls' } },
-        { type: 'tool_use', id: 't2', tool: 'Task', input: { description: 'look' } },
-        { type: 'tool_use', id: 't3', tool: 'Agent', input: { description: 'go' } },
-      ]),
-    );
-    expect(blocks.map((b) => b.kind)).toEqual(['tool', 'subagent', 'subagent']);
-  });
-
-  it('pairs tool_result with tool_use by id and hides orphan results', () => {
-    const blocks = eventsToBlocks(
-      seq([
-        { type: 'tool_use', id: 't1', tool: 'Read', input: { file_path: '/a' } },
         { type: 'tool_result', toolUseId: 't1', output: 'hello', isError: false },
       ]),
     );
-    expect(blocks).toHaveLength(1);
     expect(blocks[0].kind).toBe('tool');
     expect(blocks[0].result?.output).toBe('hello');
   });
 
-  it('prefers final assistant_text over partials and coalesces consecutive text', () => {
+  it('prefers final assistant_text over partials', () => {
     const blocks = eventsToBlocks(
-      seq([
+      wrap([
         { type: 'assistant_text', text: 'Hel', partial: true },
         { type: 'assistant_text', text: 'lo', partial: true },
         { type: 'assistant_text', text: 'Hello world', partial: false },
       ]),
     );
     expect(blocks).toHaveLength(1);
-    expect(blocks[0]).toEqual({ kind: 'text', content: 'Hello world' });
+    expect(blocks[0]).toEqual({ kind: 'text', text: 'Hello world' });
   });
 
-  it('closes text buffer when a non-text event arrives', () => {
+  it('drops checkpoint and rate_limit (web parity)', () => {
     const blocks = eventsToBlocks(
-      seq([
-        { type: 'assistant_text', text: 'first', partial: false },
+      wrap([
+        { type: 'system', model: 'm', cwd: '/tmp' },
+        { type: 'checkpoint', uuid: 'x', turnIndex: 1 },
+        { type: 'rate_limit', retryAfterMs: 1000, message: 'slow' },
         { type: 'thinking', text: 'hmm' },
-        { type: 'assistant_text', text: 'second', partial: false },
       ]),
     );
-    expect(blocks.map((b) => b.kind)).toEqual(['text', 'thinking', 'text']);
+    expect(blocks.map((b) => b.kind)).toEqual(['system', 'thinking']);
   });
 
-  it('maps checkpoint, rate_limit, ask_user_question, system, result, error kinds', () => {
+  it('maps ask_user_question with event payload', () => {
     const blocks = eventsToBlocks(
-      seq([
-        { type: 'system', model: 'claude-sonnet-4', cwd: '/tmp' },
-        { type: 'checkpoint', uuid: 'abcdef123456', turnIndex: 2 },
-        { type: 'rate_limit', retryAfterMs: 5000, message: 'slow down' },
-        { type: 'ask_user_question', askId: 'q1', questions: [{ question: 'why?' }] },
-        { type: 'result', durationMs: 2000, costUsd: 0.01, numTurns: 1, isError: false },
-        { type: 'error', message: 'boom' },
-      ]),
+      wrap([{ type: 'ask_user_question', askId: 'q1', questions: [{ question: 'why?' }] }]),
     );
-    expect(blocks.map((b) => b.kind)).toEqual([
-      'system',
-      'checkpoint',
-      'rate_limit',
-      'ask_question',
-      'result',
-      'error',
-    ]);
-    expect(blocks[0]).toMatchObject({ model: 'claude-sonnet-4', cwd: '/tmp' });
-    expect(blocks[3]).toMatchObject({ askId: 'q1' });
+    expect(blocks[0].kind).toBe('ask_question');
+    expect(blocks[0].event.askId).toBe('q1');
   });
 
-  it('flushes pending text before emitting the ask_question block', () => {
+  it('flushes text before ask_question', () => {
     const blocks = eventsToBlocks(
-      seq([
+      wrap([
         { type: 'assistant_text', text: 'Choose wisely', partial: false },
-        { type: 'ask_user_question', askId: 'q1', questions: [{ question: 'pick one' }] },
+        { type: 'ask_user_question', askId: 'q1', questions: [{ question: 'pick' }] },
       ]),
     );
     expect(blocks.map((b) => b.kind)).toEqual(['text', 'ask_question']);
-    expect(blocks[0].content).toBe('Choose wisely');
-    expect(blocks[1].askId).toBe('q1');
+    expect(blocks[0].text).toBe('Choose wisely');
   });
 
-  it('defaults questions to an empty array when the server omits it', () => {
-    const blocks = eventsToBlocks(seq([{ type: 'ask_user_question', askId: 'q1' }]));
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0]).toMatchObject({ kind: 'ask_question', askId: 'q1', questions: [] });
-  });
-
-  it('preserves every ask block when a stream contains multiple', () => {
-    const blocks = eventsToBlocks(
-      seq([
-        { type: 'ask_user_question', askId: 'a', questions: [{ question: 'A?' }] },
-        { type: 'ask_user_question', askId: 'b', questions: [{ question: 'B?' }] },
+  it('subagent tools', () => {
+    const kinds = eventsToBlocks(
+      wrap([
+        { type: 'tool_use', id: 'a', tool: 'Task', input: { description: 'x' } },
+        { type: 'tool_use', id: 'b', tool: 'Agent', input: { description: 'y' } },
       ]),
-    );
-    const askBlocks = blocks.filter((b) => b.kind === 'ask_question');
-    expect(askBlocks).toHaveLength(2);
-    expect(askBlocks.map((b) => b.askId)).toEqual(['a', 'b']);
+    ).map((b) => b.kind);
+    expect(kinds).toEqual(['subagent', 'subagent']);
   });
 
-  it('skips progress_step events (handled by out-of-tail progress UI)', () => {
-    const blocks = eventsToBlocks(
-      seq([
-        { type: 'progress_step', name: 'Gather' },
-        { type: 'thinking', text: 'thinking' },
-      ]),
-    );
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].kind).toBe('thinking');
-  });
-
-  it('skips null events without crashing', () => {
-    const blocks = eventsToBlocks([{ seq: 0, event: null }, { seq: 1, event: undefined }]);
-    expect(blocks).toEqual([]);
+  it('skips null events', () => {
+    expect(eventsToBlocks([{ seq: 0, event: null }])).toEqual([]);
   });
 });
 
-describe('summarizeToolInput', () => {
-  it('returns empty for missing input', () => {
-    expect(summarizeToolInput('Bash', null)).toBe('');
-    expect(summarizeToolInput('Bash', undefined)).toBe('');
-  });
-
-  it('summarizes Bash via command', () => {
-    expect(summarizeToolInput('Bash', { command: 'ls -la' })).toBe('ls -la');
-  });
-
-  it('summarizes Read/Write/Edit via file_path', () => {
-    expect(summarizeToolInput('Read', { file_path: '/a.js' })).toBe('/a.js');
-    expect(summarizeToolInput('Edit', { file_path: '/b.js' })).toBe('/b.js');
-    expect(summarizeToolInput('Write', { path: '/legacy.js' })).toBe('/legacy.js');
-  });
-
-  it('wraps Grep/Glob patterns in slashes', () => {
-    expect(summarizeToolInput('Grep', { pattern: 'foo' })).toBe('/foo/');
-    expect(summarizeToolInput('Glob', { pattern: '*.ts' })).toBe('/*.ts/');
-  });
-
-  it('summarizes TodoWrite with count', () => {
-    expect(summarizeToolInput('TodoWrite', { todos: [1, 2, 3] })).toBe('3 todos');
-    expect(summarizeToolInput('TodoWrite', { todos: [1] })).toBe('1 todo');
-  });
-
-  it('falls back to first string field for unknown tools', () => {
-    expect(summarizeToolInput('MysteryTool', { extra: 'value', n: 1 })).toBe('value');
+describe('describeTool', () => {
+  it('matches web headlines for Read/Grep', () => {
+    expect(describeTool('Read', { file_path: '/project/src/foo.ts' }).headline).toBe('Read foo.ts');
+    expect(describeTool('Grep', { pattern: 'TODO' }).headline).toBe('Search for /TODO/');
+    expect(describeTool('Grep', { pattern: 'TODO', path: '/src/utils.ts' }).headline).toBe(
+      'Search utils.ts for /TODO/',
+    );
   });
 });

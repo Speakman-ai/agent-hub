@@ -54,7 +54,6 @@ describe('SessionTail — lazy message events fetch', () => {
         agentColor="#6366f1"
         streaming={false}
         onEventsLoaded={onEventsLoaded}
-        verboseMode={false}
       />,
     );
 
@@ -98,7 +97,6 @@ describe('SessionTail — lazy message events fetch', () => {
         agentColor="#6366f1"
         streaming={false}
         onEventsLoaded={onEventsLoaded}
-        verboseMode={false}
       />,
     );
 

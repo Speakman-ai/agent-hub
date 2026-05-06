@@ -60,8 +60,6 @@ export default function TopBar({
   onWorktreeChange,
   sessionAskMode,
   onAskModeChange,
-  verboseMode,
-  onVerboseModeChange,
   projectId,
   showToast,
   onOpenForward,
@@ -260,33 +258,6 @@ export default function TopBar({
               />
             </svg>
             <span>{sessionAskMode ? 'Ask' : 'Agent'}</span>
-          </button>
-        )}
-
-        {/* Desktop: Verbose Mode Toggle */}
-        {agent && (
-          <button
-            onClick={() => onVerboseModeChange(!verboseMode)}
-            className={`hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg transition-colors border ${
-              verboseMode
-                ? 'bg-orange-900/30 border-orange-700/50 text-orange-400 hover:bg-orange-900/50'
-                : 'bg-gray-800 border-gray-700 text-gray-500 hover:bg-gray-700'
-            }`}
-            title={`Verbose mode: ${verboseMode ? 'ON — tool calls and thinking auto-expand' : 'OFF — tool calls collapsed by default'}`}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-3.5 w-3.5"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path
-                fillRule="evenodd"
-                d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z"
-                clipRule="evenodd"
-              />
-            </svg>
-            <span>{verboseMode ? 'Verbose' : 'Compact'}</span>
           </button>
         )}
 
@@ -523,22 +494,6 @@ export default function TopBar({
                   >
                     <span>{sessionAskMode ? 'Ask (read-only)' : 'Agent (full access)'}</span>
                     {sessionAskMode && <span className="text-blue-400 text-xs">✓</span>}
-                  </button>
-                  <div className="border-t border-gray-700 my-1" />
-                  <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
-                    Output
-                  </div>
-                  <button
-                    onClick={() => {
-                      onVerboseModeChange(!verboseMode);
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
-                      verboseMode ? 'text-orange-400' : 'text-gray-400'
-                    }`}
-                  >
-                    <span>{verboseMode ? 'Verbose (expanded)' : 'Compact (collapsed)'}</span>
-                    {verboseMode && <span className="text-orange-400 text-xs">✓</span>}
                   </button>
                 </div>
               </>

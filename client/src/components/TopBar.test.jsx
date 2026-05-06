@@ -35,8 +35,6 @@ function renderTopBar(overrides = {}) {
     onWorktreeChange: () => {},
     sessionAskMode: false,
     onAskModeChange: () => {},
-    verboseMode: false,
-    onVerboseModeChange: () => {},
     projectId: 'proj-a',
     showToast: () => {},
     onOpenForward: () => {},

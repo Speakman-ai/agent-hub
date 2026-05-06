@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { DiffView } from './SessionTail.jsx';
 
 /**
@@ -15,6 +15,8 @@ import { DiffView } from './SessionTail.jsx';
  */
 describe('DiffView leading-whitespace preservation', () => {
   it('preserves leading spaces for indented removals and additions (Edit)', () => {
+    // 10-line diff triggers Cursor-style preview/expand; click "view all"
+    // so removals are visible alongside additions for the whitespace check.
     const { container } = render(
       <DiffView
         tool="Edit"
@@ -25,6 +27,7 @@ describe('DiffView leading-whitespace preservation', () => {
         }}
       />,
     );
+    fireEvent.click(screen.getByTestId('diff-view-expand'));
 
     // The code portion of each diff line is rendered in a span with
     // the `whitespace-pre` class. Collect those spans and verify the

@@ -36,26 +36,12 @@ describe('eventsToBlocks — progress_step handling', () => {
       },
     ]);
 
-    const blocks = eventsToBlocks(events, false);
+    const blocks = eventsToBlocks(events);
     expect(blocks.filter((b) => b.kind === 'unknown')).toEqual([]);
     // progress_step is rendered by ProgressPanel, not the tail — so no
     // blocks at all should be produced for a stream that only contains
     // progress events.
     expect(blocks).toEqual([]);
-  });
-
-  it('hides progress_step in verbose mode too (ProgressPanel owns it)', () => {
-    const events = wrap([
-      {
-        type: 'progress_step',
-        step: 'Post formal review',
-        status: 'completed',
-        startedAt: 1,
-        finishedAt: 2,
-      },
-    ]);
-
-    expect(eventsToBlocks(events, true)).toEqual([]);
   });
 
   it('still renders assistant_text and tool_use around progress_step events', () => {
@@ -84,7 +70,7 @@ describe('eventsToBlocks — progress_step handling', () => {
       { type: 'assistant_text', text: 'Done.', partial: false },
     ]);
 
-    const kinds = eventsToBlocks(events, false).map((b) => b.kind);
+    const kinds = eventsToBlocks(events).map((b) => b.kind);
     expect(kinds).toEqual(['text', 'tool', 'text']);
   });
 });
@@ -122,7 +108,7 @@ describe('eventsToBlocks — ExitPlanMode routing', () => {
       },
     ]);
 
-    const blocks = eventsToBlocks(events, false);
+    const blocks = eventsToBlocks(events);
     expect(blocks).toHaveLength(1);
     expect(blocks[0].kind).toBe('plan_proposal');
     expect(blocks[0].use.input.plan).toContain('Refactor');
@@ -144,7 +130,7 @@ describe('eventsToBlocks — ExitPlanMode routing', () => {
       },
     ]);
 
-    const blocks = eventsToBlocks(events, false);
+    const blocks = eventsToBlocks(events);
     expect(blocks).toEqual([
       {
         kind: 'plan_proposal',
@@ -159,7 +145,7 @@ describe('eventsToBlocks — ExitPlanMode routing', () => {
     ]);
   });
 
-  it('leaves non-ExitPlanMode tool_use events as generic tool blocks', () => {
+  it('leaves a single Read tool_use as a generic tool block (no coalesce of one)', () => {
     const events = wrap([
       {
         type: 'tool_use',
@@ -169,8 +155,114 @@ describe('eventsToBlocks — ExitPlanMode routing', () => {
       },
     ]);
 
-    const blocks = eventsToBlocks(events, false);
+    const blocks = eventsToBlocks(events);
     expect(blocks).toHaveLength(1);
     expect(blocks[0].kind).toBe('tool');
+  });
+});
+
+/**
+ * "Explored 3 files" coalescer — runs of read/search tool calls collapse
+ * into a single chip when there is no prose, error, or non-explore tool
+ * between them. Mirrors Cursor's chat where the model gathering context
+ * doesn't dominate the timeline.
+ */
+describe('eventsToBlocks — explored coalescer', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+  const read = (id, file) => ({ type: 'tool_use', id, tool: 'Read', input: { file_path: file } });
+  const grep = (id, pattern) => ({ type: 'tool_use', id, tool: 'Grep', input: { pattern } });
+  const ok = (id) => ({ type: 'tool_result', toolUseId: id, output: 'ok', isError: false });
+
+  it('coalesces 3 reads + 1 grep into a single explored block with all items', () => {
+    const events = wrap([
+      read('r1', '/a.ts'),
+      ok('r1'),
+      read('r2', '/b.ts'),
+      ok('r2'),
+      grep('g1', 'foo'),
+      ok('g1'),
+      read('r3', '/c.ts'),
+      ok('r3'),
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('explored');
+    expect(blocks[0].items).toHaveLength(4);
+    expect(blocks[0].items.map((i) => i.use.tool)).toEqual(['Read', 'Read', 'Grep', 'Read']);
+  });
+
+  it('breaks the burst on assistant_text — each phase is its own group', () => {
+    const events = wrap([
+      read('r1', '/a.ts'),
+      ok('r1'),
+      read('r2', '/b.ts'),
+      ok('r2'),
+      { type: 'assistant_text', text: 'Found the bug.', partial: false },
+      read('r3', '/c.ts'),
+      ok('r3'),
+      read('r4', '/d.ts'),
+      ok('r4'),
+    ]);
+    const kinds = eventsToBlocks(events).map((b) => b.kind);
+    expect(kinds).toEqual(['explored', 'text', 'explored']);
+  });
+
+  it('errored read does not coalesce — the failure stays a visible tool card', () => {
+    const events = wrap([
+      read('r1', '/a.ts'),
+      ok('r1'),
+      read('r2', '/missing.ts'),
+      { type: 'tool_result', toolUseId: 'r2', output: 'ENOENT', isError: true },
+      read('r3', '/c.ts'),
+      ok('r3'),
+    ]);
+    const kinds = eventsToBlocks(events).map((b) => b.kind);
+    // The error breaks the run; the surrounding reads are each one-element
+    // groups, which we render as a regular tool block (not a chip).
+    expect(kinds).toEqual(['tool', 'tool', 'tool']);
+  });
+
+  it('non-explore tool (Edit) breaks the burst', () => {
+    const events = wrap([
+      read('r1', '/a.ts'),
+      ok('r1'),
+      read('r2', '/b.ts'),
+      ok('r2'),
+      {
+        type: 'tool_use',
+        id: 'e1',
+        tool: 'Edit',
+        input: { file_path: '/a.ts', old_string: 'x', new_string: 'y' },
+      },
+      ok('e1'),
+      read('r3', '/c.ts'),
+      ok('r3'),
+      read('r4', '/d.ts'),
+      ok('r4'),
+    ]);
+    const kinds = eventsToBlocks(events).map((b) => b.kind);
+    expect(kinds).toEqual(['explored', 'tool', 'explored']);
+  });
+
+  it('routes TodoWrite to a dedicated todos block', () => {
+    const events = wrap([
+      {
+        type: 'tool_use',
+        id: 't1',
+        tool: 'TodoWrite',
+        input: {
+          todos: [
+            { content: 'Write tests', status: 'completed' },
+            { content: 'Wire up UI', status: 'in_progress' },
+            { content: 'Ship PR', status: 'pending' },
+          ],
+        },
+      },
+      ok('t1'),
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('todos');
+    expect(blocks[0].use.input.todos).toHaveLength(3);
   });
 });

@@ -129,13 +129,6 @@ export default function App() {
   const [sessionWorktree, setSessionWorktree] = useState(true);
   const [gitWorktreeDetected, setGitWorktreeDetected] = useState(null); // null = unknown, true/false from CLI
   const [sessionAskMode, setSessionAskMode] = useState(false);
-  const [verboseMode, setVerboseMode] = useState(() => {
-    return localStorage.getItem('verboseMode') === 'true';
-  });
-  const handleVerboseModeChange = useCallback((v) => {
-    localStorage.setItem('verboseMode', v ? 'true' : 'false');
-    setVerboseMode(v);
-  }, []);
   const [currentView, setCurrentView] = useState('chat');
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showForward, setShowForward] = useState(false);
@@ -3075,8 +3068,6 @@ export default function App() {
                 onWorktreeChange={handleWorktreeChange}
                 sessionAskMode={sessionAskMode}
                 onAskModeChange={handleAskModeChange}
-                verboseMode={verboseMode}
-                onVerboseModeChange={handleVerboseModeChange}
                 projectId={
                   currentView.startsWith('kanban:')
                     ? currentView.split(':')[1]
@@ -3367,7 +3358,6 @@ export default function App() {
                                     events={eventsByMessage[msg.id]}
                                     agentColor={activeAgent?.color}
                                     onEventsLoaded={handleEventsLoaded}
-                                    verboseMode={verboseMode}
                                     onAskSubmit={handleAskSubmit}
                                     askSubmittedIds={askSubmitted}
                                     fromAgent={activeAgent}
@@ -3403,7 +3393,6 @@ export default function App() {
                                   events={eventsByMessage[streamingMsgId]}
                                   agentColor={activeAgent?.color}
                                   streaming
-                                  verboseMode={verboseMode}
                                   onAskSubmit={handleAskSubmit}
                                   askSubmittedIds={askSubmitted}
                                   fromAgent={activeAgent}

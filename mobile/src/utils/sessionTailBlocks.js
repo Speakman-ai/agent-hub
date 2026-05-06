@@ -1,121 +1,181 @@
 /**
  * Mobile twin of the reducer in `client/src/components/SessionTail.jsx`.
  *
- * Walks a session-events array and produces a flat list of display blocks:
- *   text, thinking, tool, subagent, ask_question, checkpoint, rate_limit,
- *   system, result, error.
+ * Walks session-events and produces display blocks with the same kinds and
+ * coalescing rules as the web client (explored burst, todos, plan_proposal,
+ * checkpoint/rate_limit suppressed, etc.).
  *
- * Pairs tool_use with its tool_result by id so orphan results aren't
- * rendered. Coalesces consecutive assistant_text events using the
- * partial-vs-final precedence rule: the final frame replaces any partials.
- *
- * Pure function — kept in utils so it can be unit-tested without a React
- * Native environment.
+ * Pure functions — unit-tested without a React Native environment.
+ */
+
+const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookRead']);
+
+/**
+ * @param {{ seq?: number, event: object }[]|null|undefined} events
  */
 export function eventsToBlocks(events) {
-  if (!events || events.length === 0) return [];
+  const blocks = [];
 
-  // First pass: index tool_results by tool_use_id for pairing.
   const resultByToolId = {};
-  for (const entry of events) {
-    const evt = entry?.event;
-    if (evt?.type === 'tool_result' && evt.toolUseId) {
-      resultByToolId[evt.toolUseId] = evt;
+  for (const { event } of events || []) {
+    if (event?.type === 'tool_result' && event.toolUseId) {
+      resultByToolId[event.toolUseId] = event;
     }
   }
 
-  const blocks = [];
-  let textBuf = null; // { partials, final }
+  let textBuf = null;
+  let exploredBuf = null;
 
   const flushText = () => {
     if (!textBuf) return;
     const text = textBuf.final || textBuf.partials;
-    if (text && text.trim()) blocks.push({ kind: 'text', content: text.trim() });
+    if (text && text.trim()) blocks.push({ kind: 'text', text });
     textBuf = null;
   };
 
-  for (const e of events) {
-    const evt = e?.event;
-    if (!evt) continue;
-    const t = evt.type;
+  const flushExplored = () => {
+    if (!exploredBuf) return;
+    if (exploredBuf.items.length === 1) {
+      const { use, result } = exploredBuf.items[0];
+      blocks.push({ kind: 'tool', use, result });
+    } else if (exploredBuf.items.length > 1) {
+      blocks.push({ kind: 'explored', items: exploredBuf.items });
+    }
+    exploredBuf = null;
+  };
+
+  const flushAll = () => {
+    flushExplored();
+    flushText();
+  };
+
+  for (const { event } of events || []) {
+    if (!event) continue;
+    const t = event.type;
 
     if (t === 'assistant_text') {
+      flushExplored();
       if (!textBuf) textBuf = { partials: '', final: '' };
-      if (evt.partial) textBuf.partials += evt.text || '';
-      else textBuf.final += evt.text || '';
+      if (event.partial) textBuf.partials += event.text || '';
+      else textBuf.final += event.text || '';
       continue;
     }
 
-    flushText();
+    if (t === 'tool_result') continue;
 
-    if (t === 'tool_result') continue; // rendered inside paired tool/subagent card
-    if (t === 'progress_step') continue; // handled by out-of-tail progress UI
+    if (t === 'progress_step') continue;
+    if (t === 'checkpoint') continue;
+    if (t === 'rate_limit') continue;
 
-    switch (t) {
-      case 'thinking':
-        blocks.push({ kind: 'thinking', text: evt.text || '' });
-        break;
-      case 'tool_use': {
-        const isSubagent = evt.tool === 'Task' || evt.tool === 'Agent';
-        blocks.push({
-          kind: isSubagent ? 'subagent' : 'tool',
-          use: evt,
-          tool: evt.tool,
-          input: evt.input,
-          result: resultByToolId[evt.id] || null,
-        });
-        break;
+    if (t === 'tool_use') {
+      const isSubagent = event.tool === 'Task' || event.tool === 'Agent';
+      const isExitPlanMode = event.tool === 'ExitPlanMode';
+      const isTodoWrite = event.tool === 'TodoWrite';
+      const result = resultByToolId[event.id];
+      const isExplore = EXPLORE_TOOLS.has(event.tool) && !result?.isError;
+      if (isExplore) {
+        flushText();
+        if (!exploredBuf) exploredBuf = { items: [] };
+        exploredBuf.items.push({ use: event, result });
+        continue;
       }
-      case 'result':
-        blocks.push({
-          kind: 'result',
-          durationMs: evt.durationMs,
-          costUsd: evt.costUsd,
-          numTurns: evt.numTurns,
-          isError: evt.isError,
-        });
-        break;
-      case 'checkpoint':
-        blocks.push({ kind: 'checkpoint', uuid: evt.uuid, turnIndex: evt.turnIndex });
-        break;
-      case 'rate_limit':
-        blocks.push({ kind: 'rate_limit', retryAfterMs: evt.retryAfterMs, message: evt.message });
-        break;
-      case 'ask_user_question':
-        blocks.push({ kind: 'ask_question', askId: evt.askId, questions: evt.questions || [] });
-        break;
-      case 'error':
-        blocks.push({ kind: 'error', message: evt.message || 'Unknown error' });
-        break;
-      case 'system':
-        blocks.push({ kind: 'system', model: evt.model, cwd: evt.cwd });
-        break;
-      default:
-        break;
+      flushAll();
+      let kind = 'tool';
+      if (isSubagent) kind = 'subagent';
+      else if (isExitPlanMode) kind = 'plan_proposal';
+      else if (isTodoWrite) kind = 'todos';
+      blocks.push({ kind, use: event, result });
+      continue;
     }
+
+    flushAll();
+
+    if (t === 'system') blocks.push({ kind: 'system', event });
+    else if (t === 'thinking') blocks.push({ kind: 'thinking', event });
+    else if (t === 'result') blocks.push({ kind: 'result', event });
+    else if (t === 'ask_user_question') blocks.push({ kind: 'ask_question', event });
+    else if (t === 'error') blocks.push({ kind: 'error', event });
+    else blocks.push({ kind: 'unknown', event });
   }
-  flushText();
+  flushAll();
   return blocks;
 }
 
-/** Summarize a tool's input into a single line for collapsed card headers. */
-export function summarizeToolInput(tool, input) {
-  if (!input) return '';
-  if (typeof input === 'string') return input.slice(0, 80);
-  if (typeof input !== 'object') return '';
-  if (tool === 'Bash') return (input.command || input.description || '').slice(0, 80);
-  if (tool === 'Read' || tool === 'Edit' || tool === 'Write') {
-    return input.file_path || input.path || '';
+export function truncateOneLine(s, max) {
+  if (!s) return '';
+  const one = String(s).replace(/\s+/g, ' ').trim();
+  if (one.length <= max) return one;
+  return `${one.slice(0, max - 1)}…`;
+}
+
+/**
+ * Humanized one-line headline for a tool call (Cursor-style) — same rules as web.
+ * @returns {{ headline: string, arg: string }}
+ */
+export function describeTool(tool, input) {
+  const obj = input && typeof input === 'object' ? input : {};
+  const baseName = (p) => {
+    if (!p || typeof p !== 'string') return '';
+    const segs = p.split('/').filter(Boolean);
+    return segs[segs.length - 1] || p;
+  };
+  switch (tool) {
+    case 'Bash': {
+      const cmd = typeof obj.command === 'string' ? obj.command.trim() : '';
+      const desc = typeof obj.description === 'string' ? obj.description.trim() : '';
+      if (desc) return { headline: desc, arg: cmd };
+      return { headline: cmd ? `Run ${truncateOneLine(cmd, 64)}` : 'Run shell command', arg: '' };
+    }
+    case 'Read':
+      return { headline: `Read ${baseName(obj.file_path || obj.path) || 'file'}`, arg: '' };
+    case 'Edit':
+      return { headline: `Edit ${baseName(obj.file_path || obj.path) || 'file'}`, arg: '' };
+    case 'Write':
+      return { headline: `Write ${baseName(obj.file_path || obj.path) || 'file'}`, arg: '' };
+    case 'Grep': {
+      const p = typeof obj.pattern === 'string' ? obj.pattern : '';
+      const path = typeof obj.path === 'string' ? obj.path : '';
+      const head = p
+        ? `Search ${path ? `${baseName(path)} ` : ''}for /${truncateOneLine(p, 40)}/`
+        : 'Search files';
+      return { headline: head, arg: '' };
+    }
+    case 'Glob': {
+      const p = typeof obj.pattern === 'string' ? obj.pattern : '';
+      return { headline: p ? `Find files matching ${p}` : 'Find files', arg: '' };
+    }
+    case 'WebFetch': {
+      const url = typeof obj.url === 'string' ? obj.url : '';
+      return { headline: url ? `Fetch ${truncateOneLine(url, 60)}` : 'Fetch URL', arg: '' };
+    }
+    case 'WebSearch': {
+      const q = typeof obj.query === 'string' ? obj.query : '';
+      return {
+        headline: q ? `Search the web for "${truncateOneLine(q, 60)}"` : 'Web search',
+        arg: '',
+      };
+    }
+    case 'NotebookRead':
+      return { headline: `Read notebook ${baseName(obj.notebook_path) || ''}`.trim(), arg: '' };
+    case 'NotebookEdit':
+      return { headline: `Edit notebook ${baseName(obj.notebook_path) || ''}`.trim(), arg: '' };
+    case 'Task':
+      return { headline: obj.description || 'Run subagent task', arg: '' };
+    case 'TodoWrite': {
+      const todos = Array.isArray(obj.todos) ? obj.todos : [];
+      const done = todos.filter((x) => x?.status === 'completed').length;
+      return { headline: `${done} of ${todos.length} Done`, arg: '' };
+    }
+    case 'ExitPlanMode': {
+      const plan = typeof obj.plan === 'string' ? obj.plan : '';
+      const first = plan.split('\n').find((l) => l.trim()) || '';
+      return { headline: first.replace(/^#+\s*/, '') || 'Plan proposal', arg: '' };
+    }
+    default: {
+      for (const v of Object.values(obj)) {
+        if (typeof v === 'string' && v) return { headline: tool, arg: truncateOneLine(v, 80) };
+      }
+      return { headline: tool, arg: '' };
+    }
   }
-  if (tool === 'Grep' || tool === 'Glob') return input.pattern ? `/${input.pattern}/` : '';
-  if (tool === 'WebFetch' || tool === 'WebSearch') return input.url || input.query || '';
-  if (tool === 'TodoWrite') {
-    const todos = input.todos;
-    if (Array.isArray(todos)) return `${todos.length} todo${todos.length === 1 ? '' : 's'}`;
-    return '';
-  }
-  for (const v of Object.values(input)) {
-    if (typeof v === 'string' && v) return v.slice(0, 80);
-  }
-  return '';
 }

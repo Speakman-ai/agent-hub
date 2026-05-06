@@ -63,7 +63,6 @@ function SessionTail({
   agentColor,
   streaming,
   onEventsLoaded,
-  verboseMode,
   onAskSubmit,
   askSubmittedIds,
   fromAgent,
@@ -123,10 +122,7 @@ function SessionTail({
   }, [messageId, events, streaming, onEventsLoaded, eventFetchRetry]);
 
   const effectiveEvents = events !== undefined ? events : localEvents;
-  const blocks = useMemo(
-    () => eventsToBlocks(effectiveEvents ?? [], verboseMode),
-    [effectiveEvents, verboseMode],
-  );
+  const blocks = useMemo(() => eventsToBlocks(effectiveEvents ?? []), [effectiveEvents]);
   const hasEvents = !!effectiveEvents && effectiveEvents.length > 0;
 
   const timelineFetchPending =
@@ -154,7 +150,10 @@ function SessionTail({
   if (timelineFetchPending) {
     return (
       <div className="flex justify-start mb-4 min-w-0">
-        <div className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
+        <div
+          className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 pl-3 border-l-2"
+          style={{ borderColor: agentColor || '#374151' }}
+        >
           <Header
             agentColor={agentColor}
             engine={message?.engine}
@@ -178,7 +177,10 @@ function SessionTail({
   if (timelineFetchFailed) {
     return (
       <div className="flex justify-start mb-4 min-w-0">
-        <div className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
+        <div
+          className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 pl-3 border-l-2"
+          style={{ borderColor: agentColor || '#374151' }}
+        >
           <Header
             agentColor={agentColor}
             engine={message?.engine}
@@ -234,7 +236,14 @@ function SessionTail({
 
   return (
     <div className="flex justify-start mb-4 min-w-0">
-      <div className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 bg-gray-800/60 rounded-2xl rounded-bl-md px-3 py-3 sm:px-4 sm:py-4 border border-gray-800">
+      {/* Cursor-style assistant turn: no heavy bubble, just a thin left stripe
+          in the agent's color so the column reads as one logical turn while
+          letting individual cards/text breathe. The Header below carries the
+          agent dot, engine/model badges, and timestamp. */}
+      <div
+        className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 pl-3 border-l-2"
+        style={{ borderColor: agentColor || '#374151' }}
+      >
         <Header
           agentColor={agentColor}
           engine={message?.engine}
@@ -267,42 +276,23 @@ function SessionTail({
           </div>
         )}
 
-        <div className="space-y-2 mt-2">
+        <div className="space-y-1.5 mt-2">
           {blocks.map((block, i) => {
             switch (block.kind) {
               case 'system':
                 return <SystemBanner key={`b${i}`} system={block.event} />;
               case 'thinking':
-                return (
-                  <ThinkingBlock key={`b${i}`} text={block.event.text} defaultOpen={verboseMode} />
-                );
+                return <ThinkingBlock key={`b${i}`} text={block.event.text} />;
               case 'subagent':
-                return (
-                  <SubagentCard
-                    key={`b${i}`}
-                    use={block.use}
-                    result={block.result}
-                    defaultOpen={verboseMode}
-                  />
-                );
+                return <SubagentCard key={`b${i}`} use={block.use} result={block.result} />;
               case 'tool':
-                return (
-                  <ToolCard
-                    key={`b${i}`}
-                    use={block.use}
-                    result={block.result}
-                    defaultOpen={verboseMode}
-                  />
-                );
+                return <ToolCard key={`b${i}`} use={block.use} result={block.result} />;
+              case 'todos':
+                return <TodoListCard key={`b${i}`} use={block.use} result={block.result} />;
+              case 'explored':
+                return <ExploredChip key={`b${i}`} items={block.items} />;
               case 'plan_proposal':
-                return (
-                  <PlanProposalCard
-                    key={`b${i}`}
-                    use={block.use}
-                    result={block.result}
-                    defaultOpen={verboseMode}
-                  />
-                );
+                return <PlanProposalCard key={`b${i}`} use={block.use} result={block.result} />;
               case 'text':
                 return (
                   <TextBubble
@@ -351,13 +341,25 @@ function SessionTail({
 // ─── Reducer: events → display blocks ──────────────────────────────────
 
 /**
- * Walk events and produce a flat list of display blocks. Pairs tool_use with
- * its tool_result by id (so we don't render orphan results), and coalesces
- * consecutive assistant_text events into a single text bubble using the
- * partial-vs-final precedence rule (final wins; partials are the streaming
- * preview that gets replaced when the final arrives).
+ * Tools whose tool_use we coalesce into a single "Explored …" chip when they
+ * appear in an uninterrupted run (no prose, errors, or other tool kinds in
+ * between). Mirrors Cursor's "Explored 3 files, 1 search" status row — the
+ * model is gathering context, not making changes, so per-call cards add noise.
  */
-export function eventsToBlocks(events, verbose) {
+const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookRead']);
+
+/**
+ * Walk events and produce a flat list of display blocks. Pairs tool_use with
+ * its tool_result by id (so we don't render orphan results), coalesces
+ * consecutive assistant_text events into a single text bubble (partial-vs-
+ * final precedence: final wins), and folds runs of read/search tool calls
+ * into a single `explored` block.
+ *
+ * Single source of truth for layout: there is no verbose/compact toggle —
+ * each block kind picks its own sensible default and provides a click-to-
+ * expand affordance. Cursor's chat works the same way.
+ */
+export function eventsToBlocks(events) {
   const blocks = [];
 
   // First pass: index tool_results by tool_use_id for pairing.
@@ -368,8 +370,9 @@ export function eventsToBlocks(events, verbose) {
     }
   }
 
-  // Second pass: walk events, coalescing text segments.
+  // Second pass: walk events, coalescing text and explore-tool runs.
   let textBuf = null; // { partials: '', final: '' }
+  let exploredBuf = null; // { items: [{ use, result }] }
 
   const flushText = () => {
     if (!textBuf) return;
@@ -378,66 +381,84 @@ export function eventsToBlocks(events, verbose) {
     textBuf = null;
   };
 
+  const flushExplored = () => {
+    if (!exploredBuf) return;
+    if (exploredBuf.items.length === 1) {
+      // Single read/search keeps its own tool card — coalescing a single call
+      // hides useful context (e.g. which file). Cursor only collapses bursts.
+      const { use, result } = exploredBuf.items[0];
+      blocks.push({ kind: 'tool', use, result });
+    } else if (exploredBuf.items.length > 1) {
+      blocks.push({ kind: 'explored', items: exploredBuf.items });
+    }
+    exploredBuf = null;
+  };
+
+  const flushAll = () => {
+    flushExplored();
+    flushText();
+  };
+
   for (const { event } of events) {
     if (!event) continue;
     const t = event.type;
 
+    // Text breaks an explored run (model said something between reads → new
+    // logical phase). Buffer text separately so a clean burst stays clean.
     if (t === 'assistant_text') {
+      flushExplored();
       if (!textBuf) textBuf = { partials: '', final: '' };
       if (event.partial) textBuf.partials += event.text;
       else textBuf.final += event.text;
       continue;
     }
 
-    // Any non-text event closes the current text segment.
-    flushText();
+    // Tool results are folded into their paired tool_use; on their own they
+    // never break an explored run.
+    if (t === 'tool_result') continue;
 
-    if (t === 'tool_result') continue; // shown inside its paired tool card
-    if (t === 'checkpoint' && !verbose) continue; // internal restore-point bookkeeping
-    if (t === 'rate_limit' && !verbose) continue; // no visual representation
-    // progress_step events drive the out-of-tail ProgressPanel; rendering
-    // them inline would produce "unhandled event" noise (e.g. autonomous
-    // review sessions emit Gather/Analyze/Post steps). In verbose mode we
-    // still hide them because the panel already shows them.
+    // Hidden / internal: don't surface, but also don't break the buffers —
+    // these can interleave with reads without changing the "burst" semantics.
     if (t === 'progress_step') continue;
-    if (t === 'system') {
-      blocks.push({ kind: 'system', event });
-    } else if (t === 'thinking') {
-      blocks.push({ kind: 'thinking', event });
-    } else if (t === 'tool_use') {
+    if (t === 'checkpoint') continue;
+    if (t === 'rate_limit') continue;
+
+    if (t === 'tool_use') {
       const isSubagent = event.tool === 'Task' || event.tool === 'Agent';
-      // ExitPlanMode is the CLI tool Claude uses in --permission-mode plan to
-      // propose a plan and ask the user to approve exiting plan mode. In
-      // Agent Hub's non-interactive `--print` setup there's no live permission
-      // prompt, so the CLI always flags ExitPlanMode's tool_result as an
-      // error ("plan approval declined") — which is expected flow, NOT a
-      // failure. Route it to a dedicated plan-proposal card so the plan
-      // content is rendered as markdown and the red ERROR styling is
-      // suppressed. (Bug: "Plan mode doesn't function properly".)
+      // ExitPlanMode (Claude's plan-mode proposal) routes to a dedicated card
+      // so the plan renders as markdown without ERROR styling — its
+      // tool_result is `is_error: true` by design under non-interactive CLI
+      // ("plan approval declined" is the expected flow).
       const isExitPlanMode = event.tool === 'ExitPlanMode';
+      const isTodoWrite = event.tool === 'TodoWrite';
+      const result = resultByToolId[event.id];
+      const isExplore = EXPLORE_TOOLS.has(event.tool) && !result?.isError;
+      if (isExplore) {
+        flushText();
+        if (!exploredBuf) exploredBuf = { items: [] };
+        exploredBuf.items.push({ use: event, result });
+        continue;
+      }
+      flushAll();
       let kind = 'tool';
       if (isSubagent) kind = 'subagent';
       else if (isExitPlanMode) kind = 'plan_proposal';
-      blocks.push({
-        kind,
-        use: event,
-        result: resultByToolId[event.id],
-      });
-    } else if (t === 'checkpoint') {
-      blocks.push({ kind: 'checkpoint', event });
-    } else if (t === 'rate_limit') {
-      blocks.push({ kind: 'rate_limit', event });
-    } else if (t === 'result') {
-      blocks.push({ kind: 'result', event });
-    } else if (t === 'ask_user_question') {
-      blocks.push({ kind: 'ask_question', event });
-    } else if (t === 'error') {
-      blocks.push({ kind: 'error', event });
-    } else {
-      blocks.push({ kind: 'unknown', event });
+      else if (isTodoWrite) kind = 'todos';
+      blocks.push({ kind, use: event, result });
+      continue;
     }
+
+    // Anything else closes both buffers.
+    flushAll();
+
+    if (t === 'system') blocks.push({ kind: 'system', event });
+    else if (t === 'thinking') blocks.push({ kind: 'thinking', event });
+    else if (t === 'result') blocks.push({ kind: 'result', event });
+    else if (t === 'ask_user_question') blocks.push({ kind: 'ask_question', event });
+    else if (t === 'error') blocks.push({ kind: 'error', event });
+    else blocks.push({ kind: 'unknown', event });
   }
-  flushText();
+  flushAll();
   return blocks;
 }
 
@@ -581,15 +602,124 @@ const TOOL_STYLES = {
 };
 
 /**
- * DiffView — compact, colorized diff for Edit and Write tools.
- * Edit: shows old_string lines as removals (red) and new_string as additions (green).
- * Write: shows all content as additions (green).
+ * Humanized one-line headline for a tool call (Cursor-style):
+ *   { headline: "Re-run live test with adjoiner overlay", arg: "pytest -k …" }
+ *
+ * Rules:
+ *  - Bash: prefer the model-supplied `description` ("intent"); show the
+ *    command as a small monospace chip beneath. Falls back to the command
+ *    itself if no description was provided.
+ *  - Read/Edit/Write: "Read foo.ts" / "Edit src/foo.ts" — verb + basename.
+ *  - Grep/Glob/Web*: search-shaped verbs with the pattern/url as the arg.
+ *  - Anything else: best-effort verb + first useful string field.
+ *
+ * Returns null fields when nothing meaningful is available; the caller
+ * decides what to render.
+ */
+export function describeTool(tool, input) {
+  const obj = input && typeof input === 'object' ? input : {};
+  const baseName = (p) => {
+    if (!p || typeof p !== 'string') return '';
+    const segs = p.split('/').filter(Boolean);
+    return segs[segs.length - 1] || p;
+  };
+  switch (tool) {
+    case 'Bash': {
+      const cmd = typeof obj.command === 'string' ? obj.command.trim() : '';
+      const desc = typeof obj.description === 'string' ? obj.description.trim() : '';
+      if (desc) return { headline: desc, arg: cmd };
+      return { headline: cmd ? `Run ${truncateOneLine(cmd, 64)}` : 'Run shell command', arg: '' };
+    }
+    case 'Read':
+      return { headline: `Read ${baseName(obj.file_path || obj.path) || 'file'}`, arg: '' };
+    case 'Edit':
+      return { headline: `Edit ${baseName(obj.file_path || obj.path) || 'file'}`, arg: '' };
+    case 'Write':
+      return { headline: `Write ${baseName(obj.file_path || obj.path) || 'file'}`, arg: '' };
+    case 'Grep': {
+      const p = typeof obj.pattern === 'string' ? obj.pattern : '';
+      const path = typeof obj.path === 'string' ? obj.path : '';
+      const head = p
+        ? `Search ${path ? `${baseName(path)} ` : ''}for /${truncateOneLine(p, 40)}/`
+        : 'Search files';
+      return { headline: head, arg: '' };
+    }
+    case 'Glob': {
+      const p = typeof obj.pattern === 'string' ? obj.pattern : '';
+      return { headline: p ? `Find files matching ${p}` : 'Find files', arg: '' };
+    }
+    case 'WebFetch': {
+      const url = typeof obj.url === 'string' ? obj.url : '';
+      return { headline: url ? `Fetch ${truncateOneLine(url, 60)}` : 'Fetch URL', arg: '' };
+    }
+    case 'WebSearch': {
+      const q = typeof obj.query === 'string' ? obj.query : '';
+      return {
+        headline: q ? `Search the web for "${truncateOneLine(q, 60)}"` : 'Web search',
+        arg: '',
+      };
+    }
+    case 'NotebookRead':
+      return { headline: `Read notebook ${baseName(obj.notebook_path) || ''}`.trim(), arg: '' };
+    case 'NotebookEdit':
+      return { headline: `Edit notebook ${baseName(obj.notebook_path) || ''}`.trim(), arg: '' };
+    case 'Task':
+      return { headline: obj.description || 'Run subagent task', arg: '' };
+    case 'TodoWrite': {
+      const todos = Array.isArray(obj.todos) ? obj.todos : [];
+      const done = todos.filter((t) => t?.status === 'completed').length;
+      return { headline: `${done} of ${todos.length} Done`, arg: '' };
+    }
+    case 'ExitPlanMode': {
+      const plan = typeof obj.plan === 'string' ? obj.plan : '';
+      const first = plan.split('\n').find((l) => l.trim()) || '';
+      return { headline: first.replace(/^#+\s*/, '') || 'Plan proposal', arg: '' };
+    }
+    default: {
+      // Best-effort: the first non-empty string-valued field.
+      for (const v of Object.values(obj)) {
+        if (typeof v === 'string' && v) return { headline: tool, arg: truncateOneLine(v, 80) };
+      }
+      return { headline: tool, arg: '' };
+    }
+  }
+}
+
+function truncateOneLine(s, max) {
+  if (!s) return '';
+  const one = String(s).replace(/\s+/g, ' ').trim();
+  if (one.length <= max) return one;
+  return `${one.slice(0, max - 1)}…`;
+}
+
+/** How many addition lines we show in the collapsed preview before "+ N more". */
+const DIFF_PREVIEW_LINES = 5;
+
+/**
+ * DiffView — colorized diff for Edit / Write / Codex `file_change` tools.
+ *
+ * Two visual modes:
+ *  - **Preview** (default): Cursor-style — header strip with `file.ext +N -M`
+ *    and a few addition lines (DIFF_PREVIEW_LINES). Hidden lines are summarized
+ *    as a `N more lines` footer that expands to the full diff on click. This
+ *    matches the pattern in the Cursor screenshots — the chat stays scannable
+ *    even when the model rewrites a 200-line file.
+ *  - **Full**: every removal followed by every addition, scrollable. Used when
+ *    the user clicks the preview footer or when the change has fewer than
+ *    `DIFF_PREVIEW_LINES` lines (no truncation needed).
  */
 export function DiffView({ tool, input }) {
   const { filePath, action, removals, additions } = parseDiffLines(tool, input);
+  const [expanded, setExpanded] = useState(false);
 
   const addedCount = additions.filter((l) => l.trim()).length;
   const removedCount = removals.filter((l) => l.trim()).length;
+  const totalLines = removals.length + additions.length;
+  const canPreview = totalLines > DIFF_PREVIEW_LINES;
+  const showFull = expanded || !canPreview;
+  const previewLines = additions.length > 0 ? additions : removals;
+  const previewKind = additions.length > 0 ? 'add' : 'remove';
+  const hiddenCount = totalLines - Math.min(previewLines.length, DIFF_PREVIEW_LINES);
 
   return (
     <div className="bg-gray-950/60 rounded-md overflow-hidden font-mono text-xs">
@@ -597,38 +727,73 @@ export function DiffView({ tool, input }) {
       <div className="flex items-center gap-2 px-2 py-1 bg-gray-900/80 text-gray-400 border-b border-gray-800/50">
         <span className="text-emerald-500 font-semibold">{action}:</span>
         <span className="truncate">{shortenPath(filePath)}</span>
-        <span className="ml-auto text-[10px] text-gray-600">
+        <span className="ml-auto text-[10px] text-gray-600 shrink-0">
           {addedCount > 0 && <span className="text-emerald-500">+{addedCount}</span>}
           {removedCount > 0 && <span className="text-red-400 ml-1">-{removedCount}</span>}
         </span>
       </div>
-      {/* Diff lines — whitespace-pre preserves leading indentation; the gutter
-          marker is in a flex-shrink-0 span so the code portion keeps its
-          original column alignment even when the container wraps. */}
-      <div className="overflow-x-auto max-h-64 overflow-y-auto">
-        {removals.map((line, i) => (
-          <div
-            key={`r${i}`}
-            className="flex px-2 py-px bg-red-950/40 text-red-300 border-l-2 border-red-600"
-          >
-            <span className="text-red-500/60 select-none mr-2 flex-shrink-0">-</span>
-            <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
-              {line}
-            </span>
+      {showFull ? (
+        <div className="overflow-x-auto max-h-64 overflow-y-auto">
+          {removals.map((line, i) => (
+            <div
+              key={`r${i}`}
+              className="flex px-2 py-px bg-red-950/40 text-red-300 border-l-2 border-red-600"
+            >
+              <span className="text-red-500/60 select-none mr-2 flex-shrink-0">-</span>
+              <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
+                {line}
+              </span>
+            </div>
+          ))}
+          {additions.map((line, i) => (
+            <div
+              key={`a${i}`}
+              className="flex px-2 py-px bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-600"
+            >
+              <span className="text-emerald-500/60 select-none mr-2 flex-shrink-0">+</span>
+              <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
+                {line}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            {previewLines.slice(0, DIFF_PREVIEW_LINES).map((line, i) => (
+              <div
+                key={`p${i}`}
+                className={`flex px-2 py-px ${
+                  previewKind === 'add'
+                    ? 'bg-emerald-950/30 text-emerald-300 border-l-2 border-emerald-600/60'
+                    : 'bg-red-950/30 text-red-300 border-l-2 border-red-600/60'
+                }`}
+              >
+                <span
+                  className={`select-none mr-2 flex-shrink-0 ${
+                    previewKind === 'add' ? 'text-emerald-500/60' : 'text-red-500/60'
+                  }`}
+                >
+                  {previewKind === 'add' ? '+' : '-'}
+                </span>
+                <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
+                  {line}
+                </span>
+              </div>
+            ))}
           </div>
-        ))}
-        {additions.map((line, i) => (
-          <div
-            key={`a${i}`}
-            className="flex px-2 py-px bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-600"
-          >
-            <span className="text-emerald-500/60 select-none mr-2 flex-shrink-0">+</span>
-            <span className="whitespace-pre" style={{ tabSize: 2, MozTabSize: 2 }}>
-              {line}
-            </span>
-          </div>
-        ))}
-      </div>
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="w-full text-left text-[10px] text-gray-500 hover:text-gray-300 px-2 py-1 bg-gray-900/40 border-t border-gray-800/40"
+              data-testid="diff-view-expand"
+            >
+              {hiddenCount} more {hiddenCount === 1 ? 'line' : 'lines'} · view all
+            </button>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -639,7 +804,7 @@ export function ToolCard({ use, result, defaultOpen }) {
     color: 'border-gray-700/60 bg-gray-900/40',
     icon: <Wrench size={16} />,
   };
-  const summary = summarizeToolInput(use.tool, use.input);
+  const { headline, arg } = describeTool(use.tool, use.input);
   const errored = result?.isError;
   const stillRunning = !result;
   const showDiff = isFileModifyingTool(use.tool);
@@ -677,17 +842,29 @@ export function ToolCard({ use, result, defaultOpen }) {
     >
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs hover:bg-black/20"
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-black/20"
       >
         <span className="flex-shrink-0">{style.icon}</span>
-        <span className="font-mono font-semibold text-gray-200 flex-shrink-0">{use.tool}</span>
-        <span className="text-gray-400 truncate flex-1 font-mono">{summary}</span>
-        {stillRunning && (
-          <span className="text-emerald-400 text-[10px] animate-pulse">running…</span>
+        {/* Cursor-style: humanized headline as the primary text, with the raw
+            argument (e.g. the actual shell command) as a small monospace chip
+            after it. Falls back to the tool name when describeTool can't
+            produce something better. */}
+        <span className="text-gray-200 truncate min-w-0">{headline || use.tool}</span>
+        {arg && (
+          <code className="hidden sm:inline-block text-[10px] text-gray-500 bg-black/30 rounded px-1.5 py-0.5 max-w-[40%] truncate font-mono shrink">
+            {arg}
+          </code>
         )}
-        {errored && <span className="text-red-400 text-[10px] uppercase tracking-wide">error</span>}
-        <span className="text-gray-500 text-2xl leading-none flex items-center">
-          {open ? '▼' : '▶'}
+        <span className="ml-auto flex items-center gap-2 shrink-0">
+          {stillRunning && (
+            <span className="text-emerald-400 text-[10px] animate-pulse">running…</span>
+          )}
+          {errored && (
+            <span className="text-red-400 text-[10px] uppercase tracking-wide">error</span>
+          )}
+          <span className="text-gray-500 text-2xl leading-none flex items-center">
+            {open ? '▼' : '▶'}
+          </span>
         </span>
       </button>
       {open && (
@@ -711,6 +888,160 @@ export function ToolCard({ use, result, defaultOpen }) {
             </div>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ExploredChip — coalesced summary for a burst of read/search tool calls.
+ * Cursor renders these as a single line ("Explored 3 files, 1 search") with
+ * a click-to-expand list. We do the same: show the count chip by default,
+ * expand to a small bullet list of the underlying calls. Items array carries
+ * `{ use, result }` for each tool call, in original order.
+ */
+export function ExploredChip({ items, defaultOpen }) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  const counts = items.reduce(
+    (acc, it) => {
+      const t = it.use?.tool;
+      if (t === 'Read' || t === 'NotebookRead') acc.files += 1;
+      else if (t === 'Grep') acc.searches += 1;
+      else if (t === 'Glob') acc.globs += 1;
+      else if (t === 'WebFetch' || t === 'WebSearch') acc.web += 1;
+      return acc;
+    },
+    { files: 0, searches: 0, globs: 0, web: 0 },
+  );
+  const parts = [];
+  if (counts.files) parts.push(`${counts.files} file${counts.files === 1 ? '' : 's'}`);
+  if (counts.searches) parts.push(`${counts.searches} search${counts.searches === 1 ? '' : 'es'}`);
+  if (counts.globs) parts.push(`${counts.globs} glob${counts.globs === 1 ? '' : 's'}`);
+  if (counts.web) parts.push(`${counts.web} web`);
+  const summary = parts.length > 0 ? parts.join(', ') : `${items.length} items`;
+  return (
+    <div className="border border-gray-800 rounded-lg bg-gray-900/30 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-400 hover:bg-gray-900/60"
+        data-testid="explored-chip"
+      >
+        <FolderSearch size={14} className="text-gray-500 shrink-0" />
+        <span className="text-gray-300">Explored</span>
+        <span className="text-gray-500 truncate">{summary}</span>
+        <span className="ml-auto text-gray-500 text-2xl leading-none flex items-center">
+          {open ? '▼' : '▶'}
+        </span>
+      </button>
+      {open && (
+        <ul className="border-t border-gray-800/60 px-3 py-2 space-y-1">
+          {items.map((it, i) => {
+            const d = describeTool(it.use?.tool, it.use?.input);
+            return (
+              <li
+                key={`ex${i}`}
+                className="text-[11px] text-gray-400 flex items-center gap-2 min-w-0"
+              >
+                <span className="text-gray-600 font-mono shrink-0">{it.use?.tool}</span>
+                <span className="text-gray-300 truncate">{d.headline}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * TodoListCard — dedicated rendering for the CLI's `TodoWrite` tool. Cursor
+ * renders this as a "M of N Done · View all" panel with status icons and
+ * strikethrough for completed items. The generic ToolCard is too noisy here
+ * because it hides the actual list behind a click.
+ *
+ * Default state: show ~4 items (mix of in-progress and pending), with a
+ * `View all` toggle that expands to the full list. When every item is
+ * completed or cancelled, the collapsed filter would otherwise yield an empty
+ * list under a truthful "N of N Done" header — we fall back to the last few
+ * terminal rows so the card still reads as intentional.
+ */
+const TODO_STATUS_GLYPH = {
+  completed: { mark: '✓', cls: 'text-emerald-500' },
+  in_progress: { mark: '◐', cls: 'text-blue-400' },
+  cancelled: { mark: '✕', cls: 'text-gray-500' },
+  pending: { mark: '○', cls: 'text-gray-500' },
+};
+
+export function TodoListCard({ use, result, defaultOpen }) {
+  const todos = Array.isArray(use?.input?.todos) ? use.input.todos : [];
+  const done = todos.filter((t) => t?.status === 'completed').length;
+  const total = todos.length;
+  const errored = result?.isError;
+  const stillRunning = !result;
+  const [open, setOpen] = useState(defaultOpen ?? false);
+
+  const maxCollapsed = 4;
+  const activeOnly = todos.filter((t) => t?.status !== 'completed' && t?.status !== 'cancelled');
+
+  // When collapsed: first few active todos. When open: all in original order.
+  let visible = open ? todos : activeOnly.slice(0, maxCollapsed);
+
+  // Collapsed UI hides completed/cancelled; if nothing active remains, show
+  // up to `maxCollapsed` terminal items (tail order) instead of an empty <ul>.
+  if (!open && visible.length === 0 && total > 0) {
+    const terminal = todos.filter((t) => t?.status === 'completed' || t?.status === 'cancelled');
+    visible = terminal.slice(-maxCollapsed);
+  }
+
+  return (
+    <div className="border border-gray-700/60 bg-gray-900/40 rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-300 hover:bg-black/20"
+        data-testid="todo-list-toggle"
+      >
+        <ListChecks size={14} className="text-gray-400 shrink-0" />
+        <span className="text-gray-200 font-medium">
+          {done} of {total} Done
+        </span>
+        <span className="text-gray-500">{open ? '· Hide' : '· View all'}</span>
+        {stillRunning && (
+          <span className="text-emerald-400 text-[10px] animate-pulse ml-auto">running…</span>
+        )}
+        {!stillRunning && errored && (
+          <span className="text-red-400 text-[10px] uppercase tracking-wide ml-auto">error</span>
+        )}
+      </button>
+      {todos.length > 0 && (
+        <ul className="border-t border-gray-800/60 px-3 py-2 space-y-1">
+          {visible.map((t, i) => {
+            const g = TODO_STATUS_GLYPH[t?.status] || TODO_STATUS_GLYPH.pending;
+            const completed = t?.status === 'completed';
+            const cancelled = t?.status === 'cancelled';
+            return (
+              <li
+                key={`todo${i}`}
+                className="text-[12px] text-gray-300 flex items-start gap-2 min-w-0"
+              >
+                <span className={`shrink-0 ${g.cls}`}>{g.mark}</span>
+                <span
+                  className={`truncate ${
+                    completed
+                      ? 'line-through text-gray-500'
+                      : cancelled
+                        ? 'line-through text-gray-600'
+                        : ''
+                  }`}
+                  title={t?.content || ''}
+                >
+                  {t?.content || '(untitled)'}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );
@@ -908,39 +1239,6 @@ function SubagentCard({ use, result, defaultOpen }) {
       )}
     </div>
   );
-}
-
-/**
- * Single-line summary of a tool's input for the collapsed card header.
- * Tries to extract the most-important field per tool type.
- */
-function summarizeToolInput(tool, input) {
-  if (!input || typeof input !== 'object') return '';
-  if (tool === 'Bash') return input.command || input.description || '';
-  if (tool === 'Read') return input.file_path || input.path || '';
-  if (tool === 'Write') return input.file_path || input.path || '';
-  if (tool === 'Edit') return input.file_path || input.path || '';
-  if (tool === 'Grep') return input.pattern || '';
-  if (tool === 'Glob') return input.pattern || '';
-  if (tool === 'WebFetch' || tool === 'WebSearch') return input.url || input.query || '';
-  if (tool === 'Task') return input.description || input.subagent_type || '';
-  if (tool === 'TodoWrite') {
-    const todos = input.todos;
-    if (Array.isArray(todos)) return `${todos.length} todo${todos.length === 1 ? '' : 's'}`;
-    return '';
-  }
-  if (tool === 'ExitPlanMode') {
-    const plan = typeof input.plan === 'string' ? input.plan.trim() : '';
-    if (!plan) return '';
-    // First non-empty line of the plan as a summary.
-    const firstLine = plan.split('\n').find((l) => l.trim()) || '';
-    return firstLine.replace(/^#+\s*/, '');
-  }
-  // Fallback: first string-valued field
-  for (const v of Object.values(input)) {
-    if (typeof v === 'string' && v) return v;
-  }
-  return '';
 }
 
 function formatToolInput(input) {
