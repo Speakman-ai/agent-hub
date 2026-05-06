@@ -10,7 +10,7 @@
  * (for partial-preserving / MASK semantics) or removed (precedence).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 import supertest from 'supertest';
@@ -18,7 +18,7 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import createPrEnvSettingsRoutes from './pr-env-settings.js';
+import createPrEnvSettingsRoutes, { procWalkHasNginx } from './pr-env-settings.js';
 import type { GitHubAppConfig } from '../types.js';
 import {
   PR_ENV_CONFIG_SCHEMA,
@@ -574,5 +574,68 @@ describe('POST /api/settings/pr-env/validate', () => {
     expect(res.body.ok).toBe(true);
     const docker = res.body.checks.find((c: { name: string }) => c.name === 'docker');
     expect(docker.pass).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// procWalkHasNginx — unit tests with mocked fs/promises
+// ---------------------------------------------------------------------------
+
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return { ...actual };
+});
+
+describe('procWalkHasNginx', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('returns true when a numeric /proc entry has comm=nginx', async () => {
+    const fsp = await import('fs/promises');
+    vi.spyOn(fsp, 'readdir').mockResolvedValue(['1', 'self', '2'] as unknown as Awaited<
+      ReturnType<typeof fsp.readdir>
+    >);
+    vi.spyOn(fsp, 'readFile')
+      .mockResolvedValueOnce('other\n') // pid 1
+      .mockResolvedValueOnce('nginx\n'); // pid 2
+    expect(await procWalkHasNginx()).toBe(true);
+  });
+
+  it('returns false when no numeric entry has comm=nginx', async () => {
+    const fsp = await import('fs/promises');
+    vi.spyOn(fsp, 'readdir').mockResolvedValue(['1', '2'] as unknown as Awaited<
+      ReturnType<typeof fsp.readdir>
+    >);
+    vi.spyOn(fsp, 'readFile').mockResolvedValue('other\n');
+    expect(await procWalkHasNginx()).toBe(false);
+  });
+
+  it('returns false when readdir rejects (e.g. /proc unavailable)', async () => {
+    const fsp = await import('fs/promises');
+    vi.spyOn(fsp, 'readdir').mockRejectedValue(new Error('ENOENT'));
+    expect(await procWalkHasNginx()).toBe(false);
+  });
+
+  it('skips entries where readFile rejects (process disappeared) and keeps scanning', async () => {
+    const fsp = await import('fs/promises');
+    vi.spyOn(fsp, 'readdir').mockResolvedValue(['10', '20'] as unknown as Awaited<
+      ReturnType<typeof fsp.readdir>
+    >);
+    vi.spyOn(fsp, 'readFile')
+      .mockRejectedValueOnce(new Error('ESRCH')) // pid 10 vanished
+      .mockResolvedValueOnce('nginx\n'); // pid 20 is nginx
+    expect(await procWalkHasNginx()).toBe(true);
+  });
+
+  it('skips non-numeric entries like "self" and "net"', async () => {
+    const fsp = await import('fs/promises');
+    vi.spyOn(fsp, 'readdir').mockResolvedValue(['self', 'net', 'tty'] as unknown as Awaited<
+      ReturnType<typeof fsp.readdir>
+    >);
+    // readFile should never be called for non-numeric entries
+    const readFileSpy = vi.spyOn(fsp, 'readFile').mockResolvedValue('nginx\n');
+    expect(await procWalkHasNginx()).toBe(false);
+    expect(readFileSpy).not.toHaveBeenCalled();
   });
 });

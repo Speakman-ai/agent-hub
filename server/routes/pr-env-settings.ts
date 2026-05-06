@@ -15,7 +15,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { access, constants, readFile } from 'fs/promises';
+import { access, constants, readFile, readdir } from 'fs/promises';
 import { spawn } from 'child_process';
 import { createSign, X509Certificate } from 'crypto';
 import { Route53Client, GetHostedZoneCommand } from '@aws-sdk/client-route-53';
@@ -98,6 +98,34 @@ async function defaultCheckDocker(): Promise<ValidateCheck> {
       };
 }
 
+/**
+ * Last-resort nginx detection: scan /proc/<pid>/comm for "nginx" without
+ * shelling out. Works in slim node containers that ship neither procps
+ * (`pgrep`) nor systemd (`systemctl`), provided the docker run was invoked
+ * with `--pid=host` so the container sees host PIDs. Resolves false on any
+ * read error so callers can treat it as "not running" rather than crashing.
+ */
+export async function procWalkHasNginx(): Promise<boolean> {
+  let entries: string[];
+  try {
+    entries = await readdir('/proc');
+  } catch {
+    return false;
+  }
+  for (const ent of entries) {
+    if (!/^\d+$/.test(ent)) continue;
+    try {
+      const comm = await readFile(`/proc/${ent}/comm`, 'utf-8');
+      if (comm.trim() === 'nginx') return true;
+    } catch {
+      // /proc/<pid> can disappear between readdir and readFile, or be
+      // unreadable for some kernel-thread variants. Ignore and keep
+      // scanning.
+    }
+  }
+  return false;
+}
+
 async function defaultCheckNginx(
   sitesAvailable: string,
   sitesEnabled: string,
@@ -116,8 +144,10 @@ async function defaultCheckNginx(
     }
   }
 
-  // nginx process check — try systemctl first, fall back to pgrep so the
-  // check still works in containers / non-systemd environments.
+  // nginx process check — try systemctl first, then pgrep, then fall back
+  // to walking /proc/*/comm directly so the check still works in containers
+  // that don't ship procps/systemd. With --pid=host bind-mounting the host
+  // PID namespace into the container, /proc enumerates host processes too.
   const sysctl = await spawnOnce('systemctl', ['is-active', '--quiet', 'nginx']);
   let nginxRunning = sysctl.code === 0;
   if (!nginxRunning) {
@@ -125,7 +155,10 @@ async function defaultCheckNginx(
     nginxRunning = pg.code === 0;
   }
   if (!nginxRunning) {
-    problems.push('nginx process not running (systemctl is-active / pgrep both failed)');
+    nginxRunning = await procWalkHasNginx();
+  }
+  if (!nginxRunning) {
+    problems.push('nginx process not running (systemctl / pgrep / /proc walk all failed)');
   }
 
   // Base vhost file: only verify when a path was supplied. An empty path
