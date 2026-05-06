@@ -129,6 +129,48 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - Committing directly to main (only merge commits from PRs)
 - Merging PRs — leave that for the human
 
+## Kanban Card Hygiene — Done-State Contract
+
+Full contract in the wiki: **`kanban-done-state-contract-when-a-card-may-move-to-done`**. Read it once; the rules below are the operational summary.
+
+A card may move to **Done** only if **one** of these holds:
+
+- **(a) Full scope shipped** — every acceptance criterion in the card description was actually delivered in user-visible form.
+- **(b) Partial / spec only** — the card title is prefixed `[Spec]` or `[Partial]`, AND a comment on the card lists the follow-up card IDs that cover the gap. Both halves are required: the prefix makes the gap visible at-a-glance; the IDs make the remaining work findable.
+
+There is no third option. If neither holds, the card stays in **In Progress** or **Review** until follow-up cards exist.
+
+### At PR-merge time (lead checklist)
+
+Before moving a card to Done after a PR merges:
+
+1. Diff the PR contents against the card's acceptance criteria.
+2. If scope shrank: **create the follow-up cards first**, wire blocker edges, link them under an epic if there's one, retitle the original card with `[Spec]` / `[Partial]`, and post a comment on the original card listing the follow-up IDs and a one-line "why we split" rationale.
+3. **Then** move it to Done.
+
+The bookkeeping happens at the moment the gap exists, not weeks later when someone asks "wasn't this supposed to ship?"
+
+### End-of-session announcement
+
+The closing message of any session that touched the kanban board must include an explicit **user-visible delta** statement:
+
+> **User-visible behavior change after merge:** yes / no.
+> If no: **follow-up cards required** → `<id1>`, `<id2>`, …
+
+This is what tells the human in the loop whether they will see anything different after the merge lands. If you closed a card under path (b), this announcement is non-optional — it's the live signal that scaffolding shipped, not the feature.
+
+### What "user-visible" means
+
+- ✅ A page, button, or copy renders differently in web / mobile / Electron.
+- ✅ A REST or WebSocket surface gains or changes behavior callers can observe.
+- ✅ A CLI / script output, log line, or installed binary changes.
+- ❌ A new file/type/function with no caller exercising it yet.
+- ❌ Test-only additions.
+- ❌ Internal refactors with unchanged external contracts.
+- ❌ Spec docs, ADRs, wiki pages.
+
+When in doubt, err toward "not user-visible" and require the follow-up.
+
 ## External API Documentation — Always Verify
 
 When working with any external service API (GitHub, Slack, Stripe, AWS, etc.), **always search for and read the current official documentation** before implementing or debugging. Do not rely solely on training data — APIs change.
