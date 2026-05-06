@@ -827,6 +827,18 @@ export const api = {
       timeout: 30000,
     }),
 
+  // PR environments provisioning wizard. The wizard fans these calls into
+  // `subscribeProvisioningEvents` for the live event stream — see
+  // `client/src/components/PrEnvironmentsSection.jsx`.
+  // POST /provision returns `{ jobId, wsUrl }`; GET /provision/last returns
+  // `{ jobId, outcome, finishedAt } | { jobId: null }`.
+  startPrEnvProvision: (payload) =>
+    fetchJSON('/settings/pr-env/provision', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getLastPrEnvProvision: () => fetchJSON('/settings/pr-env/provision/last'),
+
   // MCP servers (per-user). Replaces the deleted Nango integration surface.
   // Distinct from the per-agent MCP methods above (`getMcpServers` etc.) —
   // those manage the agent's template under `/agents/:id/mcp-servers`; these

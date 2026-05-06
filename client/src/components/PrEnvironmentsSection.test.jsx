@@ -1,141 +1,297 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import PrEnvironmentsSection, { ValidateResults } from './PrEnvironmentsSection.jsx';
 import { api } from '../utils/api.js';
+import * as provisioningClient from '../utils/provisioningClient.js';
 
 vi.mock('../utils/api.js', () => ({
   api: {
     getPrEnvSettings: vi.fn(),
-    updatePrEnvSettings: vi.fn(),
+    getLastPrEnvProvision: vi.fn(),
+    startPrEnvProvision: vi.fn(),
     validatePrEnvSettings: vi.fn(),
   },
 }));
 
 /**
- * Canonical "already configured" shape from the server. Tier 2 credential
- * fields may still be present in the response (the server keeps them for
- * legacy compat), but the UI no longer surfaces them — credentials are
- * inherited from infrastructure (registered Reviewer App + IMDS).
+ * The wizard pipes WebSocket frames through `subscribeProvisioningEvents`.
+ * We replace it with a controllable double so each test can assert against
+ * a specific phase / log / done sequence.
  */
-function loadedServerState() {
-  return {
-    enabled: true,
-    repoFullName: 'acme/widgets',
-    previewHost: '*.preview.example.com',
-    previewBaseUrl: 'https://pr-{{number}}.preview.example.com',
-    certRenewalLive: true,
-    portRangeMin: 8000,
-    portRangeMax: 8999,
-    // Tier 2 — present but ignored by the UI.
-    githubAppId: '123456',
-    githubInstallationId: '7890',
-    githubPrivateKey: '',
-    route53AccessKeyId: '',
-    route53SecretAccessKey: '',
-    route53HostedZoneId: 'Z0123',
-  };
-}
+let lastSubscriber = null; // { onEvent, onClose, onError, close }
+let lastSubscribeUrl = null;
 
 beforeEach(() => {
-  api.getPrEnvSettings.mockResolvedValue(loadedServerState());
-  api.updatePrEnvSettings.mockImplementation(async (payload) => ({
-    ...loadedServerState(),
-    ...payload,
-  }));
-  api.validatePrEnvSettings.mockResolvedValue({
-    ok: false,
-    checks: [
-      { name: 'docker', pass: true, message: 'Docker daemon reachable.' },
-      { name: 'nginx', pass: true, message: 'Writable: /etc/nginx/sites-{available,enabled}' },
-      { name: 'github-app', pass: false, message: 'Access-tokens request failed (401): bad jwt' },
-      {
-        name: 'route53',
-        pass: true,
-        message: 'Hosted zone Z0123 reachable (instance role / default chain).',
-      },
-    ],
+  lastSubscriber = null;
+  lastSubscribeUrl = null;
+
+  vi.spyOn(provisioningClient, 'subscribeProvisioningEvents').mockImplementation(
+    (wsUrl, handlers) => {
+      lastSubscribeUrl = wsUrl;
+      lastSubscriber = handlers;
+      return {
+        close: vi.fn(),
+      };
+    },
+  );
+
+  api.getPrEnvSettings.mockResolvedValue({
+    enabled: false,
+    repoFullName: 'acme/widgets',
+    previewHost: 'preview.example.com',
+    route53HostedZoneId: 'Z0123',
   });
+  api.getLastPrEnvProvision.mockResolvedValue({ jobId: null });
+  api.startPrEnvProvision.mockResolvedValue({
+    jobId: 'job-abc',
+    wsUrl: 'ws://test/api/settings/pr-env/provision/job-abc/events',
+  });
+  api.validatePrEnvSettings.mockResolvedValue({ ok: true, checks: [] });
+
+  // Clean any stash left by previous tests so the mount sequence is
+  // deterministic.
+  if (typeof window !== 'undefined' && window.localStorage) {
+    window.localStorage.clear();
+  }
 });
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
-describe('<PrEnvironmentsSection />', () => {
-  it('loads server state and populates Tier 1 fields', async () => {
+/** Push an event to the active subscriber inside an `act()` so React renders. */
+async function emit(ev) {
+  await act(async () => {
+    lastSubscriber.onEvent(ev);
+  });
+}
+
+describe('<PrEnvironmentsSection /> — wizard inputs', () => {
+  it('prefills the three operator inputs from saved settings', async () => {
     render(<PrEnvironmentsSection />);
 
     await waitFor(() => expect(api.getPrEnvSettings).toHaveBeenCalled());
 
-    expect((await screen.findByLabelText(/Repo \(owner\/name\)/i)).value).toBe('acme/widgets');
-    expect(screen.getByLabelText(/Preview host/i).value).toBe('*.preview.example.com');
+    expect((await screen.findByLabelText(/Preview host/i)).value).toBe('preview.example.com');
+    expect(screen.getByLabelText(/Route 53 hosted zone ID/i).value).toBe('Z0123');
+    expect(screen.getByLabelText(/GitHub repo \(owner\/name\)/i).value).toBe('acme/widgets');
   });
 
-  it('shows the inherited-credentials notice and does NOT render credential inputs', async () => {
+  it('disables Provision until all three inputs are non-empty', async () => {
+    api.getPrEnvSettings.mockResolvedValueOnce({
+      enabled: false,
+      repoFullName: '',
+      previewHost: '',
+      route53HostedZoneId: '',
+    });
     render(<PrEnvironmentsSection />);
-    await screen.findByLabelText(/Repo \(owner\/name\)/i);
+    await screen.findByLabelText(/Preview host/i);
 
-    // Inherited-creds explainer is present.
-    expect(screen.getByTestId('prenv-inherited-creds-notice')).toBeInTheDocument();
+    const btn = screen.getByTestId('prenv-provision-button');
+    expect(btn).toBeDisabled();
 
-    // Tier 2 credential fields must NOT exist anywhere in the UI.
-    expect(screen.queryByLabelText(/App ID/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Installation ID/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Private key/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Access key ID/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Hosted zone ID/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Secret access key/i)).not.toBeInTheDocument();
-  });
-
-  it('does not include any Tier 2 credential fields in the save payload', async () => {
-    // Gate: Save is disabled until validate passes. Use an all-ok mock.
-    api.validatePrEnvSettings.mockResolvedValueOnce({ ok: true, checks: [] });
-
-    render(<PrEnvironmentsSection />);
-    await screen.findByLabelText(/Repo \(owner\/name\)/i);
-
-    fireEvent.change(screen.getByLabelText(/Repo \(owner\/name\)/i), {
-      target: { value: 'acme/gadgets' },
+    fireEvent.change(screen.getByLabelText(/Preview host/i), {
+      target: { value: 'preview.example.com' },
+    });
+    fireEvent.change(screen.getByLabelText(/Route 53 hosted zone ID/i), {
+      target: { value: 'Z0123' },
+    });
+    fireEvent.change(screen.getByLabelText(/GitHub repo \(owner\/name\)/i), {
+      target: { value: 'acme/widgets' },
     });
 
-    // Run validate so the Save button becomes enabled.
-    fireEvent.click(screen.getByRole('button', { name: /^Validate$/ }));
-    await waitFor(() => expect(api.validatePrEnvSettings).toHaveBeenCalled());
+    expect(btn).not.toBeDisabled();
+  });
+});
 
-    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+describe('<PrEnvironmentsSection /> — provisioning flow', () => {
+  it('starts a job and renders all 5 phase rows in pending state', async () => {
+    render(<PrEnvironmentsSection />);
+    await screen.findByLabelText(/Preview host/i);
 
-    await waitFor(() => expect(api.updatePrEnvSettings).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('prenv-provision-button'));
 
-    const payload = api.updatePrEnvSettings.mock.calls[0][0];
-    for (const k of [
-      'githubAppId',
-      'githubInstallationId',
-      'githubPrivateKey',
-      'route53AccessKeyId',
-      'route53SecretAccessKey',
-      'route53HostedZoneId',
-    ]) {
-      expect(payload, `must not include Tier 2 field ${k}`).not.toHaveProperty(k);
-    }
-    expect(payload.repoFullName).toBe('acme/gadgets');
+    await waitFor(() => expect(api.startPrEnvProvision).toHaveBeenCalledTimes(1));
+    expect(provisioningClient.subscribeProvisioningEvents).toHaveBeenCalled();
+    expect(lastSubscribeUrl).toContain('job-abc');
+
+    // All 5 phases are listed once the job kicks off.
+    expect(screen.getByTestId('prenv-phase-detect-host')).toBeInTheDocument();
+    expect(screen.getByTestId('prenv-phase-write-tier3-config')).toBeInTheDocument();
+    expect(screen.getByTestId('prenv-phase-issue-cert')).toBeInTheDocument();
+    expect(screen.getByTestId('prenv-phase-attach-iam')).toBeInTheDocument();
+    expect(screen.getByTestId('prenv-phase-verify')).toBeInTheDocument();
   });
 
-  it('renders per-check pass/fail after the Validate button is clicked', async () => {
+  it('reflects each phase status as events arrive (started → ok → failed → skipped)', async () => {
     render(<PrEnvironmentsSection />);
-    await screen.findByLabelText(/Repo \(owner\/name\)/i);
+    await screen.findByLabelText(/Preview host/i);
+    fireEvent.click(screen.getByTestId('prenv-provision-button'));
+    await waitFor(() => expect(provisioningClient.subscribeProvisioningEvents).toHaveBeenCalled());
 
-    fireEvent.click(screen.getByRole('button', { name: /^Validate$/ }));
+    await emit({
+      type: 'phase',
+      phase: 'detect-host',
+      status: 'started',
+      at: '2026-05-06T00:00:00Z',
+      seq: 0,
+    });
+    expect(screen.getByTestId('prenv-phase-detect-host')).toHaveTextContent(/running/i);
 
+    await emit({
+      type: 'phase',
+      phase: 'detect-host',
+      status: 'ok',
+      message: 'containerized (AL2023)',
+      at: '2026-05-06T00:00:01Z',
+      seq: 1,
+    });
+    expect(screen.getByTestId('prenv-phase-detect-host')).toHaveTextContent(/ok/i);
+    expect(screen.getByTestId('prenv-phase-detect-host-message')).toHaveTextContent(
+      /containerized/i,
+    );
+
+    await emit({
+      type: 'phase',
+      phase: 'issue-cert',
+      status: 'skipped',
+      message: 'cert valid for 78 days',
+      at: '2026-05-06T00:00:02Z',
+      seq: 2,
+    });
+    expect(screen.getByTestId('prenv-phase-issue-cert')).toHaveTextContent(/skipped/i);
+
+    await emit({
+      type: 'phase',
+      phase: 'attach-iam',
+      status: 'failed',
+      message: 'PutRolePolicy denied',
+      at: '2026-05-06T00:00:03Z',
+      seq: 3,
+    });
+    expect(screen.getByTestId('prenv-phase-attach-iam')).toHaveTextContent(/failed/i);
+  });
+
+  it('appends log lines to the live event stream', async () => {
+    render(<PrEnvironmentsSection />);
+    await screen.findByLabelText(/Preview host/i);
+    fireEvent.click(screen.getByTestId('prenv-provision-button'));
+    await waitFor(() => expect(provisioningClient.subscribeProvisioningEvents).toHaveBeenCalled());
+
+    await emit({
+      type: 'log',
+      phase: 'issue-cert',
+      line: 'Requesting cert for *.preview.example.com',
+      at: '2026-05-06T00:00:00Z',
+      seq: 0,
+    });
+    await emit({
+      type: 'log',
+      phase: 'issue-cert',
+      line: 'DNS challenge succeeded',
+      at: '2026-05-06T00:00:01Z',
+      seq: 1,
+    });
+
+    const stream = screen.getByTestId('prenv-event-stream');
+    expect(stream).toHaveTextContent(/Requesting cert/);
+    expect(stream).toHaveTextContent(/DNS challenge succeeded/);
+    expect(screen.getAllByTestId('prenv-event-line')).toHaveLength(2);
+  });
+
+  it('renders remediation cards next to verify when done.partial arrives', async () => {
+    render(<PrEnvironmentsSection />);
+    await screen.findByLabelText(/Preview host/i);
+    fireEvent.click(screen.getByTestId('prenv-provision-button'));
+    await waitFor(() => expect(provisioningClient.subscribeProvisioningEvents).toHaveBeenCalled());
+
+    await emit({ type: 'phase', phase: 'verify', status: 'ok', at: '...', seq: 10 });
+    await emit({
+      type: 'done',
+      outcome: 'partial',
+      remediations: [
+        {
+          check: 'route53',
+          severity: 'amber',
+          headline: 'Attach IAM policy to ryan-ec2-ssm',
+          detail: 'Wizard could not put-role-policy from this box.',
+          actions: [
+            { label: 'Copy CLI', kind: 'copy', payload: 'aws iam put-role-policy …' },
+            {
+              label: 'Open Route 53 console',
+              kind: 'link',
+              payload: 'https://console.aws.amazon.com/route53/',
+            },
+          ],
+        },
+      ],
+      at: '2026-05-06T00:00:10Z',
+      seq: 11,
+    });
+
+    // Card is rendered under the verify row only.
+    expect(screen.getByTestId('prenv-phase-verify-remediations')).toBeInTheDocument();
+    expect(screen.getByTestId('prenv-remediation-route53')).toHaveTextContent(/Attach IAM/i);
+    expect(screen.getByTestId('prenv-remediation-route53-action-copy')).toBeInTheDocument();
+    expect(screen.getByTestId('prenv-remediation-route53-action-link')).toBeInTheDocument();
+
+    // Other phases should NOT have a remediations container.
+    expect(screen.queryByTestId('prenv-phase-attach-iam-remediations')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('prenv-phase-issue-cert-remediations')).not.toBeInTheDocument();
+  });
+
+  it('marks the run as not running once a done event arrives', async () => {
+    render(<PrEnvironmentsSection />);
+    await screen.findByLabelText(/Preview host/i);
+    fireEvent.click(screen.getByTestId('prenv-provision-button'));
+    await waitFor(() => expect(provisioningClient.subscribeProvisioningEvents).toHaveBeenCalled());
+
+    expect(screen.getByTestId('prenv-provision-button')).toBeDisabled();
+
+    await emit({ type: 'done', outcome: 'ok', at: '2026-05-06T00:00:00Z', seq: 99 });
+    await waitFor(() => expect(screen.getByTestId('prenv-provision-button')).not.toBeDisabled());
+    expect(screen.getByTestId('prenv-done-banner')).toHaveTextContent(/all green/i);
+  });
+
+  it('resumes an in-flight job from localStorage on mount with ?since=-1', async () => {
+    window.localStorage.setItem(
+      'prenv-wizard-active-job',
+      JSON.stringify({
+        jobId: 'job-prev',
+        wsUrl: 'ws://test/api/settings/pr-env/provision/job-prev/events',
+      }),
+    );
+    render(<PrEnvironmentsSection />);
+    await screen.findByLabelText(/Preview host/i);
+
+    await waitFor(() => expect(provisioningClient.subscribeProvisioningEvents).toHaveBeenCalled());
+    // The component reattached to the saved jobId, not a fresh one.
+    expect(lastSubscribeUrl).toContain('job-prev');
+    // No new POST happened — we resumed.
+    expect(api.startPrEnvProvision).not.toHaveBeenCalled();
+  });
+
+  it('renders Last provisioned at … from /provision/last on mount', async () => {
+    api.getLastPrEnvProvision.mockResolvedValueOnce({
+      jobId: 'job-old',
+      outcome: 'ok',
+      finishedAt: '2026-05-05T12:00:00Z',
+    });
+    render(<PrEnvironmentsSection />);
+
+    await screen.findByTestId('prenv-last-run');
+    expect(screen.getByTestId('prenv-last-run')).toHaveTextContent(/Last provisioned/);
+    expect(screen.getByTestId('prenv-last-run')).toHaveTextContent(/all green/i);
+  });
+
+  it('calls validate when Re-validate is clicked', async () => {
+    render(<PrEnvironmentsSection />);
+    await screen.findByLabelText(/Preview host/i);
+
+    fireEvent.click(screen.getByTestId('prenv-revalidate-button'));
     await waitFor(() => expect(api.validatePrEnvSettings).toHaveBeenCalled());
-
     expect(await screen.findByTestId('prenv-validate-results')).toBeInTheDocument();
-    // Four named checks rendered with their server-supplied messages.
-    expect(screen.getByTestId('prenv-check-docker')).toHaveTextContent(/reachable/i);
-    expect(screen.getByTestId('prenv-check-nginx')).toHaveTextContent(/writable/i);
-    expect(screen.getByTestId('prenv-check-github-app')).toHaveTextContent(/failed/i);
-    expect(screen.getByTestId('prenv-check-route53')).toHaveTextContent(/reachable/i);
-    // Overall banner reflects at-least-one failure.
-    expect(screen.getByText(/one or more checks failed/i)).toBeInTheDocument();
   });
 });
 
@@ -148,171 +304,16 @@ describe('<ValidateResults />', () => {
           checks: [
             { name: 'docker', pass: true, message: 'ok' },
             { name: 'nginx', pass: true, message: 'ok' },
-            { name: 'github-app', pass: true, message: 'ok' },
-            { name: 'route53', pass: true, message: 'ok' },
           ],
         }}
       />,
     );
     expect(screen.getByText(/all checks passed/i)).toBeInTheDocument();
-    expect(screen.getByTestId('prenv-check-github-app')).toBeInTheDocument();
+    expect(screen.getByTestId('prenv-check-docker')).toBeInTheDocument();
   });
 
   it('renders a top-level error message when validation fetch itself failed', () => {
     render(<ValidateResults error="Network down" />);
     expect(screen.getByText(/network down/i)).toBeInTheDocument();
-  });
-
-  it('shows a remediation hint under failing checks', () => {
-    render(
-      <ValidateResults
-        result={{
-          ok: false,
-          checks: [
-            { name: 'github-app', pass: false, message: 'not registered' },
-            { name: 'cert', pass: true, message: 'ok' },
-          ],
-        }}
-      />,
-    );
-    // Remediation paragraph appears for the failing row only.
-    expect(screen.getByTestId('prenv-check-github-app-remediation')).toHaveTextContent(
-      /Register Reviewer App/,
-    );
-    expect(screen.queryByTestId('prenv-check-cert-remediation')).not.toBeInTheDocument();
-  });
-});
-
-describe('<PrEnvironmentsSection /> — prereq panel', () => {
-  it('shows the Register Reviewer App CTA when github-app check fails', async () => {
-    render(<PrEnvironmentsSection />);
-    await screen.findByLabelText(/Repo \(owner\/name\)/i);
-
-    fireEvent.click(screen.getByRole('button', { name: /^Validate$/ }));
-    await waitFor(() => expect(api.validatePrEnvSettings).toHaveBeenCalled());
-
-    // The default mock returns github-app: false → CTA should render.
-    expect(await screen.findByTestId('prenv-register-app-cta')).toBeInTheDocument();
-    expect(screen.getByTestId('prenv-register-app-button')).toBeInTheDocument();
-  });
-
-  it('hides the Register Reviewer App CTA once github-app check passes', async () => {
-    api.validatePrEnvSettings.mockResolvedValueOnce({
-      ok: true,
-      required: ['cert', 'nginx', 'github-app', 'route53', 'webhook'],
-      checks: [
-        { name: 'docker', pass: true, message: 'ok' },
-        { name: 'nginx', pass: true, message: 'ok' },
-        { name: 'cert', pass: true, message: 'ok' },
-        { name: 'github-app', pass: true, message: 'ok' },
-        { name: 'route53', pass: true, message: 'ok' },
-        { name: 'webhook', pass: true, message: 'ok' },
-      ],
-    });
-    render(<PrEnvironmentsSection />);
-    await screen.findByLabelText(/Repo \(owner\/name\)/i);
-
-    fireEvent.click(screen.getByRole('button', { name: /^Validate$/ }));
-    await waitFor(() => expect(api.validatePrEnvSettings).toHaveBeenCalled());
-    await screen.findByTestId('prenv-validate-results');
-
-    expect(screen.queryByTestId('prenv-register-app-cta')).not.toBeInTheDocument();
-  });
-
-  it('disables Save when any required prereq is failing and shows the Fix link', async () => {
-    api.validatePrEnvSettings.mockResolvedValueOnce({
-      ok: false,
-      required: ['cert', 'nginx', 'github-app', 'route53', 'webhook'],
-      checks: [
-        { name: 'docker', pass: true, message: 'ok' },
-        { name: 'nginx', pass: true, message: 'ok' },
-        { name: 'cert', pass: false, message: 'expired' },
-        { name: 'github-app', pass: true, message: 'ok' },
-        { name: 'route53', pass: true, message: 'ok' },
-        { name: 'webhook', pass: true, message: 'ok' },
-      ],
-    });
-    render(<PrEnvironmentsSection />);
-    await screen.findByLabelText(/Repo \(owner\/name\)/i);
-
-    fireEvent.click(screen.getByRole('button', { name: /^Validate$/ }));
-    await waitFor(() => expect(api.validatePrEnvSettings).toHaveBeenCalled());
-    await screen.findByTestId('prenv-validate-results');
-
-    const saveBtn = screen.getByTestId('prenv-save-button');
-    expect(saveBtn).toBeDisabled();
-    expect(saveBtn.getAttribute('title')).toMatch(/Wildcard TLS certificate/);
-
-    // Fix-link surfaces the first failing required check.
-    const link = screen.getByTestId('prenv-failing-required-link');
-    expect(link).toHaveTextContent(/Wildcard TLS certificate/);
-  });
-
-  it('enables Save when all required prereqs pass', async () => {
-    api.validatePrEnvSettings.mockResolvedValueOnce({
-      ok: true,
-      required: ['cert', 'nginx', 'github-app', 'route53', 'webhook'],
-      checks: [
-        { name: 'docker', pass: false, message: 'down' }, // informational, ignored
-        { name: 'nginx', pass: true, message: 'ok' },
-        { name: 'cert', pass: true, message: 'ok' },
-        { name: 'github-app', pass: true, message: 'ok' },
-        { name: 'route53', pass: true, message: 'ok' },
-        { name: 'webhook', pass: true, message: 'ok' },
-      ],
-    });
-    render(<PrEnvironmentsSection />);
-    await screen.findByLabelText(/Repo \(owner\/name\)/i);
-
-    fireEvent.click(screen.getByRole('button', { name: /^Validate$/ }));
-    await waitFor(() => expect(api.validatePrEnvSettings).toHaveBeenCalled());
-    await screen.findByTestId('prenv-validate-results');
-
-    expect(screen.getByTestId('prenv-save-button')).not.toBeDisabled();
-  });
-
-  it('auto-validates on the off→on Enabled transition', async () => {
-    // Server returns enabled: false initially so toggling can transition.
-    api.getPrEnvSettings.mockResolvedValueOnce({
-      ...loadedServerState(),
-      enabled: false,
-    });
-    render(<PrEnvironmentsSection />);
-    await screen.findByLabelText(/Repo \(owner\/name\)/i);
-
-    // No validate calls yet — initial render is not a transition.
-    expect(api.validatePrEnvSettings).not.toHaveBeenCalled();
-
-    const toggle = screen.getByLabelText('PR environments enabled');
-    fireEvent.click(toggle); // off → on, triggers validate
-    await waitFor(() => expect(api.validatePrEnvSettings).toHaveBeenCalledTimes(1));
-  });
-
-  it('detects #/settings?githubApp=ready on return from GitHub App flow and re-validates', async () => {
-    const originalLocation = window.location;
-    const replaceState = vi.fn();
-    Object.defineProperty(window, 'location', {
-      writable: true,
-      value: {
-        ...originalLocation,
-        pathname: '/',
-        search: '',
-        hash: '#/settings?githubApp=ready',
-      },
-    });
-    Object.defineProperty(window.history, 'replaceState', {
-      writable: true,
-      value: replaceState,
-    });
-
-    render(<PrEnvironmentsSection />);
-    await screen.findByLabelText(/Repo \(owner\/name\)/i);
-    await waitFor(() => expect(api.validatePrEnvSettings).toHaveBeenCalled());
-    expect(replaceState).toHaveBeenCalled();
-    // Param stripped; bare path fragment preserved
-    const newUrl = replaceState.mock.calls[0][2];
-    expect(newUrl).toBe('/#/settings');
-
-    Object.defineProperty(window, 'location', { writable: true, value: originalLocation });
   });
 });

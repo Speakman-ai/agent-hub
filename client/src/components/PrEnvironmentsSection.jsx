@@ -8,216 +8,333 @@ import {
   Loader2,
   RefreshCw,
   Info,
-  KeyRound,
+  PlayCircle,
+  Copy,
+  ExternalLink,
+  CircleDot,
+  Circle,
+  MinusCircle,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
-import { buildPrEnvSavePayload, validatePrEnvForm } from '../utils/prEnvPayload.js';
+import { subscribeProvisioningEvents } from '../utils/provisioningClient.js';
 
-const EMPTY_FORM = {
-  enabled: false,
-  repoFullName: '',
-  previewHost: '',
-  previewBaseUrl: '',
-  certRenewalLive: false,
-  portRangeMin: '',
-  portRangeMax: '',
-};
+/**
+ * PR Environments — Provisioning Wizard.
+ *
+ * Replaces the read-only validator panel. The wizard collects three inputs
+ * the operator must specify (`previewHost`, `hostedZoneId`, `repoFullName`)
+ * and runs the five-phase orchestrator documented in
+ * `docs/architecture/pr-environments-provisioning-wizard-v1-spec.md`:
+ *
+ *   1. detect-host
+ *   2. write-tier3-config
+ *   3. issue-cert
+ *   4. attach-iam
+ *   5. verify   ← only phase allowed to emit RemediationCards
+ *
+ * The wizard calls:
+ *   - POST  /api/settings/pr-env/provision         → { jobId, wsUrl }
+ *   - WS    <wsUrl>?since=<seq>                    → phase / log / done events
+ *   - GET   /api/settings/pr-env/provision/last    → last terminal summary
+ *   - POST  /api/settings/pr-env/validate          → kept as Re-validate
+ *
+ * Resume-on-reload semantics: an in-flight job stashes its `jobId` + `wsUrl`
+ * in `localStorage`; on mount we resubscribe with `?since=<lastSeq>` so a
+ * page refresh mid-run keeps streaming. Once a `done` arrives we clear the
+ * stash and surface a "Last provisioned at …" status row from
+ * `/provision/last`.
+ */
 
-/** Map masked server state into form state (null/undefined → '' for controlled inputs). */
-function hydrateForm(server) {
-  if (!server) return { ...EMPTY_FORM };
-  return {
-    enabled: !!server.enabled,
-    repoFullName: server.repoFullName ?? '',
-    previewHost: server.previewHost ?? '',
-    previewBaseUrl: server.previewBaseUrl ?? '',
-    certRenewalLive: !!server.certRenewalLive,
-    portRangeMin: server.portRangeMin ?? '',
-    portRangeMax: server.portRangeMax ?? '',
-  };
+const PHASES = [
+  {
+    id: 'detect-host',
+    label: 'Detect host',
+    description: 'Classify the host as containerized / pm2-on-ec2 / dev.',
+  },
+  {
+    id: 'write-tier3-config',
+    label: 'Write Tier-3 config',
+    description: 'Merge derived nginx paths into ~/.agent-hub/data/config.json.',
+  },
+  {
+    id: 'issue-cert',
+    label: 'Issue wildcard cert',
+    description: 'certbot certonly --dns-route53 -d "*.<previewHost>".',
+  },
+  {
+    id: 'attach-iam',
+    label: 'Attach IAM policy',
+    description: 'iam:PutRolePolicy on the EC2 instance role (or copy-paste).',
+  },
+  {
+    id: 'verify',
+    label: 'Verify',
+    description: 'Re-run the docker / nginx / cert / github-app / route53 / webhook checks.',
+  },
+];
+
+const EMPTY_FORM = { previewHost: '', hostedZoneId: '', repoFullName: '' };
+
+const ACTIVE_JOB_LS_KEY = 'prenv-wizard-active-job';
+
+function readActiveJobFromStorage() {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_JOB_LS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.jobId || !parsed?.wsUrl) return null;
+    return { jobId: parsed.jobId, wsUrl: parsed.wsUrl };
+  } catch {
+    return null;
+  }
 }
 
-const CHECK_LABELS = {
-  docker: 'Docker daemon',
-  nginx: 'Nginx running + base vhost',
-  cert: 'Wildcard TLS certificate',
-  'github-app': 'Reviewer GitHub App',
-  route53: 'Route 53 IAM',
-  webhook: 'Webhook installed on a repo',
-};
+function writeActiveJobToStorage(value) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    if (value) window.localStorage.setItem(ACTIVE_JOB_LS_KEY, JSON.stringify(value));
+    else window.localStorage.removeItem(ACTIVE_JOB_LS_KEY);
+  } catch {
+    /* ignore quota / disabled storage */
+  }
+}
 
-/**
- * Default required-check set the UI gates Save against. The server is
- * the source of truth — when the validate response includes a `required`
- * array, we use that; this constant is the fallback for older servers
- * (and for tests that stub the API).
- */
-const DEFAULT_REQUIRED_CHECKS = ['cert', 'nginx', 'github-app', 'route53', 'webhook'];
+function formatTimestamp(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  } catch {
+    return iso;
+  }
+}
 
-/** Per-check remediation hint shown next to a failing row. */
-const CHECK_REMEDIATION = {
-  cert: 'Run `certbot certonly --dns-route53 -d "*.<previewHost>"` (or rerun the TF cert workflow), then re-validate.',
-  nginx:
-    'Ensure nginx is running (`systemctl start nginx`) and that the base vhost file exists at the configured path.',
-  'github-app': 'Click "Register Reviewer App" below to walk the GitHub App manifest flow.',
-  route53:
-    'Attach the `route53:ListHostedZones`/`GetHostedZone` policy to the EC2 instance role, or set explicit AWS keys.',
-  webhook:
-    'Open a project, then Settings → GitHub Webhook → Install. PR-env dispatch fires off webhook deliveries.',
-  docker:
-    'Start the Docker daemon (`systemctl start docker`) — required for PR-env container builds.',
-};
+/** Reduce phase events into a per-phase status map keyed by phase id. */
+function phaseReducer(state, event) {
+  if (event.type !== 'phase') return state;
+  const next = { ...state };
+  next[event.phase] = {
+    status: event.status, // 'started' | 'ok' | 'failed' | 'skipped'
+    message: event.message ?? '',
+    at: event.at,
+  };
+  return next;
+}
 
-/**
- * PR environments settings UI.
- *
- * Covers Tier 1 (general) settings only. GitHub App credentials are
- * inherited from the registered Reviewer App (`config.githubApp`); Route 53
- * credentials come from the AWS SDK default credential chain (IAM Role via
- * IMDSv2 on EC2). Both are infrastructure-managed (Terraform), so neither
- * is editable here — see `ops/terraform/locals-agent-hub.tf` for the
- * Tier-3 `prEnv` block written into `<dataDir>/config.json` at first
- * boot, and `ops/terraform/ssm-iam.tf` for the Route 53 IAM policy
- * attached to the EC2 instance role.
- *
- * Tier 3 (host paths — nginx dirs, prodDbPath, hostedZoneId) likewise
- * stays in `<dataDir>/config.json` by design.
- *
- * Behaviors:
- * - Validate hits `/api/settings/pr-env/validate` and renders the 4
- *   per-check results (docker / nginx / github-app / route53). The
- *   github-app + route53 checks use the inherited credentials when the
- *   PR-env-specific fields are blank.
- * - Enable toggle is gated: disabled until either (a) a prior save succeeded
- *   AND validation passes, or (b) the user explicitly overrides via the
- *   "Enable without validation" checkbox (rare — surfaces a warning).
- */
 export default function PrEnvironmentsSection() {
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(null);
-  const [, setServer] = useState(null);
+  // ── form ─────────────────────────────────────────────────────────────
   const [form, setForm] = useState(EMPTY_FORM);
-  const [saving, setSaving] = useState(false);
-  const [saveStatus, setSaveStatus] = useState(null); // 'saved' | 'error' | null
-  const [saveError, setSaveError] = useState(null);
+  const [formLoading, setFormLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+
+  // ── last-run summary ─────────────────────────────────────────────────
+  const [lastRun, setLastRun] = useState(null); // { jobId, outcome, finishedAt } | null
+
+  // ── live job state ───────────────────────────────────────────────────
+  const [activeJobId, setActiveJobId] = useState(null);
+  const [phaseState, setPhaseState] = useState({}); // { [phaseId]: { status, message, at } }
+  const [logEvents, setLogEvents] = useState([]); // list of { phase, line, at, seq }
+  const [doneEvent, setDoneEvent] = useState(null); // last terminal { outcome, error?, remediations? }
+  const [running, setRunning] = useState(false);
+  const [startError, setStartError] = useState(null);
+
+  // ── re-validate (kept from old panel) ────────────────────────────────
   const [validating, setValidating] = useState(false);
-  const [validateResult, setValidateResult] = useState(null); // { ok, checks: [...] } | null
+  const [validateResult, setValidateResult] = useState(null);
   const [validateError, setValidateError] = useState(null);
-  const [overrideGate, setOverrideGate] = useState(false);
-  // Tracks the previous `enabled` value so we can fire validation only on
-  // the off→on transition (not on the initial render).
-  const prevEnabledRef = useRef(false);
 
-  const load = useCallback(async () => {
-    try {
-      setLoadError(null);
-      const data = await api.getPrEnvSettings();
-      setServer(data);
-      setForm(hydrateForm(data));
-      prevEnabledRef.current = !!data?.enabled;
-    } catch (err) {
-      setLoadError(err.message || 'Failed to load PR-env settings');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const clientErrors = validatePrEnvForm(form);
-  const validationPassed = validateResult?.ok === true;
-  const enableGated = !overrideGate && !validationPassed;
-
-  // Required-check set: prefer the server-provided list (forwards-compatible
-  // when we add new prereqs server-side) and fall back to the constant.
-  const requiredChecks =
-    Array.isArray(validateResult?.required) && validateResult.required.length > 0
-      ? validateResult.required
-      : DEFAULT_REQUIRED_CHECKS;
-  const failingRequired = (validateResult?.checks || []).filter(
-    (c) => requiredChecks.includes(c.name) && !c.pass,
-  );
-  const githubAppFailing = (validateResult?.checks || []).some(
-    (c) => c.name === 'github-app' && !c.pass,
-  );
+  // Refs so the WS subscriber callback always sees current values.
+  const subscriptionRef = useRef(null);
+  const logScrollRef = useRef(null);
+  const lastSeqRef = useRef(-1);
 
   const setField = (k, v) => setForm((prev) => ({ ...prev, [k]: v }));
 
-  const handleSave = async () => {
-    if (clientErrors.length > 0) return;
-    setSaving(true);
-    setSaveError(null);
+  const closeSubscription = useCallback(() => {
+    if (subscriptionRef.current) {
+      try {
+        subscriptionRef.current.close();
+      } catch {
+        /* ignore */
+      }
+      subscriptionRef.current = null;
+    }
+  }, []);
+
+  const handleEvent = useCallback(
+    (ev) => {
+      if (!ev || typeof ev !== 'object') return;
+      if (typeof ev.seq === 'number' && ev.seq > lastSeqRef.current) {
+        lastSeqRef.current = ev.seq;
+      }
+      if (ev.type === 'phase') {
+        setPhaseState((prev) => phaseReducer(prev, ev));
+      } else if (ev.type === 'log') {
+        setLogEvents((prev) => {
+          // De-duplicate on seq when the server replays after a reconnect.
+          if (typeof ev.seq === 'number' && prev.some((p) => p.seq === ev.seq)) return prev;
+          return [...prev, ev];
+        });
+      } else if (ev.type === 'done') {
+        setDoneEvent({
+          outcome: ev.outcome ?? (ev.error ? 'error' : 'ok'),
+          error: ev.error,
+          remediations: ev.remediations || [],
+          at: ev.at,
+        });
+        setRunning(false);
+        writeActiveJobToStorage(null);
+        // Refresh the "Last provisioned at" row from the server's terminal
+        // summary so the display matches /provision/last.
+        api
+          .getLastPrEnvProvision()
+          .then((d) => {
+            if (d && d.jobId) setLastRun(d);
+          })
+          .catch(() => {
+            /* non-fatal */
+          });
+      }
+    },
+    [], // intentionally stable: refs + setters only
+  );
+
+  /** Subscribe to a job's WS. `since` enables replay-on-reconnect. */
+  const attachToJob = useCallback(
+    ({ jobId, wsUrl, since }) => {
+      closeSubscription();
+      setActiveJobId(jobId);
+      setRunning(true);
+      setStartError(null);
+      setDoneEvent(null);
+      // Keep existing phase/log state when reconnecting (since>=0); reset
+      // when starting a fresh job.
+      if (typeof since !== 'number' || since < 0) {
+        setPhaseState({});
+        setLogEvents([]);
+        lastSeqRef.current = -1;
+      }
+      const url =
+        typeof since === 'number' && since >= 0
+          ? `${wsUrl}${wsUrl.includes('?') ? '&' : '?'}since=${since}`
+          : wsUrl;
+      subscriptionRef.current = subscribeProvisioningEvents(url, {
+        onEvent: handleEvent,
+        onClose: () => {
+          // The subscriber synthesises a `done` on stall/drop, so we don't
+          // need to flip `running` here — handleEvent will when the done
+          // arrives. This is just teardown bookkeeping.
+        },
+        onError: () => {
+          /* surfaced via synthesised done */
+        },
+      });
+    },
+    [closeSubscription, handleEvent],
+  );
+
+  // ── initial load: Tier-1 settings (for previewHost / repo prefill) +
+  //    last-run summary + reattach an in-flight job from localStorage. ──
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [settings, last] = await Promise.allSettled([
+          api.getPrEnvSettings(),
+          api.getLastPrEnvProvision(),
+        ]);
+        if (cancelled) return;
+        if (settings.status === 'fulfilled' && settings.value) {
+          const s = settings.value;
+          setForm({
+            previewHost: s.previewHost ?? '',
+            hostedZoneId: s.route53HostedZoneId ?? '',
+            repoFullName: s.repoFullName ?? '',
+          });
+        } else if (settings.status === 'rejected') {
+          setLoadError(settings.reason?.message || 'Failed to load PR-env settings');
+        }
+        if (last.status === 'fulfilled' && last.value && last.value.jobId) {
+          setLastRun(last.value);
+        }
+        // Resume an in-flight job if localStorage has one. The WS replays
+        // events ≥ since so we don't lose the in-progress phases.
+        const stash = readActiveJobFromStorage();
+        if (stash) {
+          attachToJob({ jobId: stash.jobId, wsUrl: stash.wsUrl, since: -1 });
+        }
+      } finally {
+        if (!cancelled) setFormLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // attachToJob is stable; intentionally run once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Tear down the WS on unmount.
+  useEffect(() => () => closeSubscription(), [closeSubscription]);
+
+  // Auto-scroll the live event stream to the bottom on append.
+  useEffect(() => {
+    if (logScrollRef.current) {
+      logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight;
+    }
+  }, [logEvents.length]);
+
+  const formErrors = (() => {
+    const out = [];
+    if (!form.previewHost.trim()) out.push('previewHost is required');
+    if (!form.hostedZoneId.trim()) out.push('Route 53 hostedZoneId is required');
+    if (!form.repoFullName.trim()) out.push('repoFullName is required');
+    return out;
+  })();
+
+  const handleProvision = async () => {
+    if (formErrors.length > 0) return;
+    setStartError(null);
+    setDoneEvent(null);
+    setPhaseState({});
+    setLogEvents([]);
+    lastSeqRef.current = -1;
+    setRunning(true);
     try {
-      const payload = buildPrEnvSavePayload(form);
-      const updated = await api.updatePrEnvSettings(payload);
-      setServer(updated);
-      setForm(hydrateForm(updated));
-      setSaveStatus('saved');
-      // Any save invalidates the last validation result — settings may have changed.
-      setValidateResult(null);
-      setTimeout(() => setSaveStatus(null), 2500);
+      const res = await api.startPrEnvProvision({
+        previewHost: form.previewHost.trim(),
+        hostedZoneId: form.hostedZoneId.trim(),
+        repoFullName: form.repoFullName.trim(),
+      });
+      if (!res?.jobId || !res?.wsUrl) {
+        throw new Error('Server did not return a jobId / wsUrl');
+      }
+      writeActiveJobToStorage({ jobId: res.jobId, wsUrl: res.wsUrl });
+      attachToJob({ jobId: res.jobId, wsUrl: res.wsUrl });
     } catch (err) {
-      setSaveStatus('error');
-      setSaveError(err.message || 'Save failed');
-      setTimeout(() => setSaveStatus(null), 4000);
-    } finally {
-      setSaving(false);
+      setRunning(false);
+      setStartError(err.message || 'Failed to start provisioning');
+      writeActiveJobToStorage(null);
     }
   };
 
-  const handleValidate = useCallback(async () => {
+  const handleRevalidate = useCallback(async () => {
     setValidating(true);
     setValidateError(null);
     setValidateResult(null);
     try {
-      // Send only currently edited fields so unsaved edits are validated,
-      // but masked secrets drop out (server falls back to stored value).
-      const payload = buildPrEnvSavePayload(form);
-      const result = await api.validatePrEnvSettings(payload);
+      const result = await api.validatePrEnvSettings({});
       setValidateResult(result);
     } catch (err) {
       setValidateError(err.message || 'Validation failed');
     } finally {
       setValidating(false);
     }
-  }, [form]);
+  }, []);
 
-  // Auto-validate when the operator flips Enabled on. Only fires on the
-  // off→on transition so we don't spam the endpoint on every render.
-  useEffect(() => {
-    if (loading) return;
-    const prev = prevEnabledRef.current;
-    prevEnabledRef.current = form.enabled;
-    if (form.enabled && !prev) {
-      handleValidate();
-    }
-  }, [form.enabled, loading, handleValidate]);
-
-  // Handle return from the GitHub App manifest flow. The callback redirects to
-  // `/#/settings?githubApp=ready` (hash routing); refresh the panel + run
-  // validation, then strip the param so a hard-refresh doesn't re-trigger.
-  useEffect(() => {
-    if (loading) return;
-    if (typeof window === 'undefined') return;
-    const hash = window.location.hash;
-    const match = hash.match(/[?&]githubApp=(ready|created)/);
-    if (!match) return;
-    handleValidate();
-    const cleanHash = hash.replace(/[?&]githubApp=[^&]*(&message=[^&]*)?/, '').replace(/\?$/, '');
-    window.history.replaceState({}, '', window.location.pathname + cleanHash);
-    // Intentionally only depend on `loading` — running once after first load.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading]);
-
-  const handleRegisterReviewerApp = () => {
-    // The /register route returns an auto-submitting HTML form that POSTs the
-    // manifest to GitHub; navigating there handles the whole manifest flow.
-    window.location.href = '/api/github-app/register';
-  };
-
-  if (loading) {
+  if (formLoading) {
     return (
       <p className="text-sm text-gray-500 flex items-center gap-2">
         <Loader2 size={14} className="animate-spin" />
@@ -225,17 +342,18 @@ export default function PrEnvironmentsSection() {
       </p>
     );
   }
+
   if (loadError) {
     return (
       <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
         <p className="text-red-400 text-sm font-medium mb-1">Failed to load</p>
         <p className="text-xs text-gray-400 mb-3">{loadError}</p>
         <button
-          onClick={load}
+          onClick={() => window.location.reload()}
           className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded-lg"
         >
           <RefreshCw size={12} />
-          Retry
+          Reload
         </button>
       </div>
     );
@@ -245,8 +363,11 @@ export default function PrEnvironmentsSection() {
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono disabled:opacity-60';
   const labelClass = 'block text-xs text-gray-400 mb-1';
 
+  // Remediation cards only come from the verify phase per spec.
+  const remediations = doneEvent?.remediations || [];
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="prenv-wizard">
       {/* Header */}
       <div>
         <h3 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -254,15 +375,13 @@ export default function PrEnvironmentsSection() {
           PR Environments
         </h3>
         <p className="text-xs text-gray-400 mt-1 max-w-2xl">
-          Configure ephemeral per-PR preview environments. Tier 1 (general) and Tier 2 (credentials)
-          are edited here; Tier 3 (host paths such as nginx dirs) stays in
-          <code className="text-gray-300 mx-1">~/.agent-hub/data/config.json</code>
-          by design.
+          Click <strong>Provision PR Environments</strong> to detect the host, write the nginx
+          paths, issue a wildcard cert via certbot + Route 53, attach the IAM policy, and verify
+          everything end-to-end. Re-running is safe — every phase is idempotent.
         </p>
       </div>
 
-      {/* Inherited-credentials notice. PR Envs reuses infrastructure-managed
-          credentials — nothing to enter here. */}
+      {/* Inherited-credentials notice (kept for context). */}
       <div
         className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4"
         data-testid="prenv-inherited-creds-notice"
@@ -273,66 +392,55 @@ export default function PrEnvironmentsSection() {
             <p className="font-medium text-blue-300">Credentials come from infrastructure</p>
             <p>
               GitHub App credentials are inherited from the registered Reviewer App, and Route 53
-              access is provided by the EC2 instance role (IMDSv2). Both are managed by Terraform —
-              see <code className="text-blue-200">ops/terraform/locals-agent-hub.tf</code> and{' '}
-              <code className="text-blue-200">ops/terraform/ssm-iam.tf</code>. Neither needs to be
-              entered here.
+              access is provided by the EC2 instance role (IMDSv2). Both are managed by Terraform
+              and surfaced through the wizard&apos;s <code>attach-iam</code> phase when a manual
+              copy-paste is required.
             </p>
           </div>
         </div>
       </div>
 
-      {/* ── Enable toggle ─────────────────────────────────────────────────── */}
-      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h4 className="text-sm font-medium text-gray-200">Feature enabled</h4>
-            <p className="text-xs text-gray-500 mt-0.5">
-              When enabled, PR webhooks will trigger preview environment builds using the configured
-              GitHub App and Route53 credentials.
-            </p>
-          </div>
-          <label className="flex items-center gap-2 cursor-pointer shrink-0">
-            <input
-              type="checkbox"
-              checked={form.enabled}
-              disabled={enableGated && !form.enabled}
-              onChange={(e) => setField('enabled', e.target.checked)}
-              className="w-4 h-4"
-              aria-label="PR environments enabled"
-            />
-            <span className="text-sm text-gray-300">{form.enabled ? 'On' : 'Off'}</span>
-          </label>
-        </div>
-        {enableGated && !form.enabled && (
-          <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5 flex items-start gap-2">
-            <AlertTriangle size={13} className="shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <p>Validation must pass before enabling. Run "Validate" below, or:</p>
-              <label className="flex items-center gap-1.5 text-amber-200/80">
-                <input
-                  type="checkbox"
-                  checked={overrideGate}
-                  onChange={(e) => setOverrideGate(e.target.checked)}
-                  className="w-3.5 h-3.5"
-                />
-                Enable without validation (not recommended)
-              </label>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ── Tier 1 — General ──────────────────────────────────────────────── */}
+      {/* ── Three operator inputs (the only fields the wizard needs) ───── */}
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
         <div className="flex items-center gap-2">
           <Globe size={14} className="text-gray-400" />
-          <h4 className="text-sm font-medium text-gray-200">General</h4>
+          <h4 className="text-sm font-medium text-gray-200">Provision inputs</h4>
+        </div>
+
+        <div>
+          <label className={labelClass} htmlFor="prenv-preview-host">
+            Preview host
+          </label>
+          <input
+            id="prenv-preview-host"
+            value={form.previewHost}
+            onChange={(e) => setField('previewHost', e.target.value)}
+            className={inputClass}
+            placeholder="preview.example.com"
+            disabled={running}
+          />
+          <p className="text-[11px] text-gray-600 mt-1">
+            Used to issue <code>*.&lt;previewHost&gt;</code> via Let&apos;s Encrypt + Route 53.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass} htmlFor="prenv-hosted-zone-id">
+            Route 53 hosted zone ID
+          </label>
+          <input
+            id="prenv-hosted-zone-id"
+            value={form.hostedZoneId}
+            onChange={(e) => setField('hostedZoneId', e.target.value)}
+            className={inputClass}
+            placeholder="Z0123456789ABC"
+            disabled={running}
+          />
         </div>
 
         <div>
           <label className={labelClass} htmlFor="prenv-repo">
-            Repo (owner/name)
+            GitHub repo (owner/name)
           </label>
           <input
             id="prenv-repo"
@@ -340,182 +448,103 @@ export default function PrEnvironmentsSection() {
             onChange={(e) => setField('repoFullName', e.target.value)}
             className={inputClass}
             placeholder="acme/widgets"
+            disabled={running}
           />
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className={labelClass} htmlFor="prenv-preview-host">
-              Preview host
-            </label>
-            <input
-              id="prenv-preview-host"
-              value={form.previewHost}
-              onChange={(e) => setField('previewHost', e.target.value)}
-              className={inputClass}
-              placeholder="*.preview.example.com"
-            />
-            <p className="text-[11px] text-gray-600 mt-1">
-              Wildcard DNS target for preview envs (Route53).
-            </p>
+        {formErrors.length > 0 && (
+          <div className="text-xs text-amber-400 space-y-0.5" data-testid="prenv-form-errors">
+            {formErrors.map((e) => (
+              <p key={e} className="flex items-center gap-1.5">
+                <AlertTriangle size={12} /> {e}
+              </p>
+            ))}
           </div>
-          <div>
-            <label className={labelClass} htmlFor="prenv-preview-base-url">
-              Preview base URL
-            </label>
-            <input
-              id="prenv-preview-base-url"
-              value={form.previewBaseUrl}
-              onChange={(e) => setField('previewBaseUrl', e.target.value)}
-              className={inputClass}
-              placeholder="https://pr-{{number}}.preview.example.com"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className={labelClass} htmlFor="prenv-port-min">
-              Port range min
-            </label>
-            <input
-              id="prenv-port-min"
-              type="number"
-              min={1}
-              value={form.portRangeMin}
-              onChange={(e) => setField('portRangeMin', e.target.value)}
-              className={inputClass}
-              placeholder="8000"
-            />
-          </div>
-          <div>
-            <label className={labelClass} htmlFor="prenv-port-max">
-              Port range max
-            </label>
-            <input
-              id="prenv-port-max"
-              type="number"
-              min={1}
-              value={form.portRangeMax}
-              onChange={(e) => setField('portRangeMax', e.target.value)}
-              className={inputClass}
-              placeholder="8999"
-            />
-          </div>
-        </div>
-
-        <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.certRenewalLive}
-            onChange={(e) => setField('certRenewalLive', e.target.checked)}
-            className="w-4 h-4"
-          />
-          Request live certificates (disable for Let's Encrypt staging)
-        </label>
+        )}
       </div>
 
-      {/* ── Client-side errors ────────────────────────────────────────────── */}
-      {clientErrors.length > 0 && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-xs text-red-300 space-y-1">
-          {clientErrors.map((err) => (
-            <p key={err} className="flex items-center gap-1.5">
-              <AlertTriangle size={12} /> {err}
-            </p>
-          ))}
+      {/* ── Last-run status row ────────────────────────────────────────── */}
+      {lastRun && (
+        <div className="text-xs text-gray-400 flex items-center gap-2" data-testid="prenv-last-run">
+          <span className="text-gray-500">Last provisioned:</span>
+          <span className="text-gray-300">{formatTimestamp(lastRun.finishedAt)}</span>
+          <OutcomeBadge outcome={lastRun.outcome} />
         </div>
       )}
 
-      {/* ── Register Reviewer App CTA ────────────────────────────────────── */}
-      {githubAppFailing && (
-        <div
-          className="bg-blue-600/10 border border-blue-500/30 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3"
-          data-testid="prenv-register-app-cta"
+      {/* ── Action buttons ─────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={handleProvision}
+          disabled={running || formErrors.length > 0}
+          data-testid="prenv-provision-button"
+          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
         >
-          <div className="min-w-0">
-            <h4 className="text-sm font-medium text-blue-200 flex items-center gap-2">
-              <KeyRound size={14} /> Reviewer GitHub App not registered
+          {running ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={14} />}
+          {running ? 'Provisioning…' : 'Provision PR Environments'}
+        </button>
+        <button
+          type="button"
+          onClick={handleRevalidate}
+          disabled={validating}
+          data-testid="prenv-revalidate-button"
+          className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+        >
+          {validating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          Re-validate
+        </button>
+        {startError && (
+          <span className="text-xs text-red-400 flex items-center gap-1">
+            <XCircle size={13} /> {startError}
+          </span>
+        )}
+      </div>
+
+      {/* ── Phase rows ─────────────────────────────────────────────────── */}
+      {(running || activeJobId || doneEvent) && (
+        <PhaseList
+          phases={PHASES}
+          phaseState={phaseState}
+          remediations={remediations}
+          done={doneEvent}
+        />
+      )}
+
+      {/* ── Live event stream ──────────────────────────────────────────── */}
+      {(running || logEvents.length > 0) && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl">
+          <div className="flex items-center justify-between border-b border-gray-800 px-3 py-2">
+            <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+              Live event stream
             </h4>
-            <p className="text-xs text-blue-100/80 mt-1 max-w-xl">
-              Register the App so PR webhooks can authenticate as the bot identity. You'll be
-              redirected to GitHub to confirm the manifest, then sent back here automatically.
-            </p>
+            <span className="text-[10px] text-gray-600">
+              {logEvents.length} line{logEvents.length === 1 ? '' : 's'}
+            </span>
           </div>
-          <button
-            type="button"
-            onClick={handleRegisterReviewerApp}
-            data-testid="prenv-register-app-button"
-            className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-1.5"
+          <div
+            ref={logScrollRef}
+            data-testid="prenv-event-stream"
+            className="font-mono text-[11px] text-gray-300 max-h-64 overflow-auto p-3 space-y-0.5"
           >
-            <KeyRound size={14} /> Register Reviewer App
-          </button>
+            {logEvents.length === 0 && (
+              <p className="text-gray-600 italic">Waiting for the first event…</p>
+            )}
+            {logEvents.map((ev, i) => (
+              <div
+                key={ev.seq ?? i}
+                className="flex items-start gap-2"
+                data-testid="prenv-event-line"
+              >
+                <span className="text-gray-600 shrink-0">[{ev.phase}]</span>
+                <span className="break-all">{ev.line}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* ── Save + Validate actions ───────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-xs">
-          {saveStatus === 'saved' && (
-            <span className="text-emerald-400 flex items-center gap-1">
-              <CheckCircle2 size={13} /> Saved
-            </span>
-          )}
-          {saveStatus === 'error' && (
-            <span className="text-red-400 flex items-center gap-1">
-              <XCircle size={13} /> {saveError || 'Save failed'}
-            </span>
-          )}
-          {failingRequired.length > 0 && (
-            <button
-              type="button"
-              onClick={() => {
-                const first = failingRequired[0];
-                if (!first) return;
-                const el = document.querySelector(`[data-testid="prenv-check-${first.name}"]`);
-                if (el && typeof el.scrollIntoView === 'function') {
-                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }
-              }}
-              data-testid="prenv-failing-required-link"
-              className="text-amber-400 hover:text-amber-300 underline-offset-2 hover:underline"
-            >
-              Fix: {CHECK_LABELS[failingRequired[0].name] || failingRequired[0].name}
-            </button>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleValidate}
-            disabled={validating}
-            className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
-          >
-            {validating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            Validate
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={
-              saving ||
-              clientErrors.length > 0 ||
-              validateResult === null ||
-              failingRequired.length > 0
-            }
-            data-testid="prenv-save-button"
-            title={
-              failingRequired.length > 0
-                ? `Fix failing prerequisites first: ${failingRequired
-                    .map((c) => CHECK_LABELS[c.name] || c.name)
-                    .join(', ')}`
-                : ''
-            }
-            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm px-4 py-2 rounded-lg transition-colors"
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </div>
-
-      {/* ── Validate results panel ────────────────────────────────────────── */}
+      {/* ── Re-validate result panel (kept as paranoid-operator escape hatch) */}
       {(validateResult || validateError) && (
         <ValidateResults
           result={validateResult}
@@ -530,15 +559,200 @@ export default function PrEnvironmentsSection() {
   );
 }
 
+/** Render the 5 phase rows + their remediation cards. */
+function PhaseList({ phases, phaseState, remediations, done }) {
+  return (
+    <div className="bg-gray-800 rounded-xl p-4 space-y-2" data-testid="prenv-phase-list">
+      <h4 className="text-sm font-medium text-gray-200 mb-2">Progress</h4>
+      <ul className="space-y-2">
+        {phases.map((p) => {
+          const state = phaseState[p.id]; // undefined → pending
+          const status = state?.status ?? 'pending';
+          const cardsForPhase = p.id === 'verify' ? remediations : []; // spec: only verify emits remediations
+          return (
+            <li key={p.id} data-testid={`prenv-phase-${p.id}`} className="space-y-2">
+              <div className="flex items-start gap-3 text-sm">
+                <PhaseStatusIcon status={status} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-200 font-medium">{p.label}</span>
+                    <PhaseStatusPill status={status} />
+                  </div>
+                  <p className="text-[11px] text-gray-500">{p.description}</p>
+                  {state?.message && (
+                    <p
+                      className="text-[11px] text-gray-400 mt-1"
+                      data-testid={`prenv-phase-${p.id}-message`}
+                    >
+                      {state.message}
+                    </p>
+                  )}
+                </div>
+              </div>
+              {cardsForPhase.length > 0 && (
+                <div className="ml-7 space-y-2" data-testid={`prenv-phase-${p.id}-remediations`}>
+                  {cardsForPhase.map((card, idx) => (
+                    <RemediationCard key={`${card.check}-${idx}`} card={card} />
+                  ))}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      {done && (
+        <div
+          className="mt-3 pt-3 border-t border-gray-700 text-xs flex items-center gap-2"
+          data-testid="prenv-done-banner"
+        >
+          <OutcomeBadge outcome={done.outcome} />
+          {done.error?.message && <span className="text-red-300">{done.error.message}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PhaseStatusIcon({ status }) {
+  const cls = 'shrink-0 mt-0.5';
+  switch (status) {
+    case 'started':
+      return <Loader2 size={14} className={`${cls} animate-spin text-blue-400`} />;
+    case 'ok':
+      return <CheckCircle2 size={14} className={`${cls} text-emerald-400`} />;
+    case 'failed':
+      return <XCircle size={14} className={`${cls} text-red-400`} />;
+    case 'skipped':
+      return <MinusCircle size={14} className={`${cls} text-gray-500`} />;
+    case 'pending':
+    default:
+      return <Circle size={14} className={`${cls} text-gray-600`} />;
+  }
+}
+
+function PhaseStatusPill({ status }) {
+  const meta = {
+    pending: { label: 'pending', className: 'bg-gray-700 text-gray-400' },
+    started: { label: 'running', className: 'bg-blue-500/20 text-blue-300' },
+    ok: { label: 'ok', className: 'bg-emerald-500/20 text-emerald-300' },
+    failed: { label: 'failed', className: 'bg-red-500/20 text-red-300' },
+    skipped: { label: 'skipped', className: 'bg-gray-600/40 text-gray-300' },
+  }[status] || { label: status, className: 'bg-gray-700 text-gray-300' };
+  return (
+    <span className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${meta.className}`}>
+      {meta.label}
+    </span>
+  );
+}
+
+function OutcomeBadge({ outcome }) {
+  if (outcome === 'ok') {
+    return (
+      <span className="text-emerald-400 flex items-center gap-1">
+        <CheckCircle2 size={13} /> all green
+      </span>
+    );
+  }
+  if (outcome === 'partial') {
+    return (
+      <span className="text-amber-400 flex items-center gap-1">
+        <AlertTriangle size={13} /> partial — see remediation
+      </span>
+    );
+  }
+  if (outcome === 'error') {
+    return (
+      <span className="text-red-400 flex items-center gap-1">
+        <XCircle size={13} /> error
+      </span>
+    );
+  }
+  return (
+    <span className="text-gray-400 flex items-center gap-1">
+      <CircleDot size={13} /> {outcome ?? 'unknown'}
+    </span>
+  );
+}
+
 /**
- * Per-check pass/fail panel, driven by the POST /validate response shape:
- *   { ok: boolean, checks: Array<{ name, pass, message }> }
+ * Remediation card surfaced by a verify-phase failure. Spec: each card has
+ * a headline, optional detail block, and a list of typed actions
+ * (`retry` | `copy` | `link` | `open-settings`).
+ */
+function RemediationCard({ card }) {
+  const [copied, setCopied] = useState(null);
+  const severityClass =
+    card.severity === 'amber'
+      ? 'bg-amber-500/10 border-amber-500/30 text-amber-100'
+      : 'bg-red-500/10 border-red-500/30 text-red-100';
+
+  const handleAction = async (action) => {
+    if (action.kind === 'copy' && typeof action.payload === 'string') {
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(action.payload);
+        }
+        setCopied(action.label);
+        setTimeout(() => setCopied(null), 1500);
+      } catch {
+        /* clipboard blocked — silent */
+      }
+    } else if (action.kind === 'link' && action.payload) {
+      window.open(action.payload, '_blank', 'noopener,noreferrer');
+    } else if (action.kind === 'open-settings' && action.payload) {
+      window.location.hash = action.payload;
+    } else if (action.kind === 'retry') {
+      // V1: a retry button on a verify card is informational — the spec says
+      // operators re-run the wizard top-level button. We surface the action
+      // but don't auto-trigger; downstream PRs may wire it to a per-phase
+      // re-execution endpoint.
+    }
+  };
+
+  return (
+    <div
+      className={`border rounded-lg p-3 text-xs ${severityClass}`}
+      data-testid={`prenv-remediation-${card.check}`}
+    >
+      <p className="font-medium flex items-center gap-1.5">
+        <AlertTriangle size={13} /> {card.headline}
+      </p>
+      {card.detail && (
+        <pre className="text-[11px] mt-1.5 whitespace-pre-wrap opacity-80">{card.detail}</pre>
+      )}
+      {card.actions?.length > 0 && (
+        <div className="flex flex-wrap gap-2 mt-2">
+          {card.actions.map((action, i) => (
+            <button
+              key={`${action.kind}-${i}`}
+              type="button"
+              onClick={() => handleAction(action)}
+              data-testid={`prenv-remediation-${card.check}-action-${action.kind}`}
+              className="bg-gray-800/60 hover:bg-gray-700 text-gray-100 px-2 py-1 rounded flex items-center gap-1"
+            >
+              {action.kind === 'copy' && <Copy size={11} />}
+              {action.kind === 'link' && <ExternalLink size={11} />}
+              {action.kind === 'retry' && <RefreshCw size={11} />}
+              {copied === action.label ? 'Copied!' : action.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Programmatic Re-validate panel. Kept for crons / paranoid operators who
+ * want to confirm verify is still green without re-running provisioning.
+ * Backed by the unchanged POST /api/settings/pr-env/validate endpoint.
  */
 export function ValidateResults({ result, error, onDismiss }) {
   return (
     <div className="bg-gray-800 rounded-xl p-4 space-y-3" data-testid="prenv-validate-results">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium text-gray-200">Validation results</h4>
+        <h4 className="text-sm font-medium text-gray-200">Re-validate result</h4>
         {onDismiss && (
           <button
             type="button"
@@ -583,16 +797,8 @@ export function ValidateResults({ result, error, onDismiss }) {
                   <XCircle size={13} className="shrink-0 mt-0.5" />
                 )}
                 <div className="min-w-0">
-                  <p className="font-medium">{CHECK_LABELS[check.name] || check.name}</p>
+                  <p className="font-medium">{check.name}</p>
                   <p className="text-[11px] opacity-80 break-words">{check.message}</p>
-                  {!check.pass && CHECK_REMEDIATION[check.name] && (
-                    <p
-                      className="text-[11px] opacity-70 mt-1 italic"
-                      data-testid={`prenv-check-${check.name}-remediation`}
-                    >
-                      → {CHECK_REMEDIATION[check.name]}
-                    </p>
-                  )}
                 </div>
               </li>
             ))}
