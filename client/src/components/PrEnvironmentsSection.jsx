@@ -36,7 +36,12 @@ import { subscribeProvisioningEvents } from '../utils/provisioningClient.js';
  *   - POST  /api/settings/pr-env/provision         → { jobId, wsUrl }
  *   - WS    <wsUrl>?since=<seq>                    → phase / log / done events
  *   - GET   /api/settings/pr-env/provision/last    → last terminal summary
- *   - POST  /api/settings/pr-env/validate          → kept as Re-validate
+ *
+ * The legacy `POST /api/settings/pr-env/validate` endpoint is retained
+ * server-side as a programmatic hook for crons / monitoring (see
+ * `server/routes/pr-env-settings.ts`) but is no longer surfaced in this
+ * panel — operators re-run the wizard end-to-end if they want a fresh
+ * verification.
  *
  * Resume-on-reload semantics: an in-flight job stashes its `jobId` + `wsUrl`
  * in `localStorage`; on mount we resubscribe with `?since=<lastSeq>` so a
@@ -139,11 +144,6 @@ export default function PrEnvironmentsSection() {
   const [doneEvent, setDoneEvent] = useState(null); // last terminal { outcome, error?, remediations? }
   const [running, setRunning] = useState(false);
   const [startError, setStartError] = useState(null);
-
-  // ── re-validate (kept from old panel) ────────────────────────────────
-  const [validating, setValidating] = useState(false);
-  const [validateResult, setValidateResult] = useState(null);
-  const [validateError, setValidateError] = useState(null);
 
   // Refs so the WS subscriber callback always sees current values.
   const subscriptionRef = useRef(null);
@@ -320,20 +320,6 @@ export default function PrEnvironmentsSection() {
     }
   };
 
-  const handleRevalidate = useCallback(async () => {
-    setValidating(true);
-    setValidateError(null);
-    setValidateResult(null);
-    try {
-      const result = await api.validatePrEnvSettings({});
-      setValidateResult(result);
-    } catch (err) {
-      setValidateError(err.message || 'Validation failed');
-    } finally {
-      setValidating(false);
-    }
-  }, []);
-
   if (formLoading) {
     return (
       <p className="text-sm text-gray-500 flex items-center gap-2">
@@ -484,16 +470,6 @@ export default function PrEnvironmentsSection() {
           {running ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={14} />}
           {running ? 'Provisioning…' : 'Provision PR Environments'}
         </button>
-        <button
-          type="button"
-          onClick={handleRevalidate}
-          disabled={validating}
-          data-testid="prenv-revalidate-button"
-          className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg transition-colors"
-        >
-          {validating ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          Re-validate
-        </button>
         {startError && (
           <span className="text-xs text-red-400 flex items-center gap-1">
             <XCircle size={13} /> {startError}
@@ -542,18 +518,6 @@ export default function PrEnvironmentsSection() {
             ))}
           </div>
         </div>
-      )}
-
-      {/* ── Re-validate result panel (kept as paranoid-operator escape hatch) */}
-      {(validateResult || validateError) && (
-        <ValidateResults
-          result={validateResult}
-          error={validateError}
-          onDismiss={() => {
-            setValidateResult(null);
-            setValidateError(null);
-          }}
-        />
       )}
     </div>
   );
@@ -738,72 +702,6 @@ function RemediationCard({ card }) {
             </button>
           ))}
         </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Programmatic Re-validate panel. Kept for crons / paranoid operators who
- * want to confirm verify is still green without re-running provisioning.
- * Backed by the unchanged POST /api/settings/pr-env/validate endpoint.
- */
-export function ValidateResults({ result, error, onDismiss }) {
-  return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-3" data-testid="prenv-validate-results">
-      <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium text-gray-200">Re-validate result</h4>
-        {onDismiss && (
-          <button
-            type="button"
-            onClick={onDismiss}
-            className="text-[11px] text-gray-500 hover:text-gray-300"
-          >
-            Dismiss
-          </button>
-        )}
-      </div>
-
-      {error && (
-        <div className="text-xs text-red-300 flex items-center gap-1.5">
-          <XCircle size={13} /> {error}
-        </div>
-      )}
-
-      {result && (
-        <>
-          <div
-            className={`text-xs flex items-center gap-1.5 ${
-              result.ok ? 'text-emerald-400' : 'text-amber-400'
-            }`}
-          >
-            {result.ok ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
-            {result.ok ? 'All checks passed.' : 'One or more checks failed.'}
-          </div>
-          <ul className="space-y-1.5">
-            {(result.checks || []).map((check) => (
-              <li
-                key={check.name}
-                data-testid={`prenv-check-${check.name}`}
-                className={`flex items-start gap-2 text-xs rounded-lg px-3 py-2 border ${
-                  check.pass
-                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200'
-                    : 'bg-red-500/10 border-red-500/20 text-red-200'
-                }`}
-              >
-                {check.pass ? (
-                  <CheckCircle2 size={13} className="shrink-0 mt-0.5" />
-                ) : (
-                  <XCircle size={13} className="shrink-0 mt-0.5" />
-                )}
-                <div className="min-w-0">
-                  <p className="font-medium">{check.name}</p>
-                  <p className="text-[11px] opacity-80 break-words">{check.message}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </>
       )}
     </div>
   );

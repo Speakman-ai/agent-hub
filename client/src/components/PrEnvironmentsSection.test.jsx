@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
-import PrEnvironmentsSection, { ValidateResults } from './PrEnvironmentsSection.jsx';
+import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
 import { api } from '../utils/api.js';
 import * as provisioningClient from '../utils/provisioningClient.js';
 
@@ -9,7 +9,6 @@ vi.mock('../utils/api.js', () => ({
     getPrEnvSettings: vi.fn(),
     getLastPrEnvProvision: vi.fn(),
     startPrEnvProvision: vi.fn(),
-    validatePrEnvSettings: vi.fn(),
   },
 }));
 
@@ -46,7 +45,6 @@ beforeEach(() => {
     jobId: 'job-abc',
     wsUrl: 'ws://test/api/settings/pr-env/provision/job-abc/events',
   });
-  api.validatePrEnvSettings.mockResolvedValue({ ok: true, checks: [] });
 
   // Clean any stash left by previous tests so the mount sequence is
   // deterministic.
@@ -285,35 +283,11 @@ describe('<PrEnvironmentsSection /> — provisioning flow', () => {
     expect(screen.getByTestId('prenv-last-run')).toHaveTextContent(/all green/i);
   });
 
-  it('calls validate when Re-validate is clicked', async () => {
+  it('does not render a Re-validate button — the validator panel was removed in PR 2b', async () => {
     render(<PrEnvironmentsSection />);
     await screen.findByLabelText(/Preview host/i);
 
-    fireEvent.click(screen.getByTestId('prenv-revalidate-button'));
-    await waitFor(() => expect(api.validatePrEnvSettings).toHaveBeenCalled());
-    expect(await screen.findByTestId('prenv-validate-results')).toBeInTheDocument();
-  });
-});
-
-describe('<ValidateResults />', () => {
-  it('renders an "all passed" banner when every check is pass', () => {
-    render(
-      <ValidateResults
-        result={{
-          ok: true,
-          checks: [
-            { name: 'docker', pass: true, message: 'ok' },
-            { name: 'nginx', pass: true, message: 'ok' },
-          ],
-        }}
-      />,
-    );
-    expect(screen.getByText(/all checks passed/i)).toBeInTheDocument();
-    expect(screen.getByTestId('prenv-check-docker')).toBeInTheDocument();
-  });
-
-  it('renders a top-level error message when validation fetch itself failed', () => {
-    render(<ValidateResults error="Network down" />);
-    expect(screen.getByText(/network down/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('prenv-revalidate-button')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('prenv-validate-results')).not.toBeInTheDocument();
   });
 });

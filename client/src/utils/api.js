@@ -817,15 +817,16 @@ export const api = {
   // PR environments settings (Tier 1 + Tier 2)
   // GET returns secrets masked as `••••••••` when set, empty string when unset.
   // PUT is partial-preserving: the mask sentinel is NOT overwritten server-side.
+  //
+  // The legacy `POST /settings/pr-env/validate` endpoint is unchanged
+  // server-side (cron / monitoring callers still depend on it), but the
+  // web UI helper was removed in Wizard PR 2b — the wizard's own
+  // `verify` phase replaces the read-only validator panel. The mobile
+  // app keeps its own `validatePrEnvSettings` helper for the Settings →
+  // PR Env screen.
   getPrEnvSettings: () => fetchJSON('/settings/pr-env'),
   updatePrEnvSettings: (payload) =>
     fetchJSON('/settings/pr-env', { method: 'PUT', body: JSON.stringify(payload) }),
-  validatePrEnvSettings: (payload = {}) =>
-    fetchJSON('/settings/pr-env/validate', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-      timeout: 30000,
-    }),
 
   // PR environments provisioning wizard. The wizard fans these calls into
   // `subscribeProvisioningEvents` for the live event stream — see
