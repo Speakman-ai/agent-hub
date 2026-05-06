@@ -150,20 +150,34 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
       agentSessionCounts.set(session.agent_id, (agentSessionCounts.get(session.agent_id) || 0) + 1);
   }
 
+  // Reviewer/docs/intake are out-of-band roles — never autonomously assigned.
+  // Leads are always assignable: they can implement directly or `<handoff>`
+  // to a specialist, and they're the right safety net when a project's
+  // `subAgents` list is stale or empty.
+  const roleFiltered = project.agents.filter(
+    (a) => a.role !== 'docs' && a.role !== 'intake' && a.role !== 'reviewer',
+  );
   const leadAgent = project.agents.find((a) => a.role === 'lead');
+  const allLeads = project.agents.filter((a) => a.role === 'lead');
   let assignableAgents: Agent[];
   if (leadAgent && leadAgent.subAgents?.length) {
-    assignableAgents = leadAgent.subAgents
+    const resolvedSubAgents = leadAgent.subAgents
       .map((sa) => {
         const saId = typeof sa === 'string' ? sa : (sa as { id: string }).id;
         return project.agents.find((a) => a.id === saId) || d.findAgent(saId)?.agent;
       })
       .filter((a): a is Agent => !!a);
+    // Union of resolved subAgents and all leads, deduped by id.
+    const byId = new Map<string, Agent>();
+    for (const a of [...resolvedSubAgents, ...allLeads]) byId.set(a.id, a);
+    assignableAgents = Array.from(byId.values());
+    // Stale/unresolved subAgent IDs and no leads in the project → fall back
+    // to the role-filter so a misconfigured roster doesn't strand the loop.
+    if (assignableAgents.length === 0) {
+      assignableAgents = roleFiltered;
+    }
   } else {
-    // Reviewer/docs/intake are out-of-band roles — never autonomously assigned.
-    assignableAgents = project.agents.filter(
-      (a) => a.role !== 'docs' && a.role !== 'intake' && a.role !== 'reviewer',
-    );
+    assignableAgents = roleFiltered;
   }
 
   const agentCount = assignableAgents.length;

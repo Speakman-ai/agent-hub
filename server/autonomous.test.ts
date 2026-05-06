@@ -514,6 +514,86 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
     const sessionArgs = stmts.createSession.run.mock.calls[0];
     expect(sessionArgs[1]).toBe('dev-2');
   });
+
+  it('keeps the lead assignable as fallback even when subAgents is configured', async () => {
+    // subAgents=['dev-2'] would historically have stripped lead-1 from the
+    // assignable pool entirely. The card has no matching label, so the
+    // routing layer must fall back to the lead — verifying the lead is
+    // still in `assignableAgents`.
+    const card = makeCard({ labels: '' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [
+          {
+            id: 'lead-1',
+            name: 'Lead',
+            role: 'lead',
+            engine: 'claude-code',
+            subAgents: ['dev-2'],
+          },
+          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
+          { id: 'dev-2', name: 'Dev Two', role: 'sub', engine: 'claude-code' },
+        ] as never,
+      }),
+    );
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    const sessionArgs = stmts.createSession.run.mock.calls[0];
+    expect(sessionArgs[1]).toBe('lead-1');
+    expect(stmts.createKanbanCardComment.run).not.toHaveBeenCalled();
+  });
+
+  it('falls back to role-filter when every subAgent id is stale/unresolved', async () => {
+    // subAgents references agents that don't exist in the project (the
+    // real-world Hub Lead Dev case). Old behavior: empty pool → "No
+    // assignable agents". New behavior: drop back to the role-filter so
+    // the lead + any specialists still pick up work.
+    const card = makeCard({ labels: '' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [
+          {
+            id: 'lead-1',
+            name: 'Lead',
+            role: 'lead',
+            engine: 'claude-code',
+            subAgents: ['ghost-1', 'ghost-2'],
+          },
+          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
+        ] as never,
+      }),
+    );
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // No label match → routing falls to the lead. The new fallback put
+    // lead-1 + dev-1 back in the pool (instead of bailing with the
+    // "No assignable agents" notice), and the lead absorbs the card.
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    const sessionArgs = stmts.createSession.run.mock.calls[0];
+    expect(sessionArgs[1]).toBe('lead-1');
+    expect(stmts.createKanbanCardComment.run).not.toHaveBeenCalled();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
