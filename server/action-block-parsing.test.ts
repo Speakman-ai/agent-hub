@@ -6,12 +6,14 @@ import {
   sliceFirstBalancedJson,
   normalizeControlCharsInsideStrings,
   parseTagBodyAsJson,
+  stripFencedCodeBlockBodies,
 } from './action-block-parsing.js';
 import { detectCloseCardBlock } from './card-auto-close.js';
 import { detectHandoffBlock } from './handoff.js';
 import { detectDelegateBlock } from './delegation.js';
-import { parseSkillBlock } from './skill-invoke.js';
-import { parseReActBlock } from './chat.js';
+import { detectSkillBlock, parseSkillBlock } from './skill-invoke.js';
+import { detectReActBlock, parseReActBlock } from './chat.js';
+import { detectWikiRequestBlock } from './wiki-rag.js';
 
 // ─── extractJsonFromTagBody ─────────────────────────────────────────────
 
@@ -449,5 +451,177 @@ describe('parseReActBlock — wrapper-shape tolerance', () => {
       '<agenthub:react>\n> {"actions":[{"tool":"wiki","query":"foo"}]}\n</agenthub:react>';
     const r = parseReActBlock(text);
     expect('error' in r).toBe(false);
+  });
+});
+
+// ─── stripFencedCodeBlockBodies ─────────────────────────────────────────
+
+describe('stripFencedCodeBlockBodies', () => {
+  it('returns non-string input unchanged', () => {
+    expect(stripFencedCodeBlockBodies('' as string)).toBe('');
+    expect(stripFencedCodeBlockBodies(undefined as unknown as string)).toBe(
+      undefined as unknown as string,
+    );
+  });
+
+  it('returns input unchanged when there are no fence characters', () => {
+    expect(stripFencedCodeBlockBodies('hello world')).toBe('hello world');
+    expect(stripFencedCodeBlockBodies('<agenthub:skill>{"name":"x"}</agenthub:skill>')).toBe(
+      '<agenthub:skill>{"name":"x"}</agenthub:skill>',
+    );
+  });
+
+  it('blanks the body of a triple-backtick fenced block', () => {
+    const text = [
+      'before',
+      '```',
+      '<agenthub:skill>{"name":"x"}</agenthub:skill>',
+      '```',
+      'after',
+    ].join('\n');
+    const out = stripFencedCodeBlockBodies(text);
+    expect(out).toContain('before');
+    expect(out).toContain('after');
+    // Opener and closer kept; body line blanked.
+    expect(out).toContain('```');
+    expect(out).not.toContain('<agenthub:skill>');
+  });
+
+  it('blanks the body of a triple-tilde fenced block', () => {
+    const text = ['~~~', '<agenthub:react>{"actions":[]}</agenthub:react>', '~~~'].join('\n');
+    const out = stripFencedCodeBlockBodies(text);
+    expect(out).toContain('~~~');
+    expect(out).not.toContain('<agenthub:react>');
+  });
+
+  it('handles fenced blocks with a language hint on the opener', () => {
+    const text = ['```json', '<agenthub:wiki>{"query":"x"}</agenthub:wiki>', '```'].join('\n');
+    const out = stripFencedCodeBlockBodies(text);
+    expect(out).not.toContain('<agenthub:wiki>');
+  });
+
+  it('only treats a fence character as a closer when length matches or exceeds opener', () => {
+    // Opener uses 4 backticks; a 3-backtick line is NOT a valid closer.
+    const text = [
+      '````',
+      'inside still <agenthub:skill>{"name":"x"}</agenthub:skill>',
+      '```',
+      'still inside',
+      '````',
+    ].join('\n');
+    const out = stripFencedCodeBlockBodies(text);
+    expect(out).not.toContain('<agenthub:skill>');
+    expect(out).not.toContain('still inside');
+  });
+
+  it('does not strip across non-matching fence characters', () => {
+    // ``` opens, ~~~ does NOT close it.
+    const text = [
+      '```',
+      '<agenthub:skill>{"name":"x"}</agenthub:skill>',
+      '~~~',
+      'still fenced',
+      '```',
+    ].join('\n');
+    const out = stripFencedCodeBlockBodies(text);
+    expect(out).not.toContain('<agenthub:skill>');
+    expect(out).not.toContain('still fenced');
+  });
+
+  it('preserves naked top-level tags outside any fence', () => {
+    const text = [
+      'Use this:',
+      '```',
+      '<agenthub:skill>{"name":"docs"}</agenthub:skill>',
+      '```',
+      '<agenthub:skill>{"name":"real"}</agenthub:skill>',
+    ].join('\n');
+    const out = stripFencedCodeBlockBodies(text);
+    expect(out).toContain('<agenthub:skill>{"name":"real"}</agenthub:skill>');
+    expect(out).not.toContain('"docs"');
+  });
+});
+
+// ─── detector code-fence suppression ────────────────────────────────────
+
+describe('detectSkillBlock — fenced examples are NOT detected', () => {
+  it('returns null for a skill block that lives only inside a ``` fence', () => {
+    const text = [
+      'Here is how to invoke it:',
+      '```',
+      '<agenthub:skill>',
+      '{"name":"aws-login","reason":"profile=dev"}',
+      '</agenthub:skill>',
+      '```',
+      'Reply when ready.',
+    ].join('\n');
+    expect(detectSkillBlock(text)).toBeNull();
+  });
+
+  it('still detects a real top-level block when an example fence is also present', () => {
+    const text = [
+      '```',
+      '<agenthub:skill>{"name":"example"}</agenthub:skill>',
+      '```',
+      '',
+      '<agenthub:skill>{"name":"real"}</agenthub:skill>',
+    ].join('\n');
+    const got = detectSkillBlock(text);
+    expect(got).not.toBeNull();
+    expect(got).toContain('"real"');
+    expect(got).not.toContain('"example"');
+  });
+
+  it('treats triple-tilde fences the same as triple-backtick', () => {
+    const text = ['~~~', '<agenthub:skill>{"name":"docs"}</agenthub:skill>', '~~~'].join('\n');
+    expect(detectSkillBlock(text)).toBeNull();
+  });
+});
+
+describe('detectReActBlock — fenced examples are NOT detected', () => {
+  it('returns null for a ReAct block quoted inside a fence', () => {
+    const text = [
+      'Emit something like:',
+      '```',
+      '<agenthub:react>{"actions":[{"tool":"wiki","query":"foo"}]}</agenthub:react>',
+      '```',
+    ].join('\n');
+    expect(detectReActBlock(text)).toBeNull();
+  });
+
+  it('still detects a real top-level ReAct block alongside a fenced example', () => {
+    const text = [
+      '```',
+      '<agenthub:react>{"actions":[{"tool":"wiki","query":"example"}]}</agenthub:react>',
+      '```',
+      '<agenthub:react>{"actions":[{"tool":"wiki","query":"real"}]}</agenthub:react>',
+    ].join('\n');
+    const got = detectReActBlock(text);
+    expect(got).not.toBeNull();
+    expect(got).toContain('"real"');
+  });
+});
+
+describe('detectWikiRequestBlock — fenced examples are NOT detected', () => {
+  it('returns null for a wiki block quoted inside a fence', () => {
+    const text = [
+      'Try:',
+      '```',
+      '<agenthub:wiki>{"query":"deployment"}</agenthub:wiki>',
+      '```',
+    ].join('\n');
+    expect(detectWikiRequestBlock(text)).toBeNull();
+  });
+
+  it('still detects a real top-level wiki block alongside a fenced example', () => {
+    const text = [
+      '```',
+      '<agenthub:wiki>{"query":"example"}</agenthub:wiki>',
+      '```',
+      '<agenthub:wiki>{"query":"real"}</agenthub:wiki>',
+    ].join('\n');
+    const got = detectWikiRequestBlock(text);
+    expect(got).not.toBeNull();
+    expect(got).toContain('"real"');
   });
 });

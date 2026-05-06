@@ -50,7 +50,7 @@ import {
   parseSkillBlock,
 } from './skill-invoke.js';
 import { routeSkillsFromMessage } from './skill-router.js';
-import { extractJsonFromTagBody } from './action-block-parsing.js';
+import { extractJsonFromTagBody, stripFencedCodeBlockBodies } from './action-block-parsing.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -777,10 +777,16 @@ export function stripAssistantControlBlocks(text: string): string {
 
 export function detectReActBlock(text: string): string | null {
   if (typeof text !== 'string' || !text.trim()) return null;
+  // Mask fenced code-block bodies so documentation examples that show
+  // `<agenthub:react>...` syntax inside ``` / ~~~ aren't parsed as
+  // real ReAct invocations. See the longer rationale on
+  // `detectSkillBlock` — the same auto-continuation feedback loop
+  // applied to ReAct blocks before this guard was in place.
+  const scanned = stripFencedCodeBlockBodies(text);
   const re = /<agenthub:react>\s*[\s\S]*?\s*<\/agenthub:react>/gi;
   let match: RegExpExecArray | null;
   let last: string | null = null;
-  while ((match = re.exec(text)) !== null) {
+  while ((match = re.exec(scanned)) !== null) {
     last = match[0];
   }
   return last;

@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'f
 import { v4 as uuidv4 } from 'uuid';
 import { DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import type { BroadcastFn, Stmts } from './types.js';
-import { extractJsonFromTagBody } from './action-block-parsing.js';
+import { extractJsonFromTagBody, stripFencedCodeBlockBodies } from './action-block-parsing.js';
 
 const PER_REFERENCE_BYTE_CAP = 8 * 1024;
 const TOTAL_REFERENCES_BYTE_CAP = 32 * 1024;
@@ -94,10 +94,18 @@ function collectReferenceFiles(dir: string, root = dir): string[] {
 
 export function detectSkillBlock(text: string): string | null {
   if (typeof text !== 'string' || !text.trim()) return null;
+  // Mask fenced code-block bodies first so a documentation example like
+  // ```
+  // <agenthub:skill>{"name":"foo"}</agenthub:skill>
+  // ```
+  // is NOT picked up as a real invocation. Without this, every reply
+  // that explains the skill syntax would queue a phantom skill load
+  // and trigger an auto-continuation loop until the depth cap hits.
+  const scanned = stripFencedCodeBlockBodies(text);
   const re = /<agenthub:skill>\s*[\s\S]*?\s*<\/agenthub:skill>/gi;
   let match: RegExpExecArray | null;
   let last: string | null = null;
-  while ((match = re.exec(text)) !== null) {
+  while ((match = re.exec(scanned)) !== null) {
     last = match[0];
   }
   return last;

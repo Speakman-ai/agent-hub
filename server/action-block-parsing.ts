@@ -265,3 +265,71 @@ export function parseTagBodyAsJson(rawBody: string): { ok: true; value: unknown 
     return { ok: false };
   }
 }
+
+/**
+ * Replace the *body* of every fenced markdown code block in `text` with
+ * empty lines, preserving the opening and closing fences (and the line
+ * count) so callers can still scan the surrounding prose without the
+ * fenced contents leaking into their regex matches.
+ *
+ * Why this exists
+ * ───────────────
+ * The agent-side action-block detectors (`<agenthub:skill>`,
+ * `<agenthub:react>`, `<agenthub:wiki>`) historically did a naive
+ * `text.match(/<tag>.*?<\/tag>/)` on the assistant's raw output. That
+ * works fine for real invocations, but it also matches *documentation
+ * examples* the agent legitimately quotes inside ```/~~~ fences when
+ * explaining how to use a skill — and a false-positive detection drops
+ * the example skill into `pending_skill_context`, which flips
+ * `continuationContextAdded` true and triggers an auto-continuation
+ * turn the agent never asked for. Repeating the same explanation
+ * (with the same example block) on the next turn re-fires the loop
+ * until the depth cap kills it.
+ *
+ * Pre-stripping fenced bodies before the detector regex runs makes the
+ * documented behavior real: only blocks the agent emits as *naked*
+ * top-level XML tags count as invocations. Quoted examples inside
+ * ` ``` ` or `~~~` are inert.
+ *
+ * Conservative scope
+ * ──────────────────
+ * - Only fenced (```/~~~) blocks are masked. Inline backtick spans
+ *   (`` ` ``) and indented (4-space) code blocks are left alone — the
+ *   bug we're fixing only manifests in multi-line fences, and inline
+ *   spans rarely contain a full agent-tag pair anyway.
+ * - The opening and closing fence lines themselves are kept verbatim
+ *   so other passes that count newlines or scan for fence markers
+ *   still see them.
+ * - Closing fence rule follows the CommonMark contract: the closer
+ *   must use the same fence character as the opener and be at least
+ *   as long. A mismatched closer is treated as fenced content, which
+ *   matches how real markdown renderers behave.
+ */
+export function stripFencedCodeBlockBodies(text: string): string {
+  if (typeof text !== 'string' || !text.length) return text;
+  if (text.indexOf('`') === -1 && text.indexOf('~') === -1) return text;
+
+  const lines = text.split('\n');
+  let openFence: { char: string; len: number } | null = null;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    const m = line.match(/^[ \t]{0,3}(`{3,}|~{3,})/);
+    if (openFence === null) {
+      if (m) {
+        openFence = { char: m[1]![0]!, len: m[1]!.length };
+      }
+      continue;
+    }
+    // Inside a fenced block.
+    if (m && m[1]![0] === openFence.char && m[1]!.length >= openFence.len) {
+      // Closing fence — keep the line verbatim and exit fenced mode.
+      openFence = null;
+      continue;
+    }
+    // Fenced body line — blank it so detectors can't match across it.
+    lines[i] = '';
+  }
+
+  return lines.join('\n');
+}

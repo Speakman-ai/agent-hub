@@ -1,5 +1,6 @@
 import { searchWiki, type SearchResultRow } from './wiki-embeddings.js';
 import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
+import { stripFencedCodeBlockBodies } from './action-block-parsing.js';
 
 const MAX_QUERY_CHARS = 600;
 const MAX_RESULTS = 6;
@@ -78,10 +79,15 @@ export interface AssistantWikiRequestMalformed {
 
 export function detectWikiRequestBlock(text: string): string | null {
   if (typeof text !== 'string' || !text.trim()) return null;
+  // Mask fenced code-block bodies so documentation examples that show
+  // `<agenthub:wiki>...` syntax inside ``` / ~~~ aren't parsed as
+  // real wiki RAG invocations. See `detectSkillBlock` for the longer
+  // rationale (auto-continuation feedback loop on quoted examples).
+  const scanned = stripFencedCodeBlockBodies(text);
   const re = /<agenthub:wiki>\s*[\s\S]*?\s*<\/agenthub:wiki>/gi;
   let match: RegExpExecArray | null;
   let last: string | null = null;
-  while ((match = re.exec(text)) !== null) {
+  while ((match = re.exec(scanned)) !== null) {
     last = match[0];
   }
   return last;
