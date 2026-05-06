@@ -808,6 +808,10 @@ export function ToolCard({ use, result, defaultOpen }) {
   const errored = result?.isError;
   const stillRunning = !result;
   const showDiff = isFileModifyingTool(use.tool);
+  const isBash =
+    use.tool === 'Bash' &&
+    typeof use.input?.command === 'string' &&
+    use.input.command.trim().length > 0;
 
   // File-modifying tools: always show the diff from the latest tool input. When
   // the CLI flags `is_error`, we still render the diff (what was attempted)
@@ -867,7 +871,40 @@ export function ToolCard({ use, result, defaultOpen }) {
           </span>
         </span>
       </button>
-      {open && (
+      {open && isBash && (
+        <div
+          data-testid="bash-terminal"
+          className="border-t border-black/30 bg-black/40 font-mono text-xs"
+        >
+          {/* Terminal-style: `$ <command>` followed by stdout/stderr, the way
+              Cursor renders Bash tool calls. We deliberately render the full
+              command (no truncation) and let it wrap so chained commands like
+              `cd ... && git push ...` stay scannable. */}
+          <div className="px-3 py-2 border-b border-black/30">
+            <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">command</div>
+            <div className="flex items-start gap-2 text-gray-100 whitespace-pre-wrap break-words">
+              <span className="text-emerald-500 select-none shrink-0">$</span>
+              <span className="flex-1 break-all">{use.input.command}</span>
+            </div>
+            {typeof use.input.description === 'string' && use.input.description.trim() && (
+              <div className="mt-1 text-[10px] text-gray-500 italic">
+                {use.input.description.trim()}
+              </div>
+            )}
+          </div>
+          {result && (
+            <pre
+              className={`px-3 py-2 overflow-x-auto whitespace-pre-wrap break-words max-h-96 ${errored ? 'text-red-300' : 'text-gray-300'}`}
+            >
+              {result.output || '(empty)'}
+            </pre>
+          )}
+          {!result && (
+            <div className="px-3 py-2 text-[10px] text-emerald-400 animate-pulse">running…</div>
+          )}
+        </div>
+      )}
+      {open && !isBash && (
         <div className="border-t border-black/30 p-3 space-y-2">
           <div>
             <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">input</div>

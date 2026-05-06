@@ -511,20 +511,52 @@ function SessionTail({
                   ) : null}
                   {isBlockExpanded && (
                     <ScrollView style={styles.expandedContent} nestedScrollEnabled>
-                      {use.input != null && (
-                        <View style={styles.codeBox}>
-                          <Text style={styles.codeLabel}>Input</Text>
-                          <Text style={styles.codeText}>{formatToolInput(use.input)}</Text>
+                      {use.tool === 'Bash' && typeof use.input?.command === 'string' ? (
+                        // Cursor-style terminal view: `$ <command>` followed by
+                        // raw stdout/stderr. Replaces the JSON-input + plain
+                        // output panel for Bash so it reads like a real
+                        // terminal session.
+                        <View style={styles.bashTerminal} testID="bash-terminal">
+                          <View style={styles.bashCommandRow}>
+                            <Text style={styles.bashPrompt}>$</Text>
+                            <Text style={styles.bashCommandText}>{use.input.command}</Text>
+                          </View>
+                          {typeof use.input.description === 'string' &&
+                          use.input.description.trim() ? (
+                            <Text style={styles.bashDescription}>
+                              {use.input.description.trim()}
+                            </Text>
+                          ) : null}
+                          {block.result?.output ? (
+                            <Text
+                              style={[styles.bashOutput, isError && { color: colors.red400 }]}
+                            >
+                              {block.result.output.slice(0, 2000)}
+                            </Text>
+                          ) : !block.result ? (
+                            <Text style={styles.bashRunning}>running…</Text>
+                          ) : null}
                         </View>
+                      ) : (
+                        <>
+                          {use.input != null && (
+                            <View style={styles.codeBox}>
+                              <Text style={styles.codeLabel}>Input</Text>
+                              <Text style={styles.codeText}>{formatToolInput(use.input)}</Text>
+                            </View>
+                          )}
+                          {block.result?.output ? (
+                            <View style={[styles.codeBox, isError && styles.errorCodeBox]}>
+                              <Text style={styles.codeLabel}>{isError ? 'error' : 'Output'}</Text>
+                              <Text
+                                style={[styles.codeText, isError && { color: colors.red400 }]}
+                              >
+                                {block.result.output.slice(0, 2000)}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </>
                       )}
-                      {block.result?.output ? (
-                        <View style={[styles.codeBox, isError && styles.errorCodeBox]}>
-                          <Text style={styles.codeLabel}>{isError ? 'error' : 'Output'}</Text>
-                          <Text style={[styles.codeText, isError && { color: colors.red400 }]}>
-                            {block.result.output.slice(0, 2000)}
-                          </Text>
-                        </View>
-                      ) : null}
                     </ScrollView>
                   )}
                 </View>
@@ -782,6 +814,39 @@ const styles = StyleSheet.create({
   errorCodeBox: { borderWidth: 1, borderColor: colors.red600 },
   codeLabel: { fontSize: 10, color: colors.gray500, marginBottom: 4, fontWeight: '600' },
   codeText: { fontSize: 11, color: colors.gray300, fontFamily: 'monospace' },
+  bashTerminal: {
+    backgroundColor: '#000',
+    borderRadius: 6,
+    padding: 8,
+    marginTop: 4,
+  },
+  bashCommandRow: { flexDirection: 'row', gap: 6, alignItems: 'flex-start' },
+  bashPrompt: { color: colors.emerald500, fontFamily: 'monospace', fontSize: 11 },
+  bashCommandText: {
+    color: colors.gray100 || '#f3f4f6',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    flexShrink: 1,
+  },
+  bashDescription: {
+    fontSize: 10,
+    color: colors.gray500,
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  bashOutput: {
+    marginTop: 8,
+    color: colors.gray300,
+    fontFamily: 'monospace',
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  bashRunning: {
+    marginTop: 8,
+    fontSize: 10,
+    color: colors.emerald400,
+    fontStyle: 'italic',
+  },
   cardWrapper: {
     paddingHorizontal: 10,
     paddingVertical: 6,
