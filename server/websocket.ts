@@ -19,6 +19,10 @@ import type {
 } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
 import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
+import {
+  subscribeToJob as subscribeToPrEnvJob,
+  isJobFinished as isPrEnvJobFinished,
+} from './pr-env-provisioning/orchestrator.js';
 
 /**
  * Match `/api/provisioning/<jobId>/events` and return the jobId. Returns
@@ -30,6 +34,28 @@ export function parseProvisioningPath(rawUrl: string | undefined): string | null
   // Strip query string; we don't consult it here.
   const pathOnly = rawUrl.split('?')[0] ?? '';
   const m = pathOnly.match(/^\/api\/provisioning\/([^/]+)\/events\/?$/);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]!);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Match `/api/settings/pr-env/provision/<jobId>/events` and return the
+ * jobId. Returns null when the URL is not a PR-env provision subscription.
+ *
+ * Mirrors `parseProvisioningPath` — same hardening (query strip, guarded
+ * decodeURIComponent in a try/catch) so that malformed escape sequences
+ * (`%ZZ`, partial UTF-8 bytes) cannot escape as an unhandled URIError out
+ * of the WS connection handler. The wizard spec lives in
+ * `docs/architecture/pr-environments-provisioning-wizard-v1-spec.md`.
+ */
+export function parsePrEnvProvisionPath(rawUrl: string | undefined): string | null {
+  if (!rawUrl) return null;
+  const pathOnly = rawUrl.split('?')[0] ?? '';
+  const m = pathOnly.match(/^\/api\/settings\/pr-env\/provision\/([^/]+)\/events\/?$/);
   if (!m) return null;
   try {
     return decodeURIComponent(m[1]!);
@@ -126,6 +152,18 @@ export default function createWebSocket(
     if (provisioningJobId) {
       const since = parseProvisioningSince(request.url);
       handleProvisioningSubscription(ws, provisioningJobId, since);
+      return;
+    }
+
+    // PR-env provision subscription — same shape as the new-project
+    // provisioning stream above, but routes to the PR-env wizard's
+    // orchestrator (`server/pr-env-provisioning/orchestrator.ts`). The
+    // POST that starts a job lives in `routes/pr-env-provision.ts` and
+    // returns a `wsUrl` that points back here.
+    const prEnvJobId = parsePrEnvProvisionPath(request.url);
+    if (prEnvJobId) {
+      const since = parseProvisioningSince(request.url);
+      handlePrEnvProvisionSubscription(ws, prEnvJobId, since);
       return;
     }
 
@@ -314,6 +352,81 @@ function handleProvisioningSubscription(
   // race between POST and WS open), `subscribeToJob` replays the
   // terminal done and we still need to close the socket.
   if (isJobFinished(jobId)) {
+    try {
+      ws.close(1000, 'Job already complete');
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  ws.on('close', () => {
+    unsubscribe();
+  });
+  ws.on('error', () => {
+    unsubscribe();
+  });
+}
+
+/**
+ * Attach a freshly-opened WebSocket to a PR-env provisioning job. Mirrors
+ * `handleProvisioningSubscription` exactly — replay buffered events,
+ * live-tail until terminal `done`, drop the socket cleanly on `done`,
+ * synthesize a 404 done frame for unknown jobs, and tolerate the
+ * race where the job finishes between POST and WS open.
+ *
+ * `since` (optional): the last seq id the client already received; only
+ * events with `seq > since` are replayed. The orchestrator's ring
+ * buffer is bounded (EVENT_BUFFER_CAP = 2000) but always retains the
+ * terminal `done` event, so a client whose `since` lags further than
+ * the buffer still gets a definitive end-of-stream signal — they may
+ * just miss interior events. That's acceptable for the wizard UX:
+ * fresh connect = full replay; reconnect within reasonable lag = no
+ * gaps; very long lag = degraded but never silently stuck.
+ */
+export function handlePrEnvProvisionSubscription(
+  ws: WsClient,
+  jobId: string,
+  since: number | null = null,
+): void {
+  const send = (data: Record<string, unknown>): void => {
+    if (ws.readyState !== WsClient.OPEN) return;
+    try {
+      ws.send(JSON.stringify(data));
+    } catch {
+      /* caller disconnected */
+    }
+  };
+
+  const unsubscribe = subscribeToPrEnvJob(
+    jobId,
+    (ev) => {
+      send(ev as unknown as Record<string, unknown>);
+      if (ev.type === 'done') {
+        try {
+          ws.close(1000, 'Job complete');
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+    since != null ? { since } : {},
+  );
+
+  if (!unsubscribe) {
+    send({ type: 'done', error: { code: 404, message: `Unknown job ${jobId}` } });
+    try {
+      ws.close(4404, 'Unknown pr-env provisioning job');
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  // Edge case: subscribeToPrEnvJob already replayed the buffered events
+  // (including the terminal `done`) if the job finished before we
+  // subscribed. Close the socket so the client doesn't hang.
+  if (isPrEnvJobFinished(jobId)) {
     try {
       ws.close(1000, 'Job already complete');
     } catch {

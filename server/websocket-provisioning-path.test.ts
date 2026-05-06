@@ -7,7 +7,11 @@
  * `null`, but never throws.
  */
 import { describe, it, expect } from 'vitest';
-import { parseProvisioningPath, parseProvisioningSince } from './websocket.js';
+import {
+  parseProvisioningPath,
+  parsePrEnvProvisionPath,
+  parseProvisioningSince,
+} from './websocket.js';
 
 describe('parseProvisioningPath', () => {
   it('extracts the jobId from a canonical UUID path', () => {
@@ -49,6 +53,39 @@ describe('parseProvisioningPath', () => {
     // returns a string or null, never throws.
     expect(() => parseProvisioningPath('/api/provisioning/foo.bar/events')).not.toThrow();
     expect(() => parseProvisioningPath('/api/provisioning/abc/events')).not.toThrow();
+  });
+});
+
+describe('parsePrEnvProvisionPath', () => {
+  const id = '11111111-2222-3333-4444-555555555555';
+
+  it('extracts the jobId from the canonical path', () => {
+    expect(parsePrEnvProvisionPath(`/api/settings/pr-env/provision/${id}/events`)).toBe(id);
+  });
+
+  it('tolerates a trailing slash', () => {
+    expect(parsePrEnvProvisionPath(`/api/settings/pr-env/provision/${id}/events/`)).toBe(id);
+  });
+
+  it('strips the query string before matching', () => {
+    expect(parsePrEnvProvisionPath(`/api/settings/pr-env/provision/${id}/events?since=4`)).toBe(id);
+  });
+
+  it('returns null for unrelated paths', () => {
+    expect(parsePrEnvProvisionPath('/api/provisioning/abc/events')).toBeNull();
+    expect(parsePrEnvProvisionPath('/api/settings/pr-env/provision')).toBeNull();
+    expect(parsePrEnvProvisionPath('/api/settings/pr-env/provision//events')).toBeNull();
+    expect(parsePrEnvProvisionPath('/ws')).toBeNull();
+    expect(parsePrEnvProvisionPath('')).toBeNull();
+    expect(parsePrEnvProvisionPath(undefined)).toBeNull();
+  });
+
+  it('returns null (never throws) for malformed escape sequences', () => {
+    expect(() =>
+      parsePrEnvProvisionPath('/api/settings/pr-env/provision/%ZZ/events'),
+    ).not.toThrow();
+    expect(parsePrEnvProvisionPath('/api/settings/pr-env/provision/%ZZ/events')).toBeNull();
+    expect(parsePrEnvProvisionPath('/api/settings/pr-env/provision/%E0%A4/events')).toBeNull();
   });
 });
 

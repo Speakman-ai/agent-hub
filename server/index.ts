@@ -111,6 +111,7 @@ import createBugReportRoutes from './routes/bug-reports.js';
 import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
 import createPrEnvSettingsRoutes from './routes/pr-env-settings.js';
+import createPrEnvProvisionRoutes from './routes/pr-env-provision.js';
 import { migrateFileConfigToDb as migratePrEnvFileToDb } from './pr-env-store.js';
 import { fileConfig as prEnvFileConfig } from './config.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
@@ -672,6 +673,11 @@ app.use(createBugReportRoutes(routeDeps));
 app.use(createAuthRoutes());
 app.use(createMcpServerRoutes());
 app.use(createPrEnvSettingsRoutes(routeDeps));
+// PR-env provisioning wizard. The route returns `{ jobId, wsUrl }`; the
+// matching WS upgrade handler lives in `server/websocket.ts`. Production
+// currently falls through to `stubExecutor` — wiring `createRealExecutor`
+// (host detection, certbot, IAM, verify) is the follow-up card.
+app.use(createPrEnvProvisionRoutes());
 app.use(createGithubOAuthRoutes(routeDeps));
 
 // One-shot migration: copy legacy `config.json` prEnv block into the new
