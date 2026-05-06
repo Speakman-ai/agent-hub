@@ -65,7 +65,12 @@ beforeEach(() => {
   app.use(
     createPrEnvSettingsRoutes(stubRouteDeps(), {
       getDb: () => db,
-      getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+      getNginxPaths: () => ({
+        certPath: '',
+        baseVhostPath: '',
+        sitesAvailableDir: '',
+        sitesEnabledDir: '',
+      }),
       adapters: {
         checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
         checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
@@ -231,7 +236,12 @@ describe('POST /api/settings/pr-env/validate', () => {
     failApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           ...defaultStubAdapters(),
           // `cert` is a required check; flip it (instead of docker, which is
@@ -253,7 +263,12 @@ describe('POST /api/settings/pr-env/validate', () => {
     throwApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           ...defaultStubAdapters(),
           checkDocker: async () => {
@@ -289,7 +304,12 @@ describe('POST /api/settings/pr-env/validate', () => {
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
         getReviewerApp: () => reviewerApp,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           ...defaultStubAdapters(),
           checkGithubApp: async (appId, privateKey, installationId) => {
@@ -320,7 +340,12 @@ describe('POST /api/settings/pr-env/validate', () => {
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
         getReviewerApp: () => null,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           ...defaultStubAdapters(),
           checkGithubApp: async (appId, privateKey, installationId) => {
@@ -350,7 +375,12 @@ describe('POST /api/settings/pr-env/validate', () => {
     r53App.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           ...defaultStubAdapters(),
           checkRoute53: async (accessKeyId, secretAccessKey, hostedZoneId) => {
@@ -387,7 +417,12 @@ describe('POST /api/settings/pr-env/validate', () => {
     spyApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           ...defaultStubAdapters(),
           checkRoute53: async (accessKeyId, secretAccessKey, hostedZoneId) => {
@@ -419,6 +454,8 @@ describe('POST /api/settings/pr-env/validate', () => {
         getNginxPaths: () => ({
           certPath: '/etc/letsencrypt/live/preview/fullchain.pem',
           baseVhostPath: '/etc/nginx/sites-available/agent-hub',
+          sitesAvailableDir: '/etc/nginx/sites-available',
+          sitesEnabledDir: '/etc/nginx/sites-enabled',
         }),
         adapters: {
           ...defaultStubAdapters(),
@@ -437,6 +474,79 @@ describe('POST /api/settings/pr-env/validate', () => {
     expect(certSeenPath).toBe('/etc/letsencrypt/live/preview/fullchain.pem');
     expect(nginxSeen).not.toBeNull();
     expect(nginxSeen!.bv).toBe('/etc/nginx/sites-available/agent-hub');
+    // Bug-fix: sites dirs come from resolved config, not the hardcoded
+    // `/etc/nginx/sites-{available,enabled}` defaults the route used to
+    // bake in. The wizard's `write-tier3-config` phase populates these
+    // based on host class.
+    expect(nginxSeen!.sa).toBe('/etc/nginx/sites-available');
+    expect(nginxSeen!.se).toBe('/etc/nginx/sites-enabled');
+  });
+
+  it('threads CONTAINER-shaped resolved nginx paths (conf.d) when host detection picked containerized', async () => {
+    // Bug-fix regression: previously the validate route hardcoded
+    // /etc/nginx/sites-{available,enabled} regardless of host class, so a
+    // containerized install (which writes vhosts under /etc/nginx/conf.d
+    // via write-tier3-config) would always fail the nginx prereq.
+    let nginxSeen: { sa: string; se: string; bv: string } | null = null;
+    const containerApp = express();
+    containerApp.use(express.json());
+    containerApp.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        getNginxPaths: () => ({
+          certPath: '/etc/letsencrypt/live/preview/fullchain.pem',
+          baseVhostPath: '/etc/nginx/conf.d/agent-hub-pr-env.conf',
+          sitesAvailableDir: '/etc/nginx/conf.d',
+          sitesEnabledDir: '/etc/nginx/conf.d',
+        }),
+        adapters: {
+          ...defaultStubAdapters(),
+          checkNginx: async (sa, se, bv) => {
+            nginxSeen = { sa, se, bv };
+            return { name: 'nginx', pass: true, message: 'ok' };
+          },
+        },
+      }),
+    );
+    await supertest(containerApp).post('/api/settings/pr-env/validate').send({}).expect(200);
+    expect(nginxSeen).not.toBeNull();
+    expect(nginxSeen!.sa).toBe('/etc/nginx/conf.d');
+    expect(nginxSeen!.se).toBe('/etc/nginx/conf.d');
+    expect(nginxSeen!.bv).toBe('/etc/nginx/conf.d/agent-hub-pr-env.conf');
+  });
+
+  it('per-request sitesAvailableDir/sitesEnabledDir overrides win over resolved config', async () => {
+    let nginxSeen: { sa: string; se: string } | null = null;
+    const overrideApp = express();
+    overrideApp.use(express.json());
+    overrideApp.use(
+      createPrEnvSettingsRoutes(stubRouteDeps(), {
+        getDb: () => db,
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '/etc/nginx/conf.d',
+          sitesEnabledDir: '/etc/nginx/conf.d',
+        }),
+        adapters: {
+          ...defaultStubAdapters(),
+          checkNginx: async (sa, se) => {
+            nginxSeen = { sa, se };
+            return { name: 'nginx', pass: true, message: 'ok' };
+          },
+        },
+      }),
+    );
+    await supertest(overrideApp)
+      .post('/api/settings/pr-env/validate')
+      .send({
+        sitesAvailableDir: '/custom/avail',
+        sitesEnabledDir: '/custom/enabled',
+      })
+      .expect(200);
+    expect(nginxSeen).not.toBeNull();
+    expect(nginxSeen!.sa).toBe('/custom/avail');
+    expect(nginxSeen!.se).toBe('/custom/enabled');
   });
 
   it('default webhook check passes when at least one project has an enabled webhook', async () => {
@@ -462,7 +572,12 @@ describe('POST /api/settings/pr-env/validate', () => {
     realWebhookApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
           checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
@@ -501,7 +616,12 @@ describe('POST /api/settings/pr-env/validate', () => {
     emptyApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
           checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
@@ -526,7 +646,12 @@ describe('POST /api/settings/pr-env/validate', () => {
     noCertApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           checkDocker: async () => ({ name: 'docker', pass: true, message: 'ok' }),
           checkNginx: async () => ({ name: 'nginx', pass: true, message: 'ok' }),
@@ -560,7 +685,12 @@ describe('POST /api/settings/pr-env/validate', () => {
     dockerOnlyFailApp.use(
       createPrEnvSettingsRoutes(stubRouteDeps(), {
         getDb: () => db,
-        getNginxPaths: () => ({ certPath: '', baseVhostPath: '' }),
+        getNginxPaths: () => ({
+          certPath: '',
+          baseVhostPath: '',
+          sitesAvailableDir: '',
+          sitesEnabledDir: '',
+        }),
         adapters: {
           ...defaultStubAdapters(),
           checkDocker: async () => ({ name: 'docker', pass: false, message: 'down' }),

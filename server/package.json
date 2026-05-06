@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@aws-sdk/client-iam": "^3.1043.0",
     "@aws-sdk/client-route-53": "^3.1042.0",
     "@aws-sdk/client-ssm": "^3.1042.0",
     "@browserbasehq/stagehand": "^3.2.1",

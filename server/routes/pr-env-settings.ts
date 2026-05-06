@@ -443,10 +443,16 @@ export interface PrEnvSettingsDeps {
    */
   getReviewerApp?: () => GitHubAppConfig | null;
   /**
-   * Override the resolved nginx host paths (certPath, baseVhostPath) for
-   * tests. Production reads them from `routeDeps.config.prEnv.nginx`.
+   * Override the resolved nginx host paths (certPath, baseVhostPath,
+   * sitesAvailableDir, sitesEnabledDir) for tests. Production reads them
+   * from `routeDeps.config.prEnv.nginx`.
    */
-  getNginxPaths?: () => { certPath: string; baseVhostPath: string };
+  getNginxPaths?: () => {
+    certPath: string;
+    baseVhostPath: string;
+    sitesAvailableDir: string;
+    sitesEnabledDir: string;
+  };
 }
 
 export default function createPrEnvSettingsRoutes(
@@ -467,15 +473,32 @@ export default function createPrEnvSettingsRoutes(
     checkGithubApp: extra.adapters?.checkGithubApp ?? defaultCheckGithubApp,
     checkRoute53: extra.adapters?.checkRoute53 ?? defaultCheckRoute53,
   };
-  const resolveNginxPaths = (): { certPath: string; baseVhostPath: string } => {
+  const resolveNginxPaths = (): {
+    certPath: string;
+    baseVhostPath: string;
+    sitesAvailableDir: string;
+    sitesEnabledDir: string;
+  } => {
     if (extra.getNginxPaths) return extra.getNginxPaths();
     const cfg = routeDeps?.config as unknown as Record<string, unknown> | undefined;
     const nginxBlock =
-      (cfg?.prEnv as { nginx?: { certPath?: string; baseVhostPath?: string } } | undefined)
-        ?.nginx ?? {};
+      (
+        cfg?.prEnv as
+          | {
+              nginx?: {
+                certPath?: string;
+                baseVhostPath?: string;
+                sitesAvailableDir?: string;
+                sitesEnabledDir?: string;
+              };
+            }
+          | undefined
+      )?.nginx ?? {};
     return {
       certPath: nginxBlock.certPath ?? '',
       baseVhostPath: nginxBlock.baseVhostPath ?? '',
+      sitesAvailableDir: nginxBlock.sitesAvailableDir ?? '',
+      sitesEnabledDir: nginxBlock.sitesEnabledDir ?? '',
     };
   };
 
@@ -596,17 +619,27 @@ export default function createPrEnvSettingsRoutes(
     };
 
     // Tier-3 host paths aren't UI-editable but we still need somewhere to
-    // point the nginx check at. Prefer the caller-supplied override, then
-    // the conventional linux defaults.
+    // point the nginx check at. Resolution order:
+    //   1. Per-request body override (used by tests / validate-with-edits).
+    //   2. Detected/saved values in `prEnv.nginx.{sitesAvailableDir,
+    //      sitesEnabledDir}` (written by the provisioning wizard's
+    //      `write-tier3-config` phase based on the host class — `conf.d`
+    //      on most container distros, `sites-{available,enabled}` on
+    //      Debian/Ubuntu PM2-on-EC2 hosts).
+    //   3. As a last resort fall back to the conventional Debian layout —
+    //      keeps fresh installs that haven't run the wizard yet from
+    //      crashing the validate route, but the `nginx` check will fail
+    //      and surface a remediation hint pointing at the wizard.
+    const resolved = resolveNginxPaths();
+    const { certPath, baseVhostPath } = resolved;
     const sitesAvailable =
       typeof incoming.sitesAvailableDir === 'string'
         ? incoming.sitesAvailableDir
-        : '/etc/nginx/sites-available';
+        : resolved.sitesAvailableDir || '/etc/nginx/sites-available';
     const sitesEnabled =
       typeof incoming.sitesEnabledDir === 'string'
         ? incoming.sitesEnabledDir
-        : '/etc/nginx/sites-enabled';
-    const { certPath, baseVhostPath } = resolveNginxPaths();
+        : resolved.sitesEnabledDir || '/etc/nginx/sites-enabled';
 
     const checks = await Promise.all([
       adapters.checkDocker().catch((err: Error) => ({
