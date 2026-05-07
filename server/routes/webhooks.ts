@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import config, { defaultModelForEngine, fileConfig } from '../config.js';
 import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
@@ -148,6 +148,34 @@ interface BoardData {
   columns: KanbanColumnRow[];
   cards: KanbanCardRow[];
   epics: KanbanEpicRow[];
+}
+
+/** Same limit as the global `express.json` middleware in `index.ts`. */
+const GITHUB_WEBHOOK_RAW_BODY_LIMIT = '20mb';
+
+/**
+ * GitHub signs the raw request body bytes (UTF-8). Exposed for unit tests and
+ * kept in lockstep with the HTTP handler’s HMAC check.
+ */
+export function expectedGithubWebhookSignature256(secret: string, rawBody: Buffer): string {
+  return 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+}
+
+export function verifyGithubWebhookSignature256(
+  secret: string,
+  rawBody: Buffer,
+  signatureHeader: string | undefined,
+): boolean {
+  if (!signatureHeader) return false;
+  const expected = expectedGithubWebhookSignature256(secret, rawBody);
+  try {
+    const sigBuf = Buffer.from(signatureHeader, 'utf8');
+    const expBuf = Buffer.from(expected, 'utf8');
+    if (sigBuf.length !== expBuf.length) return false;
+    return crypto.timingSafeEqual(sigBuf, expBuf);
+  } catch {
+    return false;
+  }
 }
 
 // ─── P1 dedup/coalesce helpers (card 2c4a0d06) ──────────────────
@@ -2286,21 +2314,46 @@ function handleWebhookReviewComment(
 // the HTTP request. A webhook stampede on 2026-04-16 (254 events in 3 min,
 // handler latencies up to 292s) saturated the event loop and wedged the box
 // until PM2 restarted it. Fast-ack keeps inline work in the <50ms range.
+//
+// IMPORTANT: This route is mounted *before* the global `express.json()` in
+// `index.ts` and uses `express.raw` so the HMAC is computed over GitHub’s exact
+// UTF-8 bytes. Re-serialising with `JSON.stringify(JSON.parse(buf))` can
+// diverge (whitespace, surrogate pairs, etc.) and spuriously fail
+// verification for large `check_run` / `check_suite` payloads.
 
 export function createGithubWebhookHandler(deps: RouteDeps): Router {
   const { stmts } = deps;
   const router = Router();
 
-  router.post('/api/webhooks/github', (req: Request, res: Response) => {
+  const githubRawBodyParser = express.raw({
+    limit: GITHUB_WEBHOOK_RAW_BODY_LIMIT,
+    // GitHub ships `application/json`; keep this permissive so charset and
+    // forward-proxy quirks cannot skip parsing and bypass HMAC altogether.
+    type: () => true,
+  });
+
+  router.post('/api/webhooks/github', githubRawBodyParser, (req: Request, res: Response) => {
     const signature = req.headers['x-hub-signature-256'] as string | undefined;
     const event = req.headers['x-github-event'] as string | undefined;
     const deliveryId = req.headers['x-github-delivery'] as string | undefined;
 
-    if (!event || !req.body) {
+    const bodyBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!bodyBuf.length) {
       return res.status(400).json({ error: 'Missing event or body' });
     }
 
-    const payload = req.body as GitHubWebhookPayload;
+    let payload: GitHubWebhookPayload;
+    try {
+      payload = JSON.parse(bodyBuf.toString('utf8')) as GitHubWebhookPayload;
+    } catch {
+      return res.status(400).json({ error: 'Invalid JSON body' });
+    }
+
+    (req as Request & { body: GitHubWebhookPayload }).body = payload;
+
+    if (!event) {
+      return res.status(400).json({ error: 'Missing event or body' });
+    }
     const repoFullName = payload.repository?.full_name || '';
 
     const allConfigs = (stmts.getWebhookConfigs.all() as WebhookConfigRow[]).filter(
@@ -2324,22 +2377,10 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
     }
 
     if (signature && webhookConfig.secret) {
-      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-      const bodyBuf = rawBody || Buffer.from(JSON.stringify(req.body));
       const appSecret = config.githubApp?.webhookSecret;
 
-      const verifyAgainst = (secret: string): boolean => {
-        const expected =
-          'sha256=' + crypto.createHmac('sha256', secret).update(bodyBuf).digest('hex');
-        try {
-          const sigBuf = Buffer.from(signature);
-          const expBuf = Buffer.from(expected);
-          if (sigBuf.length !== expBuf.length) return false;
-          return crypto.timingSafeEqual(sigBuf, expBuf);
-        } catch {
-          return false;
-        }
-      };
+      const verifyAgainst = (secret: string): boolean =>
+        verifyGithubWebhookSignature256(secret, bodyBuf, signature);
 
       // Accept either the per-repo webhook secret OR the GitHub App's webhook
       // secret. Installed GitHub Apps deliver events to the same endpoint but

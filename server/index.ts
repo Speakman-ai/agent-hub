@@ -381,16 +381,6 @@ app.set('trust proxy', trustProxyValueFromEnv());
 // throw an unhandled `URIError`. See ./uri-error-handler.ts.
 app.use(uriDecodeGuard);
 app.use(cors(corsOptions));
-app.use(
-  express.json({
-    limit: '20mb',
-    verify: (req: Request, _res, buf: Buffer) => {
-      (req as Request & { rawBody?: Buffer }).rawBody = buf;
-    },
-  }),
-);
-
-app.use(createHealthRoute({ allAgents, getProjects, config }));
 
 let _broadcast: BroadcastFn;
 function broadcast(data: Record<string, unknown>): void {
@@ -419,6 +409,21 @@ export const webhookHandlerDeps = {
     ghAppSlug = v;
   },
 } as unknown as RouteDeps;
+
+// GitHub webhook HMAC covers the raw request bytes; mount BEFORE `express.json`
+// consumes the stream (routes/webhooks.ts uses `express.raw` internally).
+app.use(createGithubWebhookHandler(webhookHandlerDeps));
+
+app.use(
+  express.json({
+    limit: '20mb',
+    verify: (req: Request, _res, buf: Buffer) => {
+      (req as Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }),
+);
+
+app.use(createHealthRoute({ allAgents, getProjects, config }));
 
 initAutoGit({
   stmts: stmts!,
@@ -511,7 +516,6 @@ initAutonomous({
   getWebhookHandlerDeps: () => webhookHandlerDeps,
 } as Parameters<typeof initAutonomous>[0]);
 
-app.use(createGithubWebhookHandler(webhookHandlerDeps));
 app.use(
   createWorkflowIncomingRouter({
     stmts: stmts!,
