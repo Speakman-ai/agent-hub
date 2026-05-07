@@ -54,6 +54,7 @@ export interface ContainerRunner {
    * script to bring everything up.
    */
   build(opts: {
+    /** Build context directory — resolved on the Docker daemon host when DinD mapping applies. */
     contextDir: string;
     dockerfilePath: string | null;
     imageTag: string;
@@ -63,6 +64,10 @@ export interface ContainerRunner {
    * Start a detached container. The runner is expected to:
    *   - publish `hostPort:internalPort`
    *   - bind-mount `checkoutDir` → /workspace, set workdir to /workspace
+   *     (`checkoutDir` here is the path the **Docker daemon host** must use
+   *     for `-v`; when Agent Hub runs in DinD it may differ from the git
+   *     checkout path inside the server container — see
+   *     `checkoutPathForDockerDaemon`.)
    *   - inject `PORT=<internalPort>` plus any caller-supplied env
    *   - exec `setupCommand && startScript` under `sh -c` (setupCommand
    *     is optional — when omitted, just the start script runs).
@@ -162,6 +167,12 @@ export interface PrEnvBuilderDeps {
      * is `~/.agent-hub/pr-envs`.
      */
     checkoutBaseDir: string;
+    /**
+     * When set, paths passed to `docker build` / `docker run -v` use this
+     * directory as the host-visible prefix instead of `checkoutBaseDir`
+     * (see `checkoutPathForDockerDaemon`). Omit on bare-metal installs.
+     */
+    dockerHostCheckoutBaseDir?: string;
   };
   /**
    * Generic image used when `projectConfig.dockerfilePath` is null —
@@ -188,6 +199,39 @@ interface BuildAudit {
   imageBuilt: boolean;
   containerStarted: boolean;
   nginxWritten: boolean;
+}
+
+/**
+ * Docker CLI resolves bind-mount sources and build contexts on the **daemon
+ * host**. When the Agent Hub server runs inside a container that exposes the
+ * host Docker socket, clones land under `checkoutBaseDir` (often something
+ * like `/home/node/.agent-hub/pr-envs`) inside that container — but the same
+ * files appear on the host under `dockerHostCheckoutBaseDir` (e.g.
+ * `/var/lib/agent-hub/pr-envs`) when ops bind-mounts the volume there.
+ *
+ * Pass every absolute path that will be handed to `docker build` / `docker run
+ * -v` through this helper when `dockerHostCheckoutBaseDir` is configured.
+ * Git / FS paths stay on the in-process checkout paths unchanged.
+ */
+export function checkoutPathForDockerDaemon(
+  absoluteCheckoutPath: string,
+  checkoutBaseDir: string,
+  dockerHostCheckoutBaseDir?: string,
+): string {
+  const trimmed = dockerHostCheckoutBaseDir?.trim();
+  if (!trimmed) {
+    return absoluteCheckoutPath;
+  }
+  const base = path.resolve(checkoutBaseDir);
+  const abs = path.resolve(absoluteCheckoutPath);
+  const rel = path.relative(base, abs);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(
+      `[pr-env] Checkout path ${abs} is not under checkout base ${base}. ` +
+        `Cannot map to Docker daemon bind path (dockerHostCheckoutBaseDir=${trimmed}).`,
+    );
+  }
+  return path.join(path.resolve(trimmed), rel);
 }
 
 /**
@@ -261,9 +305,22 @@ export async function buildPrEnv(
 
     // 4. Build image (or pass through the default base image).
     const dockerfilePath = projectConfig.dockerfilePath?.trim() || null;
+    const dockerCheckoutDir = checkoutPathForDockerDaemon(
+      checkoutDir,
+      paths.checkoutBaseDir,
+      paths.dockerHostCheckoutBaseDir,
+    );
+    const resolvedDockerfileForDaemon =
+      dockerfilePath != null
+        ? checkoutPathForDockerDaemon(
+            path.resolve(checkoutDir, dockerfilePath),
+            paths.checkoutBaseDir,
+            paths.dockerHostCheckoutBaseDir,
+          )
+        : null;
     const builtImage = await container.build({
-      contextDir: checkoutDir,
-      dockerfilePath: dockerfilePath ? path.resolve(checkoutDir, dockerfilePath) : null,
+      contextDir: dockerCheckoutDir,
+      dockerfilePath: resolvedDockerfileForDaemon,
       imageTag,
       defaultBaseImage: deps.defaultBaseImage,
     });
@@ -309,7 +366,7 @@ export async function buildPrEnv(
       imageTag: resolvedImageTag,
       hostPort: port,
       internalPort: projectConfig.internalPort,
-      checkoutDir,
+      checkoutDir: dockerCheckoutDir,
       startScript: projectConfig.startScript,
       setupCommand: projectConfig.setupCommand?.trim() || undefined,
       // Per-project env vars (e.g. AWS credentials, upstream API URLs).

@@ -20,6 +20,13 @@ services:
       - AGENT_HUB_PUBLIC_URL=${AGENT_HUB_PUBLIC_URL:-}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3050}
+      # PR preview envs when the server container uses the host Docker socket:
+      # mount the same host dir at PR_ENV_CHECKOUT_BASE_DIR inside this container,
+      # then set PR_ENV_DOCKER_HOST_CHECKOUT_BASE_DIR to the host-side path so
+      # `docker run -v` bind-mount sources resolve to cloned files (see server/container-pool/pr-env-builder.ts).
+      # Also mount `/var/run/docker.sock` and e.g. `/var/lib/agent-hub/pr-envs:/home/node/.agent-hub/pr-envs`.
+      # - PR_ENV_CHECKOUT_BASE_DIR=/home/node/.agent-hub/pr-envs
+      # - PR_ENV_DOCKER_HOST_CHECKOUT_BASE_DIR=/var/lib/agent-hub/pr-envs
     expose:
       - "3051"
     healthcheck:

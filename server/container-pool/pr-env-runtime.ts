@@ -48,11 +48,21 @@ export interface PrEnvAppConfigRef {
 export interface PrEnvRuntimeConfig {
   enabled: boolean;
   /**
-   * Where per-PR working trees live on the host. The builder will place
-   * each PR under `<checkoutBaseDir>/<projectSlug>/pr-<N>/`. Default in
-   * production is `~/.agent-hub/pr-envs`.
+   * Directory where git clones per-PR checkouts (`mkdir`, `rmDir`, clone target).
+   * Each PR lives under `<checkoutBaseDir>/<projectSlug>/pr-<N>/`. Default is
+   * `~/.agent-hub/pr-envs`. With Docker-in-Docker (host socket mounted), this
+   * is usually the **in-container** mount target; pair it with
+   * `dockerHostCheckoutBaseDir` so `docker build` / `docker run -v` receive paths
+   * the daemon resolves on the real host.
    */
   checkoutBaseDir: string;
+  /**
+   * Prefix for paths passed to `docker build` / `docker run -v` when it must
+   * differ from `checkoutBaseDir` (Docker-in-Docker: daemon resolves bind
+   * mounts on the host). Set via `PR_ENV_DOCKER_HOST_CHECKOUT_BASE_DIR` or
+   * `prEnv.dockerHostCheckoutBaseDir`. Omit when the server runs on bare metal.
+   */
+  dockerHostCheckoutBaseDir?: string;
   /**
    * Generic base image used when a project's PR-env config has no
    * Dockerfile path set. Defaults to `node:20` so JS/TS projects work
@@ -240,6 +250,13 @@ export function readPrEnvConfig(
     fileBlock.checkoutBaseDir,
     path.join(os.homedir(), '.agent-hub', 'pr-envs'),
   );
+  const dockerHostCheckoutBaseDirRaw = pick(
+    env.PR_ENV_DOCKER_HOST_CHECKOUT_BASE_DIR,
+    undefined,
+    fileBlock.dockerHostCheckoutBaseDir as string | undefined,
+    '',
+  );
+  const dockerHostCheckoutBaseDir = dockerHostCheckoutBaseDirRaw.trim() || undefined;
   const defaultBaseImage = pick(
     env.PR_ENV_DEFAULT_BASE_IMAGE,
     undefined,
@@ -328,6 +345,7 @@ export function readPrEnvConfig(
   return {
     enabled: true,
     checkoutBaseDir,
+    ...(dockerHostCheckoutBaseDir ? { dockerHostCheckoutBaseDir } : {}),
     defaultBaseImage,
     previewBaseUrl: resolvePreviewBaseUrl(fileBlock, env, dbRow),
     github: {
@@ -635,6 +653,9 @@ export function getPrEnvBuilderDeps(
     getCloneToken: defaultGetCloneToken,
     paths: {
       checkoutBaseDir: runtimeConfig.checkoutBaseDir,
+      ...(runtimeConfig.dockerHostCheckoutBaseDir
+        ? { dockerHostCheckoutBaseDir: runtimeConfig.dockerHostCheckoutBaseDir }
+        : {}),
     },
     defaultBaseImage: runtimeConfig.defaultBaseImage,
     previewBaseUrl: runtimeConfig.previewBaseUrl,
