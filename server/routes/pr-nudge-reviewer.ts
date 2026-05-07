@@ -58,7 +58,17 @@ export default function createPrNudgeReviewerRoutes(deps: RouteDeps): Router {
         });
       }
 
-      if (isReviewerDispatchPending(project.id, num)) {
+      // P1 (card 2c4a0d06): consult both the in-memory debounce map AND the
+      // persistent webhook_events queue. Pre-P1 this only checked the in-memory
+      // map; a server restart mid-debounce would clear the map and let a
+      // double-dispatch slip through. Now the queue's `pr_key` + `deferred_until`
+      // columns are durable across restarts.
+      if (
+        isReviewerDispatchPending(project.id, num, {
+          stmts,
+          repoFullName: `${repo.owner}/${repo.repo}`,
+        })
+      ) {
         return res.status(409).json({
           error:
             'A formal review dispatch is already queued for this PR (debounce window — try again shortly).',

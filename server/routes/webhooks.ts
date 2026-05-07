@@ -142,6 +142,98 @@ interface BoardData {
   epics: KanbanEpicRow[];
 }
 
+// ─── P1 dedup/coalesce helpers (card 2c4a0d06) ──────────────────
+//
+// These helpers compute the metadata stored on a freshly-inserted
+// `webhook_events` row. The worker uses them to:
+//
+//   * `pr_key`         — `<repo_full_name>:<pr_number>` for events scoped to
+//                        a specific PR. Per-PR concurrency cap & coalescing
+//                        both key off this column.
+//   * `deferred_until` — when the worker may first claim the row. Defers the
+//                        reviewer-triggering events by `QUEUE_REVIEWER_DEFER_MS`
+//                        so a burst of synchronizes coalesces into one dispatch.
+//
+// These functions are pure (payload + event/action in, metadata out) so they
+// are unit-testable without spinning up the full express stack.
+
+/**
+ * Build the per-PR coalesce key. Returns null when the inputs are unusable
+ * (missing repo, non-positive PR number) so callers can leave `pr_key`
+ * NULL without a separate guard.
+ */
+export function makePrKey(repoFullName: string | undefined, prNumber: unknown): string | null {
+  if (!repoFullName) return null;
+  const n = typeof prNumber === 'number' ? prNumber : Number(prNumber);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return `${repoFullName}:${n}`;
+}
+
+/**
+ * Extract the PR number this event is scoped to, regardless of whether the
+ * payload carries it under `pull_request`, `check_run.pull_requests[0]`, or
+ * `check_suite.pull_requests[0]`. Used for both `pr_key` computation and the
+ * coalesce-key derivation in the queue-level dedup path.
+ *
+ * Returns null when no PR number is present (push events, ping, repo-level
+ * events) — those rows skip the per-PR concurrency cap entirely.
+ */
+export function extractPrNumberFromPayload(
+  event: string,
+  payload: GitHubWebhookPayload,
+): number | null {
+  if (payload.pull_request?.number) return payload.pull_request.number;
+  if (event === 'check_run' && payload.check_run?.pull_requests?.length) {
+    return payload.check_run.pull_requests[0]?.number ?? null;
+  }
+  if (event === 'check_suite' && payload.check_suite?.pull_requests?.length) {
+    return payload.check_suite.pull_requests[0]?.number ?? null;
+  }
+  return null;
+}
+
+/**
+ * Compute the metadata stored on the freshly-inserted webhook_events row.
+ *
+ * `deferredUntilSql` is a SQLite expression suitable for `datetime(...)`
+ * (e.g. `"+30 seconds"`) or null when the row should be eligible immediately.
+ * The choice of which events to defer encodes the per-handler timeout policy:
+ *
+ *   * `pull_request.opened` / `pull_request.synchronize` — defer by the
+ *     reviewer debounce window so the worker can't claim a row before the
+ *     coalesce sweep has had a chance to flip its older siblings to 'skipped'.
+ *     This is the persistent replacement for `reviewerDebounceTimers`.
+ *
+ *   * `check_run.rerequested` / `check_suite.rerequested` — defer briefly so
+ *     a double-clicked "Re-run" button collapses into one dispatch. 5s is
+ *     enough to cover the human round-trip without making the user wait.
+ *
+ *   * Every other event is processed immediately. The worker still honors
+ *     the per-key concurrency cap so PRs with concurrent events serialize.
+ */
+export function computeWebhookCoalesceMeta(
+  event: string,
+  action: string,
+  payload: GitHubWebhookPayload,
+): { prKey: string | null; deferredUntilSql: string | null } {
+  const repoFullName = payload.repository?.full_name;
+  const prNumber = extractPrNumberFromPayload(event, payload);
+  const prKey = makePrKey(repoFullName, prNumber);
+
+  let deferredUntilSql: string | null = null;
+  if (event === 'pull_request' && (action === 'opened' || action === 'synchronize')) {
+    deferredUntilSql = `+${Math.floor(QUEUE_REVIEWER_DEFER_MS / 1000)} seconds`;
+  } else if (
+    (event === 'check_run' || event === 'check_suite') &&
+    action === 'rerequested' &&
+    prKey
+  ) {
+    deferredUntilSql = '+5 seconds';
+  }
+
+  return { prKey, deferredUntilSql };
+}
+
 // ─── Shared helpers (used by multiple routes and index.js) ──────
 
 /**
@@ -717,13 +809,53 @@ export function shouldReviewPrAuthor(
 // webhook fires a Reviewer-agent session for the project's dedicated Reviewer.
 // Multiple rapid pushes within a debounce window coalesce into one dispatch
 // (the latest push wins) so a burst of force-pushes doesn't burn N sessions.
+//
+// P1 (card 2c4a0d06) layered durable, queue-level coalescing on top:
+// `webhook_events.deferred_until` defers the row, and insert-time coalescing
+// flips older same-key rows to 'skipped'. The in-memory `reviewerDebounceTimers`
+// stays as defense-in-depth for non-queue callers (`pr-nudge-reviewer.ts`),
+// but the durable signal — the one that survives a server restart — lives in
+// the queue. `isReviewerDispatchPending` consults BOTH so callers get a
+// truthful answer regardless of where the pending dispatch was scheduled.
 
 const REVIEWER_DEBOUNCE_MS = 30_000;
 const reviewerDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-/** True while a debounced reviewer dispatch is waiting to fire for this PR. */
-export function isReviewerDispatchPending(projectId: string, prNumber: number): boolean {
-  return reviewerDebounceTimers.has(`${projectId}:${prNumber}`);
+/**
+ * Per-PR debounce window applied at the queue layer. Matches REVIEWER_DEBOUNCE_MS
+ * for `pull_request.opened` / `pull_request.synchronize` events so the worker
+ * can't claim a fresh row before the in-memory debounce would have fired.
+ *
+ * Exported for tests and for `routes/webhooks.ts` callers that need to compute
+ * the same window without re-deriving the constant.
+ */
+export const QUEUE_REVIEWER_DEFER_MS = REVIEWER_DEBOUNCE_MS;
+
+/**
+ * True while a debounced reviewer dispatch is waiting to fire for this PR.
+ *
+ * Checks two sources:
+ *   1. The in-memory `reviewerDebounceTimers` map — set by direct callers
+ *      of `dispatchReviewerForPR` (e.g. the `/api/pr/nudge-reviewer` route).
+ *   2. The persistent `webhook_events` queue — set by webhook deliveries
+ *      that have been enqueued with `deferred_until` and haven't been
+ *      claimed yet. This is what makes the answer survive a restart.
+ *
+ * Either source returning true means the PR has a pending review dispatch
+ * that the caller should NOT duplicate.
+ */
+export function isReviewerDispatchPending(
+  projectId: string,
+  prNumber: number,
+  opts: { stmts?: Stmts; repoFullName?: string } = {},
+): boolean {
+  if (reviewerDebounceTimers.has(`${projectId}:${prNumber}`)) return true;
+  const { stmts, repoFullName } = opts;
+  if (!stmts || !repoFullName) return false;
+  const prKey = makePrKey(repoFullName, prNumber);
+  if (!prKey) return false;
+  const found = stmts.hasDeferredPendingForPrKey.get(prKey) as { found: number } | undefined;
+  return !!found;
 }
 
 function reviewerTriggerDescription(reason: ReviewerDispatchOpts['reason']): string {
@@ -2151,6 +2283,25 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
       }
     }
 
+    // P1 dedup/coalesce — compute the (event_type, repo, pr_number) key plus
+    // an optional `deferred_until` window. The window does double duty:
+    //   1. It gives the worker a quiet period to coalesce any near-simultaneous
+    //      siblings (e.g. burst of `pull_request.synchronize` from a force-push)
+    //      before claiming the row.
+    //   2. It survives a server restart — the in-memory `reviewerDebounceTimers`
+    //      map used to be lost on boot; a `deferred_until` timestamp persists.
+    const coalesceMeta = computeWebhookCoalesceMeta(event, action || '', payload);
+    const deferredUntilSql = coalesceMeta.deferredUntilSql;
+    // We embed the deferral as a SQLite expression evaluated at INSERT time so
+    // every row uses the DB clock — the express server might be running on a
+    // host with skewed wall time, but `datetime('now', '+30 seconds')` is
+    // self-consistent with the `claimPendingWebhookEvent` comparator.
+    const deferredUntil =
+      deferredUntilSql == null
+        ? null
+        : ((stmts.evalDatetimeOffset.get(deferredUntilSql) as { ts: string } | undefined)?.ts ??
+          null);
+
     let insertResult: ReturnType<typeof stmts.insertWebhookEvent.run>;
     try {
       insertResult = stmts.insertWebhookEvent.run(
@@ -2160,6 +2311,8 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
         action || null,
         JSON.stringify(payload),
         signature || null,
+        coalesceMeta.prKey,
+        deferredUntil,
       );
     } catch (err: unknown) {
       // UNIQUE constraint on delivery_id means a near-simultaneous duplicate
@@ -2181,9 +2334,42 @@ export function createGithubWebhookHandler(deps: RouteDeps): Router {
       return res.status(500).json({ error: 'enqueue failed' });
     }
 
+    const newId = Number(insertResult.lastInsertRowid);
+
+    // Coalesce older pending siblings: if this new row carries a pr_key, mark
+    // any earlier pending rows with the same (event_type, action, pr_key) as
+    // 'skipped' and link them via `superseded_by`. This is the moment when the
+    // dedup happens — by the time the worker's claim query runs, only the
+    // newest row is eligible.
+    //
+    // Done at insert-time (not in a separate sweep tick) so the worker's claim
+    // path stays a single atomic UPDATE — no separate transaction to lose
+    // races against under WAL.
+    if (coalesceMeta.prKey) {
+      try {
+        const sweep = stmts.coalescePendingForKey.run(
+          newId,
+          event,
+          action || null,
+          coalesceMeta.prKey,
+          newId,
+        );
+        if (sweep.changes > 0) {
+          console.log(
+            `[Webhook] coalesced ${sweep.changes} older pending row(s) for ${eventKey} on ${coalesceMeta.prKey} (superseded_by=${newId})`,
+          );
+        }
+      } catch (err: unknown) {
+        // Coalesce failure should never block the ack — the worker will still
+        // run the rows in arrival order; we just lose the dedup optimization.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[Webhook] coalesce sweep failed:', msg);
+      }
+    }
+
     return res.status(202).json({
       status: 'queued',
-      id: Number(insertResult.lastInsertRowid),
+      id: newId,
       event: eventKey,
     });
   });

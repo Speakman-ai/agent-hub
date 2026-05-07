@@ -37,11 +37,25 @@ export async function getApp(): Promise<Express> {
  * Drain all pending + in-flight webhook events. Returns the number of rows
  * processed. Used by tests that depend on webhook side-effects (kanban
  * linking, Claude runs). Bounded by `maxIterations` to prevent runaway loops.
+ *
+ * P1 (card 2c4a0d06): synchronize / check_run.rerequested rows are now
+ * inserted with a `deferred_until` window so the production worker can
+ * coalesce sibling deliveries. Tests don't want to sleep through that
+ * window, so we shift any pending row's deferred_until into the past
+ * before each tick. This preserves the production semantics (the worker
+ * still consults the column) while making tests deterministic.
  */
 export async function drainWebhookQueue(maxIterations = 100): Promise<number> {
   const { processOnce } = await import('../webhook-worker.js');
+  const { getDb } = await import('../db.js');
+  const clearDefer = getDb().prepare(
+    "UPDATE webhook_events SET deferred_until = datetime('now', '-1 second') " +
+      "WHERE status = 'pending' AND deferred_until IS NOT NULL " +
+      "AND deferred_until > datetime('now')",
+  );
   let processed = 0;
   for (let i = 0; i < maxIterations; i++) {
+    clearDefer.run();
     const didWork = await processOnce();
     if (!didWork) break;
     processed++;

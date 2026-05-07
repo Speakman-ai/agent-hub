@@ -493,12 +493,25 @@ export interface WebhookEventRow {
   action: string | null;
   payload: string; // JSON-stringified GitHubWebhookPayload
   signature: string | null;
-  status: 'pending' | 'processing' | 'done' | 'error';
+  status: 'pending' | 'processing' | 'done' | 'error' | 'skipped';
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
   attempts: number;
   created_at: string;
+  // Coalescing key for events scoped to a PR — `<repo_full_name>:<pr_number>`
+  // for events that target a specific PR, NULL otherwise. Two webhook_events
+  // rows with the same `pr_key` are never processed concurrently (per-PR
+  // serialization) and within a (event_type, action, pr_key) cohort, older
+  // pending rows are coalesced into 'skipped' when a newer row arrives.
+  pr_key: string | null;
+  // Persistent debounce: when set, the worker will not claim this row until
+  // `deferred_until <= datetime('now')`. Replaces the in-memory
+  // reviewerDebounceTimers map so debounce state survives restart.
+  deferred_until: string | null;
+  // For coalesced rows (status='skipped'), the id of the newer row that
+  // superseded this one. Lets the queue audit trail record the chain.
+  superseded_by: number | null;
 }
 
 export interface SkillRegistryRow {
@@ -1009,6 +1022,16 @@ export interface Stmts {
   markWebhookEventError: Stmt;
   resetStaleWebhookEvents: Stmt;
   countWebhookEventsByStatus: Stmt;
+  // Coalescing — mark older pending rows that share (event_type, action,
+  // pr_key) with a newer row as 'skipped'. Run at insert time so the worker
+  // claim path stays a single atomic UPDATE.
+  coalescePendingForKey: Stmt;
+  // Per-key concurrency / persistent-debounce introspection.
+  countPendingForPrKey: Stmt;
+  hasDeferredPendingForPrKey: Stmt;
+  // Evaluate `datetime('now', ?)` for a SQLite modifier string. Used to
+  // compute `deferred_until` at enqueue time on the DB clock.
+  evalDatetimeOffset: Stmt;
 
   // Wiki pages
   getWikiPages: Stmt;
