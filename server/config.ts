@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import type { AppConfig } from './types.js';
 import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 import { resolveSpawnPath, refreshShellPath, getCachedShellPath } from './shell-path.js';
+import { getActualPort } from './server-port.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -405,6 +406,48 @@ export function buildSpawnEnv(
   }
 
   return env;
+}
+
+/**
+ * Normalize an operator-supplied Hub API base URL to `http(s)://host[:port]`
+ * (origin only; paths are discarded). Invalid URLs / non-http(s) schemes
+ * yield null — callers fall back to loopback when every layer is unusable.
+ */
+export function normalizedHttpOriginForAgentHub(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const withoutTrailingSlash = trimmed.replace(/\/+$/, '');
+  try {
+    const u = new URL(withoutTrailingSlash);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Base URL injected as `AGENT_HUB_URL` for spawned CLI processes (skills,
+ * kanban helpers, reviewer curl templates, etc.).
+ *
+ * Remote tool sandboxes may not share loopback with the Hub process —
+ * configuring `AGENT_HUB_AGENT_URL`, `agentHubUrl` in config.json, or
+ * `PUBLIC_URL` / `publicUrl` gives them a reachable address.
+ *
+ * Precedence:
+ *   1. `AGENT_HUB_AGENT_URL` env or `agentHubUrl` in config.json
+ *   2. Normalized `publicUrl`
+ *   3. `http://127.0.0.1:${getActualPort()}`
+ */
+export function resolveAgentHubApiBaseForSpawn(cfg: AppConfig): string {
+  const explicit = normalizedHttpOriginForAgentHub(
+    resolve('AGENT_HUB_AGENT_URL', 'agentHubUrl', null),
+  );
+  if (explicit) return explicit;
+  const pub = normalizedHttpOriginForAgentHub(cfg.publicUrl);
+  if (pub) return pub;
+  return `http://127.0.0.1:${getActualPort()}`;
 }
 
 export default config;

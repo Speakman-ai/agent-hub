@@ -338,3 +338,116 @@ describe('config.ts — CLI binary auto-detection (pickBin)', () => {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 });
+
+describe('normalizedHttpOriginForAgentHub + resolveAgentHubApiBaseForSpawn', () => {
+  async function loadConfigFresh(
+    dataDir: string,
+    fileCfg?: Record<string, unknown>,
+    opts: {
+      AGENT_HUB_AGENT_URL?: string;
+      mockedPort?: number;
+    } = {},
+  ): Promise<{ mod: typeof import('./config.js'); portSpy: ReturnType<typeof vi.spyOn> }> {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = dataDir;
+    fs.mkdirSync(dataDir, { recursive: true });
+    if (fileCfg !== undefined) {
+      fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify(fileCfg), 'utf8');
+    }
+
+    delete process.env.AGENT_HUB_AGENT_URL;
+    if (opts.AGENT_HUB_AGENT_URL !== undefined) {
+      process.env.AGENT_HUB_AGENT_URL = opts.AGENT_HUB_AGENT_URL;
+    }
+    delete process.env.AGENT_HUB_PUBLIC_URL;
+
+    const serverPortMod = await import('./server-port.js');
+    const mockPort = opts.mockedPort ?? 4242;
+    const portSpy = vi.spyOn(serverPortMod, 'getActualPort').mockReturnValue(mockPort);
+    const mod = await import('./config.js');
+    return { mod, portSpy };
+  }
+
+  it('normalizes https origins and strips trailing paths', async () => {
+    const dir = path.join(
+      os.tmpdir(),
+      `agent-hub-http-origin-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    try {
+      const { mod } = await loadConfigFresh(dir);
+      expect(mod.normalizedHttpOriginForAgentHub('https://hub.example/with/path')).toBe(
+        'https://hub.example',
+      );
+      expect(mod.normalizedHttpOriginForAgentHub('')).toBeNull();
+      expect(mod.normalizedHttpOriginForAgentHub('ftp://bad')).toBeNull();
+      expect(mod.normalizedHttpOriginForAgentHub('https://h.example/foo/')).toBe(
+        'https://h.example',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to http://127.0.0.1:<actual port> when no agent URL configured', async () => {
+    const dir = path.join(
+      os.tmpdir(),
+      `agent-hub-spawnurl-fallback-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    try {
+      const { mod, portSpy } = await loadConfigFresh(dir);
+      expect(mod.resolveAgentHubApiBaseForSpawn(mod.default)).toBe('http://127.0.0.1:4242');
+      expect(portSpy).toHaveBeenCalled();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers PUBLIC_URL/normalized publicUrl over loopback', async () => {
+    const dir = path.join(
+      os.tmpdir(),
+      `agent-hub-spawnurl-pub-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    try {
+      const { mod } = await loadConfigFresh(dir, {
+        publicUrl: 'https://svc.example/agent-hub/',
+      });
+      expect(mod.resolveAgentHubApiBaseForSpawn(mod.default)).toBe('https://svc.example');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers AGENT_HUB_AGENT_URL over publicUrl', async () => {
+    const dir = path.join(
+      os.tmpdir(),
+      `agent-hub-spawnurl-env-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    try {
+      const { mod } = await loadConfigFresh(
+        dir,
+        { publicUrl: 'https://public.example' },
+        { AGENT_HUB_AGENT_URL: 'http://runner.internal:3051/' },
+      );
+      expect(mod.resolveAgentHubApiBaseForSpawn(mod.default)).toBe('http://runner.internal:3051');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads agentHubUrl from config.json when env is unset', async () => {
+    const dir = path.join(
+      os.tmpdir(),
+      `agent-hub-spawnurl-file-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    try {
+      const { mod } = await loadConfigFresh(dir, {
+        publicUrl: 'https://ignored.example',
+        agentHubUrl: 'http://worker.svc.dev:8099/',
+      });
+      expect(mod.resolveAgentHubApiBaseForSpawn(mod.default)).toBe('http://worker.svc.dev:8099');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
