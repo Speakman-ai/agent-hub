@@ -40,7 +40,6 @@ All scripts read these env vars:
 | Variable               | Default                   | Notes                                                                    |
 | ---------------------- | ------------------------- | ------------------------------------------------------------------------ |
 | `AGENT_HUB_URL`        | Loopback:* `http://127.0.0.1:<port>` | Server-injected REST base (`resolveAgentHubApiBaseForSpawn`). Defaults to loopback; if your tool sandbox cannot reach localhost (remote workers), Hub uses `PUBLIC_URL` / `publicUrl` automatically, or set `AGENT_HUB_AGENT_URL` / `agentHubUrl` in config. |
-
 | `AGENT_HUB_API_KEY`    | (injected by the server)  | Sent as `x-api-key`; the server treats it as Owner for all orgs.         |
 | `PROJECT_ID`           | (required for most calls) | Slug from the system prompt, e.g. `agent-hub`. See `scripts/server.sh`.  |
 | `AGENT_HUB_SESSION_ID` | (injected)                | Your session id. Pass when creating cards to auto-link.                  |
