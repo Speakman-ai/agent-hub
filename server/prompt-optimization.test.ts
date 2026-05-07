@@ -579,6 +579,59 @@ describe('buildEnrichedPrompt — lead agent delegation (removed)', () => {
   });
 });
 
+describe('buildEnrichedPrompt — Lead Response Contract Next-step hygiene', () => {
+  // The Lead Response Contract used to mandate `Next step` on every
+  // non-trivial response ("Do not omit `Evidence` or `Next step`."), which
+  // trained leads to end turns by *naming* a follow-up rather than executing
+  // it — directly competing with the Bias to Action section. The contract
+  // now marks `Next step` as optional + explicitly forbids using it as a
+  // parking lot for work the agent could have done in the same turn.
+  beforeEach(() => {
+    mkdirSync(tmpBase, { recursive: true });
+    mkdirSync(path.join(tmpBase, 'skills'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  function leadFirstMessagePrompt(): string {
+    return buildEnrichedPrompt(makeProject(), makeAgent({ role: 'lead' }), {
+      isFirstMessage: true,
+    });
+  }
+
+  it('marks Next step as optional and not a mandatory heading', () => {
+    const prompt = leadFirstMessagePrompt();
+    // Old wording forced the heading on every response — that line is gone.
+    expect(prompt).not.toContain('Do not omit `Evidence` or `Next step`.');
+    // New contract still requires Evidence...
+    expect(prompt).toContain('Do not omit `Evidence`');
+    // ...but explicitly flags Next step as optional.
+    expect(prompt).toMatch(/`Next step` is optional/);
+  });
+
+  it('explicitly tells the lead: if Next step is doable now, do it in this turn', () => {
+    const prompt = leadFirstMessagePrompt();
+    // The contract must call out the parking-lot anti-pattern...
+    expect(prompt).toMatch(/parking lot/i);
+    // ...and instruct the agent to execute the work in the same turn rather
+    // than emit a "Next step: …" line for something it could have done.
+    expect(prompt).toMatch(/do it in this turn/i);
+    // And it should fold the executed work back into Actions taken / Result.
+    expect(prompt).toMatch(/`Actions taken`/);
+    expect(prompt).toMatch(/`Result`/);
+  });
+
+  it('describes the legitimate uses of Next step (deferred work only)', () => {
+    const prompt = leadFirstMessagePrompt();
+    // Genuinely deferred work — follow-up cards, user questions, blocked
+    // hand-offs — is the only category that should appear under Next step.
+    expect(prompt).toMatch(/genuinely deferred/i);
+    expect(prompt).toMatch(/follow-up card/i);
+  });
+});
+
 describe('getMemoryContext — reduced truncation limits', () => {
   const memWorkspace = path.join(tmpBase, 'mem-test');
 

@@ -729,8 +729,9 @@ For non-trivial execution updates, end with a compact structured block in prose 
 - \`Actions taken\`
 - \`Evidence\`
 - \`Result\`
-- \`Next step\`
-Do not omit \`Evidence\` or \`Next step\`.`;
+- \`Next step\` *(optional — only for genuinely deferred work)*
+
+Do not omit \`Evidence\`. **\`Next step\` is optional and must NOT be a parking lot for unexecuted work.** If the next action is something you can do right now in this same turn — write the code, open the PR, run the test, ask the picker question — **do it in this turn** and fold the result into \`Actions taken\` / \`Result\` instead of naming it as a follow-up. Only include \`Next step\` when the work is genuinely deferred: a follow-up card you've already created (cite its id), a question that needs the user's answer, or a hand-off blocked on something outside this turn. Lines like "Next step: implement X" or "Next step: open the PR" are the anti-pattern this rule exists to kill.`;
   }
 
   const outerOrch = formatOuterOrchestrationPromptAppend(
