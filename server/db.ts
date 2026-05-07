@@ -55,6 +55,26 @@ function initDb(dataDir: string): void {
   db.exec('DROP TABLE IF EXISTS preview_captures');
   db.exec('DROP TABLE IF EXISTS preview_containers');
 
+  // Pre-bootstrap migration: P1 webhook_events columns (pr_key, deferred_until,
+  // superseded_by). MUST run before the bootstrap `db.exec` below because that
+  // block contains `CREATE INDEX … ON webhook_events(pr_key, …)` — and on
+  // existing installs `CREATE TABLE IF NOT EXISTS webhook_events` is a no-op,
+  // so the index would reference a column that doesn't exist yet and throw
+  // `SqliteError: no such column: pr_key` (root-caused 2026-05-07 deploy
+  // outage on dev + prod). The post-bootstrap migration block further down
+  // also needs these columns for the CHECK-constraint rebuild, so adding them
+  // here is strictly earlier — fresh installs skip the ALTER (no table) and
+  // the bootstrap CREATE TABLE creates them inline; legacy installs get the
+  // columns added before any index references them. ALTER TABLE on a missing
+  // table throws "no such table" which the try/catch swallows safely.
+  for (const col of ['pr_key TEXT', 'deferred_until TEXT', 'superseded_by INTEGER']) {
+    try {
+      db.exec(`ALTER TABLE webhook_events ADD COLUMN ${col}`);
+    } catch (_e) {
+      /* table doesn't exist yet (fresh install) or column already present */
+    }
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -1346,20 +1366,13 @@ function initDb(dataDir: string): void {
     }
   }
 
-  // Migration: P1 webhook event coalescing — pr_key, deferred_until, superseded_by.
-  // Each column is nullable so ADD COLUMN is sufficient. Skipping the CHECK
-  // constraint update is fine for legacy rows: they were never written with
-  // status='skipped' (didn't exist), and the new prepared statements only
-  // write 'skipped' to the new column-set. SQLite enforces CHECK on every
-  // write, so we DO need to update the constraint to allow the new value —
-  // do that via a conditional table rebuild below.
-  for (const col of ['pr_key TEXT', 'deferred_until TEXT', 'superseded_by INTEGER']) {
-    try {
-      db.exec(`ALTER TABLE webhook_events ADD COLUMN ${col}`);
-    } catch (_e) {
-      /* column already exists */
-    }
-  }
+  // Migration: P1 webhook event coalescing CHECK-constraint rebuild.
+  // The pr_key / deferred_until / superseded_by columns themselves are added
+  // in the pre-bootstrap block above (must run before the bootstrap block's
+  // CREATE INDEX on pr_key). What's left here is the conditional table
+  // rebuild that updates the `status` CHECK constraint to allow the new
+  // 'skipped' value — that requires a full INSERT…SELECT copy and so stays
+  // post-bootstrap to run after the table definitively exists.
   {
     const ddl =
       (
