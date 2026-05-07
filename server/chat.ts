@@ -121,23 +121,11 @@ import {
 import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-observability.js';
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
+import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 
 const stmts = _stmts!;
 const DEFAULT_MODEL: string = config.defaultModel;
 const MAX_QUEUE_SIZE = 10;
-
-/**
- * Allowlist of keys that `ChatMessage.extraEnv` is permitted to inject into
- * the spawned CLI process. Any key NOT in this set is silently dropped at
- * merge time, regardless of what the caller supplies. This is the security
- * boundary that prevents WebSocket callers from shadowing server-resolved
- * auth variables (ANTHROPIC_API_KEY, GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, etc.)
- * via the `extraEnv` field. Expand this set only for keys that are genuinely
- * safe for callers to supply and that the server never sets itself.
- *
- * See also: `ChatMessage.extraEnv` in `server/types.ts`.
- */
-const EXTRA_ENV_ALLOWLIST = new Set(['DEV_HUB_API_KEY']);
 
 // ─── Internal types ─────────────────────────────────────────────
 
@@ -1979,17 +1967,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     })();
 
     // Merge allowlisted caller-supplied env vars (e.g. DEV_HUB_API_KEY from
-    // autonomous-dispatch for cross-hub cards). Only keys on EXTRA_ENV_ALLOWLIST
-    // are accepted, and only when not already set by server-side credential
-    // resolution — prevents WebSocket callers from shadowing core auth vars
-    // (ANTHROPIC_API_KEY, GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, etc.).
-    if (msg.extraEnv) {
-      for (const [key, val] of Object.entries(msg.extraEnv)) {
-        if (EXTRA_ENV_ALLOWLIST.has(key) && !(key in spawnEnv)) {
-          spawnEnv[key] = val;
-        }
-      }
-    }
+    // autonomous-dispatch for cross-hub cards). See `mergeAllowlistedExtraEnv`.
+    mergeAllowlistedExtraEnv(spawnEnv, msg.extraEnv);
 
     if (process.env.AGENT_HUB_DEBUG_CLAUDE_AUTH === '1' && engine === 'claude-code') {
       console.log('[chat] claude-code spawn auth:', {

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import config, { buildSpawnEnv, normalizeClaudeSetupToken, refreshShellPath } from './config.js';
+import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 
 describe('buildSpawnEnv — PATH propagation', () => {
   beforeEach(() => {
@@ -160,51 +161,33 @@ describe('buildSpawnEnv — per-user override (per-user Claude auth)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// extraEnv / EXTRA_ENV_ALLOWLIST gate (chat.ts)
-//
-// chat.ts applies an explicit allowlist before merging msg.extraEnv into
-// spawnEnv. These tests lock in the three invariants so a future refactor
-// can't accidentally widen the gate and let callers shadow auth variables.
-//
-// The applyExtraEnv helper mirrors the exact loop in chat.ts. If that logic
-// changes, update both the helper and these tests.
+// extraEnv gate — uses production `mergeAllowlistedExtraEnv` from
+// `extra-env-allowlist.ts` (same path as `chat.ts`).
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('EXTRA_ENV_ALLOWLIST — extraEnv gate in chat.ts', () => {
-  // Mirrors EXTRA_ENV_ALLOWLIST from chat.ts. Update here whenever a new key
-  // is added to the allowlist in production.
-  const EXTRA_ENV_ALLOWLIST = new Set(['DEV_HUB_API_KEY']);
-
-  function applyExtraEnv(spawnEnv: Record<string, string>, extraEnv: Record<string, string>): void {
-    for (const [key, val] of Object.entries(extraEnv)) {
-      if (EXTRA_ENV_ALLOWLIST.has(key) && !(key in spawnEnv)) {
-        spawnEnv[key] = val;
-      }
-    }
-  }
-
+describe('mergeAllowlistedExtraEnv — spawn env integration', () => {
   it('allowlisted key (DEV_HUB_API_KEY) is accepted when spawnEnv does not have it', () => {
-    const spawnEnv: Record<string, string> = { PATH: '/usr/bin' };
-    applyExtraEnv(spawnEnv, { DEV_HUB_API_KEY: 'ahub_key' });
+    const spawnEnv = { PATH: '/usr/bin' } as NodeJS.ProcessEnv;
+    mergeAllowlistedExtraEnv(spawnEnv, { DEV_HUB_API_KEY: 'ahub_key' });
     expect(spawnEnv.DEV_HUB_API_KEY).toBe('ahub_key');
-    expect(spawnEnv.PATH).toBe('/usr/bin'); // pre-existing key undisturbed
+    expect(spawnEnv.PATH).toBe('/usr/bin');
   });
 
   it('allowlisted key is silently dropped when spawnEnv already has it', () => {
-    const spawnEnv: Record<string, string> = { DEV_HUB_API_KEY: 'server-set' };
-    applyExtraEnv(spawnEnv, { DEV_HUB_API_KEY: 'caller-override' });
+    const spawnEnv = { DEV_HUB_API_KEY: 'server-set' } as NodeJS.ProcessEnv;
+    mergeAllowlistedExtraEnv(spawnEnv, { DEV_HUB_API_KEY: 'caller-override' });
     expect(spawnEnv.DEV_HUB_API_KEY).toBe('server-set');
   });
 
   it('non-allowlisted GH_TOKEN is silently dropped — cannot shadow server auth', () => {
-    const spawnEnv: Record<string, string> = { GH_TOKEN: 'server-token' };
-    applyExtraEnv(spawnEnv, { GH_TOKEN: 'caller-token' });
+    const spawnEnv = { GH_TOKEN: 'server-token' } as NodeJS.ProcessEnv;
+    mergeAllowlistedExtraEnv(spawnEnv, { GH_TOKEN: 'caller-token' });
     expect(spawnEnv.GH_TOKEN).toBe('server-token');
   });
 
   it('non-allowlisted ANTHROPIC_API_KEY is dropped even when absent from spawnEnv', () => {
-    const spawnEnv: Record<string, string> = {};
-    applyExtraEnv(spawnEnv, { ANTHROPIC_API_KEY: 'sk-ant-caller' });
+    const spawnEnv = {} as NodeJS.ProcessEnv;
+    mergeAllowlistedExtraEnv(spawnEnv, { ANTHROPIC_API_KEY: 'sk-ant-caller' });
     expect(spawnEnv.ANTHROPIC_API_KEY).toBeUndefined();
   });
 });
