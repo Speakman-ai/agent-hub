@@ -159,10 +159,12 @@ describe('getDevHubApiKey — error handling', () => {
 
     const key1 = await getDevHubApiKey();
     const key2 = await getDevHubApiKey();
+    const key3 = await getDevHubApiKey();
 
     expect(key1).toBeNull();
     expect(key2).toBeNull();
-    // AWS should only have been called once; second call is served from negative cache.
+    expect(key3).toBeNull();
+    // AWS should only have been called once; subsequent calls are served from negative cache.
     expect(fakeSend).toHaveBeenCalledTimes(1);
   });
 

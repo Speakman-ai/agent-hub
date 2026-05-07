@@ -52,6 +52,13 @@ let clientSingleton: SecretsManagerClient | null = null;
 function getClient(): SecretsManagerClient {
   if (clientSingleton) return clientSingleton;
   const region = process.env.AWS_REGION || 'us-east-2';
+  if (!process.env.AWS_REGION) {
+    console.warn(
+      `[secrets] AWS_REGION is not set; defaulting to "${region}". ` +
+        `Set AWS_REGION in the environment to suppress this message and ensure ` +
+        `the correct region is used for Secrets Manager calls.`,
+    );
+  }
   clientSingleton = new SecretsManagerClient({ region });
   return clientSingleton;
 }

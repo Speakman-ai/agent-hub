@@ -243,7 +243,13 @@ export default function createWebSocket(
           ws.send(JSON.stringify({ type: 'error', error: 'Session not found' }));
           return;
         }
-        handleChat(ws, msg as unknown as import('./types.js').ChatMessage);
+        // Strip `extraEnv` so clients cannot inject arbitrary env vars into
+        // the spawned CLI process (e.g. overriding GH_TOKEN, ANTHROPIC_API_KEY,
+        // AGENT_HUB_URL, LD_PRELOAD).  Only the autonomous-dispatch in-process
+        // call site (server/autonomous.ts) — which never goes through WebSocket
+        // — is a legitimate producer of extraEnv.
+        const { extraEnv: _drop, ...safeMsg } = msg;
+        handleChat(ws, safeMsg as unknown as import('./types.js').ChatMessage);
       } else if (
         type === 'room_chat' &&
         typeof msg.roomId === 'string' &&

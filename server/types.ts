@@ -1747,6 +1747,12 @@ export interface ChatMessage {
    * so callers can supply scoped secrets (e.g. `DEV_HUB_API_KEY`) without
    * touching the shared credential-resolution logic in `buildSpawnEnv`.
    *
+   * **Important:** not all keys flow through. `chat.ts` filters this field
+   * against `EXTRA_ENV_ALLOWLIST` (see `server/chat.ts`) and additionally
+   * skips any key already present in `spawnEnv`. Keys not on the allowlist
+   * are silently dropped; this is what prevents WebSocket callers from
+   * shadowing `ANTHROPIC_API_KEY`, `GH_TOKEN`, etc.
+   *
    * Currently used by the autonomous-dispatch path to inject cross-hub API
    * keys only for cards that carry an opt-in label (see `server/secrets.ts`).
    */
