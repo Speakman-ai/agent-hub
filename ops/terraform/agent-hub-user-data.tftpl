@@ -34,6 +34,47 @@ fi
 $PKG_UPDATE
 $PKG_INSTALL ca-certificates git
 
+# AL2023: stock nginx may link libprofiler.so.0; the packaged gperftools build
+# can segfault during library init, breaking `nginx -t` and any reload. When
+# `ldd` shows the dependency, compile and swap in a no-op stub (source:
+# ops/terraform/templates/libprofiler-stub.c, embedded as base64 below).
+maybe_fix_al2023_nginx_libprofiler() {
+  command -v dnf >/dev/null 2>&1 || return 0
+  [ -x /usr/sbin/nginx ] || return 0
+  if ! ldd /usr/sbin/nginx 2>/dev/null | grep -q libprofiler; then
+    return 0
+  fi
+
+  local prof_path
+  prof_path="$(PATH=/usr/sbin:/sbin:/usr/bin:/bin ldconfig -p 2>/dev/null | awk '/libprofiler\.so\.0 \(/{print $NF; exit}')"
+  if [ -z "$prof_path" ] && [ -f /lib64/libprofiler.so.0 ]; then
+    prof_path=/lib64/libprofiler.so.0
+  fi
+  if [ -z "$prof_path" ] || [ ! -f "$prof_path" ]; then
+    echo "WARN: agent-hub: libprofiler stub skipped (library path not found)" >&2
+    return 0
+  fi
+
+  echo "agent-hub: replacing libprofiler.so.0 with no-op stub (AL2023 nginx link bug)" >&2
+  printf '%s' '${libprofiler_stub_c_b64}' | base64 -d >/tmp/libprofiler-stub.c
+  $PKG_INSTALL gcc
+  gcc -shared -fPIC -O2 /tmp/libprofiler-stub.c -o /tmp/libprofiler.so.0.stub -Wl,-soname,libprofiler.so.0
+
+  if [ ! -f "$${prof_path}.bak.agenthub" ]; then
+    cp -a "$prof_path" "$${prof_path}.bak.agenthub"
+  fi
+  install -m 0755 /tmp/libprofiler.so.0.stub "$prof_path"
+  ldconfig 2>/dev/null || true
+  rm -f /tmp/libprofiler-stub.c /tmp/libprofiler.so.0.stub
+
+  if ! nginx -t >/dev/null 2>&1; then
+    echo "ERROR: agent-hub: nginx -t failed after libprofiler stub; restoring upstream library" >&2
+    cp -a "$${prof_path}.bak.agenthub" "$prof_path"
+    ldconfig 2>/dev/null || true
+    exit 1
+  fi
+}
+
 %{ if pr_env_enabled ~}
 # ── PR-env mode: host nginx + certbot for per-PR preview environments ──────
 # Host nginx terminates TLS (using the wildcard ACM cert provisioned by PR 1
@@ -52,6 +93,7 @@ $PKG_INSTALL ca-certificates git
 # so the literal package name below MUST stay in sync with the AWS-published
 # tutorial. See: https://docs.aws.amazon.com/linux/al2023/ug/SSL-on-amazon-linux-2023.html
 $PKG_INSTALL nginx certbot python3-certbot-dns-route53
+maybe_fix_al2023_nginx_libprofiler
 systemctl enable --now nginx
 
 # Base vhost: include /etc/nginx/conf.d/pr-[0-9]*.preview.conf so the Hub
@@ -170,6 +212,7 @@ curl -fsSL https://deb.nodesource.com/setup_${node_major}.x | bash -
 $PKG_INSTALL nodejs
 npm install -g pm2
 $PKG_INSTALL nginx
+maybe_fix_al2023_nginx_libprofiler
 systemctl enable nginx
 %{ endif }
 
