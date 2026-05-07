@@ -75,6 +75,12 @@ import {
 } from '../auth-validation.js';
 import { parseClaudeOAuthExpiry } from '../oauth-expiry.js';
 import { createApiKey, listApiKeys, revokeApiKey, countApiKeysForUser } from '../api-keys-store.js';
+import {
+  listMaskedUserSkillCredentials,
+  upsertUserSkillCredential,
+  deleteUserSkillCredential,
+} from '../skill-credentials-store.js';
+import { readCredentialsSchemaForSkill } from '../skill-credentials-resolve.js';
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
 
@@ -530,6 +536,88 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         claudeCodeOAuthToken: !!config.claudeCodeOAuthToken,
       },
     });
+  });
+
+  // ── Per-user skill credentials (encrypted; keys merged into spawn env) ──
+  router.get('/api/auth/me/skill-credentials', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const skillIdRaw = req.query.skillId;
+    const skillId = typeof skillIdRaw === 'string' && skillIdRaw.trim() ? skillIdRaw.trim() : null;
+    try {
+      const rows = listMaskedUserSkillCredentials(authedReq.authUserId, skillId);
+      res.json({ credentials: rows });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.put('/api/auth/me/skill-credentials', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const body = (req.body ?? {}) as { skill_id?: unknown; key_name?: unknown; value?: unknown };
+    const skill_id = typeof body.skill_id === 'string' ? body.skill_id.trim() : '';
+    const key_name = typeof body.key_name === 'string' ? body.key_name.trim() : '';
+    const value = typeof body.value === 'string' ? body.value : '';
+    if (!skill_id || !key_name) {
+      res.status(400).json({ error: 'skill_id and key_name are required' });
+      return;
+    }
+
+    const parsed = readCredentialsSchemaForSkill(skill_id);
+    if (parsed.error) {
+      res.status(400).json({ error: `invalid credential schema for skill: ${parsed.error}` });
+      return;
+    }
+    if (parsed.credentials.length === 0) {
+      res.status(400).json({ error: 'This skill declares no credentials in SKILL.md frontmatter' });
+      return;
+    }
+    const spec = parsed.credentials.find((c) => c.name === key_name);
+    if (!spec) {
+      res
+        .status(400)
+        .json({ error: `Unknown credential key "${key_name}" for skill "${skill_id}"` });
+      return;
+    }
+    if (spec.required && value.trim().length === 0) {
+      res.status(400).json({ error: `Credential "${key_name}" is required` });
+      return;
+    }
+
+    try {
+      const row = upsertUserSkillCredential({
+        userId: authedReq.authUserId,
+        skillId: skill_id,
+        keyName: key_name,
+        value,
+        actorUserId: authedReq.authUserId,
+      });
+      res.json({ credential: row });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  router.delete('/api/auth/me/skill-credentials/:id', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const { id } = req.params as { id: string };
+    const result = deleteUserSkillCredential(authedReq.authUserId, id, authedReq.authUserId);
+    if (!result.ok) {
+      res.status(404).json({ error: 'Credential not found' });
+      return;
+    }
+    res.json({ ok: true });
   });
 
   // ──────────────────────────────────────────────────────────────

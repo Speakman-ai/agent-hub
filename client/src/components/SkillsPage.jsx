@@ -85,23 +85,102 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
   const [expanded, setExpanded] = useState(false);
   const [fullContent, setFullContent] = useState(skill.content || null);
   const [loading, setLoading] = useState(false);
+  const [credentialSchema, setCredentialSchema] = useState([]);
+  const [credentialRows, setCredentialRows] = useState([]);
+  const [credLoading, setCredLoading] = useState(false);
+  const [credError, setCredError] = useState(null);
+  const [credSaving, setCredSaving] = useState(null);
+  const [credentialInputs, setCredentialInputs] = useState({});
 
   const override = overrides?.find((o) => o.skill_id === skill.id);
   const isEnabled = override ? !!override.enabled : true;
+
+  useEffect(() => {
+    if (!expanded || !credentialSchema?.length || !agentId) return;
+    let cancelled = false;
+    (async () => {
+      setCredLoading(true);
+      setCredError(null);
+      try {
+        const pack = await api.getSkillCredentials(skill.id);
+        if (!cancelled) setCredentialRows(pack.credentials || []);
+      } catch (err) {
+        if (!cancelled) {
+          setCredError(err?.message || String(err));
+          setCredentialRows([]);
+        }
+      } finally {
+        if (!cancelled) setCredLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, skill.id, agentId, credentialSchema?.length]);
+
+  const rowForKey = useCallback(
+    (keyName) => credentialRows.find((r) => r.key_name === keyName),
+    [credentialRows],
+  );
+
+  const saveCredential = useCallback(
+    async (spec) => {
+      const val = credentialInputs[spec.name] ?? '';
+      if (spec.required && !String(val).trim()) return;
+      setCredSaving(spec.name);
+      setCredError(null);
+      try {
+        await api.putSkillCredential({
+          skill_id: skill.id,
+          key_name: spec.name,
+          value: String(val),
+        });
+        const pack = await api.getSkillCredentials(skill.id);
+        setCredentialRows(pack.credentials || []);
+        setCredentialInputs((prev) => ({ ...prev, [spec.name]: '' }));
+      } catch (err) {
+        setCredError(err?.message || String(err));
+      } finally {
+        setCredSaving(null);
+      }
+    },
+    [credentialInputs, skill.id],
+  );
+
+  const deleteCredential = useCallback(
+    async (spec) => {
+      const row = rowForKey(spec.name);
+      if (!row?.id) return;
+      setCredSaving(spec.name);
+      setCredError(null);
+      try {
+        await api.deleteSkillCredential(row.id);
+        const pack = await api.getSkillCredentials(skill.id);
+        setCredentialRows(pack.credentials || []);
+      } catch (err) {
+        setCredError(err?.message || String(err));
+      } finally {
+        setCredSaving(null);
+      }
+    },
+    [rowForKey, skill.id],
+  );
 
   const handleExpand = async () => {
     if (expanded) {
       setExpanded(false);
       return;
     }
-    if (!fullContent && agentId) {
+    if (agentId) {
       setLoading(true);
       try {
         const data = await api.getSkill(agentId, skill.id);
         setFullContent(data.content);
+        setCredentialSchema(Array.isArray(data.credentials) ? data.credentials : []);
       } catch (err) {
         const detail = err?.message ? `: ${err.message}` : '.';
         setFullContent(`Failed to load skill content${detail}`);
+        setCredentialSchema([]);
         console.error('Failed to load skill content:', err);
       } finally {
         setLoading(false);
@@ -171,11 +250,109 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
           {loading ? (
             <p className="text-xs text-gray-500">Loading...</p>
           ) : (
-            <div className="prose prose-invert prose-sm max-w-none text-xs">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-                {fullContent || ''}
-              </ReactMarkdown>
-            </div>
+            <>
+              <div className="prose prose-invert prose-sm max-w-none text-xs">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                  {fullContent || ''}
+                </ReactMarkdown>
+              </div>
+              {credentialSchema.length > 0 && agentId && (
+                <div className="mt-5 rounded-lg border border-gray-700/80 bg-gray-900/35 p-3">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Shield size={14} className="flex-shrink-0 text-amber-400" />
+                    <span className="text-xs font-medium text-gray-200">Credentials</span>
+                    <span className="text-[10px] text-gray-500">
+                      Stored per user, injected into spawned sessions
+                    </span>
+                  </div>
+                  {credLoading ? (
+                    <p className="text-xs text-gray-500">Loading saved values…</p>
+                  ) : credError ? (
+                    <p className="text-xs text-amber-300/95">{credError}</p>
+                  ) : (
+                    credentialSchema.map((spec) => {
+                      const row = rowForKey(spec.name);
+                      const inputType =
+                        spec.type === 'secret' || spec.type === 'json' ? 'password' : 'text';
+                      return (
+                        <div
+                          key={spec.name}
+                          className="mb-4 border-b border-gray-800 pb-4 last:mb-0 last:border-b-0 last:pb-0"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-xs font-medium text-gray-200">{spec.label}</div>
+                              <div className="font-mono text-[10px] text-gray-500">{spec.name}</div>
+                              {spec.description ? (
+                                <p className="mt-1 text-[11px] text-gray-400">{spec.description}</p>
+                              ) : null}
+                              {spec.docs_url ? (
+                                <a
+                                  href={spec.docs_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300"
+                                >
+                                  Documentation <ExternalLink size={11} />
+                                </a>
+                              ) : null}
+                            </div>
+                            {row?.masked_preview ? (
+                              <span className="text-[10px] text-gray-500">
+                                Saved:{' '}
+                                <span className="font-mono text-gray-300">
+                                  {row.masked_preview}
+                                </span>
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <input
+                              type={inputType}
+                              autoComplete="off"
+                              spellCheck={false}
+                              placeholder={spec.required ? 'Required' : 'Optional — paste to set'}
+                              value={credentialInputs[spec.name] ?? ''}
+                              onChange={(e) =>
+                                setCredentialInputs((p) => ({ ...p, [spec.name]: e.target.value }))
+                              }
+                              className="min-w-[160px] flex-1 rounded-md border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-100 placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              disabled={credSaving === spec.name}
+                              onClick={() => saveCredential(spec)}
+                              className="rounded-md bg-indigo-600 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                            >
+                              {credSaving === spec.name ? 'Saving…' : 'Save'}
+                            </button>
+                            {row?.id ? (
+                              <button
+                                type="button"
+                                disabled={credSaving === spec.name}
+                                onClick={() => deleteCredential(spec)}
+                                className="rounded-md border border-gray-600 px-2.5 py-1.5 text-[11px] text-gray-300 hover:bg-gray-750 disabled:opacity-40"
+                              >
+                                Revoke
+                              </button>
+                            ) : null}
+                          </div>
+                          {row?.last_used_at ? (
+                            <p className="mt-1 text-[10px] text-gray-600">
+                              Last used:{' '}
+                              {new Date(row.last_used_at).toLocaleString(undefined, {
+                                dateStyle: 'short',
+                                timeStyle: 'short',
+                              })}
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

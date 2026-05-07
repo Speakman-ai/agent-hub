@@ -19,7 +19,7 @@ import {
 } from './project-paths.js';
 import { getWikiContext } from './wiki.js';
 import { getMemoryContext, appendDailyNote, reconcileMemoryAfterSession } from './memory.js';
-import { collectSkillsFromDir, DEFAULT_SKILLS_DIR } from './routes/skills.js';
+import { listEnabledSkills } from './agent-skills-list.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
@@ -145,6 +145,7 @@ import {
   buildBrowserActivityScreenshotBroadcast,
   buildBrowserActivityStartedEvent,
 } from './browser-activity-emits.js';
+import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 const stmts = _stmts!;
@@ -156,13 +157,6 @@ const MAX_QUEUE_SIZE = 10;
 interface ImageRef {
   filename: string;
   [key: string]: unknown;
-}
-
-interface SkillInfo {
-  id: string;
-  name: string;
-  description: string;
-  path?: string;
 }
 
 interface SlashSkillResult {
@@ -440,31 +434,6 @@ function peersOnProject(projectId: string, excludeAgentId: string): ProjectAgent
       name: (a.name || '').trim() || a.id,
       role: typeof a.role === 'string' && a.role.trim() ? a.role.trim() : undefined,
     }));
-}
-
-function applyAgentSkillOverrides(agentId: string, skills: SkillInfo[]): SkillInfo[] {
-  let filtered = skills;
-  try {
-    const overrides = stmts.getAgentSkillOverrides.all(agentId) as Array<{
-      skill_id: string;
-      enabled: number;
-    }>;
-    const disabledSet = new Set(overrides.filter((o) => !o.enabled).map((o) => o.skill_id));
-    if (disabledSet.size > 0) {
-      filtered = skills.filter((s) => !disabledSet.has(s.id));
-    }
-  } catch {
-    /* ignore if table doesn't exist yet */
-  }
-  return filtered;
-}
-
-function listEnabledSkills(agentId: string, skillsDir: string): SkillInfo[] {
-  const projectSkills: SkillInfo[] = collectSkillsFromDir(skillsDir);
-  const defaultSkills: SkillInfo[] = collectSkillsFromDir(DEFAULT_SKILLS_DIR);
-  const projectIds = new Set(projectSkills.map((s) => s.id));
-  const merged = [...projectSkills, ...defaultSkills.filter((s) => !projectIds.has(s.id))];
-  return applyAgentSkillOverrides(agentId, merged);
 }
 
 // ─── buildEnrichedPrompt ───────────────────────────────────────────
@@ -2189,6 +2158,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // AGENT_HUB_PUBLIC_URL (config `publicUrl`). See resolveAgentHubApiBaseForSpawn.
         base.AGENT_HUB_URL = resolveAgentHubApiBaseForSpawn(config);
         base.PROJECT_ID = project.id;
+        mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
         return base;
       })();
 

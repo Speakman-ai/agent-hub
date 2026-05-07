@@ -467,6 +467,15 @@ export const api = {
       timeout: 35000,
     }),
 
+  getSkillCredentials: (skillId) =>
+    fetchJSON(
+      `/auth/me/skill-credentials${skillId ? `?skillId=${encodeURIComponent(skillId)}` : ''}`,
+    ),
+  putSkillCredential: (body) =>
+    fetchJSON('/auth/me/skill-credentials', { method: 'PUT', body: JSON.stringify(body) }),
+  deleteSkillCredential: (id) =>
+    fetchJSON(`/auth/me/skill-credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
   // Gemini CLI Authentication
   getGeminiAuth: () => fetchJSON('/config/gemini-auth'),
   setGeminiApiKey: (apiKey) =>
