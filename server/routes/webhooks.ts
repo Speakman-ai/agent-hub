@@ -283,7 +283,7 @@ export async function callGitHubApiWithToken<T>(
 ): Promise<T> {
   const url = `https://api.github.com/${endpoint}`;
   const headers: Record<string, string> = {
-    Authorization: `token ${token}`,
+    Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
   };

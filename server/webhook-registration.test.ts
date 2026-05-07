@@ -159,7 +159,7 @@ describe('callGitHubApiWithToken', () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
     const [url, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.github.com/repos/owner/repo/hooks');
-    expect((opts.headers as Record<string, string>)['Authorization']).toBe(`token ${FAKE_TOKEN}`);
+    expect((opts.headers as Record<string, string>)['Authorization']).toBe(`Bearer ${FAKE_TOKEN}`);
     expect((opts.headers as Record<string, string>)['Accept']).toBe('application/vnd.github+json');
     expect((opts.headers as Record<string, string>)['X-GitHub-Api-Version']).toBe('2022-11-28');
   });
