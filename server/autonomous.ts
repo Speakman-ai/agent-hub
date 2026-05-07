@@ -8,7 +8,7 @@ import { getOrCreateBoard } from './routes/board.js';
 import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
 import { createEscalation } from './routes/escalations.js';
 import { defaultModelForEngine } from './config.js';
-import { loadBoardBlockers, hasUnresolvedBlockers } from './kanban-blockers.js';
+import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
 import { pickAgentForCard, pickLead } from './routing.js';
 import type {
   Stmts,
@@ -16,6 +16,7 @@ import type {
   Agent,
   KanbanEpicRow,
   KanbanCardRow,
+  KanbanColumnRow,
   AppConfig,
   BroadcastFn,
   ChatMessage,
@@ -106,6 +107,34 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
 
   const epic = d.stmts.getAutonomousEpic.get(boardData.board.id) as KanbanEpicRow | undefined;
   if (!epic) return;
+
+  const colsForDoneCheck = d.stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
+  const colNameByIdForEpic = Object.fromEntries(colsForDoneCheck.map((c) => [c.id, c.name]));
+  const allEpicCardsForDone = d.stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[];
+  const epicWorkComplete =
+    allEpicCardsForDone.length > 0 &&
+    allEpicCardsForDone.every((c) => isColumnDone(colNameByIdForEpic[c.column_id]));
+
+  if (epicWorkComplete && epic.autonomous) {
+    d.stmts.updateKanbanEpic.run(
+      epic.name,
+      epic.description,
+      epic.color,
+      0,
+      epic.autonomous_interval,
+      epic.autonomous_max_concurrent,
+      epic.autonomous_max_iterations,
+      epic.autonomous_model ?? null,
+      epic.orchestration_budgets_json ?? null,
+      epic.pr_base_branch ?? null,
+      epic.id,
+    );
+    const clearedEpic = d.stmts.getKanbanEpic.get(epic.id) as KanbanEpicRow;
+    scheduleAutonomousEpic(projectId, clearedEpic);
+    d.broadcast({ type: 'kanban_update', projectId });
+    console.log(`[Autonomous] Epic "${epic.name}" — all cards are Done; autonomous mode disabled`);
+    return;
+  }
 
   const rawEligible = d.stmts.getEligibleAutonomousCards.all(
     epic.id,

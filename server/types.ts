@@ -453,6 +453,11 @@ export interface KanbanEpicRow {
   autonomous_model: string | null;
   /** JSON object: optional overrides merged on top of the project's `orchestrationBudgets`. */
   orchestration_budgets_json?: string | null;
+  /**
+   * Default PR base / integration branch for cards in this epic. Cards may
+   * override with their own `pr_base_branch`. Null = repo default.
+   */
+  pr_base_branch?: string | null;
   position: number;
   created_at: string;
   updated_at: string;

@@ -1375,6 +1375,8 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
           { id: 'col-done', name: 'Done' },
         ]),
       },
+      getKanbanEpic: { get: vi.fn(() => undefined) },
+      createKanbanCardComment: { run: vi.fn() },
       moveKanbanCard: { run: vi.fn() },
       updateKanbanCard: { run: vi.fn() },
       updateSessionChangesReady: { run: vi.fn() },
@@ -2621,6 +2623,7 @@ describe('autoCommitAndPR — pr_base_branch override', () => {
       getMessageById: { get: vi.fn() },
       createPrCreationLog: { run: vi.fn(() => ({ changes: 1 })) },
       createKanbanCardComment: { run: vi.fn() },
+      getKanbanEpic: { get: vi.fn(() => null) },
     } as Record<string, unknown>;
   }
 
@@ -2679,6 +2682,64 @@ describe('autoCommitAndPR — pr_base_branch override', () => {
     const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
     expect(ghCreateCalls).toHaveLength(1);
     expect(ghCreateCalls[0]).toContain('--base feature/parent-branch');
+  });
+
+  it('uses epic pr_base_branch when card omits pr_base_branch', async () => {
+    const execCalls: string[] = [];
+    const base = makeAutonomousStmtsWithCard({
+      id: 'card-epic-base',
+      title: 'Epic default base',
+      description: 'desc',
+      priority: 'medium',
+      autonomous_iterations: 1,
+      dispatched_by_autonomous: 1,
+      epic_id: 'epic-1',
+      pr_base_branch: null,
+    });
+    const stmts = {
+      ...base,
+      getKanbanEpic: {
+        get: vi.fn(() => ({ id: 'epic-1', pr_base_branch: 'feature/from-epic' })),
+      },
+    };
+
+    initAutoGit({
+      stmts: stmts as never,
+      broadcast: mockBroadcast,
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        execCalls.push(cmd);
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        const fail = (msg: string) => callback?.(new Error(msg), { stdout: '', stderr: '' });
+
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M file.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return fail('no upstream');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/child\n');
+        if (cmd.includes('git ls-remote --heads origin'))
+          return ok('a'.repeat(40) + '\trefs/heads/feature/from-epic\n');
+        if (cmd.startsWith('gh pr view')) return fail('no pull requests found');
+        if (cmd.startsWith('gh pr create')) return ok('https://github.com/test/repo/pull/124\n');
+        return ok('');
+      },
+    );
+
+    const project = { id: 'p', cwd: '/repo', githubRepo: 'test/repo' } as never;
+    const agent = { name: 'dev', role: 'dev' } as never;
+    await autoCommitAndPR('sess-epic-base', 'agent-1', project, agent, '/worktree', '');
+
+    const ghCreateCalls = execCalls.filter((c) => c.startsWith('gh pr create'));
+    expect(ghCreateCalls).toHaveLength(1);
+    expect(ghCreateCalls[0]).toContain('--base feature/from-epic');
   });
 
   it('falls back to default base + posts a card comment when override no longer exists', async () => {

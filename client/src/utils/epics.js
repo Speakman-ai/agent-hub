@@ -20,6 +20,7 @@ export function epicFormToUpdateBody(form) {
   const autonomousOn = form.autonomous ? 1 : 0;
   const rawModel = typeof form.autonomous_model === 'string' ? form.autonomous_model.trim() : '';
   const autonomousModel = autonomousOn ? rawModel || null : null;
+  const prTrim = typeof form.pr_base_branch === 'string' ? form.pr_base_branch.trim() : '';
   return {
     name: (form.name || '').trim(),
     description: form.description || '',
@@ -29,6 +30,7 @@ export function epicFormToUpdateBody(form) {
     autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
     autonomousMaxIterations: form.autonomous_max_iterations || 3,
     autonomousModel,
+    prBaseBranch: prTrim || null,
     ...(form.orchestrationBudgets !== undefined
       ? { orchestrationBudgets: form.orchestrationBudgets }
       : {}),
@@ -40,9 +42,14 @@ export function epicFormToUpdateBody(form) {
  * settings are applied via a follow-up PUT if needed.
  */
 export function epicFormToCreateBody(form) {
+  const pr =
+    typeof form.pr_base_branch === 'string' && form.pr_base_branch.trim()
+      ? form.pr_base_branch.trim()
+      : null;
   return {
     name: (form.name || '').trim(),
     description: form.description || '',
     color: form.color || DEFAULT_EPIC_COLOR,
+    ...(pr ? { prBaseBranch: pr } : {}),
   };
 }

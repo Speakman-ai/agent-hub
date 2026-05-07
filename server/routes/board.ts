@@ -14,6 +14,7 @@ import type {
   KanbanCardBlockerRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
+import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
@@ -296,27 +297,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
     const hasPrBaseBranch = 'prBaseBranch' in body || 'pr_base_branch' in body;
     const prBaseBranchRaw = (body.prBaseBranch ?? body.pr_base_branch) as string | null | undefined;
-    // Normalize: trim, treat empty string as null (clear the override).
-    // Reject obviously invalid branch names so we don't persist values that
-    // would cause `gh pr create --base` to fail at PR-open time.
-    let prBaseBranch: string | null | undefined = prBaseBranchRaw;
+    let prBaseBranch: string | null | undefined;
     if (hasPrBaseBranch) {
-      if (prBaseBranchRaw == null || String(prBaseBranchRaw).trim() === '') {
-        prBaseBranch = null;
-      } else {
-        const trimmed = String(prBaseBranchRaw).trim();
-        // Permissive but safe: GitHub branch names allow most printable chars
-        // but disallow whitespace, control chars, and a handful of refspec
-        // sentinels. Block the obvious shell-injection vectors here so a bad
-        // value can't reach the spawned `gh` argv.
-        if (!/^[A-Za-z0-9._/-]+$/.test(trimmed)) {
-          return res.status(400).json({
-            error:
-              'Invalid pr_base_branch: must contain only letters, digits, dots, dashes, underscores, and slashes',
-          });
-        }
-        prBaseBranch = trimmed;
-      }
+      const parsed = parsePrBaseBranchInput(prBaseBranchRaw);
+      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+      prBaseBranch = parsed.value;
+    } else {
+      prBaseBranch = undefined;
     }
 
     // FK pre-flight: a non-null epicId must reference an existing epic on
@@ -739,16 +726,44 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
   router.post('/api/projects/:projectId/board/epics', (req: Request, res: Response) => {
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
-    const { name, description, color } = req.body as {
+    const body = req.body as {
       name?: string;
       description?: string;
       color?: string;
+      prBaseBranch?: string | null;
+      pr_base_branch?: string | null;
     };
+    const { name, description, color } = body;
+    const hasEpicPrBase = 'prBaseBranch' in body || 'pr_base_branch' in body;
+    const epicPrBaseRaw = body.prBaseBranch ?? body.pr_base_branch;
+    if (hasEpicPrBase) {
+      const parsed = parsePrBaseBranchInput(epicPrBaseRaw);
+      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+    }
     if (!name) return res.status(400).json({ error: 'name is required' });
     const epics = stmts.getKanbanEpics.all(board.id) as KanbanEpicRow[];
     const maxPos = epics.length > 0 ? Math.max(...epics.map((e) => e.position)) + 1 : 0;
     const id = uuidv4();
     stmts.createKanbanEpic.run(id, board.id, name, description || null, color || '#6366F1', maxPos);
+    if (hasEpicPrBase) {
+      const p = parsePrBaseBranchInput(epicPrBaseRaw);
+      if (p.ok) {
+        const row = stmts.getKanbanEpic.get(id) as KanbanEpicRow;
+        stmts.updateKanbanEpic.run(
+          row.name,
+          row.description,
+          row.color,
+          row.autonomous,
+          row.autonomous_interval,
+          row.autonomous_max_concurrent,
+          row.autonomous_max_iterations,
+          row.autonomous_model ?? null,
+          row.orchestration_budgets_json ?? null,
+          p.value,
+          id,
+        );
+      }
+    }
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json(stmts.getKanbanEpic.get(id));
   });
@@ -777,6 +792,17 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousModel?: string | null;
       orchestrationBudgets?: Record<string, unknown> | null;
     };
+
+    const hasEpicPrBasePut = 'prBaseBranch' in req.body || 'pr_base_branch' in req.body;
+    const epicPrBasePutRaw =
+      (req.body as { prBaseBranch?: unknown; pr_base_branch?: unknown }).prBaseBranch ??
+      (req.body as { pr_base_branch?: unknown }).pr_base_branch;
+    let nextEpicPrBaseField: string | null | undefined;
+    if (hasEpicPrBasePut) {
+      const parsed = parsePrBaseBranchInput(epicPrBasePutRaw);
+      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+      nextEpicPrBaseField = parsed.value;
+    }
 
     const nextAutonomousModel =
       autonomousModel !== undefined
@@ -812,6 +838,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           currentAutonomous.autonomous_model ?? null,
           (currentAutonomous as { orchestration_budgets_json?: string | null })
             .orchestration_budgets_json ?? null,
+          currentAutonomous.pr_base_branch ?? null,
           currentAutonomous.id,
         );
       }
@@ -839,6 +866,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousMaxIterations ?? epic.autonomous_max_iterations,
       nextAutonomousModel,
       nextOrchestrationJson,
+      hasEpicPrBasePut ? (nextEpicPrBaseField ?? null) : (epic.pr_base_branch ?? null),
       req.params.epicId,
     );
 

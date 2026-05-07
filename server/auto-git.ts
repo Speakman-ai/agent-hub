@@ -8,12 +8,14 @@ import type {
   Project,
   Agent,
   KanbanCardRow,
+  KanbanEpicRow,
   AppConfig,
   BroadcastFn,
   MessageRow,
 } from './types.js';
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
+import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -1463,7 +1465,12 @@ async function commitPushAndCreatePR(
     let resolvedBaseBranch: string | null = null;
     let baseBranchFellBack = false;
     let baseBranchFallbackReason: string | null = null;
-    const requestedBase = card?.pr_base_branch?.trim();
+    let linkedEpic: KanbanEpicRow | undefined;
+    if (card?.epic_id) {
+      linkedEpic = d.stmts.getKanbanEpic.get(card.epic_id) as KanbanEpicRow | undefined;
+    }
+    const requestedBaseRaw = effectivePrBaseBranch(card, linkedEpic);
+    const requestedBase = requestedBaseRaw?.trim();
     // Defensive re-validation of the persisted value before we hand it to
     // `gh`. The PUT route already enforces this regex, but we don't want a
     // hand-edited DB row to escape into a spawned argv.

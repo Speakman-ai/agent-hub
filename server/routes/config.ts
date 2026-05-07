@@ -22,6 +22,7 @@ import type {
 } from '../types.js';
 import { refreshShellPath, getCachedShellPath } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
+import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { parseCursorStatusJson } from '../cursor-auth-parse.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
@@ -1352,6 +1353,36 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           epic.color || '#6b7280',
           epic.position || 0,
         );
+        const importedEpicPrBase = (epic as { pr_base_branch?: string | null }).pr_base_branch;
+        if (importedEpicPrBase != null && String(importedEpicPrBase).trim() !== '') {
+          const br = parsePrBaseBranchInput(importedEpicPrBase);
+          if (br.ok && br.value) {
+            const row = stmts.getKanbanEpic.get(newEpicId) as {
+              name: string;
+              description: string | null;
+              color: string;
+              autonomous: number;
+              autonomous_interval: number;
+              autonomous_max_concurrent: number;
+              autonomous_max_iterations: number;
+              autonomous_model: string | null;
+              orchestration_budgets_json?: string | null;
+            };
+            stmts.updateKanbanEpic.run(
+              row.name,
+              row.description,
+              row.color,
+              row.autonomous,
+              row.autonomous_interval,
+              row.autonomous_max_concurrent,
+              row.autonomous_max_iterations,
+              row.autonomous_model ?? null,
+              row.orchestration_budgets_json ?? null,
+              br.value,
+              newEpicId,
+            );
+          }
+        }
         epicsImported++;
       }
 

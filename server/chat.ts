@@ -122,6 +122,7 @@ import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-obse
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
+import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 const stmts = _stmts!;
 const DEFAULT_MODEL: string = config.defaultModel;
@@ -1434,7 +1435,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const cardForWorktree = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
         | KanbanCardRow
         | undefined;
-      const rawBase = cardForWorktree?.pr_base_branch;
+      let epicForBase: KanbanEpicRow | undefined;
+      if (cardForWorktree?.epic_id) {
+        epicForBase = stmts.getKanbanEpic.get(cardForWorktree.epic_id) as KanbanEpicRow | undefined;
+      }
+      const rawBase = effectivePrBaseBranch(cardForWorktree, epicForBase);
       sessionPrBase = typeof rawBase === 'string' && rawBase.trim() !== '' ? rawBase.trim() : null;
     } catch {
       sessionPrBase = null;

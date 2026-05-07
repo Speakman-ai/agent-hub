@@ -41,12 +41,21 @@ describe('normalizeOrchestrationMetaInput', () => {
   });
 
   it('rejects serialized JSON over the control-block byte cap', () => {
-    let pad = '';
-    while (
-      Buffer.byteLength(JSON.stringify({ b: pad }), 'utf8') <= MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES
-    ) {
-      pad += 'x';
+    // Binary search for the smallest padding length that pushes serialized JSON
+    // over the cap — the naive one-byte-at-a-time loop is O(n²) stringify work
+    // and can hit the default test timeout under load.
+    let lo = 0;
+    let hi = MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES + 50_000;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const len = Buffer.byteLength(JSON.stringify({ b: 'x'.repeat(mid) }), 'utf8');
+      if (len > MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES) hi = mid;
+      else lo = mid + 1;
     }
+    const pad = 'x'.repeat(lo);
+    expect(Buffer.byteLength(JSON.stringify({ b: pad }), 'utf8')).toBeGreaterThan(
+      MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES,
+    );
     expect(normalizeOrchestrationMetaInput({ b: pad })).toEqual({
       ok: false,
       error: 'oversize',

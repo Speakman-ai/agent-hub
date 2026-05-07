@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -1276,6 +1277,17 @@ export default function KanbanScreen({ route, navigation }) {
                 multiline
               />
 
+              <Text style={styles.fieldLabel}>PR base branch (optional)</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={epicForm.pr_base_branch ?? ''}
+                onChangeText={(v) => setEpicForm((f) => ({ ...f, pr_base_branch: v }))}
+                placeholder="e.g. feature/epic-integration"
+                placeholderTextColor={colors.gray600}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+
               <Text style={styles.fieldLabel}>Color</Text>
               <View style={styles.colorRow}>
                 {EPIC_COLORS.map((c) => (
@@ -1291,31 +1303,26 @@ export default function KanbanScreen({ route, navigation }) {
                 ))}
               </View>
 
-              {/* Autonomous toggle — only shown when editing (mirrors web) */}
+              {/* Autonomous — edit only (mirrors web) */}
               {editingEpic && (
                 <>
-                  <Text style={styles.fieldLabel}>Autonomous Mode</Text>
-                  <TouchableOpacity
-                    style={[
-                      styles.autonomousToggle,
-                      epicForm.autonomous
-                        ? { backgroundColor: '#059669', borderColor: '#10b981' }
-                        : { backgroundColor: colors.gray800, borderColor: colors.gray700 },
-                    ]}
-                    onPress={() =>
-                      setEpicForm((f) => ({ ...f, autonomous: f.autonomous ? 0 : 1 }))
-                    }
-                  >
-                    <Text style={styles.autonomousToggleIcon}>{'\u26A1'}</Text>
-                    <Text
-                      style={[
-                        styles.autonomousToggleText,
-                        { color: epicForm.autonomous ? colors.white : colors.gray400 },
-                      ]}
-                    >
-                      {epicForm.autonomous ? 'Autonomous: ON' : 'Autonomous: OFF'}
-                    </Text>
-                  </TouchableOpacity>
+                  <View style={styles.autonomousModeCard}>
+                    <View style={{ flex: 1, paddingRight: 8 }}>
+                      <Text style={styles.autonomousModeTitle}>Autonomous mode</Text>
+                      <Text style={styles.autonomousModeHint}>
+                        Automatically assign backlog cards in this epic when agent slots are free.
+                      </Text>
+                    </View>
+                    <Switch
+                      value={epicForm.autonomous === 1}
+                      onValueChange={(on) =>
+                        setEpicForm((f) => ({ ...f, autonomous: on ? 1 : 0 }))
+                      }
+                      trackColor={{ false: colors.gray600, true: '#059669' }}
+                      thumbColor={Platform.OS === 'android' ? colors.white : undefined}
+                      ios_backgroundColor={colors.gray600}
+                    />
+                  </View>
 
                   {epicForm.autonomous === 1 && (
                     <View style={styles.autonomousSettings}>
@@ -1681,14 +1688,25 @@ const styles = StyleSheet.create({
   assignStartBtnDisabled: { backgroundColor: colors.gray700 },
   assignStartBtnText: { fontSize: 13, color: colors.white, fontWeight: '600' },
 
-  // Autonomous toggle
-  autonomousToggle: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8,
+  // Epic autonomous block
+  autonomousModeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: colors.gray800,
     borderWidth: 1,
+    borderColor: colors.gray700,
   },
-  autonomousToggleIcon: { fontSize: 14 },
-  autonomousToggleText: { fontSize: 13, fontWeight: '500' },
+  autonomousModeTitle: { fontSize: 14, fontWeight: '600', color: colors.gray200 },
+  autonomousModeHint: {
+    fontSize: 11,
+    color: colors.gray500,
+    marginTop: 4,
+    lineHeight: 15,
+  },
   autonomousSettings: { flexDirection: 'row', gap: 10, marginTop: 8 },
   autonomousSettingLabel: { fontSize: 11, color: colors.gray500, marginBottom: 4 },
 

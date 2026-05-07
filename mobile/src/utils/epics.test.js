@@ -35,6 +35,7 @@ describe('DEFAULT_EPIC_FORM', () => {
       name: '',
       description: '',
       color: DEFAULT_EPIC_COLOR,
+      pr_base_branch: '',
       autonomous: 0,
       autonomous_interval: 5,
       autonomous_max_concurrent: 2,
@@ -70,6 +71,7 @@ describe('epicFormFromRow', () => {
       autonomous_max_concurrent: 4,
       autonomous_max_iterations: 8,
       autonomous_model: '',
+      pr_base_branch: '',
     });
   });
 
@@ -110,6 +112,7 @@ describe('epicFormToUpdateBody', () => {
       autonomousMaxConcurrent: 3,
       autonomousMaxIterations: 5,
       autonomousModel: null,
+      prBaseBranch: null,
     });
   });
 
@@ -130,13 +133,30 @@ describe('epicFormToUpdateBody', () => {
 });
 
 describe('epicFormToCreateBody', () => {
-  it('only sends the subset supported by POST /board/epics', () => {
+  it('sends name, description, color; optional prBaseBranch when set', () => {
     const form = {
       name: 'New epic',
       description: 'desc',
       color: '#EAB308',
-      autonomous: 1, // should be ignored — create endpoint doesn't accept it
+      autonomous: 1, // ignored for POST
       autonomous_interval: 10,
+      pr_base_branch: '  feature/x  ',
+    };
+    expect(epicFormToCreateBody(form)).toEqual({
+      name: 'New epic',
+      description: 'desc',
+      color: '#EAB308',
+      prBaseBranch: 'feature/x',
+    });
+  });
+
+  it('omits prBaseBranch when branch field empty', () => {
+    const form = {
+      name: 'New epic',
+      description: 'desc',
+      color: '#EAB308',
+      autonomous: 1,
+      pr_base_branch: '',
     };
     expect(epicFormToCreateBody(form)).toEqual({
       name: 'New epic',
