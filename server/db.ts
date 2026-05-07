@@ -1629,6 +1629,23 @@ function initDb(dataDir: string): void {
     // The prefix is the same 8-char slice the workspace dir was named after,
     // so `id LIKE ?||'%'` is a primary-key prefix search. Returns 1 row or
     // none — callers use `.get()`.
+    // Newest live reviewer session targeting a particular PR. The bind
+    // values are `(reviewer.agent_id, 'Review: PR #<n> %')`; the LIKE
+    // pattern is safe because `<n>` is enforced numeric upstream by
+    // `parsePrUrl` in `server/routes/pr-actions.ts`. Used by the
+    // post-review cleanup hook (`server/reviewer-session-cleanup.ts`) to
+    // soft-delete the session and reclaim its worktree clone the moment
+    // a formal review lands. Filters `deleted_at IS NULL` so we never
+    // clobber an already-archived row, and orders by `created_at DESC`
+    // so re-review dispatches resolve to the freshest session.
+    getActiveReviewerSessionForPR: db.prepare(
+      `SELECT * FROM sessions
+       WHERE agent_id = ?
+         AND name LIKE ?
+         AND deleted_at IS NULL
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    ),
     getRecoverableSessionByIdPrefix: db.prepare(
       `SELECT 1 FROM sessions
        WHERE id LIKE ? || '%'

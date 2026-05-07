@@ -732,6 +732,13 @@ export interface Stmts {
   getArchivedSessionsByAgent: Stmt;
   getExpiredArchivedSessions: Stmt;
   getRecoverableSessionByIdPrefix: Stmt;
+  /**
+   * Newest live (non-archived) reviewer session for a given PR. Bound with
+   * `(reviewer.id, 'Review: PR #<n> %')`; the LIKE pattern is safe because
+   * `<n>` is enforced numeric upstream by `parsePrUrl`. Powers the
+   * cleanup-on-review hook in `server/reviewer-session-cleanup.ts`.
+   */
+  getActiveReviewerSessionForPR: Stmt;
   touchSession: Stmt;
   updateSessionEngine: Stmt;
   updateSessionModel: Stmt;

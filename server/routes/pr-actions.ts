@@ -33,6 +33,8 @@ import {
 } from '../check-runs.js';
 import { cancelAnalyzePhaseTimer } from '../reviewer-analyze-phase-timer.js';
 import { validateFormalReviewBody } from '../review-body-validation.js';
+import { cleanupReviewerSessionForPR } from '../reviewer-session-cleanup.js';
+import { removeWorkspace } from '../worktree.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -82,6 +84,32 @@ const ALLOWED_MERGE_METHODS = new Set(['squash', 'merge', 'rebase']);
 export default function createPrActionRoutes(deps: RouteDeps): Router {
   const { config, stmts } = deps;
   const router = Router();
+
+  /**
+   * Best-effort: reclaim the reviewer agent's session row + worktree clone
+   * the moment its formal review lands. Wired into both `/api/pr/review`
+   * success branches alongside `completeReviewerCheckRun`. Always
+   * fire-and-forget — the formal review has already posted by the time we
+   * reach here, so a cleanup failure must never alter the response.
+   *
+   * Implementation lives in `server/reviewer-session-cleanup.ts`; this
+   * wrapper just supplies the route's `deps` (projects, broadcast,
+   * activeProcesses) so the helper stays decoupled from `RouteDeps`.
+   */
+  function reclaimReviewerSession(pr: ParsedPR): void {
+    try {
+      cleanupReviewerSessionForPR(pr, {
+        stmts,
+        broadcast: deps.broadcast,
+        getProjects: deps.getProjects,
+        activeProcesses: deps.activeProcesses,
+        removeWorkspace,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[ReviewerCleanup] Hook threw for PR #${pr.number}: ${msg.split('\n')[0]}`);
+    }
+  }
 
   /**
    * Mark the "Agent Hub Reviewer" Check Run as completed after a successful
@@ -440,6 +468,10 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
           completeReviewerCheckRun(pr, event, reviewBody).catch(() => {
             /* best-effort */
           });
+          // Fire-and-forget: soft-delete the reviewer's session + remove
+          // its worktree clone now that the review has landed. Failure
+          // here must not change the response.
+          reclaimReviewerSession(pr);
           persistReviewLog({ prUrl, event, body: reviewBody, reviewerLogin: data.user?.login });
           return res.json({
             ok: true,
@@ -488,6 +520,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
         completeReviewerCheckRun(pr, event, reviewBody).catch(() => {
           /* best-effort */
         });
+        reclaimReviewerSession(pr);
         persistReviewLog({ prUrl, event, body: reviewBody, reviewerLogin: data.user?.login });
         return res.json({
           ok: true,
