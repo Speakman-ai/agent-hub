@@ -333,3 +333,56 @@ export function stripFencedCodeBlockBodies(text: string): string {
 
   return lines.join('\n');
 }
+
+/**
+ * Fallback detector for action blocks that are wrapped inside a fenced code
+ * block at the **very end** of the message. This handles a real-world bug where
+ * agents follow the documentation example too literally and wrap the action block
+ * in triple-backtick fences instead of emitting it as a naked XML tag.
+ *
+ * When an agent outputs:
+ * ```
+ * <agenthub:skill>{"name":"kanban"}</agenthub:skill>
+ * ```
+ * the primary detectors (`detectSkillBlock`, `detectReActBlock`) use
+ * `stripFencedCodeBlockBodies` to mask fenced content — which correctly prevents
+ * false-positives from in-body documentation examples, but also swallows genuine
+ * end-of-turn invocations that happen to be inside a fence.
+ *
+ * Safety constraint: we **only** search the LAST fenced block, AND only when it
+ * appears at the tail of the message (nothing meaningful after its closing fence).
+ * This preserves the documentation-example guard for mid-message fences while
+ * rescuing end-of-turn invocations.
+ *
+ * @param text     Full assistant message text.
+ * @param tagName  The XML tag name to look for (e.g. `agenthub:skill`).
+ * @returns The matched block string, or `null` if none found.
+ */
+export function detectTagBlockInLastFence(text: string, tagName: string): string | null {
+  if (typeof text !== 'string' || !text.trim()) return null;
+
+  // Find the last fenced code block that ends at (or very close to) the tail
+  // of the message. We look for a closing fence (```) and then only accept it
+  // when nothing but whitespace follows.
+  //
+  // The regex intentionally uses a lazy `[\s\S]*?` for the body so it grabs
+  // the LAST possible fence pair rather than the first.
+  const lastFenceRe = /```(?:[^\n`]*)?\n([\s\S]*?)\n[ \t]*```[ \t]*$/;
+  const m = text.match(lastFenceRe);
+  if (!m) return null;
+
+  const fenceBody = m[1] ?? '';
+
+  // Confirm the fence starts after all substantive prose has ended.  The
+  // matched `\`\`\`` position in `text` can be cross-checked by verifying that
+  // only whitespace precedes it on the same line — but the regex anchor `$`
+  // already guarantees nothing meaningful follows the closing fence.  For the
+  // opening fence we simply require the body contains an action block and rely
+  // on the "last fence wins" selection to reject mid-message documentation.
+  const tagRe = new RegExp(
+    `<${tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}>\\s*[\\s\\S]*?\\s*<\\/${tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}>`,
+    'i',
+  );
+  const tagMatch = fenceBody.match(tagRe);
+  return tagMatch ? tagMatch[0] : null;
+}

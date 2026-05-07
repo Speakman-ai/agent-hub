@@ -7,6 +7,7 @@ import {
   normalizeControlCharsInsideStrings,
   parseTagBodyAsJson,
   stripFencedCodeBlockBodies,
+  detectTagBlockInLastFence,
 } from './action-block-parsing.js';
 import { detectCloseCardBlock } from './card-auto-close.js';
 import { detectHandoffBlock } from './handoff.js';
@@ -579,12 +580,17 @@ describe('detectSkillBlock — fenced examples are NOT detected', () => {
 });
 
 describe('detectReActBlock — fenced examples are NOT detected', () => {
-  it('returns null for a ReAct block quoted inside a fence', () => {
+  it('returns null for a ReAct block in a mid-message fence (content follows)', () => {
+    // The fence is NOT at the tail of the message — substantive text follows the
+    // closing fence, which is the canonical pattern for a documentation example.
+    // The fallback (`detectTagBlockInLastFence`) only fires for fences that end
+    // the message, so this correctly returns null.
     const text = [
       'Emit something like:',
       '```',
       '<agenthub:react>{"actions":[{"tool":"wiki","query":"foo"}]}</agenthub:react>',
       '```',
+      'The actions array must contain at least one action.',
     ].join('\n');
     expect(detectReActBlock(text)).toBeNull();
   });
@@ -623,5 +629,150 @@ describe('detectWikiRequestBlock — fenced examples are NOT detected', () => {
     const got = detectWikiRequestBlock(text);
     expect(got).not.toBeNull();
     expect(got).toContain('"real"');
+  });
+});
+
+// ─── detectTagBlockInLastFence ──────────────────────────────────────────────
+//
+// Regression suite for the "skill block wrapped in backtick fences" bug:
+// agents sometimes follow the documentation example too literally and wrap
+// their <agenthub:skill> / <agenthub:react> blocks in triple-backtick fences.
+// The primary detectors mask fenced content (to avoid false-positives from
+// in-message documentation examples), but `detectTagBlockInLastFence` provides
+// a fallback that rescues genuine end-of-turn invocations inside the LAST fence.
+
+describe('detectTagBlockInLastFence', () => {
+  it('finds a tag block inside the last fenced code block', () => {
+    const text = [
+      'Some prose.',
+      '```',
+      '<agenthub:skill>{"name":"kanban","reason":"need cards"}',
+      '</agenthub:skill>',
+      '```',
+    ].join('\n');
+    const got = detectTagBlockInLastFence(text, 'agenthub:skill');
+    expect(got).not.toBeNull();
+    expect(got).toContain('kanban');
+  });
+
+  it('returns null when the tag only appears in a mid-message fence (not last)', () => {
+    // The fence with the skill tag is NOT the last thing — there is substantial
+    // prose after it. This is the documentation-example scenario we must NOT detect.
+    const text = [
+      'Here is how to load a skill:',
+      '```',
+      '<agenthub:skill>{"name":"example"}</agenthub:skill>',
+      '```',
+      'After that explanation, here is more content that comes after the fence.',
+    ].join('\n');
+    const got = detectTagBlockInLastFence(text, 'agenthub:skill');
+    expect(got).toBeNull();
+  });
+
+  it('returns null when no fenced block exists', () => {
+    expect(detectTagBlockInLastFence('hello world', 'agenthub:skill')).toBeNull();
+  });
+
+  it('returns null for empty / non-string input', () => {
+    expect(detectTagBlockInLastFence('', 'agenthub:skill')).toBeNull();
+    expect(detectTagBlockInLastFence(null as unknown as string, 'agenthub:skill')).toBeNull();
+  });
+
+  it('works for the agenthub:react tag too', () => {
+    const text = [
+      'Need wiki context.',
+      '```',
+      '<agenthub:react>{"actions":[{"tool":"wiki","query":"deployment"}]}</agenthub:react>',
+      '```',
+    ].join('\n');
+    const got = detectTagBlockInLastFence(text, 'agenthub:react');
+    expect(got).not.toBeNull();
+    expect(got).toContain('deployment');
+  });
+});
+
+// ─── detectSkillBlock — in-fence fallback ───────────────────────────────────
+
+describe('detectSkillBlock — in-fence fallback (regression)', () => {
+  it('detects a skill block that is wrapped in backtick fences at end of message', () => {
+    const text = [
+      'I need to check the kanban board.',
+      '',
+      '```',
+      '<agenthub:skill>{"name":"kanban","reason":"need board access"}',
+      '</agenthub:skill>',
+      '```',
+    ].join('\n');
+    const got = detectSkillBlock(text);
+    expect(got).not.toBeNull();
+    expect(got).toContain('kanban');
+  });
+
+  it('still detects a naked skill block (primary path unchanged)', () => {
+    const text = [
+      'Some work done.',
+      '',
+      '<agenthub:skill>{"name":"kanban","reason":"need cards"}',
+      '</agenthub:skill>',
+    ].join('\n');
+    const got = detectSkillBlock(text);
+    expect(got).not.toBeNull();
+    expect(got).toContain('kanban');
+  });
+
+  it('does NOT detect a skill block in a mid-message fence (docs example)', () => {
+    // Block is in a fence, but there is meaningful content after the fence.
+    const text = [
+      'Here is how to use a skill:',
+      '```',
+      '<agenthub:skill>{"name":"example"}</agenthub:skill>',
+      '```',
+      'Use the name field to specify which skill to load.',
+    ].join('\n');
+    // There IS a naked-looking block in the middle; the surrounding prose
+    // before the fence body isn't a naked top-level block, so nothing matches.
+    expect(detectSkillBlock(text)).toBeNull();
+  });
+
+  it('prefers a naked block over a fenced one when both are present', () => {
+    const text = [
+      '```',
+      '<agenthub:skill>{"name":"docs-example"}</agenthub:skill>',
+      '```',
+      'Here is the real invocation:',
+      '<agenthub:skill>{"name":"real-skill"}</agenthub:skill>',
+    ].join('\n');
+    const got = detectSkillBlock(text);
+    expect(got).not.toBeNull();
+    expect(got).toContain('real-skill');
+    expect(got).not.toContain('docs-example');
+  });
+});
+
+// ─── detectReActBlock — in-fence fallback ───────────────────────────────────
+
+describe('detectReActBlock — in-fence fallback (regression)', () => {
+  it('detects a react block wrapped in backtick fences at end of message', () => {
+    const text = [
+      'Let me search the wiki.',
+      '',
+      '```',
+      '<agenthub:react>{"actions":[{"tool":"wiki","query":"deployment guide"}]}</agenthub:react>',
+      '```',
+    ].join('\n');
+    const got = detectReActBlock(text);
+    expect(got).not.toBeNull();
+    expect(got).toContain('deployment guide');
+  });
+
+  it('does NOT detect a react block in a mid-message fence', () => {
+    const text = [
+      'Here is an example:',
+      '```',
+      '<agenthub:react>{"actions":[{"tool":"wiki","query":"example"}]}</agenthub:react>',
+      '```',
+      'The actions array must contain at least one action.',
+    ].join('\n');
+    expect(detectReActBlock(text)).toBeNull();
   });
 });

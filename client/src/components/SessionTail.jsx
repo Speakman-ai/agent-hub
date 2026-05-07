@@ -12,6 +12,7 @@ import {
   describeDelegateReason,
 } from '../utils/coordinationBlocks.js';
 import { deriveAssistantTailOutcome } from '../utils/assistantTailOutcome.js';
+import { stripAssistantControlBlocks } from '../utils/controlBlocks.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
 import DelegateCard from './DelegateCard.jsx';
@@ -376,7 +377,14 @@ export function eventsToBlocks(events) {
 
   const flushText = () => {
     if (!textBuf) return;
-    const text = textBuf.final || textBuf.partials;
+    // Strip agent-side action blocks (<agenthub:skill>, <agenthub:react>, etc.)
+    // before rendering. The server strips these from messages.content at storage
+    // time, but the raw event payloads in session_events are immutable — they
+    // still contain the original blocks. Without this, agents that emit a skill
+    // block (whether naked or wrapped in backtick fences) see the raw XML or a
+    // visible code block in the chat transcript.
+    const rawText = textBuf.final || textBuf.partials;
+    const text = stripAssistantControlBlocks(rawText);
     if (text && text.trim()) blocks.push({ kind: 'text', text });
     textBuf = null;
   };

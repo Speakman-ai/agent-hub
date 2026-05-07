@@ -266,3 +266,93 @@ describe('eventsToBlocks — explored coalescer', () => {
     expect(blocks[0].use.input.todos).toHaveLength(3);
   });
 });
+
+/**
+ * Regression tests for the "skill block renders as visible code block" bug
+ * (agent-hub v1.13.0 / Electron, job-search project).
+ *
+ * Two related symptoms:
+ *  1. The <agenthub:skill> block is visible in the chat transcript (either as
+ *     raw XML or as a fenced code block).
+ *  2. The skill is not loaded on the next turn (when the block is inside fences,
+ *     the server-side detector misses it — fixed separately).
+ *
+ * This suite covers the client-side rendering half: `eventsToBlocks` must strip
+ * control blocks from the final text before pushing a `{ kind: 'text' }` block.
+ */
+describe('eventsToBlocks — control block stripping (regression: v1.13.0)', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('strips a naked <agenthub:skill> block from a non-partial assistant_text event', () => {
+    const events = wrap([
+      {
+        type: 'assistant_text',
+        text: 'Done.\n\n<agenthub:skill>{"name":"kanban","reason":"need cards"}\n</agenthub:skill>',
+        partial: false,
+      },
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('text');
+    expect(blocks[0].text).not.toContain('<agenthub:skill>');
+    expect(blocks[0].text).not.toContain('kanban');
+    expect(blocks[0].text).toContain('Done.');
+  });
+
+  it('strips a fenced <agenthub:skill> block (the "visible code block" variant)', () => {
+    const text = [
+      'I need the kanban skill.',
+      '',
+      '```',
+      '<agenthub:skill>{"name": "kanban", "reason": "create card"}',
+      '</agenthub:skill>',
+      '```',
+    ].join('\n');
+    const events = wrap([{ type: 'assistant_text', text, partial: false }]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).not.toContain('<agenthub:skill>');
+    expect(blocks[0].text).not.toContain('```');
+    expect(blocks[0].text).toContain('I need the kanban skill.');
+  });
+
+  it('strips blocks accumulated from partial streaming events', () => {
+    // Partial events build up in textBuf.partials; stripping applies to the
+    // combined text at flush time regardless of partial/non-partial origin.
+    const events = wrap([
+      { type: 'assistant_text', text: 'Some work.\n\n<agenthub', partial: true },
+      {
+        type: 'assistant_text',
+        text: ':skill>{"name":"kanban"}</agenthub:skill>',
+        partial: true,
+      },
+    ]);
+    const blocks = eventsToBlocks(events);
+    // The only block should be the visible prose, with the control tag stripped.
+    const textBlocks = blocks.filter((b) => b.kind === 'text');
+    expect(textBlocks).toHaveLength(1);
+    expect(textBlocks[0].text).not.toContain('<agenthub:skill>');
+    expect(textBlocks[0].text).toContain('Some work.');
+  });
+
+  it('preserves normal prose that contains no control blocks', () => {
+    const events = wrap([
+      { type: 'assistant_text', text: 'Analysis complete. No issues found.', partial: false },
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks[0].text).toBe('Analysis complete. No issues found.');
+  });
+
+  it('produces no text block when the ONLY content is a control block (agent emitting just the invocation)', () => {
+    const events = wrap([
+      {
+        type: 'assistant_text',
+        text: '<agenthub:skill>{"name":"kanban"}</agenthub:skill>',
+        partial: false,
+      },
+    ]);
+    const blocks = eventsToBlocks(events);
+    // After stripping, the text is empty — no block should be pushed.
+    expect(blocks.filter((b) => b.kind === 'text')).toHaveLength(0);
+  });
+});

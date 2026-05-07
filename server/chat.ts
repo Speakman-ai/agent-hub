@@ -51,7 +51,11 @@ import {
   parseSkillBlock,
 } from './skill-invoke.js';
 import { routeSkillsFromMessage } from './skill-router.js';
-import { extractJsonFromTagBody, stripFencedCodeBlockBodies } from './action-block-parsing.js';
+import {
+  detectTagBlockInLastFence,
+  extractJsonFromTagBody,
+  stripFencedCodeBlockBodies,
+} from './action-block-parsing.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -494,12 +498,10 @@ export function buildEnrichedPrompt(
     if (allSkills.length > 0) {
       const skillsList = allSkills.map((s) => `- **${s.name}**: ${s.description}`);
       prompt += `\n\n## Available Skills
-To load a skill for your next turn, end your turn with a fenced block like:
-\`\`\`
+To load a skill for your next turn, end your turn with this block (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
 <agenthub:skill>
 {"name": "<skill-id>", "reason": "<one-liner why>"}
 </agenthub:skill>
-\`\`\`
 The SKILL.md body and referenced files will be injected into your next turn. This replaces the native \`Skill\` tool and works uniformly across claude-code, cursor-agent, and codex.
 
 Only the skills listed below are real here: use their exact \`name\` in \`<agenthub:skill>\` (anything else will not load). On engines that still expose the native \`Skill\` tool, calling it with an unregistered id fails with \`Unknown skill\` — same idea: do not invent third-party "skill" ids. For capabilities that are not in this list, use Bash, WebFetch, or your other normal tools instead of making up skill names.
@@ -512,12 +514,10 @@ ${skillsList.join('\n')}`;
 
   if (isFirstMessage) {
     prompt += `\n\n## ReAct Loop
-When you need extra context mid-answer, use a host-mediated ReAct action block:
-\`\`\`
+When you need extra context mid-answer, use a host-mediated ReAct action block (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
 <agenthub:react>
 {"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."}]}
 </agenthub:react>
-\`\`\`
 Replace each string with real values you need (the example must stay valid JSON — never replace the \`actions\` array with bracket-dot-dot-dot-bracket or other non-JSON shorthand).
 Supported tools:
 - \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
@@ -810,7 +810,11 @@ export function detectReActBlock(text: string): string | null {
   while ((match = re.exec(scanned)) !== null) {
     last = match[0];
   }
-  return last;
+  if (last) return last;
+  // Fallback: handle agents that wrapped the block in backtick fences per
+  // the documentation example. Only try the LAST fenced block so we don't
+  // accidentally fire on mid-message usage examples.
+  return detectTagBlockInLastFence(text, 'agenthub:react');
 }
 
 export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed {

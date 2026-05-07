@@ -3,7 +3,11 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'f
 import { v4 as uuidv4 } from 'uuid';
 import { DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import type { BroadcastFn, Stmts } from './types.js';
-import { extractJsonFromTagBody, stripFencedCodeBlockBodies } from './action-block-parsing.js';
+import {
+  detectTagBlockInLastFence,
+  extractJsonFromTagBody,
+  stripFencedCodeBlockBodies,
+} from './action-block-parsing.js';
 
 const PER_REFERENCE_BYTE_CAP = 8 * 1024;
 const TOTAL_REFERENCES_BYTE_CAP = 32 * 1024;
@@ -108,7 +112,14 @@ export function detectSkillBlock(text: string): string | null {
   while ((match = re.exec(scanned)) !== null) {
     last = match[0];
   }
-  return last;
+  if (last) return last;
+  // Fallback: some agents follow the documentation example too literally and
+  // wrap the block in backtick fences (e.g. ```\n<agenthub:skill>...\n```).
+  // The primary pass above masks fenced content, so we missed it. Try again
+  // using only the LAST fenced block at the tail of the message — this
+  // preserves the guard against mid-message documentation examples while
+  // rescuing genuine end-of-turn invocations inside fences.
+  return detectTagBlockInLastFence(text, 'agenthub:skill');
 }
 
 export function parseSkillBlock(raw: string): SkillInvokeTask | SkillInvokeMalformed {
