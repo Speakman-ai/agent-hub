@@ -32,6 +32,18 @@ vi.mock('./session-ownership.js', () => ({
   userOwnsSession: vi.fn(() => true),
 }));
 
+// ─── Secrets mock (controls cross-hub label gate) ─────────────────────────
+// Use the real `cardNeedsDevHubKey` so the label set in secrets.ts is the
+// single source of truth — the test never re-implements the matching logic.
+// Only `getDevHubApiKey` is stubbed so no AWS calls are made during tests.
+vi.mock('./secrets.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./secrets.js')>();
+  return {
+    ...actual,
+    getDevHubApiKey: vi.fn(async () => 'ahub_mock_dev_key'),
+  };
+});
+
 const {
   initAutonomous,
   runAutonomousLoop,
@@ -45,6 +57,9 @@ const {
 
 const { getOrCreateBoard } = await import('./routes/board.js');
 const mockGetOrCreateBoard = getOrCreateBoard as Mock;
+
+const { getDevHubApiKey: mockGetDevHubApiKey } = await import('./secrets.js');
+const mockGetDevHubApiKeyFn = mockGetDevHubApiKey as Mock;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -1024,5 +1039,97 @@ describe('runAutonomousLoop — label routing', () => {
     expect(stmts.createSession.run).toHaveBeenCalledTimes(2);
     expect(stmts.createSession.run.mock.calls[0][1]).toBe('hub-frontend');
     expect(stmts.createSession.run.mock.calls[1][1]).toBe('hub-frontend');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  runAutonomousLoop — DEV_HUB_API_KEY label gate
+//
+//  Positive: cards labelled `cross-hub:dev` or `survey-tracker` must cause
+//    handleChat to be called with `extraEnv: { DEV_HUB_API_KEY: '...' }`.
+//  Negative: cards without those labels must NOT inject DEV_HUB_API_KEY.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('runAutonomousLoop — DEV_HUB_API_KEY label gate', () => {
+  function makeMinimalSetup(card: KanbanCardRow) {
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [{ id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' }],
+      }),
+    );
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+    return deps;
+  }
+
+  beforeEach(() => {
+    mockGetDevHubApiKeyFn.mockResolvedValue('ahub_mock_dev_key');
+  });
+
+  it('POSITIVE: cross-hub:dev label → handleChat called with DEV_HUB_API_KEY', async () => {
+    const card = makeCard({ id: 'c-xhub', labels: 'cross-hub:dev,infra' });
+    const deps = makeMinimalSetup(card);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    const chatMsg = deps.handleChat.mock.calls[0][1];
+    expect(chatMsg.extraEnv).toBeDefined();
+    expect(chatMsg.extraEnv.DEV_HUB_API_KEY).toBe('ahub_mock_dev_key');
+  });
+
+  it('POSITIVE: survey-tracker label → handleChat called with DEV_HUB_API_KEY', async () => {
+    const card = makeCard({ id: 'c-st', labels: 'survey-tracker,backend' });
+    const deps = makeMinimalSetup(card);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    const chatMsg = deps.handleChat.mock.calls[0][1];
+    expect(chatMsg.extraEnv).toBeDefined();
+    expect(chatMsg.extraEnv.DEV_HUB_API_KEY).toBe('ahub_mock_dev_key');
+  });
+
+  it('NEGATIVE: card without cross-hub label → handleChat called WITHOUT DEV_HUB_API_KEY', async () => {
+    const card = makeCard({ id: 'c-plain', labels: 'infra,backend' });
+    const deps = makeMinimalSetup(card);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    const chatMsg = deps.handleChat.mock.calls[0][1];
+    // extraEnv must be absent or empty — DEV_HUB_API_KEY must NOT appear.
+    expect(chatMsg.extraEnv?.DEV_HUB_API_KEY).toBeUndefined();
+  });
+
+  it('NEGATIVE: card with null labels → handleChat called WITHOUT DEV_HUB_API_KEY', async () => {
+    const card = makeCard({ id: 'c-null', labels: null as unknown as string });
+    const deps = makeMinimalSetup(card);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    const chatMsg = deps.handleChat.mock.calls[0][1];
+    expect(chatMsg.extraEnv?.DEV_HUB_API_KEY).toBeUndefined();
+  });
+
+  it('NEGATIVE: getDevHubApiKey returns null → handleChat called WITHOUT DEV_HUB_API_KEY', async () => {
+    // Simulate Secrets Manager being unreachable.
+    mockGetDevHubApiKeyFn.mockResolvedValue(null);
+    const card = makeCard({ id: 'c-fail', labels: 'cross-hub:dev' });
+    const deps = makeMinimalSetup(card);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    const chatMsg = deps.handleChat.mock.calls[0][1];
+    expect(chatMsg.extraEnv?.DEV_HUB_API_KEY).toBeUndefined();
   });
 });

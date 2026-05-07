@@ -26,6 +26,14 @@ locals {
     ? var.enable_pr_env_ssm_secrets
     : var.enable_pr_environments
   )
+  # Autonomous-dispatch cross-hub Secrets Manager IAM. Defaults to enabled
+  # whenever the EC2 SSM instance role exists (enable_instance_ssm = true).
+  # Operators can set enable_cross_hub_secrets_iam = false to opt out.
+  cross_hub_secrets_iam_enabled = (
+    var.enable_cross_hub_secrets_iam != null
+    ? var.enable_cross_hub_secrets_iam
+    : var.enable_instance_ssm
+  )
 
   # For random_id count (avoids trimspace on null) and for effective API key.
   agent_hub_api_key_trim = (var.agent_hub_api_key == null ? "" : trimspace(var.agent_hub_api_key))

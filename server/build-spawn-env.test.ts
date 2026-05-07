@@ -158,3 +158,48 @@ describe('buildSpawnEnv — per-user override (per-user Claude auth)', () => {
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// extraEnv merge semantics (chat.ts: Object.assign(spawnEnv, {...extraEnv, ...spawnEnv}))
+//
+// The pattern used in chat.ts puts spawnEnv LAST so server-resolved auth
+// always wins over anything a caller supplies via msg.extraEnv. These tests
+// lock in that invariant so a future refactor can't accidentally reverse the
+// spread order and allow callers to shadow GH_TOKEN / ANTHROPIC_API_KEY / etc.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('extraEnv merge — spawnEnv wins over caller-supplied extras', () => {
+  it('extraEnv cannot override a server-set GH_TOKEN', () => {
+    const spawnEnv: Record<string, string> = {
+      GH_TOKEN: 'server-token',
+      ANTHROPIC_API_KEY: 'sk-ant-server',
+      PATH: '/usr/bin',
+    };
+    const extraEnv = { GH_TOKEN: 'caller-injected-token', DEV_HUB_API_KEY: 'ahub_key' };
+
+    // This is the exact pattern in chat.ts:
+    Object.assign(spawnEnv, { ...extraEnv, ...spawnEnv });
+
+    // Server-resolved auth vars must be unchanged:
+    expect(spawnEnv.GH_TOKEN).toBe('server-token');
+    expect(spawnEnv.ANTHROPIC_API_KEY).toBe('sk-ant-server');
+    // New key supplied by extraEnv must be accepted:
+    expect(spawnEnv.DEV_HUB_API_KEY).toBe('ahub_key');
+  });
+
+  it('extraEnv cannot override ANTHROPIC_API_KEY', () => {
+    const spawnEnv: Record<string, string> = { ANTHROPIC_API_KEY: 'sk-ant-server' };
+    const extraEnv = { ANTHROPIC_API_KEY: 'sk-ant-caller' };
+    Object.assign(spawnEnv, { ...extraEnv, ...spawnEnv });
+    expect(spawnEnv.ANTHROPIC_API_KEY).toBe('sk-ant-server');
+  });
+
+  it('extraEnv adds a brand-new key that is absent from spawnEnv', () => {
+    const spawnEnv: Record<string, string> = { PATH: '/usr/bin' };
+    const extraEnv = { DEV_HUB_API_KEY: 'ahub_newkey' };
+    Object.assign(spawnEnv, { ...extraEnv, ...spawnEnv });
+    expect(spawnEnv.DEV_HUB_API_KEY).toBe('ahub_newkey');
+    // Pre-existing key is undisturbed:
+    expect(spawnEnv.PATH).toBe('/usr/bin');
+  });
+});

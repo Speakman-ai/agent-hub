@@ -1969,6 +1969,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       return base;
     })();
 
+    // Merge any caller-supplied scoped env vars (e.g. DEV_HUB_API_KEY from
+    // autonomous-dispatch for cross-hub cards). spawnEnv ALWAYS wins on key
+    // collision — extraEnv can supply NEW variables but can never override
+    // server-resolved auth (ANTHROPIC_API_KEY, GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN,
+    // AGENT_HUB_API_KEY, etc.). Spread order: extraEnv first, then spawnEnv
+    // on top, so any key already present in spawnEnv is preserved.
+    if (msg.extraEnv && Object.keys(msg.extraEnv).length > 0) {
+      Object.assign(spawnEnv, { ...msg.extraEnv, ...spawnEnv });
+    }
+
     if (process.env.AGENT_HUB_DEBUG_CLAUDE_AUTH === '1' && engine === 'claude-code') {
       console.log('[chat] claude-code spawn auth:', {
         sessionId,

@@ -404,6 +404,24 @@ variable "pr_env_ssm_path_prefix" {
   }
 }
 
+variable "enable_cross_hub_secrets_iam" {
+  description = <<-DESC
+    When true, attaches an inline IAM policy to the EC2 SSM instance role
+    granting `secretsmanager:GetSecretValue` on
+    `arn:aws:secretsmanager:*:*:secret:agent-hub/dev-hub/api-key-*` plus
+    `kms:Decrypt` for the default Secrets Manager CMK.  This allows the
+    Agent Hub server process to fetch the dev-hub API key at runtime and
+    inject it into autonomous-dispatch sessions whose kanban card carries
+    the `cross-hub:dev` or `survey-tracker` label.
+
+    Defaults to true when `enable_instance_ssm = true`; set explicitly to
+    false to opt out.  Requires `enable_instance_ssm = true`.
+  DESC
+  type        = bool
+  default     = null
+  nullable    = true
+}
+
 variable "pr_env_preview_subdomain" {
   description = "Single DNS label used to namespace per-PR preview hostnames under the canonical Agent Hub hostname: <pr-id>.<pr_env_preview_subdomain>.<alb_fqdn>. The wildcard ACM cert (when enable_pr_env_wildcard_cert = true) covers *.<pr_env_preview_subdomain>.<alb_fqdn>. Must be a single label (no dots) so downstream PRs can compose per-PR hostnames as <pr-id>.<this>.<alb_fqdn> without ambiguity. Lowercase letters, digits, hyphens; not starting/ending with hyphen; ≤63 chars."
   type        = string

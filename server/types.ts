@@ -1741,6 +1741,16 @@ export interface ChatMessage {
    */
   _reroutedFromBugReport?: boolean;
   hookSpecificOutput?: { sessionTitle?: string; [key: string]: unknown };
+  /**
+   * Additional environment variables to inject into the spawned CLI process.
+   * Merged into the base `spawnEnv` AFTER all other credentials are resolved,
+   * so callers can supply scoped secrets (e.g. `DEV_HUB_API_KEY`) without
+   * touching the shared credential-resolution logic in `buildSpawnEnv`.
+   *
+   * Currently used by the autonomous-dispatch path to inject cross-hub API
+   * keys only for cards that carry an opt-in label (see `server/secrets.ts`).
+   */
+  extraEnv?: Record<string, string>;
 }
 
 export interface RoomChatMessage {

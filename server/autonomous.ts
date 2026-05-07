@@ -23,6 +23,7 @@ import type {
 } from './types.js';
 import { defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
+import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -377,12 +378,26 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
         `\n---\nYou have been assigned this task by the autonomous dispatch system. Review the description above and begin working on it. When done, commit your changes — a PR will be created automatically.`,
       );
 
+      // Scoped cross-hub secret injection: only cards that carry an opt-in
+      // label (`cross-hub:dev` or `survey-tracker`) receive `DEV_HUB_API_KEY`
+      // in their spawn environment. The fetch is best-effort — if Secrets
+      // Manager is unreachable the session starts without the key and the
+      // error is logged via the TOOL_ERROR pattern (see server/secrets.ts).
+      const extraEnv: Record<string, string> = {};
+      if (cardNeedsDevHubKey(card.labels)) {
+        const devHubKey = await getDevHubApiKey();
+        if (devHubKey) {
+          extraEnv.DEV_HUB_API_KEY = devHubKey;
+        }
+      }
+
       d.handleChat(null, {
         type: 'chat',
         agentId: agent.id,
         sessionId,
         content: contextLines.join('\n'),
         hookSpecificOutput: { sessionTitle: card.title },
+        ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
       }).catch(rollbackCard);
 
       d.broadcast({
