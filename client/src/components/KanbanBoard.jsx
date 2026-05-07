@@ -19,11 +19,6 @@ import {
 import { api } from '../utils/api.js';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh.js';
 import { epicFormToUpdateBody, epicFormToCreateBody } from '../utils/epics.js';
-import {
-  buildOrchestrationBudgetsPayload,
-  orchestrationFieldsFromEpicJson,
-  ORCHESTRATION_FIELD_META,
-} from '../utils/orchestrationBudgets.js';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
 import { MarkdownContent, markdownComponentsKanbanCardSnippet } from './MarkdownRenderer.jsx';
 
@@ -54,7 +49,7 @@ export default function KanbanBoard({
   agents = [],
   refreshKey,
   onNavigateToSession,
-  showToast,
+  showToast: _showToast,
 }) {
   const [_board, setBoard] = useState(null);
   const [columns, setColumns] = useState([]);
@@ -103,7 +98,6 @@ export default function KanbanBoard({
     description: '',
     color: '#6366F1',
     pr_base_branch: '',
-    obFields: orchestrationFieldsFromEpicJson(null),
   });
   const [editingEpic, setEditingEpic] = useState(null);
 
@@ -610,7 +604,6 @@ export default function KanbanBoard({
         description: '',
         color: '#6366F1',
         pr_base_branch: '',
-        obFields: orchestrationFieldsFromEpicJson(null),
       });
       setShowEpicForm(false);
       fetchBoard();
@@ -627,36 +620,13 @@ export default function KanbanBoard({
       // before sending — otherwise autonomous_max_concurrent /
       // autonomous_max_iterations silently fall through to undefined on the
       // server and the old DB values are preserved.
-      const obFields = epicForm.obFields || {};
-      const hasObTyping = ORCHESTRATION_FIELD_META.some(
-        ({ key }) => String(obFields[key] ?? '').trim() !== '',
-      );
-      let orchestrationBudgets;
-      if (!hasObTyping) {
-        orchestrationBudgets = null;
-      } else {
-        const obParsed = buildOrchestrationBudgetsPayload(obFields);
-        if (obParsed === null) {
-          showToast?.(
-            'Orchestration budgets: values must be whole numbers. Nothing was saved — fix or clear the fields.',
-            'error',
-          );
-          return;
-        }
-        orchestrationBudgets = obParsed;
-      }
-      await api.updateEpic(
-        projectId,
-        editingEpic.id,
-        epicFormToUpdateBody({ ...epicForm, orchestrationBudgets }),
-      );
+      await api.updateEpic(projectId, editingEpic.id, epicFormToUpdateBody(epicForm));
       setEditingEpic(null);
       setEpicForm({
         name: '',
         description: '',
         color: '#6366F1',
         pr_base_branch: '',
-        obFields: orchestrationFieldsFromEpicJson(null),
       });
       fetchBoard();
     } catch (err) {
@@ -699,7 +669,6 @@ export default function KanbanBoard({
       autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
       autonomous_max_iterations: epic.autonomous_max_iterations || 3,
       autonomous_model: epic.autonomous_model || '',
-      obFields: orchestrationFieldsFromEpicJson(epic.orchestration_budgets_json),
     });
     setShowEpicForm(false);
   };
@@ -971,7 +940,6 @@ export default function KanbanBoard({
               description: '',
               color: '#6366F1',
               pr_base_branch: '',
-              obFields: orchestrationFieldsFromEpicJson(null),
             });
           }}
           className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 whitespace-nowrap transition-colors"
@@ -1043,73 +1011,82 @@ export default function KanbanBoard({
               ))}
             </div>
 
-            {/* Autonomous toggle */}
+            {/* Autonomous — edit only */}
             {editingEpic && (
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 cursor-pointer">
+              <div className="rounded-lg border border-gray-700/80 bg-gray-800/40 p-3 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-start gap-2 min-w-0">
+                    <Zap
+                      size={16}
+                      className={`mt-0.5 shrink-0 ${epicForm.autonomous ? 'text-emerald-400' : 'text-gray-500'}`}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-gray-200">Autonomous mode</div>
+                      <p className="text-[11px] text-gray-500 leading-snug mt-0.5">
+                        Automatically assign backlog cards in this epic to agents when slots are
+                        free.
+                      </p>
+                    </div>
+                  </div>
                   <button
+                    type="button"
+                    role="switch"
+                    aria-checked={epicForm.autonomous === 1}
                     onClick={() => setEpicForm((f) => ({ ...f, autonomous: f.autonomous ? 0 : 1 }))}
-                    className={`relative w-8 h-4.5 rounded-full transition-colors ${
-                      epicForm.autonomous ? 'bg-emerald-600' : 'bg-gray-700'
+                    className={`relative inline-flex h-7 w-11 shrink-0 cursor-pointer rounded-full border border-transparent transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/80 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 ${
+                      epicForm.autonomous ? 'bg-emerald-600' : 'bg-gray-600'
                     }`}
                   >
                     <span
-                      className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${
-                        epicForm.autonomous ? 'translate-x-3.5' : ''
+                      className={`pointer-events-none absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform duration-200 ease-out ${
+                        epicForm.autonomous ? 'translate-x-4' : 'translate-x-0'
                       }`}
                     />
                   </button>
-                  <Zap
-                    size={14}
-                    className={epicForm.autonomous ? 'text-emerald-400' : 'text-gray-500'}
-                  />
-                  <span
-                    className={`text-sm ${epicForm.autonomous ? 'text-emerald-400' : 'text-gray-400'}`}
-                  >
-                    Autonomous Mode
-                  </span>
-                </label>
+                </div>
 
                 {epicForm.autonomous === 1 && (
-                  <div className="flex items-center gap-3 pl-6">
-                    <div>
-                      <label
-                        className="block text-xs text-gray-500 mb-0.5"
-                        title="Limits cards in both In Progress and Review — new work won't start until PRs are merged"
-                      >
-                        Max concurrent
-                      </label>
-                      <input
-                        type="number"
-                        value={epicForm.autonomous_max_concurrent || 2}
-                        onChange={(e) =>
-                          setEpicForm((f) => ({
-                            ...f,
-                            autonomous_max_concurrent: parseInt(e.target.value) || 2,
-                          }))
-                        }
-                        min={1}
-                        max={5}
-                        className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500"
-                      />
+                  <div className="space-y-3 pt-1 border-t border-gray-700/50">
+                    <div className="flex flex-wrap items-end gap-3">
+                      <div>
+                        <label
+                          className="block text-xs text-gray-500 mb-0.5"
+                          title="Limits cards in both In Progress and Review — new work won't start until PRs are merged"
+                        >
+                          Max concurrent
+                        </label>
+                        <input
+                          type="number"
+                          value={epicForm.autonomous_max_concurrent || 2}
+                          onChange={(e) =>
+                            setEpicForm((f) => ({
+                              ...f,
+                              autonomous_max_concurrent: parseInt(e.target.value, 10) || 2,
+                            }))
+                          }
+                          min={1}
+                          max={5}
+                          className="w-16 bg-gray-900/80 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-600/50"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-0.5">Max iterations</label>
+                        <input
+                          type="number"
+                          value={epicForm.autonomous_max_iterations || 3}
+                          onChange={(e) =>
+                            setEpicForm((f) => ({
+                              ...f,
+                              autonomous_max_iterations: parseInt(e.target.value, 10) || 3,
+                            }))
+                          }
+                          min={1}
+                          max={10}
+                          className="w-16 bg-gray-900/80 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-600/50"
+                        />
+                      </div>
                     </div>
                     <div>
-                      <label className="block text-xs text-gray-500 mb-0.5">Max iterations</label>
-                      <input
-                        type="number"
-                        value={epicForm.autonomous_max_iterations || 3}
-                        onChange={(e) =>
-                          setEpicForm((f) => ({
-                            ...f,
-                            autonomous_max_iterations: parseInt(e.target.value) || 3,
-                          }))
-                        }
-                        min={1}
-                        max={10}
-                        className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500"
-                      />
-                    </div>
-                    <div className="w-full max-w-xs mt-2">
                       <label className="block text-xs text-gray-500 mb-0.5">
                         Session model (optional)
                       </label>
@@ -1119,7 +1096,7 @@ export default function KanbanBoard({
                         onChange={(e) =>
                           setEpicForm((f) => ({ ...f, autonomous_model: e.target.value }))
                         }
-                        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-gray-500"
+                        className="w-full max-w-sm bg-gray-900/80 border border-gray-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-600/50"
                       >
                         <option value="">Each agent&apos;s default</option>
                         {modelConfig?.engineValidModels &&
@@ -1133,38 +1110,6 @@ export default function KanbanBoard({
                             </optgroup>
                           ))}
                       </select>
-                    </div>
-                  </div>
-                )}
-
-                {editingEpic && (
-                  <div className="space-y-2 pt-2 border-t border-gray-700/40">
-                    <p className="text-xs text-gray-500">
-                      ReAct / orchestration overrides for sessions linked to cards in this epic
-                      (merged on top of project defaults). Clear all fields and save to remove
-                      overrides.
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto">
-                      {ORCHESTRATION_FIELD_META.map(({ key, label, hint }) => (
-                        <div key={key}>
-                          <label className="block text-[10px] text-gray-500 mb-0.5" title={hint}>
-                            {label}
-                          </label>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={(epicForm.obFields || {})[key] ?? ''}
-                            onChange={(e) =>
-                              setEpicForm((f) => ({
-                                ...f,
-                                obFields: { ...(f.obFields || {}), [key]: e.target.value },
-                              }))
-                            }
-                            placeholder="—"
-                            className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-gray-500 font-mono"
-                          />
-                        </div>
-                      ))}
                     </div>
                   </div>
                 )}
@@ -1188,7 +1133,6 @@ export default function KanbanBoard({
                     description: '',
                     color: '#6366F1',
                     pr_base_branch: '',
-                    obFields: orchestrationFieldsFromEpicJson(null),
                   });
                 }}
                 className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs rounded transition-colors"
