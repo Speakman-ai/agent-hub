@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh.js';
-import { epicFormToUpdateBody } from '../utils/epics.js';
+import { epicFormToUpdateBody, epicFormToCreateBody } from '../utils/epics.js';
 import {
   buildOrchestrationBudgetsPayload,
   orchestrationFieldsFromEpicJson,
@@ -102,6 +102,7 @@ export default function KanbanBoard({
     name: '',
     description: '',
     color: '#6366F1',
+    pr_base_branch: '',
     obFields: orchestrationFieldsFromEpicJson(null),
   });
   const [editingEpic, setEditingEpic] = useState(null);
@@ -603,11 +604,12 @@ export default function KanbanBoard({
   const handleCreateEpic = async () => {
     if (!epicForm.name.trim()) return;
     try {
-      await api.createEpic(projectId, epicForm);
+      await api.createEpic(projectId, epicFormToCreateBody(epicForm));
       setEpicForm({
         name: '',
         description: '',
         color: '#6366F1',
+        pr_base_branch: '',
         obFields: orchestrationFieldsFromEpicJson(null),
       });
       setShowEpicForm(false);
@@ -653,6 +655,7 @@ export default function KanbanBoard({
         name: '',
         description: '',
         color: '#6366F1',
+        pr_base_branch: '',
         obFields: orchestrationFieldsFromEpicJson(null),
       });
       fetchBoard();
@@ -690,6 +693,7 @@ export default function KanbanBoard({
       name: epic.name,
       description: epic.description || '',
       color: epic.color || '#6366F1',
+      pr_base_branch: epic.pr_base_branch || '',
       autonomous: epic.autonomous || 0,
       autonomous_interval: epic.autonomous_interval || 5,
       autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
@@ -966,6 +970,7 @@ export default function KanbanBoard({
               name: '',
               description: '',
               color: '#6366F1',
+              pr_base_branch: '',
               obFields: orchestrationFieldsFromEpicJson(null),
             });
           }}
@@ -1003,6 +1008,23 @@ export default function KanbanBoard({
               placeholder="Description (optional)"
               className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-500"
             />
+
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-0.5">
+                PR base branch (optional)
+              </label>
+              <input
+                type="text"
+                value={epicForm.pr_base_branch ?? ''}
+                onChange={(e) => setEpicForm((f) => ({ ...f, pr_base_branch: e.target.value }))}
+                placeholder="e.g. feature/epic-integration — default base for cards in this epic"
+                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-gray-500 font-mono"
+              />
+              <p className="text-[10px] text-gray-600 mt-0.5">
+                Cards can still override with their own base branch. Leave empty to use the repo
+                default.
+              </p>
+            </div>
 
             {/* Color picker */}
             <div className="flex items-center gap-1.5">
@@ -1165,6 +1187,7 @@ export default function KanbanBoard({
                     name: '',
                     description: '',
                     color: '#6366F1',
+                    pr_base_branch: '',
                     obFields: orchestrationFieldsFromEpicJson(null),
                   });
                 }}

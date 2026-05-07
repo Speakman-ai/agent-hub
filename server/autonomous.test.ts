@@ -69,6 +69,8 @@ interface MockStmts {
   getKanbanColumns: { all: Mock };
   getSession: { get: Mock };
   getKanbanCardsByEpic: { all: Mock };
+  getKanbanEpic: { get: Mock };
+  updateKanbanEpic: { run: Mock };
   createSession: { run: Mock };
   updateKanbanCard: { run: Mock };
   moveKanbanCard: { run: Mock };
@@ -87,6 +89,8 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
     getKanbanColumns: { all: vi.fn(() => []) },
     getSession: { get: vi.fn(() => null) },
     getKanbanCardsByEpic: { all: vi.fn(() => []) },
+    getKanbanEpic: { get: vi.fn() },
+    updateKanbanEpic: { run: vi.fn() },
     createSession: { run: vi.fn() },
     updateKanbanCard: { run: vi.fn() },
     moveKanbanCard: { run: vi.fn() },
@@ -237,6 +241,49 @@ describe('runAutonomousLoop — dispatch', () => {
     await runAutonomousLoop('proj-1');
 
     expect(deps.handleChat).not.toHaveBeenCalled();
+  });
+
+  it('disables autonomous when every card in the epic is Done', async () => {
+    const epic: KanbanEpicRow = {
+      ...ACTIVE_EPIC,
+      description: 'd',
+      color: '#fff',
+      autonomous_interval: 5,
+      orchestration_budgets_json: null,
+      pr_base_branch: 'feature/merge',
+    } as unknown as KanbanEpicRow;
+    const doneCard = {
+      ...makeCard({ epic_id: epic.id, column_id: 'col-done' }),
+    };
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epic) },
+      getKanbanColumns: { all: vi.fn(() => [{ id: 'col-done', name: 'Done' }]) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [doneCard]) },
+      getKanbanEpic: {
+        get: vi.fn((id: string) =>
+          id === epic.id ? ({ ...epic, autonomous: 0 } as KanbanEpicRow) : undefined,
+        ),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({
+      board: { id: epic.board_id },
+      columns: [],
+      cards: [],
+      epics: [epic],
+    });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.updateKanbanEpic.run).toHaveBeenCalledTimes(1);
+    const args = stmts.updateKanbanEpic.run.mock.calls[0] as unknown[];
+    expect(args[3]).toBe(0);
+    expect(args[9]).toBe('feature/merge');
+    expect(args[10]).toBe(epic.id);
+    expect(deps.broadcast).toHaveBeenCalledWith({ type: 'kanban_update', projectId: 'proj-1' });
+    expect(stmts.getEligibleAutonomousCards.all).not.toHaveBeenCalled();
   });
 
   it('assigns an eligible card to an available sub agent and creates a session', async () => {

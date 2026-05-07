@@ -21,6 +21,7 @@ export const DEFAULT_EPIC_FORM = {
   name: '',
   description: '',
   color: DEFAULT_EPIC_COLOR,
+  pr_base_branch: '',
   autonomous: 0,
   autonomous_interval: 5,
   autonomous_max_concurrent: 2,
@@ -43,6 +44,7 @@ export function epicFormFromRow(epic) {
     autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
     autonomous_max_iterations: epic.autonomous_max_iterations || 3,
     autonomous_model: epic.autonomous_model || '',
+    pr_base_branch: epic.pr_base_branch || '',
   };
 }
 
@@ -55,6 +57,8 @@ export function epicFormToUpdateBody(form) {
   const rawModel =
     typeof form.autonomous_model === 'string' ? form.autonomous_model.trim() : '';
   const autonomousModel = autonomousOn ? (rawModel || null) : null;
+  const prTrim =
+    typeof form.pr_base_branch === 'string' ? form.pr_base_branch.trim() : '';
   return {
     name: (form.name || '').trim(),
     description: form.description || '',
@@ -64,6 +68,7 @@ export function epicFormToUpdateBody(form) {
     autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
     autonomousMaxIterations: form.autonomous_max_iterations || 3,
     autonomousModel,
+    prBaseBranch: prTrim || null,
   };
 }
 
@@ -72,10 +77,15 @@ export function epicFormToUpdateBody(form) {
  * color. Autonomous settings are applied via a follow-up PUT if needed.
  */
 export function epicFormToCreateBody(form) {
+  const pr =
+    typeof form.pr_base_branch === 'string' && form.pr_base_branch.trim()
+      ? form.pr_base_branch.trim()
+      : null;
   return {
     name: (form.name || '').trim(),
     description: form.description || '',
     color: form.color || DEFAULT_EPIC_COLOR,
+    ...(pr ? { prBaseBranch: pr } : {}),
   };
 }
 

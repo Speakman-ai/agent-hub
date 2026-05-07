@@ -1276,6 +1276,17 @@ export default function KanbanScreen({ route, navigation }) {
                 multiline
               />
 
+              <Text style={styles.fieldLabel}>PR base branch (optional)</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={epicForm.pr_base_branch ?? ''}
+                onChangeText={(v) => setEpicForm((f) => ({ ...f, pr_base_branch: v }))}
+                placeholder="e.g. feature/epic-integration"
+                placeholderTextColor={colors.gray600}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+
               <Text style={styles.fieldLabel}>Color</Text>
               <View style={styles.colorRow}>
                 {EPIC_COLORS.map((c) => (
