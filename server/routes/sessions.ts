@@ -49,6 +49,15 @@ function safeParse(s: string): Record<string, unknown> {
   }
 }
 
+function closeBrowserBestEffort(sessionId: string): void {
+  void closeBrowserSession(sessionId).catch((err) => {
+    console.warn(
+      `[sessions] closeBrowserSession failed (${sessionId}):`,
+      err instanceof Error ? err.message : String(err),
+    );
+  });
+}
+
 export function buildTranscript(
   messages: Array<{ role: string; content: string; agent_name?: string | null }>,
   { agentName, isRoom }: { agentName?: string; isRoom?: boolean },
@@ -510,7 +519,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         }
         activeProcesses.delete(session.id);
       }
-      void closeBrowserSession(session.id).catch(() => {});
+      closeBrowserBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -531,7 +540,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     for (const session of sessions) {
       if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
-      void closeBrowserSession(session.id).catch(() => {});
+      closeBrowserBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -568,7 +577,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       activeProcesses.delete(sessionId);
     }
 
-    void closeBrowserSession(sessionId).catch(() => {});
+    closeBrowserBestEffort(sessionId);
 
     stmts.softDeleteSession.run(sessionId);
 

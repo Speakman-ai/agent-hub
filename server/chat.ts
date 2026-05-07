@@ -125,7 +125,7 @@ import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-obse
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
-import { runBrowserReActStep } from './browser-tools.js';
+import { runBrowserReActStep, BROWSER_REACT_OP_SET } from './browser-tools.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 const stmts = _stmts!;
@@ -884,20 +884,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
     }
     if (a.tool === 'browser') {
       const op = typeof a.op === 'string' ? a.op.trim().toLowerCase() : '';
-      const valid = new Set([
-        'navigate',
-        'click',
-        'type',
-        'extract',
-        'screenshot',
-        'scroll',
-        'back',
-        'forward',
-        'wait',
-        'read_page',
-        'close',
-      ]);
-      if (!op || !valid.has(op)) {
+      if (!op || !BROWSER_REACT_OP_SET.has(op)) {
         return {
           error: 'malformed',
           detail: 'browser action requires op as a supported browser operation',

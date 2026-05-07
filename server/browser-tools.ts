@@ -8,6 +8,8 @@
 
 import { jsonSchemaToZod, type JsonSchema } from '@browserbasehq/stagehand';
 import type { V3 } from '@browserbasehq/stagehand';
+import { validateBrowserNavigationUrl } from './browser-navigation-url.js';
+import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import {
   getBrowserSession,
   launchBrowserSession,
@@ -18,18 +20,27 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────
 
-export type BrowserToolOp =
-  | 'navigate'
-  | 'click'
-  | 'type'
-  | 'extract'
-  | 'screenshot'
-  | 'scroll'
-  | 'back'
-  | 'forward'
-  | 'wait'
-  | 'read_page'
-  | 'close';
+/** Single source of truth for ReAct `tool: browser` operations (keep in sync with parseReActBlock). */
+export const BROWSER_REACT_OPS = [
+  'navigate',
+  'click',
+  'type',
+  'extract',
+  'screenshot',
+  'scroll',
+  'back',
+  'forward',
+  'wait',
+  'read_page',
+  'close',
+] as const;
+
+export type BrowserToolOp = (typeof BROWSER_REACT_OPS)[number];
+
+export const BROWSER_REACT_OP_SET: ReadonlySet<string> = new Set(BROWSER_REACT_OPS);
+
+/** Max UTF-8 bytes of `data` JSON embedded in ReAct continuation markdown (per tool result). */
+export const BROWSER_TOOL_MARKDOWN_DATA_MAX_BYTES = 24_000;
 
 export interface BrowserToolResult {
   ok: boolean;
@@ -57,19 +68,22 @@ export interface BrowserReActActionInput {
 
 const SCROLL_DELTA_PX = 720;
 
-const VALID_BROWSER_OPS = new Set<string>([
-  'navigate',
-  'click',
-  'type',
-  'extract',
-  'screenshot',
-  'scroll',
-  'back',
-  'forward',
-  'wait',
-  'read_page',
-  'close',
-]);
+export function shrinkBrowserToolResultForMarkdown(
+  r: BrowserToolResult,
+  maxDataJsonBytes: number = BROWSER_TOOL_MARKDOWN_DATA_MAX_BYTES,
+): BrowserToolResult {
+  if (!r.ok || r.data === undefined) return r;
+  const ser = JSON.stringify(r.data);
+  if (Buffer.byteLength(ser, 'utf-8') <= maxDataJsonBytes) return r;
+  return {
+    ...r,
+    data: {
+      _browserToolDataTruncated: true,
+      approxOriginalJsonBytes: Buffer.byteLength(ser, 'utf-8'),
+      preview: clipUtf8StringToMaxBytes(ser, maxDataJsonBytes),
+    },
+  };
+}
 
 function asV3(stagehand: unknown): V3 {
   return stagehand as V3;
@@ -136,9 +150,13 @@ function result(op: BrowserToolOp, ok: boolean, data?: unknown, error?: string):
 export async function browserNavigate(stagehand: V3, url: string): Promise<BrowserToolResult> {
   const u = url.trim();
   if (!u) return result('navigate', false, undefined, 'url is required');
+  const policy = validateBrowserNavigationUrl(u);
+  if (!policy.ok) {
+    return result('navigate', false, undefined, policy.error);
+  }
   try {
     const page = getActivePage(stagehand);
-    const res = await page.goto(u, { waitUntil: 'load', timeoutMs: 30_000 });
+    const res = await page.goto(policy.href, { waitUntil: 'load', timeoutMs: 30_000 });
     void res;
     return result('navigate', true, { url: page.url() });
   } catch (e) {
@@ -330,7 +348,7 @@ export async function runBrowserReActStep(
   input: BrowserReActActionInput,
 ): Promise<{ markdown: string; hostExit: number; hostDetail?: string }> {
   const opRaw = typeof input.op === 'string' ? input.op.trim() : '';
-  if (!opRaw || !VALID_BROWSER_OPS.has(opRaw)) {
+  if (!opRaw || !BROWSER_REACT_OP_SET.has(opRaw)) {
     return {
       markdown: `## Browser tool error\nUnsupported or missing op "${opRaw}"`,
       hostExit: 1,
@@ -352,7 +370,8 @@ export async function runBrowserReActStep(
   const sh = asV3(session.stagehand);
 
   const fmt = (r: BrowserToolResult, title: string) => {
-    const lines = [`## ${title}`, '', '```json', JSON.stringify(r, null, 2), '```'];
+    const display = shrinkBrowserToolResultForMarkdown(r);
+    const lines = [`## ${title}`, '', '```json', JSON.stringify(display, null, 2), '```'];
     if (r.ok && r.imageBase64) {
       lines.push('', `![screenshot](data:image/png;base64,${r.imageBase64})`);
     }
