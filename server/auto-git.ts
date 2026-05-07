@@ -585,6 +585,48 @@ function isGenericCommitSubject(subject: string): boolean {
 }
 
 /**
+ * A commit summarised down to the parts the PR formatters care about.
+ *
+ * `subject` is the first line of the commit message (`git log %s`).
+ * `body` is everything after the subject + blank line (`git log %b`),
+ * trimmed of trailing whitespace. Empty body is normalised to `''` so callers
+ * can treat the field as optional/absent uniformly.
+ */
+export interface CommitInfo {
+  subject: string;
+  body?: string;
+}
+
+/**
+ * Normalise the union of legacy `string[]` (subject-only) and `CommitInfo[]`
+ * (subject + body) inputs to a uniform `CommitInfo[]` shape. Empty / falsy
+ * subjects are filtered. Bodies are trimmed; missing/empty bodies remain
+ * `undefined` so callers can branch cleanly on `if (body)`.
+ *
+ * Exported for tests; production code paths normalise once at the top of
+ * each formatter.
+ */
+export function normalizeCommitInputs(
+  commits: ReadonlyArray<string | CommitInfo> | undefined,
+): CommitInfo[] {
+  if (!commits) return [];
+  const out: CommitInfo[] = [];
+  for (const c of commits) {
+    if (typeof c === 'string') {
+      const subject = c.trim();
+      if (!subject) continue;
+      out.push({ subject });
+    } else if (c && typeof c === 'object') {
+      const subject = (c.subject ?? '').trim();
+      if (!subject) continue;
+      const body = (c.body ?? '').trim();
+      out.push(body ? { subject, body } : { subject });
+    }
+  }
+  return out;
+}
+
+/**
  * Pick the most descriptive commit subject from a branch's commit list to use
  * as the PR title. Returns null if every commit looks generic / non-descriptive
  * (in which case the caller should fall back to the card / session title).
@@ -592,11 +634,18 @@ function isGenericCommitSubject(subject: string): boolean {
  * Commits are expected newest-first (the order `git log main..HEAD` returns).
  * We prefer the newest non-generic subject — it usually reflects the final
  * shape of the change after any fixups.
+ *
+ * Accepts either a `string[]` (subjects only — legacy callers like
+ * `handoff.ts` and pre-body tests) or a `CommitInfo[]` (subject + body). Only
+ * subjects are inspected for genericness, so the body field is structurally
+ * irrelevant here — but accepting both shapes keeps the call sites single.
  */
-export function pickPrTitleFromCommits(commits: string[] | undefined): string | null {
+export function pickPrTitleFromCommits(
+  commits: ReadonlyArray<string | CommitInfo> | undefined,
+): string | null {
   if (!commits) return null;
   for (const raw of commits) {
-    const subject = (raw ?? '').trim();
+    const subject = typeof raw === 'string' ? (raw ?? '').trim() : (raw?.subject ?? '').trim();
     if (!subject) continue;
     if (isGarbageTitle(subject)) continue;
     if (isGenericCommitSubject(subject)) continue;
@@ -618,7 +667,10 @@ export function pickPrTitleFromCommits(commits: string[] | undefined): string | 
  * - Hard-caps at 70 chars, preferring a word boundary and appending an
  *   ellipsis (`…`) rather than `...` mid-word.
  */
-export function buildPrTitle(rawTitle: string, commits?: string[]): string {
+export function buildPrTitle(
+  rawTitle: string,
+  commits?: ReadonlyArray<string | CommitInfo>,
+): string {
   const fromCommit = pickPrTitleFromCommits(commits);
   const source = fromCommit ?? rawTitle;
   const normalized = (source ?? '').replace(/\s+/g, ' ').trim();
@@ -652,7 +704,17 @@ export function buildPrTitle(rawTitle: string, commits?: string[]): string {
 export interface PrBodyInput {
   card?: KanbanCardRow;
   agentName: string;
-  commits?: string[];
+  /**
+   * Commits on the branch, newest first.
+   *
+   * - Legacy `string[]` form (subjects only): preserved for back-compat with
+   *   tests and handoff-style callers that don't have bodies.
+   * - `CommitInfo[]` form: subject + optional body. When a body is present,
+   *   `buildPrBody` will use it in the Summary (single-commit branches) and
+   *   render it as indented detail under each bullet (multi-commit
+   *   branches). Generic-commit filtering still operates on subjects only.
+   */
+  commits?: ReadonlyArray<string | CommitInfo>;
   diffStat?: string;
 }
 
@@ -692,17 +754,23 @@ export function buildPrBody(input: PrBodyInput): string {
   // Commit subjects describe what was *done*; card descriptions describe what
   // was *asked* — and the card description is preserved below as origin
   // context. Falls back to the card description, then to a generic marker.
-  const commitList = (commits ?? []).map((c) => c.trim()).filter(Boolean);
+  //
+  // When a commit *body* is present (CommitInfo form), single-commit PRs use
+  // the body as the Summary — that's where the agent's "why" usually lives,
+  // while the subject often duplicates the title. Empty bodies fall back to
+  // the subject so the legacy subject-only path is unchanged.
+  const commitList = normalizeCommitInputs(commits);
   const cardDescription = card?.description?.trim() || '';
   const commitDrivenSummary = commitList.length > 0;
   let summary: string;
   if (commitList.length === 1) {
-    summary = commitList[0];
+    const only = commitList[0];
+    summary = only.body ? `${only.subject}\n\n${only.body}` : only.subject;
   } else if (commitList.length > 1) {
     // For multi-commit branches the bulleted ## Commits section below renders
     // the full list; here in Summary we surface a one-line lede so the PR is
     // skimmable. Prefer the most recent (newest-first) descriptive subject.
-    summary = pickPrTitleFromCommits(commitList) ?? commitList[0];
+    summary = pickPrTitleFromCommits(commitList) ?? commitList[0].subject;
   } else if (cardDescription) {
     summary = cardDescription;
   } else {
@@ -712,13 +780,35 @@ export function buildPrBody(input: PrBodyInput): string {
   sections.push(summary);
 
   // Commits — only list when there's more than one, otherwise the single
-  // commit subject is already the summary and listing it is noise.
+  // commit subject + body is already the summary and listing it is noise.
+  // Each bullet renders the subject; if the commit has a body we render it
+  // as indented detail (4-space indent so GitHub keeps the bullet's hanging
+  // alignment) capped at a few lines per commit so squash-style merges with
+  // long bodies don't blow up the PR description.
   if (commitList.length > 1) {
     sections.push('');
     sections.push('## Commits');
     const MAX_COMMITS = 20;
+    const MAX_BODY_LINES_PER_COMMIT = 10;
     const shown = commitList.slice(0, MAX_COMMITS);
-    for (const c of shown) sections.push(`- ${c}`);
+    for (const c of shown) {
+      sections.push(`- ${c.subject}`);
+      if (c.body) {
+        const lines = c.body.split('\n');
+        const truncated = lines.length > MAX_BODY_LINES_PER_COMMIT;
+        const rendered = truncated
+          ? [...lines.slice(0, MAX_BODY_LINES_PER_COMMIT - 1), '…'].join('\n')
+          : c.body;
+        // Prefix each body line with 4 spaces so it renders as indented
+        // continuation under the bullet on GitHub.
+        sections.push(
+          rendered
+            .split('\n')
+            .map((line) => `    ${line}`)
+            .join('\n'),
+        );
+      }
+    }
     if (commitList.length > MAX_COMMITS) {
       sections.push(`- …and ${commitList.length - MAX_COMMITS} more`);
     }
@@ -784,6 +874,10 @@ export function buildPrBody(input: PrBodyInput): string {
  * Collect the commit subjects that would appear in this PR: commits on the
  * current branch that are not on `main`. Newest first. Best-effort — returns
  * an empty array on any git failure (missing `main` ref, detached HEAD, etc.).
+ *
+ * Retained for back-compat with any future callers that only need subjects.
+ * The PR pipeline uses {@link collectCommits} so that bodies make it into the
+ * PR description.
  */
 async function collectCommitSubjects(cwd: string): Promise<string[]> {
   try {
@@ -795,6 +889,42 @@ async function collectCommitSubjects(cwd: string): Promise<string[]> {
       .split('\n')
       .map((s) => s.trim())
       .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Collect the full commit message for each commit on the branch (subject +
+ * body), newest first. Returns an empty array on any git failure so callers
+ * can degrade to the card / session title pipeline without special-casing.
+ *
+ * Implementation: `git log -z` separates commits with a NUL byte, which lets
+ * the body contain arbitrary characters (newlines, blank lines, even literal
+ * separators) without escaping. Within each NUL-separated record we use the
+ * first line as the subject (`%s`) and the remainder (after the standard
+ * blank line) as the body (`%b`). Empty bodies become `undefined` on the
+ * returned `CommitInfo` so downstream formatters can branch on presence.
+ */
+async function collectCommits(cwd: string): Promise<CommitInfo[]> {
+  try {
+    const { stdout } = await execAsync('git log main..HEAD -z --format=%s%n%b', {
+      cwd,
+      timeout: 10000,
+    });
+    if (!stdout) return [];
+    const records = stdout.split('\0');
+    const out: CommitInfo[] = [];
+    for (const rec of records) {
+      const trimmed = rec.replace(/\n+$/, '');
+      if (!trimmed) continue;
+      const newlineIdx = trimmed.indexOf('\n');
+      const subject = (newlineIdx === -1 ? trimmed : trimmed.slice(0, newlineIdx)).trim();
+      if (!subject) continue;
+      const rawBody = newlineIdx === -1 ? '' : trimmed.slice(newlineIdx + 1).trim();
+      out.push(rawBody ? { subject, body: rawBody } : { subject });
+    }
+    return out;
   } catch {
     return [];
   }
@@ -1198,11 +1328,13 @@ async function commitPushAndCreatePR(
     }
 
     const [commits, diffStat] = await Promise.all([
-      collectCommitSubjects(effectiveCwd),
+      collectCommits(effectiveCwd),
       collectDiffStat(effectiveCwd),
     ]);
     // Pass commits into buildPrTitle so the agent's actual commit subject(s)
     // win over the card / session title — see buildPrTitle JSDoc for why.
+    // buildPrTitle only uses subjects; passing CommitInfo[] is fine since the
+    // signature accepts both shapes.
     const prTitle = buildPrTitle(commitTitle, commits);
     const prBody = buildPrBody({
       card,

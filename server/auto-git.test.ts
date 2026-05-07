@@ -34,6 +34,8 @@ import {
   MAX_GIT_COMMIT_MESSAGE_CHARS,
   runShellCommandStreaming,
   STREAM_OUTPUT_MAX_BYTES,
+  normalizeCommitInputs,
+  pickPrTitleFromCommits,
 } from './auto-git.js';
 import path from 'path';
 import type { MessageRow } from './types.js';
@@ -2071,6 +2073,180 @@ describe('buildPrBody', () => {
     const body = buildPrBody({ agentName });
     expect(body).toContain('_Automated PR from Agent Hub_');
     expect(body).not.toContain('kanban card');
+  });
+
+  // ─── Commit-body support (acceptance criteria for "meaningful PRs from
+  // commits") ─────────────────────────────────────────────────────────────
+  // The legacy form passed `string[]` (subjects only). The new
+  // `CommitInfo[]` form lets us surface the agent's commit *bodies* — which
+  // is where the rationale usually lives — in the PR Summary and the
+  // per-bullet detail. Empty bodies fall back to the subject-only behaviour
+  // so legacy callers (handoff.ts, older tests) are unaffected.
+
+  it('uses the commit body as the Summary when a single commit has a body', () => {
+    const body = buildPrBody({
+      agentName,
+      commits: [
+        {
+          subject: 'feat: per-user GitHub login',
+          body: 'Adds a setup-wizard step that PATs the user into GitHub.\n\nMotivation: shared OAuth was leaking org context.',
+        },
+      ],
+    });
+    expect(body).toContain('## Summary');
+    expect(body).toContain('feat: per-user GitHub login');
+    expect(body).toContain('Adds a setup-wizard step that PATs the user into GitHub.');
+    expect(body).toContain('Motivation: shared OAuth was leaking org context.');
+    // No commits-listing for a single commit — the body IS the summary.
+    expect(body).not.toContain('## Commits');
+  });
+
+  it('falls back to subject-only Summary when a single commit has an empty body', () => {
+    const body = buildPrBody({
+      agentName,
+      commits: [{ subject: 'Fix login crash', body: '' }],
+    });
+    expect(body).toMatch(/## Summary\nFix login crash\n/);
+    expect(body).not.toContain('## Commits');
+  });
+
+  it('renders bodies as indented detail under each bullet for multi-commit PRs', () => {
+    const body = buildPrBody({
+      agentName,
+      commits: [
+        {
+          subject: 'feat: decouple personal GitHub OAuth from the GitHub App',
+          body: 'Splits the per-user PAT flow from the App install path so\nreviewer identity stays distinct from the human user.',
+        },
+        {
+          subject: 'feat: per-user GitHub login via PAT + setup-wizard step',
+          body: 'New /api/auth/github/pat endpoint backed by an encrypted store.',
+        },
+      ],
+    });
+    // Lede uses the newest descriptive subject.
+    expect(body).toContain('## Summary\nfeat: decouple personal GitHub OAuth');
+    expect(body).toContain('## Commits');
+    expect(body).toContain('- feat: decouple personal GitHub OAuth from the GitHub App');
+    // Body lines are indented 4 spaces under the bullet.
+    expect(body).toContain('    Splits the per-user PAT flow from the App install path so');
+    expect(body).toContain('    reviewer identity stays distinct from the human user.');
+    expect(body).toContain('- feat: per-user GitHub login via PAT + setup-wizard step');
+    expect(body).toContain('    New /api/auth/github/pat endpoint backed by an encrypted store.');
+  });
+
+  it('truncates very long commit bodies to a manageable per-commit cap', () => {
+    const longBody = Array.from({ length: 25 }, (_, i) => `line ${i}`).join('\n');
+    const body = buildPrBody({
+      agentName,
+      commits: [{ subject: 'feat: commit one', body: longBody }, { subject: 'feat: commit two' }],
+    });
+    // First 9 body lines are kept, then a single ellipsis line, capping at
+    // MAX_BODY_LINES_PER_COMMIT (10) total rendered lines per commit.
+    expect(body).toContain('    line 0');
+    expect(body).toContain('    line 8');
+    expect(body).toContain('    …');
+    expect(body).not.toContain('    line 24');
+  });
+
+  it('mixes string subjects and CommitInfo objects in the same array', () => {
+    // back-compat: callers (or tests) can mix forms freely.
+    const body = buildPrBody({
+      agentName,
+      commits: [
+        'feat: keep subject-only entries working',
+        { subject: 'feat: structured commit', body: 'with rationale' },
+      ],
+    });
+    expect(body).toContain('## Commits');
+    expect(body).toContain('- feat: keep subject-only entries working');
+    expect(body).toContain('- feat: structured commit');
+    expect(body).toContain('    with rationale');
+  });
+
+  it('preserves the Original task (card description) section under the new path', () => {
+    const card = {
+      id: 'c1',
+      description: 'Need a way to login to github. Also need to do this during setup.',
+    } as never;
+    const body = buildPrBody({
+      agentName,
+      card,
+      commits: [
+        {
+          subject: 'feat: per-user GitHub login via PAT + setup-wizard step',
+          body: 'Adds the setup-wizard step that captures a PAT.',
+        },
+      ],
+    });
+    // Summary is commit-driven (subject + body).
+    expect(body).toContain('feat: per-user GitHub login via PAT + setup-wizard step');
+    expect(body).toContain('Adds the setup-wizard step that captures a PAT.');
+    // Card description preserved as origin context — diffstat / footer /
+    // kanban-card linkage unchanged.
+    expect(body).toContain('## Original task');
+    expect(body).toContain('Need a way to login to github. Also need to do this during setup.');
+    expect(body).toContain('_Automated PR from Agent Hub · kanban card c1_');
+  });
+});
+
+describe('normalizeCommitInputs', () => {
+  it('returns an empty array for undefined / empty inputs', () => {
+    expect(normalizeCommitInputs(undefined)).toEqual([]);
+    expect(normalizeCommitInputs([])).toEqual([]);
+  });
+
+  it('coerces strings into subject-only CommitInfo objects', () => {
+    expect(normalizeCommitInputs(['feat: a', '  feat: b  '])).toEqual([
+      { subject: 'feat: a' },
+      { subject: 'feat: b' },
+    ]);
+  });
+
+  it('preserves CommitInfo objects, trimming subject and body', () => {
+    expect(normalizeCommitInputs([{ subject: '  feat: a  ', body: '  rationale  ' }])).toEqual([
+      { subject: 'feat: a', body: 'rationale' },
+    ]);
+  });
+
+  it('drops entries with empty subjects', () => {
+    expect(
+      normalizeCommitInputs(['', '   ', { subject: '' }, { subject: '  ', body: 'x' }]),
+    ).toEqual([]);
+  });
+
+  it('omits the body field when the body is empty / whitespace', () => {
+    expect(normalizeCommitInputs([{ subject: 'feat: a', body: '   ' }])).toEqual([
+      { subject: 'feat: a' },
+    ]);
+  });
+
+  it('accepts mixed string + object inputs', () => {
+    expect(normalizeCommitInputs(['feat: a', { subject: 'feat: b', body: 'why' }])).toEqual([
+      { subject: 'feat: a' },
+      { subject: 'feat: b', body: 'why' },
+    ]);
+  });
+});
+
+describe('pickPrTitleFromCommits — CommitInfo form', () => {
+  // Subject genericness still rules; bodies are irrelevant to title choice.
+  it('picks the newest descriptive CommitInfo subject', () => {
+    expect(
+      pickPrTitleFromCommits([
+        { subject: 'feat: ship the thing', body: 'rationale' },
+        { subject: 'wip: poking', body: 'still poking' },
+      ]),
+    ).toBe('feat: ship the thing');
+  });
+
+  it('returns null when every CommitInfo subject is generic', () => {
+    expect(
+      pickPrTitleFromCommits([
+        { subject: 'wip', body: 'long rationale that does NOT save it' },
+        { subject: 'fix typo' },
+      ]),
+    ).toBeNull();
   });
 });
 
