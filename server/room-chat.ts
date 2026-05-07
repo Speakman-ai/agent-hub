@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process';
+import { trackChild, killProcessGroup } from './process-groups.js';
 import { v4 as uuidv4 } from 'uuid';
 import { buildSpawnEnv } from './config.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -80,7 +81,7 @@ export function handleRoomCancel(roomId: string): void {
   const state = activeRoomProcesses.get(roomId);
   if (state) {
     state.cancelled = true;
-    if (state.proc) state.proc.kill('SIGTERM');
+    if (state.proc) killProcessGroup(state.proc, 'SIGTERM');
   }
   try {
     d.stmts.clearRoomQueue.run(roomId);
@@ -364,12 +365,14 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
           cwd: agent.cwd || process.env.HOME,
           env: roomEnv,
           stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
         }) as ChildProcess;
 
         roomState.proc = proc;
+        trackChild(proc);
 
         const timer = setTimeout(() => {
-          proc.kill('SIGTERM');
+          killProcessGroup(proc, 'SIGTERM');
           reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
         }, timeout);
 

@@ -2,6 +2,7 @@ import { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { CodedError, SayFn, SlackEventMiddlewareArgs } from '@slack/bolt';
 import { spawn } from 'child_process';
+import { trackChild, killProcessGroup } from './process-groups.js';
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -208,10 +209,12 @@ function runAgent(
       cwd,
       env: buildSpawnEnv(config),
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    trackChild(proc);
 
     const timeout = setTimeout(() => {
-      proc.kill('SIGTERM');
+      killProcessGroup(proc, 'SIGTERM');
       reject(new Error('Claude timed out after 5 minutes'));
     }, TIMEOUT_MS);
 

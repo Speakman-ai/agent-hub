@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 import os from 'os';
 import type { RouteDeps } from '../types.js';
+import { trackChild, killProcessGroup } from '../process-groups.js';
 import {
   extractCursorLoginUrl,
   parseCursorStatusJson,
@@ -28,7 +29,9 @@ function runCursor(
       env: { ...process.env, ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: opts.timeout ?? 25_000,
+      detached: true,
     });
+    trackChild(proc);
 
     let stdout = '';
     let stderr = '';
@@ -113,7 +116,7 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
   router.post('/api/config/cursor-auth/login', (_req: Request, res: Response) => {
     if (activeLoginProc) {
       try {
-        activeLoginProc.kill('SIGTERM');
+        killProcessGroup(activeLoginProc, 'SIGTERM');
       } catch {
         /* already dead */
       }
@@ -132,7 +135,9 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
       cwd: HOME,
       env: { ...process.env, NO_OPEN_BROWSER: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    trackChild(proc);
     activeLoginProc = proc;
 
     let allOutput = '';

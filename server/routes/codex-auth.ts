@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import { homedir } from 'os';
 import type { RouteDeps, AppConfig } from '../types.js';
+import { trackChild, killProcessGroup } from '../process-groups.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import {
   computeCodexUiStatus,
@@ -38,7 +39,9 @@ function runCodex(
       env: { ...process.env, ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: opts.timeout || 30_000,
+      detached: true,
     });
+    trackChild(proc);
 
     let stdout = '';
     let stderr = '';
@@ -131,7 +134,7 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
   router.post('/api/config/codex-auth/device-login', (_req: Request, res: Response) => {
     if (activeDeviceLoginProc) {
       try {
-        activeDeviceLoginProc.kill('SIGTERM');
+        killProcessGroup(activeDeviceLoginProc, 'SIGTERM');
       } catch {
         /* ignore */
       }
@@ -150,7 +153,9 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
       cwd: HOME,
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    trackChild(proc);
     activeDeviceLoginProc = proc;
 
     let allOutput = '';

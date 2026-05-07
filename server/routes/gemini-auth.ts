@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from 'fs';
 import { spawn } from 'child_process';
 import path from 'path';
 import type { RouteDeps, AppConfig } from '../types.js';
+import { trackChild } from '../process-groups.js';
 
 /**
  * Gemini CLI auth routes.
@@ -36,7 +37,9 @@ function runGemini(
       env: { ...process.env, ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: opts.timeout || 15_000,
+      detached: true,
     });
+    trackChild(proc);
 
     let stdout = '';
     let stderr = '';

@@ -57,6 +57,7 @@ import { migrateAuthRecordIfNeeded } from './users-store.js';
 import { backfillSessionOwners, resetOrgOwnerCache } from './session-ownership.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { ensureSessionWorkspace } from './worktree.js';
+import { installShutdownHandlers, killProcessGroup } from './process-groups.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
 import { uriDecodeGuard, uriErrorHandler } from './uri-error-handler.js';
@@ -745,7 +746,7 @@ saveErrorMessage = chatHandler.saveErrorMessage;
 function handleCancel(sessionId: string): void {
   const proc = activeProcesses.get(sessionId);
   if (proc) {
-    proc.kill('SIGTERM');
+    killProcessGroup(proc, 'SIGTERM');
   }
   handleDelegationCancel(sessionId);
   stmts!.clearSessionQueue.run(sessionId);
@@ -1007,6 +1008,10 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
   // failure, so this cannot throw in practice.
   const shellPath = refreshShellPath();
   console.log(`[shell-path] Captured spawn PATH from ${shellPath.source}`);
+
+  // SIGTERM/SIGINT → drain spawned CLI children before exit, so pm2 restarts
+  // (e.g. max_memory_restart) don't reparent in-flight claudes to init.
+  installShutdownHandlers();
 
   server.listen(PORT, '0.0.0.0', () => {
     const actualPort = (server.address() as AddressInfo).port;

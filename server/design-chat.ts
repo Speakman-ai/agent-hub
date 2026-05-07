@@ -13,6 +13,7 @@
  * `design_message_added` (chat pane) and `design_updated` (iframe reload).
  */
 import { spawn, execFile, type ChildProcess } from 'child_process';
+import { trackChild, killProcessGroup } from './process-groups.js';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { buildSpawnEnv } from './config.js';
@@ -126,7 +127,7 @@ export function handleDesignCancel(designId: string): void {
   const state = activeDesignProcesses.get(designId);
   if (!state) return;
   state.cancelled = true;
-  if (state.proc) state.proc.kill('SIGTERM');
+  if (state.proc) killProcessGroup(state.proc, 'SIGTERM');
 }
 
 // ─── System prompt assembly ────────────────────────────────────────────
@@ -308,11 +309,13 @@ export async function handleDesignChat(
         cwd: designDir,
         env: spawnEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
       }) as ChildProcess;
       state.proc = proc;
+      trackChild(proc);
 
       const timer = setTimeout(() => {
-        proc.kill('SIGTERM');
+        killProcessGroup(proc, 'SIGTERM');
         reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
       }, timeout);
 

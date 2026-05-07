@@ -1,5 +1,6 @@
 import cron, { type ScheduledTask } from 'node-cron';
 import { spawn } from 'child_process';
+import { trackChild, killProcessGroup } from './process-groups.js';
 import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
@@ -222,10 +223,12 @@ export function runClaude(
       cwd,
       env: heartbeatEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    trackChild(proc);
 
     const timer = setTimeout(() => {
-      proc.kill('SIGTERM');
+      killProcessGroup(proc, 'SIGTERM');
       if (options.detailed) {
         reject(
           Object.assign(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`), {

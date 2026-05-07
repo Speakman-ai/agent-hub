@@ -24,7 +24,15 @@ module.exports = {
       exec_mode: 'fork',
       instances: 1,
       autorestart: true,
-      max_memory_restart: '800M',
+      // Server holds session/wiki caches and forks parsers per CLI turn; 800 MB
+      // was being hit during normal autonomous activity, triggering pm2 restart
+      // cycles that orphaned in-flight `claude` children. 2 GB is large enough
+      // to absorb that without masking real leaks.
+      max_memory_restart: '2G',
+      // Give shutdown handlers (server/process-groups.ts) time to drain spawned
+      // CLI children before pm2 escalates SIGTERM → SIGKILL. Default is 1.6 s,
+      // not enough to TERM-then-KILL the subtree cleanly.
+      kill_timeout: 10000,
       env: {
         NODE_ENV: 'production',
         AGENT_HUB_PORT: process.env.AGENT_HUB_PORT || '3051',

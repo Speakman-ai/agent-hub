@@ -305,6 +305,18 @@ matching `delegations` rows `status = 'cancelled'`, clears delegation UI
 meta, and broadcasts `delegation_cancelled`. Each cancelled task still
 returns a result with `error: "Cancelled"` and the original `task` text.
 
+Sub-agent and synthesis CLI spawns are launched with `detached: true`
+and registered with `trackChild` (`server/process-groups.ts`), and
+cancellation/timeout paths call `killProcessGroup` rather than
+`proc.kill`. This means SIGTERM is delivered to the entire process
+group, so the CLI's own grandchildren (Claude Code worker processes,
+shells, etc.) are reaped together with the parent — pm2 restarts and
+user-cancel flows no longer leak orphan claude processes that hold
+RSS until the host runs out of memory. The host shutdown handler
+(`installShutdownHandlers`) drains the same registry on
+`SIGTERM` / `SIGINT` / `SIGHUP`, escalating to SIGKILL after a grace
+window before `process.exit(0)`.
+
 After the round completes, `synthesizeResults` runs. When any task was
 cancelled, `buildDelegationSynthesisPrompt` switches to **lead takeover**
 mode: the prompt **splits** finished vs cancelled vs other-failure rows so

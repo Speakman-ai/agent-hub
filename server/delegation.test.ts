@@ -58,6 +58,7 @@ import type { BroadcastFn, EnrichedAgent, Project, SessionRow, Stmts } from './t
  */
 function makeFakeProc(): {
   proc: EventEmitter & {
+    pid: number;
     stdout: EventEmitter;
     stderr: EventEmitter;
     kill: (sig?: string) => void;
@@ -66,6 +67,13 @@ function makeFakeProc(): {
   fail: (err: Error) => void;
 } {
   const proc = Object.assign(new EventEmitter(), {
+    // High fake pid that's well above /proc/sys/kernel/pid_max on every
+    // supported host. killProcessGroup will call `process.kill(-pid, sig)`
+    // which the kernel rejects with ESRCH; the helper then falls through
+    // to `proc.kill(signal)` which the mock below handles. Without a pid
+    // killProcessGroup short-circuits and `close` never fires, so cancel
+    // tests deadlock.
+    pid: 99_999_999,
     stdout: new EventEmitter(),
     stderr: new EventEmitter(),
     kill: vi.fn((sig?: string) => {

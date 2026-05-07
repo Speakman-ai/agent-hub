@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { spawn, ChildProcess } from 'child_process';
 import { Router, Request, Response } from 'express';
 import { defaultModelForEngine, buildSpawnEnv } from '../config.js';
+import { trackChild, killProcessGroup } from '../process-groups.js';
 import { getDb } from '../db.js';
 import { manualCommitAndPR } from '../auto-git.js';
 import {
@@ -188,10 +189,12 @@ export function summarizeTranscript(
       cwd: cwd || process.env.HOME,
       env: buildSpawnEnv(config),
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    trackChild(proc);
 
     const timer = setTimeout(() => {
-      proc.kill('SIGTERM');
+      killProcessGroup(proc, 'SIGTERM');
       reject(new Error(`Summary timed out after ${Math.round(timeout / 60000)} minutes`));
     }, timeout);
 
@@ -910,11 +913,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       const proc = spawn(claudeBin, args, {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
       });
+      trackChild(proc);
 
       const killTimer = setTimeout(() => {
         console.error(`[rewind] Process timed out after ${REWIND_TIMEOUT_MS}ms — killing`);
-        proc.kill();
+        killProcessGroup(proc);
       }, REWIND_TIMEOUT_MS);
 
       proc.stdout!.on('data', (chunk: Buffer) => {

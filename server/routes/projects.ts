@@ -6,6 +6,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
+import { trackChild, killProcessGroup } from '../process-groups.js';
 import { buildSpawnEnv } from '../config.js';
 import {
   classifyCloneUrl,
@@ -1497,11 +1498,13 @@ This workspace has no git repo and no PR automation — your job is planning, or
         cwd: resolvedCwd,
         env: buildSpawnEnv(config),
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
       });
     } catch (err: unknown) {
       console.error(`[analyze ${analyzeId}] spawn threw:`, (err as Error).message);
       return res.status(500).json({ error: `Failed to spawn claude: ${(err as Error).message}` });
     }
+    trackChild(proc);
 
     const ANALYZE_TIMEOUT_MS = 5 * 60 * 1000;
     let timedOut = false;
@@ -1509,11 +1512,11 @@ This workspace has no git repo and no PR automation — your job is planning, or
       timedOut = true;
       console.error(`[analyze ${analyzeId}] timed out after ${ANALYZE_TIMEOUT_MS}ms, killing`);
       try {
-        proc.kill('SIGTERM');
+        killProcessGroup(proc, 'SIGTERM');
       } catch {}
       setTimeout(() => {
         try {
-          proc.kill('SIGKILL');
+          killProcessGroup(proc, 'SIGKILL');
         } catch {}
       }, 2000);
       broadcast({

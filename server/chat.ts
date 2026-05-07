@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
+import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
 import { clampPayload } from './session-events-store.js';
 import config, { defaultModelForEngine, buildSpawnEnv } from './config.js';
@@ -1286,7 +1287,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         console.log(`[chat] Interrupt received for session ${sessionId} — stopping current task`);
         const proc = activeProcesses.get(sessionId);
         if (proc) {
-          proc.kill('SIGTERM');
+          killProcessGroup(proc, 'SIGTERM');
         }
         if (isDelegating) {
           handleDelegationCancel(sessionId);
@@ -2043,11 +2044,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       cwd: effectiveCwd,
       env: spawnEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Run as its own process-group leader so killProcessGroup(proc) reaches
+      // grandchildren (bash → npm → vitest workers) on cancel/shutdown.
+      detached: true,
     });
 
     const S = stmts;
 
     activeProcesses.set(sessionId, proc);
+    trackChild(proc);
     if (proc.pid) {
       try {
         S.updateActiveTaskPid.run(proc.pid, sessionId);

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
 import { execFile, spawn, ChildProcess } from 'child_process';
+import { trackChild, killProcessGroup } from '../process-groups.js';
 import { promisify } from 'util';
 import http from 'http';
 import os from 'os';
@@ -151,7 +152,9 @@ function runClaude(
       env: { ...buildSpawnEnv(config), ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: opts.timeout || 15_000,
+      detached: true,
     });
+    trackChild(proc);
 
     let stdout = '';
     let stderr = '';
@@ -452,7 +455,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   router.post('/api/config/claude-auth/login', (req: Request, res: Response) => {
     if (activeLoginProc) {
       try {
-        activeLoginProc.kill('SIGTERM');
+        killProcessGroup(activeLoginProc, 'SIGTERM');
       } catch {
         /* already dead */
       }
@@ -489,7 +492,9 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
       cwd: getUserHome(),
       env: { ...buildSpawnEnv(config), BROWSER: 'false' },
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
     });
+    trackChild(proc);
 
     activeLoginProc = proc;
 
@@ -619,7 +624,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
           output: allOutput.trim() || 'Timed out waiting for OAuth URL',
         });
         try {
-          proc.kill('SIGTERM');
+          killProcessGroup(proc, 'SIGTERM');
         } catch {
           /* ignore */
         }
@@ -630,7 +635,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   router.post('/api/config/claude-auth/cancel-login', (_req: Request, res: Response) => {
     if (activeLoginProc) {
       try {
-        activeLoginProc.kill('SIGTERM');
+        killProcessGroup(activeLoginProc, 'SIGTERM');
       } catch {
         /* already dead */
       }
@@ -865,7 +870,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
   const cleanup = (): void => {
     if (activeLoginProc) {
       try {
-        activeLoginProc.kill('SIGTERM');
+        killProcessGroup(activeLoginProc, 'SIGTERM');
       } catch {
         /* already dead */
       }

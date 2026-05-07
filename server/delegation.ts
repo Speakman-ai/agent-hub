@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { buildSpawnEnv, defaultModelForEngine } from './config.js';
+import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { createStreamParser } from './stream-parser.js';
@@ -308,7 +309,7 @@ export function handleDelegationCancel(sessionId: string): void {
     if (!compositeKey.startsWith(keyPrefix)) continue;
     const delegationId = compositeKey.slice(keyPrefix.length);
     state.cancelled = true;
-    if (state.proc) state.proc.kill('SIGTERM');
+    if (state.proc) killProcessGroup(state.proc, 'SIGTERM');
     try {
       stmts.updateDelegation.run('cancelled', null, 'Cancelled by user', delegationId);
     } catch {}
@@ -573,12 +574,14 @@ export async function handleDelegation(
             cwd: spawnCwd,
             env: spawnEnv,
             stdio: ['ignore', 'pipe', 'pipe'],
+            detached: true,
           });
 
           delegationState.proc = proc;
+          trackChild(proc);
 
           const timer = setTimeout(() => {
-            proc.kill('SIGTERM');
+            killProcessGroup(proc, 'SIGTERM');
             reject(new Error(`Timed out after ${Math.round(timeout / 60000)} minutes`));
           }, timeout);
 
@@ -1019,12 +1022,14 @@ export async function synthesizeResults(
         cwd: cwdSynth,
         env: synthEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
       });
 
       activeProcesses.set(sessionId, proc);
+      trackChild(proc);
 
       const timer = setTimeout(() => {
-        proc.kill('SIGTERM');
+        killProcessGroup(proc, 'SIGTERM');
         reject(new Error(`Synthesis timed out after ${Math.round(timeout / 60000)} minutes`));
       }, timeout);
 

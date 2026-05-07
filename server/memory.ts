@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
+import { trackChild, killProcessGroup } from './process-groups.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 
 export function localDateStr(d = new Date()): string {
@@ -200,10 +201,12 @@ function runClaudeForMemory(
       cwd: cwd || process.env.HOME,
       env: spawnEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    trackChild(proc);
 
     const timer = setTimeout(() => {
-      proc.kill('SIGTERM');
+      killProcessGroup(proc, 'SIGTERM');
       reject(new Error('Memory reconciliation timed out'));
     }, timeoutMs);
 
