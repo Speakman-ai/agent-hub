@@ -18,6 +18,8 @@ describe('AUTO_CONTINUATION_PROMPT', () => {
     expect(AUTO_CONTINUATION_PROMPT).toContain(
       '{"actions":[{"tool":"wiki","query":"kanban api"}]}',
     );
+    expect(AUTO_CONTINUATION_PROMPT).toMatch(/skill.*web.*browser|browser.*skill/is);
+    expect(AUTO_CONTINUATION_PROMPT).toContain('"tool":"browser"');
   });
 });
 

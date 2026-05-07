@@ -320,9 +320,9 @@ export function planAutoContinuationRetry(opts: {
 }
 
 export const AUTO_CONTINUATION_PROMPT =
-  'Continue your previous answer using the newly loaded skill/wiki/web context from this same turn. ' +
+  'Continue your previous answer using the newly loaded skill/wiki/web/browser context from this same turn. ' +
   'Use a think -> act -> observe loop when needed. ' +
-  'When you need tools, emit <agenthub:react>{"actions":[{"tool":"wiki","query":"kanban api"}]}</agenthub:react> with your own real query strings; add more action objects for skill or web as needed. ' +
+  'When you need tools, emit <agenthub:react>{"actions":[{"tool":"wiki","query":"kanban api"}]}</agenthub:react> with your own real query strings; add more action objects for skill, web, or browser as needed (browser example: {"tool":"browser","op":"navigate","url":"https://example.com"}). ' +
   'The JSON between the tags must parse with JSON.parse (no comments, no trailing commas, no doc placeholders like an actions array written as bracket-dot-dot-dot-bracket). ' +
   'Answer the original user request directly when done.';
 
