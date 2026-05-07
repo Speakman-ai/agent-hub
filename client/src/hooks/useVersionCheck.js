@@ -7,8 +7,13 @@
  * distribution channel (TestFlight / Expo). Only the installed desktop app
  * can meaningfully be "behind" the server.
  *
- * The caller (App.jsx) already fetches `/api/health` on startup to populate
- * `serverVersion` — this hook consumes that value rather than double-fetching.
+ * **Client version** prefers `app.getVersion()` (see `useClientBuildVersion`) so
+ * the compare matches the DMG installer, not only the Vite-baked constant.
+ *
+ * The caller (App.jsx) passes `serverVersion` from `fetchDesktopUpdateHealth`, which
+ * uses the remote hub, Settings → publicUrl (main-process fetch), or
+ * `VITE_DESKTOP_UPDATE_CHECK_URL` so local bundled mode is not stuck on the
+ * embedded server's version.
  *
  * Dismissal is stored in `sessionStorage` keyed by the specific server
  * version, so the banner comes back if the user connects to a server that
@@ -16,6 +21,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
+import { useClientBuildVersion } from './useClientBuildVersion.js';
 import { compareSemver, buildDmgDownloadUrl } from '../utils/version.js';
 
 const DISMISS_STORAGE_KEY = 'update-dismissed-version';
@@ -59,7 +65,8 @@ export function useVersionCheck({ serverVersion } = {}) {
   const platform = typeof window !== 'undefined' ? window.electronAPI?.platform : undefined;
   const arch = typeof window !== 'undefined' ? window.electronAPI?.arch : undefined;
 
-  const clientVersion = import.meta.env?.VITE_APP_VERSION || null;
+  const rawClient = useClientBuildVersion();
+  const clientVersion = rawClient || null;
   const normalizedServer =
     typeof serverVersion === 'string' && serverVersion.trim() ? serverVersion.trim() : null;
 

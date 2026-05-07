@@ -39,6 +39,7 @@ import { useVisibleIntervalRefresh } from './hooks/useVisibleIntervalRefresh.js'
 import { useDesktopNotifications } from './hooks/useDesktopNotifications.js';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts.js';
 import { useVersionCheck } from './hooks/useVersionCheck.js';
+import { fetchDesktopUpdateHealth } from './utils/desktopUpdateCheck.js';
 import { api } from './utils/api.js';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate.js';
 import { coalescePromiseByKey } from './utils/coalesceInFlight.js';
@@ -70,12 +71,7 @@ import {
   getOrgs,
   switchOrg,
 } from './utils/orgs.js';
-import {
-  getApiBase,
-  getAuthHeaders,
-  getServerBase,
-  reloadForOrgSwitch,
-} from './utils/connection.js';
+import { getApiBase, getAuthHeaders, reloadForOrgSwitch } from './utils/connection.js';
 import { extractSubmittedAskIds } from './utils/askAnswers.js';
 import { getDefaultShortcuts } from './utils/shortcuts.js';
 import {
@@ -2843,24 +2839,23 @@ export default function App() {
 
   const sidebarDataLoading = !projectDataReady || sessionsListLoading;
 
-  // Version-check for the "update available" modal. We fetch /api/health once
-  // on mount to learn the server's version, then compare against the client
-  // bundle's VITE_APP_VERSION inside useVersionCheck. Electron-only; a no-op
-  // in the web client (the hook gates itself on window.electronAPI.isElectron).
-  const [healthServerVersion, setHealthServerVersion] = useState(null);
+  // Version-check for the "update available" modal + Electron sidebar footer.
+  // Local bundled mode compares against Settings → publicUrl (main-process fetch)
+  // so the prompt is not stuck on the embedded server's version.
+  const [electronDesktopHealth, setElectronDesktopHealth] = useState(null);
   useEffect(() => {
-    if (!isElectron) return; // skip the fetch entirely in the browser
-    const base = getServerBase();
-    fetch(`${base}/api/health`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data?.version) setHealthServerVersion(data.version);
-      })
-      .catch(() => {
-        /* offline / unreachable — no prompt, no error */
-      });
+    if (!isElectron) return;
+    let cancelled = false;
+    fetchDesktopUpdateHealth().then((h) => {
+      if (!cancelled && h) setElectronDesktopHealth(h);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [isElectron]);
-  const versionCheck = useVersionCheck({ serverVersion: healthServerVersion });
+  const versionCheck = useVersionCheck({
+    serverVersion: electronDesktopHealth?.version ?? null,
+  });
 
   // Show loading spinner while connecting to the server and loading org data.
   // Includes an org switcher so users can escape a dead remote org.
@@ -3042,6 +3037,8 @@ export default function App() {
               setActiveRoomId(null);
               setSidebarOpen(false);
             }}
+            electronSuppressHealthFetch={isElectron}
+            electronHealthSnapshot={electronDesktopHealth}
           />
         </div>
 

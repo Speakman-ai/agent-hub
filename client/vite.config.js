@@ -40,6 +40,10 @@ export default defineConfig({
     'import.meta.env.VITE_API_PORT': JSON.stringify(apiPort),
     'import.meta.env.VITE_APP_VERSION': JSON.stringify(clientVersion),
     'import.meta.env.VITE_GIT_HASH': JSON.stringify(gitHash),
+    // Optional absolute origin for local Electron when `publicUrl` is unset (e.g. CI DMG)
+    'import.meta.env.VITE_DESKTOP_UPDATE_CHECK_URL': JSON.stringify(
+      process.env.VITE_DESKTOP_UPDATE_CHECK_URL || '',
+    ),
   },
   server: {
     port: 3050,

@@ -18,6 +18,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** CPU architecture (arm64, x64, ia32). Used by the renderer to pick the right DMG when prompting the user to download a newer build. */
   arch: process.arch,
 
+  /** DMG / installer semver from electron-builder (`app.getVersion()`). */
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+
+  /**
+   * Fetch `/api/health` JSON from an absolute http(s) URL in the main process
+   * (avoids renderer CORS when comparing the desktop bundle to a canonical hub).
+   */
+  fetchRemoteHealth: (url) => ipcRenderer.invoke('agenthub-fetch-health', url),
+
   /** Read the connection config from the main process (file-backed). */
   getConnectionConfig: () => ipcRenderer.sendSync('get-connection-config'),
 

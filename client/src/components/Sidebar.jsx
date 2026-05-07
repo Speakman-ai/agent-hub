@@ -22,6 +22,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
+import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
 import AgentAvatar from './AgentAvatar.jsx';
@@ -77,6 +78,9 @@ export default function Sidebar({
   /** Optional PAV controls for the active chat session (left sidebar). */
   onOrchestrationSave,
   showToast,
+  /** Electron: parent provides canonical /api/health so footer matches update prompt. */
+  electronSuppressHealthFetch = false,
+  electronHealthSnapshot = null,
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [hoveredRoom, setHoveredRoom] = useState(null);
@@ -101,10 +105,11 @@ export default function Sidebar({
     }
   };
 
-  const clientVersion = import.meta.env.VITE_APP_VERSION || 'unknown';
+  const clientVersion = useClientBuildVersion() || 'unknown';
   const clientGitHash = import.meta.env.VITE_GIT_HASH || '';
 
   useEffect(() => {
+    if (electronSuppressHealthFetch) return;
     const base = getServerBase();
     fetch(`${base}/api/health`)
       .then((r) => r.json())
@@ -116,7 +121,14 @@ export default function Sidebar({
         setServerVersion(null);
         setServerGitHash(null);
       });
-  }, []);
+  }, [electronSuppressHealthFetch]);
+
+  const footerServerVersion = electronSuppressHealthFetch
+    ? (electronHealthSnapshot?.version ?? null)
+    : serverVersion;
+  const footerServerGitHash = electronSuppressHealthFetch
+    ? (electronHealthSnapshot?.gitHash ?? null)
+    : serverGitHash;
 
   const toggleProjectCollapse = (projectId, e) => {
     e.stopPropagation();
@@ -1055,30 +1067,30 @@ export default function Sidebar({
         <div className="px-3 pt-2 text-xs text-gray-500 flex flex-col gap-0.5">
           <div className="flex items-center gap-1.5">
             <span>v{clientVersion}</span>
-            {serverVersion && serverVersion !== clientVersion && (
+            {footerServerVersion && footerServerVersion !== clientVersion && (
               <span
                 className="inline-flex items-center gap-1 text-amber-400"
-                title={`Client v${clientVersion} · Server v${serverVersion}`}
+                title={`Client v${clientVersion} · Server v${footerServerVersion}`}
               >
                 <AlertTriangle size={12} />
-                <span>server v{serverVersion}</span>
+                <span>server v{footerServerVersion}</span>
               </span>
             )}
           </div>
-          {(clientGitHash || serverGitHash) && (
+          {(clientGitHash || footerServerGitHash) && (
             <div
               className="flex items-center gap-1.5 text-[10px] text-gray-600 font-mono"
               title={
-                serverGitHash && clientGitHash && serverGitHash !== clientGitHash
-                  ? `Client ${clientGitHash} · Server ${serverGitHash} (mismatch — rebuild/redeploy)`
-                  : `Build ${clientGitHash || serverGitHash}`
+                footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash
+                  ? `Client ${clientGitHash} · Server ${footerServerGitHash} (mismatch — rebuild/redeploy)`
+                  : `Build ${clientGitHash || footerServerGitHash}`
               }
             >
               <span>{clientGitHash || '—'}</span>
-              {serverGitHash && clientGitHash && serverGitHash !== clientGitHash && (
+              {footerServerGitHash && clientGitHash && footerServerGitHash !== clientGitHash && (
                 <span className="inline-flex items-center gap-1 text-amber-400">
                   <AlertTriangle size={10} />
-                  <span>server {serverGitHash}</span>
+                  <span>server {footerServerGitHash}</span>
                 </span>
               )}
             </div>

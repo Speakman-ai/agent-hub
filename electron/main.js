@@ -487,6 +487,43 @@ ipcMain.handle('design-pdf:save', async (event, { defaultFilename, data }) => {
   });
 });
 
+/** Packaged app / electron-builder version (normalized DMG semver). */
+ipcMain.handle('get-app-version', () => app.getVersion());
+
+/**
+ * GET JSON health in the main process so local Electron can compare against a
+ * canonical hub (publicUrl) without browser CORS blocking the renderer.
+ */
+ipcMain.handle('agenthub-fetch-health', async (_event, rawUrl) => {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return null;
+  let url;
+  try {
+    url = new URL(rawUrl.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const res = await fetch(url.href, {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || typeof data.version !== 'string' || !data.version.trim()) return null;
+    return {
+      version: data.version.trim(),
+      gitHash: typeof data.gitHash === 'string' ? data.gitHash : '',
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 // ─── Notification IPC handlers ───────────────────────────────────
 
 const notifHandlers = createNotificationHandlers(() => mainWindow);
