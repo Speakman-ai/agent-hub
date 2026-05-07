@@ -46,6 +46,34 @@ describe('stripAssistantControlBlocks', () => {
     expect(result).toContain('I need the wiki skill.');
   });
 
+  it('strips a <agenthub:skill> block wrapped in tilde fences (markdown ~~~)', () => {
+    const text = [
+      'Loading docs skill.',
+      '~~~',
+      '<agenthub:skill>{"name":"wiki-search"}</agenthub:skill>',
+      '~~~',
+    ].join('\n');
+    const result = stripAssistantControlBlocks(text);
+    expect(result).not.toContain('<agenthub:skill>');
+    expect(result).not.toContain('~~~');
+    expect(result).toContain('Loading docs skill.');
+  });
+
+  it('strips fenced skill block with surrounding prose before the fence', () => {
+    const text = [
+      'Wrapping up this turn.',
+      '',
+      '```json',
+      '<agenthub:skill>{"name":"kanban","reason":"next turn"}',
+      '</agenthub:skill>',
+      '```',
+    ].join('\n');
+    const result = stripAssistantControlBlocks(text);
+    expect(result).toContain('Wrapping up this turn.');
+    expect(result).not.toContain('<agenthub:skill>');
+    expect(result).not.toContain('```');
+  });
+
   it('strips a naked <agenthub:react> block', () => {
     const text = [
       'Searching wiki.',

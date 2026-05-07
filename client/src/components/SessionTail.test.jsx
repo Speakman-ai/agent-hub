@@ -343,6 +343,21 @@ describe('eventsToBlocks — control block stripping (regression: v1.13.0)', () 
     expect(blocks[0].text).toBe('Analysis complete. No issues found.');
   });
 
+  it('strips a tilde-fenced <agenthub:skill> block (~~~ markdown variant)', () => {
+    const text = [
+      'Using wiki-search.',
+      '~~~',
+      '<agenthub:skill>{"name":"wiki-search"}</agenthub:skill>',
+      '~~~',
+    ].join('\n');
+    const events = wrap([{ type: 'assistant_text', text, partial: false }]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).not.toContain('<agenthub:skill>');
+    expect(blocks[0].text).not.toContain('~~~');
+    expect(blocks[0].text).toContain('Using wiki-search.');
+  });
+
   it('produces no text block when the ONLY content is a control block (agent emitting just the invocation)', () => {
     const events = wrap([
       {

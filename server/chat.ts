@@ -57,6 +57,7 @@ import {
   extractJsonFromTagBody,
   stripFencedCodeBlockBodies,
 } from './action-block-parsing.js';
+import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantControlBlocks.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -798,17 +799,7 @@ export function consumePendingSkillInjection(
   }
 }
 
-export function stripAssistantControlBlocks(text: string): string {
-  if (typeof text !== 'string' || !text) return text;
-  return text
-    .replace(/<agenthub:react>\s*[\s\S]*?\s*<\/agenthub:react>/gi, '')
-    .replace(/<agenthub:skill>\s*[\s\S]*?\s*<\/agenthub:skill>/gi, '')
-    .replace(/<agenthub:wiki>\s*[\s\S]*?\s*<\/agenthub:wiki>/gi, '')
-    .replace(/<agenthub:task-state>\s*[\s\S]*?\s*<\/agenthub:task-state>/gi, '')
-    .replace(/<agenthub:triage>\s*[\s\S]*?\s*<\/agenthub:triage>/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
+export { stripAssistantControlBlocks };
 
 export function detectReActBlock(text: string): string | null {
   if (typeof text !== 'string' || !text.trim()) return null;

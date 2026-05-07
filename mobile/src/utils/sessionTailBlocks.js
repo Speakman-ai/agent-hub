@@ -8,39 +8,9 @@
  * Pure functions — unit-tested without a React Native environment.
  */
 
-const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookRead']);
+import { stripAssistantControlBlocks } from '../../../shared/utils/stripAssistantControlBlocks.js';
 
-/**
- * Strip agent-side action blocks from rendered text.
- * Mobile twin of `client/src/utils/controlBlocks.js`.
- */
-function stripAssistantControlBlocks(text) {
-  if (typeof text !== 'string' || !text) return text;
-  const TAGS = [
-    'agenthub:react',
-    'agenthub:skill',
-    'agenthub:wiki',
-    'agenthub:task-state',
-    'agenthub:triage',
-  ];
-  let result = text;
-  for (const tag of TAGS) {
-    const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Fenced block first (before naked) to avoid leaving empty ``` lines.
-    result = result.replace(
-      new RegExp(
-        `\`\`\`[^\`\\n]*\\n[ \\t]*<${escapedTag}>[\\s\\S]*?<\\/${escapedTag}>[ \\t]*\\n[ \\t]*\`\`\``,
-        'gi',
-      ),
-      '',
-    );
-    result = result.replace(
-      new RegExp(`<${escapedTag}>\\s*[\\s\\S]*?\\s*<\\/${escapedTag}>`, 'gi'),
-      '',
-    );
-  }
-  return result.replace(/\n{3,}/g, '\n\n').trim();
-}
+const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookRead']);
 
 /**
  * @param {{ seq?: number, event: object }[]|null|undefined} events

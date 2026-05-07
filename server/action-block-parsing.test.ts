@@ -573,9 +573,11 @@ describe('detectSkillBlock — fenced examples are NOT detected', () => {
     expect(got).not.toContain('"example"');
   });
 
-  it('treats triple-tilde fences the same as triple-backtick', () => {
-    const text = ['~~~', '<agenthub:skill>{"name":"docs"}</agenthub:skill>', '~~~'].join('\n');
-    expect(detectSkillBlock(text)).toBeNull();
+  it('detects a skill block inside triple-tilde fences at end of message', () => {
+    const text = ['~~~', '<agenthub:skill>{"name":"kanban"}</agenthub:skill>', '~~~'].join('\n');
+    const got = detectSkillBlock(text);
+    expect(got).not.toBeNull();
+    expect(got).toContain('kanban');
   });
 });
 
@@ -688,6 +690,19 @@ describe('detectTagBlockInLastFence', () => {
     const got = detectTagBlockInLastFence(text, 'agenthub:react');
     expect(got).not.toBeNull();
     expect(got).toContain('deployment');
+  });
+
+  it('finds a tag inside the last ~~~ fence at EOF', () => {
+    const text = [
+      'Loading skill.',
+      '~~~json',
+      '<agenthub:skill>{"name":"wiki-search","reason":"docs"}',
+      '</agenthub:skill>',
+      '~~~',
+    ].join('\n');
+    const got = detectTagBlockInLastFence(text, 'agenthub:skill');
+    expect(got).not.toBeNull();
+    expect(got).toContain('wiki-search');
   });
 });
 

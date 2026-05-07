@@ -361,28 +361,25 @@ export function stripFencedCodeBlockBodies(text: string): string {
 export function detectTagBlockInLastFence(text: string, tagName: string): string | null {
   if (typeof text !== 'string' || !text.trim()) return null;
 
-  // Find the last fenced code block that ends at (or very close to) the tail
-  // of the message. We look for a closing fence (```) and then only accept it
-  // when nothing but whitespace follows.
-  //
-  // The regex intentionally uses a lazy `[\s\S]*?` for the body so it grabs
-  // the LAST possible fence pair rather than the first.
-  const lastFenceRe = /```(?:[^\n`]*)?\n([\s\S]*?)\n[ \t]*```[ \t]*$/;
-  const m = text.match(lastFenceRe);
-  if (!m) return null;
+  const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tagRe = new RegExp(`<${escaped}>\\s*[\\s\\S]*?\\s*</${escaped}>`, 'i');
 
-  const fenceBody = m[1] ?? '';
-
-  // Confirm the fence starts after all substantive prose has ended.  The
-  // matched `\`\`\`` position in `text` can be cross-checked by verifying that
-  // only whitespace precedes it on the same line — but the regex anchor `$`
-  // already guarantees nothing meaningful follows the closing fence.  For the
-  // opening fence we simply require the body contains an action block and rely
-  // on the "last fence wins" selection to reject mid-message documentation.
-  const tagRe = new RegExp(
-    `<${tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}>\\s*[\\s\\S]*?\\s*<\\/${tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}>`,
-    'i',
-  );
-  const tagMatch = fenceBody.match(tagRe);
-  return tagMatch ? tagMatch[0] : null;
+  /** Last ``` or ~~~ fence that runs to EOF, with the same fence char on open/close. */
+  const candidates: Array<{ block: string; matchIndex: number }> = [];
+  for (const fence of ['```', '~~~'] as const) {
+    const notInInfo = fence === '```' ? '[^\n`]*' : '[^\n~]*';
+    const fenceTailRe = new RegExp(
+      `${fence}${notInInfo}?\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*${fence}[ \\t]*$`,
+    );
+    const m = text.match(fenceTailRe);
+    if (!m || m.index === undefined) continue;
+    const fenceBody = m[1] ?? '';
+    const tagMatch = fenceBody.match(tagRe);
+    if (tagMatch) {
+      candidates.push({ block: tagMatch[0], matchIndex: m.index });
+    }
+  }
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => a.matchIndex - b.matchIndex);
+  return candidates[candidates.length - 1]!.block;
 }

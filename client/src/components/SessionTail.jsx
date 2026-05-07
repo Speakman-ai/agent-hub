@@ -1307,6 +1307,12 @@ function TextBubble({
   parentSessionActive,
   onOpenSession,
 }) {
+  // Strip <agenthub:skill> / <agenthub:react> / … before coordination blocks.
+  // `eventsToBlocks` already strips for persisted session_events, but this
+  // bubble also renders `message.content` during early streaming (before the
+  // first session_event) — that path must not leak fenced skill blocks into
+  // the markdown renderer.
+  const scrubbed = stripAssistantControlBlocks(text);
   // Strip any <handoff>/<delegate> blocks from the prose so the raw JSON
   // wall doesn't end up rendered inline. The blocks are surfaced separately
   // as dedicated cards below the prose. Rendering delegate blocks here as a
@@ -1315,7 +1321,7 @@ function TextBubble({
   // WebSocket events that can be dropped or missed when the user switches
   // sessions, so the message-anchored card is the reliable visual signal.
   const { stripped, handoff, handoffMalformed, delegate, delegateMalformed } =
-    extractCoordinationBlocks(text);
+    extractCoordinationBlocks(scrubbed);
   const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
   const malformedProps = handoffMalformed
     ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)
@@ -1524,8 +1530,9 @@ function LegacyAssistantBubble({
   // raw `<handoff>...</handoff>` JSON in their content. Delegate blocks get
   // the same treatment: the message-anchored DelegateCard is the persistent
   // visual record even when live WebSocket events never arrived.
+  const scrubbed = stripAssistantControlBlocks(message.content);
   const { stripped, handoff, handoffMalformed, delegate, delegateMalformed } =
-    extractCoordinationBlocks(message.content);
+    extractCoordinationBlocks(scrubbed);
   const handoffRow = handoff ? pickHandoffRow(handoff, sessionHandoffs) : null;
   const malformedProps = handoffMalformed
     ? buildMalformedHandoffProps(handoffMalformed, sessionHandoffs)

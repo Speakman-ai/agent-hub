@@ -48,6 +48,34 @@ describe('stripAssistantControlBlocks', () => {
     expect(out).toContain('Done.');
     expect(out).not.toContain('task-state');
   });
+
+  it('removes a fenced <agenthub:skill> block (persisted message shape)', () => {
+    const input = [
+      'Answer complete.',
+      '',
+      '```',
+      '<agenthub:skill>{"name":"kanban","reason":"cards"}',
+      '</agenthub:skill>',
+      '```',
+    ].join('\n');
+    const out = stripAssistantControlBlocks(input);
+    expect(out).toContain('Answer complete.');
+    expect(out).not.toContain('<agenthub:skill>');
+    expect(out).not.toContain('```');
+  });
+
+  it('removes a tilde-fenced <agenthub:skill> block', () => {
+    const input = [
+      'Done.',
+      '~~~',
+      '<agenthub:skill>{"name":"wiki-search"}</agenthub:skill>',
+      '~~~',
+    ].join('\n');
+    const out = stripAssistantControlBlocks(input);
+    expect(out).toContain('Done.');
+    expect(out).not.toContain('<agenthub:skill>');
+    expect(out).not.toContain('~~~');
+  });
 });
 
 describe('ReAct block parse', () => {
