@@ -57,6 +57,17 @@ function renderTemplate(tpl: string, vars: Record<string, unknown>): string {
   });
 }
 
+const here = dirname(fileURLToPath(import.meta.url));
+const libprofilerStubPath = resolve(
+  here,
+  '..',
+  'ops',
+  'terraform',
+  'templates',
+  'libprofiler-stub.c',
+);
+const LIBPROFILER_STUB_B64 = readFileSync(libprofilerStubPath).toString('base64');
+
 const RENDER_VARS_BASE = {
   node_major: 22,
   app_user: 'agenthub',
@@ -82,6 +93,7 @@ const RENDER_VARS_BASE = {
   config_json_b64: '',
   pr_env_preview_host: '',
   cert_renewal_email: '',
+  libprofiler_stub_c_b64: LIBPROFILER_STUB_B64,
 };
 
 /**
@@ -126,7 +138,6 @@ const PR_ENV_FIXTURE = {
  * See: fix/al2023-curl-conflict.
  */
 describe('agent-hub-user-data.tftpl', () => {
-  const here = dirname(fileURLToPath(import.meta.url));
   const tplPath = resolve(here, '..', 'ops', 'terraform', 'agent-hub-user-data.tftpl');
   const tpl = readFileSync(tplPath, 'utf8');
 
@@ -146,6 +157,23 @@ describe('agent-hub-user-data.tftpl', () => {
     // `git` is used to clone the repo on the legacy bootstrap paths;
     // `ca-certificates` is required for TLS to docker registries / GitHub.
     expect(tpl).toMatch(/\$PKG_INSTALL\s+ca-certificates\s+git\b/);
+  });
+
+  it('embeds an AL2023 libprofiler workaround (nginx linked to broken gperftools build)', () => {
+    expect(tpl).toContain('maybe_fix_al2023_nginx_libprofiler()');
+    expect(tpl).toContain(
+      "printf '%s' '${libprofiler_stub_c_b64}' | base64 -d >/tmp/libprofiler-stub.c",
+    );
+    const stub = readFileSync(libprofilerStubPath, 'utf8');
+    for (const sym of [
+      'ProfilerStart',
+      'ProfilerStartWithOptions',
+      'ProfilerStop',
+      'ProfilerGetCurrentState',
+      'ProfilerGetStackTrace',
+    ]) {
+      expect(stub, `stub must export ${sym}`).toContain(sym);
+    }
   });
 
   // Context: the server container image uses node:22-slim and runs as the
@@ -194,6 +222,12 @@ describe('agent-hub-user-data.tftpl', () => {
           /\bpython3-certbot-route53\b/,
         );
       }
+    });
+
+    it('runs the AL2023 libprofiler stub between nginx package install and enabling nginx', () => {
+      expect(rendered).toMatch(
+        /\$PKG_INSTALL nginx certbot python3-certbot-dns-route53\nmaybe_fix_al2023_nginx_libprofiler\nsystemctl enable --now nginx/,
+      );
     });
 
     it('drops the base nginx vhost in /etc/nginx/conf.d/ (the dir AL2023 actually loads)', () => {
@@ -610,5 +644,18 @@ describe('agent-hub-user-data.tftpl', () => {
         /exec docker run --rm --name agenthub-server[\s\S]*?--env-file "\\\$REPO_DIR\/\.env"/,
       );
     });
+  });
+
+  it('runs the libprofiler stub after PM2-path nginx install', () => {
+    const r = renderTemplate(tpl, {
+      ...RENDER_VARS_BASE,
+      pr_env_enabled: false,
+      use_ecr_pull: false,
+      use_docker_bootstrap: false,
+      use_pm2_bootstrap: true,
+    });
+    expect(r).toMatch(
+      /\$PKG_INSTALL nginx\nmaybe_fix_al2023_nginx_libprofiler\nsystemctl enable nginx/,
+    );
   });
 });

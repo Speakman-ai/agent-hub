@@ -231,6 +231,10 @@ locals {
   pr_env_config_json     = local.pr_env_config != null ? jsonencode(local.pr_env_config) : ""
   pr_env_config_json_b64 = local.pr_env_config_json != "" ? base64encode(local.pr_env_config_json) : ""
 
+  # Embedded in EC2 user-data (base64) so first boot can compile a no-op
+  # libprofiler.so.0 on AL2023 when stock nginx links a broken gperftools build.
+  libprofiler_stub_c_b64 = filebase64("${path.module}/templates/libprofiler-stub.c")
+
   user_data_templated = templatefile(
     "${path.module}/agent-hub-user-data.tftpl",
     {
@@ -257,8 +261,9 @@ locals {
       # pr_env_config.nginx.{certPath,keyPath}). The email is the Let's Encrypt
       # registration contact; it is required at plan time when
       # local.pr_env_host_nginx_enabled = true (precondition on aws_instance.app).
-      pr_env_preview_host = local.pr_env_preview_host_resolved
-      cert_renewal_email  = var.cert_renewal_email != null ? trimspace(var.cert_renewal_email) : ""
+      pr_env_preview_host    = local.pr_env_preview_host_resolved
+      cert_renewal_email     = var.cert_renewal_email != null ? trimspace(var.cert_renewal_email) : ""
+      libprofiler_stub_c_b64 = local.libprofiler_stub_c_b64
     }
   )
 }
