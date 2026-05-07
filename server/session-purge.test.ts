@@ -28,6 +28,8 @@ import { WORKSPACES_ROOT, removeWorkspace, cleanupStaleWorkspaces } from './work
 import {
   purgeExpiredArchivedSessions,
   cleanupAllProjectWorkspaces,
+  pruneOrphanedSessionEvents,
+  runWorkspacePurge,
   type PurgeDeps,
 } from './session-purge.js';
 import type { Project } from './types.js';
@@ -282,6 +284,88 @@ describe('cleanupAllProjectWorkspaces', () => {
     cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
 
     expect(existsSync(cronDir)).toBe(true);
+  });
+});
+
+describe('pruneOrphanedSessionEvents', () => {
+  let fixture: ReturnType<typeof makeProjectFixture>;
+
+  beforeEach(() => {
+    fixture = makeProjectFixture();
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  it('removes session_events whose parent message was hard-deleted', () => {
+    const db = getDb();
+    const stmts = getStmts();
+
+    // Create a live session with one message + 2 events. The events
+    // should survive the sweep.
+    const liveSession = makeSession(fixture.workspaceDir, { deletedAtSql: null });
+    const liveMsgId = `msg-${liveSession.id.slice(0, 8)}`;
+    db.prepare(`INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)`).run(
+      liveMsgId,
+      liveSession.id,
+      'assistant',
+      'live',
+    );
+    stmts.addSessionEvent.run('message', liveMsgId, 1, 'tool_use', '{}');
+    stmts.addSessionEvent.run('message', liveMsgId, 2, 'tool_result', '{}');
+
+    // Insert orphan events directly (parent_id pointing at a message
+    // that never existed — simulating post-cascade-delete state).
+    stmts.addSessionEvent.run('message', 'msg-ghost', 1, 'assistant_text', '{}');
+    stmts.addSessionEvent.run('message', 'msg-ghost', 2, 'tool_result', '{}');
+    stmts.addSessionEvent.run('message', 'msg-ghost', 3, 'tool_result', '{}');
+
+    pruneOrphanedSessionEvents(depsFor(fixture.projectCwd));
+
+    const remaining = db.prepare('SELECT parent_id FROM session_events ORDER BY id').all() as {
+      parent_id: string;
+    }[];
+    expect(remaining.map((r) => r.parent_id)).toEqual([liveMsgId, liveMsgId]);
+  });
+
+  it('runWorkspacePurge cascades: archived-session delete then orphan sweep in one tick', () => {
+    const db = getDb();
+    const stmts = getStmts();
+
+    // Archived session past the 24h window.
+    const expiredAt = new Date(Date.now() - 25 * 60 * 60 * 1000)
+      .toISOString()
+      .replace('T', ' ')
+      .slice(0, 19);
+    const archived = makeSession(fixture.workspaceDir, { deletedAtSql: expiredAt });
+
+    // Add a message + events. After purgeExpiredArchivedSessions runs,
+    // FK CASCADE deletes the message but session_events stay (no FK).
+    // The orphan sweep should clean them up in the same tick.
+    const archivedMsgId = `msg-${archived.id.slice(0, 8)}`;
+    db.prepare(`INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, ?, ?)`).run(
+      archivedMsgId,
+      archived.id,
+      'user',
+      'goodbye',
+    );
+    stmts.addSessionEvent.run('message', archivedMsgId, 1, 'tool_use', '{}');
+    stmts.addSessionEvent.run('message', archivedMsgId, 2, 'tool_result', '{}');
+
+    runWorkspacePurge(depsFor(fixture.projectCwd));
+
+    // Session row gone.
+    const sessionRow = db.prepare('SELECT id FROM sessions WHERE id = ?').get(archived.id);
+    expect(sessionRow).toBeUndefined();
+    // Cascade dropped the message.
+    const msgRow = db.prepare('SELECT id FROM messages WHERE id = ?').get(archivedMsgId);
+    expect(msgRow).toBeUndefined();
+    // Orphan sweep dropped the events.
+    const eventRows = db
+      .prepare('SELECT COUNT(*) AS n FROM session_events WHERE parent_id = ?')
+      .get(archivedMsgId) as { n: number };
+    expect(eventRows.n).toBe(0);
   });
 });
 

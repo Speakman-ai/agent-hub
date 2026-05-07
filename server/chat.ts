@@ -5,6 +5,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
 import { createStreamParser } from './stream-parser.js';
+import { clampPayload } from './session-events-store.js';
 import config, { defaultModelForEngine, buildSpawnEnv } from './config.js';
 import { getActualPort } from './server-port.js';
 import { resolveProjectPaths, contextFilePath } from './project-paths.js';
@@ -2005,7 +2006,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
     const handleEvent = (event: StreamEvent): void => {
       try {
-        S.addSessionEvent.run('message', assistantMsgId, ++seq, event.type, JSON.stringify(event));
+        // Clamp the serialized payload to MAX_PAYLOAD_BYTES so a single
+        // huge tool_result / tool_use cannot blow up the table. See
+        // session-events-store.ts for the truncation envelope shape.
+        S.addSessionEvent.run(
+          'message',
+          assistantMsgId,
+          ++seq,
+          event.type,
+          clampPayload(JSON.stringify(event)),
+        );
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         console.error('Failed to persist session_event:', message);

@@ -33,6 +33,7 @@ import {
   cleanupStaleWorkspaces as defaultCleanupStaleWorkspaces,
 } from './worktree.js';
 import { getProjects as defaultGetProjects } from './project-model.js';
+import { pruneOrphanSessionEvents } from './session-events-store.js';
 import type { Project, Stmts } from './types.js';
 import type Database from 'better-sqlite3';
 
@@ -172,10 +173,31 @@ export function cleanupAllProjectWorkspaces(deps: PurgeDeps = defaultDeps()): vo
 }
 
 /**
+ * Sweep `session_events` rows whose parent message/heartbeat/cron row
+ * is gone. Runs after the archived-session purge (which cascades into
+ * `messages`) so freshly-orphaned events from this tick are caught the
+ * same day. See `session-events-store.ts` for the rationale and SQL.
+ */
+export function pruneOrphanedSessionEvents(deps: PurgeDeps = defaultDeps()): void {
+  try {
+    const result = pruneOrphanSessionEvents(deps.db);
+    if (result.totalDeleted > 0) {
+      console.log(
+        `[Purge] Swept ${result.totalDeleted} orphan session_event row(s) ` +
+          `(message=${result.messageOrphans}, heartbeat=${result.heartbeatOrphans}, cron=${result.cronOrphans}).`,
+      );
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[Purge] Orphan session_events sweep threw:', message);
+  }
+}
+
+/**
  * Combined daily tick — purge expired archived sessions, then sweep stale
- * clones. Call from `scheduleAll` (daily cron) and once at server startup.
- * Wrapped in a top-level try so a SQLite/FS hiccup never poisons the
- * scheduler.
+ * clones, then sweep orphan `session_events`. Call from `scheduleAll`
+ * (daily cron) and once at server startup. Wrapped in a top-level try
+ * so a SQLite/FS hiccup never poisons the scheduler.
  */
 export function runWorkspacePurge(deps: PurgeDeps = defaultDeps()): PurgeResult {
   let result: PurgeResult = { rowsDeleted: 0, workspacesRemoved: 0 };
@@ -191,5 +213,8 @@ export function runWorkspacePurge(deps: PurgeDeps = defaultDeps()): PurgeResult 
     const message = err instanceof Error ? err.message : String(err);
     console.error('[Purge] Stale-clone sweep threw:', message);
   }
+  // Run orphan sweep after archived-session purge so any rows freshly
+  // orphaned by the cascade in this same tick are reclaimed today.
+  pruneOrphanedSessionEvents(deps);
   return result;
 }
