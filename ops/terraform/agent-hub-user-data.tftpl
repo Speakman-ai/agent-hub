@@ -40,8 +40,11 @@ $PKG_INSTALL ca-certificates git
 # via certbot DNS-01 against Route 53) and reverse-proxies to per-PR
 # containers listening on 3100-3999 on the host loopback. The Hub control
 # plane drops one fragment per active PR into
-# /etc/nginx/conf.d/agent-hub-pr-*.conf and triggers `nginx -t` +
+# /etc/nginx/conf.d/pr-<N>.preview.conf and triggers `nginx -t` +
 # `systemctl reload nginx` via the narrow sudoers.d allowlist below.
+# (The base file's include glob pins this exact filename shape — see
+# templates/pr-env-base-nginx.conf.tftpl for why it must NOT match the
+# base file itself.)
 #
 # Package note: the certbot Route 53 DNS plugin is `python3-certbot-dns-route53`
 # on both AL2023 (`dnf`) and Ubuntu (`apt`). The shorter name
@@ -51,13 +54,20 @@ $PKG_INSTALL ca-certificates git
 $PKG_INSTALL nginx certbot python3-certbot-dns-route53
 systemctl enable --now nginx
 
-# Base vhost: include /etc/nginx/conf.d/agent-hub-pr-*.conf so the Hub can
-# drop per-PR fragments without rewriting the main config. We write to
-# /etc/nginx/conf.d/ (NOT /etc/nginx/sites-enabled/) because that is the
-# directory included by AL2023's stock nginx.conf and by Ubuntu's. The
-# Debian-style sites-available/sites-enabled split is NOT pulled in by
-# AL2023's default config, so files dropped there sit on disk and are
+# Base vhost: include /etc/nginx/conf.d/pr-[0-9]*.preview.conf so the Hub
+# can drop per-PR fragments without rewriting the main config. We write
+# to /etc/nginx/conf.d/ (NOT /etc/nginx/sites-enabled/) because that is
+# the directory included by AL2023's stock nginx.conf and by Ubuntu's.
+# The Debian-style sites-available/sites-enabled split is NOT pulled in
+# by AL2023's default config, so files dropped there sit on disk and are
 # silently never loaded.
+#
+# Glob shape note: an earlier revision used `agent-hub-pr-*.conf`, which
+# matches THIS base file (`agent-hub-pr-base.conf`) and recursed into the
+# same fragment, segfaulting nginx on `nginx -t` + reload. The new shape
+# (`pr-[0-9]*.preview.conf`) starts with `pr-` (no `agent-hub-` prefix)
+# so it cannot match the base file, and matches the actual writer output
+# (server/container-pool/nginx-template.ts → previewConfFilename).
 install -d -m 0755 /etc/nginx/conf.d
 cat >/etc/nginx/conf.d/agent-hub-pr-base.conf <<'NGINXBASE'
 ${pr_env_base_nginx_conf}

@@ -4,16 +4,28 @@
 # /etc/nginx/conf.d/agent-hub-pr-base.conf when
 # `enable_pr_env_host_nginx = true`. Its only job is to include per-PR
 # fragments — the Hub control plane writes one vhost per active PR to
-# /etc/nginx/conf.d/agent-hub-pr-*.conf and reloads nginx via the
-# narrow sudoers allowlist defined in user-data.
+# /etc/nginx/conf.d/pr-<N>.preview.conf (see
+# server/container-pool/nginx-template.ts → previewConfFilename) and
+# reloads nginx via the narrow sudoers allowlist defined in user-data.
 #
-# IMPORTANT: this directory MUST match the directory the user-data
+# IMPORTANT — glob shape:
+#   The include pattern MUST NOT match this base file itself, or nginx
+#   recurses into the same config and segfaults at startup / reload. The
+#   `pr-[0-9]*.preview.conf` shape is two-pronged:
+#     1. Begins with `pr-` (not `agent-hub-pr-`) so it never matches
+#        agent-hub-pr-base.conf.
+#     2. Matches the actual filename the writer emits (pr-<N>.preview.conf)
+#        so per-PR vhosts are picked up.
+#   Server-side regression test in server/user-data-template.test.ts
+#   asserts both the write directory and this glob agree, and pins the
+#   leading `pr-[0-9]*` prefix so a future regression can't reintroduce a
+#   self-matching glob.
+#
+# IMPORTANT — directory: this MUST match the directory the user-data
 # template writes to (/etc/nginx/conf.d/). AL2023's stock nginx.conf
-# includes conf.d/ but NOT sites-enabled/; the regression test in
-# server/user-data-template.test.ts asserts the include glob and the
-# write path agree.
+# includes conf.d/ but NOT sites-enabled/.
 #
 # Per-PR fragments are responsible for their own server { ... } blocks,
 # TLS cert paths (issued by certbot DNS-01 against the wildcard zone),
 # and proxy_pass targets in the 3100-3999 host-port range.
-include /etc/nginx/conf.d/agent-hub-pr-*.conf;
+include /etc/nginx/conf.d/pr-[0-9]*.preview.conf;

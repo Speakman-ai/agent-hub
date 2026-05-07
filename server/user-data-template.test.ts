@@ -73,7 +73,12 @@ const RENDER_VARS_BASE = {
   docker_env_b64: '',
   image_uri: 'public.ecr.aws/example/agent-hub:main',
   ssm_deb_url: 'https://example.invalid/ssm.deb',
-  pr_env_base_nginx_conf: 'include /etc/nginx/sites-enabled/agent-hub-pr-*.conf;',
+  // Stand-in fixture for the rendered base nginx fragment. The shape MUST
+  // match what ops/terraform/templates/pr-env-base-nginx.conf.tftpl emits,
+  // including the non-self-matching glob (`pr-[0-9]*.preview.conf`) — see
+  // the "include glob and write directory agree" cross-file test below
+  // which reads the real template and asserts the production glob pattern.
+  pr_env_base_nginx_conf: 'include /etc/nginx/conf.d/pr-[0-9]*.preview.conf;',
   config_json_b64: '',
   pr_env_preview_host: '',
   cert_renewal_email: '',
@@ -201,9 +206,22 @@ describe('agent-hub-user-data.tftpl', () => {
       );
       // And the include glob inside the base file MUST match the directory we
       // write per-PR fragments to — otherwise the Hub control plane can drop
-      // fragments that nginx silently ignores. This is the assertion the
-      // reviewer explicitly asked for.
-      expect(rendered).toMatch(/include\s+\/etc\/nginx\/conf\.d\/agent-hub-pr-\*\.conf/);
+      // fragments that nginx silently ignores. The glob must also be
+      // non-self-matching: an earlier revision used `agent-hub-pr-*.conf`,
+      // which matches the base file (`agent-hub-pr-base.conf`) itself and
+      // recursively re-enters the same fragment, making `nginx -t` and any
+      // reload segfault. The new shape (`pr-[0-9]*.preview.conf`) starts
+      // with `pr-` (no `agent-hub-` prefix) so it cannot match the base
+      // file, and matches the actual writer output (see
+      // server/container-pool/nginx-template.ts → previewConfFilename).
+      expect(rendered).toMatch(/include\s+\/etc\/nginx\/conf\.d\/pr-\[0-9\]\*\.preview\.conf/);
+      // Belt-and-suspenders: assert the legacy self-matching glob does NOT
+      // appear, so a future copy-paste regression trips this test loudly
+      // rather than silently re-introducing the segfault.
+      expect(
+        rendered,
+        'must not reintroduce the self-matching `agent-hub-pr-*.conf` glob (recursive include → segfault)',
+      ).not.toMatch(/include\s+\/etc\/nginx\/conf\.d\/agent-hub-pr-\*\.conf/);
     });
 
     it('runs `nginx -t && systemctl reload nginx` after writing the base file', () => {
@@ -503,14 +521,38 @@ describe('agent-hub-user-data.tftpl', () => {
       expect(writeMatch, 'user-data must `cat >` the base file under /etc/nginx').not.toBeNull();
       const writeDir = writeMatch![1]!;
 
-      const includeMatch = baseTpl.match(/include\s+(\/etc\/nginx\/[^/]+)\/agent-hub-pr-\*\.conf/);
-      expect(includeMatch, 'base sub-template must declare an include glob').not.toBeNull();
+      // Match the include glob that points at per-PR fragments. The
+      // pattern MUST be `pr-[0-9]*.preview.conf` (matches the actual
+      // writer output, does NOT match the base file itself); see
+      // server/container-pool/nginx-template.ts → previewConfFilename.
+      // Capturing the literal glob lets us assert non-self-match below.
+      const includeMatch = baseTpl.match(
+        /include\s+(\/etc\/nginx\/[^/]+)\/(pr-\[0-9\]\*\.preview\.conf)/,
+      );
+      expect(
+        includeMatch,
+        'base sub-template must declare a non-self-matching include glob (`pr-[0-9]*.preview.conf`)',
+      ).not.toBeNull();
       const includeDir = includeMatch![1]!;
+      const includeGlob = includeMatch![2]!;
 
       expect(includeDir, 'include glob dir must match the write dir').toBe(writeDir);
       // Belt-and-suspenders: surface the actual directory in the assertion
       // message if a future regression flips one of them to sites-enabled.
       expect(writeDir).toBe('/etc/nginx/conf.d');
+
+      // Independent self-match guard: the captured glob, if expanded by a
+      // shell-style matcher, MUST NOT match `agent-hub-pr-base.conf`
+      // (recursive include → nginx segfault). We assert by checking the
+      // glob's literal prefix is `pr-` and not `agent-hub-pr-`.
+      expect(
+        includeGlob.startsWith('pr-'),
+        'include glob must start with `pr-` (not `agent-hub-pr-`) so it cannot match the base file',
+      ).toBe(true);
+      expect(
+        includeGlob.startsWith('agent-hub-pr-'),
+        'must not reintroduce the self-matching `agent-hub-pr-*.conf` glob',
+      ).toBe(false);
     });
   });
 

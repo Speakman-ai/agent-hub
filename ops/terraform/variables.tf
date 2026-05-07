@@ -449,7 +449,9 @@ variable "enable_pr_env_host_nginx" {
     When effectively enabled, instance user-data:
       - installs host nginx + certbot + python3-certbot-dns-route53
       - drops a base vhost at /etc/nginx/conf.d/agent-hub-pr-base.conf that includes
-        /etc/nginx/conf.d/agent-hub-pr-*.conf so the Hub can fan out per-PR fragments
+        /etc/nginx/conf.d/pr-[0-9]*.preview.conf so the Hub can fan out per-PR fragments
+        (the glob is intentionally non-self-matching — the legacy `agent-hub-pr-*.conf`
+        shape matched the base file itself and recursed nginx into a segfault)
       - writes a narrow sudoers.d allowlist for the app user
         (/usr/sbin/nginx -t, /bin/systemctl reload nginx, /usr/bin/certbot)
       - runs the Hub container with the host docker socket bind-mounted
