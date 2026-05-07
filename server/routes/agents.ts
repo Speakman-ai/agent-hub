@@ -177,8 +177,13 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       return res.status(500).json({ error: 'Failed to clean up agent data' });
     }
 
-    // 3. Remove the agent from projects.json.
+    // 3. Remove the agent from projects.json and drop stale sub-agent refs.
     project.agents = project.agents.filter((a) => a.id !== agentId);
+    for (const a of project.agents) {
+      if (Array.isArray(a.subAgents)) {
+        a.subAgents = a.subAgents.filter((sid) => sid !== agentId);
+      }
+    }
     saveProjects();
 
     // 4. Refresh the project room so the participant list drops the agent.
