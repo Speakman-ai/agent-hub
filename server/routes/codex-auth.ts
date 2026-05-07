@@ -38,18 +38,26 @@ function runCodex(
       cwd: opts.cwd ?? process.cwd(),
       env: { ...process.env, ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: opts.timeout || 30_000,
       detached: true,
     });
     trackChild(proc);
+
+    const ms = opts.timeout || 30_000;
+    const timer = setTimeout(() => killProcessGroup(proc, 'SIGTERM'), ms);
 
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (d: Buffer) => (stdout += d));
     proc.stderr.on('data', (d: Buffer) => (stderr += d));
 
-    proc.on('close', (code) => resolve({ stdout, stderr, code }));
-    proc.on('error', (err) => resolve({ stdout, stderr: err.message, code: 1 }));
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr, code });
+    });
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr: err.message, code: 1 });
+    });
   });
 }
 
@@ -157,6 +165,7 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
     });
     trackChild(proc);
     activeDeviceLoginProc = proc;
+    trackChild(proc);
 
     let allOutput = '';
     let responded = false;
@@ -220,7 +229,7 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
           output: allOutput.trim() || 'Timed out waiting for Codex device code',
         });
         try {
-          proc.kill('SIGTERM');
+          killProcessGroup(proc, 'SIGTERM');
         } catch {
           /* ignore */
         }
@@ -231,7 +240,7 @@ export default function createCodexAuthRoutes(deps: RouteDeps): Router {
   router.post('/api/config/codex-auth/cancel-login', (_req: Request, res: Response) => {
     if (activeDeviceLoginProc) {
       try {
-        activeDeviceLoginProc.kill('SIGTERM');
+        killProcessGroup(activeDeviceLoginProc, 'SIGTERM');
       } catch {
         /* ignore */
       }

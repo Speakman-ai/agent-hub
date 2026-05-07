@@ -151,18 +151,26 @@ function runClaude(
       cwd: getUserHome(),
       env: { ...buildSpawnEnv(config), ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: opts.timeout || 15_000,
       detached: true,
     });
     trackChild(proc);
+
+    const ms = opts.timeout || 15_000;
+    const timer = setTimeout(() => killProcessGroup(proc, 'SIGTERM'), ms);
 
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (d: Buffer) => (stdout += d));
     proc.stderr.on('data', (d: Buffer) => (stderr += d));
 
-    proc.on('close', (code) => resolve({ stdout, stderr, code }));
-    proc.on('error', (err) => resolve({ stdout, stderr: err.message, code: 1 }));
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr, code });
+    });
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr: err.message, code: 1 });
+    });
   });
 }
 
@@ -497,6 +505,7 @@ export default function createClaudeAuthRoutes(deps: RouteDeps): Router {
     trackChild(proc);
 
     activeLoginProc = proc;
+    trackChild(proc);
 
     let allOutput = '';
     let urlSent = false;
