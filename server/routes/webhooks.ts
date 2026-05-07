@@ -6,7 +6,7 @@ import config, { defaultModelForEngine, fileConfig } from '../config.js';
 import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
 import { runCapture, postPrComment } from '../capture-engine.js';
-import { githubApiRequest, resolveInstallationId } from '../github-app.js';
+import { githubApiRequest, resolveInstallationId, getInstallationToken } from '../github-app.js';
 import { dispatchPrEnvBuild, dispatchPrEnvTeardown } from '../container-pool/pr-env-dispatch.js';
 import { getPrEnvBuilderDeps, readPrEnvConfig } from '../container-pool/pr-env-runtime.js';
 import { readPrEnvConfigRow } from '../pr-env-store.js';
@@ -48,6 +48,14 @@ import type {
 } from '../types.js';
 
 // ─── GitHub Payload Types ────────────────────────────────────────
+
+export interface GitHubHook {
+  id: number;
+  active: boolean;
+  events: string[];
+  config: { url: string; content_type?: string };
+  last_response?: { code: number | null; status: string; message: string };
+}
 
 interface GitHubUser {
   login: string;
@@ -263,6 +271,58 @@ export function ghApi(...args: string[]): string {
   return execFileSync('gh', ['api', ...args], { encoding: 'utf-8', timeout: 15000 });
 }
 
+/**
+ * Make a raw GitHub API call with a pre-obtained bearer token.
+ * Returns `undefined` for 204 No Content responses.
+ */
+export async function callGitHubApiWithToken<T>(
+  endpoint: string,
+  token: string,
+  method: string = 'GET',
+  body?: object,
+): Promise<T> {
+  const url = `https://api.github.com/${endpoint}`;
+  const headers: Record<string, string> = {
+    Authorization: `token ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+
+  const res = await fetch(url, {
+    method,
+    headers,
+    ...(body !== undefined && { body: JSON.stringify(body) }),
+  });
+
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`GitHub API ${method} ${url} failed (${res.status}): ${text}`);
+  }
+  return JSON.parse(text) as T;
+}
+
+/**
+ * Resolve a GitHub App installation token for a given repo owner.
+ * Returns `null` when the GitHub App is not configured or the installation
+ * cannot be resolved — callers should fall back to the gh CLI in that case.
+ */
+export async function tryGetInstallationToken(owner: string): Promise<string | null> {
+  const app = config.githubApp;
+  if (!app?.appId || !app?.privateKey) return null;
+  const installationId = resolveInstallationId(app, owner);
+  if (installationId == null) return null;
+  try {
+    return await getInstallationToken(app.appId, app.privateKey, installationId);
+  } catch (err) {
+    console.warn(
+      `[Webhook] Could not get GitHub App installation token for "${owner}": ${(err as Error).message}`,
+    );
+    return null;
+  }
+}
+
 export async function registerWebhookOnGitHub(webhookConfig: WebhookConfigRow): Promise<{
   ok: boolean;
   hookId: number;
@@ -277,6 +337,47 @@ export async function registerWebhookOnGitHub(webhookConfig: WebhookConfigRow): 
   const uniqueEvents = [...new Set(events)].filter(Boolean);
   if (uniqueEvents.length === 0) uniqueEvents.push('push', 'pull_request', 'issues');
 
+  const hookConfig = {
+    url: webhookUrl,
+    content_type: 'json',
+    secret: webhookConfig.secret,
+  };
+
+  // ── Path 1: GitHub App installation token (no gh CLI dependency) ──
+  const token = await tryGetInstallationToken(owner);
+  if (token) {
+    let existing: GitHubHook[] = [];
+    try {
+      const hooks = await callGitHubApiWithToken<GitHubHook[]>(
+        `repos/${owner}/${repo}/hooks`,
+        token,
+      );
+      existing = hooks.filter((h) => h.config.url === webhookUrl);
+    } catch {
+      // If listing fails (permissions etc.), fall through to create
+    }
+
+    if (existing.length > 0) {
+      const hookId = existing[0].id;
+      const updated = await callGitHubApiWithToken<GitHubHook>(
+        `repos/${owner}/${repo}/hooks/${hookId}`,
+        token,
+        'PATCH',
+        { active: true, events: uniqueEvents, config: hookConfig },
+      );
+      return { ok: true, hookId: updated.id, url: webhookUrl, events: uniqueEvents, updated: true };
+    }
+
+    const created = await callGitHubApiWithToken<GitHubHook>(
+      `repos/${owner}/${repo}/hooks`,
+      token,
+      'POST',
+      { name: 'web', active: true, events: uniqueEvents, config: hookConfig },
+    );
+    return { ok: true, hookId: created.id, url: webhookUrl, events: uniqueEvents, updated: false };
+  }
+
+  // ── Path 2: gh CLI fallback (requires GH_TOKEN env or gh auth login) ──
   try {
     const existingRaw = ghApi(
       `repos/${owner}/${repo}/hooks`,
@@ -2856,6 +2957,25 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
     const webhookUrl = getWebhookCallbackUrl();
 
     try {
+      // ── Path 1: GitHub App installation token ──
+      const token = await tryGetInstallationToken(owner);
+      if (token) {
+        const hooks = await callGitHubApiWithToken<GitHubHook[]>(
+          `repos/${owner}/${repo}/hooks`,
+          token,
+        );
+        const matching = hooks.filter((h) => h.config.url === webhookUrl);
+        for (const hook of matching) {
+          await callGitHubApiWithToken<undefined>(
+            `repos/${owner}/${repo}/hooks/${hook.id}`,
+            token,
+            'DELETE',
+          );
+        }
+        return res.json({ ok: true, removed: matching.length });
+      }
+
+      // ── Path 2: gh CLI fallback ──
       const existingRaw = ghApi(
         `repos/${owner}/${repo}/hooks`,
         '--jq',
@@ -2889,6 +3009,26 @@ export default function createWebhookRoutes(deps: RouteDeps): Router {
     const webhookUrl = getWebhookCallbackUrl();
 
     try {
+      // ── Path 1: GitHub App installation token ──
+      const token = await tryGetInstallationToken(owner);
+      if (token) {
+        const allHooks = await callGitHubApiWithToken<GitHubHook[]>(
+          `repos/${owner}/${repo}/hooks`,
+          token,
+        );
+        const hooks = allHooks
+          .filter((h) => h.config.url === webhookUrl)
+          .map(({ id, active, events, config: hCfg, last_response }) => ({
+            id,
+            active,
+            events,
+            config: { url: hCfg.url },
+            last_response,
+          }));
+        return res.json({ registered: hooks.length > 0, hooks, webhookUrl });
+      }
+
+      // ── Path 2: gh CLI fallback ──
       const existingRaw = ghApi(
         `repos/${owner}/${repo}/hooks`,
         '--jq',
