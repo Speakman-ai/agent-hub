@@ -1,10 +1,30 @@
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import type supertest from 'supertest';
+
+/** Hoisted so `vi.mock` factory can attach a stable spy before `../index.js` loads. */
+const mockGetDevHubApiKey = vi.hoisted(() =>
+  vi.fn(async (): Promise<string | null> => 'ahub_board_assign_fixture'),
+);
+
+vi.mock('../secrets.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../secrets.js')>();
+  return {
+    ...actual,
+    getDevHubApiKey: mockGetDevHubApiKey,
+  };
+});
+
 import { getRequest, createProject, createAgent, createCard } from './helpers.js';
 
 let request: supertest.Agent;
 
 beforeAll(async () => {
   request = await getRequest();
+});
+
+beforeEach(() => {
+  mockGetDevHubApiKey.mockClear();
+  mockGetDevHubApiKey.mockImplementation(async () => 'ahub_board_assign_fixture');
 });
 
 describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
@@ -143,6 +163,57 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
       .expect(400);
 
     expect((res.body as { error?: string }).error).toContain('not valid for engine');
+  });
+
+  it('calls getDevHubApiKey when card has cross-hub:dev label (manual assign)', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, {
+      title: 'Cross-hub task',
+      labels: 'cross-hub:dev,infra',
+    });
+
+    await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id })
+      .expect(200);
+
+    expect(mockGetDevHubApiKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls getDevHubApiKey when card has survey-tracker label (manual assign)', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, {
+      title: 'Tracker task',
+      labels: 'survey-tracker',
+    });
+
+    await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id })
+      .expect(200);
+
+    expect(mockGetDevHubApiKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call getDevHubApiKey when card lacks opt-in labels', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, {
+      title: 'Plain task',
+      labels: 'infra,backend',
+    });
+
+    await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id })
+      .expect(200);
+
+    expect(mockGetDevHubApiKey).not.toHaveBeenCalled();
   });
 });
 

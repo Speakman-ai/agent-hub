@@ -20,6 +20,7 @@ import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
+import { cardNeedsDevHubKey, getDevHubApiKey } from '../secrets.js';
 
 interface BoardData {
   board: KanbanBoardRow;
@@ -536,12 +537,19 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
       const contextMessage = contextLines.join('\n');
 
+      const extraEnv: Record<string, string> = {};
+      if (cardNeedsDevHubKey(card.labels)) {
+        const devHubKey = await getDevHubApiKey();
+        if (devHubKey) extraEnv.DEV_HUB_API_KEY = devHubKey;
+      }
+
       handleChat(null, {
         type: 'chat',
         agentId,
         sessionId,
         content: contextMessage,
         hookSpecificOutput: { sessionTitle: card.title },
+        ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
       }).catch((err: Error) => {
         console.error(`[Board Assign] handleChat failed for session ${sessionId}:`, err.message);
         broadcast({
