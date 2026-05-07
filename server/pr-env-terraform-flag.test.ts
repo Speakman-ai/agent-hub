@@ -90,6 +90,16 @@ describe('PR-environments root flag (enable_pr_environments)', () => {
     expect(albTf).toMatch(/local\.pr_env_wildcard_cert_enabled\b/);
   });
 
+  it('alb.tf provisions wildcard Route 53 alias for PR preview hostnames when host nginx is effectively enabled', () => {
+    expect(albTf).toContain('resource "aws_route53_record" "pr_env_preview_wildcard"');
+    expect(albTf).not.toMatch(
+      /resource\s+"aws_route53_record"\s+"pr_env_preview_wildcard"\s*\{[\s\S]*?var\.enable_pr_env_host_nginx\b/ms,
+    );
+    expect(albTf).toMatch(
+      /resource\s+"aws_route53_record"\s+"pr_env_preview_wildcard"\s*\{[\s\S]*?local\.pr_env_host_nginx_enabled/ms,
+    );
+  });
+
   it('ssm-iam.tf gates the Route 53 inline policy on the resolved local', () => {
     expect(ssmIamTf).not.toMatch(/var\.enable_pr_env_route53_iam\b/);
     expect(ssmIamTf).toMatch(/local\.pr_env_route53_iam_enabled\b/);

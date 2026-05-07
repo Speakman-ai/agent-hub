@@ -107,3 +107,8 @@ output "pr_env_preview_host" {
   description = "Suffix for per-PR preview hostnames: <pr-id>.<this>. Equals <pr_env_preview_subdomain>.<alb_fqdn>; null when alb_fqdn cannot be composed."
   value       = local.pr_env_preview_host
 }
+
+output "pr_env_preview_wildcard_dns_enabled" {
+  description = "True when Terraform manages Route 53 A alias *.<pr_env_preview_host> → dedicated ALB (PR preview hostnames resolve to the hub load balancer)."
+  value       = length(aws_route53_record.pr_env_preview_wildcard) > 0
+}
