@@ -26,6 +26,7 @@ describe('epicFormToUpdateBody', () => {
       autonomousMaxConcurrent: 3,
       autonomousMaxIterations: 5,
       autonomousModel: null,
+      prBaseBranch: null,
     });
   });
 

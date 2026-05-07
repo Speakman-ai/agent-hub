@@ -31,6 +31,9 @@ export function epicFormToUpdateBody(form) {
     autonomousMaxIterations: form.autonomous_max_iterations || 3,
     autonomousModel,
     prBaseBranch: prTrim || null,
+    ...(form.orchestrationBudgets !== undefined
+      ? { orchestrationBudgets: form.orchestrationBudgets }
+      : {}),
   };
 }
 

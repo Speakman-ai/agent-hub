@@ -16,6 +16,7 @@ import type {
   Agent,
   KanbanEpicRow,
   KanbanCardRow,
+  KanbanColumnRow,
   AppConfig,
   BroadcastFn,
   ChatMessage,

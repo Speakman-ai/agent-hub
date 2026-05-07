@@ -1375,6 +1375,8 @@ describe('autoCommitAndPR — isAutonomousCard gating (manual link vs dispatched
           { id: 'col-done', name: 'Done' },
         ]),
       },
+      getKanbanEpic: { get: vi.fn(() => undefined) },
+      createKanbanCardComment: { run: vi.fn() },
       moveKanbanCard: { run: vi.fn() },
       updateKanbanCard: { run: vi.fn() },
       updateSessionChangesReady: { run: vi.fn() },
