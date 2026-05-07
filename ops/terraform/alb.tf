@@ -325,3 +325,34 @@ resource "aws_acm_certificate_validation" "pr_env_wildcard" {
   certificate_arn         = aws_acm_certificate.pr_env_wildcard[0].arn
   validation_record_fqdns = [for r in aws_route53_record.pr_env_wildcard_cert_validation : r.fqdn]
 }
+
+# Wildcard DNS: *.<pr_env_preview_subdomain>.<alb_fqdn> → ALB so per-PR preview
+# hostnames resolve (TLS then terminates on host nginx via the LE wildcard cert).
+# Without this record, ACM/Let's Encrypt validation can succeed while client DNS
+# for pr-N.preview... stays NXDOMAIN.
+resource "aws_route53_record" "pr_env_preview_wildcard" {
+  count = (
+    local.r53_alias && local.pr_env_preview_host != null && local.pr_env_host_nginx_enabled ? 1 : 0
+  )
+
+  zone_id = local.route53_zone_id_effective
+  name    = "*.${trimsuffix(local.pr_env_preview_host, ".${var.base_domain}")}"
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.agenthub[0].dns_name
+    zone_id                = aws_lb.agenthub[0].zone_id
+    evaluate_target_health = true
+  }
+
+  depends_on = [aws_lb_listener.agenthub_https]
+
+  lifecycle {
+    precondition {
+      condition = (
+        endswith(local.pr_env_preview_host, ".${var.base_domain}")
+      )
+      error_message = "preview host (${local.pr_env_preview_host}) must be under var.base_domain (${var.base_domain}) so the wildcard record can be created in the managed zone."
+    }
+  }
+}
