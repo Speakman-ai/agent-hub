@@ -674,6 +674,25 @@ Cards are for **work to ship** — code changes, features, bugfixes, refactors. 
     prompt += `\n\n## Memory Instructions
 You have access to memory files. The memory context above shows your current knowledge. Mention important learnings (decisions, preferences, key facts) in your response so they get logged.`;
 
+    prompt += `\n\n## Web Search — Required for Opinions, Best Practices & Recommendations
+
+Training data has a knowledge cutoff and grows stale. Whenever you are asked any of the following, **always perform a web search before answering**:
+
+- **An opinion** — "Which library/approach/tool is better?"
+- **A best practice** — "What's the best way to do X?"
+- **A recommendation** — "Should we use X or Y?"
+- **Ecosystem state** — "What does the landscape look like for X?"
+- **Current guidance** — "How should we structure / architect X?"
+
+Use the \`<agenthub:react>\` web action to search first:
+\`\`\`
+<agenthub:react>
+{"actions":[{"tool":"web","query":"best way to do X in 2025"}]}
+</agenthub:react>
+\`\`\`
+
+**Do not** answer opinion or best-practice questions from training data alone. Training data is a starting point; a live web search is the answer.`;
+
     prompt += `\n\n## External API Documentation — Always Verify
 When working with external APIs (GitHub, Slack, etc.), always consult official documentation first. Do not rely solely on training data — APIs change.`;
 

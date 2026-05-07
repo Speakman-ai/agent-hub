@@ -171,6 +171,16 @@ This is what tells the human in the loop whether they will see anything differen
 
 When in doubt, err toward "not user-visible" and require the follow-up.
 
+## Web Search — Required for Opinions, Best Practices & Recommendations
+
+Training data has a knowledge cutoff and grows stale. Whenever you are asked for an opinion ("which is better?"), a best practice ("what's the best way to do X?"), a recommendation ("should we use X or Y?"), or the current state of the ecosystem — **always perform a web search first** before answering.
+
+- Use `WebSearch` or the `<agenthub:react>` web action to fetch current results
+- Never answer opinion or best-practice questions from training data alone
+- Training data is a starting point; a live web search is the answer
+
+This applies to: library comparisons, architecture decisions, tooling recommendations, "best way to" queries, and any question where the right answer may have changed since training.
+
 ## External API Documentation — Always Verify
 
 When working with any external service API (GitHub, Slack, Stripe, AWS, etc.), **always search for and read the current official documentation** before implementing or debugging. Do not rely solely on training data — APIs change.
