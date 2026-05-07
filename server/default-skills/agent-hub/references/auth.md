@@ -18,6 +18,7 @@ Back to [SKILL.md](../SKILL.md).
 - [Config locations](#config-locations)
 - [Endpoints at a glance](#endpoints-at-a-glance)
 - [Per-user Claude credentials](#per-user-claude-credentials)
+- [Per-user skill credentials](#per-user-skill-credentials)
 - [JWT `uid` claim & pre-migration fallback](#jwt-uid-claim--pre-migration-fallback)
 - [Rate limiting — `trust proxy` is coupled to the proxy topology](#rate-limiting--trust-proxy-is-coupled-to-the-proxy-topology)
 
@@ -141,6 +142,9 @@ Prefix everything with `/api/auth`. All require auth unless flagged
 | `POST /invites/:token/accept`                  | **public**   | redeem invite (per-IP rate-limited)      |
 | `GET  /me/claude-auth`                         | any          | masked per-user Claude credentials       |
 | `PUT  /me/claude-auth`                         | any          | upsert per-user Claude credentials       |
+| `GET  /me/skill-credentials`                   | any          | masked per-user skill secrets (optional `?skillId=`) |
+| `PUT  /me/skill-credentials`                   | any          | upsert one skill credential key (schema-enforced)    |
+| `DELETE /me/skill-credentials/:id`             | any          | revoke a stored skill credential row                 |
 | `POST /keys`                                   | any          | create per-user `ahub_*` API key (token returned ONCE) |
 | `GET  /keys`                                   | any          | list caller's active API keys (no token) |
 | `DELETE /keys/:id`                             | any          | revoke an API key the caller owns        |
@@ -200,6 +204,37 @@ missing (apiKey-only callers + local-bundled-server bypass) and `404`
 when the user row is unknown. Encryption-at-rest is tracked as a
 follow-up — credentials currently sit on the users row in plaintext,
 mirroring the existing `github_user_token` precedent.
+
+## Per-user skill credentials
+
+Third-party tokens for **installed skills** (Linear, GitHub PAT, etc.) live
+in a dedicated store — not on the `users` row — so operators are not
+tempted to paste secrets into chat or kanban cards.
+
+**Declaration.** Each skill may list keys under a `credentials:` array in
+**SKILL.md** frontmatter (`name`, `label`, `description`, `required`,
+`type`, `docs_url`). Registry import and `POST /api/skills/registry`
+reject malformed blocks.
+
+**Storage & crypto.** Rows in `orgs.db` table `user_skill_credentials`
+(`user_skill_credential_audit` for `upsert` / `delete`). Ciphertext uses
+`encryptSecret` / `decryptSecret` from `server/pr-env-store.ts` (same
+AES-256-GCM key file as PR-env tier-2 secrets).
+
+**REST surface** (all under `/api/auth`, JWT required — `authUserId` must
+be present; global `x-api-key` break-glass alone returns **401**):
+
+| Endpoint | Method | Purpose |
+| -------- | ------ | ------- |
+| `/me/skill-credentials` | GET | `{ credentials: [...] }` — `masked_preview`, timestamps; filter with `?skillId=` |
+| `/me/skill-credentials` | PUT | Body `{ skill_id, key_name, value }` — `key_name` must appear in that skill's declared schema |
+| `/me/skill-credentials/:id` | DELETE | Hard-delete the row |
+
+**Spawn merge.** For interactive chat, decrypted values are merged into
+the child process env for every **enabled** skill (project + bundled
+defaults, honouring per-agent disable overrides). Keys already set in
+the resolved env are **not** overwritten. Implementation:
+`server/skill-credentials-spawn.ts` (called from `server/chat.ts`).
 
 ## JWT `uid` claim & pre-migration fallback
 
