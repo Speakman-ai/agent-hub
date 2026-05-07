@@ -22,6 +22,7 @@ import { describe, it, expect } from 'vitest';
 import { PortPool, PORT_POOL_SCHEMA } from './port-pool.js';
 import {
   buildPrEnv,
+  checkoutPathForDockerDaemon,
   prEnvPaths,
   teardownPrEnv,
   type ContainerRunner,
@@ -202,6 +203,46 @@ function buildRequest(prNumber: number, repo = 'acme/repo', branch = 'feature/x'
   };
 }
 
+// ─── checkoutPathForDockerDaemon ─────────────────────────────────────────
+
+describe('checkoutPathForDockerDaemon', () => {
+  it('returns the input path unchanged when dockerHostCheckoutBaseDir is unset', () => {
+    expect(checkoutPathForDockerDaemon('/srv/pr-envs/acme/pr-1', '/srv/pr-envs', undefined)).toBe(
+      '/srv/pr-envs/acme/pr-1',
+    );
+    expect(checkoutPathForDockerDaemon('/srv/pr-envs/acme/pr-1', '/srv/pr-envs', '   ')).toBe(
+      '/srv/pr-envs/acme/pr-1',
+    );
+  });
+
+  it('rewrites the checkout prefix to the daemon-host base', () => {
+    expect(
+      checkoutPathForDockerDaemon(
+        '/home/node/.agent-hub/pr-envs/acme-repo/pr-546',
+        '/home/node/.agent-hub/pr-envs',
+        '/var/lib/agent-hub/pr-envs',
+      ),
+    ).toBe('/var/lib/agent-hub/pr-envs/acme-repo/pr-546');
+  });
+
+  it('maps Dockerfile paths under the checkout base', () => {
+    const checkoutDir = '/in/container/pr-envs/proj/pr-8';
+    const df = '/in/container/pr-envs/proj/pr-8/docker/Dockerfile';
+    expect(checkoutPathForDockerDaemon(df, '/in/container/pr-envs', '/host/pr-envs')).toBe(
+      '/host/pr-envs/proj/pr-8/docker/Dockerfile',
+    );
+    expect(checkoutPathForDockerDaemon(checkoutDir, '/in/container/pr-envs', '/host/pr-envs')).toBe(
+      '/host/pr-envs/proj/pr-8',
+    );
+  });
+
+  it('throws when the path is not under checkoutBaseDir', () => {
+    expect(() =>
+      checkoutPathForDockerDaemon('/tmp/other/file', '/srv/pr-envs', '/host/pr-envs'),
+    ).toThrow(/not under checkout base/);
+  });
+});
+
 // ─── suite ────────────────────────────────────────────────────────────────
 
 describe('buildPrEnv — happy path', () => {
@@ -298,6 +339,44 @@ describe('buildPrEnv — happy path', () => {
       imageTag: 'agent-hub-pr/acme-repo:pr-8',
     });
     expect(deps.container.state.runCalls[0]?.imageTag).toBe('agent-hub-pr/acme-repo:pr-8');
+  });
+
+  it('uses dockerHostCheckoutBaseDir for docker build/run bind paths while git clones in-container', async () => {
+    const deps = freshDeps();
+    deps.paths.checkoutBaseDir = '/home/node/.agent-hub/pr-envs';
+    deps.paths.dockerHostCheckoutBaseDir = '/var/lib/agent-hub/pr-envs';
+
+    const res = await buildPrEnv(deps, buildRequest(546));
+
+    expect(res.checkoutDir).toBe('/home/node/.agent-hub/pr-envs/acme-repo/pr-546');
+    expect(deps.git.state.cloneCalls[0]?.checkoutDir).toBe(
+      '/home/node/.agent-hub/pr-envs/acme-repo/pr-546',
+    );
+    expect(deps.container.state.buildCalls[0]).toMatchObject({
+      contextDir: '/var/lib/agent-hub/pr-envs/acme-repo/pr-546',
+      dockerfilePath: null,
+    });
+    expect(deps.container.state.runCalls[0]).toMatchObject({
+      checkoutDir: '/var/lib/agent-hub/pr-envs/acme-repo/pr-546',
+    });
+  });
+
+  it('maps Dockerfile paths through dockerHostCheckoutBaseDir', async () => {
+    const deps = freshDeps();
+    deps.paths.checkoutBaseDir = '/in/container/pr-envs';
+    deps.paths.dockerHostCheckoutBaseDir = '/host/pr-envs';
+    const req = {
+      ...buildRequest(5),
+      projectConfig: { ...FIXTURE_PROJECT_CONFIG, dockerfilePath: 'docker/Dockerfile' },
+    };
+    deps.container.state.buildReturnsTag = 'agent-hub-pr/acme-repo:pr-5';
+
+    await buildPrEnv(deps, req);
+
+    expect(deps.container.state.buildCalls[0]).toMatchObject({
+      contextDir: '/host/pr-envs/acme-repo/pr-5',
+      dockerfilePath: '/host/pr-envs/acme-repo/pr-5/docker/Dockerfile',
+    });
   });
 
   it('omits setupCommand when project config leaves it blank', async () => {

@@ -282,6 +282,36 @@ describe('readPrEnvConfig — required field validation', () => {
     expect(result!.checkoutBaseDir).toBe('/from/env/pr-envs');
     expect(result!.defaultBaseImage).toBe('node:22');
   });
+
+  it('loads dockerHostCheckoutBaseDir from env with precedence over fileBlock', () => {
+    const result = readPrEnvConfig(
+      {
+        prEnv: {
+          enabled: true,
+          checkoutBaseDir: '/home/node/.agent-hub/pr-envs',
+          dockerHostCheckoutBaseDir: '/from/file/host-pr-envs',
+          repoFullName: 'acme/repo',
+          route53: { accessKeyId: '', secretAccessKey: '', hostedZoneId: 'Z1' },
+          nginx: {
+            sitesAvailableDir: '/etc/nginx/sites-available',
+            sitesEnabledDir: '/etc/nginx/sites-enabled',
+            certPath: '/etc/letsencrypt/live/preview/fullchain.pem',
+            keyPath: '/etc/letsencrypt/live/preview/privkey.pem',
+            previewHost: 'preview.example.com',
+            certHome: '/var/lib/acme',
+          },
+        },
+      },
+      {
+        PR_ENV_DOCKER_HOST_CHECKOUT_BASE_DIR: '/from/env/host-pr-envs',
+      },
+      null,
+      APP_CONFIG,
+    );
+    expect(result).not.toBeNull();
+    expect(result!.checkoutBaseDir).toBe('/home/node/.agent-hub/pr-envs');
+    expect(result!.dockerHostCheckoutBaseDir).toBe('/from/env/host-pr-envs');
+  });
 });
 
 // ─── rollback always cleans checkout dir ─────────────────────────────────
