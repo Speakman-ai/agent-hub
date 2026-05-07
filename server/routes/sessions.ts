@@ -26,6 +26,7 @@ import type {
 } from '../types.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
+import { closeBrowserSession } from '../browser.js';
 import {
   normalizeOrchestrationMetaInput,
   parseOrchestrationMetaJson,
@@ -509,6 +510,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         }
         activeProcesses.delete(session.id);
       }
+      void closeBrowserSession(session.id).catch(() => {});
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -529,6 +531,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     for (const session of sessions) {
       if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
+      void closeBrowserSession(session.id).catch(() => {});
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -564,6 +567,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
       activeProcesses.delete(sessionId);
     }
+
+    void closeBrowserSession(sessionId).catch(() => {});
 
     stmts.softDeleteSession.run(sessionId);
 

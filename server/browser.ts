@@ -4,9 +4,9 @@
  * This module centralizes the configuration and lifecycle management for the
  * Stagehand-wrapped Playwright browser instances agents use during chat
  * sessions. It purposefully does not expose raw Playwright types to the rest
- * of the server; higher-level tools (see `browser-tools.ts`, added in a
- * follow-up PR) will interact with a session through the `BrowserSession`
- * handle returned from `launchBrowserSession()`.
+ * of the server; higher-level tools live in `browser-tools.ts` and interact
+ * with a session through the `BrowserSession` handle returned from
+ * `launchBrowserSession()`.
  *
  * Design notes:
  *   • Each call to `launchBrowserSession()` spins up a dedicated Stagehand
