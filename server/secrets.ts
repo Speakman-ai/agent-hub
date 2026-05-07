@@ -26,6 +26,10 @@
  * of the opt-in labels `cross-hub:dev` or `survey-tracker`.  Sessions without
  * those labels never trigger a `GetSecretValue` call and never receive
  * `DEV_HUB_API_KEY` in their spawn environment.
+ *
+ * Both **autonomous dispatch** (`server/autonomous.ts`) and **manual board
+ * assign** (`server/routes/board.ts`) honour the same gate before the first
+ * `handleChat` turn for a linked card.
  */
 
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';

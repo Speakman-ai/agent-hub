@@ -1754,8 +1754,9 @@ export interface ChatMessage {
    * the allowlist are silently dropped; this is what prevents WebSocket
    * callers from shadowing `ANTHROPIC_API_KEY`, `GH_TOKEN`, etc.
    *
-   * Currently used by the autonomous-dispatch path to inject cross-hub API
-   * keys only for cards that carry an opt-in label (see `server/secrets.ts`).
+   * Used by autonomous dispatch and manual kanban assign (`routes/board.ts`)
+   * to inject cross-hub API keys only for cards that carry an opt-in label
+   * (see `server/secrets.ts`).
    */
   extraEnv?: Record<string, string>;
 }
