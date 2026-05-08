@@ -6,20 +6,36 @@ Back to [SKILL.md](../SKILL.md).
 
 ## Pagination
 
-Most AWS list/describe commands return paginated results. Default page size varies
-by service (often 100–1000 items).
+AWS CLI v2 **auto-paginates by default.** For list/describe commands the CLI
+silently follows all `NextToken` / `ContinuationToken` pages and concatenates
+the results into a single response. You do not need to add any flag to get
+complete results.
 
-### Auto-paginate (fetch all pages automatically)
+### Default behaviour — all pages returned automatically
 
 ```bash
-# --no-paginate follows all NextToken pages and merges results
+# No extra flags needed; the CLI fetches all pages and merges them.
+aws ec2 describe-instances --output json
+aws s3api list-objects-v2 --bucket my-bucket --output json
+aws iam list-users --output json
+```
+
+> **Warning:** On large datasets (huge S3 buckets, accounts with thousands of
+> IAM users) this can be slow and return very large JSON. Use `--max-items` or
+> `--no-paginate` to cap the result set.
+
+### `--no-paginate` — **first page only**
+
+`--no-paginate` **disables** auto-pagination. The CLI returns only the first
+page of results. Use it when you want a quick sample or intend to walk pages
+manually:
+
+```bash
+# First page only — fast, but may miss items beyond the first page
 aws ec2 describe-instances --no-paginate --output json
 aws s3api list-objects-v2 --bucket my-bucket --no-paginate
 aws iam list-users --no-paginate
 ```
-
-> **Warning:** On large datasets, `--no-paginate` can be slow and return
-> very large JSON. Use filters or manual pagination for production-scale buckets.
 
 ### Manual pagination
 

@@ -156,14 +156,19 @@ Cheatsheet: `references/jmespath-recipes.md`
 
 ## Pagination
 
-AWS list/describe commands paginate. Use `--no-paginate` to auto-follow all pages:
+AWS CLI v2 **auto-paginates by default** — it follows all `NextToken` pages
+and merges them into a single response. You rarely need to do anything special
+for small-to-medium datasets.
+
+Use `--no-paginate` to **disable** auto-pagination and return **only the first
+page** (useful for quick checks or when you want to control paging yourself):
 
 ```bash
+# First page only — fast, but may miss items on subsequent pages
 aws ec2 describe-instances --no-paginate --output json
-aws s3api list-objects-v2 --bucket my-bucket --no-paginate
 ```
 
-Or step through manually:
+For manual page-by-page control:
 
 ```bash
 aws ec2 describe-instances --max-items 50
