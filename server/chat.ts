@@ -70,7 +70,7 @@ import {
   detectSessionIdInUseError,
   buildSessionIdInUseRecoveryMessage,
 } from './claude-session-id-conflict.js';
-import { allAgents } from './project-model.js';
+import { allAgents, findProject } from './project-model.js';
 import {
   setSessionOwner,
   inheritOwnerFromSession,
@@ -126,6 +126,10 @@ import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import { runBrowserReActStep, BROWSER_REACT_OP_SET } from './browser-tools.js';
+import {
+  effectiveBrowserToolsEnabled,
+  resolveBrowserSessionOptions,
+} from './browser-agent-settings.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 const stmts = _stmts!;
@@ -319,9 +323,12 @@ export function planAutoContinuationRetry(opts: {
   return { action: 'drop', reason: 'retries-exhausted' };
 }
 
-/** Host browser tools via ReAct — enabled unless explicitly `browserToolsEnabled === false`. */
-export function agentBrowserToolsEnabled(agent: Pick<Agent, 'browserToolsEnabled'>): boolean {
-  return agent.browserToolsEnabled !== false;
+/** Passes through to effectiveBrowserToolsEnabled (project-aware). */
+export function agentBrowserToolsEnabled(
+  agent: Pick<Agent, 'browserToolsEnabled'>,
+  project?: Pick<Project, 'browserToolsDefaultEnabled'> | null,
+): boolean {
+  return effectiveBrowserToolsEnabled(agent, project ?? undefined);
 }
 
 /** Auto-continuation user message — browser wording omitted when tools are off for the agent. */
@@ -544,7 +551,8 @@ ${skillsList.join('\n')}`;
   }
 
   const isFirstMessage = options.isFirstMessage !== false; // default true for backward compat
-  const browserToolsOn = agentBrowserToolsEnabled(agent as Agent);
+  const browserProject = projectId ? findProject(projectId) : null;
+  const browserToolsOn = effectiveBrowserToolsEnabled(agent as Agent, browserProject ?? undefined);
 
   if (isFirstMessage) {
     const reactExampleJson = browserToolsOn
@@ -553,7 +561,7 @@ ${skillsList.join('\n')}`;
     const browserToolLines = browserToolsOn
       ? `- \`browser\` — host Chromium via Stagehand (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — natural language or CSS/XPath; \`type\` also needs \`text\`), \`extract\` (optional \`instruction\`, optional JSON \`schema\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. Requires Playwright Chromium on the server and an LLM API key for natural-language \`act\`/\`extract\` (override model with \`STAGEHAND_MODEL\`).
 - **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`act\`/\`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
-      : `- **Browser tools** are turned off for this agent (\`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them.`;
+      : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them.`;
 
     prompt += `\n\n## ReAct Loop
 When you need extra context mid-answer, use a host-mediated ReAct action block (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
@@ -2643,7 +2651,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           reactObservations.push(`- Action list exceeded ${maxAct}; truncated to budget.`);
         }
         let boundedActions = actions.slice(0, maxAct);
-        const browserAllowed = agentBrowserToolsEnabled(agent);
+        const browserAllowed = effectiveBrowserToolsEnabled(agent, project);
+        const browserLaunchOpts = resolveBrowserSessionOptions(agent, project);
         if (!browserAllowed) {
           const removed = boundedActions.filter((a) => a.tool === 'browser').length;
           if (removed > 0) {
@@ -2816,16 +2825,20 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             }
 
             if (action.tool === 'browser') {
-              const b = await runBrowserReActStep(sessionId, {
-                op: action.op ?? '',
-                url: action.url,
-                target: action.target,
-                text: action.text,
-                instruction: action.instruction,
-                schema: action.schema,
-                direction: action.direction,
-                condition: action.condition,
-              });
+              const b = await runBrowserReActStep(
+                sessionId,
+                {
+                  op: action.op ?? '',
+                  url: action.url,
+                  target: action.target,
+                  text: action.text,
+                  instruction: action.instruction,
+                  schema: action.schema,
+                  direction: action.direction,
+                  condition: action.condition,
+                },
+                browserLaunchOpts,
+              );
               if (b.markdown.trim()) {
                 assistantContextToAppend = assistantContextToAppend
                   ? `${assistantContextToAppend}\n\n${b.markdown.trim()}`
@@ -3274,7 +3287,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             type: 'chat',
             agentId,
             sessionId,
-            content: buildAutoContinuationPrompt(agentBrowserToolsEnabled(agent)),
+            content: buildAutoContinuationPrompt(effectiveBrowserToolsEnabled(agent, project)),
             _autoContinuation: true,
             _continuationDepth: continuationDepth + 1,
             _chainStartedAtMs: chainStartedAtMs,

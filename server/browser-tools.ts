@@ -14,6 +14,7 @@ import {
   getBrowserSession,
   launchBrowserSession,
   closeBrowserSession,
+  DEFAULT_TIMEOUT_MS,
   type BrowserSession,
   type BrowserSessionOptions,
 } from './browser.js';
@@ -297,7 +298,11 @@ function result(op: BrowserToolOp, ok: boolean, data?: unknown, error?: string):
   return r;
 }
 
-export async function browserNavigate(stagehand: V3, url: string): Promise<BrowserToolResult> {
+export async function browserNavigate(
+  stagehand: V3,
+  url: string,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<BrowserToolResult> {
   const u = url.trim();
   if (!u) return result('navigate', false, undefined, 'url is required');
   const policy = validateBrowserNavigationUrl(u);
@@ -307,7 +312,7 @@ export async function browserNavigate(stagehand: V3, url: string): Promise<Brows
   try {
     const page = getActivePage(stagehand);
     await withDocumentNavigationUrlPolicy(stagehand, async () => {
-      const res = await page.goto(policy.href, { waitUntil: 'load', timeoutMs: 30_000 });
+      const res = await page.goto(policy.href, { waitUntil: 'load', timeoutMs });
       void res;
     });
     const finalUrl = page.url();
@@ -444,11 +449,14 @@ export async function browserScroll(stagehand: V3, direction: string): Promise<B
   }
 }
 
-export async function browserBack(stagehand: V3): Promise<BrowserToolResult> {
+export async function browserBack(
+  stagehand: V3,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(stagehand);
     await withDocumentNavigationUrlPolicy(stagehand, async () => {
-      await page.goBack({ waitUntil: 'load', timeoutMs: 30_000 });
+      await page.goBack({ waitUntil: 'load', timeoutMs });
     });
     const finalUrl = page.url();
     const landed = validateBrowserNavigationUrl(finalUrl);
@@ -467,11 +475,14 @@ export async function browserBack(stagehand: V3): Promise<BrowserToolResult> {
   }
 }
 
-export async function browserForward(stagehand: V3): Promise<BrowserToolResult> {
+export async function browserForward(
+  stagehand: V3,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(stagehand);
     await withDocumentNavigationUrlPolicy(stagehand, async () => {
-      await page.goForward({ waitUntil: 'load', timeoutMs: 30_000 });
+      await page.goForward({ waitUntil: 'load', timeoutMs });
     });
     const finalUrl = page.url();
     const landed = validateBrowserNavigationUrl(finalUrl);
@@ -493,6 +504,7 @@ export async function browserForward(stagehand: V3): Promise<BrowserToolResult> 
 export async function browserWaitFixed(
   stagehand: V3,
   condition: string,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<BrowserToolResult> {
   const c = condition.trim();
   if (!c) return result('wait', false, undefined, 'condition is required');
@@ -500,20 +512,24 @@ export async function browserWaitFixed(
     const page = getActivePage(stagehand);
     const lower = c.toLowerCase();
     if (lower === 'networkidle' || lower === 'network_idle' || lower === 'network-idle') {
-      await page.waitForLoadState('networkidle', 30_000);
+      await page.waitForLoadState('networkidle', timeoutMs);
       return result('wait', true, { kind: 'networkidle' });
     }
     if (lower === 'load') {
-      await page.waitForLoadState('load', 30_000);
+      await page.waitForLoadState('load', timeoutMs);
       return result('wait', true, { kind: 'load' });
     }
     if (lower === 'domcontentloaded' || lower === 'dom') {
-      await page.waitForLoadState('domcontentloaded', 30_000);
+      await page.waitForLoadState('domcontentloaded', timeoutMs);
       return result('wait', true, { kind: 'domcontentloaded' });
     }
     const selPrefix = /^selector:\s*/i.exec(c);
     const selector = selPrefix ? c.slice(selPrefix[0].length).trim() : c;
-    await page.waitForSelector(selector, { state: 'visible', timeout: 30_000, pierceShadow: true });
+    await page.waitForSelector(selector, {
+      state: 'visible',
+      timeout: timeoutMs,
+      pierceShadow: true,
+    });
     return result('wait', true, { kind: 'selector', selector });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -543,6 +559,7 @@ export async function browserReadPage(stagehand: V3): Promise<BrowserToolResult>
 export async function runBrowserReActStep(
   chatSessionId: string,
   input: BrowserReActActionInput,
+  sessionLaunchOpts: BrowserSessionOptions = {},
 ): Promise<{ markdown: string; hostExit: number; hostDetail?: string }> {
   const opRaw = typeof input.op === 'string' ? input.op.trim() : '';
   if (!opRaw || !BROWSER_REACT_OP_SET.has(opRaw)) {
@@ -555,7 +572,7 @@ export async function runBrowserReActStep(
   const op = opRaw as BrowserToolOp;
   let session: BrowserSession;
   try {
-    session = await getOrCreateBrowserSessionForChat(chatSessionId);
+    session = await getOrCreateBrowserSessionForChat(chatSessionId, sessionLaunchOpts);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
@@ -565,6 +582,7 @@ export async function runBrowserReActStep(
     };
   }
   const sh = asV3(session.stagehand);
+  const opTimeoutMs = session.timeoutMs;
 
   const fmt = (r: BrowserToolResult, title: string) => {
     const display = shrinkBrowserToolResultForMarkdown(r);
@@ -584,7 +602,7 @@ export async function runBrowserReActStep(
         return { markdown: fmt(r, 'Browser: close'), hostExit: 0, hostDetail: 'close' };
       }
       case 'navigate': {
-        const r = await browserNavigate(sh, input.url ?? '');
+        const r = await browserNavigate(sh, input.url ?? '', opTimeoutMs);
         return {
           markdown: fmt(r, 'Browser: navigate'),
           hostExit: r.ok ? 0 : 1,
@@ -646,7 +664,7 @@ export async function runBrowserReActStep(
         };
       }
       case 'back': {
-        const r = await browserBack(sh);
+        const r = await browserBack(sh, opTimeoutMs);
         return {
           markdown: fmt(r, 'Browser: back'),
           hostExit: r.ok ? 0 : 1,
@@ -654,7 +672,7 @@ export async function runBrowserReActStep(
         };
       }
       case 'forward': {
-        const r = await browserForward(sh);
+        const r = await browserForward(sh, opTimeoutMs);
         return {
           markdown: fmt(r, 'Browser: forward'),
           hostExit: r.ok ? 0 : 1,
@@ -662,7 +680,7 @@ export async function runBrowserReActStep(
         };
       }
       case 'wait': {
-        const r = await browserWaitFixed(sh, input.condition ?? '');
+        const r = await browserWaitFixed(sh, input.condition ?? '', opTimeoutMs);
         return {
           markdown: fmt(r, 'Browser: wait'),
           hostExit: r.ok ? 0 : 1,

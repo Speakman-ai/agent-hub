@@ -358,6 +358,45 @@ describe('Projects', () => {
       expect(String(bad.body.error)).toMatch(/mode must/i);
     });
 
+    it('persists project browser defaults and clears with null', async () => {
+      const proj = await createProject();
+      const setAll = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({
+          browserToolsDefaultEnabled: false,
+          browserViewportWidth: 1440,
+          browserViewportHeight: 900,
+          browserPageLoadTimeoutMs: 45_000,
+        })
+        .expect(200);
+      expect(setAll.body.browserToolsDefaultEnabled).toBe(false);
+      expect(setAll.body.browserViewportWidth).toBe(1440);
+      expect(setAll.body.browserViewportHeight).toBe(900);
+      expect(setAll.body.browserPageLoadTimeoutMs).toBe(45_000);
+
+      const cleared = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({
+          browserToolsDefaultEnabled: null,
+          browserViewportWidth: null,
+          browserViewportHeight: null,
+          browserPageLoadTimeoutMs: null,
+        })
+        .expect(200);
+      expect(cleared.body.browserToolsDefaultEnabled).toBeUndefined();
+      expect(cleared.body.browserViewportWidth).toBeUndefined();
+      expect(cleared.body.browserViewportHeight).toBeUndefined();
+      expect(cleared.body.browserPageLoadTimeoutMs).toBeUndefined();
+    });
+
+    it('returns 400 for invalid project browser viewport', async () => {
+      const proj = await createProject();
+      await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ browserViewportWidth: 200 })
+        .expect(400);
+    });
+
     it('updates githubWorkflow settings', async () => {
       const proj = await createProject();
       const res = await request
@@ -733,6 +772,38 @@ describe('Agents', () => {
         .expect(400);
 
       expect(res.body.error).toMatch(/browserToolsEnabled must be a boolean/i);
+    });
+
+    it('persists browser viewport and timeout overrides and clears with null', async () => {
+      const agent = await createAgent();
+      const setNums = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({
+          browserViewportWidth: 1024,
+          browserViewportHeight: 768,
+          browserPageLoadTimeoutMs: 45_000,
+        })
+        .expect(200);
+      expect(setNums.body.browserViewportWidth).toBe(1024);
+      expect(setNums.body.browserViewportHeight).toBe(768);
+      expect(setNums.body.browserPageLoadTimeoutMs).toBe(45_000);
+
+      const cleared = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({
+          browserViewportWidth: null,
+          browserViewportHeight: null,
+          browserPageLoadTimeoutMs: null,
+        })
+        .expect(200);
+      expect(cleared.body.browserViewportWidth).toBeUndefined();
+      expect(cleared.body.browserViewportHeight).toBeUndefined();
+      expect(cleared.body.browserPageLoadTimeoutMs).toBeUndefined();
+
+      await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ browserViewportWidth: 200 })
+        .expect(400);
     });
   });
 
