@@ -164,7 +164,12 @@ describe('Sidebar — actionable session visibility', () => {
     expect(screen.queryByText('Only idle session')).not.toBeInTheDocument();
   });
 
-  it('treats Resolve PR sessions with only changes_ready as non-actionable when agent is collapsed', () => {
+  it('keeps Resolve PR sessions with changes_ready visible when the agent is collapsed', () => {
+    // Reviewer feedback (PR #839): Resolve-PR sessions that only have
+    // `changes_ready` must stay visible in the collapsed sidebar so users can
+    // reopen them without expanding. The misleading "create PR" purple glyph
+    // is suppressed independently (see other tests) — visibility and glyph
+    // semantics are decoupled.
     const props = buildProps({
       sessions: [{ id: 's-resolve', name: '[Resolve PR #77] Fix thing' }],
       activeTaskSessionIds: {},
@@ -176,8 +181,27 @@ describe('Sidebar — actionable session visibility', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '▾' }));
 
-    expect(screen.queryByText('[Resolve PR #77] Fix thing')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('agent-sessions-list')).not.toBeInTheDocument();
+    // Session row remains rendered after collapse.
+    expect(screen.getByText('[Resolve PR #77] Fix thing')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-sessions-list')).toBeInTheDocument();
+    // But the misleading "create PR" pulse must not appear for the Resolve PR title.
+    expect(screen.queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
+  });
+
+  it('keeps Resolve PR sessions with changes_ready visible in the project-collapsed actionable list', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-resolve', name: '[Resolve PR #77] Fix thing' }],
+      activeTaskSessionIds: {},
+      changesReadyBySession: { 's-resolve': { branch: 'fix/77' } },
+    });
+    render(<Sidebar {...props} />);
+
+    fireEvent.click(screen.getByText('Test Project')); // collapse project
+
+    const collapsedPanel = screen.getByTestId('project-collapsed-actionable');
+    expect(within(collapsedPanel).getByText('[Resolve PR #77] Fix thing')).toBeInTheDocument();
+    // No misleading "create PR" pulse on the Resolve PR row.
+    expect(within(collapsedPanel).queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
   });
 
   it('shows external-link control for Resolve PR sessions with changes_ready when githubRepo is set', () => {

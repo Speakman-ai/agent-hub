@@ -158,11 +158,14 @@ export default function Sidebar({
 
   // A session is "actionable" when it must remain visible regardless of collapse state:
   // - it's currently running (tracked via activeTaskSessionIds)
-  // - it has a pending PR/changes ready (tracked via changesReadyBySession)
+  // - it has a pending PR/changes ready (tracked via changesReadyBySession), including
+  //   `[Resolve PR #N]` sessions — so users can reopen them from the collapsed sidebar.
+  //   The misleading "create PR" purple glyph is suppressed for those titles separately
+  //   (see `showCreatePrReadyGlyph`); an external-link affordance (`resolvePrHref`) carries
+  //   the "existing PR" semantics instead.
   // - (future) it's awaiting user input (requires backend `awaiting_input` flag; not yet wired)
   const isSessionActionable = (session) =>
-    !!activeTaskSessionIds[session.id] ||
-    (!!changesReadyBySession[session.id] && !isResolvePrSessionTitle(session.name));
+    !!activeTaskSessionIds[session.id] || !!changesReadyBySession[session.id];
 
   const orchestrationSession =
     currentView === 'chat' && activeSessionId
