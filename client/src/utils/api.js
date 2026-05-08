@@ -840,7 +840,8 @@ export const api = {
     }),
   getLastPrEnvProvision: () => fetchJSON('/settings/pr-env/provision/last'),
 
-  // MCP servers (per-user). Replaces the deleted Nango integration surface.
+  // MCP servers (per-user). Replaces the deleted Nango integration surface;
+  // configured under Skills & Context → MCP (not Settings).
   // Distinct from the per-agent MCP methods above (`getMcpServers` etc.) —
   // those manage the agent's template under `/agents/:id/mcp-servers`; these
   // manage the authenticated user's personal connections under `/mcp-servers`.

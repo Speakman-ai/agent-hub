@@ -21,6 +21,8 @@ vi.mock('../utils/api.js', () => ({
     clawhubGetSkill: vi.fn(),
     clawhubGetVersions: vi.fn(),
     clawhubInstall: vi.fn(),
+    listUserMcpServers: vi.fn(),
+    getMcpCatalog: vi.fn(),
   },
 }));
 
@@ -49,6 +51,8 @@ describe('SkillsPage error surfacing', () => {
     api.getPluginInfo.mockReset();
     api.getSkillOverrides.mockResolvedValue([]);
     api.getPluginInfo.mockResolvedValue(null);
+    api.listUserMcpServers.mockResolvedValue({ servers: [] });
+    api.getMcpCatalog.mockResolvedValue({ entries: [] });
   });
 
   afterEach(() => {
@@ -150,5 +154,18 @@ describe('SkillsPage error surfacing', () => {
     const errorBanner = await screen.findByTestId('skills-action-error');
     expect(errorBanner.textContent).toContain('Failed to install skill kanban');
     expect(errorBanner.textContent).toContain('write failed');
+  });
+
+  it('shows MCP servers when initialSkillsTab is mcp', async () => {
+    api.getSkills.mockResolvedValue([]);
+    api.getContext.mockResolvedValue({});
+    api.getRegistry.mockResolvedValue([]);
+    api.listUserMcpServers.mockResolvedValue({ servers: [] });
+    api.getMcpCatalog.mockResolvedValue({ entries: [] });
+
+    render(<SkillsPage agents={[AGENT]} projects={PROJECTS} initialSkillsTab="mcp" />);
+    await flush();
+
+    expect(await screen.findByRole('heading', { name: /^MCP Servers$/ })).toBeInTheDocument();
   });
 });
