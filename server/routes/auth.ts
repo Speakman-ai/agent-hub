@@ -80,6 +80,7 @@ import {
   upsertUserSkillCredential,
   deleteUserSkillCredential,
   existsUserSkillCredential,
+  deleteUserSkillCredentialByKey,
 } from '../skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from '../skill-credentials-resolve.js';
 import { getProjects } from '../project-model.js';
@@ -610,12 +611,18 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json({ error: `Credential "${key_name}" is required` });
       return;
     }
-    if (
-      !spec.required &&
-      value.trim().length === 0 &&
-      !existsUserSkillCredential(authedReq.authUserId, skill_id, key_name)
-    ) {
-      res.json({ credential: null, skipped: true as const });
+    if (!spec.required && value.trim().length === 0) {
+      if (!existsUserSkillCredential(authedReq.authUserId, skill_id, key_name)) {
+        res.json({ credential: null, skipped: true as const });
+        return;
+      }
+      deleteUserSkillCredentialByKey(
+        authedReq.authUserId,
+        skill_id,
+        key_name,
+        authedReq.authUserId,
+      );
+      res.json({ credential: null, cleared: true as const });
       return;
     }
 

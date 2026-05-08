@@ -124,6 +124,24 @@ export function upsertUserSkillCredential(opts: {
   return rowToMasked(row);
 }
 
+/** Delete a row by composite key (same audit path as id-based delete). */
+export function deleteUserSkillCredentialByKey(
+  userId: string,
+  skillId: string,
+  keyName: string,
+  actorUserId: string,
+): { ok: boolean } {
+  const db = getOrgsDb();
+  const row = db
+    .prepare(
+      'SELECT id FROM user_skill_credentials WHERE user_id = ? AND skill_id = ? AND key_name = ?',
+    )
+    .get(userId, skillId, keyName) as { id: string } | undefined;
+  if (!row) return { ok: false };
+  const result = deleteUserSkillCredential(userId, row.id, actorUserId);
+  return { ok: result.ok };
+}
+
 export function deleteUserSkillCredential(
   userId: string,
   rowId: string,

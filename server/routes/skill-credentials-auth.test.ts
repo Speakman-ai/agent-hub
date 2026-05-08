@@ -198,6 +198,38 @@ credentials:
     expect(listed.body.credentials).toHaveLength(0);
   });
 
+  it('clears optional credential when PUT with empty value and a row exists', async () => {
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+
+    await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'github',
+        key_name: 'GH_TOKEN',
+        value: 'ghp_clear_me',
+      })
+      .expect(200);
+
+    const clear = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'github',
+        key_name: 'GH_TOKEN',
+        value: '',
+      });
+    expect(clear.status).toBe(200);
+    expect(clear.body.cleared).toBe(true);
+    expect(clear.body.credential).toBeNull();
+
+    const listed = await supertest(app)
+      .get('/api/auth/me/skill-credentials?skillId=github')
+      .set('Authorization', `Bearer ${token}`);
+    expect(listed.body.credentials).toHaveLength(0);
+  });
+
   it('rejects PUT for unknown credential key names', async () => {
     const app = buildGatedApp();
     const token = await setupOwner(app);

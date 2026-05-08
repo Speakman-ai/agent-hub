@@ -37,4 +37,37 @@ credentials:
     expect(parsed.error).toBeNull();
     expect(parsed.credentials.some((c) => c.name === 'GH_TOKEN')).toBe(true);
   });
+
+  it('falls back to bundled default when workspace skill omits credentials block', () => {
+    const skillDir = path.join(ahw, 'skills', 'github');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: github (stub)
+---
+# Stub
+`,
+      'utf8',
+    );
+    const parsed = readCredentialsSchemaForSkill('github', { projectWorkspaces: [ahw] });
+    expect(parsed.error).toBeNull();
+    expect(parsed.credentials.some((c) => c.name === 'GH_TOKEN')).toBe(true);
+  });
+
+  it('does not fall back when workspace skill has malformed credentials', () => {
+    const skillDir = path.join(ahw, 'skills', 'github');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: github
+credentials: not-an-array
+---
+`,
+      'utf8',
+    );
+    const parsed = readCredentialsSchemaForSkill('github', { projectWorkspaces: [ahw] });
+    expect(parsed.error).toContain('credentials must be an array');
+  });
 });

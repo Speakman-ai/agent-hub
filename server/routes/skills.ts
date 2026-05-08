@@ -220,10 +220,11 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
         const raw = readFileSync(skillMd, 'utf-8');
         const { data } = matter(raw);
         const credPack = extractCredentialsFromSkillContent(raw);
-        if (credPack.error)
-          console.warn(
-            `[skills] credential schema parse (${req.params.skillId}): ${credPack.error}`,
-          );
+        if (credPack.error) {
+          return res.status(400).json({
+            error: `invalid credentials in SKILL.md frontmatter: ${credPack.error}`,
+          });
+        }
         res.json({
           id: req.params.skillId,
           name: (data.name as string) || req.params.skillId,
@@ -235,10 +236,11 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
       } else if (existsSync(skillPath)) {
         const raw = readFileSync(skillPath, 'utf-8');
         const credPackFlat = extractCredentialsFromSkillContent(raw);
-        if (credPackFlat.error)
-          console.warn(
-            `[skills] credential schema parse (${req.params.skillId}): ${credPackFlat.error}`,
-          );
+        if (credPackFlat.error) {
+          return res.status(400).json({
+            error: `invalid credentials in SKILL.md frontmatter: ${credPackFlat.error}`,
+          });
+        }
         res.json({
           id: req.params.skillId,
           name: (req.params.skillId as string).replace('.md', ''),
@@ -255,10 +257,11 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
             const raw = readFileSync(skillMd, 'utf-8');
             const { data } = matter(raw);
             const credPackDef = extractCredentialsFromSkillContent(raw);
-            if (credPackDef.error)
-              console.warn(
-                `[skills] credential schema parse (${req.params.skillId}): ${credPackDef.error}`,
-              );
+            if (credPackDef.error) {
+              return res.status(400).json({
+                error: `invalid credentials in SKILL.md frontmatter: ${credPackDef.error}`,
+              });
+            }
             return res.json({
               id: req.params.skillId,
               name: (data.name as string) || req.params.skillId,

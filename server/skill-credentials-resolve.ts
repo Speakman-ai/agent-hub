@@ -56,7 +56,12 @@ export function readCredentialsSchemaForSkill(
 ): ParsedCredentials {
   for (const ahw of opts?.projectWorkspaces ?? []) {
     const fromProject = tryParseCredentialsFromProjectWorkspace(ahw, skillId);
-    if (fromProject !== null) return fromProject;
+    if (fromProject === null) continue;
+    // Workspace copy exists but omits `credentials:` (or `credentials: []`); keep
+    // scanning so bundled defaults / registry still apply (stub dirs must not
+    // shadow GH_TOKEN and similar bundled declarations).
+    if (fromProject.credentials.length === 0 && fromProject.error === null) continue;
+    return fromProject;
   }
 
   const defaultPath = path.join(DEFAULT_SKILL_ROOT, skillId, 'SKILL.md');
