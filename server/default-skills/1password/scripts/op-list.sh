@@ -43,22 +43,22 @@ cmd_items() {
   [[ -n "$limit" ]]    && args+=(--limit "$limit")
 
   op "${args[@]}" --format json \
-    | python3 -c "
+    | python3 -c '
 import sys, json
 items = json.load(sys.stdin)
 if not items:
-    print('(no items found)')
+    print("(no items found)")
     sys.exit(0)
-print(f"{'Title':<40} {'Category':<20} {'Vault':<20} UUID")
-print('-' * 100)
+print("{:<40} {:<20} {:<20} UUID".format("Title", "Category", "Vault"))
+print("-" * 100)
 for item in items:
-    title    = (item.get('title') or '')[:38]
-    category = (item.get('category') or '')[:18]
-    vault    = (item.get('vault', {}).get('name') or '')[:18]
-    uid      = item.get('id','')
-    print(f'{title:<40} {category:<20} {vault:<20} {uid}')
-print(f'\n{len(items)} item(s)')
-"
+    title    = (item.get("title") or "")[:38]
+    category = (item.get("category") or "")[:18]
+    vault    = (item.get("vault", {}).get("name") or "")[:18]
+    uid      = item.get("id", "")
+    print("{:<40} {:<20} {:<20} {}".format(title, category, vault, uid))
+print("\n{} item(s)".format(len(items)))
+'
 }
 
 # ---------------------------------------------------------------------------
@@ -68,21 +68,21 @@ cmd_vaults() {
   require_op_auth
   require_python3
   op vault list --format json \
-    | python3 -c "
+    | python3 -c '
 import sys, json
 vaults = json.load(sys.stdin)
 if not vaults:
-    print('(no vaults accessible)')
+    print("(no vaults accessible)")
     sys.exit(0)
-print(f"{'Name':<30} {'Type':<15} UUID")
-print('-' * 75)
+print("{:<30} {:<15} UUID".format("Name", "Type"))
+print("-" * 75)
 for v in vaults:
-    name  = (v.get('name') or '')[:28]
-    vtype = (v.get('type') or '')[:13]
-    uid   = v.get('id','')
-    print(f'{name:<30} {vtype:<15} {uid}')
-print(f'\n{len(vaults)} vault(s)')
-"
+    name  = (v.get("name") or "")[:28]
+    vtype = (v.get("type") or "")[:13]
+    uid   = v.get("id", "")
+    print("{:<30} {:<15} {}".format(name, vtype, uid))
+print("\n{} vault(s)".format(len(vaults)))
+'
 }
 
 # ---------------------------------------------------------------------------
@@ -103,21 +103,21 @@ cmd_documents() {
   [[ -n "$vault" ]] && args+=(--vault "$vault")
 
   op "${args[@]}" --format json \
-    | python3 -c "
+    | python3 -c '
 import sys, json
 docs = json.load(sys.stdin)
 if not docs:
-    print('(no documents found)')
+    print("(no documents found)")
     sys.exit(0)
-print(f"{'Title':<40} {'Vault':<20} UUID")
-print('-' * 80)
+print("{:<40} {:<20} UUID".format("Title", "Vault"))
+print("-" * 80)
 for d in docs:
-    title = (d.get('title') or '')[:38]
-    vault = (d.get('vault', {}).get('name') or '')[:18]
-    uid   = d.get('id','')
-    print(f'{title:<40} {vault:<20} {uid}')
-print(f'\n{len(docs)} document(s)')
-"
+    title = (d.get("title") or "")[:38]
+    vault = (d.get("vault", {}).get("name") or "")[:18]
+    uid   = d.get("id", "")
+    print("{:<40} {:<20} {}".format(title, vault, uid))
+print("\n{} document(s)".format(len(docs)))
+'
 }
 
 # ---------------------------------------------------------------------------
