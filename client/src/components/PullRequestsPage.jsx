@@ -314,8 +314,27 @@ function CommentBlock({ comment }) {
   );
 }
 
-function ActivityKindIcon({ kind }) {
+function ActivityKindIcon({ kind, check }) {
   const common = 'flex-shrink-0 mt-0.5';
+  if (kind === 'check' && check && typeof check === 'object') {
+    const st = String(check.status || '').toLowerCase();
+    const concl = String(check.conclusion || '').toLowerCase();
+    if (st && st !== 'completed') {
+      return <Clock size={16} className={`${common} text-yellow-400`} aria-hidden />;
+    }
+    if (
+      concl === 'failure' ||
+      concl === 'timed_out' ||
+      concl === 'cancelled' ||
+      concl === 'action_required'
+    ) {
+      return <XCircle size={16} className={`${common} text-red-400`} aria-hidden />;
+    }
+    if (concl === 'success' || concl === 'skipped' || concl === 'neutral') {
+      return <CheckCircle2 size={16} className={`${common} text-emerald-400`} aria-hidden />;
+    }
+    return <AlertCircle size={16} className={`${common} text-gray-400`} aria-hidden />;
+  }
   switch (kind) {
     case 'opened':
       return <GitPullRequest size={16} className={`${common} text-blue-400`} aria-hidden />;
@@ -328,7 +347,7 @@ function ActivityKindIcon({ kind }) {
     case 'comment':
       return <MessageSquare size={16} className={`${common} text-sky-400`} aria-hidden />;
     case 'check':
-      return <CheckCircle2 size={16} className={`${common} text-gray-400`} aria-hidden />;
+      return <AlertCircle size={16} className={`${common} text-gray-400`} aria-hidden />;
     default:
       return <AlertCircle size={16} className={`${common} text-gray-500`} aria-hidden />;
   }
@@ -409,7 +428,10 @@ function PrActivityTimeline({ pr, detail }) {
     <ul className="space-y-4">
       {activity.map((item) => (
         <li key={item.id} className="flex gap-3">
-          <ActivityKindIcon kind={item.kind} />
+          <ActivityKindIcon
+            kind={item.kind}
+            check={item.kind === 'check' ? item.check : undefined}
+          />
           <div className="flex-1 min-w-0">
             <ActivityTimelineRow item={item} />
           </div>
