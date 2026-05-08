@@ -21,6 +21,11 @@ on:
         description: 'Additional tag to push (defaults to branch name)'
         required: false
         type: string
+      reset_instance:
+        description: 'Wipe Agent Hub state on the dev sandbox before restart (fresh-setup test). Preserves OS, /etc/letsencrypt, and /data/config.json.'
+        required: false
+        type: boolean
+        default: false
 
 # One in-flight build per ref at a time; cancel any superseded runs.
 concurrency:
@@ -130,14 +135,78 @@ jobs:
           aws-region: ${{ env.AWS_DEPLOY_REGION }}
 
       - name: Restart Agent Hub on dev EC2 (pull fresh image)
+        env:
+          # workflow_dispatch supplies 'true'/'false'; push events leave it empty.
+          RESET_INSTANCE: ${{ inputs.reset_instance && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          PARAMS_JSON='{"commands":["set -euo pipefail","sudo systemctl restart agenthub-server","sudo systemctl is-active agenthub-server"]}'
+          # DATA_ROOT must match `data_root_for_docker` in
+          # ops/terraform/locals-agent-hub.tf — the host paths bind-mounted
+          # into the agenthub-server container at /data, /app/uploads, and
+          # /home/node/projects.
+          DATA_ROOT="/var/lib/agent-hub"
+          if [[ "$RESET_INSTANCE" == "true" ]]; then
+            # Fresh-setup mode. Wipe Agent Hub state on the existing EC2 so
+            # the next container start regenerates an empty SQLite DB and a
+            # new initial-credentials.txt — same outcome as a brand-new box,
+            # without needing terraform-from-CI to actually replace the EC2.
+            #
+            # Preserved on purpose:
+            #   - /etc/letsencrypt   (LE rate-limits wildcard re-issuance to
+            #                         5/week — see user-data tftpl line 158)
+            #   - /var/lib/agent-hub/data/config.json (PR-env Tier-3 config,
+            #                         only ever written by cloud-init at first
+            #                         boot — losing it breaks PR-env nginx)
+            #
+            # Wiped:
+            #   - $DATA_ROOT/data        (SQLite DB, sessions, kanban, wiki,
+            #                             encrypted PR-env Tier-1+2 secrets)
+            #   - $DATA_ROOT/uploads     (chat attachments)
+            #   - $DATA_ROOT/projects    (per-project source checkouts)
+            #
+            # Recreated as 1000:1000 because the container's `node` user is
+            # uid 1000 and bind mounts preserve host ownership — see the
+            # SQLITE_CANTOPEN comment in agent-hub-user-data.tftpl.
+            SCRIPT=$(cat <<EOF
+          set -euo pipefail
+          DATA_ROOT="$DATA_ROOT"
+          if [ -f "\$DATA_ROOT/data/config.json" ]; then
+            sudo cp -a "\$DATA_ROOT/data/config.json" /tmp/agent-hub-config.json
+          fi
+          sudo systemctl stop agenthub-server || true
+          sudo docker rm -f agenthub-server 2>/dev/null || true
+          sudo rm -rf "\$DATA_ROOT/data" "\$DATA_ROOT/uploads" "\$DATA_ROOT/projects"
+          sudo install -d -m 0755 -o 1000 -g 1000 "\$DATA_ROOT/data" "\$DATA_ROOT/uploads" "\$DATA_ROOT/projects"
+          if [ -f /tmp/agent-hub-config.json ]; then
+            sudo install -m 0600 -o 1000 -g 1000 /tmp/agent-hub-config.json "\$DATA_ROOT/data/config.json"
+            sudo rm -f /tmp/agent-hub-config.json
+          fi
+          sudo systemctl start agenthub-server
+          sleep 5
+          sudo systemctl is-active agenthub-server
+          EOF
+          )
+            COMMENT="CI fresh-setup reset on dev sandbox ${{ github.sha }}"
+          else
+            SCRIPT=$(cat <<'EOF'
+          set -euo pipefail
+          sudo systemctl restart agenthub-server
+          sudo systemctl is-active agenthub-server
+          EOF
+          )
+            COMMENT="CI deploy after ECR push ${{ github.sha }}"
+          fi
+          # Convert the multi-line script into the SSM `commands` JSON array
+          # ({"commands":["line1","line2",...]}). jq -Rcs splits on newlines
+          # and JSON-encodes each line so embedded quotes / pipes are safe.
+          PARAMS_JSON=$(printf '%s' "$SCRIPT" | jq -Rcs '{commands: split("\n") | map(select(length > 0))}')
+          echo "reset_instance=$RESET_INSTANCE"
+          echo "ssm-comment=$COMMENT"
           CMD_ID="$(aws ssm send-command \
             --region "$AWS_DEPLOY_REGION" \
             --instance-ids "$DEV_SANDBOX_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "CI deploy after ECR push ${{ github.sha }}" \
+            --comment "$COMMENT" \
             --parameters "$PARAMS_JSON" \
             --output text \
             --query 'Command.CommandId')"
@@ -173,9 +242,15 @@ jobs:
           exit 1
 
       - name: Deploy summary
+        env:
+          RESET_INSTANCE: ${{ inputs.reset_instance && 'true' || 'false' }}
         run: |
           {
             echo "### Dev sandbox"
             echo ""
-            echo "Restarted \`agenthub-server\` on \`$DEV_SANDBOX_INSTANCE_ID\` (pull-on-start picks up :main)."
+            if [[ "$RESET_INSTANCE" == "true" ]]; then
+              echo "**Reset mode**: wiped \`/var/lib/agent-hub/{data,uploads,projects}\` on \`$DEV_SANDBOX_INSTANCE_ID\` (preserved \`/etc/letsencrypt\` and \`data/config.json\`), restarted \`agenthub-server\`. Next start regenerates an empty SQLite DB and \`initial-credentials.txt\` — fetch via SSM."
+            else
+              echo "Restarted \`agenthub-server\` on \`$DEV_SANDBOX_INSTANCE_ID\` (pull-on-start picks up :main)."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
