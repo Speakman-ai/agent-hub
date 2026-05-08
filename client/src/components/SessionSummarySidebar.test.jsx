@@ -118,6 +118,91 @@ describe('<SessionSummarySidebar /> — project PR detail fetch', () => {
     await waitFor(() => expect(api.getProjectPullDetail).toHaveBeenCalledWith('proj-1', 7));
   });
 
+  it('renders the PR-state pill and aggregate checks rollup pill from PR detail', async () => {
+    api.getSessionSummary.mockResolvedValue({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: {
+        id: 'c1',
+        title: 'Card',
+        pr_url: 'https://github.com/acme/widgets/pull/12',
+        review_status: null,
+        columnName: 'Review',
+      },
+      sessionTitlePrUrl: null,
+      session: { id: 's1', name: 'x' },
+      runSnapshot: emptyRun,
+      skills: [],
+    });
+    api.getProjectPullDetail.mockResolvedValue({
+      repo: 'acme/widgets',
+      source: 'rest',
+      pr: {
+        title: 'Twelfth PR',
+        head: 'feature/x',
+        base: 'main',
+        state: 'open',
+        draft: false,
+        merged_at: null,
+      },
+      checks: [
+        { name: 'lint', status: 'completed', conclusion: 'success' },
+        { name: 'unit', status: 'completed', conclusion: 'failure' },
+        { name: 'e2e', status: 'in_progress', conclusion: null },
+      ],
+      reviews: [],
+      comments: [],
+    });
+
+    render(<SessionSummarySidebar sessionId="sess-status" isLive={false} />);
+
+    await waitFor(() => expect(api.getProjectPullDetail).toHaveBeenCalled());
+
+    const statePill = await screen.findByTestId('pr-state-pill');
+    expect(statePill).toHaveTextContent('open');
+
+    // failure precedes pending in summarizeChecks → label is "X/Y failing"
+    const checksPill = await screen.findByTestId('checks-rollup-pill');
+    expect(checksPill).toHaveTextContent('1/3 failing');
+  });
+
+  it('shows the merged label when the PR has been merged', async () => {
+    api.getSessionSummary.mockResolvedValue({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: {
+        id: 'c1',
+        title: 'Card',
+        pr_url: 'https://github.com/acme/widgets/pull/13',
+        review_status: null,
+        columnName: 'Done',
+      },
+      sessionTitlePrUrl: null,
+      session: { id: 's1', name: 'x' },
+      runSnapshot: emptyRun,
+      skills: [],
+    });
+    api.getProjectPullDetail.mockResolvedValue({
+      repo: 'acme/widgets',
+      source: 'rest',
+      pr: {
+        title: 'Merged PR',
+        state: 'closed',
+        merged_at: '2026-05-01T12:00:00Z',
+      },
+      reviews: [],
+      comments: [],
+      checks: [],
+    });
+
+    render(<SessionSummarySidebar sessionId="sess-merged" isLive={false} />);
+
+    await waitFor(() => expect(api.getProjectPullDetail).toHaveBeenCalled());
+    const statePill = await screen.findByTestId('pr-state-pill');
+    expect(statePill).toHaveTextContent('merged');
+    expect(screen.queryByTestId('checks-rollup-pill')).not.toBeInTheDocument();
+  });
+
   it('renders each loaded skill once even when the server returns duplicate invocations', async () => {
     api.getSessionSummary.mockResolvedValue({
       projectId: 'proj-1',
