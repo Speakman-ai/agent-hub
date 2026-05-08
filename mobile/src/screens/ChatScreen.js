@@ -43,6 +43,7 @@ export default function ChatScreen() {
     delegations,
     messageQueues,
     eventsByMessage,
+    browserScreensBySession,
     handleDequeue,
     handleEditQueuedMessage,
     handleDelegationCancel,
@@ -136,6 +137,9 @@ export default function ChatScreen() {
                 onEventsLoaded={handleEventsLoaded}
                 onAskSubmit={handleAskSubmit}
                 askSubmittedIds={askSubmitted}
+                browserScreenshots={
+                  (activeSessionId && browserScreensBySession[activeSessionId]?.[msg.id]) || {}
+                }
               />
             )}
           </View>
@@ -170,6 +174,11 @@ export default function ChatScreen() {
                 onEventsLoaded={handleEventsLoaded}
                 onAskSubmit={handleAskSubmit}
                 askSubmittedIds={askSubmitted}
+                browserScreenshots={
+                  (activeSessionId &&
+                    browserScreensBySession[activeSessionId]?.[streamingMsgId]) ||
+                  {}
+                }
               />
             )}
           </View>

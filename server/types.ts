@@ -1617,6 +1617,7 @@ export type StreamEventType =
   | 'rate_limit'
   | 'ask_user_question'
   | 'progress_step'
+  | 'browser_tool_activity' // Synthetic host telemetry — never emitted by the CLI JSONL parser
   | 'error'
   | 'unknown';
 
@@ -1727,6 +1728,31 @@ export interface ProgressStepEvent extends BaseStreamEvent {
   finishedAt?: number;
 }
 
+/**
+ * Host-mediated browser (<agenthub:react> browser) step — emits outside the CLI
+ * stream parser while still persisting alongside stream-json telemetry.
+ */
+export interface BrowserToolActivityEvent extends BaseStreamEvent {
+  type: 'browser_tool_activity';
+  /** Correlates a started + ended pair. */
+  actionId: string;
+  phase: 'started' | 'ended';
+  op: string;
+  /** Present-tense hint while running; echoed on `ended` for stable labels. */
+  label: string;
+  startedAtMs: number;
+  /** `ended` only */
+  durationMs?: number;
+  ok?: boolean;
+  /** Past-tense headline for timeline UI */
+  summary?: string;
+  extractPreview?: string;
+  /** Screenshot browser op produced an image (`ended` phase). Independent of WS inline preview omission. */
+  hasScreenshot?: boolean;
+  targetSummary?: string;
+  error?: string;
+}
+
 export interface ErrorEvent extends BaseStreamEvent {
   type: 'error';
   message: string;
@@ -1737,6 +1763,7 @@ export interface UnknownEvent extends BaseStreamEvent {
   text: string;
 }
 
+/** Parsed stream-json CLI events plus host-synthetic rows stored in session_events together. */
 export type StreamEvent =
   | SystemEvent
   | AssistantTextEvent
@@ -1748,6 +1775,7 @@ export type StreamEvent =
   | RateLimitEvent
   | AskUserQuestionEvent
   | ProgressStepEvent
+  | BrowserToolActivityEvent
   | ErrorEvent
   | UnknownEvent;
 

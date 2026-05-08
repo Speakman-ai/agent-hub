@@ -26,6 +26,7 @@ import {
   firstEngineWithAuthenticatedModels,
   defaultModelForAuthenticatedEngine,
 } from '../utils/authModelEngines';
+import { mergeBrowserActivityScreenshot } from '../../../shared/utils/browserScreensBySessionMerge.js';
 
 const AppContext = createContext(null);
 
@@ -78,6 +79,8 @@ export function AppProvider({ children }) {
   const [messageQueues, setMessageQueues] = useState({});
   // Session events: { [messageId]: [{ seq, event }] }
   const [eventsByMessage, setEventsByMessage] = useState({});
+  // Live browser screenshot previews: { [messageId]: { [actionId]: dataUrl } }
+  const [browserScreensBySession, setBrowserScreensBySession] = useState({});
   // Cron-linked sessions
   const [cronSessions, setCronSessions] = useState([]);
   // Threads (persistent output logs for crons & heartbeats)
@@ -505,6 +508,17 @@ export function AppProvider({ children }) {
           }));
         }
         break;
+      case 'browser_activity_screenshot': {
+        const sid = data.sessionId;
+        const mid = data.messageId;
+        const aid = data.actionId;
+        const shot = data.screenshotDataUrl;
+        if (!sid || !mid || !aid || typeof shot !== 'string') break;
+        setBrowserScreensBySession((prev) =>
+          mergeBrowserActivityScreenshot(prev, sid, mid, aid, shot),
+        );
+        break;
+      }
 
       // Cron session updates
       case 'cron_session_update':
@@ -1314,6 +1328,12 @@ export function AppProvider({ children }) {
     const deletedRow = sessionsRef.current?.find((s) => s.id === sessionId) || null;
     try {
       await api.deleteSession(sessionId);
+      setBrowserScreensBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
       setSessions((prev) => {
         const remaining = prev.filter((s) => s.id !== sessionId);
         if (activeSessionIdRef.current === sessionId) {
@@ -1653,6 +1673,7 @@ export function AppProvider({ children }) {
     handleOpenHandoffSession,
     messageQueues,
     eventsByMessage,
+    browserScreensBySession,
     handleDequeue,
     handleEditQueuedMessage,
     handleDelegationCancel,

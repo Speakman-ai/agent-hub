@@ -83,6 +83,7 @@ import {
   isSessionWorktreeEnabled,
   prependSessionDeduped,
 } from './utils/sessionDerivedState.js';
+import { mergeBrowserActivityScreenshot } from '../../shared/utils/browserScreensBySessionMerge.js';
 
 export default function App() {
   const [projects, setProjects] = useState([]);
@@ -185,6 +186,8 @@ export default function App() {
   const [sessionProgress, setSessionProgress] = useState({});
   /** Host ReAct / continuation steps from WebSocket `react_loop_step`, keyed by sessionId. */
   const [reactLoopStepsBySession, setReactLoopStepsBySession] = useState({});
+  /** Live browser screenshot previews: messageId → { actionId → data URL }. */
+  const [browserScreensBySession, setBrowserScreensBySession] = useState({});
   // Tracks which agenthub:ask prompts the user has already answered in this
   // tab, so the picker renders as "Submitted" immediately after click. This is
   // the optimistic, in-memory half; the authoritative source is the derived
@@ -764,6 +767,17 @@ export default function App() {
             const cur = prev[sid] || [];
             return { ...prev, [sid]: [...cur, entry].slice(-40) };
           });
+          break;
+        }
+        case 'browser_activity_screenshot': {
+          const sid = data.sessionId;
+          const mid = data.messageId;
+          const aid = data.actionId;
+          const screenshotDataUrl = data.screenshotDataUrl;
+          if (!sid || !mid || !aid || typeof screenshotDataUrl !== 'string') break;
+          setBrowserScreensBySession((prev) =>
+            mergeBrowserActivityScreenshot(prev, sid, mid, aid, screenshotDataUrl),
+          );
           break;
         }
         case 'done':
@@ -2488,6 +2502,12 @@ export default function App() {
     const deletedRow = sessions.find((s) => s.id === sessionId) || null;
     try {
       await api.deleteSession(sessionId);
+      setBrowserScreensBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
       if (deletedRow) {
         setArchivedSessions((prev) => {
@@ -2557,6 +2577,7 @@ export default function App() {
     try {
       const result = await api.clearAllSessions(activeAgentId);
       if (result.ok) {
+        setBrowserScreensBySession({});
         setSessions([]);
         setActiveSessionId(null);
       }
@@ -3365,6 +3386,9 @@ export default function App() {
                                       delegationDispatchErrors[activeSessionId]
                                     }
                                     onOpenSession={handleOpenHandoffSession}
+                                    browserScreenshots={
+                                      browserScreensBySession[activeSessionId]?.[msg.id] ?? {}
+                                    }
                                   />
                                 ) : (
                                   <ChatMessage
@@ -3400,6 +3424,13 @@ export default function App() {
                                     delegationDispatchErrors[activeSessionId]
                                   }
                                   onOpenSession={handleOpenHandoffSession}
+                                  browserScreenshots={
+                                    activeSessionId
+                                      ? (browserScreensBySession[activeSessionId]?.[
+                                          streamingMsgId
+                                        ] ?? {})
+                                      : {}
+                                  }
                                 />
                               )}
                               {doneVerifyLogBySession[activeSessionId] && (

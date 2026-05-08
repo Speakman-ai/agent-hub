@@ -553,6 +553,106 @@ export async function browserReadPage(stagehand: V3): Promise<BrowserToolResult>
   }
 }
 
+/** Max `data:` URL length for live WebSocket screenshot preview (browser chat UI). */
+export const BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS = 120_000;
+
+export interface BrowserStepUiExtras {
+  summary: string;
+  extractPreview?: string;
+  screenshotWsUrl?: string;
+  /** True when a screenshot op succeeded and produced image bytes (not whether a WS preview was sent). */
+  screenshotCaptured?: boolean;
+  targetSummary?: string;
+  errorLine?: string;
+}
+
+/** Return type for chat host step + collapsible timeline copy. */
+export type BrowserReActStepOutcome = {
+  markdown: string;
+  hostExit: number;
+  hostDetail?: string;
+  ui?: BrowserStepUiExtras;
+};
+
+export function summarizeJsonPreview(data: unknown, maxChars = 400): string | undefined {
+  try {
+    const s =
+      typeof data === 'string' ? data.slice(0, maxChars + 400) : JSON.stringify(data, null, 0);
+    if (s.length <= maxChars) return s;
+    return `${s.slice(0, Math.max(0, maxChars - 1))}…`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Present-tense line for streaming browser status under the assistant turn. */
+export function browserToolStartLabel(input: BrowserReActActionInput): string {
+  const op = (input.op ?? '').trim().toLowerCase();
+  const ell = '…';
+  switch (op) {
+    case 'navigate': {
+      const raw = (input.url ?? '').trim();
+      if (!raw) return `Navigating${ell}`;
+      try {
+        const h = new URL(raw).hostname;
+        return h ? `Navigating to ${h}${ell}` : `Navigating${ell}`;
+      } catch {
+        return `Navigating${ell}`;
+      }
+    }
+    case 'click': {
+      const t = (input.target ?? '').trim();
+      const one = t.replace(/\s+/g, ' ').trim();
+      const short = one.length > 72 ? `${one.slice(0, 71)}…` : one;
+      return short ? `Clicking ${short}…` : 'Clicking element…';
+    }
+    case 'type':
+      if (!(input.target ?? '').trim()) return 'Typing…';
+      {
+        const tgt = (input.target ?? '').trim().replace(/\s+/g, ' ');
+        return tgt.length > 72 ? `Typing into ${tgt.slice(0, 71)}…` : `Typing into ${tgt}…`;
+      }
+    case 'extract':
+      if (!(input.instruction ?? '').trim()) return 'Extracting page content…';
+      {
+        const ins = (input.instruction ?? '').trim().replace(/\s+/g, ' ');
+        return ins.length > 64 ? `Extracting ${ins.slice(0, 63)}…` : `Extracting ${ins}…`;
+      }
+    case 'screenshot':
+      return 'Taking screenshot…';
+    case 'scroll': {
+      const d = (input.direction ?? '').trim();
+      return d ? `Scrolling ${d}…` : 'Scrolling…';
+    }
+    case 'back':
+      return 'Going back…';
+    case 'forward':
+      return 'Going forward…';
+    case 'wait': {
+      const c = (input.condition ?? '').trim();
+      if (!c) return 'Waiting…';
+      return c.length > 80 ? `Waiting for ${c.slice(0, 79)}…` : `Waiting for ${c}…`;
+    }
+    case 'read_page':
+      return 'Reading page text…';
+    case 'close':
+      return 'Closing browser…';
+    default:
+      return 'Running browser tool…';
+  }
+}
+
+function hostHintFromNavigateData(data: unknown): string | undefined {
+  const u = (data as { url?: string } | undefined)?.url;
+  if (!u || typeof u !== 'string') return undefined;
+  try {
+    return new URL(u).hostname;
+  } catch {
+    const s = u.replace(/^https?:\/\//i, '').split('/')[0];
+    return s || undefined;
+  }
+}
+
 /**
  * Run one browser tool from a parsed ReAct action. Injects markdown for the model.
  */
@@ -560,13 +660,17 @@ export async function runBrowserReActStep(
   chatSessionId: string,
   input: BrowserReActActionInput,
   sessionLaunchOpts: BrowserSessionOptions = {},
-): Promise<{ markdown: string; hostExit: number; hostDetail?: string }> {
+): Promise<BrowserReActStepOutcome> {
   const opRaw = typeof input.op === 'string' ? input.op.trim() : '';
   if (!opRaw || !BROWSER_REACT_OP_SET.has(opRaw)) {
     return {
       markdown: `## Browser tool error\nUnsupported or missing op "${opRaw}"`,
       hostExit: 1,
       hostDetail: 'bad_op',
+      ui: {
+        summary: 'Unsupported browser action',
+        errorLine: opRaw ? `Unknown op "${opRaw}"` : 'Missing browser op',
+      },
     };
   }
   const op = opRaw as BrowserToolOp;
@@ -579,6 +683,7 @@ export async function runBrowserReActStep(
       markdown: `## Browser tool error\nFailed to open browser session: ${msg}`,
       hostExit: 1,
       hostDetail: 'launch_failed',
+      ui: { summary: 'Browser failed to start', errorLine: msg },
     };
   }
   const sh = asV3(session.stagehand);
@@ -599,14 +704,30 @@ export async function runBrowserReActStep(
       case 'close': {
         const closed = await closeBrowserSession(chatSessionId);
         const r = result('close', true, { closed });
-        return { markdown: fmt(r, 'Browser: close'), hostExit: 0, hostDetail: 'close' };
+        return {
+          markdown: fmt(r, 'Browser: close'),
+          hostExit: 0,
+          hostDetail: 'close',
+          ui: { summary: 'Browser session closed' },
+        };
       }
       case 'navigate': {
         const r = await browserNavigate(sh, input.url ?? '', opTimeoutMs);
+        const host = r.ok ? hostHintFromNavigateData(r.data) : undefined;
         return {
           markdown: fmt(r, 'Browser: navigate'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? input.url?.slice(0, 120) : r.error,
+          ui: r.ok
+            ? {
+                summary: host ? `Opened ${host}` : 'Page loaded',
+                targetSummary: input.url?.slice(0, 220),
+              }
+            : {
+                summary: 'Navigation failed',
+                errorLine: r.error,
+                targetSummary: input.url?.slice(0, 220),
+              },
         };
       }
       case 'click': {
@@ -615,6 +736,13 @@ export async function runBrowserReActStep(
           markdown: fmt(r, 'Browser: click'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { method?: string })?.method : r.error,
+          ui: r.ok
+            ? { summary: 'Click completed', targetSummary: input.target?.slice(0, 220) }
+            : {
+                summary: 'Click failed',
+                errorLine: r.error,
+                targetSummary: input.target?.slice(0, 220),
+              },
         };
       }
       case 'type': {
@@ -623,14 +751,28 @@ export async function runBrowserReActStep(
           markdown: fmt(r, 'Browser: type'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { method?: string })?.method : r.error,
+          ui: r.ok
+            ? {
+                summary: 'Typed into field',
+                targetSummary: input.target?.slice(0, 160),
+              }
+            : {
+                summary: 'Type action failed',
+                errorLine: r.error,
+                targetSummary: input.target?.slice(0, 160),
+              },
         };
       }
       case 'extract': {
         const r = await browserExtract(sh, input.instruction, input.schema);
+        const preview = r.ok ? summarizeJsonPreview(r.data) : undefined;
         return {
           markdown: fmt(r, 'Browser: extract'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? 'extract' : r.error,
+          ui: r.ok
+            ? { summary: 'Extracted page data', extractPreview: preview }
+            : { summary: 'Extract failed', errorLine: r.error },
         };
       }
       case 'screenshot': {
@@ -645,14 +787,26 @@ export async function runBrowserReActStep(
           JSON.stringify(lean, null, 2),
           '```',
         ];
+        let screenshotWsUrl: string | undefined;
         if (r.ok && imageBase64) {
           const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
           lines.push('', `![screenshot](data:${mime};base64,${imageBase64})`);
+          const dataUrl = `data:${mime};base64,${imageBase64}`;
+          if (dataUrl.length <= BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS) {
+            screenshotWsUrl = dataUrl;
+          }
         }
         return {
           markdown: lines.join('\n'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? 'screenshot' : r.error,
+          ui: r.ok
+            ? {
+                summary: 'Screenshot captured',
+                screenshotWsUrl,
+                screenshotCaptured: Boolean(imageBase64),
+              }
+            : { summary: 'Screenshot failed', errorLine: r.error },
         };
       }
       case 'scroll': {
@@ -661,22 +815,36 @@ export async function runBrowserReActStep(
           markdown: fmt(r, 'Browser: scroll'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? input.direction : r.error,
+          ui: r.ok
+            ? {
+                summary: `Scrolled ${(input.direction ?? '').trim()}`,
+                targetSummary: input.direction,
+              }
+            : { summary: 'Scroll failed', errorLine: r.error },
         };
       }
       case 'back': {
         const r = await browserBack(sh, opTimeoutMs);
+        const host = r.ok ? hostHintFromNavigateData(r.data) : undefined;
         return {
           markdown: fmt(r, 'Browser: back'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { url?: string } | undefined)?.url : r.error,
+          ui: r.ok
+            ? { summary: host ? `Back · ${host}` : 'Navigated back' }
+            : { summary: 'Back navigation failed', errorLine: r.error },
         };
       }
       case 'forward': {
         const r = await browserForward(sh, opTimeoutMs);
+        const host = r.ok ? hostHintFromNavigateData(r.data) : undefined;
         return {
           markdown: fmt(r, 'Browser: forward'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { url?: string } | undefined)?.url : r.error,
+          ui: r.ok
+            ? { summary: host ? `Forward · ${host}` : 'Navigated forward' }
+            : { summary: 'Forward navigation failed', errorLine: r.error },
         };
       }
       case 'wait': {
@@ -685,6 +853,9 @@ export async function runBrowserReActStep(
           markdown: fmt(r, 'Browser: wait'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { kind?: string } | undefined)?.kind : r.error,
+          ui: r.ok
+            ? { summary: `Wait finished (${input.condition ?? ''})`.slice(0, 220) }
+            : { summary: 'Wait timed out', errorLine: r.error },
         };
       }
       case 'read_page': {
@@ -696,6 +867,7 @@ export async function runBrowserReActStep(
             markdown: fmt(r, 'Browser: read_page'),
             hostExit: 1,
             hostDetail: r.error,
+            ui: { summary: 'Read page failed', errorLine: r.error },
           };
         }
         const maxShow = 24_000;
@@ -716,10 +888,15 @@ export async function runBrowserReActStep(
           JSON.stringify(lean, null, 2),
           '```',
         ];
+        const preview = snippet.length <= 520 ? snippet : `${snippet.slice(0, 519)}…`;
         return {
           markdown: lines.join('\n'),
           hostExit: 0,
           hostDetail: `chars:${fullLen}`,
+          ui: {
+            summary: `Read ${fullLen.toLocaleString()} characters from page`,
+            extractPreview: preview,
+          },
         };
       }
       default: {
@@ -727,6 +904,7 @@ export async function runBrowserReActStep(
           markdown: `## Browser tool error\nUnsupported op`,
           hostExit: 1,
           hostDetail: 'bad_op',
+          ui: { summary: 'Unsupported browser op', errorLine: 'bad_op' },
         };
       }
     }
@@ -736,6 +914,7 @@ export async function runBrowserReActStep(
       markdown: `## Browser tool error\n${msg}`,
       hostExit: 1,
       hostDetail: 'threw',
+      ui: { summary: 'Browser threw an error', errorLine: msg },
     };
   }
 }

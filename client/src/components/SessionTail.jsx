@@ -16,6 +16,7 @@ import { stripAssistantControlBlocks } from '../utils/controlBlocks.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
 import DelegateCard from './DelegateCard.jsx';
+import BrowserActivityPanel from './BrowserActivityPanel.jsx';
 import {
   Bot,
   Zap,
@@ -57,6 +58,8 @@ import {
  *                  so the parent can hoist the events into shared state. Never
  *                  use an empty array to mean "fetch failed" — that poisons the
  *                  parent's cache (`events !== undefined`) and skips refetch.
+ *   browserScreenshots — optional map of actionId → screenshot data URL delivered
+ *                  via `browser_activity_screenshot` (not persisted).
  */
 function SessionTail({
   message,
@@ -72,6 +75,7 @@ function SessionTail({
   sessionDelegations,
   delegationDispatchError,
   onOpenSession,
+  browserScreenshots = {},
 }) {
   // `streaming` doubles as the parent-active signal for DelegateCard so it
   // can decide whether an empty live snapshot means "still awaiting dispatch"
@@ -252,6 +256,12 @@ function SessionTail({
           streaming={streaming}
           createdAt={message?.created_at}
           outcome={outcome}
+        />
+
+        <BrowserActivityPanel
+          timelineEntries={effectiveEvents ?? []}
+          streaming={streaming}
+          screenshots={browserScreenshots}
         />
 
         {/* Streaming with no events yet — render the legacy `stream` content

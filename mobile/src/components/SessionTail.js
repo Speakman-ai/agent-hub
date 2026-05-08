@@ -7,9 +7,14 @@ import { isFileModifyingTool } from '../utils/diff';
 import { eventsToBlocks, describeTool } from '../utils/sessionTailBlocks';
 import { shouldAutoLoadEvents } from '../utils/shouldAutoLoadEvents';
 import { applyLazyMessageEventsResult } from '../utils/sessionTailEventsLoad.js';
+import {
+  deriveStreamingBrowserHint,
+  mergeBrowserTimelineRows,
+} from '../../../shared/utils/browserActivityTimeline.js';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
 import AskUserQuestion from './AskUserQuestion';
+import BrowserActivityPanel from './BrowserActivityPanel';
 
 const TOOL_COLORS = {
   Bash: colors.emerald400,
@@ -224,6 +229,7 @@ function SessionTail({
   onEventsLoaded,
   onAskSubmit,
   askSubmittedIds,
+  browserScreenshots = {},
 }) {
   const [expanded, setExpanded] = useState(false);
   const [expandedBlocks, setExpandedBlocks] = useState({});
@@ -305,6 +311,10 @@ function SessionTail({
 
   const blocks = useMemo(() => eventsToBlocks(events ?? []), [events]);
 
+  const browserRows = useMemo(() => mergeBrowserTimelineRows(events ?? []), [events]);
+  const browserHint = useMemo(() => deriveStreamingBrowserHint(events ?? []), [events]);
+  const hasBrowserTimeline = browserRows.length > 0 || (!!streaming && !!browserHint);
+
   const askBlocks = useMemo(() => blocks.filter((b) => b.kind === 'ask_question'), [blocks]);
 
   const toolCount = blocks.filter((b) =>
@@ -314,7 +324,8 @@ function SessionTail({
   const resultBlock = blocks.find((b) => b.kind === 'result');
 
   if (!expanded) {
-    const hasMeta = toolCount > 0 || thinkingCount > 0 || resultBlock;
+    const hasClassicMeta = toolCount > 0 || thinkingCount > 0 || resultBlock;
+    const hasMeta = hasClassicMeta || hasBrowserTimeline;
     if (!hasMeta && !events && askBlocks.length === 0) {
       if (eventsFetchFailed) {
         return (
@@ -345,7 +356,14 @@ function SessionTail({
             submitted={askSubmittedIds?.has(b.event.askId)}
           />
         ))}
-        {hasMeta && (
+        {hasBrowserTimeline ? (
+          <BrowserActivityPanel
+            timelineEntries={events ?? []}
+            streaming={streaming}
+            screenshots={browserScreenshots}
+          />
+        ) : null}
+        {hasClassicMeta && (
           <TouchableOpacity style={styles.summaryBar} onPress={() => setExpanded(true)}>
             <View style={[styles.barDot, { backgroundColor: agentColor || colors.gray500 }]} />
             {toolCount > 0 && (
@@ -375,6 +393,14 @@ function SessionTail({
         <Text style={styles.collapseText}>Event Timeline</Text>
         <Text style={styles.expandHint}>{'\u25BE'}</Text>
       </TouchableOpacity>
+
+      {hasBrowserTimeline ? (
+        <BrowserActivityPanel
+          timelineEntries={events ?? []}
+          streaming={streaming}
+          screenshots={browserScreenshots}
+        />
+      ) : null}
 
       {askBlocks.map((b) => (
         <AskUserQuestion

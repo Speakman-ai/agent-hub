@@ -14,6 +14,9 @@ import {
   validateBrowserExtractSchema,
   BROWSER_TOOL_MARKDOWN_DATA_MAX_BYTES,
   BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE,
+  browserToolStartLabel,
+  summarizeJsonPreview,
+  BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS,
 } from './browser-tools.js';
 import {
   __registerBrowserSessionForTests,
@@ -213,6 +216,29 @@ describe('browser-tools — runBrowserReActStep', () => {
       expect.objectContaining({ type: 'jpeg', quality: 72 }),
     );
     expect(r.markdown).toContain('data:image/jpeg;base64,');
+    expect(r.ui?.screenshotCaptured).toBe(true);
+    expect(r.ui?.screenshotWsUrl).toBeTruthy();
+  });
+
+  it('screenshot: succeeds with screenshotCaptured but omits WS URL when data URL exceeds cap', async () => {
+    const page = makeMockPage();
+    const jpegBytes = 90_000;
+    page.screenshot.mockResolvedValueOnce(Buffer.alloc(jpegBytes, 7));
+    const dataUrlLen = `data:image/jpeg;base64,${Buffer.alloc(jpegBytes).toString('base64')}`
+      .length;
+    expect(dataUrlLen).toBeGreaterThan(BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS);
+
+    __registerBrowserSessionForTests({
+      id: 'shot-no-ws',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('shot-no-ws', { op: 'screenshot' });
+    expect(r.hostExit).toBe(0);
+    expect(r.ui?.screenshotCaptured).toBe(true);
+    expect(r.ui?.screenshotWsUrl).toBeUndefined();
   });
 
   it('screenshot: rejects encoded image over markdown cap', async () => {
@@ -474,6 +500,20 @@ describe('browser-tools — shrinkBrowserToolResultForMarkdown', () => {
     };
     const out = shrinkBrowserToolResultForMarkdown(r);
     expect(out.data).toMatchObject({ _browserToolDataTruncated: true });
+  });
+});
+
+describe('browser-tools — browser UI copy helpers', () => {
+  it('browserToolStartLabel surfaces navigation host when parseable', () => {
+    expect(browserToolStartLabel({ op: 'navigate', url: 'https://github.com/repos' })).toMatch(
+      /github\.com/i,
+    );
+  });
+
+  it('summarizeJsonPreview clips long payloads', () => {
+    const s = summarizeJsonPreview({ hay: 'Z'.repeat(200) }, 32);
+    expect(s!.length).toBeLessThanOrEqual(33);
+    expect(s).toContain('…');
   });
 });
 

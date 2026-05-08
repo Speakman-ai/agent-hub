@@ -115,6 +115,7 @@ import type {
   AppConfig,
   BroadcastFn,
   ChatMessage,
+  BrowserToolActivityEvent,
 } from './types.js';
 import {
   HOST_REACT_ACTIONS_PARSE_CAP,
@@ -125,11 +126,21 @@ import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-obse
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
-import { runBrowserReActStep, BROWSER_REACT_OP_SET } from './browser-tools.js';
+import {
+  runBrowserReActStep,
+  BROWSER_REACT_OP_SET,
+  browserToolStartLabel,
+} from './browser-tools.js';
 import {
   effectiveBrowserToolsEnabled,
   resolveBrowserSessionOptions,
 } from './browser-agent-settings.js';
+import {
+  buildBrowserActivityEndedEvent,
+  buildBrowserActivityEndedThrowEvent,
+  buildBrowserActivityScreenshotBroadcast,
+  buildBrowserActivityStartedEvent,
+} from './browser-activity-emits.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 const stmts = _stmts!;
@@ -2138,6 +2149,32 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
     const S = stmts;
 
+    /** Persist + fan-out host `<agenthub:react>` browser step telemetry like stream-json events. */
+    const emitBrowserActivityEvent = (evt: BrowserToolActivityEvent): void => {
+      const nextSeq = ++seq;
+      try {
+        S.addSessionEvent.run(
+          'message',
+          assistantMsgId,
+          nextSeq,
+          evt.type,
+          clampPayload(JSON.stringify(evt)),
+        );
+      } catch (err: unknown) {
+        console.error(
+          `[chat] failed to persist browser_tool_activity (${evt.actionId}):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+      broadcast({
+        type: 'session-event',
+        sessionId,
+        messageId: assistantMsgId,
+        seq: nextSeq,
+        event: evt,
+      });
+    };
+
     activeProcesses.set(sessionId, proc);
     trackChild(proc);
     if (proc.pid) {
@@ -2825,20 +2862,75 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             }
 
             if (action.tool === 'browser') {
-              const b = await runBrowserReActStep(
-                sessionId,
-                {
-                  op: action.op ?? '',
-                  url: action.url,
-                  target: action.target,
-                  text: action.text,
-                  instruction: action.instruction,
-                  schema: action.schema,
-                  direction: action.direction,
-                  condition: action.condition,
-                },
-                browserLaunchOpts,
+              const actionId = uuidv4();
+              const browserInput = {
+                op: action.op ?? '',
+                url: action.url,
+                target: action.target,
+                text: action.text,
+                instruction: action.instruction,
+                schema: action.schema,
+                direction: action.direction,
+                condition: action.condition,
+              };
+              const startLabel = browserToolStartLabel(browserInput);
+              const startedAtMs = Date.now();
+              emitBrowserActivityEvent(
+                buildBrowserActivityStartedEvent({
+                  actionId,
+                  op: browserInput.op || 'unknown',
+                  label: startLabel,
+                  startedAtMs,
+                }),
               );
+              const browserOpStartMs = Date.now();
+              let b: Awaited<ReturnType<typeof runBrowserReActStep>>;
+              try {
+                b = await runBrowserReActStep(
+                  sessionId,
+                  {
+                    op: browserInput.op,
+                    url: browserInput.url,
+                    target: browserInput.target,
+                    text: browserInput.text,
+                    instruction: browserInput.instruction,
+                    schema: browserInput.schema,
+                    direction: browserInput.direction,
+                    condition: browserInput.condition,
+                  },
+                  browserLaunchOpts,
+                );
+              } catch (err: unknown) {
+                emitBrowserActivityEvent(
+                  buildBrowserActivityEndedThrowEvent({
+                    actionId,
+                    op: browserInput.op || 'unknown',
+                    label: startLabel,
+                    startedAtMs,
+                    durationMs: Date.now() - browserOpStartMs,
+                    err,
+                  }),
+                );
+                throw err;
+              }
+
+              emitBrowserActivityEvent(
+                buildBrowserActivityEndedEvent({
+                  actionId,
+                  op: browserInput.op || 'unknown',
+                  label: startLabel,
+                  startedAtMs,
+                  durationMs: Date.now() - browserOpStartMs,
+                  b,
+                }),
+              );
+              const shot = buildBrowserActivityScreenshotBroadcast({
+                sessionId,
+                messageId: assistantMsgId,
+                actionId,
+                screenshotWsUrl: b.ui?.screenshotWsUrl,
+              });
+              if (shot) broadcast(shot);
               if (b.markdown.trim()) {
                 assistantContextToAppend = assistantContextToAppend
                   ? `${assistantContextToAppend}\n\n${b.markdown.trim()}`
