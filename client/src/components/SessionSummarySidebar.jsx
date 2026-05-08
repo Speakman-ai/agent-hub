@@ -15,8 +15,10 @@ import {
   prNumberFromUrl,
   prStateBadge,
   checkRowStyle,
+  checksBadge,
   diffSummary,
   shouldFetchProjectPullDetail,
+  summarizeChecks,
 } from '../utils/prFormatting.js';
 import { shortenPath } from '../utils/diff.js';
 import { formatInjectedBytes } from '../utils/formatBytes.js';
@@ -272,16 +274,31 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
                   <GitPullRequest size={14} className="text-gray-500" />
                   Linked PR
                 </h3>
-                {summary?.linkedCard?.review_status &&
-                  REVIEW_PILL[summary.linkedCard.review_status] && (
-                    <span
-                      className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                        REVIEW_PILL[summary.linkedCard.review_status].className
-                      }`}
-                    >
-                      {REVIEW_PILL[summary.linkedCard.review_status].label}
-                    </span>
-                  )}
+                <div className="flex items-center gap-1 flex-wrap justify-end">
+                  {pull &&
+                    (() => {
+                      const st = prStateBadge(pull);
+                      return (
+                        <span
+                          data-testid="pr-state-pill"
+                          className={`text-[10px] px-1.5 py-0.5 rounded border border-gray-700/40 capitalize ${st.color} ${st.bg}`}
+                          title={`PR is ${st.label}`}
+                        >
+                          {st.label}
+                        </span>
+                      );
+                    })()}
+                  {summary?.linkedCard?.review_status &&
+                    REVIEW_PILL[summary.linkedCard.review_status] && (
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                          REVIEW_PILL[summary.linkedCard.review_status].className
+                        }`}
+                      >
+                        {REVIEW_PILL[summary.linkedCard.review_status].label}
+                      </span>
+                    )}
+                </div>
               </div>
               {linkedPrUrl ? (
                 <>
@@ -313,20 +330,44 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
                     <p className="text-gray-500 mt-1">Could not load CI status from GitHub.</p>
                   )}
                   {pull && Array.isArray(pull.check_rollup) && pull.check_rollup.length > 0 && (
-                    <ul className="mt-2 space-y-1" aria-label="Check runs">
-                      {pull.check_rollup.slice(0, 8).map((chk, i) => {
-                        const st = checkRowStyle(chk);
-                        const Icon = CHECK_ICONS[st.iconKey] || AlertCircle;
+                    <>
+                      {(() => {
+                        const cs = summarizeChecks(pull.check_rollup);
+                        const cb = checksBadge(cs);
                         return (
-                          <li key={i} className={`flex items-center gap-1.5 ${st.color}`}>
-                            <Icon size={12} className="shrink-0" />
-                            <span className="truncate" title={chk.name}>
-                              {chk.name || 'Check'}
+                          <div className="mt-2 flex items-center gap-1.5">
+                            <span
+                              data-testid="checks-rollup-pill"
+                              className={`text-[10px] px-1.5 py-0.5 rounded border border-gray-700/40 ${cb.color} ${cb.bg}`}
+                              title={`${cs.success} passed · ${cs.failure} failing · ${cs.pending} running`}
+                            >
+                              {cb.label}
                             </span>
-                          </li>
+                            {cs.pending > 0 && (
+                              <Loader2
+                                size={12}
+                                className="text-yellow-400 animate-spin"
+                                aria-label="Checks running"
+                              />
+                            )}
+                          </div>
                         );
-                      })}
-                    </ul>
+                      })()}
+                      <ul className="mt-2 space-y-1" aria-label="Check runs">
+                        {pull.check_rollup.slice(0, 8).map((chk, i) => {
+                          const st = checkRowStyle(chk);
+                          const Icon = CHECK_ICONS[st.iconKey] || AlertCircle;
+                          return (
+                            <li key={i} className={`flex items-center gap-1.5 ${st.color}`}>
+                              <Icon size={12} className="shrink-0" />
+                              <span className="truncate" title={chk.name}>
+                                {chk.name || 'Check'}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </>
                   )}
                 </>
               ) : (
