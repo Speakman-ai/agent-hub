@@ -38,6 +38,34 @@ export function normalizeCronModel(raw: unknown): string | null {
   return raw;
 }
 
+export function normalizeCronSkillPrincipal(raw: unknown): string | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') {
+    throw new Error('skill_principal_agent_id must be a string');
+  }
+  const trimmed = raw.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * Throws when a non-null principal is paired with a missing/unknown project or
+ * when the id is not an agent on that project.
+ */
+export function assertCronSkillPrincipalMatchesProject(
+  projectId: string | null,
+  principal: string | null,
+  projects: Project[],
+): void {
+  if (!principal) return;
+  if (!projectId) {
+    throw new Error('skill_principal_agent_id requires project_id');
+  }
+  const proj = projects.find((p) => p.id === projectId);
+  if (!proj || !proj.agents.some((a) => a.id === principal)) {
+    throw new Error('skill_principal_agent_id must reference an agent in the cron project');
+  }
+}
+
 export default function createCronRoutes(deps: RouteDeps): Router {
   const { stmts } = deps;
   const router = Router();
@@ -104,6 +132,17 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     } catch (err) {
       return res.status(400).json({ error: (err as Error).message });
     }
+    let normalizedSkillPrincipal: string | null;
+    try {
+      normalizedSkillPrincipal = normalizeCronSkillPrincipal(req.body.skill_principal_agent_id);
+      assertCronSkillPrincipalMatchesProject(
+        project_id || null,
+        normalizedSkillPrincipal,
+        getProjects(),
+      );
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
     const result = stmts.createCron.run(
       name,
       schedule,
@@ -114,6 +153,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       normalizedTimeout,
       normalizedNotify,
       normalizedModel,
+      normalizedSkillPrincipal,
     );
     const cronJob = stmts.getCron.get(result.lastInsertRowid) as CronRow;
     rescheduleCron(cronJob);
@@ -150,16 +190,34 @@ export default function createCronRoutes(deps: RouteDeps): Router {
         return res.status(400).json({ error: (err as Error).message });
       }
     }
+    const nextProjectId =
+      project_id !== undefined ? project_id : (existing.project_id as string | null) || null;
+
+    let nextSkillPrincipal: string | null = existing.skill_principal_agent_id ?? null;
+    if (Object.prototype.hasOwnProperty.call(req.body, 'skill_principal_agent_id')) {
+      try {
+        nextSkillPrincipal = normalizeCronSkillPrincipal(req.body.skill_principal_agent_id);
+      } catch (err) {
+        return res.status(400).json({ error: (err as Error).message });
+      }
+    }
+    try {
+      assertCronSkillPrincipalMatchesProject(nextProjectId, nextSkillPrincipal, getProjects());
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
+
     stmts.updateCron.run(
       name || existing.name,
       schedule || existing.schedule,
       prompt || existing.prompt,
       cwd || existing.cwd,
       enabled !== undefined ? (enabled ? 1 : 0) : existing.enabled,
-      project_id !== undefined ? project_id : existing.project_id || null,
+      nextProjectId,
       nextTimeout,
       nextNotify,
       nextModel,
+      nextSkillPrincipal,
       existing.id,
     );
     const updated = stmts.getCron.get(existing.id) as CronRow;

@@ -18,6 +18,7 @@ import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { buildSpawnEnv } from './config.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
 import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
 import { createStreamParser } from './stream-parser.js';
@@ -311,10 +312,9 @@ export async function handleDesignChat(
       getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
     const linkedProject = design.linkedProjects?.[0];
     if (linkedProject && designOwnerId) {
-      const skillAgentId = linkedProject.agents?.[0]?.id ?? 'design-studio';
       mergeSkillCredentialSpawnEnv(spawnEnv, {
         ownerId: designOwnerId,
-        agentId: skillAgentId,
+        agentId: DESIGN_SKILL_PRINCIPAL_AGENT_ID,
         project: linkedProject,
       });
     }

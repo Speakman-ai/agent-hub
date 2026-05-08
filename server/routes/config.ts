@@ -27,7 +27,8 @@ import { parseCursorStatusJson } from '../cursor-auth-parse.js';
 import { getCursorAuthenticatedCached, invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
-import { normalizeCronModel } from './crons.js';
+import { normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
+import { getProjects } from '../project-model.js';
 import { normalizeOAuthExpiresAtMs } from '../oauth-expiry.js';
 
 interface FileConfig {
@@ -74,6 +75,26 @@ interface CronImportData {
   // by `normalizeCronModel`; unknown ids fall back to null (engine default) on
   // import rather than 500ing the whole batch.
   model?: string | null;
+  /** Optional agent id for spawn skill-credential resolution; must belong to the import target project. */
+  skill_principal_agent_id?: string | null;
+}
+
+function cronImportSkillPrincipal(raw: unknown, project: Project | null): string | null {
+  if (!project) return null;
+  try {
+    const id = normalizeCronSkillPrincipal(raw);
+    if (!id) return null;
+    if (!project.agents.some((a) => a.id === id)) {
+      console.warn(
+        `[config import] Ignoring skill_principal_agent_id "${id}" — not an agent on project ${project.id}`,
+      );
+      return null;
+    }
+    return id;
+  } catch {
+    console.warn('[config import] Ignoring invalid skill_principal_agent_id field on cron row');
+    return null;
+  }
 }
 
 interface RoomImportData {
@@ -1187,6 +1208,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
           c.notify_on_run ? 1 : 0,
           importedModel,
+          cronImportSkillPrincipal(c.skill_principal_agent_id, targetProject),
         );
         imported++;
       }
@@ -1691,6 +1713,11 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           } catch {
             importedModel = null;
           }
+          const projectIdForPrincipal =
+            typeof c.project_id === 'string' && c.project_id.trim() ? c.project_id.trim() : '';
+          const principalProject = projectIdForPrincipal
+            ? (getProjects().find((p) => p.id === projectIdForPrincipal) ?? null)
+            : null;
           stmts.createCron.run(
             c.name,
             c.schedule,
@@ -1701,6 +1728,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
             c.notify_on_run ? 1 : 0,
             importedModel,
+            cronImportSkillPrincipal(c.skill_principal_agent_id, principalProject),
           );
           imported++;
         }

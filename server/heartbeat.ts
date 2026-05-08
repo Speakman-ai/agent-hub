@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
 import config, { buildSpawnEnv, defaultModelForEngine, fileConfig } from './config.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { resolveCronSkillPrincipalAgentId } from './cron-skill-principal.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
@@ -527,18 +528,21 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     const resolvedCwd = resolveCronCwd(cronJob);
     const cronCwd = await getOrCreateProcessWorktree(resolvedCwd, `cron-${cronJob.id}`);
     const cronProject = findProjectForCron(cronJob);
-    const cronSkillAgentId = cronProject?.agents?.[0]?.id ?? '_cron';
+    const cronSkillAgentId = cronProject
+      ? resolveCronSkillPrincipalAgentId(cronJob, cronProject)
+      : undefined;
     const detailed = (await runClaude(cronJob.prompt, cronCwd, undefined, {
       timeoutMs,
       detailed: true,
       model: cronModel,
-      skillCredentialMerge: cronProject
-        ? {
-            ownerId: getOrgOwnerUserId(),
-            agentId: cronSkillAgentId,
-            project: cronProject,
-          }
-        : undefined,
+      skillCredentialMerge:
+        cronProject && cronSkillAgentId
+          ? {
+              ownerId: getOrgOwnerUserId(),
+              agentId: cronSkillAgentId,
+              project: cronProject,
+            }
+          : undefined,
     })) as DetailedResult;
     const durationMs = Date.now() - startTime;
     const result = detailed.stdout || detailed.stderr || '(empty response)';
