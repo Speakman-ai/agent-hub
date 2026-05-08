@@ -13,14 +13,17 @@ export default function ResolveSessionPrBanner({
   onDismiss,
 }) {
   const openPr = () => {
-    if (prUrl) Linking.openURL(prUrl).catch(() => {});
+    if (!prUrl) return;
+    Linking.openURL(prUrl).catch((err) => {
+      console.warn('[ResolveSessionPrBanner] openURL failed:', err?.message || err);
+    });
   };
 
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
-          <Text style={styles.icon} accessibilityLabel="">
+          <Text style={styles.icon} accessible={false}>
             🔗
           </Text>
           <View style={{ flex: 1, minWidth: 0 }}>
