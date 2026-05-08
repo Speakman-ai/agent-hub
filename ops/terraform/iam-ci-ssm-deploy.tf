@@ -11,6 +11,8 @@ data "aws_iam_role" "github_actions_ecr_push" {
 
 locals {
   ci_ssm_deploy_enabled = var.enable_ci_ssm_deploy_after_ecr_push && trimspace(var.ci_ssm_deploy_instance_id) != ""
+  ci_ssm_account_id     = data.aws_caller_identity.current.account_id
+  ci_ssm_instance_id    = trimspace(var.ci_ssm_deploy_instance_id)
 }
 
 resource "aws_iam_role_policy" "github_actions_ecr_push_ssm_dev_deploy" {
@@ -23,14 +25,26 @@ resource "aws_iam_role_policy" "github_actions_ecr_push_ssm_dev_deploy" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "Ec2DescribeForSsmTargets"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeInstances"
+        ]
+        Resource = "*"
+      },
+      {
         Sid    = "SendRunShellScriptToDeployTarget"
         Effect = "Allow"
         Action = [
           "ssm:SendCommand"
         ]
         Resource = [
-          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/${trimspace(var.ci_ssm_deploy_instance_id)}",
-          "arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript"
+          "arn:aws:ec2:${var.aws_region}:${local.ci_ssm_account_id}:instance/${local.ci_ssm_instance_id}",
+          "arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript",
+          "arn:aws:ssm:${var.aws_region}:${local.ci_ssm_account_id}:document/AWS-RunShellScript",
+          "arn:aws:ssm:${var.aws_region}:${local.ci_ssm_account_id}:managed-instance/${local.ci_ssm_instance_id}",
+          # Run Command also evaluates against in-account command resources created for the invocation.
+          "arn:aws:ssm:${var.aws_region}:${local.ci_ssm_account_id}:*"
         ]
       },
       {
@@ -38,7 +52,10 @@ resource "aws_iam_role_policy" "github_actions_ecr_push_ssm_dev_deploy" {
         Effect = "Allow"
         Action = [
           "ssm:GetCommandInvocation",
-          "ssm:ListCommandInvocations"
+          "ssm:ListCommandInvocations",
+          "ssm:ListCommands",
+          "ssm:DescribeDocument",
+          "ssm:GetDocument"
         ]
         Resource = "*"
       }

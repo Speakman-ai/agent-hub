@@ -205,6 +205,21 @@ resource "aws_security_group" "instance" {
     }
   }
 
+  # Dedicated ALB → app port. Must live inline on this aws_security_group — do not
+  # pair this resource with aws_vpc_security_group_ingress_rule for the same
+  # SG: inline ingress blocks are authoritative and will revoke standalone rules
+  # on apply (504 when ALB health checks time out).
+  dynamic "ingress" {
+    for_each = var.enable_dedicated_alb ? [1] : []
+    content {
+      description     = "Agent Hub app port from dedicated ALB only"
+      from_port       = var.agent_hub_target_port
+      to_port         = var.agent_hub_target_port
+      protocol        = "tcp"
+      security_groups = [aws_security_group.agenthub_alb[0].id]
+    }
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

@@ -344,12 +344,12 @@ docker rm -f agenthub-server 2>/dev/null || true
 # Hub can spin up per-PR preview containers, and add --add-host so the
 # container can reach the host nginx (which terminates TLS for the wildcard
 # preview hostname) over the gateway interface. --group-add gives the
-# container's `node` user (uid/gid 1000) supplementary access to the host's
+# container's node user (uid/gid 1000) supplementary access to the host's
 # docker GID — the GID is host-distro-specific (commonly 999 on AL2023, can
 # differ on Ubuntu) so we resolve it dynamically at runtime.
 #
 # Fail loudly if the socket is missing or unreadable. Earlier revisions
-# fell back to `|| echo 0`, which silently set --group-add 0 (root group)
+# fell back to "|| echo 0", which silently set --group-add 0 (root group)
 # on every restart and produced a container that bind-mounts the socket
 # but cannot actually use it — set -e + Restart=always then masked the
 # real bug behind a green systemd unit. Surface it instead: if the socket
@@ -370,8 +370,8 @@ fi
 #                            the base vhost) picks them up on reload.
 #   - /etc/letsencrypt (ro): the validator confirms the wildcard cert exists
 #                            at the path the per-PR vhosts will reference.
-#   - --pid=host           : the validator runs `pgrep nginx`/`systemctl
-#                            is-active nginx` to confirm the host's nginx is
+#   - --pid=host           : the validator runs pgrep(1)/systemctl(1) checks
+#                            against the host nginx unit to confirm nginx is
 #                            up. Without --pid=host the container has its own
 #                            PID namespace and both checks falsely fail.
 exec docker run --rm --name agenthub-server \
