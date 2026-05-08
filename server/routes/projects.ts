@@ -16,6 +16,8 @@ import {
 } from '../clone-url-auth.js';
 import { getActiveAccessToken } from '../github-connections-store.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
+import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
+import { runOneShotPrompt } from '../one-shot-spawn.js';
 import { getUserByUsername, createUser } from '../users-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { getOrCreateBoard } from './board.js';
@@ -1617,7 +1619,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
   });
 
   // ─── Project analysis (Open Project wizard) ──────────────────────
-  router.post('/api/projects/analyze', (req: Request, res: Response) => {
+  router.post('/api/projects/analyze', async (req: Request, res: Response) => {
     const { cwd } = req.body as { cwd?: string };
     if (!cwd) return res.status(400).json({ error: 'cwd is required' });
 
@@ -1628,161 +1630,240 @@ This workspace has no git repo and no PR automation — your job is planning, or
 
     const analyzeId = uuidv4();
 
-    const CLAUDE_BIN = getClaudeBin();
-    const args = [
-      '--print',
-      '--permission-mode',
-      'bypassPermissions',
-      '--model',
-      config.defaultModel,
-      '--system-prompt',
-      ANALYZE_SYSTEM_PROMPT,
-      '--output-format',
-      'stream-json',
-      '--verbose',
-      ANALYZE_USER_PROMPT,
-    ];
-
-    console.log(`[analyze ${analyzeId}] spawning ${CLAUDE_BIN} in ${resolvedCwd}`);
-
-    let proc: ChildProcess;
+    // Resolve which engine to drive the analysis. Claude Code is preferred
+    // because it's the only engine whose stream-json output we currently
+    // parse for live progress events; fallback engines run without
+    // streaming progress but still produce a valid JSON answer.
+    let resolved;
     try {
-      proc = spawn(CLAUDE_BIN, args, {
-        cwd: resolvedCwd,
-        env: buildSpawnEnv(config),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      });
-    } catch (err: unknown) {
-      console.error(`[analyze ${analyzeId}] spawn threw:`, (err as Error).message);
-      return res.status(500).json({ error: `Failed to spawn claude: ${(err as Error).message}` });
+      resolved = await resolveOneShotEngine(config, { preferred: 'claude-code' });
+    } catch (err) {
+      if (err instanceof NoEnginesAvailableError) {
+        return res.status(400).json({
+          error: err.message,
+          code: 'no_engines_configured',
+          availability: err.availability,
+        });
+      }
+      return res.status(500).json({ error: (err as Error).message });
     }
-    trackChild(proc);
 
-    const ANALYZE_TIMEOUT_MS = 5 * 60 * 1000;
-    let timedOut = false;
-    const timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      console.error(`[analyze ${analyzeId}] timed out after ${ANALYZE_TIMEOUT_MS}ms, killing`);
+    if (resolved.engine === 'claude-code') {
+      const CLAUDE_BIN = getClaudeBin();
+      const args = [
+        '--print',
+        '--permission-mode',
+        'bypassPermissions',
+        '--model',
+        resolved.model,
+        '--system-prompt',
+        ANALYZE_SYSTEM_PROMPT,
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        ANALYZE_USER_PROMPT,
+      ];
+
+      console.log(`[analyze ${analyzeId}] spawning ${CLAUDE_BIN} in ${resolvedCwd}`);
+
+      let proc: ChildProcess;
       try {
-        killProcessGroup(proc, 'SIGTERM');
-      } catch {}
-      setTimeout(() => {
+        proc = spawn(CLAUDE_BIN, args, {
+          cwd: resolvedCwd,
+          env: buildSpawnEnv(config),
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
+        });
+      } catch (err: unknown) {
+        console.error(`[analyze ${analyzeId}] spawn threw:`, (err as Error).message);
+        return res.status(500).json({ error: `Failed to spawn claude: ${(err as Error).message}` });
+      }
+      trackChild(proc);
+
+      const ANALYZE_TIMEOUT_MS = 5 * 60 * 1000;
+      let timedOut = false;
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        console.error(`[analyze ${analyzeId}] timed out after ${ANALYZE_TIMEOUT_MS}ms, killing`);
         try {
-          killProcessGroup(proc, 'SIGKILL');
+          killProcessGroup(proc, 'SIGTERM');
         } catch {}
-      }, 2000);
-      broadcast({
-        type: 'analyze-error',
-        analyzeId,
-        error: `Analysis timed out after ${ANALYZE_TIMEOUT_MS / 1000}s`,
-      });
-    }, ANALYZE_TIMEOUT_MS);
-
-    const parser = createStreamParser('claude-code');
-    let finalText = '';
-    let stderr = '';
-
-    const describeToolUse = (tool: string, input: Record<string, unknown> = {}): string => {
-      switch (tool) {
-        case 'Read':
-          return `Reading ${shortPath(input.file_path as string)}`;
-        case 'Glob':
-          return `Searching for ${(input.pattern as string) || 'files'}`;
-        case 'Grep':
-          return `Grepping ${(input.pattern as string) || ''}${input.path ? ` in ${shortPath(input.path as string)}` : ''}`;
-        case 'LS':
-          return `Listing ${shortPath(input.path as string)}`;
-        case 'Bash':
-          return `Running: ${((input.command as string) || '').slice(0, 80)}`;
-        case 'WebFetch':
-          return `Fetching ${input.url}`;
-        case 'TodoWrite':
-          return `Planning next steps`;
-        default:
-          return `Using ${tool}`;
-      }
-    };
-    const shortPath = (p: string | undefined): string => {
-      if (!p) return '';
-      const rel = p.startsWith(resolvedCwd) ? p.slice(resolvedCwd.length + 1) : p;
-      return rel || p;
-    };
-
-    const handleEvent = (ev: StreamEvent): void => {
-      if (ev.type === 'tool_use') {
-        const message = describeToolUse(ev.tool, ev.input);
-        console.log(`[analyze ${analyzeId}] ${message}`);
-        broadcast({ type: 'analyze-progress', analyzeId, message });
-      } else if (ev.type === 'assistant_text' && !ev.partial) {
-        finalText += ev.text;
-      } else if (ev.type === 'thinking') {
-        broadcast({ type: 'analyze-progress', analyzeId, message: 'Thinking…' });
-      } else if (ev.type === 'result' && ev.text && !finalText) {
-        finalText = ev.text;
-      }
-    };
-
-    proc.on('error', (err: Error) => {
-      clearTimeout(timeoutHandle);
-      console.error(`[analyze ${analyzeId}] process error:`, err.message);
-      broadcast({
-        type: 'analyze-error',
-        analyzeId,
-        error: `Failed to start claude (${(err as NodeJS.ErrnoException).code || 'ERR'}): ${err.message}`,
-      });
-    });
-
-    proc.stdout!.on('data', (chunk: Buffer) => {
-      for (const ev of parser.feed(chunk)) handleEvent(ev);
-    });
-
-    proc.stderr!.on('data', (chunk: Buffer) => {
-      const text = chunk.toString();
-      stderr += text;
-      console.error(`[analyze ${analyzeId}] stderr:`, text.trimEnd());
-    });
-
-    proc.on('close', (code: number | null) => {
-      clearTimeout(timeoutHandle);
-      if (timedOut) return;
-      for (const ev of parser.flush()) handleEvent(ev);
-      console.log(
-        `[analyze ${analyzeId}] exited code=${code}, finalText length=${finalText.length}`,
-      );
-      if (code !== 0) {
+        setTimeout(() => {
+          try {
+            killProcessGroup(proc, 'SIGKILL');
+          } catch {}
+        }, 2000);
         broadcast({
           type: 'analyze-error',
           analyzeId,
-          error: stderr || `Process exited with code ${code}`,
+          error: `Analysis timed out after ${ANALYZE_TIMEOUT_MS / 1000}s`,
         });
-        return;
-      }
+      }, ANALYZE_TIMEOUT_MS);
 
-      let result: AnalysisResult | null = null;
-      const fenceMatch = finalText.match(/```json\s*([\s\S]*)```/);
-      if (fenceMatch) {
-        try {
-          result = JSON.parse(fenceMatch[1].trim()) as AnalysisResult;
-        } catch {
-          // Try the whole output
+      const parser = createStreamParser('claude-code');
+      let finalText = '';
+      let stderr = '';
+
+      const describeToolUse = (tool: string, input: Record<string, unknown> = {}): string => {
+        switch (tool) {
+          case 'Read':
+            return `Reading ${shortPath(input.file_path as string)}`;
+          case 'Glob':
+            return `Searching for ${(input.pattern as string) || 'files'}`;
+          case 'Grep':
+            return `Grepping ${(input.pattern as string) || ''}${input.path ? ` in ${shortPath(input.path as string)}` : ''}`;
+          case 'LS':
+            return `Listing ${shortPath(input.path as string)}`;
+          case 'Bash':
+            return `Running: ${((input.command as string) || '').slice(0, 80)}`;
+          case 'WebFetch':
+            return `Fetching ${input.url}`;
+          case 'TodoWrite':
+            return `Planning next steps`;
+          default:
+            return `Using ${tool}`;
         }
-      }
-      if (!result) {
-        try {
-          result = JSON.parse(finalText.trim()) as AnalysisResult;
-        } catch {
+      };
+      const shortPath = (p: string | undefined): string => {
+        if (!p) return '';
+        const rel = p.startsWith(resolvedCwd) ? p.slice(resolvedCwd.length + 1) : p;
+        return rel || p;
+      };
+
+      const handleEvent = (ev: StreamEvent): void => {
+        if (ev.type === 'tool_use') {
+          const message = describeToolUse(ev.tool, ev.input);
+          console.log(`[analyze ${analyzeId}] ${message}`);
+          broadcast({ type: 'analyze-progress', analyzeId, message });
+        } else if (ev.type === 'assistant_text' && !ev.partial) {
+          finalText += ev.text;
+        } else if (ev.type === 'thinking') {
+          broadcast({ type: 'analyze-progress', analyzeId, message: 'Thinking…' });
+        } else if (ev.type === 'result' && ev.text && !finalText) {
+          finalText = ev.text;
+        }
+      };
+
+      proc.on('error', (err: Error) => {
+        clearTimeout(timeoutHandle);
+        console.error(`[analyze ${analyzeId}] process error:`, err.message);
+        broadcast({
+          type: 'analyze-error',
+          analyzeId,
+          error: `Failed to start claude (${(err as NodeJS.ErrnoException).code || 'ERR'}): ${err.message}`,
+        });
+      });
+
+      proc.stdout!.on('data', (chunk: Buffer) => {
+        for (const ev of parser.feed(chunk)) handleEvent(ev);
+      });
+
+      proc.stderr!.on('data', (chunk: Buffer) => {
+        const text = chunk.toString();
+        stderr += text;
+        console.error(`[analyze ${analyzeId}] stderr:`, text.trimEnd());
+      });
+
+      proc.on('close', (code: number | null) => {
+        clearTimeout(timeoutHandle);
+        if (timedOut) return;
+        for (const ev of parser.flush()) handleEvent(ev);
+        console.log(
+          `[analyze ${analyzeId}] exited code=${code}, finalText length=${finalText.length}`,
+        );
+        if (code !== 0) {
           broadcast({
             type: 'analyze-error',
             analyzeId,
-            error: 'Failed to parse analysis output as JSON',
+            error: stderr || `Process exited with code ${code}`,
           });
           return;
         }
-      }
 
-      broadcast({ type: 'analyze-complete', analyzeId, result });
-    });
+        let result: AnalysisResult | null = null;
+        const fenceMatch = finalText.match(/```json\s*([\s\S]*)```/);
+        if (fenceMatch) {
+          try {
+            result = JSON.parse(fenceMatch[1].trim()) as AnalysisResult;
+          } catch {
+            // Try the whole output
+          }
+        }
+        if (!result) {
+          try {
+            result = JSON.parse(finalText.trim()) as AnalysisResult;
+          } catch {
+            broadcast({
+              type: 'analyze-error',
+              analyzeId,
+              error: 'Failed to parse analysis output as JSON',
+            });
+            return;
+          }
+        }
+
+        broadcast({ type: 'analyze-complete', analyzeId, result });
+      });
+    } else {
+      // Fallback path: a non-Claude engine was selected because Claude is
+      // unavailable. We don't have a stream-json parser for these engines,
+      // so we run the analyzer one-shot and parse JSON from stdout. The
+      // user gets a single coarse "Analyzing…" progress event instead of
+      // per-tool live updates, but the run completes.
+      const ANALYZE_TIMEOUT_MS = 5 * 60 * 1000;
+      console.log(
+        `[analyze ${analyzeId}] using fallback engine "${resolved.engine}" (Claude unavailable: ${resolved.fallbackFromReason})`,
+      );
+      broadcast({
+        type: 'analyze-progress',
+        analyzeId,
+        message: `Analyzing with ${resolved.engine}…`,
+      });
+      runOneShotPrompt(
+        {
+          engine: resolved.engine,
+          model: resolved.model,
+          prompt: ANALYZE_USER_PROMPT,
+          systemPrompt: ANALYZE_SYSTEM_PROMPT,
+          cwd: resolvedCwd,
+          timeoutMs: ANALYZE_TIMEOUT_MS,
+          env: buildSpawnEnv(config),
+        },
+        config,
+      )
+        .then((output) => {
+          let result: AnalysisResult | null = null;
+          const fenceMatch = output.match(/```json\s*([\s\S]*)```/);
+          if (fenceMatch) {
+            try {
+              result = JSON.parse(fenceMatch[1].trim()) as AnalysisResult;
+            } catch {
+              /* try whole-output below */
+            }
+          }
+          if (!result) {
+            try {
+              result = JSON.parse(output.trim()) as AnalysisResult;
+            } catch {
+              broadcast({
+                type: 'analyze-error',
+                analyzeId,
+                error: 'Failed to parse analysis output as JSON',
+              });
+              return;
+            }
+          }
+          broadcast({ type: 'analyze-complete', analyzeId, result });
+        })
+        .catch((err: Error) => {
+          console.error(`[analyze ${analyzeId}] fallback engine failed:`, err.message);
+          broadcast({
+            type: 'analyze-error',
+            analyzeId,
+            error: `${resolved.engine}: ${err.message}`,
+          });
+        });
+    }
 
     res.json({ analyzeId });
   });
