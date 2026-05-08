@@ -502,8 +502,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
     !saving;
 
   return (
-    <div className="fixed inset-0 z-[70] bg-gray-950 flex items-center justify-center">
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-8">
+    <div className="fixed inset-0 z-[70] bg-gray-950 overflow-y-auto">
+      <div className="min-h-full w-full max-w-2xl mx-auto p-8">
         <StepIndicator currentStep={step} minStep={initialStep} />
 
         {/* Step 1: Welcome */}
@@ -691,274 +691,12 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
               </p>
             </div>
 
-            {/* Claude Code Card */}
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-4 h-4 rounded-full bg-purple-500 inline-block" />
-                  <span className="font-medium text-white text-sm">Claude Code</span>
-                </div>
-                <ToggleSwitch enabled={claudeEnabled} onChange={setClaudeEnabled} />
-              </div>
-              <div className="flex items-center gap-1.5 text-xs">
-                {claudeEngine.available ? (
-                  <>
-                    <svg
-                      className="w-3.5 h-3.5 text-emerald-400"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={3}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span className="text-emerald-400">Detected at {claudeEngine.path}</span>
-                  </>
-                ) : (
-                  <>
-                    <svg
-                      className="w-3.5 h-3.5 text-red-400"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2.5}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                    <span className="text-red-400">Not found</span>
-                  </>
-                )}
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">Binary Path</label>
-                <input
-                  type="text"
-                  value={claudePath}
-                  onChange={(e) => setClaudePath(e.target.value)}
-                  placeholder="/usr/local/bin/claude"
-                  disabled={!claudeEnabled}
-                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-mono"
-                />
-              </div>
-            </div>
-
-            {/* Cursor Agent card */}
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-4 h-4 rounded-full bg-sky-500 inline-block" />
-                  <span className="font-medium text-white text-sm">Cursor Agent</span>
-                </div>
-                <ToggleSwitch enabled={cursorEnabled} onChange={setCursorEnabled} />
-              </div>
-              <div className="flex items-center gap-1.5 text-xs">
-                {cursorEngine.available ? (
-                  <>
-                    <svg
-                      className="w-3.5 h-3.5 text-emerald-400"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={3}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span className="text-emerald-400">Detected at {cursorEngine.path}</span>
-                  </>
-                ) : (
-                  <>
-                    <svg
-                      className="w-3.5 h-3.5 text-red-400"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2.5}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                    <span className="text-red-400">Not found</span>
-                  </>
-                )}
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">
-                  Binary Path (cursor-agent)
-                </label>
-                <input
-                  type="text"
-                  value={cursorPath}
-                  onChange={(e) => setCursorPath(e.target.value)}
-                  placeholder="/usr/local/bin/cursor-agent"
-                  disabled={!cursorEnabled}
-                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-mono"
-                />
-              </div>
-              {cursorEnabled && (
-                <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3 text-xs space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-gray-200">Sign in to Cursor</span>
-                    {cursorCredsConfigured ? (
-                      <span className="flex items-center gap-1 text-emerald-400">
-                        <CheckCircle2 size={12} /> Connected
-                      </span>
-                    ) : (
-                      <span className="text-yellow-400">Required on server</span>
-                    )}
-                  </div>
-                  <p className="text-gray-500 leading-relaxed">
-                    On this Hub&apos;s host, run{' '}
-                    <code className="text-gray-300">cursor-agent login</code> in a terminal, then
-                    press Save &amp; Continue. Device login links also work from Settings → Cursor
-                    after onboarding.
-                  </p>
-                  {cursorAuthError && (
-                    <p className="text-red-400 flex items-center gap-1">
-                      <AlertCircle size={12} /> {cursorAuthError}
-                    </p>
-                  )}
-                  <button
-                    type="button"
-                    className="text-xs text-emerald-400 hover:text-emerald-300 underline"
-                    onClick={() => fetchCursorAuth()}
-                  >
-                    Refresh status
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Codex CLI card */}
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-4 h-4 rounded-full bg-amber-500 inline-block" />
-                  <span className="font-medium text-white text-sm">Codex CLI</span>
-                </div>
-                <ToggleSwitch enabled={codexEnabled} onChange={setCodexEnabled} />
-              </div>
-              <div className="flex items-center gap-1.5 text-xs">
-                {codexEngine.available ? (
-                  <>
-                    <svg
-                      className="w-3.5 h-3.5 text-emerald-400"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={3}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span className="text-emerald-400">Detected at {codexEngine.path}</span>
-                  </>
-                ) : (
-                  <>
-                    <svg
-                      className="w-3.5 h-3.5 text-red-400"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2.5}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                    <span className="text-red-400">Not found</span>
-                  </>
-                )}
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">
-                  Binary Path (codex)
-                </label>
-                <input
-                  type="text"
-                  value={codexPath}
-                  onChange={(e) => setCodexPath(e.target.value)}
-                  placeholder="/usr/local/bin/codex"
-                  disabled={!codexEnabled}
-                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-mono"
-                />
-              </div>
-              {codexEnabled && (
-                <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3 text-xs space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-gray-200">Codex credentials</span>
-                    {codexCredsConfigured ? (
-                      <span className="flex items-center gap-1 text-emerald-400">
-                        <CheckCircle2 size={12} /> Authenticated ({codexAuthState?.activeMethod})
-                      </span>
-                    ) : (
-                      <span className="text-yellow-400">API key or login required</span>
-                    )}
-                  </div>
-                  <p className="text-gray-500 leading-relaxed">
-                    Paste an API key used by Codex/OpenAI-compatible endpoints, or use{' '}
-                    <code className="text-gray-300">codex login</code> on the server. Keys are saved
-                    to this org&apos;s config.
-                  </p>
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-gray-400">API key</label>
-                    <input
-                      type="password"
-                      value={codexApiKeyInput}
-                      onChange={(e) => {
-                        setCodexApiKeyInput(e.target.value);
-                        setCodexApiKeyStatus(null);
-                      }}
-                      placeholder="sk-proj-... or CODEX_API_KEY"
-                      autoComplete="off"
-                      data-1p-ignore
-                      data-lpignore="true"
-                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleSaveCodexApiKey}
-                      disabled={!codexApiKeyInput.trim() || !codexPath.trim() || codexApiKeySaving}
-                      className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition-colors"
-                    >
-                      {codexApiKeySaving ? <Loader2 size={12} className="animate-spin" /> : null}
-                      {codexApiKeySaving ? 'Saving…' : 'Save API key'}
-                    </button>
-                    {codexApiKeyStatus && (
-                      <div
-                        className={`flex items-center gap-1.5 ${codexApiKeyStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}
-                      >
-                        {codexApiKeyStatus.type === 'success' ? (
-                          <CheckCircle2 size={12} />
-                        ) : (
-                          <AlertCircle size={12} />
-                        )}
-                        <span>{codexApiKeyStatus.msg}</span>
-                      </div>
-                    )}
-                  </div>
-                  {codexAuthError && (
-                    <p className="text-red-400 flex items-center gap-1">
-                      <AlertCircle size={12} /> {codexAuthError}
-                    </p>
-                  )}
-                  <button
-                    type="button"
-                    className="text-xs text-emerald-400 hover:text-emerald-300 underline"
-                    onClick={() => fetchCodexAuth()}
-                  >
-                    Refresh status
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {!anyEngineEnabled && (
-              <p className="text-yellow-400 text-xs text-center">
-                Turn on at least one engine (Claude Code, Cursor Agent, or Codex CLI) to continue.
-              </p>
-            )}
-
             {/* Claude credentials gate — API key OR setup-token OR a prior
                 CLI OAuth login. First-run users hit this; if any of the
                 three is already configured (e.g. ANTHROPIC_API_KEY env var),
                 the success pill is shown and Continue is unblocked without
-                further input. */}
+                further input. Rendered first so credentials sit above the
+                CLI engine cards. */}
             {claudeEnabled && (
               <div
                 className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3"
@@ -1114,6 +852,232 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   </div>
                 )}
               </div>
+            )}
+
+            {/* Claude Code Card */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-full bg-purple-500 inline-block" />
+                  <span className="font-medium text-white text-sm">Claude Code</span>
+                </div>
+                <ToggleSwitch enabled={claudeEnabled} onChange={setClaudeEnabled} />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs">
+                {claudeEngine.available ? (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-emerald-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-emerald-400">Detected at {claudeEngine.path}</span>
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-red-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    <span className="text-red-400">Not found</span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Cursor Agent card */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-full bg-sky-500 inline-block" />
+                  <span className="font-medium text-white text-sm">Cursor Agent</span>
+                </div>
+                <ToggleSwitch enabled={cursorEnabled} onChange={setCursorEnabled} />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs">
+                {cursorEngine.available ? (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-emerald-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-emerald-400">Detected at {cursorEngine.path}</span>
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-red-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    <span className="text-red-400">Not found</span>
+                  </>
+                )}
+              </div>
+              {cursorEnabled && (
+                <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3 text-xs space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-gray-200">Sign in to Cursor</span>
+                    {cursorCredsConfigured ? (
+                      <span className="flex items-center gap-1 text-emerald-400">
+                        <CheckCircle2 size={12} /> Connected
+                      </span>
+                    ) : (
+                      <span className="text-yellow-400">Required on server</span>
+                    )}
+                  </div>
+                  <p className="text-gray-500 leading-relaxed">
+                    On this Hub&apos;s host, run{' '}
+                    <code className="text-gray-300">cursor-agent login</code> in a terminal, then
+                    press Save &amp; Continue. Device login links also work from Settings → Cursor
+                    after onboarding.
+                  </p>
+                  {cursorAuthError && (
+                    <p className="text-red-400 flex items-center gap-1">
+                      <AlertCircle size={12} /> {cursorAuthError}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className="text-xs text-emerald-400 hover:text-emerald-300 underline"
+                    onClick={() => fetchCursorAuth()}
+                  >
+                    Refresh status
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Codex CLI card */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-full bg-amber-500 inline-block" />
+                  <span className="font-medium text-white text-sm">Codex CLI</span>
+                </div>
+                <ToggleSwitch enabled={codexEnabled} onChange={setCodexEnabled} />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs">
+                {codexEngine.available ? (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-emerald-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-emerald-400">Detected at {codexEngine.path}</span>
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-red-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    <span className="text-red-400">Not found</span>
+                  </>
+                )}
+              </div>
+              {codexEnabled && (
+                <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3 text-xs space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-gray-200">Codex credentials</span>
+                    {codexCredsConfigured ? (
+                      <span className="flex items-center gap-1 text-emerald-400">
+                        <CheckCircle2 size={12} /> Authenticated ({codexAuthState?.activeMethod})
+                      </span>
+                    ) : (
+                      <span className="text-yellow-400">API key or login required</span>
+                    )}
+                  </div>
+                  <p className="text-gray-500 leading-relaxed">
+                    Paste an API key used by Codex/OpenAI-compatible endpoints, or use{' '}
+                    <code className="text-gray-300">codex login</code> on the server. Keys are saved
+                    to this org&apos;s config.
+                  </p>
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium text-gray-400">API key</label>
+                    <input
+                      type="password"
+                      value={codexApiKeyInput}
+                      onChange={(e) => {
+                        setCodexApiKeyInput(e.target.value);
+                        setCodexApiKeyStatus(null);
+                      }}
+                      placeholder="sk-proj-... or CODEX_API_KEY"
+                      autoComplete="off"
+                      data-1p-ignore
+                      data-lpignore="true"
+                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveCodexApiKey}
+                      disabled={!codexApiKeyInput.trim() || !codexPath.trim() || codexApiKeySaving}
+                      className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      {codexApiKeySaving ? <Loader2 size={12} className="animate-spin" /> : null}
+                      {codexApiKeySaving ? 'Saving…' : 'Save API key'}
+                    </button>
+                    {codexApiKeyStatus && (
+                      <div
+                        className={`flex items-center gap-1.5 ${codexApiKeyStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}
+                      >
+                        {codexApiKeyStatus.type === 'success' ? (
+                          <CheckCircle2 size={12} />
+                        ) : (
+                          <AlertCircle size={12} />
+                        )}
+                        <span>{codexApiKeyStatus.msg}</span>
+                      </div>
+                    )}
+                  </div>
+                  {codexAuthError && (
+                    <p className="text-red-400 flex items-center gap-1">
+                      <AlertCircle size={12} /> {codexAuthError}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className="text-xs text-emerald-400 hover:text-emerald-300 underline"
+                    onClick={() => fetchCodexAuth()}
+                  >
+                    Refresh status
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {!anyEngineEnabled && (
+              <p className="text-yellow-400 text-xs text-center">
+                Turn on at least one engine (Claude Code, Cursor Agent, or Codex CLI) to continue.
+              </p>
             )}
 
             {/* Error */}
