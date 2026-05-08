@@ -5,6 +5,8 @@ import {
   runBrowserReActStep,
   resolveStagehandModelName,
   browserNavigate,
+  browserBack,
+  browserForward,
   browserWaitFixed,
   browserScroll,
   browserScreenshot,
@@ -327,6 +329,26 @@ describe('browser-tools — direct helpers', () => {
     const r = await browserNavigate(sh, 'https://example.com/');
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/landed on a disallowed URL/i);
+  });
+
+  it('browserBack rejects disallowed URL after history navigation', async () => {
+    const page = makeMockPage();
+    page.goBack.mockResolvedValueOnce(undefined);
+    vi.spyOn(page, 'url').mockReturnValue('http://192.168.1.1/');
+    const sh = asV3(makeMockStagehand(page));
+    const r = await browserBack(sh);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/History navigation landed on a disallowed URL/i);
+  });
+
+  it('browserForward rejects disallowed URL after history navigation', async () => {
+    const page = makeMockPage();
+    page.goForward.mockResolvedValueOnce(undefined);
+    vi.spyOn(page, 'url').mockReturnValue('http://127.0.0.1/');
+    const sh = asV3(makeMockStagehand(page));
+    const r = await browserForward(sh);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/History navigation landed on a disallowed URL/i);
   });
 
   it('browserWaitFixed networkidle vs selector', async () => {

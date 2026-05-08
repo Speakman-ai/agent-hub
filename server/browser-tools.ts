@@ -444,7 +444,17 @@ export async function browserBack(stagehand: V3): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(stagehand);
     await page.goBack({ waitUntil: 'load', timeoutMs: 30_000 });
-    return result('back', true, { url: page.url() });
+    const finalUrl = page.url();
+    const landed = validateBrowserNavigationUrl(finalUrl);
+    if (!landed.ok) {
+      return result(
+        'back',
+        false,
+        undefined,
+        `History navigation landed on a disallowed URL: ${landed.error}`,
+      );
+    }
+    return result('back', true, { url: finalUrl });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return result('back', false, undefined, msg);
@@ -455,7 +465,17 @@ export async function browserForward(stagehand: V3): Promise<BrowserToolResult> 
   try {
     const page = getActivePage(stagehand);
     await page.goForward({ waitUntil: 'load', timeoutMs: 30_000 });
-    return result('forward', true, { url: page.url() });
+    const finalUrl = page.url();
+    const landed = validateBrowserNavigationUrl(finalUrl);
+    if (!landed.ok) {
+      return result(
+        'forward',
+        false,
+        undefined,
+        `History navigation landed on a disallowed URL: ${landed.error}`,
+      );
+    }
+    return result('forward', true, { url: finalUrl });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return result('forward', false, undefined, msg);
