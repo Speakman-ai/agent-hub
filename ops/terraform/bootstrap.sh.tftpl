@@ -91,3 +91,6 @@ chmod 600 /root/.agent-hub-bootstrap.env
 # Install cursor-agent for engine=cursor-agent
 sudo -H -u "$${APP_USER}" bash -c 'curl -fsSL https://cursor.com/install | bash' \
   || echo "cursor-agent install failed" >&2
+
+npm install -g @openai/codex \
+  || echo "codex CLI install failed" >&2

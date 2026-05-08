@@ -1,5 +1,5 @@
 #!/bin/bash
-# Minimal bootstrap: Node, PM2, Nginx, app user, optional cursor-agent (no Docker).
+# Minimal bootstrap: Node, PM2, Nginx, app user, Cursor agent + Codex CLI (no Docker).
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
@@ -20,3 +20,6 @@ chown ${app_user}:${app_user} /home/${app_user}/app
 
 sudo -H -u ${app_user} bash -c 'curl -fsSL https://cursor.com/install | bash' \
   || echo "cursor-agent install failed" >&2
+
+npm install -g @openai/codex \
+  || echo "codex CLI install failed" >&2

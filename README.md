@@ -104,6 +104,21 @@ On EC2 this is handled automatically:
   the SSM rollout, so the CLI stays present on subsequent deploys
   even if it was manually removed.
 
+### Installing the Codex CLI
+
+For `engine: codex-cli`, run:
+
+```bash
+bash scripts/ensure-codex.sh
+```
+
+This installs `@openai/codex` via npm and symlinks `codex` into
+`~/.local/bin` so the Hub finds it via the same `COMMON_BIN_DIRS`
+probe used for other engines (reliable under PM2 even when `PATH` is
+minimal). Terraform bootstrap and the same deploy workflows also run
+`npm install -g @openai/codex` (system Node) plus `ensure-codex.sh`
+after the repo exists on PM2 hosts.
+
 ## Quick Start
 
 ```bash
