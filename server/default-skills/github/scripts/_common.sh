@@ -178,8 +178,10 @@ _require_arg() {
 
 # Run prerequisite checks immediately when sourced so wrappers don't have to
 # repeat them.
-# NOTE: this means anything that sources _common.sh will hard-exit if `gh` is
-# not on PATH, even if it only needs utility helpers (pp_json, _require_arg).
-# All current callers require `gh`, but keep this in mind before adding
-# helpers that are independent of the gh CLI.
+#
+# NOTE: `require_gh_cli` hard-exits if `gh` is not on PATH, which means ANY
+# script that sources _common.sh will fail fast if the CLI is missing — even
+# if it only needs utility helpers like `pp_json` or `_require_arg`. This is
+# intentional for the current callers (all three wrapper scripts need `gh`),
+# but keep this in mind if you add a helper that does not depend on the CLI.
 require_gh_cli

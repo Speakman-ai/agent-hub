@@ -44,8 +44,8 @@ cmd_create() {
   require_gh_token
 
   local args=(pr create --title "$title")
-  [[ -n "$base" ]]     && args+=(--base "$base")
-  [[ -n "$body" ]]     && args+=(--body "$body")
+  [[ -n "$base" ]]       && args+=(--base "$base")
+  [[ -n "$body" ]]       && args+=(--body "$body")
   [[ "$draft" == true ]] && args+=(--draft)
   [[ -n "$reviewer" ]] && args+=(--reviewer "$reviewer")
   [[ -n "$label" ]]    && args+=(--label "$label")
@@ -179,7 +179,7 @@ cmd_comment() {
 # pr merge
 # ---------------------------------------------------------------------------
 cmd_merge() {
-  [[ $# -lt 1 ]] && gh_die "pr merge <number> [--squash|--rebase|--merge] [--delete-branch]"
+  [[ $# -lt 1 ]] && gh_die "pr merge <number> [--squash|--rebase|--merge] [--auto] [--delete-branch]"
   local number="$1"; shift
 
   local squash=false rebase=false merge_commit=false delete_branch=false auto=false
@@ -196,16 +196,23 @@ cmd_merge() {
 
   require_gh_token
 
+  # gh pr merge requires an explicit method flag when running non-interactively
+  # (even with --auto). Default to --squash if the caller didn't specify one.
+  if [[ "$squash" == false && "$rebase" == false && "$merge_commit" == false ]]; then
+    squash=true
+  fi
+
   local args=(pr merge "$number")
-  [[ "$auto" == true ]]         && args+=(--auto)
-  [[ "$squash" == true ]]       && args+=(--squash)
-  [[ "$rebase" == true ]]       && args+=(--rebase)
-  [[ "$merge_commit" == true ]] && args+=(--merge)
+  [[ "$squash" == true ]]        && args+=(--squash)
+  [[ "$rebase" == true ]]        && args+=(--rebase)
+  [[ "$merge_commit" == true ]]  && args+=(--merge)
+  [[ "$auto" == true ]]          && args+=(--auto)
   [[ "$delete_branch" == true ]] && args+=(--delete-branch)
 
   gh "${args[@]}"
+
   if [[ "$auto" == true ]]; then
-    echo "Merge queued for PR #$number"
+    echo "PR #$number queued for auto-merge"
   else
     echo "PR #$number merged"
   fi

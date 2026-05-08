@@ -133,6 +133,7 @@ gh api graphql -f query='{ viewer { login }}'
   credential used exclusively for automated PR reviews — do **not** reuse it
   for ad-hoc skill calls. See [references/auth.md](references/auth.md).
 - Rate limits: REST = 5 000 req/hr authenticated; GraphQL = 5 000 points/hr.
-  The `_common.sh` helper does **not** automatically retry. Inspect the
-  response and back off manually if you hit secondary rate limits (see
-  [references/api-escape-hatch.md](references/api-escape-hatch.md)).
+  The `gh_api` wrapper in `_common.sh` is a thin passthrough — it does **not**
+  automatically retry on `403` or secondary rate-limits. If you hit a limit,
+  back off manually (see [references/api-escape-hatch.md](references/api-escape-hatch.md)
+  for a retry loop example).
