@@ -42,8 +42,9 @@ export LINEAR_API_KEY="lin_api_xxxxxxxxxxxxxxxx"
 
 To mint a key: **Linear → Settings → API → Personal API keys → Create key**.
 
-The scripts also require **`python3`** (3.6+) to be available on `PATH` — used
-for JSON serialisation and pretty-printing.
+The wrapper scripts require **`python3`** (3.7+) and **`curl`** on `$PATH`.
+These are present by default on macOS, standard Linux distros, and the
+Agent Hub EC2 host.
 
 ## Safety Model — Read-default, Write-on-confirm
 
@@ -54,9 +55,11 @@ approval ("go ahead", "do it", "create it").
 
 Show a brief summary of what will change before running any mutation.
 
-> **Note:** this is a behavioural contract on the agent — the wrapper scripts
-> do not enforce a confirmation gate at runtime. The agent must follow this
-> pattern; the scripts will not block dangerous mutations on their own.
+> **This is a behavioural contract on the agent, not a runtime guard in the
+> scripts.** The wrappers will execute a mutation the moment they are invoked —
+> the agent is responsible for asking first. Never call `issue create`,
+> `issue update`, or `issue comment` without prior user confirmation or an
+> explicit instruction to proceed.
 
 ## Quick Reference
 

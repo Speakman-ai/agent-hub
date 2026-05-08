@@ -18,7 +18,15 @@
 export interface LinearAuthContext {
   /** The resolved API key, or undefined if not configured. */
   apiKey: string | undefined;
-  /** True when the key was sourced from the injected environment. */
+  /**
+   * True when `LINEAR_API_KEY` was present and non-empty in the environment.
+   *
+   * Note: `fromEnv === true` iff `apiKey !== undefined` — they always agree.
+   * The field is kept as a named boolean so callers can write expressive log
+   * messages ("key sourced from env") without re-deriving the condition.
+   * Diagnostic tooling (e.g. Session Health) may log the source separately
+   * from the key itself to distinguish "key set" from "key value".
+   */
   fromEnv: boolean;
 }
 
