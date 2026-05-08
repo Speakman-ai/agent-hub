@@ -89,6 +89,8 @@ export interface BrowserSession {
   id: string;
   stagehand: unknown;
   createdAt: number;
+  /** Per-op timeout used for navigation waits (see {@link BrowserSessionOptions.timeoutMs}). */
+  timeoutMs: number;
   close: () => Promise<void>;
 }
 
@@ -247,7 +249,8 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
   if (!effectiveOpts.executablePath) {
     effectiveOpts.executablePath = await resolveDefaultChromiumPath();
   }
-  const sh = new Stagehand(buildStagehandOptions(effectiveOpts));
+  const builtOpts = buildStagehandOptions(effectiveOpts);
+  const sh = new Stagehand(builtOpts);
   await sh.init();
 
   const id = opts.id ?? randomUUID();
@@ -255,6 +258,7 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
     id,
     stagehand: sh,
     createdAt: Date.now(),
+    timeoutMs: builtOpts.actTimeoutMs,
     close: async () => {
       sessions.delete(id);
       try {

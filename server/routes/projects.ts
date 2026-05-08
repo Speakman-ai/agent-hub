@@ -203,6 +203,52 @@ function normalizeCheckHealMaxRounds(value: unknown): number | undefined {
 const CHECK_HEAL_MAX_ROUNDS_INVALID =
   'checkHealMaxRounds must be an integer between 1 and 5 (inclusive), or null or empty string to clear';
 
+function patchProjectOptionalBrowserDimension(
+  project: Project,
+  body: Record<string, unknown>,
+  key: 'browserViewportWidth' | 'browserViewportHeight',
+  min: number,
+  max: number,
+): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(body, key)) return undefined;
+  const v = body[key];
+  if (v === null) {
+    delete (project as Record<string, unknown>)[key];
+    return undefined;
+  }
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    return `${key} must be a finite number or null`;
+  }
+  const i = Math.floor(v);
+  if (i < min || i > max) {
+    return `${key} must be between ${min} and ${max}`;
+  }
+  (project as Record<string, unknown>)[key] = i;
+  return undefined;
+}
+
+function patchProjectBrowserPageLoadTimeout(
+  project: Project,
+  body: Record<string, unknown>,
+): string | undefined {
+  const key = 'browserPageLoadTimeoutMs';
+  if (!Object.prototype.hasOwnProperty.call(body, key)) return undefined;
+  const v = body[key];
+  if (v === null) {
+    delete (project as Record<string, unknown>)[key];
+    return undefined;
+  }
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    return `${key} must be a finite number or null`;
+  }
+  const i = Math.floor(v);
+  if (i < 1000 || i > 120_000) {
+    return `${key} must be between 1000 and 120000`;
+  }
+  (project as Record<string, unknown>)[key] = i;
+  return undefined;
+}
+
 /**
  * Validate + normalize a `prEnv` PATCH payload.
  *
@@ -1399,6 +1445,37 @@ This workspace has no git repo and no PR automation — your job is planning, or
       } else {
         return res.status(400).json({ error: 'mode must be "dev", "workflow", or null' });
       }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'browserToolsDefaultEnabled')) {
+      const v = (req.body as Record<string, unknown>).browserToolsDefaultEnabled;
+      if (v === null || v === undefined) {
+        delete (project as Record<string, unknown>).browserToolsDefaultEnabled;
+      } else if (v === true || v === false) {
+        (project as Record<string, unknown>).browserToolsDefaultEnabled = v;
+      } else {
+        return res.status(400).json({
+          error: 'browserToolsDefaultEnabled must be a boolean, null, or omitted',
+        });
+      }
+    }
+    {
+      const err =
+        patchProjectOptionalBrowserDimension(
+          project,
+          req.body as Record<string, unknown>,
+          'browserViewportWidth',
+          320,
+          3840,
+        ) ||
+        patchProjectOptionalBrowserDimension(
+          project,
+          req.body as Record<string, unknown>,
+          'browserViewportHeight',
+          240,
+          2160,
+        ) ||
+        patchProjectBrowserPageLoadTimeout(project, req.body as Record<string, unknown>);
+      if (err) return res.status(400).json({ error: err });
     }
     if (
       (req.body as Record<string, unknown>).githubRepo &&

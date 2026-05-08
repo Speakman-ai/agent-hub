@@ -32,6 +32,52 @@ function validateOptionalBrowserToolsEnabled(body: Record<string, unknown>):
   return { ok: false, error: 'browserToolsEnabled must be a boolean' };
 }
 
+function validateBrowserDim(
+  body: Record<string, unknown>,
+  key: string,
+  min: number,
+  max: number,
+): { ok: true; value: number | 'delete' | undefined } | { ok: false; error: string } {
+  if (!Object.prototype.hasOwnProperty.call(body, key)) return { ok: true, value: undefined };
+  const v = body[key];
+  if (v === null) return { ok: true, value: 'delete' };
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    return { ok: false, error: `${key} must be a finite number or null` };
+  }
+  const i = Math.floor(v);
+  if (i < min || i > max) {
+    return { ok: false, error: `${key} must be between ${min} and ${max}` };
+  }
+  return { ok: true, value: i };
+}
+
+function validateBrowserPageLoadTimeout(
+  body: Record<string, unknown>,
+): { ok: true; value: number | 'delete' | undefined } | { ok: false; error: string } {
+  const key = 'browserPageLoadTimeoutMs';
+  if (!Object.prototype.hasOwnProperty.call(body, key)) return { ok: true, value: undefined };
+  const v = body[key];
+  if (v === null) return { ok: true, value: 'delete' };
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    return { ok: false, error: `${key} must be a finite number or null` };
+  }
+  const i = Math.floor(v);
+  if (i < 1000 || i > 120_000) {
+    return { ok: false, error: `${key} must be between 1000 and 120000` };
+  }
+  return { ok: true, value: i };
+}
+
+function applyOptionalAgentNumeric(
+  agent: Agent,
+  key: 'browserViewportWidth' | 'browserViewportHeight' | 'browserPageLoadTimeoutMs',
+  value: number | 'delete' | undefined,
+) {
+  if (value === undefined) return;
+  if (value === 'delete') delete (agent as Record<string, unknown>)[key];
+  else (agent as Record<string, unknown>)[key] = value;
+}
+
 export default function createAgentRoutes(deps: RouteDeps): Router {
   const {
     stmts,
@@ -104,6 +150,12 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     const body = req.body as Record<string, unknown>;
     const btValid = validateOptionalBrowserToolsEnabled(body);
     if (!btValid.ok) return res.status(400).json({ error: btValid.error });
+    const bw = validateBrowserDim(body, 'browserViewportWidth', 320, 3840);
+    if (!bw.ok) return res.status(400).json({ error: bw.error });
+    const bh = validateBrowserDim(body, 'browserViewportHeight', 240, 2160);
+    if (!bh.ok) return res.status(400).json({ error: bh.error });
+    const bto = validateBrowserPageLoadTimeout(body);
+    if (!bto.ok) return res.status(400).json({ error: bto.error });
 
     const allowed = [
       'name',
@@ -125,6 +177,9 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (body.browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = body.browserToolsEnabled as boolean;
     }
+    applyOptionalAgentNumeric(agent, 'browserViewportWidth', bw.value);
+    applyOptionalAgentNumeric(agent, 'browserViewportHeight', bh.value);
+    applyOptionalAgentNumeric(agent, 'browserPageLoadTimeoutMs', bto.value);
     saveProjects();
     res.json(getEnrichedAgent(agent.id));
   });
@@ -133,6 +188,22 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     const body = req.body as Record<string, unknown>;
     const btValid = validateOptionalBrowserToolsEnabled(body);
     if (!btValid.ok) return res.status(400).json({ error: btValid.error });
+    const bw = validateBrowserDim(
+      body as Record<string, unknown>,
+      'browserViewportWidth',
+      320,
+      3840,
+    );
+    if (!bw.ok) return res.status(400).json({ error: bw.error });
+    const bh = validateBrowserDim(
+      body as Record<string, unknown>,
+      'browserViewportHeight',
+      240,
+      2160,
+    );
+    if (!bh.ok) return res.status(400).json({ error: bh.error });
+    const bto = validateBrowserPageLoadTimeout(body as Record<string, unknown>);
+    if (!bto.ok) return res.status(400).json({ error: bto.error });
 
     const {
       id,
@@ -171,6 +242,9 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = browserToolsEnabled as boolean;
     }
+    applyOptionalAgentNumeric(agent, 'browserViewportWidth', bw.value);
+    applyOptionalAgentNumeric(agent, 'browserViewportHeight', bh.value);
+    applyOptionalAgentNumeric(agent, 'browserPageLoadTimeoutMs', bto.value);
     mkdirSync(path.join(project.ahw, 'agents', agent.id), { recursive: true });
     project.agents.push(agent);
     saveProjects();

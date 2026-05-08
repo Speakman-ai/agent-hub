@@ -4852,6 +4852,46 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
     );
   }, [orchestrationServerSnap]);
 
+  const browserDefaultsServerSnap = useMemo(
+    () =>
+      JSON.stringify(
+        Object.fromEntries(
+          projects.map((p) => [
+            p.id,
+            {
+              d: p.browserToolsDefaultEnabled ?? null,
+              w: p.browserViewportWidth ?? null,
+              h: p.browserViewportHeight ?? null,
+              t: p.browserPageLoadTimeoutMs ?? null,
+            },
+          ]),
+        ),
+      ),
+    [projects],
+  );
+
+  const [projectBrowserFields, setProjectBrowserFields] = useState({});
+  useEffect(() => {
+    setProjectBrowserFields(() =>
+      Object.fromEntries(
+        projects.map((p) => [
+          p.id,
+          {
+            defaultOn: p.browserToolsDefaultEnabled !== false,
+            viewportW:
+              typeof p.browserViewportWidth === 'number' ? String(p.browserViewportWidth) : '',
+            viewportH:
+              typeof p.browserViewportHeight === 'number' ? String(p.browserViewportHeight) : '',
+            timeoutMs:
+              typeof p.browserPageLoadTimeoutMs === 'number'
+                ? String(p.browserPageLoadTimeoutMs)
+                : '',
+          },
+        ]),
+      ),
+    );
+  }, [browserDefaultsServerSnap]);
+
   const [projectCommandsSaved, setProjectCommandsSaved] = useState({});
   const [expandedProject, setExpandedProject] = useState(null);
 
@@ -4899,6 +4939,79 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         }
         payload = { ...basePayload, orchestrationBudgets: obParsed };
       }
+      const projRow = projects.find((x) => x.id === projectId);
+      const bf = projectBrowserFields[projectId] || {
+        defaultOn: true,
+        viewportW: '',
+        viewportH: '',
+        timeoutMs: '',
+      };
+      const browserPayload = {};
+      if (bf.defaultOn) {
+        browserPayload.browserToolsDefaultEnabled =
+          projRow?.browserToolsDefaultEnabled === false ? true : null;
+      } else {
+        browserPayload.browserToolsDefaultEnabled = false;
+      }
+      const mergeOptDim = (raw, prevVal, field, min, max, label) => {
+        const t = String(raw ?? '').trim();
+        if (t === '') {
+          if (prevVal != null) browserPayload[field] = null;
+          return true;
+        }
+        const n = parseInt(t, 10);
+        if (!Number.isFinite(n) || n < min || n > max) {
+          showToast?.(
+            `${label}: use an integer between ${min} and ${max}, or leave empty.`,
+            'error',
+          );
+          return false;
+        }
+        browserPayload[field] = n;
+        return true;
+      };
+      if (
+        !mergeOptDim(
+          bf.viewportW,
+          projRow?.browserViewportWidth,
+          'browserViewportWidth',
+          320,
+          3840,
+          'Viewport width',
+        )
+      ) {
+        return;
+      }
+      if (
+        !mergeOptDim(
+          bf.viewportH,
+          projRow?.browserViewportHeight,
+          'browserViewportHeight',
+          240,
+          2160,
+          'Viewport height',
+        )
+      ) {
+        return;
+      }
+      const timeoutRaw = String(bf.timeoutMs ?? '').trim();
+      if (timeoutRaw === '') {
+        if (projRow?.browserPageLoadTimeoutMs != null) {
+          browserPayload.browserPageLoadTimeoutMs = null;
+        }
+      } else {
+        const n = parseInt(timeoutRaw, 10);
+        if (!Number.isFinite(n) || n < 1000 || n > 120000) {
+          showToast?.(
+            'Browser timeout: enter 1000–120000 ms, or leave empty for default.',
+            'error',
+          );
+          return;
+        }
+        browserPayload.browserPageLoadTimeoutMs = n;
+      }
+
+      payload = { ...payload, ...browserPayload };
       await api.updateProject(projectId, payload);
       setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: true }));
       setTimeout(() => setProjectCommandsSaved((prev) => ({ ...prev, [projectId]: false })), 2000);
@@ -5060,6 +5173,117 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                               />
                             </div>
                           ))}
+                        </div>
+                      </div>
+                      <div className="pt-2 border-t border-gray-700/50 space-y-2">
+                        <div className="flex items-center gap-2 text-xs text-gray-400 font-semibold">
+                          <Globe size={14} className="text-sky-400 shrink-0" />
+                          <Monitor size={14} className="text-sky-400 shrink-0" />
+                          <span>Browser tools (project default)</span>
+                        </div>
+                        <p className="text-[11px] text-gray-500">
+                          Agents without their own Browser Tools setting follow this default. When
+                          OFF, host browser ReAct tools stay out of the enriched prompt unless an
+                          agent explicitly enables them.
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            data-testid={`project-${p.id}-browser-default-toggle`}
+                            onClick={() =>
+                              setProjectBrowserFields((prev) => {
+                                const row = {
+                                  defaultOn: true,
+                                  viewportW: '',
+                                  viewportH: '',
+                                  timeoutMs: '',
+                                  ...prev[p.id],
+                                };
+                                const cur = row.defaultOn !== false;
+                                return {
+                                  ...prev,
+                                  [p.id]: { ...row, defaultOn: !cur },
+                                };
+                              })
+                            }
+                            className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                              projectBrowserFields[p.id]?.defaultOn !== false
+                                ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                                : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                            }`}
+                          >
+                            {projectBrowserFields[p.id]?.defaultOn !== false ? 'ON' : 'OFF'}
+                          </button>
+                          <span className="text-[11px] text-gray-500">Default browser tools</span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pl-1">
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">
+                              Viewport width (px)
+                            </label>
+                            <input
+                              type="number"
+                              min={320}
+                              max={3840}
+                              placeholder="1280 default"
+                              value={projectBrowserFields[p.id]?.viewportW ?? ''}
+                              onChange={(e) =>
+                                setProjectBrowserFields((prev) => ({
+                                  ...prev,
+                                  [p.id]: {
+                                    ...(prev[p.id] || { defaultOn: true }),
+                                    viewportW: e.target.value,
+                                  },
+                                }))
+                              }
+                              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">
+                              Viewport height (px)
+                            </label>
+                            <input
+                              type="number"
+                              min={240}
+                              max={2160}
+                              placeholder="720 default"
+                              value={projectBrowserFields[p.id]?.viewportH ?? ''}
+                              onChange={(e) =>
+                                setProjectBrowserFields((prev) => ({
+                                  ...prev,
+                                  [p.id]: {
+                                    ...(prev[p.id] || { defaultOn: true }),
+                                    viewportH: e.target.value,
+                                  },
+                                }))
+                              }
+                              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">
+                              Load timeout (ms)
+                            </label>
+                            <input
+                              type="number"
+                              min={1000}
+                              max={120000}
+                              step={500}
+                              placeholder="30000 default"
+                              value={projectBrowserFields[p.id]?.timeoutMs ?? ''}
+                              onChange={(e) =>
+                                setProjectBrowserFields((prev) => ({
+                                  ...prev,
+                                  [p.id]: {
+                                    ...(prev[p.id] || { defaultOn: true }),
+                                    timeoutMs: e.target.value,
+                                  },
+                                }))
+                              }
+                              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
+                            />
+                          </div>
                         </div>
                       </div>
                       <button
@@ -5545,46 +5769,142 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                   </div>
 
                   <div className="border-t border-gray-700 pt-3">
-                    <div className="flex items-center gap-3 mb-2">
-                      <label className="text-xs text-gray-400 font-medium">
-                        Host browser tools (ReAct)
-                      </label>
-                      <button
-                        type="button"
-                        data-testid="agent-browser-tools-toggle"
-                        onClick={() => {
-                          const current =
-                            edit.browserToolsEnabled !== undefined
-                              ? edit.browserToolsEnabled
-                              : agent.browserToolsEnabled !== false;
-                          setEdit(agent.id, 'browserToolsEnabled', !current);
-                        }}
-                        className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                          (
-                            edit.browserToolsEnabled !== undefined
-                              ? edit.browserToolsEnabled
-                              : agent.browserToolsEnabled !== false
-                          )
-                            ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                            : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                        }`}
-                      >
-                        {(
-                          edit.browserToolsEnabled !== undefined
-                            ? edit.browserToolsEnabled
-                            : agent.browserToolsEnabled !== false
-                        )
-                          ? 'ON'
-                          : 'OFF'}
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-500">
-                      When ON, the enriched prompt documents{' '}
-                      <code className="font-mono">{'{"tool":"browser",...}'}</code> in{' '}
-                      <code className="font-mono">&lt;agenthub:react&gt;</code> and the host runs
-                      Stagehand/Playwright steps. When OFF, browser actions are stripped and the
-                      model is told not to emit them.
-                    </p>
+                    {(() => {
+                      const projRow = projects.find((pr) => pr.id === agent.projectId);
+                      const inheritedOff = projRow?.browserToolsDefaultEnabled === false;
+                      const toggleOn =
+                        edit.browserToolsEnabled !== undefined
+                          ? edit.browserToolsEnabled
+                          : agent.browserToolsEnabled !== undefined
+                            ? agent.browserToolsEnabled
+                            : !inheritedOff;
+                      const browserToolsOnForAgent = toggleOn !== false;
+                      const vw =
+                        edit.browserViewportWidth !== undefined
+                          ? edit.browserViewportWidth
+                          : agent.browserViewportWidth;
+                      const vh =
+                        edit.browserViewportHeight !== undefined
+                          ? edit.browserViewportHeight
+                          : agent.browserViewportHeight;
+                      const bto =
+                        edit.browserPageLoadTimeoutMs !== undefined
+                          ? edit.browserPageLoadTimeoutMs
+                          : agent.browserPageLoadTimeoutMs;
+                      return (
+                        <>
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            <Globe size={14} className="text-sky-400 shrink-0" />
+                            <Monitor size={14} className="text-sky-400 shrink-0" />
+                            <label className="text-xs text-gray-400 font-medium">
+                              Browser Tools
+                            </label>
+                            <button
+                              type="button"
+                              data-testid="agent-browser-tools-toggle"
+                              onClick={() => {
+                                setEdit(agent.id, 'browserToolsEnabled', !browserToolsOnForAgent);
+                              }}
+                              className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                                browserToolsOnForAgent
+                                  ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                              }`}
+                            >
+                              {browserToolsOnForAgent ? 'ON' : 'OFF'}
+                            </button>
+                          </div>
+                          <p className="text-xs text-gray-500 mb-2">
+                            When ON, the enriched prompt documents{' '}
+                            <code className="font-mono">{'{"tool":"browser",...}'}</code> in{' '}
+                            <code className="font-mono">&lt;agenthub:react&gt;</code> and the host
+                            runs Stagehand/Playwright steps. When OFF, browser actions are stripped.
+                            Uses the project default when this agent has no explicit setting
+                            {projRow?.browserToolsDefaultEnabled === false
+                              ? ' (this project defaults to OFF).'
+                              : '.'}
+                          </p>
+                          {browserToolsOnForAgent && (
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                              <div>
+                                <label className={labelClass}>Viewport width (optional)</label>
+                                <input
+                                  type="number"
+                                  min={320}
+                                  max={3840}
+                                  placeholder={
+                                    projRow?.browserViewportWidth != null
+                                      ? `Project: ${projRow.browserViewportWidth}`
+                                      : '1280 default'
+                                  }
+                                  value={vw != null ? String(vw) : ''}
+                                  onChange={(e) => {
+                                    const t = e.target.value.trim();
+                                    if (t === '') setEdit(agent.id, 'browserViewportWidth', null);
+                                    else {
+                                      const n = parseInt(t, 10);
+                                      if (Number.isFinite(n))
+                                        setEdit(agent.id, 'browserViewportWidth', n);
+                                    }
+                                  }}
+                                  className={inputClass}
+                                />
+                              </div>
+                              <div>
+                                <label className={labelClass}>Viewport height (optional)</label>
+                                <input
+                                  type="number"
+                                  min={240}
+                                  max={2160}
+                                  placeholder={
+                                    projRow?.browserViewportHeight != null
+                                      ? `Project: ${projRow.browserViewportHeight}`
+                                      : '720 default'
+                                  }
+                                  value={vh != null ? String(vh) : ''}
+                                  onChange={(e) => {
+                                    const t = e.target.value.trim();
+                                    if (t === '') setEdit(agent.id, 'browserViewportHeight', null);
+                                    else {
+                                      const n = parseInt(t, 10);
+                                      if (Number.isFinite(n))
+                                        setEdit(agent.id, 'browserViewportHeight', n);
+                                    }
+                                  }}
+                                  className={inputClass}
+                                />
+                              </div>
+                              <div>
+                                <label className={labelClass}>Max page load timeout (ms)</label>
+                                <input
+                                  type="number"
+                                  min={1000}
+                                  max={120000}
+                                  step={500}
+                                  placeholder={
+                                    projRow?.browserPageLoadTimeoutMs != null
+                                      ? `Project: ${projRow.browserPageLoadTimeoutMs}`
+                                      : '30000 default'
+                                  }
+                                  value={bto != null ? String(bto) : ''}
+                                  onChange={(e) => {
+                                    const t = e.target.value.trim();
+                                    if (t === '')
+                                      setEdit(agent.id, 'browserPageLoadTimeoutMs', null);
+                                    else {
+                                      const n = parseInt(t, 10);
+                                      if (Number.isFinite(n))
+                                        setEdit(agent.id, 'browserPageLoadTimeoutMs', n);
+                                    }
+                                  }}
+                                  className={inputClass}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
 
                   <div>

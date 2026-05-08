@@ -52,12 +52,22 @@ vi.mock('./project-paths.js', () => ({
   },
 }));
 
+const mockFindProject = vi.hoisted(() =>
+  vi.fn((_id: string): import('./types.js').Project | null => null),
+);
+
 vi.mock('./project-model.js', () => ({
   allAgents: () => [],
+  findProject: (id: string) => mockFindProject(id),
 }));
 
 import { buildEnrichedPrompt } from './chat.js';
 import { getMemoryContext } from './memory.js';
+
+beforeEach(() => {
+  mockFindProject.mockReset();
+  mockFindProject.mockImplementation(() => null);
+});
 
 function makeProject(overrides = {}) {
   return {
@@ -113,6 +123,33 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toContain('## ReAct Loop');
     expect(prompt).not.toContain('"tool":"browser"');
     expect(prompt).toMatch(/browser tools.*off/i);
+  });
+
+  it('omits browser when project default disables tools and agent omits browserToolsEnabled', () => {
+    mockFindProject.mockImplementation(
+      () =>
+        ({
+          id: 'test-proj',
+          browserToolsDefaultEnabled: false,
+        }) as import('./types.js').Project,
+    );
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
+    expect(prompt).not.toContain('"tool":"browser"');
+    expect(prompt).toMatch(/browser tools.*off/i);
+  });
+
+  it('includes browser when project default is false but agent sets browserToolsEnabled true', () => {
+    mockFindProject.mockImplementation(
+      () =>
+        ({
+          id: 'test-proj',
+          browserToolsDefaultEnabled: false,
+        }) as import('./types.js').Project,
+    );
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent({ browserToolsEnabled: true }), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('"tool":"browser"');
   });
 
   it('excludes wiki guidelines on subsequent messages', () => {

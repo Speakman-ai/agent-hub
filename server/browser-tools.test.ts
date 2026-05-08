@@ -15,7 +15,11 @@ import {
   BROWSER_TOOL_MARKDOWN_DATA_MAX_BYTES,
   BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE,
 } from './browser-tools.js';
-import { __registerBrowserSessionForTests, __resetBrowserRegistryForTests } from './browser.js';
+import {
+  __registerBrowserSessionForTests,
+  __resetBrowserRegistryForTests,
+  DEFAULT_TIMEOUT_MS,
+} from './browser.js';
 
 function makeMockPage() {
   const goto = vi.fn(async () => null);
@@ -92,6 +96,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'nav-blocked',
       stagehand: makeMockStagehand(page),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('nav-blocked', {
@@ -109,6 +114,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'nav-ok',
       stagehand: makeMockStagehand(page),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('nav-ok', {
@@ -124,6 +130,48 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.markdown).toContain('"ok": true');
   });
 
+  it('navigate: prefers sessionLaunchOpts.timeoutMs over cached BrowserSession.timeoutMs', async () => {
+    const page = makeMockPage();
+    __registerBrowserSessionForTests({
+      id: 'nav-timeout-override',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: 5_000,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep(
+      'nav-timeout-override',
+      { op: 'navigate', url: 'https://example.com/over' },
+      { timeoutMs: 60_000 },
+    );
+    expect(r.hostExit).toBe(0);
+    expect(page.goto).toHaveBeenCalledWith('https://example.com/over', {
+      waitUntil: 'load',
+      timeoutMs: 60_000,
+    });
+  });
+
+  it('navigate: uses session.timeoutMs when sessionLaunchOpts omit timeoutMs', async () => {
+    const page = makeMockPage();
+    __registerBrowserSessionForTests({
+      id: 'nav-timeout-session',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: 12_345,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep(
+      'nav-timeout-session',
+      { op: 'navigate', url: 'https://example.com/session-only' },
+      {},
+    );
+    expect(r.hostExit).toBe(0);
+    expect(page.goto).toHaveBeenCalledWith('https://example.com/session-only', {
+      waitUntil: 'load',
+      timeoutMs: 12_345,
+    });
+  });
+
   it('extract: rejects oversize schema before Stagehand extract', async () => {
     const page = makeMockPage();
     const stagehand = makeMockStagehand(page);
@@ -132,6 +180,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'ext-schema',
       stagehand,
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const bad: Record<string, unknown> = {};
@@ -155,6 +204,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'shot-ok',
       stagehand: makeMockStagehand(page),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('shot-ok', { op: 'screenshot' });
@@ -172,6 +222,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'shot-big',
       stagehand: makeMockStagehand(page),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('shot-big', { op: 'screenshot' });
@@ -188,6 +239,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'ext-big',
       stagehand: makeMockStagehand(page, { extract: async () => big }),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('ext-big', { op: 'extract', instruction: 'get stuff' });
@@ -205,6 +257,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'wait-net',
       stagehand: makeMockStagehand(page),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('wait-net', { op: 'wait', condition: 'networkidle' });
@@ -220,6 +273,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'wait-sel',
       stagehand: makeMockStagehand(page),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('wait-sel', { op: 'wait', condition: '#submit' });
@@ -239,6 +293,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'wait-fail',
       stagehand: makeMockStagehand(page),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('wait-fail', { op: 'wait', condition: '#gone' });
@@ -252,6 +307,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'scr-bad',
       stagehand: makeMockStagehand(page),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('scr-bad', { op: 'scroll', direction: 'sideways' });
@@ -267,6 +323,7 @@ describe('browser-tools — runBrowserReActStep', () => {
       id: 'scr-throw',
       stagehand: makeMockStagehand(page),
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       close: async () => {},
     });
     const r = await runBrowserReActStep('scr-throw', { op: 'scroll', direction: 'down' });

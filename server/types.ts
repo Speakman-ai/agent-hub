@@ -1291,9 +1291,19 @@ export interface Agent {
   /**
    * When explicitly `false`, host-mediated browser tools (`<agenthub:react>`
    * `tool: browser`) are omitted from the enriched prompt and rejected at
-   * execution time. `undefined` / `true` → enabled (default).
+   * execution time. When `undefined`, the project’s
+   * `browserToolsDefaultEnabled` applies (then global default on).
    */
   browserToolsEnabled?: boolean;
+  /** Optional Chromium viewport width — falls back to project then server default. */
+  browserViewportWidth?: number;
+  /** Optional Chromium viewport height — falls back to project then server default. */
+  browserViewportHeight?: number;
+  /**
+   * Navigation / host browser step timeout in ms (1000–120000).
+   * Falls back to project then the server default (30s).
+   */
+  browserPageLoadTimeoutMs?: number;
   hooks?: Record<string, HookConfig[]>;
   mcpServers?: Record<string, McpServerConfig>;
   installCommand?: string;
@@ -1469,6 +1479,17 @@ export interface Project {
    * dispatcher. See {@link PrEnvProjectConfig}.
    */
   prEnv?: PrEnvProjectConfig;
+  /**
+   * Default for `browserToolsEnabled` when an agent omits the field.
+   * When omitted project-wide, treated as enabled (backward compatible).
+   */
+  browserToolsDefaultEnabled?: boolean;
+  /** Default viewport width for host browser tools (agents may override). */
+  browserViewportWidth?: number;
+  /** Default viewport height for host browser tools (agents may override). */
+  browserViewportHeight?: number;
+  /** Default page-load / browser-op timeout in ms for agents that do not override. */
+  browserPageLoadTimeoutMs?: number;
   agents: Agent[];
   [key: string]: unknown;
 }

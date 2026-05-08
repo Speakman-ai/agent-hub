@@ -113,6 +113,7 @@ describe('session registry', () => {
     const session: BrowserSession = {
       id,
       createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       stagehand: { close: closeMock, init: vi.fn() },
       close: async () => {
         __resetBrowserRegistryForTests(); // unused, replaced by closeBrowserSession path
