@@ -291,10 +291,7 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/unassign', () => {
   });
 });
 
-// ─── Spawn env — AGENT_HUB_URL and PROJECT_ID injection ────────────────────
-// Verified at the unit level in server-port.test.ts (getActualPort fallback)
-// and by source inspection: chat.ts lines that set base.AGENT_HUB_URL and
-// base.PROJECT_ID immediately before `return base` in the spawn env block.
-// Integration-level verification that spawn fires is covered by the existing
-// assign tests which confirm a session row is created; the env var injection
-// path is exercised whenever chat.ts runs handleChat for a kanban-assigned card.
+// ─── Spawn env — AGENT_HUB_URL / resolveAgentHubApiBaseForSpawn + PROJECT_ID injection ────────────────────
+// Verified via config.test.ts plus source: chat.ts sets base.AGENT_HUB_URL from
+// resolveAgentHubApiBaseForSpawn(config) and base.PROJECT_ID before `return base`
+// in the spawn env builder.

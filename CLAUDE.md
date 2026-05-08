@@ -252,6 +252,7 @@ The Claude Code CLI binary appends a hidden `<system-reminder>` after every Read
 - **Nginx** reverse proxy on port 80 → localhost:3051
 - **PM2** manages the Node.js process
 - **Port 3051** is localhost-only — all external traffic goes through Nginx
+- **Spawned CLI `AGENT_HUB_URL`**: the server injects `AGENT_HUB_URL` for child processes (skills, kanban scripts). It defaults to loopback; if tool sandboxes cannot reach `127.0.0.1`, set **`AGENT_HUB_AGENT_URL`** (or **`agentHubUrl`** in `config.json`) to a base those hosts can reach (often the same URL as **`AGENT_HUB_PUBLIC_URL`** / **`publicUrl`**, which is used automatically when set—including path prefixes so spawned CLIs hit the same `/api/...` namespace as OAuth redirects). See `resolveAgentHubApiBaseForSpawn` in `server/config.ts`.
 - Deploy: `ssh → git pull → npm install && npm run build && (cd server && npm install) → pm2 start ecosystem.config.cjs` (or `pm2 restart agent-hub`). The API is TS (`tsx index.ts`); do not point PM2 at `index.js`.
 
 ### CORS — `ALLOWED_ORIGINS`

@@ -118,8 +118,9 @@ on `user_id` and `prefix`. See `server/api-keys-store.ts`.
 - **Legacy fallback**: `server/config.json` — read only when the data-dir
   copy is missing. Kept for backwards compatibility with older
   single-user installs.
-- **Env overrides**: `PORT`, `ALLOWED_ORIGINS`, `DATA_DIR`, `PUBLIC_URL`
-  override the on-disk values at process start.
+- **Env overrides** (see `server/config.ts` / `server/cors-config.ts`): e.g.
+  `AGENT_HUB_PORT`, `AGENT_HUB_HOST`, `AGENT_HUB_DATA_DIR`, `AGENT_HUB_PUBLIC_URL`
+  (`publicUrl`), `ALLOWED_ORIGINS`.
 
 ## Endpoints at a glance
 
