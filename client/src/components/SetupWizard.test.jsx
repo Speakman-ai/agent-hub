@@ -377,8 +377,11 @@ describe('SetupWizard — Step 3 Cursor path auth probe', () => {
         });
       }
       if (u.includes('/config/cursor-auth')) {
-        const parsed = new URL(u, 'http://localhost');
-        expect(parsed.searchParams.get('cursorBin')).toBe(wizardPath);
+        // The wizard's own probe carries `cursorBin` so a path typed in the
+        // form (not yet persisted) is honored before Save & Continue runs
+        // /setup/configure. The embedded `<CursorAuthSection />` also calls
+        // this endpoint but without the query string — only assert the wizard
+        // probe; the section's plain GET is asserted on separately below.
         return jsonResponse({
           oauth: { loggedIn: true },
           activeMethod: 'oauth',
@@ -412,11 +415,110 @@ describe('SetupWizard — Step 3 Cursor path auth probe', () => {
     await waitFor(() => expect(screen.getByText(/Configure Your Tools/i)).toBeInTheDocument());
 
     await waitFor(() => {
-      const cursorCalls = fetchMock.mock.calls.filter(([u]) =>
-        String(u).includes('/config/cursor-auth'),
-      );
-      expect(cursorCalls.length).toBeGreaterThan(0);
+      const cursorCallsWithBin = fetchMock.mock.calls.filter(([u]) => {
+        const s = String(u);
+        if (!s.includes('/config/cursor-auth')) return false;
+        const parsed = new URL(s, 'http://localhost');
+        return parsed.searchParams.get('cursorBin') === wizardPath;
+      });
+      expect(cursorCallsWithBin.length).toBeGreaterThan(0);
     });
+  });
+});
+
+describe('SetupWizard — Codex ChatGPT device login subsection', () => {
+  function jsonResponse(body, status = 200) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  it('renders the device-login button when Codex CLI is enabled and starts the flow on click', async () => {
+    const codexBin = '/usr/local/bin/codex';
+    const wizardCursorBin = '/usr/local/bin/cursor-agent';
+    let deviceLoginCalls = 0;
+    const fetchMock = vi.fn(async (url, opts) => {
+      const u = String(url);
+      if (u.includes('/config/codex-auth/device-login')) {
+        deviceLoginCalls += 1;
+        // Surface a verification URL + user code the same shape the real
+        // server returns so the wizard renders the panel.
+        return jsonResponse({
+          deviceAuthUrl: 'https://chatgpt.com/device',
+          userCode: 'WZBN-RVLM',
+        });
+      }
+      if (u.includes('/config/codex-auth')) {
+        return jsonResponse({
+          activeMethod: 'none',
+          uiStatus: 'missing',
+          loginInProgress: false,
+          binary: { present: true, path: codexBin },
+        });
+      }
+      if (u.includes('/config/cursor-auth')) {
+        return jsonResponse({
+          oauth: { loggedIn: false },
+          activeMethod: 'none',
+          uiStatus: 'missing',
+          binary: { present: true, path: wizardCursorBin },
+        });
+      }
+      if (u.includes('/config/claude-auth')) {
+        return jsonResponse({
+          oauth: { loggedIn: false },
+          apiKey: { configured: false },
+          oauthToken: { configured: false },
+          activeMethod: null,
+        });
+      }
+      if (u.includes('/setup/configure')) return jsonResponse({ ok: true });
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    // Don't actually open a popup during the test.
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+    createOrg.mockResolvedValue({ id: 'org-codex' });
+
+    render(
+      <SetupWizard
+        setupStatus={{
+          engines: {
+            'claude-code': { available: true, path: '/usr/bin/claude' },
+            'codex-cli': { available: true, path: codexBin },
+          },
+        }}
+        onComplete={() => {}}
+      />,
+    );
+
+    // Welcome → Org → Configure
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await waitFor(() => expect(screen.getByText(/Create Your Organization/i)).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    });
+    await waitFor(() => expect(screen.getByText(/Configure Your Tools/i)).toBeInTheDocument());
+
+    // The Codex device-login panel is in the DOM…
+    const deviceLoginPanel = await screen.findByTestId('codex-device-login');
+    expect(deviceLoginPanel).toHaveTextContent(/ChatGPT sign-in \(device code\)/i);
+
+    // …and clicking the button hits POST /config/codex-auth/device-login.
+    const button = screen.getByRole('button', { name: /Start ChatGPT device login/i });
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    await waitFor(() => expect(deviceLoginCalls).toBe(1));
+    // The verification URL/code render after the response resolves.
+    await waitFor(() =>
+      expect(screen.getByTestId('codex-device-login')).toHaveTextContent(/WZBN-RVLM/),
+    );
+
+    openSpy.mockRestore();
   });
 });
 
