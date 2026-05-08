@@ -83,14 +83,15 @@ function StepIndicator({ currentStep, minStep = 1 }) {
   );
 }
 
-function ToggleSwitch({ enabled, onChange }) {
+function ToggleSwitch({ enabled, onChange, disabled = false }) {
   return (
     <button
       type="button"
-      onClick={() => onChange(!enabled)}
-      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-        enabled ? 'bg-emerald-500' : 'bg-gray-600'
-      }`}
+      onClick={() => !disabled && onChange(!enabled)}
+      disabled={disabled}
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+        disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'
+      } ${enabled ? 'bg-emerald-500' : 'bg-gray-600'}`}
     >
       <span
         className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
@@ -135,11 +136,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const cursorEngine = setupStatus?.engines?.['cursor-agent'] || {};
   const codexEngine = setupStatus?.engines?.['codex-cli'] || {};
 
-  const [claudePath, setClaudePath] = useState(claudeEngine.path || '');
   const [claudeEnabled, setClaudeEnabled] = useState(claudeEngine.available || false);
-  const [cursorPath, setCursorPath] = useState(cursorEngine.path || '');
   const [cursorEnabled, setCursorEnabled] = useState(cursorEngine.available || false);
-  const [codexPath, setCodexPath] = useState(codexEngine.path || '');
   const [codexEnabled, setCodexEnabled] = useState(codexEngine.available || false);
 
   const [cursorAuthState, setCursorAuthState] = useState(null);
@@ -154,11 +152,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
     const c = setupStatus?.engines?.['claude-code'];
     const u = setupStatus?.engines?.['cursor-agent'];
     const x = setupStatus?.engines?.['codex-cli'];
-    if (c?.path != null && c.path !== '') setClaudePath(c.path);
     if (typeof c?.available === 'boolean') setClaudeEnabled(c.available);
-    if (u?.path != null && u.path !== '') setCursorPath(u.path);
     if (typeof u?.available === 'boolean') setCursorEnabled(u.available);
-    if (x?.path != null && x.path !== '') setCodexPath(x.path);
     if (typeof x?.available === 'boolean') setCodexEnabled(x.available);
   }, [setupStatus]);
 
@@ -183,7 +178,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const fetchCursorAuth = useCallback(async () => {
     setCursorAuthError(null);
     try {
-      const binForProbe = cursorEnabled && cursorPath.trim().length > 0 ? cursorPath.trim() : null;
+      const binPath = (cursorEngine.path || '').trim();
+      const binForProbe = cursorEnabled && binPath.length > 0 ? binPath : null;
       const qs =
         binForProbe != null ? `?${new URLSearchParams({ cursorBin: binForProbe }).toString()}` : '';
       const res = await fetch(`${getApiBase()}/config/cursor-auth${qs}`, {
@@ -195,7 +191,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
       setCursorAuthError(err.message || 'Failed to load Cursor auth status');
       setCursorAuthState(null);
     }
-  }, [cursorEnabled, cursorPath]);
+  }, [cursorEnabled, cursorEngine.path]);
 
   const fetchCodexAuth = async () => {
     setCodexAuthError(null);
@@ -246,7 +242,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
       void fetchCursorAuth();
     }, 400);
     return () => window.clearTimeout(id);
-  }, [step, orgMode, cursorEnabled, cursorPath, fetchCursorAuth]);
+  }, [step, orgMode, cursorEnabled, cursorEngine.path, fetchCursorAuth]);
 
   const credsConfigured = !!(
     authState?.apiKey?.configured ||
@@ -322,7 +318,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
 
   const handleSaveCodexApiKey = async () => {
     const trimmedKey = codexApiKeyInput.trim();
-    const binPath = codexPath.trim();
+    const binPath = (codexEngine.path || '').trim();
     if (!trimmedKey || !binPath) return;
     setCodexApiKeySaving(true);
     setCodexApiKeyStatus(null);
@@ -445,9 +441,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
-          claudeBin: claudeEnabled ? claudePath.trim() : '',
-          cursorBin: cursorEnabled ? cursorPath.trim() : '',
-          codexBin: codexEnabled ? codexPath.trim() : '',
+          claudeBin: claudeEnabled ? (claudeEngine.path || '').trim() : '',
+          cursorBin: cursorEnabled ? (cursorEngine.path || '').trim() : '',
+          codexBin: codexEnabled ? (codexEngine.path || '').trim() : '',
         }),
       });
       if (!res.ok) {
@@ -488,9 +484,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const cursorGateOk = !cursorEnabled || cursorCredsConfigured;
   const codexGateOk = !codexEnabled || codexCredsConfigured;
   const pathsOk =
-    (!claudeEnabled || claudePath.trim()) &&
-    (!cursorEnabled || cursorPath.trim()) &&
-    (!codexEnabled || codexPath.trim());
+    (!claudeEnabled || (claudeEngine.path || '').trim()) &&
+    (!cursorEnabled || (cursorEngine.path || '').trim()) &&
+    (!codexEnabled || (codexEngine.path || '').trim());
 
   const step3CanContinue =
     orgMode !== 'remote' &&
@@ -861,7 +857,11 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   <span className="w-4 h-4 rounded-full bg-purple-500 inline-block" />
                   <span className="font-medium text-white text-sm">Claude Code</span>
                 </div>
-                <ToggleSwitch enabled={claudeEnabled} onChange={setClaudeEnabled} />
+                <ToggleSwitch
+                  enabled={claudeEnabled}
+                  onChange={setClaudeEnabled}
+                  disabled={!claudeEngine.available}
+                />
               </div>
               <div className="flex items-center gap-1.5 text-xs">
                 {claudeEngine.available ? (
@@ -888,7 +888,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                     >
                       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                     </svg>
-                    <span className="text-red-400">Not found</span>
+                    <span className="text-red-400">
+                      Not found — install the binary on the server to enable
+                    </span>
                   </>
                 )}
               </div>
@@ -901,7 +903,11 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   <span className="w-4 h-4 rounded-full bg-sky-500 inline-block" />
                   <span className="font-medium text-white text-sm">Cursor Agent</span>
                 </div>
-                <ToggleSwitch enabled={cursorEnabled} onChange={setCursorEnabled} />
+                <ToggleSwitch
+                  enabled={cursorEnabled}
+                  onChange={setCursorEnabled}
+                  disabled={!cursorEngine.available}
+                />
               </div>
               <div className="flex items-center gap-1.5 text-xs">
                 {cursorEngine.available ? (
@@ -928,7 +934,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                     >
                       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                     </svg>
-                    <span className="text-red-400">Not found</span>
+                    <span className="text-red-400">
+                      Not found — install the binary on the server to enable
+                    </span>
                   </>
                 )}
               </div>
@@ -973,7 +981,11 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   <span className="w-4 h-4 rounded-full bg-amber-500 inline-block" />
                   <span className="font-medium text-white text-sm">Codex CLI</span>
                 </div>
-                <ToggleSwitch enabled={codexEnabled} onChange={setCodexEnabled} />
+                <ToggleSwitch
+                  enabled={codexEnabled}
+                  onChange={setCodexEnabled}
+                  disabled={!codexEngine.available}
+                />
               </div>
               <div className="flex items-center gap-1.5 text-xs">
                 {codexEngine.available ? (
@@ -1000,7 +1012,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                     >
                       <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                     </svg>
-                    <span className="text-red-400">Not found</span>
+                    <span className="text-red-400">
+                      Not found — install the binary on the server to enable
+                    </span>
                   </>
                 )}
               </div>
@@ -1039,7 +1053,11 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                     <button
                       type="button"
                       onClick={handleSaveCodexApiKey}
-                      disabled={!codexApiKeyInput.trim() || !codexPath.trim() || codexApiKeySaving}
+                      disabled={
+                        !codexApiKeyInput.trim() ||
+                        !(codexEngine.path || '').trim() ||
+                        codexApiKeySaving
+                      }
                       className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition-colors"
                     >
                       {codexApiKeySaving ? <Loader2 size={12} className="animate-spin" /> : null}

@@ -354,6 +354,81 @@ describe('SetupWizard — Step 3 Claude credential gate', () => {
     expect(screen.queryByPlaceholderText(/sk-ant-api03/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /save & continue/i })).not.toBeDisabled();
   });
+
+  it('renders credentials block before engine cards (e)', async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (typeof url === 'string' && url.includes('/config/claude-auth')) {
+        return jsonResponse({
+          oauth: { loggedIn: false },
+          apiKey: { configured: true, source: 'env' },
+          oauthToken: { configured: false },
+          activeMethod: 'api-key',
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <SetupWizard
+        setupStatus={{ engines: { 'claude-code': { available: true, path: '/usr/bin/claude' } } }}
+        onComplete={() => {}}
+      />,
+    );
+    await advanceToStep3();
+    await waitFor(() =>
+      expect(screen.getByTestId('claude-credentials')).toHaveTextContent(/API key configured/i),
+    );
+
+    const creds = screen.getByTestId('claude-credentials');
+    const claudeCard = screen.getByText('Claude Code').closest('div[class*="bg-gray-800"]');
+    // compareDocumentPosition: if creds precedes claudeCard, result has DOCUMENT_POSITION_FOLLOWING (4)
+    expect(
+      creds.compareDocumentPosition(claudeCard) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('disables engine toggle when binary is not detected (f)', async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (typeof url === 'string' && url.includes('/config/claude-auth')) {
+        return jsonResponse({
+          oauth: { loggedIn: false },
+          apiKey: { configured: false },
+          oauthToken: { configured: false },
+          activeMethod: null,
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <SetupWizard
+        // claude-code has no path / not available; cursor-agent is available
+        setupStatus={{
+          engines: {
+            'claude-code': { available: false, path: '' },
+            'cursor-agent': { available: true, path: '/usr/bin/cursor-agent' },
+          },
+        }}
+        onComplete={() => {}}
+      />,
+    );
+    await advanceToStep3();
+
+    // Claude toggle: binary not found → disabled
+    const claudeCard = screen.getByText('Claude Code').closest('div[class*="bg-gray-800"]');
+    const claudeToggle = claudeCard.querySelector('button[disabled]');
+    expect(claudeToggle).not.toBeNull();
+
+    // Cursor toggle: binary found → not disabled
+    const cursorCard = screen.getByText('Cursor Agent').closest('div[class*="bg-gray-800"]');
+    const cursorToggle = cursorCard.querySelector('button[disabled]');
+    expect(cursorToggle).toBeNull();
+
+    // "Not found" row shows the install hint
+    expect(claudeCard).toHaveTextContent(/install the binary on the server to enable/i);
+  });
 });
 
 describe('SetupWizard — Step 3 Cursor path auth probe', () => {
