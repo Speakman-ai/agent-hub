@@ -202,6 +202,18 @@ variable "github_repo_name" {
   default     = "agent-hub"
 }
 
+variable "enable_ci_ssm_deploy_after_ecr_push" {
+  description = "If true, attach an inline IAM policy to `github_oidc_role_name` so GitHub Actions can run SSM SendCommand against `ci_ssm_deploy_instance_id` (restart `agenthub-server.service` after each ECR :main push). Enable only in one workspace per account to avoid duplicate policy management."
+  type        = bool
+  default     = false
+}
+
+variable "ci_ssm_deploy_instance_id" {
+  description = "EC2 instance id (e.g. i-0abc...) in `aws_region` that receives `systemctl restart agenthub-server` from CI. Empty skips the policy. Used only when `enable_ci_ssm_deploy_after_ecr_push` is true; must match the instance in .github/workflows/push-image.yml."
+  type        = string
+  default     = ""
+}
+
 # --- Dedicated ALB (ops/terraform/alb.tf) — TLS at ALB, HTTP to Agent Hub on the instance ---
 
 variable "enable_dedicated_alb" {

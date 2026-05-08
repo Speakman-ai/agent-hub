@@ -40,6 +40,12 @@ alb_ingress_cidr_blocks = ["0.0.0.0/0"]
 # manage it — `terraform destroy` here should never break CI for other envs.
 manage_github_oidc_role = false
 
+# After CI pushes :main to ECR Public, GitHub Actions restarts agenthub-server on
+# this instance (SSM). Requires `terraform apply` once to attach the IAM policy
+# to role agent-hub-ci-ecr-push. Instance id must match push-image.yml.
+enable_ci_ssm_deploy_after_ecr_push = true
+ci_ssm_deploy_instance_id           = "i-08b54d5b72e54baed"
+
 # First-launch admin credentials. The server writes a random password to
 # /home/agenthub/.agent-hub/data/initial-credentials.txt (mode 0600) when
 # AGENT_HUB_DEFAULT_PASSWORD=auto. Retrieve it after first boot via SSM:
