@@ -216,6 +216,19 @@ tempted to paste secrets into chat or kanban cards.
 `type`, `docs_url`). Registry import and `POST /api/skills/registry`
 reject malformed blocks.
 
+**Schema resolution (`PUT` validation).** Before accepting a key/value, the
+server loads the skill's `credentials:` block in this order: **each loaded
+project workspace** `{project.ahw}/skills/{skill_id}` (directory +
+`SKILL.md`, or a legacy flat `.md` — same layout as
+`GET /api/agents/:agentId/skills/:skillId`), **then** bundled
+`server/default-skills/{skill_id}/SKILL.md`, **then** the matching
+`skill_registry` row. Hydrated `project.ahw` comes from the in-memory
+projects list (typically `<dataDir>/projects/<id>`).
+
+**Optional keys.** When a credential is `required: false`, an **empty or
+whitespace-only** `value` yields **no DB row** if none exists yet — the
+handler responds with `{ skipped: true, credential: null }`.
+
 **Storage & crypto.** Rows in `orgs.db` table `user_skill_credentials`
 (`user_skill_credential_audit` for `upsert` / `delete`). Ciphertext uses
 `encryptSecret` / `decryptSecret` from `server/pr-env-store.ts` (same

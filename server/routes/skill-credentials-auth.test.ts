@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import express from 'express';
 import supertest from 'supertest';
 import { tmpdir } from 'os';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import path from 'path';
 
 vi.mock('../pr-env-store.js', () => ({
@@ -17,33 +17,32 @@ vi.mock('../pr-env-store.js', () => ({
   },
 }));
 
-vi.mock('../skill-credentials-resolve.js', () => ({
-  readCredentialsSchemaForSkill: () => ({
-    credentials: [
-      {
-        name: 'GH_TOKEN',
-        label: 'GitHub PAT',
-        description: '',
-        required: false,
-        type: 'secret',
+var _skillCredTestRoot = '';
+var _skillCredApiKeyOverride: string | null = null;
+
+vi.mock('../config.js', async () => {
+  const actual = await vi.importActual<typeof import('../config.js')>('../config.js');
+  const base = actual.default;
+  return {
+    default: new Proxy(base, {
+      get(t, prop, recv) {
+        if (prop === 'dataDir') return _skillCredTestRoot || Reflect.get(t, 'dataDir', recv);
+        if (prop === 'projectsDir')
+          return _skillCredTestRoot
+            ? path.join(_skillCredTestRoot, 'persist', 'projects')
+            : Reflect.get(t, 'projectsDir', recv);
+        if (prop === 'apiKey')
+          return _skillCredApiKeyOverride !== null
+            ? _skillCredApiKeyOverride
+            : Reflect.get(t, 'apiKey', recv);
+        const v = Reflect.get(t, prop, recv);
+        return typeof v === 'function' ? v.bind(t) : v;
       },
-    ],
-    error: null,
-  }),
-}));
+    }),
+  };
+});
 
-let TMP_DIR = '';
-const mockConfig = {
-  apiKey: null as string | null,
-  anthropicApiKey: null as string | null,
-  claudeCodeOAuthToken: null as string | null,
-  get dataDir() {
-    return TMP_DIR;
-  },
-};
-
-vi.mock('../config.js', () => ({ default: mockConfig }));
-
+const { reloadProjects } = await import('../project-model.js');
 const { default: createAuthRoutes } = await import('./auth.js');
 const { authMiddleware } = await import('../auth.js');
 const { setAuthFilePathForTests, reloadAuthRecord } = await import('../auth-store.js');
@@ -66,20 +65,23 @@ async function setupOwner(app: ReturnType<typeof buildGatedApp>): Promise<string
 }
 
 beforeEach(() => {
-  TMP_DIR = mkdtempSync(path.join(tmpdir(), 'skill-cred-test-'));
-  setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
-  setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
+  _skillCredTestRoot = mkdtempSync(path.join(tmpdir(), 'skill-cred-test-'));
+  _skillCredApiKeyOverride = null;
+  mkdirSync(path.join(_skillCredTestRoot, 'persist', 'projects'), { recursive: true });
+  writeFileSync(path.join(_skillCredTestRoot, 'projects.json'), '[]', 'utf8');
+  reloadProjects(_skillCredTestRoot);
+
+  setAuthFilePathForTests(path.join(_skillCredTestRoot, 'auth.json'));
+  setOrgsDbPathForTests(path.join(_skillCredTestRoot, 'orgs.db'));
   initOrgsDb();
-  writeFileSync(path.join(TMP_DIR, 'projects.json'), '[]');
   updateOrg('default', { mode: 'remote' });
   reloadAuthRecord();
-  mockConfig.apiKey = null;
 });
 
 describe('/api/auth/me/skill-credentials', () => {
   it('returns 401 for api-key-only callers (no uid)', async () => {
     const app = buildGatedApp();
-    mockConfig.apiKey = 'sekrit';
+    _skillCredApiKeyOverride = 'sekrit';
     const res = await supertest(app)
       .get('/api/auth/me/skill-credentials')
       .set('x-api-key', 'sekrit');
@@ -119,6 +121,81 @@ describe('/api/auth/me/skill-credentials', () => {
       .get('/api/auth/me/skill-credentials')
       .set('Authorization', `Bearer ${token}`);
     expect(after.body.credentials).toHaveLength(0);
+  });
+
+  it('accepts PUT for credential keys declared on a workspace-only skill', async () => {
+    mkdirSync(path.join(_skillCredTestRoot, 'repo'), { recursive: true });
+    const project = {
+      id: 'p1',
+      name: 'Proj',
+      cwd: path.join(_skillCredTestRoot, 'repo'),
+      agents: [
+        {
+          id: 'a1',
+          name: 'Bot',
+          engine: 'claude-code',
+          cwd: path.join(_skillCredTestRoot, 'repo'),
+        },
+      ],
+    };
+
+    writeFileSync(
+      path.join(_skillCredTestRoot, 'projects.json'),
+      JSON.stringify([project]) + '\n',
+      'utf8',
+    );
+    reloadProjects(_skillCredTestRoot);
+
+    const ahw = path.join(_skillCredTestRoot, 'persist', 'projects', 'p1');
+    const wsSkill = path.join(ahw, 'skills', 'ws-only-skill');
+    mkdirSync(wsSkill, { recursive: true });
+    writeFileSync(
+      path.join(wsSkill, 'SKILL.md'),
+      `---
+name: ws-only-skill
+credentials:
+  - name: WORKSPACE_SECRET
+    label: Token
+    required: true
+    type: secret
+---
+`,
+      'utf8',
+    );
+
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+    const put = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'ws-only-skill',
+        key_name: 'WORKSPACE_SECRET',
+        value: 'secret-from-worktree',
+      });
+    expect(put.status).toBe(200);
+    expect(put.body.credential.key_name).toBe('WORKSPACE_SECRET');
+  });
+
+  it('noop on optional credential save with empty value when no stored row exists', async () => {
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+    const put = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'github',
+        key_name: 'GH_TOKEN',
+        value: '   ',
+      });
+    expect(put.status).toBe(200);
+    expect(put.body.skipped).toBe(true);
+    expect(put.body.credential).toBeNull();
+
+    const listed = await supertest(app)
+      .get('/api/auth/me/skill-credentials?skillId=github')
+      .set('Authorization', `Bearer ${token}`);
+    expect(listed.body.credentials).toHaveLength(0);
   });
 
   it('rejects PUT for unknown credential key names', async () => {

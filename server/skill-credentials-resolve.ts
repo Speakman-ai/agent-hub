@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, statSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 import { fileURLToPath } from 'url';
@@ -12,11 +12,53 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILL_ROOT = path.join(__dirname, 'default-skills');
 
+export interface ReadCredentialsSchemaOptions {
+  /**
+   * Project agent-workspace dirs (`project.ahw`). Each `{ahw}/skills/{skillId}` is
+   * tried before bundled defaults — same layout as `GET /api/agents/:agentId/skills/:skillId`.
+   */
+  projectWorkspaces?: readonly string[];
+}
+
 /**
- * Parse `credentials` declaration for a skill id: bundled default first, then
+ * Read SKILL.md under `{ahw}/skills/{skillId}` (directory + SKILL.md, or legacy flat .md path).
+ */
+function tryParseCredentialsFromProjectWorkspace(
+  ahw: string,
+  skillId: string,
+): ParsedCredentials | null {
+  const root = ahw.trim();
+  if (!root) return null;
+  const skillPath = path.join(root, 'skills', skillId);
+  if (!existsSync(skillPath)) return null;
+  try {
+    if (statSync(skillPath).isDirectory()) {
+      const skillMd = path.join(skillPath, 'SKILL.md');
+      if (!existsSync(skillMd)) return null;
+      const raw = readFileSync(skillMd, 'utf8');
+      return extractCredentialsFromSkillContent(raw);
+    }
+    const raw = readFileSync(skillPath, 'utf8');
+    return extractCredentialsFromSkillContent(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse `credentials` declaration for a skill id:
+ * loaded project workspaces (when provided), bundled default-skills dir, then
  * the central skill_registry row contents.
  */
-export function readCredentialsSchemaForSkill(skillId: string): ParsedCredentials {
+export function readCredentialsSchemaForSkill(
+  skillId: string,
+  opts?: ReadCredentialsSchemaOptions,
+): ParsedCredentials {
+  for (const ahw of opts?.projectWorkspaces ?? []) {
+    const fromProject = tryParseCredentialsFromProjectWorkspace(ahw, skillId);
+    if (fromProject !== null) return fromProject;
+  }
+
   const defaultPath = path.join(DEFAULT_SKILL_ROOT, skillId, 'SKILL.md');
   if (existsSync(defaultPath)) {
     const raw = readFileSync(defaultPath, 'utf8');

@@ -42,6 +42,20 @@ function appendAudit(opts: {
   ).run(uuidv4(), opts.userId, opts.skillId, opts.keyName, opts.action, opts.actorUserId);
 }
 
+export function existsUserSkillCredential(
+  userId: string,
+  skillId: string,
+  keyName: string,
+): boolean {
+  const db = getOrgsDb();
+  const row = db
+    .prepare(
+      'SELECT 1 as ok FROM user_skill_credentials WHERE user_id = ? AND skill_id = ? AND key_name = ? LIMIT 1',
+    )
+    .get(userId, skillId, keyName) as { ok: number } | undefined;
+  return !!row;
+}
+
 export function upsertUserSkillCredential(opts: {
   userId: string;
   skillId: string;

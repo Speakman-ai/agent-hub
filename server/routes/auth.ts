@@ -79,10 +79,28 @@ import {
   listMaskedUserSkillCredentials,
   upsertUserSkillCredential,
   deleteUserSkillCredential,
+  existsUserSkillCredential,
 } from '../skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from '../skill-credentials-resolve.js';
+import { getProjects } from '../project-model.js';
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
+
+function skillCredentialWorkspaceRoots(): readonly string[] {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  try {
+    for (const project of getProjects()) {
+      const w = typeof project.ahw === 'string' ? project.ahw.trim() : '';
+      if (!w || seen.has(w)) continue;
+      seen.add(w);
+      roots.push(w);
+    }
+  } catch {
+    /* best-effort: fall through to bundled / registry-only resolution */
+  }
+  return roots;
+}
 
 function issueToken(user: { id: string; username: string }, role: Role, jwtSecret: string) {
   const token = signJwt(user.username, jwtSecret, {
@@ -570,7 +588,9 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       return;
     }
 
-    const parsed = readCredentialsSchemaForSkill(skill_id);
+    const parsed = readCredentialsSchemaForSkill(skill_id, {
+      projectWorkspaces: skillCredentialWorkspaceRoots(),
+    });
     if (parsed.error) {
       res.status(400).json({ error: `invalid credential schema for skill: ${parsed.error}` });
       return;
@@ -588,6 +608,14 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     }
     if (spec.required && value.trim().length === 0) {
       res.status(400).json({ error: `Credential "${key_name}" is required` });
+      return;
+    }
+    if (
+      !spec.required &&
+      value.trim().length === 0 &&
+      !existsUserSkillCredential(authedReq.authUserId, skill_id, key_name)
+    ) {
+      res.json({ credential: null, skipped: true as const });
       return;
     }
 

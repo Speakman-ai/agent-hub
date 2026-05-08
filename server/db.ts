@@ -1587,6 +1587,10 @@ function initDb(dataDir: string): void {
 
   const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get() as { count: number };
   if (cronCount.count === 0) {
+    const seedCronCwd =
+      typeof config.defaultCwd === 'string' && config.defaultCwd.trim() !== ''
+        ? config.defaultCwd
+        : process.cwd();
     const insertCron = db.prepare(
       'INSERT INTO crons (name, schedule, prompt, cwd, enabled) VALUES (?, ?, ?, ?, ?)',
     );
@@ -1594,14 +1598,14 @@ function initDb(dataDir: string): void {
       'dependabot-merger',
       '0 */6 * * *',
       'Check all repos (mcsteen/surveytracker, speakmanra/relic-book, speakmanra/homeinspector, speakmanra/pipeline-engine) for open Dependabot PRs using gh CLI. If any have passing CI, merge them with gh pr merge --squash.',
-      config.defaultCwd,
+      seedCronCwd,
       1,
     );
     insertCron.run(
       'job-search-monitor',
       '0 8 * * 1-5',
       'Search for senior full-stack software engineer remote jobs. Check Gmail for any job application responses. Search LinkedIn for new postings matching: Python, Django, TypeScript, React, AWS, healthcare. Summarize findings.',
-      config.defaultCwd,
+      seedCronCwd,
       0,
     );
   }
