@@ -17,6 +17,21 @@ interface McpServerInput {
   cwd?: string;
 }
 
+/** JSON booleans only — rejects strings/numbers so `Boolean("false")` is never applied. */
+function validateOptionalBrowserToolsEnabled(body: Record<string, unknown>):
+  | {
+      ok: true;
+    }
+  | {
+      ok: false;
+      error: string;
+    } {
+  const v = body.browserToolsEnabled;
+  if (v === undefined) return { ok: true };
+  if (v === true || v === false) return { ok: true };
+  return { ok: false, error: 'browserToolsEnabled must be a boolean' };
+}
+
 export default function createAgentRoutes(deps: RouteDeps): Router {
   const {
     stmts,
@@ -86,6 +101,10 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     const found = findAgent(req.params.agentId as string);
     if (!found) return res.status(404).json({ error: 'Agent not found' });
     const { agent } = found;
+    const body = req.body as Record<string, unknown>;
+    const btValid = validateOptionalBrowserToolsEnabled(body);
+    if (!btValid.ok) return res.status(400).json({ error: btValid.error });
+
     const allowed = [
       'name',
       'engine',
@@ -99,17 +118,22 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       'role',
       'canReview',
       'delegationEnabled',
-      'browserToolsEnabled',
     ] as const;
     for (const key of allowed) {
-      if ((req.body as Record<string, unknown>)[key] !== undefined)
-        (agent as Record<string, unknown>)[key] = (req.body as Record<string, unknown>)[key];
+      if (body[key] !== undefined) (agent as Record<string, unknown>)[key] = body[key];
+    }
+    if (body.browserToolsEnabled !== undefined) {
+      agent.browserToolsEnabled = body.browserToolsEnabled as boolean;
     }
     saveProjects();
     res.json(getEnrichedAgent(agent.id));
   });
 
   router.post('/api/agents', (req: Request, res: Response) => {
+    const body = req.body as Record<string, unknown>;
+    const btValid = validateOptionalBrowserToolsEnabled(body);
+    if (!btValid.ok) return res.status(400).json({ error: btValid.error });
+
     const {
       id,
       projectId,
@@ -121,7 +145,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       heartbeat,
       role,
       browserToolsEnabled,
-    } = req.body as Record<string, unknown>;
+    } = body;
     if (!id || !/^[a-zA-Z0-9-]+$/.test(id as string)) {
       return res.status(400).json({ error: 'id is required and must be alphanumeric+hyphens' });
     }
@@ -145,7 +169,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     };
     if (role) agent.role = role as string;
     if (browserToolsEnabled !== undefined) {
-      agent.browserToolsEnabled = Boolean(browserToolsEnabled);
+      agent.browserToolsEnabled = browserToolsEnabled as boolean;
     }
     mkdirSync(path.join(project.ahw, 'agents', agent.id), { recursive: true });
     project.agents.push(agent);
