@@ -1215,874 +1215,580 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
   }
 
   async function handleChat(ws: WebSocketLike | null, msg: InternalChatMessage): Promise<void> {
-    const { agentId, sessionId, content, images, hookSpecificOutput } = msg;
-    const isAutoContinuation = msg._autoContinuation === true;
-    const continuationDepth = msg._continuationDepth || 0;
-    const attachments: string | null = images && images.length > 0 ? JSON.stringify(images) : null;
+    const persistHook = msg._onUserMessagePersisted;
+    let persistReported = false;
+    const reportUserMessagePersisted = (accepted: boolean) => {
+      if (!persistHook || persistReported) return;
+      persistReported = true;
+      persistHook(accepted);
+    };
 
-    const found = findAgent(agentId);
-    if (!found) {
-      if (ws) ws.send(JSON.stringify({ type: 'error', error: `Unknown agent: ${agentId}` }));
-      return;
-    }
-    const { project, agent } = found;
-    const enrichedAgent = getEnrichedAgent(agentId);
+    try {
+      const { agentId, sessionId, content, images, hookSpecificOutput } = msg;
+      const isAutoContinuation = msg._autoContinuation === true;
+      const continuationDepth = msg._continuationDepth || 0;
+      const attachments: string | null =
+        images && images.length > 0 ? JSON.stringify(images) : null;
 
-    // ── Bug-report reroute guard ──────────────────────────────────
-    // User-request bug reports (payloads starting with "## Bug Report")
-    // must be owned by the project's intake agent — never a lead,
-    // specialist, reviewer, or docs agent. If a bug-report payload is
-    // addressed to anyone else, dispatch a fresh session for the intake
-    // agent and notify the caller. See `server/bug-report-reroute.ts`.
-    const intakeTarget = resolveBugReportReroute(project, agent, content, {
-      fromQueue: msg._fromQueue,
-      alreadyRerouted: msg._reroutedFromBugReport,
-    });
-    if (intakeTarget) {
-      const intakeSessionId = uuidv4();
-      const intakeEngine = intakeTarget.engine || 'claude-code';
-      const intakeModel =
-        (intakeTarget as AgentWithModel).model || defaultModelForEngine(intakeEngine);
-      const title = extractBugReportTitle(content) || 'Bug Report';
-      const sessionName = `[Bug] ${title.substring(0, 80)}`;
-
-      try {
-        const intakeWt = defaultSessionUseWorktreeFlag(project);
-        stmts.createSession.run(
-          intakeSessionId,
-          intakeTarget.id,
-          sessionName,
-          intakeEngine,
-          intakeModel,
-          intakeWt,
-          0,
-          1,
-        );
-        // Bug-report reroute: rerouted intake session inherits ownership from
-        // the user's original session so the bug-report transcript stays
-        // attributable to the same user who filed it.
-        inheritOwnerFromSession(intakeSessionId, sessionId);
-        const taskId = uuidv4();
-        stmts.insertBackgroundTask.run(taskId, intakeSessionId, intakeTarget.id, content);
-      } catch (err) {
-        console.error('[Bug Reroute] Failed to create intake session:', (err as Error).message);
-        if (ws) {
-          ws.send(
-            JSON.stringify({
-              type: 'error',
-              sessionId,
-              error: 'Failed to reroute bug report to intake agent.',
-            }),
-          );
-        }
+      const found = findAgent(agentId);
+      if (!found) {
+        if (ws) ws.send(JSON.stringify({ type: 'error', error: `Unknown agent: ${agentId}` }));
         return;
       }
+      const { project, agent } = found;
+      const enrichedAgent = getEnrichedAgent(agentId);
 
-      if (ws) {
-        ws.send(
-          JSON.stringify({
-            type: 'bug_report_rerouted',
-            originalAgentId: agentId,
-            originalSessionId: sessionId,
-            intakeAgentId: intakeTarget.id,
-            intakeSessionId,
-            message: `Bug reports are handled by ${intakeTarget.name || intakeTarget.id}. Dispatched a fresh session there.`,
-          }),
-        );
-      }
-
-      setImmediate(() => {
-        try {
-          const result = handleChat(null, {
-            type: 'chat',
-            agentId: intakeTarget.id,
-            sessionId: intakeSessionId,
-            content,
-            _reroutedFromBugReport: true,
-          } as InternalChatMessage);
-          if (result && typeof (result as Promise<unknown>).catch === 'function') {
-            (result as Promise<unknown>).catch((err: Error) => {
-              console.error(
-                `[Bug Reroute] handleChat failed for intake session ${intakeSessionId}:`,
-                err.message,
-              );
-            });
-          }
-        } catch (err) {
-          console.error(
-            `[Bug Reroute] handleChat threw for intake session ${intakeSessionId}:`,
-            (err as Error).message,
-          );
-        }
+      // ── Bug-report reroute guard ──────────────────────────────────
+      // User-request bug reports (payloads starting with "## Bug Report")
+      // must be owned by the project's intake agent — never a lead,
+      // specialist, reviewer, or docs agent. If a bug-report payload is
+      // addressed to anyone else, dispatch a fresh session for the intake
+      // agent and notify the caller. See `server/bug-report-reroute.ts`.
+      const intakeTarget = resolveBugReportReroute(project, agent, content, {
+        fromQueue: msg._fromQueue,
+        alreadyRerouted: msg._reroutedFromBugReport,
       });
-      return;
-    }
+      if (intakeTarget) {
+        const intakeSessionId = uuidv4();
+        const intakeEngine = intakeTarget.engine || 'claude-code';
+        const intakeModel =
+          (intakeTarget as AgentWithModel).model || defaultModelForEngine(intakeEngine);
+        const title = extractBugReportTitle(content) || 'Bug Report';
+        const sessionName = `[Bug] ${title.substring(0, 80)}`;
 
-    const slashResult = resolveSlashSkill(agent, content, project);
-    if (slashResult?.error) {
-      if (ws) ws.send(JSON.stringify({ type: 'error', sessionId, error: slashResult.error }));
-      return;
-    }
-
-    let cliContent: string = content;
-
-    let session = stmts.getSession.get(sessionId) as SessionRow | undefined;
-    if (!session) {
-      const initialEngine = agent.engine || 'claude-code';
-      const orphanWt = defaultSessionUseWorktreeFlag(project);
-      stmts.createSession.run(
-        sessionId,
-        agentId,
-        `Session ${new Date().toLocaleString()}`,
-        initialEngine,
-        (agent as AgentWithModel).model || defaultModelForEngine(initialEngine),
-        orphanWt,
-        0,
-        1,
-      );
-      // Orphan-session auto-create: the WebSocket handshake validated the
-      // caller's identity; attribute the new row to that user (or fall back
-      // to the org owner in the local-bypass / system-spawn path).
-      setSessionOwner(sessionId, ownerUserIdForChatSpawn(ws));
-      session = stmts.getSession.get(sessionId) as SessionRow | undefined;
-    }
-
-    if (session) {
-      persistLegacyWikiHybridGateIfNeeded(session, sessionId);
-    }
-
-    const existingTask = stmts.getActiveTask.get(sessionId) as ActiveTaskRow | undefined;
-    const isDelegating = activeDelegationSessions.has(sessionId);
-
-    if ((existingTask || isDelegating) && !msg._fromQueue) {
-      if (isAutoContinuation) {
-        const retries = msg._continuationRetry ?? 0;
-        const plan = planAutoContinuationRetry({ retries });
-        if (plan.action === 'retry') {
-          console.warn(
-            `[auto-continuation] session ${sessionId}: active task or delegation present; ` +
-              `scheduling retry ${plan.nextRetry}/${AUTO_CONTINUATION_MAX_RETRIES}`,
+        try {
+          const intakeWt = defaultSessionUseWorktreeFlag(project);
+          stmts.createSession.run(
+            intakeSessionId,
+            intakeTarget.id,
+            sessionName,
+            intakeEngine,
+            intakeModel,
+            intakeWt,
+            0,
+            1,
           );
-          setTimeout(() => {
-            void handleChat(null, {
-              ...msg,
-              _continuationRetry: plan.nextRetry,
-            } as InternalChatMessage);
-          }, 500);
-        } else {
-          console.error(
-            `[auto-continuation] session ${sessionId}: exhausted ${AUTO_CONTINUATION_MAX_RETRIES} retries; dropping continuation.`,
-          );
-        }
-        return;
-      }
-      const isInterrupt = msg.interrupt === true;
-
-      if (!isInterrupt) {
-        const currentQueue = stmts.getQueuedMessages.all(sessionId) as MessageQueueRow[];
-        if (currentQueue.length >= MAX_QUEUE_SIZE) {
-          if (ws)
+          // Bug-report reroute: rerouted intake session inherits ownership from
+          // the user's original session so the bug-report transcript stays
+          // attributable to the same user who filed it.
+          inheritOwnerFromSession(intakeSessionId, sessionId);
+          const taskId = uuidv4();
+          stmts.insertBackgroundTask.run(taskId, intakeSessionId, intakeTarget.id, content);
+        } catch (err) {
+          console.error('[Bug Reroute] Failed to create intake session:', (err as Error).message);
+          if (ws) {
             ws.send(
               JSON.stringify({
                 type: 'error',
                 sessionId,
-                error: `Queue is full (max ${MAX_QUEUE_SIZE} messages). Wait for current task to complete.`,
+                error: 'Failed to reroute bug report to intake agent.',
               }),
             );
+          }
           return;
         }
-      }
 
-      const queueMsgId = uuidv4();
-
-      let position: number;
-      if (isInterrupt) {
-        const minPos = stmts.getMinQueuePosition.get(sessionId) as
-          | { min_pos: number | null }
-          | undefined;
-        position = (minPos?.min_pos ?? 0) - 1;
-      } else {
-        const maxPos = stmts.getMaxQueuePosition.get(sessionId) as
-          | { max_pos: number | null }
-          | undefined;
-        position = (maxPos?.max_pos ?? -1) + 1;
-      }
-
-      stmts.addMessage.run(queueMsgId, sessionId, 'user', content, null, null, attachments, null);
-      stmts.touchSession.run(sessionId);
-
-      stmts.enqueueMessage.run(queueMsgId, sessionId, agentId, content, attachments, position);
-
-      broadcast({
-        type: 'message',
-        message: {
-          id: queueMsgId,
-          session_id: sessionId,
-          role: 'user',
-          content,
-          attachments,
-          queued: !isInterrupt,
-          interrupted: isInterrupt,
-          created_at: new Date().toISOString(),
-        },
-      });
-
-      broadcast({
-        type: 'queue_updated',
-        sessionId,
-        queue: stmts.getQueuedMessages.all(sessionId),
-      });
-
-      if (isInterrupt) {
-        console.log(`[chat] Interrupt received for session ${sessionId} — stopping current task`);
-        const proc = activeProcesses.get(sessionId);
-        if (proc) {
-          killProcessGroup(proc, 'SIGTERM');
-        }
-        if (isDelegating) {
-          handleDelegationCancel(sessionId);
-          setTimeout(() => drainQueue(sessionId), 500);
-        }
-        broadcast({ type: 'interrupted', sessionId });
-      }
-
-      return;
-    }
-
-    let userMsgId: string | null = null;
-    if (msg._fromQueue) {
-      userMsgId = msg._existingMsgId!;
-      broadcast({ type: 'queue_item_processing', sessionId, messageId: userMsgId });
-    } else if (!isAutoContinuation) {
-      userMsgId = uuidv4();
-      stmts.addMessage.run(userMsgId, sessionId, 'user', content, null, null, attachments, null);
-      stmts.touchSession.run(sessionId);
-
-      broadcast({
-        type: 'message',
-        message: {
-          id: userMsgId,
-          session_id: sessionId,
-          role: 'user',
-          content,
-          attachments,
-          created_at: new Date().toISOString(),
-        },
-      });
-    }
-
-    const priorMessages = (stmts.getMessages.all(sessionId) as MessageRow[]).filter((m) =>
-      userMsgId ? m.id !== userMsgId : true,
-    );
-    const isFirstMessage = priorMessages.length === 0;
-
-    const engine: string = session!.engine || 'claude-code';
-    const model: string = session!.model || DEFAULT_MODEL;
-    const paths = resolveProjectPaths(project as Project, agent as Agent);
-    const slashAug = augmentChatTurnForSlashSkill({
-      slashResult,
-      project: project as Project,
-      agent: agent as Agent,
-      sessionId,
-      stmts: stmts as Stmts,
-      broadcast,
-      isAutoContinuation,
-      content,
-    });
-    const slashSkillSuffix = slashAug.slashSkillSuffix;
-    cliContent = slashAug.cliContent;
-
-    let routedSkillSuffix = '';
-    const loadedRoutedSkillIds = new Set<string>();
-    if (!slashResult && !isAutoContinuation) {
-      const availableSkills = listEnabledSkills(agent.id, paths.skillsDir);
-      // Seed the dedupe set from the pending-skill suffix so we don't
-      // re-inject a skill the previous `<agenthub:skill>` block already
-      // queued. The header format is `## Loaded Skill: <skill-id>` —
-      // a best-effort extraction; missing match just means no dedupe.
-      const pendingRaw = session!.pending_skill_context?.trim() || '';
-      if (pendingRaw) {
-        const m = pendingRaw.match(/^## Loaded Skill:\s*([\w.-]+)/m);
-        if (m) loadedRoutedSkillIds.add(m[1]!);
-      }
-      const routedMatches = routeSkillsFromMessage({
-        message: content,
-        skills: availableSkills,
-        agentId: agent.id,
-        agentSystemPrompt: agent.systemPrompt || '',
-        cwd: session!.worktree_path || project.cwd,
-        projectSlug: project.id,
-      });
-      const injections: string[] = [];
-      for (const routed of routedMatches) {
-        if (loadedRoutedSkillIds.has(routed.skillId)) continue;
-        const injection = loadSkillByName({
-          name: routed.skillId,
-          reason: `auto-route: ${routed.reason}`,
-          paths: { skillsDir: paths.skillsDir },
-          sessionId,
-          stmts: stmts as Stmts,
-          broadcast,
-        });
-        injections.push(injection);
-        loadedRoutedSkillIds.add(routed.skillId);
-      }
-      if (injections.length > 0) {
-        routedSkillSuffix = `\n\n${injections.join('\n\n')}`;
-      }
-    }
-
-    let enrichedPrompt = buildEnrichedPrompt(
-      project as ProjectWithCommands,
-      agent as AgentWithModel,
-      {
-        useWorktree: !!session!.use_worktree,
-        isFirstMessage,
-        sessionId,
-        orchestrationPhase: session!.orchestration_phase ?? null,
-        orchestrationMetaJson: session!.orchestration_meta ?? null,
-        _getEnrichedAgent: getEnrichedAgent,
-      },
-    );
-    const { suffix: pendingSkillSuffix, forceSystemPromptThisTurn } = consumePendingSkillInjection(
-      session!.pending_skill_context,
-      () => stmts.updateSessionPendingSkillContext.run(null, sessionId),
-    );
-    if (pendingSkillSuffix) enrichedPrompt += pendingSkillSuffix;
-    if (slashSkillSuffix) enrichedPrompt += slashSkillSuffix;
-    if (routedSkillSuffix) enrichedPrompt += routedSkillSuffix;
-
-    const projectId =
-      (project as ProjectWithCommands & { id?: string }).id ||
-      (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
-      '';
-
-    let linkedEpicForBudgets: KanbanEpicRow | null = null;
-    try {
-      const cardRow = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
-        | KanbanCardRow
-        | undefined;
-      if (cardRow?.epic_id) {
-        linkedEpicForBudgets =
-          (stmts.getKanbanEpic.get(cardRow.epic_id) as KanbanEpicRow | undefined) ?? null;
-      }
-    } catch {
-      linkedEpicForBudgets = null;
-    }
-    const orchestrationBudgets = resolveOrchestrationBudgets(
-      project as Project,
-      linkedEpicForBudgets,
-    );
-    const maxWikiSession = orchestrationBudgets.maxWikiRagCallsPerSession;
-
-    if (projectId && !isAutoContinuation) {
-      const wikiRag = await runWikiHybridRagForUserTurn(projectId, content, {
-        wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
-          session!.wiki_hybrid_rag_consumed,
-          session!.wiki_hybrid_rag_budget_version,
-          maxWikiSession,
-        ),
-        maxCallsPerSession: maxWikiSession,
-        slashSkillActive: !!slashResult,
-      });
-      if (wikiRag.promptSuffix) {
-        enrichedPrompt += wikiRag.promptSuffix;
-      }
-      if (wikiRag.logWarning) {
-        console.warn(`[wiki-rag] retrieval failed for session ${sessionId}: ${wikiRag.logWarning}`);
-      }
-      if (wikiRag.shouldIncrementWikiHybridRagUsage) {
-        try {
-          const next = nextWikiHybridRagRowAfterIncrement(
-            session!.wiki_hybrid_rag_consumed,
-            session!.wiki_hybrid_rag_budget_version,
-            maxWikiSession,
+        if (ws) {
+          ws.send(
+            JSON.stringify({
+              type: 'bug_report_rerouted',
+              originalAgentId: agentId,
+              originalSessionId: sessionId,
+              intakeAgentId: intakeTarget.id,
+              intakeSessionId,
+              message: `Bug reports are handled by ${intakeTarget.name || intakeTarget.id}. Dispatched a fresh session there.`,
+            }),
           );
-          stmts.updateSessionWikiHybridRagBudget.run(next.consumed, next.budgetVersion, sessionId);
-          session!.wiki_hybrid_rag_consumed = next.consumed;
-          session!.wiki_hybrid_rag_budget_version = next.budgetVersion;
-        } catch (err: unknown) {
-          const m = err instanceof Error ? err.message : String(err);
-          console.error(`[wiki-rag] failed to persist consumption flag: ${m}`);
         }
+
+        setImmediate(() => {
+          try {
+            const result = handleChat(null, {
+              type: 'chat',
+              agentId: intakeTarget.id,
+              sessionId: intakeSessionId,
+              content,
+              _reroutedFromBugReport: true,
+            } as InternalChatMessage);
+            if (result && typeof (result as Promise<unknown>).catch === 'function') {
+              (result as Promise<unknown>).catch((err: Error) => {
+                console.error(
+                  `[Bug Reroute] handleChat failed for intake session ${intakeSessionId}:`,
+                  err.message,
+                );
+              });
+            }
+          } catch (err) {
+            console.error(
+              `[Bug Reroute] handleChat threw for intake session ${intakeSessionId}:`,
+              (err as Error).message,
+            );
+          }
+        });
+        return;
       }
-    }
-    const assistantMsgId = uuidv4();
 
-    let engineSessionId: string | null = session!.engine_session_id || null;
-    const isNewEngineSession = !engineSessionId;
-
-    // Same cwd as the later `spawn` (worktree path when isolation is on) so
-    // `cursor-agent create-chat` and `--resume` agree on repo root / `.cursor`.
-    let sessionPrBase: string | null = null;
-    try {
-      const cardForWorktree = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
-        | KanbanCardRow
-        | undefined;
-      let epicForBase: KanbanEpicRow | undefined;
-      if (cardForWorktree?.epic_id) {
-        epicForBase = stmts.getKanbanEpic.get(cardForWorktree.epic_id) as KanbanEpicRow | undefined;
+      const slashResult = resolveSlashSkill(agent, content, project);
+      if (slashResult?.error) {
+        if (ws) ws.send(JSON.stringify({ type: 'error', sessionId, error: slashResult.error }));
+        return;
       }
-      const rawBase = effectivePrBaseBranch(cardForWorktree, epicForBase);
-      sessionPrBase = typeof rawBase === 'string' && rawBase.trim() !== '' ? rawBase.trim() : null;
-    } catch {
-      sessionPrBase = null;
-    }
 
-    let effectiveCwd: string = project.cwd;
-    if (
-      session!.use_worktree &&
-      getProjectMode(project as Project) !== 'workflow' &&
-      (session!.worktree_path || isNewEngineSession)
-    ) {
-      const priorWorktree = session!.worktree_path;
-      effectiveCwd = await ensureWorktree(
-        session!,
-        project.cwd,
-        agentId,
-        (project as ProjectWithCommands).commands?.install || null,
-        sessionPrBase,
-        (project as Project).repoUrl ?? null,
-        project.id,
-      );
-      session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      let cliContent: string = content;
+
+      let session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (!session) {
+        const initialEngine = agent.engine || 'claude-code';
+        const orphanWt = defaultSessionUseWorktreeFlag(project);
+        stmts.createSession.run(
+          sessionId,
+          agentId,
+          `Session ${new Date().toLocaleString()}`,
+          initialEngine,
+          (agent as AgentWithModel).model || defaultModelForEngine(initialEngine),
+          orphanWt,
+          0,
+          1,
+        );
+        // Orphan-session auto-create: the WebSocket handshake validated the
+        // caller's identity; attribute the new row to that user (or fall back
+        // to the org owner in the local-bypass / system-spawn path).
+        setSessionOwner(sessionId, ownerUserIdForChatSpawn(ws));
+        session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      }
+
       if (session) {
         persistLegacyWikiHybridGateIfNeeded(session, sessionId);
       }
 
-      if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
-        console.log(
-          `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
-        );
-      }
-    } else if (!isNewEngineSession && !session!.use_worktree && session!.worktree_path) {
-      console.log(
-        `[chat] Resuming session ${sessionId} in project cwd (worktree disabled, cross-worktree resume)`,
-      );
-    }
+      const existingTask = stmts.getActiveTask.get(sessionId) as ActiveTaskRow | undefined;
+      const isDelegating = activeDelegationSessions.has(sessionId);
 
-    if (engine === 'cursor-agent' && !engineSessionId) {
-      try {
-        engineSessionId = await createCursorChat(effectiveCwd);
-        stmts.updateSessionEngineSessionId.run(engineSessionId, sessionId);
-      } catch (err: unknown) {
-        const errMessage = err instanceof Error ? err.message : String(err);
-        console.error(errMessage);
-        const errText = `Failed to create cursor chat: ${errMessage}`;
-        saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+      if ((existingTask || isDelegating) && !msg._fromQueue) {
+        if (isAutoContinuation) {
+          const retries = msg._continuationRetry ?? 0;
+          const plan = planAutoContinuationRetry({ retries });
+          if (plan.action === 'retry') {
+            console.warn(
+              `[auto-continuation] session ${sessionId}: active task or delegation present; ` +
+                `scheduling retry ${plan.nextRetry}/${AUTO_CONTINUATION_MAX_RETRIES}`,
+            );
+            setTimeout(() => {
+              void handleChat(null, {
+                ...msg,
+                _continuationRetry: plan.nextRetry,
+              } as InternalChatMessage);
+            }, 500);
+          } else {
+            console.error(
+              `[auto-continuation] session ${sessionId}: exhausted ${AUTO_CONTINUATION_MAX_RETRIES} retries; dropping continuation.`,
+            );
+          }
+          return;
+        }
+        const isInterrupt = msg.interrupt === true;
+
+        if (!isInterrupt) {
+          const currentQueue = stmts.getQueuedMessages.all(sessionId) as MessageQueueRow[];
+          if (currentQueue.length >= MAX_QUEUE_SIZE) {
+            if (ws) {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  sessionId,
+                  error: `Queue is full (max ${MAX_QUEUE_SIZE} messages). Wait for current task to complete.`,
+                }),
+              );
+            } else {
+              console.error(
+                `[chat] Queue full (${MAX_QUEUE_SIZE}); dropped non-interrupt inject for session ${sessionId}` +
+                  ` (agent ${agentId}). Webhook / review feedback may need a free slot or manual nudge.`,
+              );
+            }
+            return;
+          }
+        }
+
+        const queueMsgId = uuidv4();
+
+        let position: number;
+        if (isInterrupt) {
+          const minPos = stmts.getMinQueuePosition.get(sessionId) as
+            | { min_pos: number | null }
+            | undefined;
+          position = (minPos?.min_pos ?? 0) - 1;
+        } else {
+          const maxPos = stmts.getMaxQueuePosition.get(sessionId) as
+            | { max_pos: number | null }
+            | undefined;
+          position = (maxPos?.max_pos ?? -1) + 1;
+        }
+
+        stmts.addMessage.run(queueMsgId, sessionId, 'user', content, null, null, attachments, null);
+        stmts.touchSession.run(sessionId);
+
+        stmts.enqueueMessage.run(queueMsgId, sessionId, agentId, content, attachments, position);
+
         broadcast({
-          type: 'error',
-          messageId: assistantMsgId,
-          sessionId,
-          error: errText,
+          type: 'message',
+          message: {
+            id: queueMsgId,
+            session_id: sessionId,
+            role: 'user',
+            content,
+            attachments,
+            queued: !isInterrupt,
+            interrupted: isInterrupt,
+            created_at: new Date().toISOString(),
+          },
         });
+
+        broadcast({
+          type: 'queue_updated',
+          sessionId,
+          queue: stmts.getQueuedMessages.all(sessionId),
+        });
+
+        reportUserMessagePersisted(true);
+
+        if (isInterrupt) {
+          console.log(`[chat] Interrupt received for session ${sessionId} — stopping current task`);
+          const proc = activeProcesses.get(sessionId);
+          if (proc) {
+            killProcessGroup(proc, 'SIGTERM');
+          }
+          if (isDelegating) {
+            handleDelegationCancel(sessionId);
+            setTimeout(() => drainQueue(sessionId), 500);
+          }
+          broadcast({ type: 'interrupted', sessionId });
+        }
+
         return;
       }
-    }
 
-    try {
-      stmts.insertActiveTask.run(sessionId, assistantMsgId, agentId, null, content, engine, model);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error('Failed to insert active_tasks row:', message);
-    }
+      let userMsgId: string | null = null;
+      if (msg._fromQueue) {
+        userMsgId = msg._existingMsgId!;
+        broadcast({ type: 'queue_item_processing', sessionId, messageId: userMsgId });
+        reportUserMessagePersisted(true);
+      } else if (!isAutoContinuation) {
+        userMsgId = uuidv4();
+        stmts.addMessage.run(userMsgId, sessionId, 'user', content, null, null, attachments, null);
+        stmts.touchSession.run(sessionId);
 
-    broadcast({
-      type: 'thinking',
-      messageId: assistantMsgId,
-      sessionId,
-      engine,
-      model,
-    });
-
-    const needsHistoryBootstrap = isNewEngineSession && priorMessages.length > 0;
-    const promptWithHistory: string = (() => {
-      if (!needsHistoryBootstrap) return cliContent;
-      let p = 'Previous conversation:\n';
-      for (const m of priorMessages) {
-        const prefix = m.role === 'user' ? 'Human' : 'Assistant';
-        p += `${prefix}: ${m.content}\n\n`;
-      }
-      p += `Human: ${cliContent}`;
-      return p;
-    })();
-
-    let imagePromptSuffix = '';
-    if (images && images.length > 0) {
-      const imgCwd = session!.worktree_path || project.cwd;
-      const imgDir = path.join(imgCwd, '.agent-hub-images');
-      mkdirSync(imgDir, { recursive: true });
-      const imgPaths: string[] = [];
-      for (const img of images as unknown as ImageRef[]) {
-        const srcPath = path.join(uploadsDir, img.filename);
-        if (existsSync(srcPath)) {
-          const destPath = path.join(imgDir, img.filename);
-          writeFileSync(destPath, readFileSync(srcPath));
-          imgPaths.push(destPath);
-        }
-      }
-      if (imgPaths.length > 0) {
-        const n = imgPaths.length;
-        imagePromptSuffix =
-          '\n\n[The user has attached ' +
-          (n === 1 ? 'a file' : `${n} files`) +
-          '. Open ' +
-          (n === 1 ? 'it' : 'them') +
-          ' with the Read tool at: ' +
-          imgPaths.map((p) => `"${p}"`).join(', ') +
-          ']';
-      }
-    }
-
-    const finalPrompt = promptWithHistory + imagePromptSuffix;
-
-    const CLAUDE_BIN = getClaudeBin();
-    const CURSOR_BIN = getCursorBin();
-    const GEMINI_BIN = getGeminiBin();
-    const CODEX_BIN = getCodexBin();
-
-    // Resolve the session owner ONCE up front. Drives:
-    //   - Per-user MCP servers merged into the spawn config (just below)
-    //   - Per-session hooks (`writeHooksConfig` further down)
-    //   - Per-user Claude auth (spawnEnv block)
-    //   - Per-user GitHub auth (spawnEnv block)
-    // A single DB miss / lookup failure is reported once; a known-null
-    // owner skips all four branches cleanly.
-    let ownerId: string | null = null;
-    try {
-      ownerId = getSessionOwner(sessionId);
-    } catch (err) {
-      const summary = (err as Error).message
-        .replace(/[\r\n|]+/g, ' ')
-        .trim()
-        .slice(0, 200);
-      const meta = JSON.stringify({
-        v: 2,
-        sev: 'soft',
-        resolution: 'recovered',
-        session: sessionId,
-        tags: ['session-owner', 'spawn'],
-      });
-      console.error(
-        `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
-      );
-    }
-
-    // Per-user MCP servers (claude-code only — cursor/gemini/codex have
-    // their own MCP loading rules and don't take --mcp-config). Resolved
-    // BEFORE the engine arg branch so the Claude branch can append
-    // `--mcp-config` / `--strict-mcp-config` flags. The actual file write
-    // happens just below this block once `effectiveCwd` semantics are in
-    // play; the resolved map is also reused by the hooks-config branch.
-    let mergedMcpServers: Record<string, import('./types.js').McpServerConfig> | undefined;
-    let mcpConfigPath: string | null = null;
-    if (engine === 'claude-code') {
-      try {
-        const userMcpRows = ownerId ? listEnabledMcpServersForUser(ownerId) : [];
-        if (
-          (agent.mcpServers && Object.keys(agent.mcpServers).length > 0) ||
-          userMcpRows.length > 0
-        ) {
-          mergedMcpServers = buildMcpServersMap(userMcpRows, agent.mcpServers);
-        }
-      } catch (err) {
-        // Best-effort; the spawn proceeds with agent.mcpServers only.
-        const summary = (err as Error).message
-          .replace(/[\r\n|]+/g, ' ')
-          .trim()
-          .slice(0, 200);
-        const meta = JSON.stringify({
-          v: 2,
-          sev: 'soft',
-          resolution: 'recovered',
-          session: sessionId,
-          tags: ['mcp-servers', 'spawn'],
+        broadcast({
+          type: 'message',
+          message: {
+            id: userMsgId,
+            session_id: sessionId,
+            role: 'user',
+            content,
+            attachments,
+            created_at: new Date().toISOString(),
+          },
         });
-        console.error(
-          `TOOL_ERROR | ${new Date().toISOString()} | mcp-servers | spawn lookup | error | ${summary} | ${meta}`,
-        );
-        mergedMcpServers = agent.mcpServers;
+        reportUserMessagePersisted(true);
       }
-      // Write `.claude/mcp-config.json`. Returns null when there are no
-      // servers to emit; the Claude args branch checks the path before
-      // appending the flag so an empty/missing file never gets passed
-      // to `--mcp-config` (which would, paired with `--strict-mcp-config`,
-      // unintentionally suppress whatever's at higher scopes).
-      try {
-        mcpConfigPath = writeMcpConfigFile(effectiveCwd, mergedMcpServers);
-      } catch (err) {
-        const summary = (err as Error).message
-          .replace(/[\r\n|]+/g, ' ')
-          .trim()
-          .slice(0, 200);
-        const meta = JSON.stringify({
-          v: 2,
-          sev: 'soft',
-          resolution: 'recovered',
-          session: sessionId,
-          tags: ['mcp-servers', 'spawn-write'],
-        });
-        console.error(
-          `TOOL_ERROR | ${new Date().toISOString()} | mcp-config-file | write | error | ${summary} | ${meta}`,
-        );
-        mcpConfigPath = null;
-      }
-    }
 
-    let args: string[];
-    let bin: string;
-    if (engine === 'cursor-agent') {
-      const prompt =
-        isNewEngineSession || forceSystemPromptThisTurn
-          ? `${enrichedPrompt}\n\n${finalPrompt}`
-          : cliContent + imagePromptSuffix;
-      args = [
-        '-p',
-        prompt,
-        '--force',
-        '--model',
-        model,
-        '--resume',
-        engineSessionId!,
-        '--output-format',
-        'stream-json',
-        '--stream-partial-output',
-      ];
-      bin = CURSOR_BIN;
-    } else if (engine === 'gemini-cli') {
-      // Gemini CLI flags per https://geminicli.com/docs/cli/cli-reference:
-      //   -p / --prompt         prompt text (forces non-interactive mode)
-      //   -m / --model          model selector (we pass through the session model)
-      //   -o / --output-format  'stream-json' emits JSONL events we parse in
-      //                         normalizeGemini (init / message / tool_use /
-      //                         tool_result / result).
-      //   --yolo                auto-approve tool calls — matches how we run
-      //                         Claude Code with --permission-mode bypassPermissions.
-      // Gemini does not (yet) expose a --resume flag for stateful sessions, so
-      // we always inject the enriched prompt + full history on each turn. The
-      // `needsHistoryBootstrap` branch earlier already concatenates prior
-      // messages into `finalPrompt` when engineSessionId is null, which is
-      // exactly the shape Gemini expects.
-      const prompt = `${enrichedPrompt}\n\n${finalPrompt}`;
-      args = ['-p', prompt, '--output-format', 'stream-json'];
-      if (model && model !== 'auto') {
-        args.push('--model', model);
-      }
-      const isAskMode = !!session!.ask_mode;
-      if (!isAskMode) {
-        args.push('--yolo');
-      }
-      bin = GEMINI_BIN;
-    } else if (engine === 'codex-cli') {
-      // Codex CLI flags per https://developers.openai.com/codex/noninteractive:
-      //   codex exec --json "<prompt>"                  — new turn
-      //   codex exec resume <session-id> --json "..."   — continue a session
-      //   codex exec resume --last --json "..."         — continue the newest recorded session
-      //   --sandbox read-only|workspace-write|danger-full-access
-      //   --full-auto                                   — low-friction workspace-write alias
-      //   -m / --model                                  — model selector
-      //   -C / --cd <dir>                               — working root
-      //   --skip-git-repo-check                         — allow non-git cwds (worktrees are fine)
-      //   --ephemeral                                   — don't persist session rollout files
-      //
-      // Codex has its own on-disk session store; we key resumes off the
-      // `thread_id` captured from the `thread.started` JSONL event (see
-      // `engine_session_id` tracking in stream-parser.ts + chat event hook).
-      // On the first turn we pass the enriched system prompt inline (Codex has
-      // no `--system-prompt` flag) and rely on `--skip-git-repo-check` so
-      // fresh project cwds without a `.git` dir don't fail.
-      const isAskMode = !!session!.ask_mode;
-      const prompt =
-        isNewEngineSession || forceSystemPromptThisTurn
-          ? `${enrichedPrompt}\n\n${finalPrompt}`
-          : cliContent + imagePromptSuffix;
-      args = ['exec'];
-      if (!isNewEngineSession && engineSessionId) {
-        args.push('resume', engineSessionId);
-      }
-      args.push('--json', '--skip-git-repo-check');
-      if (isAskMode) {
-        args.push('--sandbox', 'read-only');
-      } else {
-        // --full-auto = `-a on-request --sandbox workspace-write`, which is
-        // the closest parity with Claude Code's bypassPermissions default.
-        args.push('--full-auto');
-      }
-      // Auth-mode-aware --model gating. Under ChatGPT OAuth the Codex backend
-      // rejects most explicit `--model` IDs (HTTP 400 "not supported when
-      // using Codex with a ChatGPT account"). shouldPassModelFlag() filters
-      // the model against the ChatGPT allowlist; unsupported values get
-      // dropped so Codex falls back to its built-in ChatGPT default rather
-      // than 400ing the turn. API-key / unknown modes keep the prior
-      // pass-through behavior.
-      const codexAuth = detectCodexAuthMode();
-      if (model && shouldPassModelFlag(codexAuth.mode, model)) {
-        args.push('--model', model);
-      } else if (model) {
-        console.warn(
-          `[chat] Dropping --model ${model} for codex-cli session ${sessionId}: ` +
-            `auth_mode=${codexAuth.mode} does not accept it. Falling back to codex default.`,
-        );
-      }
-      args.push(prompt);
-      bin = CODEX_BIN;
-    } else {
-      const isAskMode = !!session!.ask_mode;
-      args = [
-        '--print',
-        '--permission-mode',
-        isAskMode ? 'plan' : 'bypassPermissions',
-        '--model',
-        model,
-        '--system-prompt',
-        enrichedPrompt,
-        '--output-format',
-        'stream-json',
-        '--include-partial-messages',
-        '--verbose',
-        // Agent Hub provides skills via the `<agenthub:skill>` block protocol;
-        // disable Claude Code's native `Skill` tool so agents don't fall back
-        // to it for skills outside the bundled list (see claude-cli-args.ts).
-        ...disableNativeSkillToolArgs(),
-      ];
-      // Wire per-session MCP config when we wrote one above. `--mcp-config`
-      // is the only documented Claude Code MCP source that fits Agent
-      // Hub's per-session lifecycle; `.claude/settings.json::mcpServers`
-      // is silently ignored by the loader (verified via `claude mcp list`).
-      // `--strict-mcp-config` ensures the agent only sees servers Agent
-      // Hub controls — no surprises from hand-edited `~/.claude.json` or
-      // `.mcp.json` files in the worktree.
-      if (mcpConfigPath) {
-        args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
-      }
-      if (isNewEngineSession) {
-        args.push('--session-id', sessionId);
-      } else {
-        args.push('--resume', engineSessionId!);
-      }
-      args.push(finalPrompt);
-      bin = CLAUDE_BIN;
-    }
-
-    const parser = createStreamParser(engine);
-    let finalText = '';
-    let partialFallback = '';
-    let seq = 0;
-    let errorOutput = '';
-    // Accumulates error payloads that arrive on *stdout* (as JSONL for Codex /
-    // Gemini) so the close handler can surface a meaningful message even when
-    // stderr is empty or only contains informational noise (see
-    // CODEX_STDERR_NOISE below). Examples:
-    //   codex → turn.failed.error.message (HTTP 400 model-not-supported)
-    //   codex → unknown `codex error: ...`
-    let streamErrorMessage = '';
-
-    /** Set once we have a complete `<delegate>...</delegate>` block in the stream — workers may start before the lead CLI exits. Synthesis still runs after close (see `synthesizeResults`). */
-    let delegationWorkPromise: Promise<DelegationResult[]> | null = null;
-    let delegationSafetyTimer: ReturnType<typeof setTimeout> | null = null;
-
-    function clearDelegationSafetyTimer(): void {
-      if (delegationSafetyTimer != null) {
-        clearTimeout(delegationSafetyTimer);
-        delegationSafetyTimer = null;
-      }
-    }
-
-    function startDelegationOnce(tasks: DelegateTask[]): void {
-      if (delegationWorkPromise !== null) return;
-      activeDelegationSessions.add(sessionId);
-      delegationSafetyTimer = setTimeout(
-        () => {
-          if (activeDelegationSessions.has(sessionId)) {
-            console.error(
-              `[Delegation] Safety timeout reached for session ${sessionId} — force-unlocking`,
-            );
-            handleDelegationCancel(sessionId);
-            broadcast({
-              type: 'delegation_error',
-              sessionId,
-              parentMessageId: assistantMsgId,
-              error: 'Delegation timed out (safety limit reached)',
-            });
-            drainQueue(sessionId);
-          }
-        },
-        (config as AppConfig & { delegationSafetyTimeoutMs?: number }).delegationSafetyTimeoutMs ||
-          900000,
+      const priorMessages = (stmts.getMessages.all(sessionId) as MessageRow[]).filter((m) =>
+        userMsgId ? m.id !== userMsgId : true,
       );
+      const isFirstMessage = priorMessages.length === 0;
 
-      delegationWorkPromise = handleDelegation(
+      const engine: string = session!.engine || 'claude-code';
+      const model: string = session!.model || DEFAULT_MODEL;
+      const paths = resolveProjectPaths(project as Project, agent as Agent);
+      const slashAug = augmentChatTurnForSlashSkill({
+        slashResult,
+        project: project as Project,
+        agent: agent as Agent,
         sessionId,
-        assistantMsgId,
-        tasks,
-        enrichedAgent!,
-        project,
-        effectiveCwd,
-      );
-      void delegationWorkPromise.finally(() => {
-        clearDelegationSafetyTimer();
+        stmts: stmts as Stmts,
+        broadcast,
+        isAutoContinuation,
+        content,
       });
-    }
+      const slashSkillSuffix = slashAug.slashSkillSuffix;
+      cliContent = slashAug.cliContent;
 
-    function tryKickoffDelegationFromStream(assistantAccumulated: string): void {
-      // Sub-agent delegation has been removed. This function is retained as a
-      // no-op so existing call sites continue to compile while the surrounding
-      // infrastructure is progressively deleted.
-      void assistantAccumulated;
-      return;
-    }
-
-    if (engine === 'claude-code') {
-      const isWorktree = effectiveCwd !== project.cwd;
-      const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
-      // MCP server emission moved up: see the `mergedMcpServers` /
-      // `mcpConfigPath` block before the args branch. The hooks-config
-      // file is now strictly about hooks (Stop, format guard, agent
-      // hooks); MCP lives in `.claude/mcp-config.json` paired with the
-      // Claude CLI's `--mcp-config` flag.
-      if (isWorktree || hasAgentHooks) {
-        try {
-          writeHooksConfig(effectiveCwd, sessionId, {
-            agentHooks: agent.hooks,
-            includeSystemHooks: isWorktree,
+      let routedSkillSuffix = '';
+      const loadedRoutedSkillIds = new Set<string>();
+      if (!slashResult && !isAutoContinuation) {
+        const availableSkills = listEnabledSkills(agent.id, paths.skillsDir);
+        // Seed the dedupe set from the pending-skill suffix so we don't
+        // re-inject a skill the previous `<agenthub:skill>` block already
+        // queued. The header format is `## Loaded Skill: <skill-id>` —
+        // a best-effort extraction; missing match just means no dedupe.
+        const pendingRaw = session!.pending_skill_context?.trim() || '';
+        if (pendingRaw) {
+          const m = pendingRaw.match(/^## Loaded Skill:\s*([\w.-]+)/m);
+          if (m) loadedRoutedSkillIds.add(m[1]!);
+        }
+        const routedMatches = routeSkillsFromMessage({
+          message: content,
+          skills: availableSkills,
+          agentId: agent.id,
+          agentSystemPrompt: agent.systemPrompt || '',
+          cwd: session!.worktree_path || project.cwd,
+          projectSlug: project.id,
+        });
+        const injections: string[] = [];
+        for (const routed of routedMatches) {
+          if (loadedRoutedSkillIds.has(routed.skillId)) continue;
+          const injection = loadSkillByName({
+            name: routed.skillId,
+            reason: `auto-route: ${routed.reason}`,
+            paths: { skillsDir: paths.skillsDir },
+            sessionId,
+            stmts: stmts as Stmts,
+            broadcast,
           });
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn(`[chat] Failed to write hooks config: ${message}`);
+          injections.push(injection);
+          loadedRoutedSkillIds.add(routed.skillId);
+        }
+        if (injections.length > 0) {
+          routedSkillSuffix = `\n\n${injections.join('\n\n')}`;
         }
       }
-    }
 
-    const spawnEnv: NodeJS.ProcessEnv = await (async () => {
-      // ownerId resolved above. The lookup is reused here for per-user
-      // Claude auth (below) and per-user GitHub auth (further down).
+      let enrichedPrompt = buildEnrichedPrompt(
+        project as ProjectWithCommands,
+        agent as AgentWithModel,
+        {
+          useWorktree: !!session!.use_worktree,
+          isFirstMessage,
+          sessionId,
+          orchestrationPhase: session!.orchestration_phase ?? null,
+          orchestrationMetaJson: session!.orchestration_meta ?? null,
+          _getEnrichedAgent: getEnrichedAgent,
+        },
+      );
+      const { suffix: pendingSkillSuffix, forceSystemPromptThisTurn } =
+        consumePendingSkillInjection(session!.pending_skill_context, () =>
+          stmts.updateSessionPendingSkillContext.run(null, sessionId),
+        );
+      if (pendingSkillSuffix) enrichedPrompt += pendingSkillSuffix;
+      if (slashSkillSuffix) enrichedPrompt += slashSkillSuffix;
+      if (routedSkillSuffix) enrichedPrompt += routedSkillSuffix;
 
-      // Per-user Claude auth: when the session has a recorded owner with
-      // their own ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, those win
-      // over the host config. Falsy / missing fields fall back to the
-      // host config so unconfigured users keep working transparently.
-      let userOverride: {
-        anthropicApiKey?: string | null;
-        claudeCodeOAuthToken?: string | null;
-      } | null = null;
+      const projectId =
+        (project as ProjectWithCommands & { id?: string }).id ||
+        (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
+        '';
+
+      let linkedEpicForBudgets: KanbanEpicRow | null = null;
       try {
-        if (ownerId) {
-          const userAuth = getUserClaudeAuth(ownerId);
-          if (userAuth && (userAuth.anthropicApiKey || userAuth.claudeCodeOAuthToken)) {
-            userOverride = {
-              anthropicApiKey: userAuth.anthropicApiKey,
-              claudeCodeOAuthToken: userAuth.claudeCodeOAuthToken,
-            };
+        const cardRow = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
+          | KanbanCardRow
+          | undefined;
+        if (cardRow?.epic_id) {
+          linkedEpicForBudgets =
+            (stmts.getKanbanEpic.get(cardRow.epic_id) as KanbanEpicRow | undefined) ?? null;
+        }
+      } catch {
+        linkedEpicForBudgets = null;
+      }
+      const orchestrationBudgets = resolveOrchestrationBudgets(
+        project as Project,
+        linkedEpicForBudgets,
+      );
+      const maxWikiSession = orchestrationBudgets.maxWikiRagCallsPerSession;
+
+      if (projectId && !isAutoContinuation) {
+        const wikiRag = await runWikiHybridRagForUserTurn(projectId, content, {
+          wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
+            session!.wiki_hybrid_rag_consumed,
+            session!.wiki_hybrid_rag_budget_version,
+            maxWikiSession,
+          ),
+          maxCallsPerSession: maxWikiSession,
+          slashSkillActive: !!slashResult,
+        });
+        if (wikiRag.promptSuffix) {
+          enrichedPrompt += wikiRag.promptSuffix;
+        }
+        if (wikiRag.logWarning) {
+          console.warn(
+            `[wiki-rag] retrieval failed for session ${sessionId}: ${wikiRag.logWarning}`,
+          );
+        }
+        if (wikiRag.shouldIncrementWikiHybridRagUsage) {
+          try {
+            const next = nextWikiHybridRagRowAfterIncrement(
+              session!.wiki_hybrid_rag_consumed,
+              session!.wiki_hybrid_rag_budget_version,
+              maxWikiSession,
+            );
+            stmts.updateSessionWikiHybridRagBudget.run(
+              next.consumed,
+              next.budgetVersion,
+              sessionId,
+            );
+            session!.wiki_hybrid_rag_consumed = next.consumed;
+            session!.wiki_hybrid_rag_budget_version = next.budgetVersion;
+          } catch (err: unknown) {
+            const m = err instanceof Error ? err.message : String(err);
+            console.error(`[wiki-rag] failed to persist consumption flag: ${m}`);
           }
         }
+      }
+      const assistantMsgId = uuidv4();
+
+      let engineSessionId: string | null = session!.engine_session_id || null;
+      const isNewEngineSession = !engineSessionId;
+
+      // Same cwd as the later `spawn` (worktree path when isolation is on) so
+      // `cursor-agent create-chat` and `--resume` agree on repo root / `.cursor`.
+      let sessionPrBase: string | null = null;
+      try {
+        const cardForWorktree = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
+          | KanbanCardRow
+          | undefined;
+        let epicForBase: KanbanEpicRow | undefined;
+        if (cardForWorktree?.epic_id) {
+          epicForBase = stmts.getKanbanEpic.get(cardForWorktree.epic_id) as
+            | KanbanEpicRow
+            | undefined;
+        }
+        const rawBase = effectivePrBaseBranch(cardForWorktree, epicForBase);
+        sessionPrBase =
+          typeof rawBase === 'string' && rawBase.trim() !== '' ? rawBase.trim() : null;
+      } catch {
+        sessionPrBase = null;
+      }
+
+      let effectiveCwd: string = project.cwd;
+      if (
+        session!.use_worktree &&
+        getProjectMode(project as Project) !== 'workflow' &&
+        (session!.worktree_path || isNewEngineSession)
+      ) {
+        const priorWorktree = session!.worktree_path;
+        effectiveCwd = await ensureWorktree(
+          session!,
+          project.cwd,
+          agentId,
+          (project as ProjectWithCommands).commands?.install || null,
+          sessionPrBase,
+          (project as Project).repoUrl ?? null,
+          project.id,
+        );
+        session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (session) {
+          persistLegacyWikiHybridGateIfNeeded(session, sessionId);
+        }
+
+        if (!isNewEngineSession && priorWorktree && priorWorktree !== effectiveCwd) {
+          console.log(
+            `[chat] Cross-worktree resume: session ${sessionId} moved from ${priorWorktree} → ${effectiveCwd}`,
+          );
+        }
+      } else if (!isNewEngineSession && !session!.use_worktree && session!.worktree_path) {
+        console.log(
+          `[chat] Resuming session ${sessionId} in project cwd (worktree disabled, cross-worktree resume)`,
+        );
+      }
+
+      if (engine === 'cursor-agent' && !engineSessionId) {
+        try {
+          engineSessionId = await createCursorChat(effectiveCwd);
+          stmts.updateSessionEngineSessionId.run(engineSessionId, sessionId);
+        } catch (err: unknown) {
+          const errMessage = err instanceof Error ? err.message : String(err);
+          console.error(errMessage);
+          const errText = `Failed to create cursor chat: ${errMessage}`;
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errText,
+          });
+          return;
+        }
+      }
+
+      try {
+        stmts.insertActiveTask.run(
+          sessionId,
+          assistantMsgId,
+          agentId,
+          null,
+          content,
+          engine,
+          model,
+        );
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('Failed to insert active_tasks row:', message);
+      }
+
+      broadcast({
+        type: 'thinking',
+        messageId: assistantMsgId,
+        sessionId,
+        engine,
+        model,
+      });
+
+      const needsHistoryBootstrap = isNewEngineSession && priorMessages.length > 0;
+      const promptWithHistory: string = (() => {
+        if (!needsHistoryBootstrap) return cliContent;
+        let p = 'Previous conversation:\n';
+        for (const m of priorMessages) {
+          const prefix = m.role === 'user' ? 'Human' : 'Assistant';
+          p += `${prefix}: ${m.content}\n\n`;
+        }
+        p += `Human: ${cliContent}`;
+        return p;
+      })();
+
+      let imagePromptSuffix = '';
+      if (images && images.length > 0) {
+        const imgCwd = session!.worktree_path || project.cwd;
+        const imgDir = path.join(imgCwd, '.agent-hub-images');
+        mkdirSync(imgDir, { recursive: true });
+        const imgPaths: string[] = [];
+        for (const img of images as unknown as ImageRef[]) {
+          const srcPath = path.join(uploadsDir, img.filename);
+          if (existsSync(srcPath)) {
+            const destPath = path.join(imgDir, img.filename);
+            writeFileSync(destPath, readFileSync(srcPath));
+            imgPaths.push(destPath);
+          }
+        }
+        if (imgPaths.length > 0) {
+          const n = imgPaths.length;
+          imagePromptSuffix =
+            '\n\n[The user has attached ' +
+            (n === 1 ? 'a file' : `${n} files`) +
+            '. Open ' +
+            (n === 1 ? 'it' : 'them') +
+            ' with the Read tool at: ' +
+            imgPaths.map((p) => `"${p}"`).join(', ') +
+            ']';
+        }
+      }
+
+      const finalPrompt = promptWithHistory + imagePromptSuffix;
+
+      const CLAUDE_BIN = getClaudeBin();
+      const CURSOR_BIN = getCursorBin();
+      const GEMINI_BIN = getGeminiBin();
+      const CODEX_BIN = getCodexBin();
+
+      // Resolve the session owner ONCE up front. Drives:
+      //   - Per-user MCP servers merged into the spawn config (just below)
+      //   - Per-session hooks (`writeHooksConfig` further down)
+      //   - Per-user Claude auth (spawnEnv block)
+      //   - Per-user GitHub auth (spawnEnv block)
+      // A single DB miss / lookup failure is reported once; a known-null
+      // owner skips all four branches cleanly.
+      let ownerId: string | null = null;
+      try {
+        ownerId = getSessionOwner(sessionId);
       } catch (err) {
-        // Per-user auth is best-effort; the host config remains the
-        // safety net so a lookup failure can never block a spawn. Emit
-        // a TOOL_ERROR-shaped line so this failure mode is observable
-        // in server logs — a user who deliberately set their own key
-        // and then silently ran under the host's identity is exactly
-        // what we want to catch in production. See
-        // plugin/skills/agent-hub/references/errors.md for the format.
         const summary = (err as Error).message
           .replace(/[\r\n|]+/g, ' ')
           .trim()
@@ -2092,39 +1798,55 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sev: 'soft',
           resolution: 'recovered',
           session: sessionId,
-          tags: ['per-user-claude-auth', 'spawn'],
+          tags: ['session-owner', 'spawn'],
         });
         console.error(
-          `TOOL_ERROR | ${new Date().toISOString()} | per-user-claude-auth | spawn lookup | error | ${summary} | ${meta}`,
+          `TOOL_ERROR | ${new Date().toISOString()} | session-owner | spawn lookup | error | ${summary} | ${meta}`,
         );
       }
-      const base = buildSpawnEnv(config, { userOverride });
-      // Reviewer agents post formal GitHub reviews via the bot identity so they
-      // bypass GitHub's "can't review your own PR" rule for human-author PRs.
-      // Bot wins over the user's own token here even when the user is
-      // signed in — the whole point of the reviewer role is to *not* be
-      // the human (so GitHub doesn't reject the review with "can't review
-      // your own PR"). For non-reviewer agents we fall through to the
-      // user's stored GitHub connection below.
-      if (config.botGithubToken && agent.role === 'reviewer') {
-        applyGithubSpawnCredentials(base, config.botGithubToken);
-      } else {
-        // Per-user GitHub auth: when the session owner has signed in via
-        // Settings → Sign in with GitHub (or pasted a PAT), inject their
-        // token as GH_TOKEN/GITHUB_TOKEN plus a process-scoped git
-        // credential helper so `gh`, `git push`, and `git fetch` against
-        // GitHub HTTPS remotes authenticate as the human at the keyboard
-        // — without leaking that credential into the host's gitconfig.
-        // Best-effort: if the lookup or refresh fails the spawn proceeds
-        // unauthenticated and the user can reconnect from Settings.
+
+      // Per-user MCP servers (claude-code only — cursor/gemini/codex have
+      // their own MCP loading rules and don't take --mcp-config). Resolved
+      // BEFORE the engine arg branch so the Claude branch can append
+      // `--mcp-config` / `--strict-mcp-config` flags. The actual file write
+      // happens just below this block once `effectiveCwd` semantics are in
+      // play; the resolved map is also reused by the hooks-config branch.
+      let mergedMcpServers: Record<string, import('./types.js').McpServerConfig> | undefined;
+      let mcpConfigPath: string | null = null;
+      if (engine === 'claude-code') {
         try {
-          if (ownerId) {
-            const oauthCreds = resolveOAuthAppCredentials(config);
-            const userGhToken = await getActiveAccessToken(ownerId, oauthCreds);
-            if (userGhToken) {
-              applyGithubSpawnCredentials(base, userGhToken);
-            }
+          const userMcpRows = ownerId ? listEnabledMcpServersForUser(ownerId) : [];
+          if (
+            (agent.mcpServers && Object.keys(agent.mcpServers).length > 0) ||
+            userMcpRows.length > 0
+          ) {
+            mergedMcpServers = buildMcpServersMap(userMcpRows, agent.mcpServers);
           }
+        } catch (err) {
+          // Best-effort; the spawn proceeds with agent.mcpServers only.
+          const summary = (err as Error).message
+            .replace(/[\r\n|]+/g, ' ')
+            .trim()
+            .slice(0, 200);
+          const meta = JSON.stringify({
+            v: 2,
+            sev: 'soft',
+            resolution: 'recovered',
+            session: sessionId,
+            tags: ['mcp-servers', 'spawn'],
+          });
+          console.error(
+            `TOOL_ERROR | ${new Date().toISOString()} | mcp-servers | spawn lookup | error | ${summary} | ${meta}`,
+          );
+          mergedMcpServers = agent.mcpServers;
+        }
+        // Write `.claude/mcp-config.json`. Returns null when there are no
+        // servers to emit; the Claude args branch checks the path before
+        // appending the flag so an empty/missing file never gets passed
+        // to `--mcp-config` (which would, paired with `--strict-mcp-config`,
+        // unintentionally suppress whatever's at higher scopes).
+        try {
+          mcpConfigPath = writeMcpConfigFile(effectiveCwd, mergedMcpServers);
         } catch (err) {
           const summary = (err as Error).message
             .replace(/[\r\n|]+/g, ' ')
@@ -2135,586 +1857,826 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sev: 'soft',
             resolution: 'recovered',
             session: sessionId,
-            tags: ['per-user-github-auth', 'spawn'],
+            tags: ['mcp-servers', 'spawn-write'],
           });
           console.error(
-            `TOOL_ERROR | ${new Date().toISOString()} | per-user-github-auth | spawn lookup | error | ${summary} | ${meta}`,
+            `TOOL_ERROR | ${new Date().toISOString()} | mcp-config-file | write | error | ${summary} | ${meta}`,
+          );
+          mcpConfigPath = null;
+        }
+      }
+
+      let args: string[];
+      let bin: string;
+      if (engine === 'cursor-agent') {
+        const prompt =
+          isNewEngineSession || forceSystemPromptThisTurn
+            ? `${enrichedPrompt}\n\n${finalPrompt}`
+            : cliContent + imagePromptSuffix;
+        args = [
+          '-p',
+          prompt,
+          '--force',
+          '--model',
+          model,
+          '--resume',
+          engineSessionId!,
+          '--output-format',
+          'stream-json',
+          '--stream-partial-output',
+        ];
+        bin = CURSOR_BIN;
+      } else if (engine === 'gemini-cli') {
+        // Gemini CLI flags per https://geminicli.com/docs/cli/cli-reference:
+        //   -p / --prompt         prompt text (forces non-interactive mode)
+        //   -m / --model          model selector (we pass through the session model)
+        //   -o / --output-format  'stream-json' emits JSONL events we parse in
+        //                         normalizeGemini (init / message / tool_use /
+        //                         tool_result / result).
+        //   --yolo                auto-approve tool calls — matches how we run
+        //                         Claude Code with --permission-mode bypassPermissions.
+        // Gemini does not (yet) expose a --resume flag for stateful sessions, so
+        // we always inject the enriched prompt + full history on each turn. The
+        // `needsHistoryBootstrap` branch earlier already concatenates prior
+        // messages into `finalPrompt` when engineSessionId is null, which is
+        // exactly the shape Gemini expects.
+        const prompt = `${enrichedPrompt}\n\n${finalPrompt}`;
+        args = ['-p', prompt, '--output-format', 'stream-json'];
+        if (model && model !== 'auto') {
+          args.push('--model', model);
+        }
+        const isAskMode = !!session!.ask_mode;
+        if (!isAskMode) {
+          args.push('--yolo');
+        }
+        bin = GEMINI_BIN;
+      } else if (engine === 'codex-cli') {
+        // Codex CLI flags per https://developers.openai.com/codex/noninteractive:
+        //   codex exec --json "<prompt>"                  — new turn
+        //   codex exec resume <session-id> --json "..."   — continue a session
+        //   codex exec resume --last --json "..."         — continue the newest recorded session
+        //   --sandbox read-only|workspace-write|danger-full-access
+        //   --full-auto                                   — low-friction workspace-write alias
+        //   -m / --model                                  — model selector
+        //   -C / --cd <dir>                               — working root
+        //   --skip-git-repo-check                         — allow non-git cwds (worktrees are fine)
+        //   --ephemeral                                   — don't persist session rollout files
+        //
+        // Codex has its own on-disk session store; we key resumes off the
+        // `thread_id` captured from the `thread.started` JSONL event (see
+        // `engine_session_id` tracking in stream-parser.ts + chat event hook).
+        // On the first turn we pass the enriched system prompt inline (Codex has
+        // no `--system-prompt` flag) and rely on `--skip-git-repo-check` so
+        // fresh project cwds without a `.git` dir don't fail.
+        const isAskMode = !!session!.ask_mode;
+        const prompt =
+          isNewEngineSession || forceSystemPromptThisTurn
+            ? `${enrichedPrompt}\n\n${finalPrompt}`
+            : cliContent + imagePromptSuffix;
+        args = ['exec'];
+        if (!isNewEngineSession && engineSessionId) {
+          args.push('resume', engineSessionId);
+        }
+        args.push('--json', '--skip-git-repo-check');
+        if (isAskMode) {
+          args.push('--sandbox', 'read-only');
+        } else {
+          // --full-auto = `-a on-request --sandbox workspace-write`, which is
+          // the closest parity with Claude Code's bypassPermissions default.
+          args.push('--full-auto');
+        }
+        // Auth-mode-aware --model gating. Under ChatGPT OAuth the Codex backend
+        // rejects most explicit `--model` IDs (HTTP 400 "not supported when
+        // using Codex with a ChatGPT account"). shouldPassModelFlag() filters
+        // the model against the ChatGPT allowlist; unsupported values get
+        // dropped so Codex falls back to its built-in ChatGPT default rather
+        // than 400ing the turn. API-key / unknown modes keep the prior
+        // pass-through behavior.
+        const codexAuth = detectCodexAuthMode();
+        if (model && shouldPassModelFlag(codexAuth.mode, model)) {
+          args.push('--model', model);
+        } else if (model) {
+          console.warn(
+            `[chat] Dropping --model ${model} for codex-cli session ${sessionId}: ` +
+              `auth_mode=${codexAuth.mode} does not accept it. Falling back to codex default.`,
           );
         }
-      }
-      if (config.apiKey) {
-        base.AGENT_HUB_API_KEY = config.apiKey;
-      }
-      base.AGENT_HUB_SESSION_ID = sessionId;
-      // Inject the Hub API base and project ID so spawned CLIs reach `/api`.
-      // Defaults to loopback with the bound port (`getActualPort` inside the
-      // resolver); deployments with remote tool hosts set AGENT_HUB_AGENT_URL /
-      // AGENT_HUB_PUBLIC_URL (config `publicUrl`). See resolveAgentHubApiBaseForSpawn.
-      base.AGENT_HUB_URL = resolveAgentHubApiBaseForSpawn(config);
-      base.PROJECT_ID = project.id;
-      return base;
-    })();
-
-    // Merge allowlisted caller-supplied env vars (e.g. DEV_HUB_API_KEY from
-    // autonomous-dispatch for cross-hub cards). See `mergeAllowlistedExtraEnv`.
-    mergeAllowlistedExtraEnv(spawnEnv, msg.extraEnv);
-
-    if (process.env.AGENT_HUB_DEBUG_CLAUDE_AUTH === '1' && engine === 'claude-code') {
-      console.log('[chat] claude-code spawn auth:', {
-        sessionId,
-        hasAnthropicApiKey: Boolean(spawnEnv.ANTHROPIC_API_KEY),
-        hasClaudeOAuthToken: Boolean(spawnEnv.CLAUDE_CODE_OAUTH_TOKEN),
-        cwd: effectiveCwd,
-      });
-    }
-
-    const chainStartedAtMs = msg._chainStartedAtMs ?? Date.now();
-
-    // Pre-spawn cwd guard. Node's child_process.spawn reports ENOENT against
-    // the *command* when the cwd doesn't exist, which historically surfaced
-    // as the misleading "binary not found at <bin>" error even though the bin
-    // itself was fine. Catch this case up front: auto-create the directory
-    // when possible (recoverable) or fail with a precise, actionable message.
-    const ensureCwd = ensureSpawnCwd(effectiveCwd);
-    if (ensureCwd.status === 'auto-created') {
-      console.warn(`[chat] auto-created missing cwd for session ${sessionId}: ${effectiveCwd}`);
-    } else if (ensureCwd.status === 'failed') {
-      const errText =
-        `Working directory does not exist and could not be created: ${effectiveCwd}. ` +
-        `Update the project's "cwd" in Settings or create the directory. ` +
-        `(${ensureCwd.reason})`;
-      console.error(`[chat] ${errText}`);
-      saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
-      broadcast({
-        type: 'error',
-        messageId: assistantMsgId,
-        sessionId,
-        error: errText,
-      });
-      try {
-        stmts.deleteActiveTask.run(sessionId);
-      } catch {}
-      drainQueue(sessionId);
-      return;
-    }
-
-    const cliTurnStartMs = Date.now();
-    const proc = spawn(bin, args, {
-      cwd: effectiveCwd,
-      env: spawnEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // Run as its own process-group leader so killProcessGroup(proc) reaches
-      // grandchildren (bash → npm → vitest workers) on cancel/shutdown.
-      detached: true,
-    });
-
-    const S = stmts;
-
-    /** Persist + fan-out host `<agenthub:react>` browser step telemetry like stream-json events. */
-    const emitBrowserActivityEvent = (evt: BrowserToolActivityEvent): void => {
-      const nextSeq = ++seq;
-      try {
-        S.addSessionEvent.run(
-          'message',
-          assistantMsgId,
-          nextSeq,
-          evt.type,
-          clampPayload(JSON.stringify(evt)),
-        );
-      } catch (err: unknown) {
-        console.error(
-          `[chat] failed to persist browser_tool_activity (${evt.actionId}):`,
-          err instanceof Error ? err.message : err,
-        );
-      }
-      broadcast({
-        type: 'session-event',
-        sessionId,
-        messageId: assistantMsgId,
-        seq: nextSeq,
-        event: evt,
-      });
-    };
-
-    activeProcesses.set(sessionId, proc);
-    trackChild(proc);
-    if (proc.pid) {
-      try {
-        S.updateActiveTaskPid.run(proc.pid, sessionId);
-      } catch {}
-    }
-
-    const handleEvent = (event: StreamEvent): void => {
-      try {
-        // Clamp the serialized payload to MAX_PAYLOAD_BYTES so a single
-        // huge tool_result / tool_use cannot blow up the table. See
-        // session-events-store.ts for the truncation envelope shape.
-        S.addSessionEvent.run(
-          'message',
-          assistantMsgId,
-          ++seq,
-          event.type,
-          clampPayload(JSON.stringify(event)),
-        );
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('Failed to persist session_event:', message);
-      }
-
-      if (event.type === 'assistant_text') {
-        const text = typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-        const { next, accumulatedForKickoff } = applyAssistantTextChunkForDelegationKickoff(
-          { finalText, partialFallback },
-          text,
-          event.partial,
-          event.replacesAssistantBuffer ? { replace: true } : undefined,
-        );
-        finalText = next.finalText;
-        partialFallback = next.partialFallback;
-        try {
-          S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
-        } catch {}
-        tryKickoffDelegationFromStream(accumulatedForKickoff);
-      }
-
-      if (event.type === 'system' && event.gitWorktree != null) {
-        try {
-          S.updateSessionGitWorktreeDetected.run(event.gitWorktree ? 1 : 0, sessionId);
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn('[chat] Failed to persist git_worktree_detected:', message);
+        args.push(prompt);
+        bin = CODEX_BIN;
+      } else {
+        const isAskMode = !!session!.ask_mode;
+        args = [
+          '--print',
+          '--permission-mode',
+          isAskMode ? 'plan' : 'bypassPermissions',
+          '--model',
+          model,
+          '--system-prompt',
+          enrichedPrompt,
+          '--output-format',
+          'stream-json',
+          '--include-partial-messages',
+          '--verbose',
+          // Agent Hub provides skills via the `<agenthub:skill>` block protocol;
+          // disable Claude Code's native `Skill` tool so agents don't fall back
+          // to it for skills outside the bundled list (see claude-cli-args.ts).
+          ...disableNativeSkillToolArgs(),
+        ];
+        // Wire per-session MCP config when we wrote one above. `--mcp-config`
+        // is the only documented Claude Code MCP source that fits Agent
+        // Hub's per-session lifecycle; `.claude/settings.json::mcpServers`
+        // is silently ignored by the loader (verified via `claude mcp list`).
+        // `--strict-mcp-config` ensures the agent only sees servers Agent
+        // Hub controls — no surprises from hand-edited `~/.claude.json` or
+        // `.mcp.json` files in the worktree.
+        if (mcpConfigPath) {
+          args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
         }
-        broadcast({
-          type: 'session-worktree-detected',
+        if (isNewEngineSession) {
+          args.push('--session-id', sessionId);
+        } else {
+          args.push('--resume', engineSessionId!);
+        }
+        args.push(finalPrompt);
+        bin = CLAUDE_BIN;
+      }
+
+      const parser = createStreamParser(engine);
+      let finalText = '';
+      let partialFallback = '';
+      let seq = 0;
+      let errorOutput = '';
+      // Accumulates error payloads that arrive on *stdout* (as JSONL for Codex /
+      // Gemini) so the close handler can surface a meaningful message even when
+      // stderr is empty or only contains informational noise (see
+      // CODEX_STDERR_NOISE below). Examples:
+      //   codex → turn.failed.error.message (HTTP 400 model-not-supported)
+      //   codex → unknown `codex error: ...`
+      let streamErrorMessage = '';
+
+      /** Set once we have a complete `<delegate>...</delegate>` block in the stream — workers may start before the lead CLI exits. Synthesis still runs after close (see `synthesizeResults`). */
+      let delegationWorkPromise: Promise<DelegationResult[]> | null = null;
+      let delegationSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+
+      function clearDelegationSafetyTimer(): void {
+        if (delegationSafetyTimer != null) {
+          clearTimeout(delegationSafetyTimer);
+          delegationSafetyTimer = null;
+        }
+      }
+
+      function startDelegationOnce(tasks: DelegateTask[]): void {
+        if (delegationWorkPromise !== null) return;
+        activeDelegationSessions.add(sessionId);
+        delegationSafetyTimer = setTimeout(
+          () => {
+            if (activeDelegationSessions.has(sessionId)) {
+              console.error(
+                `[Delegation] Safety timeout reached for session ${sessionId} — force-unlocking`,
+              );
+              handleDelegationCancel(sessionId);
+              broadcast({
+                type: 'delegation_error',
+                sessionId,
+                parentMessageId: assistantMsgId,
+                error: 'Delegation timed out (safety limit reached)',
+              });
+              drainQueue(sessionId);
+            }
+          },
+          (config as AppConfig & { delegationSafetyTimeoutMs?: number })
+            .delegationSafetyTimeoutMs || 900000,
+        );
+
+        delegationWorkPromise = handleDelegation(
           sessionId,
-          gitWorktree: event.gitWorktree,
+          assistantMsgId,
+          tasks,
+          enrichedAgent!,
+          project,
+          effectiveCwd,
+        );
+        void delegationWorkPromise.finally(() => {
+          clearDelegationSafetyTimer();
         });
       }
 
-      // Codex emits the engine-side session id inside the first `thread.started`
-      // event (normalized to a `system` event by normalizeCodex). Persist it on
-      // the first appearance so subsequent turns can `codex exec resume <id>`.
-      if (
-        engine === 'codex-cli' &&
-        event.type === 'system' &&
-        event.sessionId &&
-        !engineSessionId
-      ) {
-        engineSessionId = event.sessionId;
-        try {
-          S.updateSessionEngineSessionId.run(event.sessionId, sessionId);
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn('[chat] Failed to persist codex engine_session_id:', message);
+      function tryKickoffDelegationFromStream(assistantAccumulated: string): void {
+        // Sub-agent delegation has been removed. This function is retained as a
+        // no-op so existing call sites continue to compile while the surrounding
+        // infrastructure is progressively deleted.
+        void assistantAccumulated;
+        return;
+      }
+
+      if (engine === 'claude-code') {
+        const isWorktree = effectiveCwd !== project.cwd;
+        const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
+        // MCP server emission moved up: see the `mergedMcpServers` /
+        // `mcpConfigPath` block before the args branch. The hooks-config
+        // file is now strictly about hooks (Stop, format guard, agent
+        // hooks); MCP lives in `.claude/mcp-config.json` paired with the
+        // Claude CLI's `--mcp-config` flag.
+        if (isWorktree || hasAgentHooks) {
+          try {
+            writeHooksConfig(effectiveCwd, sessionId, {
+              agentHooks: agent.hooks,
+              includeSystemHooks: isWorktree,
+            });
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[chat] Failed to write hooks config: ${message}`);
+          }
         }
       }
 
-      // Claude Code emits a `system` (subtype=init) event the moment it has
-      // booted and created its on-disk JSONL. Persist `engine_session_id`
-      // immediately so subsequent turns use `--resume` instead of `--session-id`.
-      // Without this, if the spawn dies before any `assistant_text` arrives
-      // (cancel, network blip, upstream API error), the JSONL exists on disk
-      // but our DB still has `engine_session_id = NULL`. The next turn would
-      // re-spawn with `--session-id <same X>` and the CLI would reject it
-      // with "Session ID X is already in use." See claude-session-id-conflict.ts.
-      if (
-        engine === 'claude-code' &&
-        event.type === 'system' &&
-        event.sessionId &&
-        !engineSessionId
-      ) {
-        engineSessionId = event.sessionId;
-        try {
-          S.updateSessionEngineSessionId.run(event.sessionId, sessionId);
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn('[chat] Failed to persist claude engine_session_id:', message);
-        }
-      }
+      const spawnEnv: NodeJS.ProcessEnv = await (async () => {
+        // ownerId resolved above. The lookup is reused here for per-user
+        // Claude auth (below) and per-user GitHub auth (further down).
 
-      if (event.type === 'checkpoint' && event.uuid) {
-        S.addCheckpoint.run(sessionId, assistantMsgId, event.uuid, event.turnIndex, null);
-        broadcast({
-          type: 'checkpoint',
+        // Per-user Claude auth: when the session has a recorded owner with
+        // their own ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, those win
+        // over the host config. Falsy / missing fields fall back to the
+        // host config so unconfigured users keep working transparently.
+        let userOverride: {
+          anthropicApiKey?: string | null;
+          claudeCodeOAuthToken?: string | null;
+        } | null = null;
+        try {
+          if (ownerId) {
+            const userAuth = getUserClaudeAuth(ownerId);
+            if (userAuth && (userAuth.anthropicApiKey || userAuth.claudeCodeOAuthToken)) {
+              userOverride = {
+                anthropicApiKey: userAuth.anthropicApiKey,
+                claudeCodeOAuthToken: userAuth.claudeCodeOAuthToken,
+              };
+            }
+          }
+        } catch (err) {
+          // Per-user auth is best-effort; the host config remains the
+          // safety net so a lookup failure can never block a spawn. Emit
+          // a TOOL_ERROR-shaped line so this failure mode is observable
+          // in server logs — a user who deliberately set their own key
+          // and then silently ran under the host's identity is exactly
+          // what we want to catch in production. See
+          // plugin/skills/agent-hub/references/errors.md for the format.
+          const summary = (err as Error).message
+            .replace(/[\r\n|]+/g, ' ')
+            .trim()
+            .slice(0, 200);
+          const meta = JSON.stringify({
+            v: 2,
+            sev: 'soft',
+            resolution: 'recovered',
+            session: sessionId,
+            tags: ['per-user-claude-auth', 'spawn'],
+          });
+          console.error(
+            `TOOL_ERROR | ${new Date().toISOString()} | per-user-claude-auth | spawn lookup | error | ${summary} | ${meta}`,
+          );
+        }
+        const base = buildSpawnEnv(config, { userOverride });
+        // Reviewer agents post formal GitHub reviews via the bot identity so they
+        // bypass GitHub's "can't review your own PR" rule for human-author PRs.
+        // Bot wins over the user's own token here even when the user is
+        // signed in — the whole point of the reviewer role is to *not* be
+        // the human (so GitHub doesn't reject the review with "can't review
+        // your own PR"). For non-reviewer agents we fall through to the
+        // user's stored GitHub connection below.
+        if (config.botGithubToken && agent.role === 'reviewer') {
+          applyGithubSpawnCredentials(base, config.botGithubToken);
+        } else {
+          // Per-user GitHub auth: when the session owner has signed in via
+          // Settings → Sign in with GitHub (or pasted a PAT), inject their
+          // token as GH_TOKEN/GITHUB_TOKEN plus a process-scoped git
+          // credential helper so `gh`, `git push`, and `git fetch` against
+          // GitHub HTTPS remotes authenticate as the human at the keyboard
+          // — without leaking that credential into the host's gitconfig.
+          // Best-effort: if the lookup or refresh fails the spawn proceeds
+          // unauthenticated and the user can reconnect from Settings.
+          try {
+            if (ownerId) {
+              const oauthCreds = resolveOAuthAppCredentials(config);
+              const userGhToken = await getActiveAccessToken(ownerId, oauthCreds);
+              if (userGhToken) {
+                applyGithubSpawnCredentials(base, userGhToken);
+              }
+            }
+          } catch (err) {
+            const summary = (err as Error).message
+              .replace(/[\r\n|]+/g, ' ')
+              .trim()
+              .slice(0, 200);
+            const meta = JSON.stringify({
+              v: 2,
+              sev: 'soft',
+              resolution: 'recovered',
+              session: sessionId,
+              tags: ['per-user-github-auth', 'spawn'],
+            });
+            console.error(
+              `TOOL_ERROR | ${new Date().toISOString()} | per-user-github-auth | spawn lookup | error | ${summary} | ${meta}`,
+            );
+          }
+        }
+        if (config.apiKey) {
+          base.AGENT_HUB_API_KEY = config.apiKey;
+        }
+        base.AGENT_HUB_SESSION_ID = sessionId;
+        // Inject the Hub API base and project ID so spawned CLIs reach `/api`.
+        // Defaults to loopback with the bound port (`getActualPort` inside the
+        // resolver); deployments with remote tool hosts set AGENT_HUB_AGENT_URL /
+        // AGENT_HUB_PUBLIC_URL (config `publicUrl`). See resolveAgentHubApiBaseForSpawn.
+        base.AGENT_HUB_URL = resolveAgentHubApiBaseForSpawn(config);
+        base.PROJECT_ID = project.id;
+        return base;
+      })();
+
+      // Merge allowlisted caller-supplied env vars (e.g. DEV_HUB_API_KEY from
+      // autonomous-dispatch for cross-hub cards). See `mergeAllowlistedExtraEnv`.
+      mergeAllowlistedExtraEnv(spawnEnv, msg.extraEnv);
+
+      if (process.env.AGENT_HUB_DEBUG_CLAUDE_AUTH === '1' && engine === 'claude-code') {
+        console.log('[chat] claude-code spawn auth:', {
           sessionId,
-          uuid: event.uuid,
-          turnIndex: event.turnIndex,
+          hasAnthropicApiKey: Boolean(spawnEnv.ANTHROPIC_API_KEY),
+          hasClaudeOAuthToken: Boolean(spawnEnv.CLAUDE_CODE_OAUTH_TOKEN),
+          cwd: effectiveCwd,
+        });
+      }
+
+      const chainStartedAtMs = msg._chainStartedAtMs ?? Date.now();
+
+      // Pre-spawn cwd guard. Node's child_process.spawn reports ENOENT against
+      // the *command* when the cwd doesn't exist, which historically surfaced
+      // as the misleading "binary not found at <bin>" error even though the bin
+      // itself was fine. Catch this case up front: auto-create the directory
+      // when possible (recoverable) or fail with a precise, actionable message.
+      const ensureCwd = ensureSpawnCwd(effectiveCwd);
+      if (ensureCwd.status === 'auto-created') {
+        console.warn(`[chat] auto-created missing cwd for session ${sessionId}: ${effectiveCwd}`);
+      } else if (ensureCwd.status === 'failed') {
+        const errText =
+          `Working directory does not exist and could not be created: ${effectiveCwd}. ` +
+          `Update the project's "cwd" in Settings or create the directory. ` +
+          `(${ensureCwd.reason})`;
+        console.error(`[chat] ${errText}`);
+        saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+        broadcast({
+          type: 'error',
           messageId: assistantMsgId,
+          sessionId,
+          error: errText,
         });
-      }
-
-      // Capture upstream engine errors that arrive on stdout so the close
-      // handler can surface them. For Codex the stream-parser turns a
-      // `turn.failed` JSONL event into `{type:'result', isError:true, text}`
-      // and an `error` event into `{type:'unknown', text:"codex error: ..."}`.
-      // Without this, the close handler only sees stderr — which for Codex
-      // is usually just the "Reading additional input from stdin..." notice.
-      if (event.type === 'result' && event.isError && event.text) {
-        if (!streamErrorMessage) streamErrorMessage = event.text;
-      }
-      if (
-        event.type === 'unknown' &&
-        typeof event.text === 'string' &&
-        (event.text.startsWith('codex error:') || event.text.startsWith('codex item error:'))
-      ) {
-        if (!streamErrorMessage) streamErrorMessage = event.text;
-      }
-
-      // Progress-panel persistence: mirror progress_step events into the
-      // session_progress table so reopening the session rehydrates the
-      // ProgressPanel. Also broadcast a typed `session-progress` WS message
-      // so the client can update without having to parse the raw session
-      // event stream. Best-effort — failures don't block the chat turn.
-      if (event.type === 'progress_step') {
         try {
-          if (event.status === 'started') {
-            S.addSessionProgress.run(
-              sessionId,
-              assistantMsgId,
-              event.step,
-              'started',
-              event.startedAt,
-              null,
-            );
-          } else {
-            // `completed` / `failed` — close the most recent open row for
-            // (session_id, step). If no matching row exists (e.g. agent
-            // skipped the `started` marker), insert a one-shot row so the
-            // panel still shows the outcome.
-            const finishedAt = event.finishedAt ?? event.startedAt;
-            const info = S.completeSessionProgress.run(
-              event.status,
-              finishedAt,
-              sessionId,
-              event.step,
-            );
-            if ((info as { changes?: number }).changes === 0) {
+          stmts.deleteActiveTask.run(sessionId);
+        } catch {}
+        drainQueue(sessionId);
+        return;
+      }
+
+      const cliTurnStartMs = Date.now();
+      const proc = spawn(bin, args, {
+        cwd: effectiveCwd,
+        env: spawnEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Run as its own process-group leader so killProcessGroup(proc) reaches
+        // grandchildren (bash → npm → vitest workers) on cancel/shutdown.
+        detached: true,
+      });
+
+      const S = stmts;
+
+      /** Persist + fan-out host `<agenthub:react>` browser step telemetry like stream-json events. */
+      const emitBrowserActivityEvent = (evt: BrowserToolActivityEvent): void => {
+        const nextSeq = ++seq;
+        try {
+          S.addSessionEvent.run(
+            'message',
+            assistantMsgId,
+            nextSeq,
+            evt.type,
+            clampPayload(JSON.stringify(evt)),
+          );
+        } catch (err: unknown) {
+          console.error(
+            `[chat] failed to persist browser_tool_activity (${evt.actionId}):`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+        broadcast({
+          type: 'session-event',
+          sessionId,
+          messageId: assistantMsgId,
+          seq: nextSeq,
+          event: evt,
+        });
+      };
+
+      activeProcesses.set(sessionId, proc);
+      trackChild(proc);
+      if (proc.pid) {
+        try {
+          S.updateActiveTaskPid.run(proc.pid, sessionId);
+        } catch {}
+      }
+
+      const handleEvent = (event: StreamEvent): void => {
+        try {
+          // Clamp the serialized payload to MAX_PAYLOAD_BYTES so a single
+          // huge tool_result / tool_use cannot blow up the table. See
+          // session-events-store.ts for the truncation envelope shape.
+          S.addSessionEvent.run(
+            'message',
+            assistantMsgId,
+            ++seq,
+            event.type,
+            clampPayload(JSON.stringify(event)),
+          );
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('Failed to persist session_event:', message);
+        }
+
+        if (event.type === 'assistant_text') {
+          const text =
+            typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
+          const { next, accumulatedForKickoff } = applyAssistantTextChunkForDelegationKickoff(
+            { finalText, partialFallback },
+            text,
+            event.partial,
+            event.replacesAssistantBuffer ? { replace: true } : undefined,
+          );
+          finalText = next.finalText;
+          partialFallback = next.partialFallback;
+          try {
+            S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
+          } catch {}
+          tryKickoffDelegationFromStream(accumulatedForKickoff);
+        }
+
+        if (event.type === 'system' && event.gitWorktree != null) {
+          try {
+            S.updateSessionGitWorktreeDetected.run(event.gitWorktree ? 1 : 0, sessionId);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn('[chat] Failed to persist git_worktree_detected:', message);
+          }
+          broadcast({
+            type: 'session-worktree-detected',
+            sessionId,
+            gitWorktree: event.gitWorktree,
+          });
+        }
+
+        // Codex emits the engine-side session id inside the first `thread.started`
+        // event (normalized to a `system` event by normalizeCodex). Persist it on
+        // the first appearance so subsequent turns can `codex exec resume <id>`.
+        if (
+          engine === 'codex-cli' &&
+          event.type === 'system' &&
+          event.sessionId &&
+          !engineSessionId
+        ) {
+          engineSessionId = event.sessionId;
+          try {
+            S.updateSessionEngineSessionId.run(event.sessionId, sessionId);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn('[chat] Failed to persist codex engine_session_id:', message);
+          }
+        }
+
+        // Claude Code emits a `system` (subtype=init) event the moment it has
+        // booted and created its on-disk JSONL. Persist `engine_session_id`
+        // immediately so subsequent turns use `--resume` instead of `--session-id`.
+        // Without this, if the spawn dies before any `assistant_text` arrives
+        // (cancel, network blip, upstream API error), the JSONL exists on disk
+        // but our DB still has `engine_session_id = NULL`. The next turn would
+        // re-spawn with `--session-id <same X>` and the CLI would reject it
+        // with "Session ID X is already in use." See claude-session-id-conflict.ts.
+        if (
+          engine === 'claude-code' &&
+          event.type === 'system' &&
+          event.sessionId &&
+          !engineSessionId
+        ) {
+          engineSessionId = event.sessionId;
+          try {
+            S.updateSessionEngineSessionId.run(event.sessionId, sessionId);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn('[chat] Failed to persist claude engine_session_id:', message);
+          }
+        }
+
+        if (event.type === 'checkpoint' && event.uuid) {
+          S.addCheckpoint.run(sessionId, assistantMsgId, event.uuid, event.turnIndex, null);
+          broadcast({
+            type: 'checkpoint',
+            sessionId,
+            uuid: event.uuid,
+            turnIndex: event.turnIndex,
+            messageId: assistantMsgId,
+          });
+        }
+
+        // Capture upstream engine errors that arrive on stdout so the close
+        // handler can surface them. For Codex the stream-parser turns a
+        // `turn.failed` JSONL event into `{type:'result', isError:true, text}`
+        // and an `error` event into `{type:'unknown', text:"codex error: ..."}`.
+        // Without this, the close handler only sees stderr — which for Codex
+        // is usually just the "Reading additional input from stdin..." notice.
+        if (event.type === 'result' && event.isError && event.text) {
+          if (!streamErrorMessage) streamErrorMessage = event.text;
+        }
+        if (
+          event.type === 'unknown' &&
+          typeof event.text === 'string' &&
+          (event.text.startsWith('codex error:') || event.text.startsWith('codex item error:'))
+        ) {
+          if (!streamErrorMessage) streamErrorMessage = event.text;
+        }
+
+        // Progress-panel persistence: mirror progress_step events into the
+        // session_progress table so reopening the session rehydrates the
+        // ProgressPanel. Also broadcast a typed `session-progress` WS message
+        // so the client can update without having to parse the raw session
+        // event stream. Best-effort — failures don't block the chat turn.
+        if (event.type === 'progress_step') {
+          try {
+            if (event.status === 'started') {
               S.addSessionProgress.run(
                 sessionId,
                 assistantMsgId,
                 event.step,
-                event.status,
+                'started',
                 event.startedAt,
-                finishedAt,
+                null,
               );
+            } else {
+              // `completed` / `failed` — close the most recent open row for
+              // (session_id, step). If no matching row exists (e.g. agent
+              // skipped the `started` marker), insert a one-shot row so the
+              // panel still shows the outcome.
+              const finishedAt = event.finishedAt ?? event.startedAt;
+              const info = S.completeSessionProgress.run(
+                event.status,
+                finishedAt,
+                sessionId,
+                event.step,
+              );
+              if ((info as { changes?: number }).changes === 0) {
+                S.addSessionProgress.run(
+                  sessionId,
+                  assistantMsgId,
+                  event.step,
+                  event.status,
+                  event.startedAt,
+                  finishedAt,
+                );
+              }
             }
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn('[chat] Failed to persist session_progress:', message);
           }
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn('[chat] Failed to persist session_progress:', message);
+          broadcast({
+            type: 'session-progress',
+            sessionId,
+            messageId: assistantMsgId,
+            step: event.step,
+            status: event.status,
+            startedAt: event.startedAt,
+            finishedAt: event.finishedAt ?? null,
+          });
         }
-        broadcast({
-          type: 'session-progress',
-          sessionId,
-          messageId: assistantMsgId,
-          step: event.step,
-          status: event.status,
-          startedAt: event.startedAt,
-          finishedAt: event.finishedAt ?? null,
-        });
-      }
 
-      broadcast({
-        type: 'session-event',
-        messageId: assistantMsgId,
-        sessionId,
-        seq,
-        event,
+        broadcast({
+          type: 'session-event',
+          messageId: assistantMsgId,
+          sessionId,
+          seq,
+          event,
+        });
+
+        if (event.type === 'assistant_text') {
+          const chunkText =
+            typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
+          broadcast({
+            type: 'stream',
+            messageId: assistantMsgId,
+            sessionId,
+            chunk: chunkText,
+            content: finalText || partialFallback,
+            engine,
+            model,
+          });
+        }
+      };
+
+      // Tracks whether proc.on('error') fired before 'close'. When spawn fails
+      // (e.g. ENOENT because the configured bin path doesn't exist), Node emits
+      // 'error' first with a useful message, then 'close' with code=-2 (-errno
+      // for ENOENT). Without this flag the close handler overwrites the useful
+      // "Failed to spawn codex: spawn /usr/local/bin/codex ENOENT" error with
+      // the cryptic "codex-cli exited with code -2".
+      let spawnErrored = false;
+
+      proc.stdout!.on('data', (chunk: Buffer) => {
+        for (const event of parser.feed(chunk)) handleEvent(event);
       });
 
-      if (event.type === 'assistant_text') {
-        const chunkText =
-          typeof event.text === 'string' ? event.text : JSON.stringify(event.text ?? '');
-        broadcast({
-          type: 'stream',
-          messageId: assistantMsgId,
-          sessionId,
-          chunk: chunkText,
-          content: finalText || partialFallback,
-          engine,
-          model,
-        });
-      }
-    };
+      proc.stderr!.on('data', (chunk: Buffer) => {
+        errorOutput += chunk.toString();
+      });
 
-    // Tracks whether proc.on('error') fired before 'close'. When spawn fails
-    // (e.g. ENOENT because the configured bin path doesn't exist), Node emits
-    // 'error' first with a useful message, then 'close' with code=-2 (-errno
-    // for ENOENT). Without this flag the close handler overwrites the useful
-    // "Failed to spawn codex: spawn /usr/local/bin/codex ENOENT" error with
-    // the cryptic "codex-cli exited with code -2".
-    let spawnErrored = false;
+      proc.on('close', async (code: number | null) => {
+        activeProcesses.delete(sessionId);
+        try {
+          S.deleteActiveTask.run(sessionId);
+        } catch {}
 
-    proc.stdout!.on('data', (chunk: Buffer) => {
-      for (const event of parser.feed(chunk)) handleEvent(event);
-    });
+        // If spawn already failed with ENOENT/EACCES/etc, the 'error' listener
+        // has already saved a clearer message. Bail out before we clobber it.
+        if (spawnErrored) {
+          emitReactLoopStep(broadcast, {
+            sessionId,
+            messageId: assistantMsgId,
+            stepId: `${assistantMsgId}:cli`,
+            phase: 'cli_turn',
+            tool: engine,
+            exitCode: -1,
+            durationMs: Date.now() - cliTurnStartMs,
+            continuationDepth,
+            chainElapsedMs: Date.now() - chainStartedAtMs,
+            detail: 'spawn_errored',
+          });
+          return;
+        }
 
-    proc.stderr!.on('data', (chunk: Buffer) => {
-      errorOutput += chunk.toString();
-    });
-
-    proc.on('close', async (code: number | null) => {
-      activeProcesses.delete(sessionId);
-      try {
-        S.deleteActiveTask.run(sessionId);
-      } catch {}
-
-      // If spawn already failed with ENOENT/EACCES/etc, the 'error' listener
-      // has already saved a clearer message. Bail out before we clobber it.
-      if (spawnErrored) {
+        const cliDurationMs = Date.now() - cliTurnStartMs;
         emitReactLoopStep(broadcast, {
           sessionId,
           messageId: assistantMsgId,
           stepId: `${assistantMsgId}:cli`,
           phase: 'cli_turn',
           tool: engine,
-          exitCode: -1,
-          durationMs: Date.now() - cliTurnStartMs,
+          exitCode: code === null ? -1 : code,
+          durationMs: cliDurationMs,
           continuationDepth,
           chainElapsedMs: Date.now() - chainStartedAtMs,
-          detail: 'spawn_errored',
+          detail: isAutoContinuation ? 'auto_continuation' : 'user_turn',
         });
-        return;
-      }
 
-      const cliDurationMs = Date.now() - cliTurnStartMs;
-      emitReactLoopStep(broadcast, {
-        sessionId,
-        messageId: assistantMsgId,
-        stepId: `${assistantMsgId}:cli`,
-        phase: 'cli_turn',
-        tool: engine,
-        exitCode: code === null ? -1 : code,
-        durationMs: cliDurationMs,
-        continuationDepth,
-        chainElapsedMs: Date.now() - chainStartedAtMs,
-        detail: isAutoContinuation ? 'auto_continuation' : 'user_turn',
-      });
+        for (const event of parser.flush()) handleEvent(event);
 
-      for (const event of parser.flush()) handleEvent(event);
+        const assembled = (finalText || partialFallback).trim();
 
-      const assembled = (finalText || partialFallback).trim();
-
-      if (code !== 0 && !assembled) {
-        // Node reports `-errno` on the close event when spawn fails without
-        // an 'error' listener firing first (rare, but guards against edge
-        // cases). -2 = ENOENT, -13 = EACCES. Produce a message that points
-        // at the actual bin path + the config key to edit, rather than the
-        // cryptic "codex-cli exited with code -2".
-        //
-        // pickProcessErrorMessage strips known stderr noise (e.g. Codex's
-        // "Reading additional input from stdin..." line) and falls back to
-        // streamErrorMessage (real upstream errors captured from stdout
-        // JSONL) before the generic exit-code message.
-        let errorMsg = pickProcessErrorMessage({
-          stderr: errorOutput,
-          streamErrorMessage,
-          engine,
-          exitCode: code,
-        });
-        if (code === -2 || code === -13) {
-          const configKey =
-            engine === 'cursor-agent'
-              ? 'cursorBin'
-              : engine === 'gemini-cli'
-                ? 'geminiBin'
-                : engine === 'codex-cli'
-                  ? 'codexBin'
-                  : 'claudeBin';
-          const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
-          errorMsg =
-            `${engine} binary ${reason} at ${bin}. ` +
-            `Update ${configKey} in Settings (or ~/.agent-hub/data/config.json) to the correct path.`;
-        }
-
-        // Self-heal "Session ID X is already in use" — the session's on-disk
-        // JSONL exists but our DB never recorded `engine_session_id` (e.g. the
-        // first turn died before any assistant_text). Persist the id so the
-        // next retry uses `--resume`, and rewrite the surfaced error to point
-        // the user at a retry instead of the cryptic CLI line.
-        if (engine === 'claude-code' && isNewEngineSession && !engineSessionId) {
-          const conflict =
-            detectSessionIdInUseError(errorOutput) ||
-            detectSessionIdInUseError(streamErrorMessage) ||
-            detectSessionIdInUseError(errorMsg);
-          if (conflict) {
-            engineSessionId = conflict.sessionId;
-            try {
-              S.updateSessionEngineSessionId.run(conflict.sessionId, sessionId);
-            } catch (err: unknown) {
-              const message = err instanceof Error ? err.message : String(err);
-              console.warn(
-                '[chat] Failed to persist claude engine_session_id during recovery:',
-                message,
-              );
-            }
-            errorMsg = buildSessionIdInUseRecoveryMessage(conflict.sessionId);
+        if (code !== 0 && !assembled) {
+          // Node reports `-errno` on the close event when spawn fails without
+          // an 'error' listener firing first (rare, but guards against edge
+          // cases). -2 = ENOENT, -13 = EACCES. Produce a message that points
+          // at the actual bin path + the config key to edit, rather than the
+          // cryptic "codex-cli exited with code -2".
+          //
+          // pickProcessErrorMessage strips known stderr noise (e.g. Codex's
+          // "Reading additional input from stdin..." line) and falls back to
+          // streamErrorMessage (real upstream errors captured from stdout
+          // JSONL) before the generic exit-code message.
+          let errorMsg = pickProcessErrorMessage({
+            stderr: errorOutput,
+            streamErrorMessage,
+            engine,
+            exitCode: code,
+          });
+          if (code === -2 || code === -13) {
+            const configKey =
+              engine === 'cursor-agent'
+                ? 'cursorBin'
+                : engine === 'gemini-cli'
+                  ? 'geminiBin'
+                  : engine === 'codex-cli'
+                    ? 'codexBin'
+                    : 'claudeBin';
+            const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
+            errorMsg =
+              `${engine} binary ${reason} at ${bin}. ` +
+              `Update ${configKey} in Settings (or ~/.agent-hub/data/config.json) to the correct path.`;
           }
-        }
-        console.error(`[chat] ${engine} exited code=${code} session=${sessionId}`);
-        console.error(`  bin: ${bin}`);
-        console.error(`  cwd: ${effectiveCwd}`);
-        console.error(`  args: ${JSON.stringify(args)}`);
-        if (errorOutput.trim()) console.error(`  stderr:\n${errorOutput.trim()}`);
-        else console.error('  stderr: <empty>');
-        try {
-          S.addSessionEvent.run(
-            'message',
-            assistantMsgId,
-            ++seq,
-            'error',
-            JSON.stringify({ type: 'error', message: errorMsg }),
-          );
-        } catch {}
-        saveErrorMessage(sessionId, assistantMsgId, engine, model, errorMsg);
-        broadcast({
-          type: 'error',
-          messageId: assistantMsgId,
-          sessionId,
-          error: errorMsg,
-        });
-        if (delegationWorkPromise) {
-          handleDelegationCancel(sessionId);
-          delegationWorkPromise = null;
-        }
-        try {
-          const bgTask = S.getBackgroundTaskBySession.get(sessionId) as
-            | BackgroundTaskRow
-            | undefined;
-          if (bgTask && bgTask.status === 'running') {
-            S.updateBackgroundTaskStatus.run('error', bgTask.id);
-            broadcast({
-              type: 'task_complete',
-              taskId: bgTask.id,
-              sessionId,
-              agentId,
-              status: 'error',
-            });
-          }
-        } catch {}
-        try {
-          const np = (S as Stmts).getNoteProcessingBySession?.get(sessionId) as
-            | NoteProcessingRow
-            | undefined;
-          if (np && (np.status === 'pending' || np.status === 'running')) {
-            S.updateNoteProcessing.run('error', JSON.stringify({ error: errorMsg }), np.id);
-          }
-        } catch {}
-        drainQueue(sessionId);
-        return;
-      }
 
-      const rawFinalContent = assembled || errorOutput.trim() || '(empty response)';
-      let finalContent = rawFinalContent;
-      const closeCardDetection = detectCloseCardBlock(rawFinalContent);
-      const closeTask = closeCardDetection.task;
-      // `<agenthub:preview>` block — request a per-session worktree
-      // preview. Detected here alongside the other action blocks so the
-      // post-stream hook below can dispatch boot + screenshot async.
-      const previewDetection = detectPreviewBlock(rawFinalContent);
-      // Sub-agent delegation and handoff have been removed. We retain the
-      // local symbols as `null` so the rest of this handler — which still
-      // branches on `handoffDetection` / `delegateTasks` while the rest of
-      // the system is being progressively deleted — compiles and behaves as
-      // if the model had emitted neither a `<delegate>` nor a `<handoff>`
-      // block. Any literal `<delegate>...</delegate>` text the model still
-      // produces is left in the assistant message as inert prose; the
-      // dispatcher will not run.
-      const handoffDetection = null as ReturnType<typeof detectHandoffBlock> | null;
-      const delegationDisabled = false;
-      const delegateTasks = null as ReturnType<typeof parseDelegateBlock> | null;
-      // Platform-wide kill-switch: both systems are globally off. Guards the
-      // malformed-gate and disabled-gate branches below so they behave
-      // consistently instead of giving a misleading "bad JSON shape" nudge
-      // when the real cause is global removal.
-      // TODO(cleanup-card): delete with delegation modules
-      const delegationGloballyOff = true;
-      let shouldAutoContinue = false;
-      let budgetResult: { ok: boolean; reasons: string[] } = { ok: false, reasons: [] };
-      let continuationContextAdded = false;
-      let assistantContextToAppend = '';
-      const reactObservations: string[] = [];
-      const reactLoopEnabled = (session!.react_loop_enabled ?? 1) !== 0;
-
-      try {
-        const actions: ReActAction[] = [];
-        if (!reactLoopEnabled) {
-          const rawSkillBlock = detectSkillInvokeBlock(rawFinalContent);
-          if (rawSkillBlock) {
-            const injection = handleSkillInvoke({
-              rawBlock: rawSkillBlock,
-              paths: { skillsDir: paths.skillsDir },
-              sessionId,
-              stmts: stmts as Stmts,
-              broadcast,
-            });
-            if (injection.trim()) {
-              assistantContextToAppend = assistantContextToAppend
-                ? `${assistantContextToAppend}\n\n${injection}`
-                : injection;
-              reactObservations.push('- Loaded skill context (legacy skill block).');
-            }
-          }
-          // Standalone <agenthub:wiki> (no <agenthub:react>): must run the same
-          // hybrid RAG path as the react-on / no-react-block branch, via `actions`
-          // + the shared executor loop below.
-          const rawWikiBlockLegacy = detectWikiRequestBlock(rawFinalContent);
-          if (rawWikiBlockLegacy) {
-            const parsedWiki = parseWikiRequestBlock(rawWikiBlockLegacy);
-            if ('error' in parsedWiki) {
-              reactObservations.push(`- Legacy wiki block malformed: ${parsedWiki.detail}`);
-            } else {
-              actions.push({ tool: 'wiki', query: parsedWiki.query });
-            }
-          }
-        } else {
-          const rawReactBlock = detectReActBlock(rawFinalContent);
-          if (rawReactBlock) {
-            const parsedReact = parseReActBlock(rawReactBlock);
-            if ('error' in parsedReact) {
-              reactObservations.push(`- ReAct block malformed: ${parsedReact.detail}`);
-            } else {
-              actions.push(...parsedReact.actions);
-              // Same assistant message may also include legacy blocks; merge so
-              // they are not dropped when a ReAct block is present.
-              const legacySkillRaw = detectSkillInvokeBlock(rawFinalContent);
-              if (legacySkillRaw) {
-                const pst = parseSkillBlock(legacySkillRaw);
-                if ('error' in pst) {
-                  reactObservations.push(`- Legacy <agenthub:skill> malformed: ${pst.detail}`);
-                } else {
-                  const dup = actions.some((a) => a.tool === 'skill' && a.name === pst.name);
-                  if (dup) {
-                    reactObservations.push(
-                      `- Legacy <agenthub:skill> skipped (same skill already in the merged action list).`,
-                    );
-                  } else {
-                    actions.push({ tool: 'skill', name: pst.name });
-                    reactObservations.push(
-                      `- Legacy <agenthub:skill> merged into ReAct queue as skill("${pst.name}").`,
-                    );
-                  }
-                }
+          // Self-heal "Session ID X is already in use" — the session's on-disk
+          // JSONL exists but our DB never recorded `engine_session_id` (e.g. the
+          // first turn died before any assistant_text). Persist the id so the
+          // next retry uses `--resume`, and rewrite the surfaced error to point
+          // the user at a retry instead of the cryptic CLI line.
+          if (engine === 'claude-code' && isNewEngineSession && !engineSessionId) {
+            const conflict =
+              detectSessionIdInUseError(errorOutput) ||
+              detectSessionIdInUseError(streamErrorMessage) ||
+              detectSessionIdInUseError(errorMsg);
+            if (conflict) {
+              engineSessionId = conflict.sessionId;
+              try {
+                S.updateSessionEngineSessionId.run(conflict.sessionId, sessionId);
+              } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : String(err);
+                console.warn(
+                  '[chat] Failed to persist claude engine_session_id during recovery:',
+                  message,
+                );
               }
-              const legacyWikiRaw = detectWikiRequestBlock(rawFinalContent);
-              if (legacyWikiRaw) {
-                const pWiki = parseWikiRequestBlock(legacyWikiRaw);
-                if ('error' in pWiki) {
-                  reactObservations.push(`- Legacy <agenthub:wiki> malformed: ${pWiki.detail}`);
-                } else {
-                  const dup = actions.some((a) => a.tool === 'wiki' && a.query === pWiki.query);
-                  if (dup) {
-                    reactObservations.push(
-                      `- Legacy <agenthub:wiki> skipped (same query already in the merged action list).`,
-                    );
-                  } else {
-                    actions.push({ tool: 'wiki', query: pWiki.query });
-                    reactObservations.push(`- Legacy <agenthub:wiki> merged into ReAct queue.`);
-                  }
-                }
-              }
+              errorMsg = buildSessionIdInUseRecoveryMessage(conflict.sessionId);
             }
-          } else {
+          }
+          console.error(`[chat] ${engine} exited code=${code} session=${sessionId}`);
+          console.error(`  bin: ${bin}`);
+          console.error(`  cwd: ${effectiveCwd}`);
+          console.error(`  args: ${JSON.stringify(args)}`);
+          if (errorOutput.trim()) console.error(`  stderr:\n${errorOutput.trim()}`);
+          else console.error('  stderr: <empty>');
+          try {
+            S.addSessionEvent.run(
+              'message',
+              assistantMsgId,
+              ++seq,
+              'error',
+              JSON.stringify({ type: 'error', message: errorMsg }),
+            );
+          } catch {}
+          saveErrorMessage(sessionId, assistantMsgId, engine, model, errorMsg);
+          broadcast({
+            type: 'error',
+            messageId: assistantMsgId,
+            sessionId,
+            error: errorMsg,
+          });
+          if (delegationWorkPromise) {
+            handleDelegationCancel(sessionId);
+            delegationWorkPromise = null;
+          }
+          try {
+            const bgTask = S.getBackgroundTaskBySession.get(sessionId) as
+              | BackgroundTaskRow
+              | undefined;
+            if (bgTask && bgTask.status === 'running') {
+              S.updateBackgroundTaskStatus.run('error', bgTask.id);
+              broadcast({
+                type: 'task_complete',
+                taskId: bgTask.id,
+                sessionId,
+                agentId,
+                status: 'error',
+              });
+            }
+          } catch {}
+          try {
+            const np = (S as Stmts).getNoteProcessingBySession?.get(sessionId) as
+              | NoteProcessingRow
+              | undefined;
+            if (np && (np.status === 'pending' || np.status === 'running')) {
+              S.updateNoteProcessing.run('error', JSON.stringify({ error: errorMsg }), np.id);
+            }
+          } catch {}
+          drainQueue(sessionId);
+          return;
+        }
+
+        const rawFinalContent = assembled || errorOutput.trim() || '(empty response)';
+        let finalContent = rawFinalContent;
+        const closeCardDetection = detectCloseCardBlock(rawFinalContent);
+        const closeTask = closeCardDetection.task;
+        // `<agenthub:preview>` block — request a per-session worktree
+        // preview. Detected here alongside the other action blocks so the
+        // post-stream hook below can dispatch boot + screenshot async.
+        const previewDetection = detectPreviewBlock(rawFinalContent);
+        // Sub-agent delegation and handoff have been removed. We retain the
+        // local symbols as `null` so the rest of this handler — which still
+        // branches on `handoffDetection` / `delegateTasks` while the rest of
+        // the system is being progressively deleted — compiles and behaves as
+        // if the model had emitted neither a `<delegate>` nor a `<handoff>`
+        // block. Any literal `<delegate>...</delegate>` text the model still
+        // produces is left in the assistant message as inert prose; the
+        // dispatcher will not run.
+        const handoffDetection = null as ReturnType<typeof detectHandoffBlock> | null;
+        const delegationDisabled = false;
+        const delegateTasks = null as ReturnType<typeof parseDelegateBlock> | null;
+        // Platform-wide kill-switch: both systems are globally off. Guards the
+        // malformed-gate and disabled-gate branches below so they behave
+        // consistently instead of giving a misleading "bad JSON shape" nudge
+        // when the real cause is global removal.
+        // TODO(cleanup-card): delete with delegation modules
+        const delegationGloballyOff = true;
+        let shouldAutoContinue = false;
+        let budgetResult: { ok: boolean; reasons: string[] } = { ok: false, reasons: [] };
+        let continuationContextAdded = false;
+        let assistantContextToAppend = '';
+        const reactObservations: string[] = [];
+        const reactLoopEnabled = (session!.react_loop_enabled ?? 1) !== 0;
+
+        try {
+          const actions: ReActAction[] = [];
+          if (!reactLoopEnabled) {
             const rawSkillBlock = detectSkillInvokeBlock(rawFinalContent);
             if (rawSkillBlock) {
               const injection = handleSkillInvoke({
@@ -2731,988 +2693,1083 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 reactObservations.push('- Loaded skill context (legacy skill block).');
               }
             }
-
-            const rawWikiBlock = detectWikiRequestBlock(rawFinalContent);
-            if (rawWikiBlock) {
-              const parsedWiki = parseWikiRequestBlock(rawWikiBlock);
+            // Standalone <agenthub:wiki> (no <agenthub:react>): must run the same
+            // hybrid RAG path as the react-on / no-react-block branch, via `actions`
+            // + the shared executor loop below.
+            const rawWikiBlockLegacy = detectWikiRequestBlock(rawFinalContent);
+            if (rawWikiBlockLegacy) {
+              const parsedWiki = parseWikiRequestBlock(rawWikiBlockLegacy);
               if ('error' in parsedWiki) {
                 reactObservations.push(`- Legacy wiki block malformed: ${parsedWiki.detail}`);
               } else {
                 actions.push({ tool: 'wiki', query: parsedWiki.query });
               }
             }
-          }
-        }
-
-        const maxAct = orchestrationBudgets.maxReactActionsPerTurn;
-        if (actions.length > maxAct) {
-          reactObservations.push(`- Action list exceeded ${maxAct}; truncated to budget.`);
-        }
-        let boundedActions = actions.slice(0, maxAct);
-        const browserAllowed = effectiveBrowserToolsEnabled(agent, project);
-        const browserLaunchOpts = resolveBrowserSessionOptions(agent, project);
-        if (!browserAllowed) {
-          const removed = boundedActions.filter((a) => a.tool === 'browser').length;
-          if (removed > 0) {
-            boundedActions = boundedActions.filter((a) => a.tool !== 'browser');
-            reactObservations.push(
-              `- ${removed} browser action(s) skipped: browser tools are disabled for agent "${agent.id}".`,
-            );
-            const gateMsg =
-              '## Browser tools disabled\n\nHost browser tools are turned off for this agent (`browserToolsEnabled: false`). Remove `tool: browser` entries from your `<agenthub:react>` block, or ask an operator to re-enable them under Settings → Agents.';
-            assistantContextToAppend = assistantContextToAppend
-              ? `${assistantContextToAppend}\n\n${gateMsg}`
-              : gateMsg;
-          }
-        }
-        for (let actionIdx = 0; actionIdx < boundedActions.length; actionIdx++) {
-          const action = boundedActions[actionIdx]!;
-          const hostStepStart = Date.now();
-          let hostExit = 0;
-          let hostDetail: string | undefined;
-          let hostActionThrew = false;
-          let hostActionErr: unknown;
-          try {
-            if (action.tool === 'skill') {
-              const injection = loadSkillByName({
-                name: action.name!,
-                reason: 'react-loop',
-                paths: { skillsDir: paths.skillsDir },
-                sessionId,
-                stmts: stmts as Stmts,
-                broadcast,
-              });
-              if (injection.trim()) {
-                assistantContextToAppend = assistantContextToAppend
-                  ? `${assistantContextToAppend}\n\n${injection}`
-                  : injection;
-                reactObservations.push(`- skill("${action.name}") loaded.`);
-              }
-              if (!injection.trim()) {
-                hostExit = 2;
-                hostDetail = 'empty_injection';
-              } else if (injection.includes('## Skill Load Error')) {
-                hostExit = 1;
-                hostDetail = action.name;
+          } else {
+            const rawReactBlock = detectReActBlock(rawFinalContent);
+            if (rawReactBlock) {
+              const parsedReact = parseReActBlock(rawReactBlock);
+              if ('error' in parsedReact) {
+                reactObservations.push(`- ReAct block malformed: ${parsedReact.detail}`);
               } else {
-                hostDetail = action.name || undefined;
-              }
-              continue;
-            }
-
-            if (action.tool === 'web') {
-              const webCap = orchestrationBudgets.maxWebSearchCallsPerSession;
-              const webUsed = session!.web_search_calls_used || 0;
-              if (webUsed >= webCap) {
-                const err = `## Web Search Error\nSession web search budget exhausted (${webUsed}/${webCap}).`;
-                assistantContextToAppend = assistantContextToAppend
-                  ? `${assistantContextToAppend}\n\n${err}`
-                  : err;
-                reactObservations.push(
-                  `- web("${action.query}") skipped: session web search budget exhausted.`,
-                );
-                hostExit = 2;
-                hostDetail = 'web_budget_exhausted';
-                continue;
-              }
-              const webRes = await runWebSearchForQuery(action.query!);
-              if (webRes.markdown.trim()) {
-                const injection = webRes.markdown.trim();
-                assistantContextToAppend = assistantContextToAppend
-                  ? `${assistantContextToAppend}\n\n${injection}`
-                  : injection;
-                reactObservations.push(`- web("${action.query}") returned results.`);
-              }
-              if (webRes.errorMarkdown?.trim()) {
-                const err = webRes.errorMarkdown.trim();
-                assistantContextToAppend = assistantContextToAppend
-                  ? `${assistantContextToAppend}\n\n${err}`
-                  : err;
-                reactObservations.push(
-                  `- web("${action.query}") reported an error or misconfiguration.`,
-                );
-              }
-              if (webRes.consumedCall) {
-                try {
-                  const nextWeb = webUsed + 1;
-                  stmts.updateSessionWebSearchCallsUsed.run(nextWeb, sessionId);
-                  session!.web_search_calls_used = nextWeb;
-                } catch (err: unknown) {
-                  const m = err instanceof Error ? err.message : String(err);
-                  console.error(`[web-search] failed to persist web_search_calls_used: ${m}`);
+                actions.push(...parsedReact.actions);
+                // Same assistant message may also include legacy blocks; merge so
+                // they are not dropped when a ReAct block is present.
+                const legacySkillRaw = detectSkillInvokeBlock(rawFinalContent);
+                if (legacySkillRaw) {
+                  const pst = parseSkillBlock(legacySkillRaw);
+                  if ('error' in pst) {
+                    reactObservations.push(`- Legacy <agenthub:skill> malformed: ${pst.detail}`);
+                  } else {
+                    const dup = actions.some((a) => a.tool === 'skill' && a.name === pst.name);
+                    if (dup) {
+                      reactObservations.push(
+                        `- Legacy <agenthub:skill> skipped (same skill already in the merged action list).`,
+                      );
+                    } else {
+                      actions.push({ tool: 'skill', name: pst.name });
+                      reactObservations.push(
+                        `- Legacy <agenthub:skill> merged into ReAct queue as skill("${pst.name}").`,
+                      );
+                    }
+                  }
+                }
+                const legacyWikiRaw = detectWikiRequestBlock(rawFinalContent);
+                if (legacyWikiRaw) {
+                  const pWiki = parseWikiRequestBlock(legacyWikiRaw);
+                  if ('error' in pWiki) {
+                    reactObservations.push(`- Legacy <agenthub:wiki> malformed: ${pWiki.detail}`);
+                  } else {
+                    const dup = actions.some((a) => a.tool === 'wiki' && a.query === pWiki.query);
+                    if (dup) {
+                      reactObservations.push(
+                        `- Legacy <agenthub:wiki> skipped (same query already in the merged action list).`,
+                      );
+                    } else {
+                      actions.push({ tool: 'wiki', query: pWiki.query });
+                      reactObservations.push(`- Legacy <agenthub:wiki> merged into ReAct queue.`);
+                    }
+                  }
                 }
               }
-              if (!webRes.markdown.trim() && webRes.errorMarkdown?.trim()) {
-                hostExit = 1;
-              } else if (!webRes.markdown.trim() && !webRes.errorMarkdown?.trim()) {
-                hostExit = 2;
-                hostDetail = 'empty_web_result';
-              }
-              hostDetail = hostDetail || (action.query ?? '').slice(0, 120) || undefined;
-              continue;
-            }
-
-            if (action.tool === 'wiki') {
-              if (!projectId) {
-                reactObservations.push('- wiki action skipped: missing project id.');
-                hostExit = 2;
-                hostDetail = 'missing_project_id';
-                continue;
-              }
-              const rawWikiBlock =
-                action.query && action.query.startsWith('<agenthub:wiki>')
-                  ? action.query
-                  : `<agenthub:wiki>${JSON.stringify({ query: action.query || '' })}</agenthub:wiki>`;
-              const wikiRequest = await runWikiHybridRagForAssistantRequest(
-                projectId,
-                rawWikiBlock,
-                {
-                  wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
-                    session!.wiki_hybrid_rag_consumed,
-                    session!.wiki_hybrid_rag_budget_version,
-                    maxWikiSession,
-                  ),
-                  maxCallsPerSession: maxWikiSession,
-                },
-              );
-              if (wikiRequest.promptSuffix.trim()) {
-                const injection = wikiRequest.promptSuffix.trim();
-                assistantContextToAppend = assistantContextToAppend
-                  ? `${assistantContextToAppend}\n\n${injection}`
-                  : injection;
-                reactObservations.push(`- wiki("${action.query || ''}") returned context.`);
-              }
-              if (wikiRequest.errorSuffix.trim()) {
-                assistantContextToAppend = assistantContextToAppend
-                  ? `${assistantContextToAppend}\n\n${wikiRequest.errorSuffix.trim()}`
-                  : wikiRequest.errorSuffix.trim();
-                reactObservations.push(`- wiki("${action.query || ''}") returned error.`);
-              }
-              if (wikiRequest.shouldIncrementWikiHybridRagUsage) {
-                try {
-                  const next = nextWikiHybridRagRowAfterIncrement(
-                    session!.wiki_hybrid_rag_consumed,
-                    session!.wiki_hybrid_rag_budget_version,
-                    maxWikiSession,
-                  );
-                  stmts.updateSessionWikiHybridRagBudget.run(
-                    next.consumed,
-                    next.budgetVersion,
-                    sessionId,
-                  );
-                  session!.wiki_hybrid_rag_consumed = next.consumed;
-                  session!.wiki_hybrid_rag_budget_version = next.budgetVersion;
-                } catch (err: unknown) {
-                  const m = err instanceof Error ? err.message : String(err);
-                  console.error(`[wiki-rag] failed to persist assistant usage count: ${m}`);
-                }
-              }
-              if (wikiRequest.logWarning) {
-                console.warn(
-                  `[wiki-rag] assistant retrieval failed for session ${sessionId}: ${wikiRequest.logWarning}`,
-                );
-              }
-              if (!wikiRequest.promptSuffix.trim() && wikiRequest.errorSuffix.trim()) {
-                hostExit = 1;
-              } else if (!wikiRequest.promptSuffix.trim() && !wikiRequest.errorSuffix.trim()) {
-                hostExit = 2;
-                hostDetail = 'empty_wiki_result';
-              }
-              hostDetail = hostDetail || (action.query ?? '').slice(0, 120) || undefined;
-              continue;
-            }
-
-            if (action.tool === 'browser') {
-              const actionId = uuidv4();
-              const browserInput = {
-                op: action.op ?? '',
-                url: action.url,
-                target: action.target,
-                text: action.text,
-                instruction: action.instruction,
-                schema: action.schema,
-                direction: action.direction,
-                condition: action.condition,
-              };
-              const startLabel = browserToolStartLabel(browserInput);
-              const startedAtMs = Date.now();
-              emitBrowserActivityEvent(
-                buildBrowserActivityStartedEvent({
-                  actionId,
-                  op: browserInput.op || 'unknown',
-                  label: startLabel,
-                  startedAtMs,
-                }),
-              );
-              const browserOpStartMs = Date.now();
-              let b: Awaited<ReturnType<typeof runBrowserReActStep>>;
-              try {
-                b = await runBrowserReActStep(
+            } else {
+              const rawSkillBlock = detectSkillInvokeBlock(rawFinalContent);
+              if (rawSkillBlock) {
+                const injection = handleSkillInvoke({
+                  rawBlock: rawSkillBlock,
+                  paths: { skillsDir: paths.skillsDir },
                   sessionId,
+                  stmts: stmts as Stmts,
+                  broadcast,
+                });
+                if (injection.trim()) {
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${injection}`
+                    : injection;
+                  reactObservations.push('- Loaded skill context (legacy skill block).');
+                }
+              }
+
+              const rawWikiBlock = detectWikiRequestBlock(rawFinalContent);
+              if (rawWikiBlock) {
+                const parsedWiki = parseWikiRequestBlock(rawWikiBlock);
+                if ('error' in parsedWiki) {
+                  reactObservations.push(`- Legacy wiki block malformed: ${parsedWiki.detail}`);
+                } else {
+                  actions.push({ tool: 'wiki', query: parsedWiki.query });
+                }
+              }
+            }
+          }
+
+          const maxAct = orchestrationBudgets.maxReactActionsPerTurn;
+          if (actions.length > maxAct) {
+            reactObservations.push(`- Action list exceeded ${maxAct}; truncated to budget.`);
+          }
+          let boundedActions = actions.slice(0, maxAct);
+          const browserAllowed = effectiveBrowserToolsEnabled(agent, project);
+          const browserLaunchOpts = resolveBrowserSessionOptions(agent, project);
+          if (!browserAllowed) {
+            const removed = boundedActions.filter((a) => a.tool === 'browser').length;
+            if (removed > 0) {
+              boundedActions = boundedActions.filter((a) => a.tool !== 'browser');
+              reactObservations.push(
+                `- ${removed} browser action(s) skipped: browser tools are disabled for agent "${agent.id}".`,
+              );
+              const gateMsg =
+                '## Browser tools disabled\n\nHost browser tools are turned off for this agent (`browserToolsEnabled: false`). Remove `tool: browser` entries from your `<agenthub:react>` block, or ask an operator to re-enable them under Settings → Agents.';
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${gateMsg}`
+                : gateMsg;
+            }
+          }
+          for (let actionIdx = 0; actionIdx < boundedActions.length; actionIdx++) {
+            const action = boundedActions[actionIdx]!;
+            const hostStepStart = Date.now();
+            let hostExit = 0;
+            let hostDetail: string | undefined;
+            let hostActionThrew = false;
+            let hostActionErr: unknown;
+            try {
+              if (action.tool === 'skill') {
+                const injection = loadSkillByName({
+                  name: action.name!,
+                  reason: 'react-loop',
+                  paths: { skillsDir: paths.skillsDir },
+                  sessionId,
+                  stmts: stmts as Stmts,
+                  broadcast,
+                });
+                if (injection.trim()) {
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${injection}`
+                    : injection;
+                  reactObservations.push(`- skill("${action.name}") loaded.`);
+                }
+                if (!injection.trim()) {
+                  hostExit = 2;
+                  hostDetail = 'empty_injection';
+                } else if (injection.includes('## Skill Load Error')) {
+                  hostExit = 1;
+                  hostDetail = action.name;
+                } else {
+                  hostDetail = action.name || undefined;
+                }
+                continue;
+              }
+
+              if (action.tool === 'web') {
+                const webCap = orchestrationBudgets.maxWebSearchCallsPerSession;
+                const webUsed = session!.web_search_calls_used || 0;
+                if (webUsed >= webCap) {
+                  const err = `## Web Search Error\nSession web search budget exhausted (${webUsed}/${webCap}).`;
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${err}`
+                    : err;
+                  reactObservations.push(
+                    `- web("${action.query}") skipped: session web search budget exhausted.`,
+                  );
+                  hostExit = 2;
+                  hostDetail = 'web_budget_exhausted';
+                  continue;
+                }
+                const webRes = await runWebSearchForQuery(action.query!);
+                if (webRes.markdown.trim()) {
+                  const injection = webRes.markdown.trim();
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${injection}`
+                    : injection;
+                  reactObservations.push(`- web("${action.query}") returned results.`);
+                }
+                if (webRes.errorMarkdown?.trim()) {
+                  const err = webRes.errorMarkdown.trim();
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${err}`
+                    : err;
+                  reactObservations.push(
+                    `- web("${action.query}") reported an error or misconfiguration.`,
+                  );
+                }
+                if (webRes.consumedCall) {
+                  try {
+                    const nextWeb = webUsed + 1;
+                    stmts.updateSessionWebSearchCallsUsed.run(nextWeb, sessionId);
+                    session!.web_search_calls_used = nextWeb;
+                  } catch (err: unknown) {
+                    const m = err instanceof Error ? err.message : String(err);
+                    console.error(`[web-search] failed to persist web_search_calls_used: ${m}`);
+                  }
+                }
+                if (!webRes.markdown.trim() && webRes.errorMarkdown?.trim()) {
+                  hostExit = 1;
+                } else if (!webRes.markdown.trim() && !webRes.errorMarkdown?.trim()) {
+                  hostExit = 2;
+                  hostDetail = 'empty_web_result';
+                }
+                hostDetail = hostDetail || (action.query ?? '').slice(0, 120) || undefined;
+                continue;
+              }
+
+              if (action.tool === 'wiki') {
+                if (!projectId) {
+                  reactObservations.push('- wiki action skipped: missing project id.');
+                  hostExit = 2;
+                  hostDetail = 'missing_project_id';
+                  continue;
+                }
+                const rawWikiBlock =
+                  action.query && action.query.startsWith('<agenthub:wiki>')
+                    ? action.query
+                    : `<agenthub:wiki>${JSON.stringify({ query: action.query || '' })}</agenthub:wiki>`;
+                const wikiRequest = await runWikiHybridRagForAssistantRequest(
+                  projectId,
+                  rawWikiBlock,
                   {
-                    op: browserInput.op,
-                    url: browserInput.url,
-                    target: browserInput.target,
-                    text: browserInput.text,
-                    instruction: browserInput.instruction,
-                    schema: browserInput.schema,
-                    direction: browserInput.direction,
-                    condition: browserInput.condition,
+                    wikiHybridRagUsedCount: effectiveWikiHybridRagUsedCount(
+                      session!.wiki_hybrid_rag_consumed,
+                      session!.wiki_hybrid_rag_budget_version,
+                      maxWikiSession,
+                    ),
+                    maxCallsPerSession: maxWikiSession,
                   },
-                  browserLaunchOpts,
                 );
-              } catch (err: unknown) {
+                if (wikiRequest.promptSuffix.trim()) {
+                  const injection = wikiRequest.promptSuffix.trim();
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${injection}`
+                    : injection;
+                  reactObservations.push(`- wiki("${action.query || ''}") returned context.`);
+                }
+                if (wikiRequest.errorSuffix.trim()) {
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${wikiRequest.errorSuffix.trim()}`
+                    : wikiRequest.errorSuffix.trim();
+                  reactObservations.push(`- wiki("${action.query || ''}") returned error.`);
+                }
+                if (wikiRequest.shouldIncrementWikiHybridRagUsage) {
+                  try {
+                    const next = nextWikiHybridRagRowAfterIncrement(
+                      session!.wiki_hybrid_rag_consumed,
+                      session!.wiki_hybrid_rag_budget_version,
+                      maxWikiSession,
+                    );
+                    stmts.updateSessionWikiHybridRagBudget.run(
+                      next.consumed,
+                      next.budgetVersion,
+                      sessionId,
+                    );
+                    session!.wiki_hybrid_rag_consumed = next.consumed;
+                    session!.wiki_hybrid_rag_budget_version = next.budgetVersion;
+                  } catch (err: unknown) {
+                    const m = err instanceof Error ? err.message : String(err);
+                    console.error(`[wiki-rag] failed to persist assistant usage count: ${m}`);
+                  }
+                }
+                if (wikiRequest.logWarning) {
+                  console.warn(
+                    `[wiki-rag] assistant retrieval failed for session ${sessionId}: ${wikiRequest.logWarning}`,
+                  );
+                }
+                if (!wikiRequest.promptSuffix.trim() && wikiRequest.errorSuffix.trim()) {
+                  hostExit = 1;
+                } else if (!wikiRequest.promptSuffix.trim() && !wikiRequest.errorSuffix.trim()) {
+                  hostExit = 2;
+                  hostDetail = 'empty_wiki_result';
+                }
+                hostDetail = hostDetail || (action.query ?? '').slice(0, 120) || undefined;
+                continue;
+              }
+
+              if (action.tool === 'browser') {
+                const actionId = uuidv4();
+                const browserInput = {
+                  op: action.op ?? '',
+                  url: action.url,
+                  target: action.target,
+                  text: action.text,
+                  instruction: action.instruction,
+                  schema: action.schema,
+                  direction: action.direction,
+                  condition: action.condition,
+                };
+                const startLabel = browserToolStartLabel(browserInput);
+                const startedAtMs = Date.now();
                 emitBrowserActivityEvent(
-                  buildBrowserActivityEndedThrowEvent({
+                  buildBrowserActivityStartedEvent({
+                    actionId,
+                    op: browserInput.op || 'unknown',
+                    label: startLabel,
+                    startedAtMs,
+                  }),
+                );
+                const browserOpStartMs = Date.now();
+                let b: Awaited<ReturnType<typeof runBrowserReActStep>>;
+                try {
+                  b = await runBrowserReActStep(
+                    sessionId,
+                    {
+                      op: browserInput.op,
+                      url: browserInput.url,
+                      target: browserInput.target,
+                      text: browserInput.text,
+                      instruction: browserInput.instruction,
+                      schema: browserInput.schema,
+                      direction: browserInput.direction,
+                      condition: browserInput.condition,
+                    },
+                    browserLaunchOpts,
+                  );
+                } catch (err: unknown) {
+                  emitBrowserActivityEvent(
+                    buildBrowserActivityEndedThrowEvent({
+                      actionId,
+                      op: browserInput.op || 'unknown',
+                      label: startLabel,
+                      startedAtMs,
+                      durationMs: Date.now() - browserOpStartMs,
+                      err,
+                    }),
+                  );
+                  throw err;
+                }
+
+                emitBrowserActivityEvent(
+                  buildBrowserActivityEndedEvent({
                     actionId,
                     op: browserInput.op || 'unknown',
                     label: startLabel,
                     startedAtMs,
                     durationMs: Date.now() - browserOpStartMs,
-                    err,
+                    b,
                   }),
                 );
-                throw err;
-              }
-
-              emitBrowserActivityEvent(
-                buildBrowserActivityEndedEvent({
+                const shot = buildBrowserActivityScreenshotBroadcast({
+                  sessionId,
+                  messageId: assistantMsgId,
                   actionId,
-                  op: browserInput.op || 'unknown',
-                  label: startLabel,
-                  startedAtMs,
-                  durationMs: Date.now() - browserOpStartMs,
-                  b,
-                }),
-              );
-              const shot = buildBrowserActivityScreenshotBroadcast({
+                  screenshotWsUrl: b.ui?.screenshotWsUrl,
+                });
+                if (shot) broadcast(shot);
+                if (b.markdown.trim()) {
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${b.markdown.trim()}`
+                    : b.markdown.trim();
+                  reactObservations.push(
+                    `- browser(${action.op}) host step finished (exit ${b.hostExit}).`,
+                  );
+                }
+                hostExit = b.hostExit;
+                hostDetail = b.hostDetail || action.op;
+                continue;
+              }
+            } catch (err: unknown) {
+              hostActionThrew = true;
+              hostActionErr = err;
+            } finally {
+              const merged = mergeHostActionExitForEmit({
+                thrown: hostActionThrew,
+                err: hostActionErr,
+                branchExit: hostExit,
+                branchDetail: hostDetail,
+              });
+              emitReactLoopStep(broadcast, {
                 sessionId,
                 messageId: assistantMsgId,
-                actionId,
-                screenshotWsUrl: b.ui?.screenshotWsUrl,
+                stepId: `${assistantMsgId}:host:${actionIdx}:${action.tool}`,
+                phase: 'host_action',
+                tool: action.tool,
+                exitCode: merged.exitCode,
+                durationMs: Date.now() - hostStepStart,
+                continuationDepth,
+                chainElapsedMs: Date.now() - chainStartedAtMs,
+                detail: merged.detail,
               });
-              if (shot) broadcast(shot);
-              if (b.markdown.trim()) {
-                assistantContextToAppend = assistantContextToAppend
-                  ? `${assistantContextToAppend}\n\n${b.markdown.trim()}`
-                  : b.markdown.trim();
-                reactObservations.push(
-                  `- browser(${action.op}) host step finished (exit ${b.hostExit}).`,
-                );
+            }
+            if (hostActionThrew) {
+              throw hostActionErr;
+            }
+          }
+
+          if (reactObservations.length > 0) {
+            const observationBlock = `## ReAct Observation\n${reactObservations.join('\n')}`;
+            assistantContextToAppend = assistantContextToAppend
+              ? `${assistantContextToAppend}\n\n${observationBlock}`
+              : observationBlock;
+          }
+
+          if (assistantContextToAppend.trim()) {
+            const latest = stmts.getSession.get(sessionId) as SessionRow | undefined;
+            const existing = latest?.pending_skill_context?.trim() || '';
+            const merged = mergePendingContextWithCap(existing, assistantContextToAppend);
+            stmts.updateSessionPendingSkillContext.run(merged || null, sessionId);
+            continuationContextAdded = !!merged;
+          }
+        } catch (err) {
+          console.error('[assistant-context] Unexpected error:', (err as Error).message);
+        }
+
+        finalContent = stripAssistantControlBlocks(finalContent);
+        if (!finalContent.trim()) {
+          finalContent = continuationContextAdded
+            ? 'Loaded requested context for continuation.'
+            : '(empty response)';
+        }
+
+        const hasDelegateBlock = /<delegate>\s*[\s\S]*?\s*<\/delegate>/.test(rawFinalContent);
+        const controlFlowPresent =
+          !!closeTask ||
+          !!closeCardDetection.present ||
+          !!handoffDetection?.present ||
+          !!handoffDetection?.task ||
+          !!delegateTasks ||
+          hasDelegateBlock;
+        budgetResult = evaluateReactContinuationBudgets({
+          reactLoopEnabled,
+          continuationContextAdded,
+          controlFlowPresent,
+          continuationDepth,
+          chainStartedAtMs,
+          nowMs: Date.now(),
+          budgets: orchestrationBudgets,
+        });
+        shouldAutoContinue = budgetResult.ok;
+
+        if (
+          continuationDepth > 0 ||
+          isAutoContinuation ||
+          continuationContextAdded ||
+          reactObservations.length > 0
+        ) {
+          emitReactLoopStep(broadcast, {
+            sessionId,
+            messageId: assistantMsgId,
+            stepId: `${assistantMsgId}:chain_gate`,
+            phase: 'chain_gate',
+            tool: 'chain',
+            exitCode: budgetResult.ok ? 0 : 2,
+            durationMs: 0,
+            continuationDepth,
+            chainElapsedMs: Date.now() - chainStartedAtMs,
+            detail: budgetResult.ok
+              ? 'continuation_allowed'
+              : budgetResult.reasons.length
+                ? budgetResult.reasons.join('; ')
+                : 'blocked_or_ineligible',
+          });
+        }
+
+        try {
+          S.addMessage.run(
+            assistantMsgId,
+            sessionId,
+            'assistant',
+            finalContent,
+            engine,
+            model,
+            null,
+            null,
+          );
+          S.touchSession.run(sessionId);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[stream] Dropping assistant message for ${sessionId}: ${message}`);
+          if (delegationWorkPromise) {
+            handleDelegationCancel(sessionId);
+            delegationWorkPromise = null;
+          }
+          drainQueue(sessionId);
+          return;
+        }
+
+        if (engine === 'claude-code' && isNewEngineSession) {
+          try {
+            S.updateSessionEngineSessionId.run(sessionId, sessionId);
+          } catch {}
+        }
+
+        const sess = S.getSession.get(sessionId) as SessionRow | undefined;
+        if (sess && sess.name.startsWith('Session ') && isFirstMessage) {
+          let autoName: string | undefined;
+
+          if (hookSpecificOutput?.sessionTitle) {
+            autoName = hookSpecificOutput.sessionTitle;
+          }
+
+          if (!autoName) {
+            try {
+              const linkedCard = (S as Stmts).getKanbanCardBySession?.get(sessionId) as
+                | KanbanCardRow
+                | undefined;
+              if (linkedCard?.title) {
+                autoName = linkedCard.title;
               }
-              hostExit = b.hostExit;
-              hostDetail = b.hostDetail || action.op;
-              continue;
+            } catch {
+              /* ignore if table doesn't exist */
+            }
+          }
+
+          if (!autoName) {
+            autoName = content.substring(0, 60) + (content.length > 60 ? '...' : '');
+          }
+
+          S.updateSessionName.run(autoName, sessionId);
+          broadcast({
+            type: 'session-updated',
+            session: { ...sess, name: autoName },
+          });
+        }
+
+        // Enrich the broadcast with agent + session names so push-notification
+        // consumers (mobile) don't need a second round-trip to look them up.
+        // `sess` was re-read above after any rename; fall back to the older
+        // reference if the row is missing.
+        const latestSess = (S.getSession.get(sessionId) as SessionRow | undefined) || sess;
+        broadcast({
+          type: 'done',
+          messageId: assistantMsgId,
+          sessionId,
+          agentId: agent.id,
+          agentName: agent.name,
+          sessionName: latestSess?.name,
+          message: {
+            id: assistantMsgId,
+            session_id: sessionId,
+            role: 'assistant',
+            content: finalContent,
+            engine,
+            model,
+            created_at: new Date().toISOString(),
+          },
+        });
+
+        const wouldBaseContinue =
+          reactLoopEnabled && continuationContextAdded && !controlFlowPresent;
+        if (wouldBaseContinue && !budgetResult.ok && budgetResult.reasons.length > 0) {
+          const sysId = uuidv4();
+          const body = `**ReAct chain halted**\n\nContext was loaded for a follow-up model turn, but orchestration budgets blocked auto-continuation:\n- ${budgetResult.reasons.join('\n- ')}`;
+          try {
+            stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
+            stmts.touchSession.run(sessionId);
+            const inserted = stmts.getMessageById.get(sysId) as MessageRow | undefined;
+            if (inserted) {
+              broadcast({ type: 'message', sessionId, message: inserted });
             }
           } catch (err: unknown) {
-            hostActionThrew = true;
-            hostActionErr = err;
-          } finally {
-            const merged = mergeHostActionExitForEmit({
-              thrown: hostActionThrew,
-              err: hostActionErr,
-              branchExit: hostExit,
-              branchDetail: hostDetail,
-            });
-            emitReactLoopStep(broadcast, {
+            const m = err instanceof Error ? err.message : String(err);
+            console.warn(`[react-budget] failed to persist system notice: ${m}`);
+          }
+        }
+
+        try {
+          const bgTask = S.getBackgroundTaskBySession.get(sessionId) as
+            | BackgroundTaskRow
+            | undefined;
+          if (bgTask && bgTask.status === 'running') {
+            S.updateBackgroundTaskStatus.run('done', bgTask.id);
+            broadcast({
+              type: 'task_complete',
+              taskId: bgTask.id,
               sessionId,
-              messageId: assistantMsgId,
-              stepId: `${assistantMsgId}:host:${actionIdx}:${action.tool}`,
-              phase: 'host_action',
-              tool: action.tool,
-              exitCode: merged.exitCode,
-              durationMs: Date.now() - hostStepStart,
-              continuationDepth,
-              chainElapsedMs: Date.now() - chainStartedAtMs,
-              detail: merged.detail,
+              agentId,
+              status: 'done',
+              preview: finalContent.substring(0, 200),
             });
           }
-          if (hostActionThrew) {
-            throw hostActionErr;
-          }
-        }
-
-        if (reactObservations.length > 0) {
-          const observationBlock = `## ReAct Observation\n${reactObservations.join('\n')}`;
-          assistantContextToAppend = assistantContextToAppend
-            ? `${assistantContextToAppend}\n\n${observationBlock}`
-            : observationBlock;
-        }
-
-        if (assistantContextToAppend.trim()) {
-          const latest = stmts.getSession.get(sessionId) as SessionRow | undefined;
-          const existing = latest?.pending_skill_context?.trim() || '';
-          const merged = mergePendingContextWithCap(existing, assistantContextToAppend);
-          stmts.updateSessionPendingSkillContext.run(merged || null, sessionId);
-          continuationContextAdded = !!merged;
-        }
-      } catch (err) {
-        console.error('[assistant-context] Unexpected error:', (err as Error).message);
-      }
-
-      finalContent = stripAssistantControlBlocks(finalContent);
-      if (!finalContent.trim()) {
-        finalContent = continuationContextAdded
-          ? 'Loaded requested context for continuation.'
-          : '(empty response)';
-      }
-
-      const hasDelegateBlock = /<delegate>\s*[\s\S]*?\s*<\/delegate>/.test(rawFinalContent);
-      const controlFlowPresent =
-        !!closeTask ||
-        !!closeCardDetection.present ||
-        !!handoffDetection?.present ||
-        !!handoffDetection?.task ||
-        !!delegateTasks ||
-        hasDelegateBlock;
-      budgetResult = evaluateReactContinuationBudgets({
-        reactLoopEnabled,
-        continuationContextAdded,
-        controlFlowPresent,
-        continuationDepth,
-        chainStartedAtMs,
-        nowMs: Date.now(),
-        budgets: orchestrationBudgets,
-      });
-      shouldAutoContinue = budgetResult.ok;
-
-      if (
-        continuationDepth > 0 ||
-        isAutoContinuation ||
-        continuationContextAdded ||
-        reactObservations.length > 0
-      ) {
-        emitReactLoopStep(broadcast, {
-          sessionId,
-          messageId: assistantMsgId,
-          stepId: `${assistantMsgId}:chain_gate`,
-          phase: 'chain_gate',
-          tool: 'chain',
-          exitCode: budgetResult.ok ? 0 : 2,
-          durationMs: 0,
-          continuationDepth,
-          chainElapsedMs: Date.now() - chainStartedAtMs,
-          detail: budgetResult.ok
-            ? 'continuation_allowed'
-            : budgetResult.reasons.length
-              ? budgetResult.reasons.join('; ')
-              : 'blocked_or_ineligible',
-        });
-      }
-
-      try {
-        S.addMessage.run(
-          assistantMsgId,
-          sessionId,
-          'assistant',
-          finalContent,
-          engine,
-          model,
-          null,
-          null,
-        );
-        S.touchSession.run(sessionId);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[stream] Dropping assistant message for ${sessionId}: ${message}`);
-        if (delegationWorkPromise) {
-          handleDelegationCancel(sessionId);
-          delegationWorkPromise = null;
-        }
-        drainQueue(sessionId);
-        return;
-      }
-
-      if (engine === 'claude-code' && isNewEngineSession) {
-        try {
-          S.updateSessionEngineSessionId.run(sessionId, sessionId);
         } catch {}
-      }
 
-      const sess = S.getSession.get(sessionId) as SessionRow | undefined;
-      if (sess && sess.name.startsWith('Session ') && isFirstMessage) {
-        let autoName: string | undefined;
-
-        if (hookSpecificOutput?.sessionTitle) {
-          autoName = hookSpecificOutput.sessionTitle;
-        }
-
-        if (!autoName) {
-          try {
-            const linkedCard = (S as Stmts).getKanbanCardBySession?.get(sessionId) as
-              | KanbanCardRow
-              | undefined;
-            if (linkedCard?.title) {
-              autoName = linkedCard.title;
-            }
-          } catch {
-            /* ignore if table doesn't exist */
-          }
-        }
-
-        if (!autoName) {
-          autoName = content.substring(0, 60) + (content.length > 60 ? '...' : '');
-        }
-
-        S.updateSessionName.run(autoName, sessionId);
-        broadcast({
-          type: 'session-updated',
-          session: { ...sess, name: autoName },
-        });
-      }
-
-      // Enrich the broadcast with agent + session names so push-notification
-      // consumers (mobile) don't need a second round-trip to look them up.
-      // `sess` was re-read above after any rename; fall back to the older
-      // reference if the row is missing.
-      const latestSess = (S.getSession.get(sessionId) as SessionRow | undefined) || sess;
-      broadcast({
-        type: 'done',
-        messageId: assistantMsgId,
-        sessionId,
-        agentId: agent.id,
-        agentName: agent.name,
-        sessionName: latestSess?.name,
-        message: {
-          id: assistantMsgId,
-          session_id: sessionId,
-          role: 'assistant',
-          content: finalContent,
-          engine,
-          model,
-          created_at: new Date().toISOString(),
-        },
-      });
-
-      const wouldBaseContinue = reactLoopEnabled && continuationContextAdded && !controlFlowPresent;
-      if (wouldBaseContinue && !budgetResult.ok && budgetResult.reasons.length > 0) {
-        const sysId = uuidv4();
-        const body = `**ReAct chain halted**\n\nContext was loaded for a follow-up model turn, but orchestration budgets blocked auto-continuation:\n- ${budgetResult.reasons.join('\n- ')}`;
         try {
-          stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
-          stmts.touchSession.run(sessionId);
-          const inserted = stmts.getMessageById.get(sysId) as MessageRow | undefined;
-          if (inserted) {
-            broadcast({ type: 'message', sessionId, message: inserted });
+          const np = (S as Stmts).getNoteProcessingBySession?.get(sessionId) as
+            | NoteProcessingRow
+            | undefined;
+          if (np && (np.status === 'pending' || np.status === 'running')) {
+            S.updateNoteProcessing.run('success', finalContent.substring(0, 1000), np.id);
           }
-        } catch (err: unknown) {
-          const m = err instanceof Error ? err.message : String(err);
-          console.warn(`[react-budget] failed to persist system notice: ${m}`);
-        }
-      }
+        } catch {}
 
-      try {
-        const bgTask = S.getBackgroundTaskBySession.get(sessionId) as BackgroundTaskRow | undefined;
-        if (bgTask && bgTask.status === 'running') {
-          S.updateBackgroundTaskStatus.run('done', bgTask.id);
-          broadcast({
-            type: 'task_complete',
-            taskId: bgTask.id,
-            sessionId,
-            agentId,
-            status: 'done',
-            preview: finalContent.substring(0, 200),
-          });
-        }
-      } catch {}
+        if (project.ahw && !isAutoContinuation) {
+          const briefEntry = `**Chat** — User: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}\nAssistant: ${finalContent.substring(0, 200)}${finalContent.length > 200 ? '...' : ''}`;
+          appendDailyNote(project.ahw, briefEntry);
 
-      try {
-        const np = (S as Stmts).getNoteProcessingBySession?.get(sessionId) as
-          | NoteProcessingRow
-          | undefined;
-        if (np && (np.status === 'pending' || np.status === 'running')) {
-          S.updateNoteProcessing.run('success', finalContent.substring(0, 1000), np.id);
-        }
-      } catch {}
-
-      if (project.ahw && !isAutoContinuation) {
-        const briefEntry = `**Chat** — User: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}\nAssistant: ${finalContent.substring(0, 200)}${finalContent.length > 200 ? '...' : ''}`;
-        appendDailyNote(project.ahw, briefEntry);
-
-        if (finalContent.length > 300) {
-          const exchangeTranscript = buildTranscript(
-            [
-              { role: 'user' as const, content },
-              { role: 'assistant' as const, content: finalContent },
-            ] as unknown as MessageRow[],
-            { agentName: agent.name },
-          );
-          summarizeTranscript(
-            exchangeTranscript,
-            {
-              engine: engine || 'claude-code',
-              model: model,
-              cwd: project.cwd,
-            },
-            config,
-          )
-            .then((summary: string) => {
-              if (summary && summary.trim()) {
-                appendDailyNote(project.ahw, `**Session Summary** (${agent.name}):\n${summary}`);
-
-                reconcileMemoryAfterSession(project.ahw, summary, {
-                  claudeBin: config.claudeBin,
-                  spawnEnv: buildSpawnEnv(config),
-                  cwd: project.cwd,
-                }).catch((err: unknown) => {
-                  const message = err instanceof Error ? err.message : String(err);
-                  console.error('[Memory Reconciliation] Post-session failed:', message);
-                });
-              }
-            })
-            .catch((err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
-              console.error('[Auto-summarize] Failed:', message);
-            });
-        }
-      }
-
-      // Auto-close the linked kanban card when the agent reports the work
-      // is a duplicate or already done via an `<agenthub:close-card>` block.
-      // Malformed blocks (missing/invalid fields) are rejected via a system
-      // message; the linked card is not moved.
-      if (closeCardDetection.present && !closeTask && closeCardDetection.reason) {
-        persistCloseCardGateSystemMessage(
-          sessionId,
-          `**Card close gate rejected:** ${describeCloseCardReason(closeCardDetection.reason)}.\n\nThe linked kanban card was **not** moved to Done.`,
-          {
-            kind: 'close_card_gate',
-            outcome: 'gate_rejected',
-            reason: closeCardDetection.reason,
-          },
-        );
-      }
-
-      if (closeTask) {
-        try {
-          const projectId =
-            (project as Project & { id?: string }).id ||
-            (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
-            '';
-          handleCardAutoClose(sessionId, closeTask, {
-            stmts: stmts as Stmts,
-            broadcast,
-            projectId,
-            author: agent.id,
-          });
-        } catch (err) {
-          console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
-        }
-      }
-
-      // ── `<agenthub:preview>` dispatch ───────────────────────────────
-      // Malformed blocks: surface a system message so the agent learns
-      // why the request was dropped — same shape as the close-card gate.
-      if (previewDetection.present && !previewDetection.task && previewDetection.reason) {
-        try {
-          broadcast({
-            type: 'agenthub_preview',
-            kind: 'preview_failed',
-            sessionId,
-            previewId: '',
-            error: `**Preview block rejected:** ${describePreviewReason(previewDetection.reason)}.`,
-            logTail: [],
-          });
-        } catch (err) {
-          console.error('[Preview] Failed to broadcast malformed-block notice:', err);
-        }
-      }
-      if (previewDetection.task) {
-        const previewTask = previewDetection.task;
-        // ── Fullstack target → draft-PR + container-pool poll ─────
-        if (previewTask.target === 'fullstack') {
-          const prEnvRow = (() => {
-            try {
-              return readPrEnvConfigRow();
-            } catch {
-              return null;
-            }
-          })();
-          const previewBaseUrl = prEnvRow?.previewBaseUrl ?? '';
-          // Reuse the existing execFile import. argv is fully driven
-          // by the handler (no shell interpolation), so an array form
-          // with `execFile` is the right safety primitive here.
-          const runCmd = (
-            bin: string,
-          ): ((
-            args: readonly string[],
-            cwd: string,
-          ) => Promise<{ stdout: string; stderr: string }>) => {
-            return (args, cwd) =>
-              new Promise((resolve, reject) => {
-                execFile(bin, args as string[], { cwd, timeout: 60_000 }, (err, stdout, stderr) => {
-                  if (err) {
-                    // Surface stderr in the error message so the
-                    // handler can pattern-match (e.g. for the
-                    // "PR already exists" recovery branch).
-                    const e = err as NodeJS.ErrnoException & {
-                      stdout?: string;
-                      stderr?: string;
-                    };
-                    const composed =
-                      (e.message || '') +
-                      (stderr ? '\n' + String(stderr) : '') +
-                      (stdout ? '\n' + String(stdout) : '');
-                    reject(new Error(composed));
-                    return;
-                  }
-                  resolve({ stdout: String(stdout || ''), stderr: String(stderr || '') });
-                });
-              });
-          };
-          void handleFullstackPreviewBlock(sessionId, previewTask, {
-            broadcast,
-            project,
-            worktreePath: effectiveCwd,
-            previewBaseUrl,
-            git: runCmd('git'),
-            gh: runCmd('gh'),
-            getPoolSlotByPrNumber: (prNumber) => {
-              try {
-                const row = getDb()
-                  .prepare(
-                    `SELECT slot_id, class, status, container_id, pr_number
-                       FROM pool_slots
-                      WHERE class = 'pr_env' AND pr_number = ?
-                      ORDER BY started_at DESC
-                      LIMIT 1`,
-                  )
-                  .get(prNumber) as
-                  | {
-                      slot_id: string;
-                      class: 'pr_env';
-                      status: 'free' | 'reserved' | 'busy' | 'draining' | 'failed';
-                      container_id: string | null;
-                      pr_number: number | null;
-                    }
-                  | undefined;
-                return row ?? null;
-              } catch (err) {
-                console.warn(
-                  '[Fullstack Preview] pool_slots query failed:',
-                  err instanceof Error ? err.message : String(err),
-                );
-                return null;
-              }
-            },
-          }).catch((err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error('[Fullstack Preview] Unexpected handler error:', message);
-          });
-        } else {
-          const previewRuntime = getPreviewRuntime ? getPreviewRuntime() : null;
-          // Fire-and-forget — the chat flow must not block on preview boot.
-          // The handler funnels every outcome (success, unconfigured, failure)
-          // into a broadcast event so the UI gets a final state.
-          void handlePreviewBlock(sessionId, previewTask, {
-            runtime: previewRuntime,
-            broadcast,
-            project,
-            worktreePath: effectiveCwd,
-          }).catch((err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error('[Preview] Unexpected handler error:', message);
-          });
-        }
-      }
-
-      const runWorktreeAutoCommitAndDrainTail = async (): Promise<void> => {
-        const worktreeClaude = engine === 'claude-code' && effectiveCwd !== project.cwd;
-        if (worktreeClaude) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 1200));
-        }
-        await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent).catch(
-          (err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error('[auto-commit] Unexpected error:', message);
-          },
-        );
-        if (autonomousProjects.size > 0) {
-          setTimeout(() => tryAutonomousDispatch(), 2000);
-        }
-        drainQueue(sessionId);
-      };
-
-      if (shouldAutoContinue) {
-        await runWorktreeAutoCommitAndDrainTail();
-        setImmediate(() => {
-          handleChat(null, {
-            type: 'chat',
-            agentId,
-            sessionId,
-            content: buildAutoContinuationPrompt(effectiveBrowserToolsEnabled(agent, project)),
-            _autoContinuation: true,
-            _continuationDepth: continuationDepth + 1,
-            _chainStartedAtMs: chainStartedAtMs,
-          } as InternalChatMessage).catch((err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error('[auto-continuation] Failed:', message);
-            drainQueue(sessionId);
-          });
-        });
-        return;
-      }
-
-      // Handoff takes precedence over delegate — if the agent emitted a
-      // <handoff> block, ownership transfers to the target agent and we do
-      // not run the delegate/synthesize flow for this turn. Per design,
-      // <handoff> is terminal: any prose after the closing tag is dropped.
-      if (enrichedAgent) {
-        // No fallback to detectHandoffBlock — handoff dispatch is globally off.
-        // When handoffDetection is null the entire block below is skipped.
-        const detection = handoffDetection;
-        if (detection !== null && detection.task) {
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
-          }
-          if (handoffHasTrailingContent(rawFinalContent)) {
-            console.warn(
-              `[Handoff] Trailing content after </handoff> in session ${sessionId} — dropped (handoff is terminal).`,
+          if (finalContent.length > 300) {
+            const exchangeTranscript = buildTranscript(
+              [
+                { role: 'user' as const, content },
+                { role: 'assistant' as const, content: finalContent },
+              ] as unknown as MessageRow[],
+              { agentName: agent.name },
             );
-          }
-          handleHandoff(sessionId, assistantMsgId, detection.task, enrichedAgent, project).catch(
-            (err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
-              console.error('[Handoff] Failed:', message);
-              broadcast({ type: 'handoff_error', sessionId, error: message });
-            },
-          );
-          drainQueue(sessionId);
-          return;
-        }
-        if (detection !== null && detection.present && detection.reason) {
-          if (delegationWorkPromise) {
-            handleDelegationCancel(sessionId);
-            delegationWorkPromise = null;
-          }
-          // The agent emitted a <handoff> tag but the payload was malformed
-          // (bad JSON, missing fields, etc.). Previously this path silently
-          // dropped the handoff with no UI feedback. Now: record a failed
-          // row + broadcast handoff_error so the widget renders the failure
-          // state instead of leaving the user staring at a dead-air turn.
-          const projectId =
-            (project as Project & { id?: string }).id ||
-            (enrichedAgent as EnrichedAgent & { projectId?: string }).projectId ||
-            '';
-          recordMalformedHandoff({
-            stmts,
-            broadcast,
-            sessionId,
-            fromAgentId: enrichedAgent.id,
-            fromAgentName: enrichedAgent.name,
-            projectId,
-            detection,
-          });
-          console.warn(
-            `[Handoff] Malformed <handoff> block in session ${sessionId}: ${detection.reason}`,
-          );
-          drainQueue(sessionId);
-          return;
-        }
-      }
+            summarizeTranscript(
+              exchangeTranscript,
+              {
+                engine: engine || 'claude-code',
+                model: model,
+                cwd: project.cwd,
+              },
+              config,
+            )
+              .then((summary: string) => {
+                if (summary && summary.trim()) {
+                  appendDailyNote(project.ahw, `**Session Summary** (${agent.name}):\n${summary}`);
 
-      // Operator-controlled gate (`delegationEnabled === false`): the lead is
-      // configured for inline-only completion. Surface a clear in-chat nudge
-      // and a `delegation_disabled` WS event for the message-anchored
-      // DelegateCard so the user knows exactly why nothing dispatched. This
-      // case takes priority over the malformed-gate branch below — when
-      // delegation is disabled we don't care whether the block parsed, the
-      // outcome is the same: nothing spawns.
-      const leadHasSubAgents =
-        agent.role === 'lead' && !!agent.subAgents && agent.subAgents.length > 0;
-      if (leadHasSubAgents && hasDelegateBlock && (delegationDisabled || delegationGloballyOff)) {
-        const sysId = uuidv4();
-        const body = delegationGloballyOff
-          ? '**Sub-agent delegation has been removed.** The `<delegate>` block was ignored — the delegation/handoff system is no longer active on this platform. Use conference rooms or direct chat to coordinate with other agents.'
-          : '**Delegation disabled for this lead.** The `<delegate>` block was ignored — this lead agent is configured to complete work inline. Re-enable delegation in agent settings to use sub-agents, or finish the task yourself.';
-        try {
-          stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
-          stmts.touchSession.run(sessionId);
-          const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
-            id: sysId,
-            session_id: sessionId,
-            role: 'system' as const,
-            content: body,
-            engine: null,
-            model: null,
-            attachments: null,
-            metadata: null,
-            created_at: new Date().toISOString(),
-          };
-          broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-        } catch (err: unknown) {
-          const m = err instanceof Error ? err.message : String(err);
-          console.warn(`[delegation] failed to persist disabled-gate notice: ${m}`);
-          const fallback: MessageRow = {
-            id: sysId,
-            session_id: sessionId,
-            role: 'system',
-            content: body,
-            engine: null,
-            model: null,
-            attachments: null,
-            metadata: null,
-            created_at: new Date().toISOString(),
-          };
-          broadcast({ type: 'message_added', sessionId, message: fallback });
-        }
-        // Anchored banner on the DelegateCard. Same shape as
-        // `delegation_error` so the client's existing dispatchError
-        // correlation logic works without a parallel state machine.
-        broadcast({
-          type: 'delegation_disabled',
-          sessionId,
-          parentMessageId: assistantMsgId,
-          reason: 'Delegation disabled for this lead',
-        });
-      }
-
-      if (
-        leadHasSubAgents &&
-        hasDelegateBlock &&
-        !delegateTasks &&
-        !delegationDisabled &&
-        !delegationGloballyOff
-      ) {
-        const sysId = uuidv4();
-        const body =
-          '**Delegation gate rejected.** `<delegate>` payload must be a JSON array of task objects (or a single task object — it will be coerced to a one-element array). Every task must include `agentId`, `task`, `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`. No delegation was started.';
-        try {
-          stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
-          stmts.touchSession.run(sessionId);
-          const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
-            id: sysId,
-            session_id: sessionId,
-            role: 'system' as const,
-            content: body,
-            engine: null,
-            model: null,
-            attachments: null,
-            metadata: null,
-            created_at: new Date().toISOString(),
-          };
-          broadcast({ type: 'message_added', sessionId, message: insertedMessage });
-        } catch (err: unknown) {
-          const m = err instanceof Error ? err.message : String(err);
-          console.warn(`[delegation] failed to persist malformed delegate notice: ${m}`);
-          const fallback: MessageRow = {
-            id: sysId,
-            session_id: sessionId,
-            role: 'system',
-            content: body,
-            engine: null,
-            model: null,
-            attachments: null,
-            metadata: null,
-            created_at: new Date().toISOString(),
-          };
-          broadcast({ type: 'message_added', sessionId, message: fallback });
-        }
-      }
-
-      if (agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0) {
-        const parsedDelegateTasks = delegateTasks;
-        const closePlan = planDelegationRoundOnProcClose({
-          delegateTasks: parsedDelegateTasks,
-          hadEarlyDelegationPromise: delegationWorkPromise != null,
-        });
-        if (closePlan.mode === 'delegate') {
-          if (closePlan.startIfNeeded) {
-            startDelegationOnce(parsedDelegateTasks!);
-          }
-
-          if (delegationWorkPromise) {
-            void delegationWorkPromise
-              .then((results) => {
-                if (results.length > 0) {
-                  return synthesizeResults(
-                    sessionId,
-                    agentId,
-                    enrichedAgent!,
-                    project,
-                    results,
-                    content,
-                    effectiveCwd,
-                  );
+                  reconcileMemoryAfterSession(project.ahw, summary, {
+                    claudeBin: config.claudeBin,
+                    spawnEnv: buildSpawnEnv(config),
+                    cwd: project.cwd,
+                  }).catch((err: unknown) => {
+                    const message = err instanceof Error ? err.message : String(err);
+                    console.error('[Memory Reconciliation] Post-session failed:', message);
+                  });
                 }
               })
               .catch((err: unknown) => {
                 const message = err instanceof Error ? err.message : String(err);
-                console.error('[Delegation] Failed:', message);
-                broadcast({
-                  type: 'delegation_error',
-                  sessionId,
-                  parentMessageId: assistantMsgId,
-                  error: message,
-                });
-              })
-              .finally(() => {
-                clearDelegationSafetyTimer();
-                activeDelegationSessions.delete(sessionId);
-                clearDelegationUiMeta(sessionId);
-                broadcastActiveTasksSnapshot(stmts, broadcast);
-                drainQueue(sessionId);
+                console.error('[Auto-summarize] Failed:', message);
               });
           }
+        }
+
+        // Auto-close the linked kanban card when the agent reports the work
+        // is a duplicate or already done via an `<agenthub:close-card>` block.
+        // Malformed blocks (missing/invalid fields) are rejected via a system
+        // message; the linked card is not moved.
+        if (closeCardDetection.present && !closeTask && closeCardDetection.reason) {
+          persistCloseCardGateSystemMessage(
+            sessionId,
+            `**Card close gate rejected:** ${describeCloseCardReason(closeCardDetection.reason)}.\n\nThe linked kanban card was **not** moved to Done.`,
+            {
+              kind: 'close_card_gate',
+              outcome: 'gate_rejected',
+              reason: closeCardDetection.reason,
+            },
+          );
+        }
+
+        if (closeTask) {
+          try {
+            const projectId =
+              (project as Project & { id?: string }).id ||
+              (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
+              '';
+            handleCardAutoClose(sessionId, closeTask, {
+              stmts: stmts as Stmts,
+              broadcast,
+              projectId,
+              author: agent.id,
+            });
+          } catch (err) {
+            console.error('[CardAutoClose] Unexpected error:', (err as Error).message);
+          }
+        }
+
+        // ── `<agenthub:preview>` dispatch ───────────────────────────────
+        // Malformed blocks: surface a system message so the agent learns
+        // why the request was dropped — same shape as the close-card gate.
+        if (previewDetection.present && !previewDetection.task && previewDetection.reason) {
+          try {
+            broadcast({
+              type: 'agenthub_preview',
+              kind: 'preview_failed',
+              sessionId,
+              previewId: '',
+              error: `**Preview block rejected:** ${describePreviewReason(previewDetection.reason)}.`,
+              logTail: [],
+            });
+          } catch (err) {
+            console.error('[Preview] Failed to broadcast malformed-block notice:', err);
+          }
+        }
+        if (previewDetection.task) {
+          const previewTask = previewDetection.task;
+          // ── Fullstack target → draft-PR + container-pool poll ─────
+          if (previewTask.target === 'fullstack') {
+            const prEnvRow = (() => {
+              try {
+                return readPrEnvConfigRow();
+              } catch {
+                return null;
+              }
+            })();
+            const previewBaseUrl = prEnvRow?.previewBaseUrl ?? '';
+            // Reuse the existing execFile import. argv is fully driven
+            // by the handler (no shell interpolation), so an array form
+            // with `execFile` is the right safety primitive here.
+            const runCmd = (
+              bin: string,
+            ): ((
+              args: readonly string[],
+              cwd: string,
+            ) => Promise<{ stdout: string; stderr: string }>) => {
+              return (args, cwd) =>
+                new Promise((resolve, reject) => {
+                  execFile(
+                    bin,
+                    args as string[],
+                    { cwd, timeout: 60_000 },
+                    (err, stdout, stderr) => {
+                      if (err) {
+                        // Surface stderr in the error message so the
+                        // handler can pattern-match (e.g. for the
+                        // "PR already exists" recovery branch).
+                        const e = err as NodeJS.ErrnoException & {
+                          stdout?: string;
+                          stderr?: string;
+                        };
+                        const composed =
+                          (e.message || '') +
+                          (stderr ? '\n' + String(stderr) : '') +
+                          (stdout ? '\n' + String(stdout) : '');
+                        reject(new Error(composed));
+                        return;
+                      }
+                      resolve({ stdout: String(stdout || ''), stderr: String(stderr || '') });
+                    },
+                  );
+                });
+            };
+            void handleFullstackPreviewBlock(sessionId, previewTask, {
+              broadcast,
+              project,
+              worktreePath: effectiveCwd,
+              previewBaseUrl,
+              git: runCmd('git'),
+              gh: runCmd('gh'),
+              getPoolSlotByPrNumber: (prNumber) => {
+                try {
+                  const row = getDb()
+                    .prepare(
+                      `SELECT slot_id, class, status, container_id, pr_number
+                       FROM pool_slots
+                      WHERE class = 'pr_env' AND pr_number = ?
+                      ORDER BY started_at DESC
+                      LIMIT 1`,
+                    )
+                    .get(prNumber) as
+                    | {
+                        slot_id: string;
+                        class: 'pr_env';
+                        status: 'free' | 'reserved' | 'busy' | 'draining' | 'failed';
+                        container_id: string | null;
+                        pr_number: number | null;
+                      }
+                    | undefined;
+                  return row ?? null;
+                } catch (err) {
+                  console.warn(
+                    '[Fullstack Preview] pool_slots query failed:',
+                    err instanceof Error ? err.message : String(err),
+                  );
+                  return null;
+                }
+              },
+            }).catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error('[Fullstack Preview] Unexpected handler error:', message);
+            });
+          } else {
+            const previewRuntime = getPreviewRuntime ? getPreviewRuntime() : null;
+            // Fire-and-forget — the chat flow must not block on preview boot.
+            // The handler funnels every outcome (success, unconfigured, failure)
+            // into a broadcast event so the UI gets a final state.
+            void handlePreviewBlock(sessionId, previewTask, {
+              runtime: previewRuntime,
+              broadcast,
+              project,
+              worktreePath: effectiveCwd,
+            }).catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error('[Preview] Unexpected handler error:', message);
+            });
+          }
+        }
+
+        const runWorktreeAutoCommitAndDrainTail = async (): Promise<void> => {
+          const worktreeClaude = engine === 'claude-code' && effectiveCwd !== project.cwd;
+          if (worktreeClaude) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+          }
+          await autoCommitAndPR(
+            sessionId,
+            agentId,
+            project,
+            agent,
+            effectiveCwd,
+            finalContent,
+          ).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error('[auto-commit] Unexpected error:', message);
+          });
+          if (autonomousProjects.size > 0) {
+            setTimeout(() => tryAutonomousDispatch(), 2000);
+          }
+          drainQueue(sessionId);
+        };
+
+        if (shouldAutoContinue) {
+          await runWorktreeAutoCommitAndDrainTail();
+          setImmediate(() => {
+            handleChat(null, {
+              type: 'chat',
+              agentId,
+              sessionId,
+              content: buildAutoContinuationPrompt(effectiveBrowserToolsEnabled(agent, project)),
+              _autoContinuation: true,
+              _continuationDepth: continuationDepth + 1,
+              _chainStartedAtMs: chainStartedAtMs,
+            } as InternalChatMessage).catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error('[auto-continuation] Failed:', message);
+              drainQueue(sessionId);
+            });
+          });
           return;
         }
-      }
 
-      // Isolated (git worktree) + Claude: give the filesystem a moment to settle
-      // after the CLI exits before `git status` / `gh`. The old flow ran auto-commit
-      // from the HTTP stop hook immediately; if git still looked clean, the hook
-      // path marked the session "handled" and proc skipped — no `changes_ready`
-      // / Create PR banner even with Isolated ON.
-      await runWorktreeAutoCommitAndDrainTail();
-    });
+        // Handoff takes precedence over delegate — if the agent emitted a
+        // <handoff> block, ownership transfers to the target agent and we do
+        // not run the delegate/synthesize flow for this turn. Per design,
+        // <handoff> is terminal: any prose after the closing tag is dropped.
+        if (enrichedAgent) {
+          // No fallback to detectHandoffBlock — handoff dispatch is globally off.
+          // When handoffDetection is null the entire block below is skipped.
+          const detection = handoffDetection;
+          if (detection !== null && detection.task) {
+            if (delegationWorkPromise) {
+              handleDelegationCancel(sessionId);
+              delegationWorkPromise = null;
+            }
+            if (handoffHasTrailingContent(rawFinalContent)) {
+              console.warn(
+                `[Handoff] Trailing content after </handoff> in session ${sessionId} — dropped (handoff is terminal).`,
+              );
+            }
+            handleHandoff(sessionId, assistantMsgId, detection.task, enrichedAgent, project).catch(
+              (err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+                console.error('[Handoff] Failed:', message);
+                broadcast({ type: 'handoff_error', sessionId, error: message });
+              },
+            );
+            drainQueue(sessionId);
+            return;
+          }
+          if (detection !== null && detection.present && detection.reason) {
+            if (delegationWorkPromise) {
+              handleDelegationCancel(sessionId);
+              delegationWorkPromise = null;
+            }
+            // The agent emitted a <handoff> tag but the payload was malformed
+            // (bad JSON, missing fields, etc.). Previously this path silently
+            // dropped the handoff with no UI feedback. Now: record a failed
+            // row + broadcast handoff_error so the widget renders the failure
+            // state instead of leaving the user staring at a dead-air turn.
+            const projectId =
+              (project as Project & { id?: string }).id ||
+              (enrichedAgent as EnrichedAgent & { projectId?: string }).projectId ||
+              '';
+            recordMalformedHandoff({
+              stmts,
+              broadcast,
+              sessionId,
+              fromAgentId: enrichedAgent.id,
+              fromAgentName: enrichedAgent.name,
+              projectId,
+              detection,
+            });
+            console.warn(
+              `[Handoff] Malformed <handoff> block in session ${sessionId}: ${detection.reason}`,
+            );
+            drainQueue(sessionId);
+            return;
+          }
+        }
 
-    proc.on('error', (err: Error) => {
-      spawnErrored = true;
-      activeProcesses.delete(sessionId);
-      try {
-        S.deleteActiveTask.run(sessionId);
-      } catch {}
-      const engineLabel =
-        engine === 'cursor-agent'
-          ? 'cursor agent'
-          : engine === 'gemini-cli'
-            ? 'gemini'
-            : engine === 'codex-cli'
-              ? 'codex'
-              : 'claude';
-      // Point the user at the correct config key. ENOENT here almost always
-      // means the configured bin path is wrong (wiki: "Spawn PATH Propagation").
-      const configKey =
-        engine === 'cursor-agent'
-          ? 'cursorBin'
-          : engine === 'gemini-cli'
-            ? 'geminiBin'
-            : engine === 'codex-cli'
-              ? 'codexBin'
-              : 'claudeBin';
-      const errnoCode = (err as NodeJS.ErrnoException).code;
-      // Node reports ENOENT against the command when *either* the binary or
-      // the cwd is missing. Re-check the cwd here so the user gets an
-      // actionable message instead of being misdirected to the bin path.
-      const cwdMissing = errnoCode === 'ENOENT' && !existsSync(effectiveCwd);
-      const hint = cwdMissing
-        ? ` — working directory does not exist: ${effectiveCwd}. Update the project's "cwd" in Settings or create the directory.`
-        : errnoCode === 'ENOENT'
-          ? ` — binary not found at ${bin}. Update ${configKey} in Settings or ~/.agent-hub/data/config.json.`
-          : errnoCode === 'EACCES'
-            ? ` — ${bin} is not executable. Update ${configKey} or chmod +x it.`
-            : '';
-      const errText = `Failed to spawn ${engineLabel}: ${err.message}${hint}`;
-      saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
-      broadcast({
-        type: 'error',
-        messageId: assistantMsgId,
-        sessionId,
-        error: errText,
+        // Operator-controlled gate (`delegationEnabled === false`): the lead is
+        // configured for inline-only completion. Surface a clear in-chat nudge
+        // and a `delegation_disabled` WS event for the message-anchored
+        // DelegateCard so the user knows exactly why nothing dispatched. This
+        // case takes priority over the malformed-gate branch below — when
+        // delegation is disabled we don't care whether the block parsed, the
+        // outcome is the same: nothing spawns.
+        const leadHasSubAgents =
+          agent.role === 'lead' && !!agent.subAgents && agent.subAgents.length > 0;
+        if (leadHasSubAgents && hasDelegateBlock && (delegationDisabled || delegationGloballyOff)) {
+          const sysId = uuidv4();
+          const body = delegationGloballyOff
+            ? '**Sub-agent delegation has been removed.** The `<delegate>` block was ignored — the delegation/handoff system is no longer active on this platform. Use conference rooms or direct chat to coordinate with other agents.'
+            : '**Delegation disabled for this lead.** The `<delegate>` block was ignored — this lead agent is configured to complete work inline. Re-enable delegation in agent settings to use sub-agents, or finish the task yourself.';
+          try {
+            stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
+            stmts.touchSession.run(sessionId);
+            const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
+              id: sysId,
+              session_id: sessionId,
+              role: 'system' as const,
+              content: body,
+              engine: null,
+              model: null,
+              attachments: null,
+              metadata: null,
+              created_at: new Date().toISOString(),
+            };
+            broadcast({ type: 'message_added', sessionId, message: insertedMessage });
+          } catch (err: unknown) {
+            const m = err instanceof Error ? err.message : String(err);
+            console.warn(`[delegation] failed to persist disabled-gate notice: ${m}`);
+            const fallback: MessageRow = {
+              id: sysId,
+              session_id: sessionId,
+              role: 'system',
+              content: body,
+              engine: null,
+              model: null,
+              attachments: null,
+              metadata: null,
+              created_at: new Date().toISOString(),
+            };
+            broadcast({ type: 'message_added', sessionId, message: fallback });
+          }
+          // Anchored banner on the DelegateCard. Same shape as
+          // `delegation_error` so the client's existing dispatchError
+          // correlation logic works without a parallel state machine.
+          broadcast({
+            type: 'delegation_disabled',
+            sessionId,
+            parentMessageId: assistantMsgId,
+            reason: 'Delegation disabled for this lead',
+          });
+        }
+
+        if (
+          leadHasSubAgents &&
+          hasDelegateBlock &&
+          !delegateTasks &&
+          !delegationDisabled &&
+          !delegationGloballyOff
+        ) {
+          const sysId = uuidv4();
+          const body =
+            '**Delegation gate rejected.** `<delegate>` payload must be a JSON array of task objects (or a single task object — it will be coerced to a one-element array). Every task must include `agentId`, `task`, `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`. No delegation was started.';
+          try {
+            stmts.addMessage.run(sysId, sessionId, 'system', body, null, null, null, null);
+            stmts.touchSession.run(sessionId);
+            const insertedMessage = (stmts.getMessageById.get(sysId) as MessageRow | undefined) ?? {
+              id: sysId,
+              session_id: sessionId,
+              role: 'system' as const,
+              content: body,
+              engine: null,
+              model: null,
+              attachments: null,
+              metadata: null,
+              created_at: new Date().toISOString(),
+            };
+            broadcast({ type: 'message_added', sessionId, message: insertedMessage });
+          } catch (err: unknown) {
+            const m = err instanceof Error ? err.message : String(err);
+            console.warn(`[delegation] failed to persist malformed delegate notice: ${m}`);
+            const fallback: MessageRow = {
+              id: sysId,
+              session_id: sessionId,
+              role: 'system',
+              content: body,
+              engine: null,
+              model: null,
+              attachments: null,
+              metadata: null,
+              created_at: new Date().toISOString(),
+            };
+            broadcast({ type: 'message_added', sessionId, message: fallback });
+          }
+        }
+
+        if (agent.role === 'lead' && agent.subAgents && agent.subAgents.length > 0) {
+          const parsedDelegateTasks = delegateTasks;
+          const closePlan = planDelegationRoundOnProcClose({
+            delegateTasks: parsedDelegateTasks,
+            hadEarlyDelegationPromise: delegationWorkPromise != null,
+          });
+          if (closePlan.mode === 'delegate') {
+            if (closePlan.startIfNeeded) {
+              startDelegationOnce(parsedDelegateTasks!);
+            }
+
+            if (delegationWorkPromise) {
+              void delegationWorkPromise
+                .then((results) => {
+                  if (results.length > 0) {
+                    return synthesizeResults(
+                      sessionId,
+                      agentId,
+                      enrichedAgent!,
+                      project,
+                      results,
+                      content,
+                      effectiveCwd,
+                    );
+                  }
+                })
+                .catch((err: unknown) => {
+                  const message = err instanceof Error ? err.message : String(err);
+                  console.error('[Delegation] Failed:', message);
+                  broadcast({
+                    type: 'delegation_error',
+                    sessionId,
+                    parentMessageId: assistantMsgId,
+                    error: message,
+                  });
+                })
+                .finally(() => {
+                  clearDelegationSafetyTimer();
+                  activeDelegationSessions.delete(sessionId);
+                  clearDelegationUiMeta(sessionId);
+                  broadcastActiveTasksSnapshot(stmts, broadcast);
+                  drainQueue(sessionId);
+                });
+            }
+            return;
+          }
+        }
+
+        // Isolated (git worktree) + Claude: give the filesystem a moment to settle
+        // after the CLI exits before `git status` / `gh`. The old flow ran auto-commit
+        // from the HTTP stop hook immediately; if git still looked clean, the hook
+        // path marked the session "handled" and proc skipped — no `changes_ready`
+        // / Create PR banner even with Isolated ON.
+        await runWorktreeAutoCommitAndDrainTail();
       });
-      drainQueue(sessionId);
-    });
+
+      proc.on('error', (err: Error) => {
+        spawnErrored = true;
+        activeProcesses.delete(sessionId);
+        try {
+          S.deleteActiveTask.run(sessionId);
+        } catch {}
+        const engineLabel =
+          engine === 'cursor-agent'
+            ? 'cursor agent'
+            : engine === 'gemini-cli'
+              ? 'gemini'
+              : engine === 'codex-cli'
+                ? 'codex'
+                : 'claude';
+        // Point the user at the correct config key. ENOENT here almost always
+        // means the configured bin path is wrong (wiki: "Spawn PATH Propagation").
+        const configKey =
+          engine === 'cursor-agent'
+            ? 'cursorBin'
+            : engine === 'gemini-cli'
+              ? 'geminiBin'
+              : engine === 'codex-cli'
+                ? 'codexBin'
+                : 'claudeBin';
+        const errnoCode = (err as NodeJS.ErrnoException).code;
+        // Node reports ENOENT against the command when *either* the binary or
+        // the cwd is missing. Re-check the cwd here so the user gets an
+        // actionable message instead of being misdirected to the bin path.
+        const cwdMissing = errnoCode === 'ENOENT' && !existsSync(effectiveCwd);
+        const hint = cwdMissing
+          ? ` — working directory does not exist: ${effectiveCwd}. Update the project's "cwd" in Settings or create the directory.`
+          : errnoCode === 'ENOENT'
+            ? ` — binary not found at ${bin}. Update ${configKey} in Settings or ~/.agent-hub/data/config.json.`
+            : errnoCode === 'EACCES'
+              ? ` — ${bin} is not executable. Update ${configKey} or chmod +x it.`
+              : '';
+        const errText = `Failed to spawn ${engineLabel}: ${err.message}${hint}`;
+        saveErrorMessage(sessionId, assistantMsgId, engine, model, errText);
+        broadcast({
+          type: 'error',
+          messageId: assistantMsgId,
+          sessionId,
+          error: errText,
+        });
+        drainQueue(sessionId);
+      });
+    } finally {
+      if (persistHook && !persistReported) {
+        persistReported = true;
+        persistHook(false);
+      }
+    }
   }
 
   return { handleChat, saveErrorMessage, createCursorChat };

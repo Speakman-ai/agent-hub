@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AGENT_HUB_BOT_SENTINEL, handleWebhookPrReview } from './webhooks.js';
-import type { Project, KanbanCardRow, KanbanColumnRow } from '../types.js';
+import { lastDispatchedReviewId } from '../review-feedback-dedup.js';
+import type { Project, KanbanCardRow, KanbanColumnRow, ChatMessage } from '../types.js';
 
 // Regression coverage for `handleWebhookPrReview`'s self-trigger filter.
 //
@@ -91,7 +92,14 @@ function makeDeps(overrides: {
     getGhAppSlug: vi.fn(() => overrides.ghAppSlug ?? null),
     getGhAuthenticatedUser: vi.fn(() => overrides.ghAuthenticatedUser ?? null),
     findAgent: vi.fn((id: string) => PROJECT.agents.find((a) => a.id === id) || null),
-    handleChat: vi.fn(() => Promise.resolve()),
+    handleChat: vi.fn(
+      async (
+        _ws: unknown,
+        msg: ChatMessage & { _onUserMessagePersisted?: (ok: boolean) => void },
+      ) => {
+        msg._onUserMessagePersisted?.(true);
+      },
+    ),
   };
 }
 
@@ -107,6 +115,7 @@ function payload(reviewOverrides: { state: string; body?: string; senderLogin: s
       html_url: 'https://github.com/owner/repo',
     },
     review: {
+      id: 9_009_001,
       state: reviewOverrides.state,
       body: reviewOverrides.body || '',
       user: { login: reviewOverrides.senderLogin },
@@ -118,14 +127,15 @@ function payload(reviewOverrides: { state: string; body?: string; senderLogin: s
 describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    lastDispatchedReviewId.clear();
   });
 
-  it("dispatches when a human on the auth'd account submits CHANGES_REQUESTED (no sentinel)", () => {
+  it("dispatches when a human on the auth'd account submits CHANGES_REQUESTED (no sentinel)", async () => {
     // This is the bug the fix closes: previously the sender-identity match
     // dropped the event, the author agent stayed asleep, PR sat idle.
     const deps = makeDeps({ ghAuthenticatedUser: 'ryan-human' });
 
-    const handled = handleWebhookPrReview(
+    const handled = await handleWebhookPrReview(
       deps as never,
       CARD,
       PROJECT,
@@ -139,12 +149,13 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
     );
 
     expect(handled).toBe(true);
-    // Card must move to In Progress so the next missed-review poll scan
-    // doesn't stampede — and because that's the column author sessions run in.
+    // Card moves to In Progress — workflow home for author follow-up; the poll
+    // fallback also scans In Progress so missed webhooks still reach busy cards.
     expect(deps.stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-in-progress', 0, 'card-1');
     // A fresh author session is spawned (card.session_id was null).
     expect(deps.stmts.createSession.run).toHaveBeenCalledTimes(1);
     expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    expect(lastDispatchedReviewId.get('card-1')).toBe(9_009_001);
     const chatMsg = (deps.handleChat.mock.calls[0] as unknown as unknown[])?.[1] as {
       content: string;
     };
@@ -152,13 +163,41 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
     expect(chatMsg.content).toContain('ryan-human');
   });
 
-  it('skips a CHANGES_REQUESTED review when the body carries the bot sentinel', () => {
+  it('does not record dedup when review prompt is not persisted (e.g. full queue)', async () => {
+    const deps = makeDeps({ ghAuthenticatedUser: 'ryan-human' });
+    deps.handleChat = vi.fn(
+      async (
+        _ws: unknown,
+        msg: ChatMessage & { _onUserMessagePersisted?: (ok: boolean) => void },
+      ) => {
+        msg._onUserMessagePersisted?.(false);
+      },
+    );
+
+    const handled = await handleWebhookPrReview(
+      deps as never,
+      CARD,
+      PROJECT,
+      COLS,
+      payload({
+        state: 'changes_requested',
+        body: 'Fix the bug',
+        senderLogin: 'ryan-human',
+      }) as never,
+      'ryan-human',
+    );
+
+    expect(handled).toBe(true);
+    expect(lastDispatchedReviewId.get('card-1')).toBeUndefined();
+  });
+
+  it('skips a CHANGES_REQUESTED review when the body carries the bot sentinel', async () => {
     // Defense-in-depth: if an agent ignores guidance and posts via `gh pr
     // review` under the CLI identity, the body sentinel still suppresses the
     // self-loop.
     const deps = makeDeps({ ghAuthenticatedUser: 'ryan-human' });
 
-    const handled = handleWebhookPrReview(
+    const handled = await handleWebhookPrReview(
       deps as never,
       CARD,
       PROJECT,
@@ -177,10 +216,10 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
     expect(deps.handleChat).not.toHaveBeenCalled();
   });
 
-  it('skips when sender is the bot PAT user (ghBotUser), regardless of body content', () => {
+  it('skips when sender is the bot PAT user (ghBotUser), regardless of body content', async () => {
     const deps = makeDeps({ ghBotUser: 'agent-hub-bot' });
 
-    const handled = handleWebhookPrReview(
+    const handled = await handleWebhookPrReview(
       deps as never,
       CARD,
       PROJECT,
@@ -197,10 +236,10 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
     expect(deps.handleChat).not.toHaveBeenCalled();
   });
 
-  it('skips when sender is the GitHub App bot (${ghAppSlug}[bot]), regardless of body content', () => {
+  it('skips when sender is the GitHub App bot (${ghAppSlug}[bot]), regardless of body content', async () => {
     const deps = makeDeps({ ghAppSlug: 'ryan-s-agent-hub-reviewer' });
 
-    const handled = handleWebhookPrReview(
+    const handled = await handleWebhookPrReview(
       deps as never,
       CARD,
       PROJECT,
@@ -217,7 +256,7 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
     expect(deps.handleChat).not.toHaveBeenCalled();
   });
 
-  it('still dispatches for a different human reviewer not tied to any bot identity', () => {
+  it('still dispatches for a different human reviewer not tied to any bot identity', async () => {
     // Nothing fancy — a teammate reviewed the PR. Must always flow through.
     const deps = makeDeps({
       ghAuthenticatedUser: 'ryan-human',
@@ -225,7 +264,7 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
       ghAppSlug: 'ryan-s-agent-hub-reviewer',
     });
 
-    const handled = handleWebhookPrReview(
+    const handled = await handleWebhookPrReview(
       deps as never,
       CARD,
       PROJECT,
@@ -240,5 +279,6 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
 
     expect(handled).toBe(true);
     expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    expect(lastDispatchedReviewId.get('card-1')).toBe(9_009_001);
   });
 });

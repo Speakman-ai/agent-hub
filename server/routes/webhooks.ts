@@ -27,6 +27,7 @@ import {
   clearAllAnalyzePhaseTimers,
   scheduleReviewerAnalyzePhaseTransition,
 } from '../reviewer-analyze-phase-timer.js';
+import { recordDispatchedChangesRequestedReview } from '../review-feedback-dedup.js';
 import { getProjectMode } from '../project-mode.js';
 import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
 import type {
@@ -104,6 +105,7 @@ interface GitHubWebhookPayload {
     line?: number;
   };
   review?: {
+    id?: number;
     user?: GitHubUser;
     state: string;
     body?: string;
@@ -753,6 +755,12 @@ export async function triggerCaptureForPR(
 
 // ─── Review Feedback Dispatch ───────────────────────────────────
 
+export type DispatchReviewFeedbackResult = {
+  sessionId: string | null;
+  /** True when the user message row was queued or written (not dropped, e.g. queue full). */
+  userMessagePersisted: boolean;
+};
+
 interface ReviewDispatchDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
@@ -760,26 +768,30 @@ interface ReviewDispatchDeps {
   handleChat(ws: unknown, msg: ChatMessage): Promise<void>;
 }
 
-export function dispatchReviewFeedback(
+export async function dispatchReviewFeedback(
   deps: ReviewDispatchDeps,
   card: KanbanCardRow,
   project: Project,
   feedbackContent: string,
-): string | null {
+): Promise<DispatchReviewFeedbackResult> {
   const { stmts, findAgent, handleChat, broadcast } = deps;
   try {
-    if (card.session_id) {
-      const existingSession = stmts.getSession.get(card.session_id) as SessionRow | undefined;
+    const linkedSessionId = card.session_id;
+    if (linkedSessionId) {
+      const existingSession = stmts.getSession.get(linkedSessionId) as SessionRow | undefined;
       if (existingSession) {
         const agentExists = findAgent(existingSession.agent_id);
         if (agentExists) {
-          handleChat(null, {
-            type: 'chat',
-            agentId: existingSession.agent_id,
-            sessionId: card.session_id,
-            content: feedbackContent,
+          const userMessagePersisted = await new Promise<boolean>((resolve) => {
+            void handleChat(null, {
+              type: 'chat',
+              agentId: existingSession.agent_id,
+              sessionId: linkedSessionId,
+              content: feedbackContent,
+              _onUserMessagePersisted: resolve,
+            });
           });
-          return card.session_id;
+          return { sessionId: linkedSessionId, userMessagePersisted };
         }
       }
     }
@@ -801,7 +813,7 @@ export function dispatchReviewFeedback(
         projectId: project.id,
         reason: `No eligible agent found (assignee: ${card.assignee || 'none'}, no fallback non-lead/non-docs/non-intake agent available)`,
       });
-      return null;
+      return { sessionId: null, userMessagePersisted: false };
     }
 
     const sessionId = crypto.randomUUID();
@@ -850,14 +862,17 @@ export function dispatchReviewFeedback(
       `[ReviewDispatch] Created new session ${sessionId} for "${card.title}" → agent "${agent.name}"`,
     );
 
-    handleChat(null, {
-      type: 'chat',
-      agentId: agent.id,
-      sessionId,
-      content: feedbackContent,
-      hookSpecificOutput: { sessionTitle: `Review fixes: ${card.title}` },
+    const userMessagePersisted = await new Promise<boolean>((resolve) => {
+      void handleChat(null, {
+        type: 'chat',
+        agentId: agent.id,
+        sessionId,
+        content: feedbackContent,
+        hookSpecificOutput: { sessionTitle: `Review fixes: ${card.title}` },
+        _onUserMessagePersisted: resolve,
+      });
     });
-    return sessionId;
+    return { sessionId, userMessagePersisted };
   } catch (err: unknown) {
     notifyDispatchFailure(deps, {
       source: 'ReviewDispatch',
@@ -868,7 +883,7 @@ export function dispatchReviewFeedback(
       reason: 'Unexpected error during review feedback dispatch',
       error: err,
     });
-    return null;
+    return { sessionId: null, userMessagePersisted: false };
   }
 }
 
@@ -1438,12 +1453,17 @@ function enqueueReviewComment(
   });
 
   if (entry.timer) clearTimeout(entry.timer);
-  entry.timer = setTimeout(() => flushReviewComments(deps, card.id), REVIEW_COMMENT_BATCH_DELAY_MS);
+  entry.timer = setTimeout(() => {
+    void flushReviewComments(deps, card.id).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[ReviewBatch] flush failed for card ${card.id}:`, msg);
+    });
+  }, REVIEW_COMMENT_BATCH_DELAY_MS);
 
   pendingReviewComments.set(card.id, entry);
 }
 
-function flushReviewComments(deps: RouteDeps, cardId: string): void {
+async function flushReviewComments(deps: RouteDeps, cardId: string): Promise<void> {
   const entry = pendingReviewComments.get(cardId);
   if (!entry || entry.comments.length === 0) return;
   pendingReviewComments.delete(cardId);
@@ -1477,10 +1497,19 @@ gh api repos/${repoFullName}/pulls/${prNumber}/comments -f body="<!-- agent-hub-
 Your response here"
 \`\`\``;
 
-  const sessionId = dispatchReviewFeedback(deps, card, project, feedbackContent);
-  if (sessionId) {
+  const { sessionId, userMessagePersisted } = await dispatchReviewFeedback(
+    deps,
+    card,
+    project,
+    feedbackContent,
+  );
+  if (sessionId && userMessagePersisted) {
     console.log(
       `[ReviewBatch] Flushed ${comments.length} comment(s) for card "${card.title}" → session ${sessionId}`,
+    );
+  } else if (sessionId && !userMessagePersisted) {
+    console.warn(
+      `[ReviewBatch] Chat queue rejected inline comments for "${card.title}" (session ${sessionId}) — not logged as delivered`,
     );
   }
 }
@@ -1545,13 +1574,13 @@ function buildWebhookContext(event: string, action: string, payload: GitHubWebho
 
 // ─── Kanban Board Webhook Lifecycle Handlers ────────────────────
 
-function handleKanbanWebhookEvent(
+async function handleKanbanWebhookEvent(
   deps: RouteDeps,
   event: string,
   action: string,
   payload: GitHubWebhookPayload,
   webhookConfig: WebhookConfigRow,
-): boolean {
+): Promise<boolean> {
   const { stmts, broadcast, getProjects } = deps;
   const projects = getProjects();
 
@@ -1783,7 +1812,7 @@ function handleKanbanWebhookEvent(
 
   switch (eventKey) {
     case 'pull_request_review.submitted':
-      return handleWebhookPrReview(deps, card, project, cols, payload, sender);
+      return await handleWebhookPrReview(deps, card, project, cols, payload, sender);
     case 'pull_request.closed':
       return handleWebhookPrClosed(deps, card, project, cols, payload, sender);
     case 'pull_request.synchronize':
@@ -1797,14 +1826,14 @@ function handleKanbanWebhookEvent(
   }
 }
 
-export function handleWebhookPrReview(
+export async function handleWebhookPrReview(
   deps: RouteDeps,
   card: KanbanCardRow,
   project: Project,
   cols: KanbanColumnRow[],
   payload: GitHubWebhookPayload,
   sender: string,
-): boolean {
+): Promise<boolean> {
   const { stmts, broadcast, getGhBotUser, getGhAppSlug } = deps;
   const getGhAuthenticatedUser = deps.getGhAuthenticatedUser as () => string | null;
   const review = payload.review;
@@ -1908,10 +1937,22 @@ ${reviewBody || '(No body — check inline comments on the PR)'}
       broadcast({ type: 'kanban_update', projectId: project.id });
     }
 
-    const sessionId = dispatchReviewFeedback(deps, card, project, feedbackMessage);
-    console.log(
-      `[Webhook/Kanban] Changes requested on "${card.title}" by ${sender} — dispatched to session ${sessionId || '(failed)'}`,
+    const { sessionId, userMessagePersisted } = await dispatchReviewFeedback(
+      deps,
+      card,
+      project,
+      feedbackMessage,
     );
+    console.log(
+      `[Webhook/Kanban] Changes requested on "${card.title}" by ${sender} — dispatched to session ${sessionId || '(failed)'} (persisted: ${userMessagePersisted})`,
+    );
+
+    if (sessionId && userMessagePersisted) {
+      const rid = typeof review.id === 'number' ? review.id : Number(review.id);
+      if (Number.isFinite(rid) && rid > 0) {
+        recordDispatchedChangesRequestedReview(card.id, rid);
+      }
+    }
 
     if (prNumber) {
       const existing = stmts.getRecentEscalationByTypeAndPr.get(
@@ -1965,9 +2006,14 @@ ${reviewBody}
 
 **Important:** Always prefix your comment body with \`<!-- agent-hub-bot -->\` so the system knows it was posted by an agent.`;
 
-    const sessionId = dispatchReviewFeedback(deps, card, project, feedbackMessage);
+    const { sessionId, userMessagePersisted } = await dispatchReviewFeedback(
+      deps,
+      card,
+      project,
+      feedbackMessage,
+    );
     console.log(
-      `[Webhook/Kanban] Commented review on "${card.title}" by ${sender} (substantive) — dispatched to session ${sessionId || '(failed)'}`,
+      `[Webhook/Kanban] Commented review on "${card.title}" by ${sender} (substantive) — dispatched to session ${sessionId || '(failed)'} (persisted: ${userMessagePersisted})`,
     );
 
     broadcast({
@@ -2635,7 +2681,7 @@ export async function processWebhookEvent(
 
   let kanbanHandled = false;
   try {
-    kanbanHandled = handleKanbanWebhookEvent(deps, event, action, payload, webhookConfig);
+    kanbanHandled = await handleKanbanWebhookEvent(deps, event, action, payload, webhookConfig);
     if (kanbanHandled) {
       const logEntry = stmts.addWebhookLog.run(
         webhookConfig.id,

@@ -1827,6 +1827,12 @@ export interface ChatMessage {
    * (see `server/secrets.ts`).
    */
   extraEnv?: Record<string, string>;
+  /**
+   * Internal: invoked at most once with true when the user message for this turn
+   * was persisted (queued or immediate). False otherwise. Used so review-feedback
+   * webhook dedup does not advance when `handleChat` drops a system inject (e.g. queue full).
+   */
+  _onUserMessagePersisted?: (accepted: boolean) => void;
 }
 
 export interface RoomChatMessage {
@@ -1903,7 +1909,7 @@ export interface RouteDeps {
   ensureProjectRoom: (project: Project) => RoomWithAgents | null;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
   pendingReviewComments: Map<string, unknown>;
-  lastDispatchedReviewId: Map<string, string>;
+  lastDispatchedReviewId: Map<string, number>;
   scheduleAutonomousEpic: (projectId: string, epic: KanbanEpicRow) => void;
   autonomousCrons: Map<string, unknown>;
   runAutonomousLoop: (projectId: string) => Promise<void>;
