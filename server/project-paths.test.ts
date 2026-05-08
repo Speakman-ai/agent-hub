@@ -1,6 +1,8 @@
 import {
   resolveProjectPaths,
   contextFilePath,
+  resolveWorkspaceDataDir,
+  resolveWorkspaceSkillsDir,
   SHARED_CONTEXT_FILES,
   AGENT_CONTEXT_FILES,
   ALL_CONTEXT_FILES,
@@ -39,6 +41,58 @@ describe('resolveProjectPaths', () => {
     expect(paths.soulMd).toBe('');
     expect(paths.identityMd).toBe('');
     expect(paths.skillsDir).toBe('');
+  });
+});
+
+describe('resolveWorkspaceSkillsDir (slash / loadSkill parity)', () => {
+  it('matches project.ahw when set', () => {
+    expect(
+      resolveWorkspaceSkillsDir(
+        { ahw: '/w/p' } as Project,
+        { id: 'a1', ahw: '/agent-only', name: 'A', engine: 'claude-code' } as Agent,
+      ),
+    ).toBe('/w/p/skills');
+  });
+
+  it('falls back to agent.ahw when project has no ahw', () => {
+    expect(
+      resolveWorkspaceSkillsDir(
+        { cwd: '/c' } as Project,
+        {
+          id: 'a1',
+          ahw: '/agent-workspace',
+          name: 'A',
+          engine: 'claude-code',
+        } as Agent,
+      ),
+    ).toBe('/agent-workspace/skills');
+  });
+
+  it('returns empty when neither project nor agent workspace is set', () => {
+    expect(
+      resolveWorkspaceSkillsDir(
+        { cwd: '/c' } as Project,
+        {
+          id: 'a1',
+          name: 'A',
+          engine: 'claude-code',
+        } as Agent,
+      ),
+    ).toBe('');
+  });
+
+  it('resolveWorkspaceDataDir reads agent workspace field like resolveSlashSkill', () => {
+    expect(
+      resolveWorkspaceDataDir(
+        { cwd: '/c' } as Project,
+        {
+          id: 'a1',
+          name: 'A',
+          engine: 'claude-code',
+          workspace: '/legacy-ws',
+        } as Agent,
+      ),
+    ).toBe('/legacy-ws');
   });
 });
 

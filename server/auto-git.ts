@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import path from 'path';
-import { readFileSync, existsSync, statSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import type {
@@ -492,7 +492,6 @@ interface AutoGitDeps {
 }
 
 interface SlashSkillResult {
-  skillContent?: string;
   skillName: string;
   userArgs: string;
   error?: undefined;
@@ -544,8 +543,7 @@ export function resolveSlashSkill(
     if (existsSync(dirPath) && statSync(dirPath).isDirectory()) {
       const skillMd = path.join(dirPath, 'SKILL.md');
       if (existsSync(skillMd)) {
-        const raw = readFileSync(skillMd, 'utf-8');
-        return { skillContent: raw, skillName, userArgs };
+        return { skillName, userArgs };
       }
     }
 
@@ -553,8 +551,7 @@ export function resolveSlashSkill(
       ? path.join(skillsDir, skillName)
       : path.join(skillsDir, skillName + '.md');
     if (existsSync(mdPath) && !statSync(mdPath).isDirectory()) {
-      const raw = readFileSync(mdPath, 'utf-8');
-      return { skillContent: raw, skillName: skillName.replace('.md', ''), userArgs };
+      return { skillName: skillName.replace(/\.md$/i, ''), userArgs };
     }
   }
 

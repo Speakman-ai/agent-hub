@@ -12,7 +12,11 @@ import config, {
   buildSpawnEnv,
   resolveAgentHubApiBaseForSpawn,
 } from './config.js';
-import { resolveProjectPaths, contextFilePath } from './project-paths.js';
+import {
+  resolveProjectPaths,
+  contextFilePath,
+  resolveWorkspaceSkillsDir,
+} from './project-paths.js';
 import { getWikiContext } from './wiki.js';
 import { getMemoryContext, appendDailyNote, reconcileMemoryAfterSession } from './memory.js';
 import { collectSkillsFromDir, DEFAULT_SKILLS_DIR } from './routes/skills.js';
@@ -164,7 +168,6 @@ interface SkillInfo {
 interface SlashSkillResult {
   error?: string;
   skillName?: string;
-  skillContent?: string;
   userArgs?: string;
 }
 
@@ -1039,6 +1042,54 @@ export function mergePendingContextWithCap(
   return `${body}${truncatedMarker}`.trim();
 }
 
+/** Shape returned by {@link ChatHandlerDeps.resolveSlashSkill} (success or error). */
+export interface SlashSkillResolveShape {
+  error?: string;
+  skillName?: string;
+  userArgs?: string;
+}
+
+export interface SlashSkillTurnAugmentation {
+  slashSkillSuffix: string;
+  cliContent: string;
+}
+
+/**
+ * Slash `/skillId` turns: inject skill body via `loadSkillByName` into the
+ * enriched prompt suffix, and pass only the user args to the CLI as
+ * `cliContent` (no legacy `<skill>` XML). Kept exported for regression
+ * tests — `createChatHandler` delegates here.
+ */
+export function augmentChatTurnForSlashSkill(args: {
+  slashResult: SlashSkillResolveShape | null;
+  project: Project;
+  agent: Agent;
+  sessionId: string;
+  stmts: Stmts;
+  broadcast: BroadcastFn;
+  isAutoContinuation: boolean;
+  content: string;
+}): SlashSkillTurnAugmentation {
+  const { slashResult, project, agent, sessionId, stmts, broadcast, isAutoContinuation, content } =
+    args;
+  let cliContent = content;
+  let slashSkillSuffix = '';
+  if (slashResult && !slashResult.error && slashResult.skillName && !isAutoContinuation) {
+    const userArgs = slashResult.userArgs || 'Please use this skill as instructed.';
+    const slashSkillsDir = resolveWorkspaceSkillsDir(project, agent);
+    slashSkillSuffix = `\n\n${loadSkillByName({
+      name: slashResult.skillName,
+      reason: 'slash-command',
+      paths: { skillsDir: slashSkillsDir },
+      sessionId,
+      stmts,
+      broadcast,
+    })}`;
+    cliContent = userArgs;
+  }
+  return { slashSkillSuffix, cliContent };
+}
+
 // ─── createChatHandler (factory) ───────────────────────────────────
 
 export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerResult {
@@ -1274,10 +1325,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     }
 
     let cliContent: string = content;
-    if (slashResult) {
-      const args = slashResult.userArgs || 'Please use this skill as instructed.';
-      cliContent = `<skill name="${slashResult.skillName}">\n${slashResult.skillContent}\n</skill>\n\n${args}`;
-    }
 
     let session = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) {
@@ -1432,6 +1479,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const engine: string = session!.engine || 'claude-code';
     const model: string = session!.model || DEFAULT_MODEL;
     const paths = resolveProjectPaths(project as Project, agent as Agent);
+    const slashAug = augmentChatTurnForSlashSkill({
+      slashResult,
+      project: project as Project,
+      agent: agent as Agent,
+      sessionId,
+      stmts: stmts as Stmts,
+      broadcast,
+      isAutoContinuation,
+      content,
+    });
+    const slashSkillSuffix = slashAug.slashSkillSuffix;
+    cliContent = slashAug.cliContent;
+
     let routedSkillSuffix = '';
     const loadedRoutedSkillIds = new Set<string>();
     if (!slashResult && !isAutoContinuation) {
@@ -1489,6 +1549,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       () => stmts.updateSessionPendingSkillContext.run(null, sessionId),
     );
     if (pendingSkillSuffix) enrichedPrompt += pendingSkillSuffix;
+    if (slashSkillSuffix) enrichedPrompt += slashSkillSuffix;
     if (routedSkillSuffix) enrichedPrompt += routedSkillSuffix;
 
     const projectId =

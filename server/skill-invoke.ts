@@ -30,11 +30,12 @@ function isStrictDescendant(resolvedChild: string, resolvedRoot: string): boolea
 
 /** Reject path traversal / nested paths so `name` cannot escape the skills directory. */
 export function resolveSkillDirUnderBase(baseDir: string, name: string): string | null {
+  if (!baseDir || typeof baseDir !== 'string' || !baseDir.trim()) return null;
   if (!name || typeof name !== 'string') return null;
   if (name.includes('\0')) return null;
   if (name !== path.basename(name)) return null;
 
-  const base = path.resolve(baseDir);
+  const base = path.resolve(baseDir.trim());
   const skillDir = path.resolve(base, name);
   const rel = path.relative(base, skillDir);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
@@ -58,6 +59,11 @@ export interface SkillInvokePaths {
 export interface LoadedSkillBody {
   source: 'project' | 'default';
   skillDir: string;
+  /**
+   * When the skill is a flat `<skillsRoot>/<id>.md` file, set this so injection
+   * titles use the skill id (e.g. `foo`), not the markdown basename (`foo.md`).
+   */
+  skillTitle?: string;
   skillMd: string;
   references: Array<{ path: string; body: string }>;
   scriptListing: string[];
@@ -164,26 +170,36 @@ export function parseSkillBlock(raw: string): SkillInvokeTask | SkillInvokeMalfo
   return reason ? { name, reason } : { name };
 }
 
-export function loadSkillBody(name: string, paths: SkillInvokePaths): LoadedSkillBody | null {
-  const projectDir = resolveSkillDirUnderBase(paths.skillsDir, name);
-  const defaultDir = resolveSkillDirUnderBase(DEFAULT_SKILLS_DIR, name);
-  if (!projectDir && !defaultDir) return null;
+function resolveFlatSkillMdUnderSkillsRoot(
+  skillsRoot: string,
+  name: string,
+): { mdPath: string; displayName: string } | null {
+  const fileBase = name.endsWith('.md') ? name : `${name}.md`;
+  if (fileBase.includes('\0')) return null;
+  if (fileBase !== path.basename(fileBase)) return null;
 
-  const candidates: Array<{ source: 'project' | 'default'; skillDir: string }> = [];
-  if (projectDir) candidates.push({ source: 'project', skillDir: projectDir });
-  if (defaultDir) candidates.push({ source: 'default', skillDir: defaultDir });
+  const baseResolved = path.resolve(skillsRoot);
+  const mdPath = path.resolve(baseResolved, fileBase);
+  const rel = path.relative(baseResolved, mdPath);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (!existsSync(mdPath) || statSync(mdPath).isDirectory()) return null;
 
-  const found = candidates.find((c) => existsSync(path.join(c.skillDir, 'SKILL.md')));
-  if (!found) return null;
+  const displayName = name.endsWith('.md') ? name.replace(/\.md$/i, '') : name;
+  return { mdPath, displayName };
+}
 
-  const skillsRoot = found.source === 'project' ? paths.skillsDir : DEFAULT_SKILLS_DIR;
+function loadSkillFromDirectory(
+  source: 'project' | 'default',
+  skillsRoot: string,
+  skillDir: string,
+): LoadedSkillBody | null {
   const rootReal = realpathOrNull(skillsRoot);
-  const skillDirReal = realpathOrNull(found.skillDir);
+  const skillDirReal = realpathOrNull(skillDir);
   if (!rootReal || !skillDirReal || !isStrictDescendant(skillDirReal, rootReal)) {
     return null;
   }
 
-  const skillMdPath = path.join(found.skillDir, 'SKILL.md');
+  const skillMdPath = path.join(skillDir, 'SKILL.md');
   const mdReal = realpathOrNull(skillMdPath);
   if (!mdReal || !isStrictDescendant(mdReal, skillDirReal)) return null;
 
@@ -194,7 +210,7 @@ export function loadSkillBody(name: string, paths: SkillInvokePaths): LoadedSkil
     skillMd += '\n\n[Truncated: SKILL.md byte cap reached]';
   }
 
-  const referencesDir = path.join(found.skillDir, 'references');
+  const referencesDir = path.join(skillDir, 'references');
   const referenceRelPaths = collectReferenceFiles(referencesDir);
   const references: Array<{ path: string; body: string }> = [];
 
@@ -220,7 +236,7 @@ export function loadSkillBody(name: string, paths: SkillInvokePaths): LoadedSkil
     remaining -= Buffer.byteLength(body, 'utf-8');
   }
 
-  const scriptsDir = path.join(found.skillDir, 'scripts');
+  const scriptsDir = path.join(skillDir, 'scripts');
   const scriptListing: string[] = [];
   if (existsSync(scriptsDir)) {
     const scriptsRootReal = realpathOrNull(scriptsDir);
@@ -244,16 +260,74 @@ export function loadSkillBody(name: string, paths: SkillInvokePaths): LoadedSkil
   }
 
   return {
-    source: found.source,
-    skillDir: found.skillDir,
+    source,
+    skillDir,
     skillMd,
     references,
     scriptListing,
   };
 }
 
+function loadSkillFromFlatMarkdownFile(
+  source: 'project' | 'default',
+  skillsRoot: string,
+  mdPath: string,
+  skillTitle: string,
+): LoadedSkillBody | null {
+  const rootReal = realpathOrNull(skillsRoot);
+  const mdReal = realpathOrNull(mdPath);
+  if (!rootReal || !mdReal || !isStrictDescendant(mdReal, rootReal)) return null;
+
+  const rawMdBuf = readFileSync(mdPath);
+  const mdSlice = rawMdBuf.subarray(0, Math.min(rawMdBuf.length, SKILL_MD_BYTE_CAP));
+  let skillMd = mdSlice.toString('utf-8');
+  if (rawMdBuf.length > SKILL_MD_BYTE_CAP) {
+    skillMd += '\n\n[Truncated: SKILL.md byte cap reached]';
+  }
+
+  return {
+    source,
+    skillDir: mdPath,
+    skillTitle,
+    skillMd,
+    references: [],
+    scriptListing: [],
+  };
+}
+
+export function loadSkillBody(name: string, paths: SkillInvokePaths): LoadedSkillBody | null {
+  const trimmedName = name.trim();
+  if (!trimmedName) return null;
+
+  const projectRoot = paths.skillsDir?.trim() ? paths.skillsDir.trim() : '';
+  const searchOrder: Array<{ source: 'project' | 'default'; root: string }> = [];
+  if (projectRoot) searchOrder.push({ source: 'project', root: projectRoot });
+  searchOrder.push({ source: 'default', root: DEFAULT_SKILLS_DIR });
+
+  for (const { source, root } of searchOrder) {
+    if (!root || !existsSync(root)) continue;
+
+    const dir = resolveSkillDirUnderBase(root, trimmedName);
+    if (dir && existsSync(dir) && statSync(dir).isDirectory()) {
+      const skillMdPath = path.join(dir, 'SKILL.md');
+      if (existsSync(skillMdPath)) {
+        const loaded = loadSkillFromDirectory(source, root, dir);
+        if (loaded) return loaded;
+      }
+    }
+
+    const flat = resolveFlatSkillMdUnderSkillsRoot(root, trimmedName);
+    if (flat) {
+      const loaded = loadSkillFromFlatMarkdownFile(source, root, flat.mdPath, flat.displayName);
+      if (loaded) return loaded;
+    }
+  }
+
+  return null;
+}
+
 export function buildSkillInjection(loaded: LoadedSkillBody): string {
-  const skillName = path.basename(loaded.skillDir);
+  const skillName = loaded.skillTitle ?? path.basename(loaded.skillDir);
   const lines: string[] = [
     `## Loaded Skill: ${skillName}`,
     `Source: ${loaded.source}`,
