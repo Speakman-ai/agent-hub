@@ -2,7 +2,7 @@
 # CORS/ALB wiring in locals. Overlaps with ideas from https://github.com/Speakman-ai/agent-hub/pull/571
 # (docker + .env + optional generated API key).
 variable "bootstrap_agent_hub" {
-  description = "If true, on first boot clone and start Agent Hub. Requires a new instance or user data change; see user_data_replace_on_change on the EC2 instance."
+  description = "If true, on first boot clone and start Agent Hub. Changing bootstrap inputs after launch does not replace the instance by default; see user_data_replace_on_change and the `aws_instance.app` lifecycle in main.tf."
   type        = bool
   default     = false
 }

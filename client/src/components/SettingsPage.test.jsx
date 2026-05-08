@@ -169,6 +169,30 @@ describe('SettingsPage — tab labels', () => {
     window.history.replaceState(null, '', '/');
   });
 
+  it('does not expose a Workspace sidebar link named Integrations', async () => {
+    const { queryByRole, findByRole } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
+    );
+    await findByRole('button', { name: /^General$/ });
+    expect(queryByRole('button', { name: /^Integrations$/ })).toBeNull();
+  });
+
+  it('redirects legacy Settings → Integrations deep link to Skills MCP', async () => {
+    const onNavigate = vi.fn();
+    render(
+      <SettingsPage
+        projects={[]}
+        agents={[]}
+        onAgentsChange={() => {}}
+        initialTab="integrations"
+        onNavigate={onNavigate}
+      />,
+    );
+    await waitFor(() => {
+      expect(onNavigate).toHaveBeenCalledWith('skills:mcp');
+    });
+  });
+
   it('labels the combined AI CLI auth tab "AI Authentication"', async () => {
     // Bug report: the combined Claude/Gemini/Cursor/Codex auth tab was
     // simply labeled "Auth", which is too terse and ambiguous. It should

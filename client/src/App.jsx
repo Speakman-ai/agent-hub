@@ -3213,8 +3213,16 @@ export default function App() {
                     window.open(url, '_blank', 'noopener,noreferrer');
                   }}
                 />
-              ) : currentView === 'skills' ? (
-                <SkillsPage agents={agents} projects={projects} />
+              ) : currentView === 'skills' || currentView.startsWith('skills:') ? (
+                <SkillsPage
+                  agents={agents}
+                  projects={projects}
+                  initialSkillsTab={
+                    currentView.startsWith('skills:')
+                      ? currentView.slice('skills:'.length) || undefined
+                      : undefined
+                  }
+                />
               ) : currentView === 'room' && activeRoom ? (
                 <RoomChat
                   room={activeRoom}

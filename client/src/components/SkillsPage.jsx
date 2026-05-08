@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
 import ClawHubBrowser from './ClawHubBrowser.jsx';
+import McpServersSection from './McpServersSection.jsx';
 import {
   BookOpen,
   Loader2,
@@ -22,6 +23,7 @@ import {
   Package,
   X,
   Plug,
+  Cpu,
   Check,
   Shield,
   Cloud,
@@ -685,8 +687,10 @@ function PluginPanel() {
   );
 }
 
-export default function SkillsPage({ agents, projects }) {
-  const [activeTab, setActiveTab] = useState('installed');
+export default function SkillsPage({ agents, projects, initialSkillsTab }) {
+  const [activeTab, setActiveTab] = useState(() =>
+    initialSkillsTab === 'mcp' ? 'mcp' : 'installed',
+  );
   const [activeAgentId, setActiveAgentId] = useState(agents[0]?.id || null);
   const [skills, setSkills] = useState([]);
   const [context, setContext] = useState({});
@@ -702,6 +706,10 @@ export default function SkillsPage({ agents, projects }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [showImport, setShowImport] = useState(false);
+
+  useEffect(() => {
+    if (initialSkillsTab === 'mcp') setActiveTab('mcp');
+  }, [initialSkillsTab]);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
   // Derive the project from the active agent
@@ -873,8 +881,8 @@ export default function SkillsPage({ agents, projects }) {
           </div>
         )}
 
-        {/* Tabs: Installed | Registry */}
-        <div className="flex items-center gap-1 mb-6 border-b border-gray-700 pb-0">
+        {/* Tabs: Installed | MCP | Registry | Plugin | ClawHub */}
+        <div className="flex items-center gap-1 mb-6 border-b border-gray-700 pb-0 overflow-x-auto">
           <button
             onClick={() => setActiveTab('installed')}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
@@ -885,6 +893,18 @@ export default function SkillsPage({ agents, projects }) {
           >
             <span className="flex items-center gap-1.5">
               <Puzzle size={14} /> Installed
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab('mcp')}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+              activeTab === 'mcp'
+                ? 'border-indigo-500 text-white'
+                : 'border-transparent text-gray-400 hover:text-white'
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
+              <Cpu size={14} /> MCP
             </span>
           </button>
           <button
@@ -924,6 +944,8 @@ export default function SkillsPage({ agents, projects }) {
             </span>
           </button>
         </div>
+
+        {activeTab === 'mcp' && <McpServersSection />}
 
         {activeTab === 'installed' && (
           <>

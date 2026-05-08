@@ -1,5 +1,5 @@
 /**
- * Settings → Integrations panel.
+ * Skills & Context → MCP tab (per-user registry).
  *
  * Replaces the deleted Nango-based integrations page with a per-user MCP
  * (Model Context Protocol) server registry. Each row gets injected into

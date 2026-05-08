@@ -1040,7 +1040,7 @@ export default function Sidebar({
         <button
           onClick={() => onNavigate('skills')}
           className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${
-            currentView === 'skills'
+            currentView === 'skills' || currentView.startsWith('skills:')
               ? 'bg-gray-800 text-white'
               : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
           }`}

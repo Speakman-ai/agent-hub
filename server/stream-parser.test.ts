@@ -572,6 +572,17 @@ describe('createStreamParser — Cursor Agent', () => {
     expect(events).toHaveLength(0);
   });
 
+  it('ignores interaction_query frames (headless Cursor; no unknown tail noise)', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'interaction_query',
+        session_id: 's-cursor',
+        query: 'Allow this MCP server to run?',
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
   it('parses streaming assistant events (with timestamp_ms)', () => {
     const events = parse([
       JSON.stringify({
@@ -761,6 +772,27 @@ describe('createStreamParser — Cursor Agent', () => {
     expect(use.input).toEqual({ path: 'summary.txt', fileText: 'hello' });
     expect(res.type).toBe('tool_result');
     expect(res.isError).toBe(false);
+  });
+
+  it('emits Edit tool_use on started when args include unified_diff (not deferred to completed)', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'started',
+        call_id: 'e-ud',
+        tool_call: {
+          editToolCall: {
+            args: { path: 'f.ts', unified_diff: '-a\n+b' },
+          },
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_use');
+    const use = events[0] as { tool: string; input: Record<string, unknown> };
+    expect(use.tool).toBe('Edit');
+    expect(use.input.path).toBe('f.ts');
+    expect(use.input.unified_diff).toBe('-a\n+b');
   });
 
   it('handles unknown tool variants gracefully', () => {

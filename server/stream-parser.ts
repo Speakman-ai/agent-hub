@@ -21,6 +21,7 @@ function shouldDeferCursorFileToolCall(toolName: string, input: Record<string, u
   }
   // Edit
   if (input.strReplace || input.multiStrReplace || input.applyPatch) return false;
+  if (typeof input.unified_diff === 'string' && input.unified_diff.trim()) return false;
   if (input.changes && Array.isArray(input.changes)) return false;
   if (typeof input.old_string === 'string' || typeof input.oldString === 'string') return false;
   if (typeof input.new_string === 'string' || typeof input.newString === 'string') return false;
@@ -629,6 +630,24 @@ function normalizeCursor(
 
     case 'thinking':
       return [];
+
+    case 'interaction_query': {
+      // Cursor emits `interaction_query` when the CLI would prompt the user in an
+      // interactive TTY. Agent Hub runs `cursor-agent` with `--print`, `--force`, and
+      // no stdin for answers — the frame is informational; surfacing it as `unknown`
+      // produced noisy "Unhandled Cursor event: interaction_query" rows in SessionTail.
+      if (process.env.AGENT_HUB_DEBUG_CURSOR_STREAM === '1') {
+        const pick =
+          (typeof raw.prompt === 'string' && raw.prompt) ||
+          (typeof raw.query === 'string' && raw.query) ||
+          (typeof raw.message === 'string' && raw.message) ||
+          (typeof raw.text === 'string' && raw.text);
+        console.debug(
+          `[stream-parser] cursor interaction_query ignored (headless)${pick ? `: ${pick.slice(0, 200)}` : ''}`,
+        );
+      }
+      return [];
+    }
 
     case 'assistant': {
       if (raw.timestamp_ms === undefined) return [];
