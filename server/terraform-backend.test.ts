@@ -111,15 +111,26 @@ describe('ops/terraform/main.tf — required_version floor', () => {
 describe('ops/terraform/variables.tf — user_data_replace_on_change', () => {
   const path = join(tfDir, 'variables.tf');
 
-  it('defaults to true so in-place user_data updates never silently skip cloud-init', () => {
-    // If this ever flips back to false, a user_data change will update the
-    // EC2 attribute but cloud-init won't re-run on the existing instance —
-    // the OS keeps running whatever was first-booted. This regressed once
-    // already (see the AL2023 curl-conflict incident).
+  it('defaults to false so bootstrap edits do not replace the host unless operators opt in', () => {
+    // True forces instance replacement whenever rendered user_data changes.
+    // Default false pairs with `lifecycle.ignore_changes = [ami]` on
+    // `aws_instance.app` so routine applies do not wipe the box; adopt bootstrap
+    // on existing hosts via SSM, or `terraform apply -replace=aws_instance.app`,
+    // or set this true temporarily for a deliberate rebuild.
     const tf = readText(path);
     const m = tf.match(/variable\s+"user_data_replace_on_change"\s*\{[\s\S]*?\n\}/);
     expect(m, 'variable block must exist').toBeTruthy();
-    expect(m![0]).toMatch(/default\s*=\s*true/);
+    expect(m![0]).toMatch(/default\s*=\s*false/);
+  });
+});
+
+describe('ops/terraform/main.tf — aws_instance.app lifecycle', () => {
+  const path = join(tfDir, 'main.tf');
+
+  it('ignores post-create ami drift so SSM recommended AMI updates do not replace the instance', () => {
+    const tf = readText(path);
+    expect(tf).toMatch(/resource\s+"aws_instance"\s+"app"/);
+    expect(tf).toMatch(/ignore_changes\s*=\s*\[\s*ami\s*\]/);
   });
 });
 

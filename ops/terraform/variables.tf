@@ -17,7 +17,7 @@ variable "instance_type" {
 }
 
 variable "ami_id" {
-  description = "Override AMI. Leave null to use the ECS-optimized Amazon Linux 2023 AMI resolved from SSM (`use_ecs_optimized_ami = true`, default), which has Docker + SSM agent + ECR credential helper preinstalled. Set a raw AMI ID (e.g. Ubuntu) only when you need the legacy PM2-on-host path that installs Node + Docker in user-data."
+  description = "Override AMI used at instance **create** time. Leave null to use the ECS-optimized Amazon Linux 2023 AMI resolved from SSM (`use_ecs_optimized_ami = true`, default). After the first apply, `aws_instance.app` ignores `ami` drift (see main.tf lifecycle) so changing this variable alone does not re-image the host — use `terraform apply -replace=aws_instance.app` when you intend to rebuild. Set a raw AMI ID (e.g. Ubuntu) only for the legacy PM2-on-host path."
   type        = string
   default     = null
   nullable    = true
@@ -147,9 +147,9 @@ variable "agent_hub_web_port" {
 }
 
 variable "user_data_replace_on_change" {
-  description = "Set true (the default) to replace the instance when user_data (bootstrap) changes. Without this, TF updates the user_data attribute in-place but cloud-init doesn't re-run on the existing instance — meaning the OS keeps running whatever was first-booted. Turn off only if you have an explicit out-of-band mechanism for re-running bootstrap (e.g. SSM)."
+  description = "When true, any change to rendered user_data **replaces** the EC2 instance (full rebuild). Default false so bootstrap template edits do not wipe production; cloud-init still does not re-run on an existing host unless you replace out-of-band (SSM) or force `terraform apply -replace=aws_instance.app`. Set true temporarily when you deliberately want a fresh instance after a user_data change."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "ssh_user" {
