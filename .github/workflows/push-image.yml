@@ -104,3 +104,78 @@ jobs:
             echo "docker pull ${{ env.ECR_PUBLIC_URI }}:${{ steps.tags.outputs.sha_short }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Dev sandbox (ryan) pulls `agent-hub:main` via systemd; restart re-runs
+  # docker pull on the host. IAM: inline policy on agent-hub-ci-ecr-push from
+  # Terraform (`enable_ci_ssm_deploy_after_ecr_push` in environments/ryan).
+  deploy-dev-sandbox:
+    name: Deploy dev sandbox (SSM)
+    needs: push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_ROLE_TO_ASSUME: arn:aws:iam::120569607241:role/agent-hub-ci-ecr-push
+      AWS_DEPLOY_REGION: us-east-2
+      # Must stay in sync with ci_ssm_deploy_instance_id (ryan.tfvars): ryan-sandbox EC2.
+      DEV_SANDBOX_INSTANCE_ID: i-08b54d5b72e54baed
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_DEPLOY_REGION }}
+
+      - name: Restart Agent Hub on dev EC2 (pull fresh image)
+        run: |
+          set -euo pipefail
+          PARAMS_JSON='{"commands":["set -euo pipefail","sudo systemctl restart agenthub-server","sudo systemctl is-active agenthub-server"]}'
+          CMD_ID="$(aws ssm send-command \
+            --region "$AWS_DEPLOY_REGION" \
+            --instance-ids "$DEV_SANDBOX_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "CI deploy after ECR push ${{ github.sha }}" \
+            --parameters "$PARAMS_JSON" \
+            --output text \
+            --query 'Command.CommandId')"
+          echo "SSM CommandId=$CMD_ID"
+          for i in $(seq 1 90); do
+            STATUS="$(aws ssm get-command-invocation \
+              --region "$AWS_DEPLOY_REGION" \
+              --command-id "$CMD_ID" \
+              --instance-id "$DEV_SANDBOX_INSTANCE_ID" \
+              --query Status \
+              --output text || true)"
+            echo "poll $i status=$STATUS"
+            if [[ "$STATUS" == "Success" ]]; then
+              aws ssm get-command-invocation \
+                --region "$AWS_DEPLOY_REGION" \
+                --command-id "$CMD_ID" \
+                --instance-id "$DEV_SANDBOX_INSTANCE_ID" \
+                --query StandardOutputContent \
+                --output text
+              exit 0
+            fi
+            if [[ "$STATUS" == "Failed" ]] || [[ "$STATUS" == "Cancelled" ]] || [[ "$STATUS" == "TimedOut" ]] || [[ "$STATUS" == "Cancelling" ]]; then
+              aws ssm get-command-invocation \
+                --region "$AWS_DEPLOY_REGION" \
+                --command-id "$CMD_ID" \
+                --instance-id "$DEV_SANDBOX_INSTANCE_ID" \
+                --output json
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for SSM" >&2
+          exit 1
+
+      - name: Deploy summary
+        run: |
+          {
+            echo "### Dev sandbox"
+            echo ""
+            echo "Restarted \`agenthub-server\` on \`$DEV_SANDBOX_INSTANCE_ID\` (pull-on-start picks up :main)."
+          } >> "$GITHUB_STEP_SUMMARY"
