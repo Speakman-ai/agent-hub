@@ -32,13 +32,30 @@ export function redactUrlForBrowserAudit(raw: string | undefined): string | unde
   }
 }
 
+/**
+ * Swap every standalone `http(s)://…` span in prose (Playwright timeouts, navigate errors)
+ * with {@link redactUrlForBrowserAudit}. Delimiter set is intentionally conservative —
+ * parentheses/brackets usually wrap URLs in formatter output, not host paths.
+ */
+function scrubEmbeddedHttpUrlsInAuditText(text: string): string {
+  return text.replace(/\bhttps?:\/\/[^\s<>"')}\]]+/gi, (raw) => {
+    let token = raw;
+    while (token.length > 0 && /[.,;:!?)\]}]/.test(token[token.length - 1]!)) {
+      token = token.slice(0, -1);
+    }
+    return redactUrlForBrowserAudit(token) ?? raw;
+  });
+}
+
 /** Max length for audit `detail` fields (`.slice` uses UTF-16 code units, not byte length). */
 const MAX_AUDIT_DETAIL_CHARS = 512;
 
 /**
  * Build a safe `detail` field for {@link logBrowserToolAudit}: URL-shaped
  * `hostDetail` / navigate input is redacted (no `?` / `#`) so tokens are not
- * echoed to stdout; non-URL strings are truncated only.
+ * echoed to stdout. Non-leading URLs embedded in Stagehand / Playwright error
+ * text are rewritten to redacted origins (query/hash stripped). Prose is
+ * truncated afterward.
  */
 export function sanitizeBrowserToolAuditDetail(params: {
   op: string;
@@ -61,16 +78,11 @@ export function sanitizeBrowserToolAuditDetail(params: {
 
   if (typeof hostDetail !== 'string' || !hostDetail.trim()) return undefined;
   const trimmed = hostDetail.trim();
+  const scrubbed = scrubEmbeddedHttpUrlsInAuditText(trimmed);
 
-  if (/^https?:\/\//i.test(trimmed)) {
-    const red = redactUrlForBrowserAudit(trimmed);
-    if (red)
-      return red.length > MAX_AUDIT_DETAIL_CHARS
-        ? `${red.slice(0, MAX_AUDIT_DETAIL_CHARS - 1)}…`
-        : red;
-  }
-
-  return hostDetail.slice(0, MAX_AUDIT_DETAIL_CHARS);
+  return scrubbed.length > MAX_AUDIT_DETAIL_CHARS
+    ? `${scrubbed.slice(0, MAX_AUDIT_DETAIL_CHARS - 1)}…`
+    : scrubbed;
 }
 
 export function logBrowserToolAudit(entry: BrowserToolAuditEntry): void {

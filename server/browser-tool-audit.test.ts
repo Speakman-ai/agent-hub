@@ -93,6 +93,37 @@ describe('sanitizeBrowserToolAuditDetail', () => {
     ).toBe('https://a.test/r');
   });
 
+  it('redacts embedded https URL query strings from Playwright-style error lines', () => {
+    expect(
+      sanitizeBrowserToolAuditDetail({
+        op: 'navigate',
+        hostExit: 1,
+        hostDetail:
+          'Timeout 30000ms exceeded: navigation to https://app.test/oauth?token=sekret&id=99 failed.',
+      }),
+    ).toBe('Timeout 30000ms exceeded: navigation to https://app.test/oauth failed.');
+  });
+
+  it('leaves error text without urls unchanged aside from truncation', () => {
+    expect(
+      sanitizeBrowserToolAuditDetail({
+        op: 'navigate',
+        hostExit: 1,
+        hostDetail: 'Only http',
+      }),
+    ).toBe('Only http');
+  });
+
+  it('redacts urls inside ASCII double quotes before the closing delimiter', () => {
+    expect(
+      sanitizeBrowserToolAuditDetail({
+        op: 'click',
+        hostExit: 1,
+        hostDetail: 'Error opening "https://x.example/here?secret=1"',
+      }),
+    ).toBe('Error opening "https://x.example/here"');
+  });
+
   describe('with mocked console.log', () => {
     let logSpy: ReturnType<typeof vi.spyOn>;
 
