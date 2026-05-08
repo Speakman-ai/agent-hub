@@ -13,6 +13,6 @@ describe('push-image.yml deploy contract', () => {
     expect(yml).toContain('deploy-dev-sandbox:');
     expect(yml).toContain('systemctl restart agenthub-server');
     expect(yml).toContain('DEV_SANDBOX_INSTANCE_ID');
-    expect(yml).toContain('i-08b54d5b72e54baed');
+    expect(yml).toContain('i-066e44ff85ec24d8e');
   });
 });

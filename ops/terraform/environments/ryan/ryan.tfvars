@@ -44,7 +44,7 @@ manage_github_oidc_role = false
 # this instance (SSM). Requires `terraform apply` once to attach the IAM policy
 # to role agent-hub-ci-ecr-push. Instance id must match push-image.yml.
 enable_ci_ssm_deploy_after_ecr_push = true
-ci_ssm_deploy_instance_id           = "i-08b54d5b72e54baed"
+ci_ssm_deploy_instance_id           = "i-066e44ff85ec24d8e"
 
 # First-launch admin credentials. The server writes a random password to
 # /home/agenthub/.agent-hub/data/initial-credentials.txt (mode 0600) when
