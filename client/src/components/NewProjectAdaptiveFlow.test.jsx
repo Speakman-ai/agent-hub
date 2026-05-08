@@ -296,8 +296,18 @@ describe('NewProjectAdaptiveFlow — project-type picker (step 0)', () => {
     render(<NewProjectAdaptiveFlow onClose={vi.fn()} onProjectCreated={vi.fn()} />);
     expect(screen.getByTestId('project-type-picker')).toBeInTheDocument();
     expect(screen.getByTestId('ptp-code')).toBeInTheDocument();
+    expect(screen.getByTestId('ptp-import')).toBeInTheDocument();
     expect(screen.getByTestId('ptp-workflow')).toBeInTheDocument();
     // Neither downstream view is mounted yet.
+    expect(screen.queryByTestId('adaptive-questionnaire')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('workflow-project-form')).not.toBeInTheDocument();
+  });
+
+  it('signals import via onProjectCreated when the user picks import', () => {
+    const onProjectCreated = vi.fn();
+    render(<NewProjectAdaptiveFlow onClose={vi.fn()} onProjectCreated={onProjectCreated} />);
+    fireEvent.click(screen.getByTestId('ptp-import'));
+    expect(onProjectCreated).toHaveBeenCalledWith({ action: 'import' });
     expect(screen.queryByTestId('adaptive-questionnaire')).not.toBeInTheDocument();
     expect(screen.queryByTestId('workflow-project-form')).not.toBeInTheDocument();
   });

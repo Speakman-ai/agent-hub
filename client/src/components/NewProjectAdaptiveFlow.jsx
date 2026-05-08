@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Check, Code2, Kanban, X } from 'lucide-react';
+import { ArrowLeft, Check, Code2, FolderGit2, Kanban, X } from 'lucide-react';
 import AdaptiveQuestionnaire from './AdaptiveQuestionnaire.jsx';
 import ProvisioningStatus from './ProvisioningStatus.jsx';
 import PostScaffoldAudit from './PostScaffoldAudit.jsx';
@@ -20,10 +20,11 @@ import {
  *
  * Sub-views driven by local state:
  *   0. `type-picker` — render <ProjectTypePicker /> so the user chooses
- *      between a code project (full scaffold path) and a workflow /
+ *      among creating a new code repo (scaffold questionnaire), importing
+ *      an existing repo (host swaps to OpenProjectWizard), or a workflow /
  *      non-code project (kanban + wiki + agents only). Picking "code"
- *      enters the existing flow at `questionnaire`; picking "workflow"
- *      enters the `workflow-form` view.
+ *      enters `questionnaire`; "import" signals `onProjectCreated({ action:
+ *      'import' })`; "workflow" enters `workflow-form`.
  *   1. `questionnaire` — render <AdaptiveQuestionnaire />. On submit we
  *      POST the payload to the provisioning endpoint, open the event
  *      stream, and transition to...
@@ -247,14 +248,21 @@ export default function NewProjectAdaptiveFlow({
     [onProjectCreated, createdProjectId],
   );
 
-  const handlePickType = useCallback((type) => {
-    if (type === 'workflow') {
-      setView('workflow-form');
-      return;
-    }
-    // Default: code path — drop into the existing adaptive questionnaire.
-    setView('questionnaire');
-  }, []);
+  const handlePickType = useCallback(
+    (type) => {
+      if (type === 'workflow') {
+        setView('workflow-form');
+        return;
+      }
+      if (type === 'import') {
+        onProjectCreated?.({ action: 'import' });
+        return;
+      }
+      // Default: new code repo — adaptive questionnaire + provisioning.
+      setView('questionnaire');
+    },
+    [onProjectCreated],
+  );
 
   // Workflow-form submit: POST /api/projects with mode:'workflow' and
   // route the host to the new project's kanban (action:'task' is the
@@ -363,9 +371,9 @@ export function inferWithGithub(payload) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Top-level picker that lets the user choose between a code project (the
- * existing adaptive scaffolding flow) and a workflow / non-code project
- * (kanban + wiki + agents only). Exported for tests.
+ * Top-level picker: new code repo (scaffold), import existing repo (host
+ * routes to OpenProjectWizard), or workflow / non-code project. Exported
+ * for tests.
  */
 export function ProjectTypePicker({ onPick, onClose }) {
   return (
@@ -390,16 +398,16 @@ export function ProjectTypePicker({ onPick, onClose }) {
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 py-8 sm:px-8">
-        <div className="mx-auto w-full max-w-2xl">
+        <div className="mx-auto w-full max-w-5xl">
           <div className="mb-6">
             <h2 className="text-lg font-semibold text-white">What kind of project?</h2>
             <p className="mt-1 text-sm text-gray-400">
-              Pick a code project to scaffold a real repo with stack + integrations, or a workflow
-              project for pure kanban / wiki / agents with no repo.
+              Create a new code repo from our scaffold, link an existing Git repository, or start a
+              workflow-only space (kanban / wiki / agents with no repo).
             </p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <button
               type="button"
               onClick={() => onPick('code')}
@@ -410,10 +418,28 @@ export function ProjectTypePicker({ onPick, onClose }) {
                 <Code2 size={20} />
               </div>
               <div className="flex-1">
-                <div className="text-sm font-semibold text-white">Code project</div>
+                <div className="text-sm font-semibold text-white">Create new code project</div>
                 <p className="mt-1 text-xs text-gray-400">
                   Scaffold a new repo: pick a stack, integrations, auth, and (optionally) push to
                   GitHub. Worktrees + PR flow are on.
+                </p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onPick('import')}
+              data-testid="ptp-import"
+              className="group flex h-full flex-col items-start gap-3 rounded-xl border border-gray-700 bg-gray-900/60 p-5 text-left transition-colors hover:border-sky-500 hover:bg-sky-500/5"
+            >
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-sky-900/40 text-sky-300 group-hover:bg-sky-500/20">
+                <FolderGit2 size={20} />
+              </div>
+              <div className="flex-1">
+                <div className="text-sm font-semibold text-white">Import existing project</div>
+                <p className="mt-1 text-xs text-gray-400">
+                  Point at a GitHub repo or local folder you already have. No scaffold wizard —
+                  Agents, kanban, and wiki attach to that codebase.
                 </p>
               </div>
             </button>

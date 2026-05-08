@@ -3677,6 +3677,11 @@ export default function App() {
             <NewProjectAdaptiveFlow
               onClose={() => setCurrentView(newProjectWizardReturnRef.current)}
               onProjectCreated={(payload) => {
+                if (payload?.action === 'import') {
+                  setCurrentView('import-project-wizard');
+                  setSidebarOpen(false);
+                  return;
+                }
                 refreshAgents();
                 if (payload?.action === 'chat' && payload.agentId) {
                   setActiveAgentId(payload.agentId);
