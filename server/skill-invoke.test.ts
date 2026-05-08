@@ -138,6 +138,26 @@ describe('skill-invoke', () => {
       expect(loaded?.skillDir).toBe(p);
     });
 
+    it('loads a flat skills/<id>.md file', () => {
+      writeFileSync(path.join(projectSkillsDir, 'linear.md'), '# Linear\n\nFlat body.\n');
+      const loaded = loadSkillBody('linear', { skillsDir: projectSkillsDir });
+      expect(loaded).not.toBeNull();
+      expect(loaded?.source).toBe('project');
+      expect(loaded?.skillTitle).toBe('linear');
+      expect(loaded?.references).toEqual([]);
+      expect(loaded?.scriptListing).toEqual([]);
+      expect(loaded?.skillMd).toContain('Flat body.');
+      expect(buildSkillInjection(loaded!)).toContain('## Loaded Skill: linear');
+    });
+
+    it('prefers directory skill over co-located flat .md', () => {
+      writeFileSync(path.join(projectSkillsDir, 'dup.md'), '# flat\n');
+      makeSkill(projectSkillsDir, 'dup');
+      const loaded = loadSkillBody('dup', { skillsDir: projectSkillsDir });
+      expect(loaded?.skillMd).toContain('Skill body for dup');
+      expect(loaded?.skillTitle).toBeUndefined();
+    });
+
     it('returns null when skill is missing', () => {
       const loaded = loadSkillBody('missing', { skillsDir: projectSkillsDir });
       expect(loaded).toBeNull();

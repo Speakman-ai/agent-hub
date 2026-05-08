@@ -12,7 +12,11 @@ import config, {
   buildSpawnEnv,
   resolveAgentHubApiBaseForSpawn,
 } from './config.js';
-import { resolveProjectPaths, contextFilePath } from './project-paths.js';
+import {
+  resolveProjectPaths,
+  contextFilePath,
+  resolveWorkspaceSkillsDir,
+} from './project-paths.js';
 import { getWikiContext } from './wiki.js';
 import { getMemoryContext, appendDailyNote, reconcileMemoryAfterSession } from './memory.js';
 import { collectSkillsFromDir, DEFAULT_SKILLS_DIR } from './routes/skills.js';
@@ -164,7 +168,6 @@ interface SkillInfo {
 interface SlashSkillResult {
   error?: string;
   skillName?: string;
-  skillContent?: string;
   userArgs?: string;
 }
 
@@ -1431,10 +1434,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     let slashSkillSuffix = '';
     if (slashResult && !slashResult.error && slashResult.skillName && !isAutoContinuation) {
       const args = slashResult.userArgs || 'Please use this skill as instructed.';
+      const slashSkillsDir = resolveWorkspaceSkillsDir(project, agent);
       slashSkillSuffix = `\n\n${loadSkillByName({
         name: slashResult.skillName,
         reason: 'slash-command',
-        paths: { skillsDir: paths.skillsDir },
+        paths: { skillsDir: slashSkillsDir },
         sessionId,
         stmts: stmts as Stmts,
         broadcast,

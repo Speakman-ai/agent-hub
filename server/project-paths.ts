@@ -1,6 +1,18 @@
 import path from 'path';
 import type { ProjectPaths, Project, Agent } from './types.js';
 
+/** Workspace data dir aligned with `resolveSlashSkill` / agent tooling: project.ahw → agent.ahw → workspace. */
+export function resolveWorkspaceDataDir(project: Project | undefined, agent: Agent): string {
+  const raw = project?.ahw || agent.ahw || (agent as Record<string, unknown>).workspace;
+  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : '';
+}
+
+/** `skills/` under {@link resolveWorkspaceDataDir}, or `''` when no workspace root is configured. */
+export function resolveWorkspaceSkillsDir(project: Project | undefined, agent: Agent): string {
+  const dataDir = resolveWorkspaceDataDir(project, agent);
+  return dataDir ? path.join(dataDir, 'skills') : '';
+}
+
 export function resolveProjectPaths(project: Project, agent: Agent): ProjectPaths {
   const dataDir = project.ahw || '';
   const agentDir = dataDir ? path.join(dataDir, 'agents', agent.id) : '';
