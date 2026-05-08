@@ -190,8 +190,9 @@ describe('aws-q.sh invocation guard', () => {
 describe('aws-whoami.sh credential error handling', () => {
   const awsWhoami = path.join(SCRIPTS_DIR, 'aws-whoami.sh');
 
-  it('exits non-zero when no credentials are configured', () => {
-    // Clear all credential env vars and point to a non-existent profile
+  it('exits non-zero and prints actionable guidance when no credentials are configured', () => {
+    // Clear all credential env vars and point to a non-existent profile so
+    // aws sts get-caller-identity returns a NoCredentialProviders error.
     const result = runBash(`"${awsWhoami}" --profile __nonexistent_test_profile__`, {
       AWS_PROFILE: '',
       AWS_ACCESS_KEY_ID: '',
@@ -201,9 +202,10 @@ describe('aws-whoami.sh credential error handling', () => {
       AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
       HOME: '/tmp',
     });
-    // Should exit non-zero (1 for cred error, or 2 for cli missing)
+    // Must exit non-zero
     expect(result.status).not.toBe(0);
-    // Must surface actionable guidance — not a silent non-zero exit
+    // Must surface actionable guidance — not a silent non-zero exit.
+    // Accepts our own "error:" prefix, aws sso login hint, or aws's own error text.
     const combined = result.stderr + result.stdout;
     const hasCredGuidance =
       combined.includes('aws sso login') ||
@@ -211,7 +213,9 @@ describe('aws-whoami.sh credential error handling', () => {
       combined.includes('No AWS credentials') ||
       combined.includes('AWS session token has expired') ||
       combined.includes('failed') ||
-      combined.includes('error:');
+      combined.includes('error:') ||
+      combined.toLowerCase().includes('no credential') ||
+      combined.toLowerCase().includes('unable to locate');
     expect(hasCredGuidance).toBe(true);
   });
 });

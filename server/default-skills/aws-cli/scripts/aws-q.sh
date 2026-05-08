@@ -18,7 +18,7 @@
 # Notes:
 #   - Meant for READ operations. Do not use for writes — confirm with the user
 #     first and call `aws` directly (with profile/region from _common.sh).
-#   - Output is masked through mask_secrets() before printing.
+#   - Output (including error output) is masked through mask_secrets() before printing.
 #   - The AWS CLI auto-paginates by default (all pages merged). Pass --no-paginate
 #     if you want ONLY the first page (e.g. quick sampling or manual paging).
 
@@ -48,11 +48,12 @@ fi
 echo "# Profile: ${RESOLVED_PROFILE}  Region: ${RESOLVED_REGION}" >&2
 echo "" >&2
 
-# Run the command; capture output for masking without letting set -e abort on failure
+# Run the command; capture output for masking without letting set -e abort on failure.
+# Using || so set -e does not fire; mask_secrets() runs on both success and error output.
 EXIT_CODE=0
 OUTPUT="$(aws_cmd "${REMAINING_ARGS[@]}" 2>&1)" || EXIT_CODE=$?
 
-# Mask any accidental credential material
+# Mask any accidental credential material in both success and error output.
 SAFE_OUTPUT="$(mask_secrets "${OUTPUT}")"
 
 printf '%s\n' "${SAFE_OUTPUT}"
