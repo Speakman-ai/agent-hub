@@ -45,7 +45,7 @@ manage_github_oidc_role = false
 # to keep inline IAM on agent-hub-ci-ecr-push aligned; re-run whenever the sandbox
 # instance is replaced. Instance id must match DEV_SANDBOX_INSTANCE_ID in push-image.yml.
 enable_ci_ssm_deploy_after_ecr_push = true
-ci_ssm_deploy_instance_id           = "i-08b54d5b72e54baed"
+ci_ssm_deploy_instance_id           = "i-066e44ff85ec24d8e"
 
 # First-launch admin credentials. The server writes a random password to
 # /home/agenthub/.agent-hub/data/initial-credentials.txt (mode 0600) when
