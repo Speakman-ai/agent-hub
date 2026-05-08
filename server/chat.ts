@@ -1963,7 +1963,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // Inject the Hub API base and project ID so spawned CLIs reach `/api`.
       // Defaults to loopback with the bound port (`getActualPort` inside the
       // resolver); deployments with remote tool hosts set AGENT_HUB_AGENT_URL /
-      // publicUrl. See resolveAgentHubApiBaseForSpawn in config.ts.
+      // AGENT_HUB_PUBLIC_URL (config `publicUrl`). See resolveAgentHubApiBaseForSpawn.
       base.AGENT_HUB_URL = resolveAgentHubApiBaseForSpawn(config);
       base.PROJECT_ID = project.id;
       return base;

@@ -34,7 +34,7 @@ Browser / Mobile / Desktop
 | `PORT`             | `3051`                                      | HTTP/WebSocket port bound by the Node process.   |
 | `ALLOWED_ORIGINS`  | `https://<your-host>`                       | Comma-separated browser origin allowlist (CORS). |
 | `DATA_DIR`         | `/var/lib/agent-hub`                        | Where SQLite, configs, and workspaces live.      |
-| `PUBLIC_URL`       | `https://<your-host>`                       | External URL used for webhook and PR callbacks.  |
+| `AGENT_HUB_PUBLIC_URL` | `https://<your-host>`                   | External URL (`publicUrl`) for webhooks, PR callbacks, spawn `AGENT_HUB_URL` fallback. |
 
 > **Security:** `ALLOWED_ORIGINS` should list only the hosts your real web
 > clients use. Unknown origins get no CORS header and the browser's SOP blocks

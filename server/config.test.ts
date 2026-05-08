@@ -339,7 +339,7 @@ describe('config.ts — CLI binary auto-detection (pickBin)', () => {
   });
 });
 
-describe('normalizedHttpOriginForAgentHub + resolveAgentHubApiBaseForSpawn', () => {
+describe('normalizedHttpOriginForAgentHub + normalizedHttpSpawnBaseForAgentHub + resolveAgentHubApiBaseForSpawn', () => {
   async function loadConfigFresh(
     dataDir: string,
     fileCfg?: Record<string, unknown>,
@@ -369,7 +369,7 @@ describe('normalizedHttpOriginForAgentHub + resolveAgentHubApiBaseForSpawn', () 
     return { mod, portSpy };
   }
 
-  it('normalizes https origins and strips trailing paths', async () => {
+  it('normalizes https origins (origin-only helper) and spawn bases (path preserved, OAuth-base parity)', async () => {
     const dir = path.join(
       os.tmpdir(),
       `agent-hub-http-origin-${process.pid}-${Math.random().toString(36).slice(2)}`,
@@ -384,6 +384,16 @@ describe('normalizedHttpOriginForAgentHub + resolveAgentHubApiBaseForSpawn', () 
       expect(mod.normalizedHttpOriginForAgentHub('https://h.example/foo/')).toBe(
         'https://h.example',
       );
+
+      expect(mod.normalizedHttpSpawnBaseForAgentHub('https://hub.example/with/path')).toBe(
+        'https://hub.example/with/path',
+      );
+      expect(mod.normalizedHttpSpawnBaseForAgentHub('https://h.example/foo/')).toBe(
+        'https://h.example/foo',
+      );
+      expect(mod.normalizedHttpSpawnBaseForAgentHub('https://host/app')).toBe('https://host/app');
+      expect(mod.normalizedHttpSpawnBaseForAgentHub('')).toBeNull();
+      expect(mod.normalizedHttpSpawnBaseForAgentHub('ftp://bad')).toBeNull();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -403,7 +413,7 @@ describe('normalizedHttpOriginForAgentHub + resolveAgentHubApiBaseForSpawn', () 
     }
   });
 
-  it('prefers PUBLIC_URL/normalized publicUrl over loopback', async () => {
+  it('prefers path-preserving publicUrl (AGENT_HUB_PUBLIC_URL / config) over loopback', async () => {
     const dir = path.join(
       os.tmpdir(),
       `agent-hub-spawnurl-pub-${process.pid}-${Math.random().toString(36).slice(2)}`,
@@ -412,7 +422,7 @@ describe('normalizedHttpOriginForAgentHub + resolveAgentHubApiBaseForSpawn', () 
       const { mod } = await loadConfigFresh(dir, {
         publicUrl: 'https://svc.example/agent-hub/',
       });
-      expect(mod.resolveAgentHubApiBaseForSpawn(mod.default)).toBe('https://svc.example');
+      expect(mod.resolveAgentHubApiBaseForSpawn(mod.default)).toBe('https://svc.example/agent-hub');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -430,6 +440,23 @@ describe('normalizedHttpOriginForAgentHub + resolveAgentHubApiBaseForSpawn', () 
         { AGENT_HUB_AGENT_URL: 'http://runner.internal:3051/' },
       );
       expect(mod.resolveAgentHubApiBaseForSpawn(mod.default)).toBe('http://runner.internal:3051');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves path on AGENT_HUB_AGENT_URL when set explicitly', async () => {
+    const dir = path.join(
+      os.tmpdir(),
+      `agent-hub-spawnurl-agent-path-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    try {
+      const { mod } = await loadConfigFresh(
+        dir,
+        { publicUrl: 'https://ignored.example' },
+        { AGENT_HUB_AGENT_URL: 'https://worker.example/hub/' },
+      );
+      expect(mod.resolveAgentHubApiBaseForSpawn(mod.default)).toBe('https://worker.example/hub');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
