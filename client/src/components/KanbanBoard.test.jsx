@@ -465,6 +465,109 @@ describe('KanbanBoard reassign active session', () => {
     expect(within(modal).getByRole('button', { name: /Open Session/i })).toBeInTheDocument();
     expect(api.assignCard).not.toHaveBeenCalled();
   });
+
+  it('shows Session model dropdown in assigned/active state and "Save model override" on change', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-1',
+          title: 'Active card',
+          column_id: 'col-todo',
+          position: 0,
+          assignee: 'AgentA',
+          session_id: 'sess-1',
+          assign_model: 'claude-opus-4-7',
+        },
+      ]),
+    );
+    api.updateCard.mockResolvedValue({});
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Active card')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Active card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+
+    // The Session model dropdown should be visible without clicking Reassign.
+    const combos = within(modal).getAllByRole('combobox');
+    const modelSelect = combos.find((c) =>
+      Array.from(c.options).some((o) => o.textContent === 'Agent default'),
+    );
+    expect(modelSelect).toBeDefined();
+    // Current value should match card's assign_model.
+    expect(modelSelect.value).toBe('claude-opus-4-7');
+
+    // "Save model override" button should NOT appear yet (no change).
+    expect(within(modal).queryByRole('button', { name: /Save model override/i })).toBeNull();
+
+    // Change to a different model.
+    fireEvent.change(modelSelect, { target: { value: 'claude-sonnet-4-20250514' } });
+
+    // "Save model override" button should now appear.
+    const saveBtn = await within(modal).findByRole('button', { name: /Save model override/i });
+    expect(saveBtn).toBeInTheDocument();
+
+    // Click save — should call updateCard with the new model.
+    fireEvent.click(saveBtn);
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', {
+        assign_model: 'claude-sonnet-4-20250514',
+      }),
+    );
+  });
+
+  it('can clear model override back to Agent default from session-active view', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-1',
+          title: 'Active card',
+          column_id: 'col-todo',
+          position: 0,
+          assignee: 'AgentA',
+          session_id: 'sess-1',
+          assign_model: 'claude-sonnet-4-20250514',
+        },
+      ]),
+    );
+    api.updateCard.mockResolvedValue({});
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Active card')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Active card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+
+    const combos = within(modal).getAllByRole('combobox');
+    const modelSelect = combos.find((c) =>
+      Array.from(c.options).some((o) => o.textContent === 'Agent default'),
+    );
+    expect(modelSelect).toBeDefined();
+
+    // Clear the model override by selecting "Agent default".
+    fireEvent.change(modelSelect, { target: { value: '' } });
+
+    const saveBtn = await within(modal).findByRole('button', { name: /Save model override/i });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', {
+        assign_model: null,
+      }),
+    );
+  });
 });
 
 describe('KanbanBoard drag-and-drop', () => {
