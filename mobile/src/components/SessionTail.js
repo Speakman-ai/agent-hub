@@ -317,6 +317,14 @@ function SessionTail({
 
   const askBlocks = useMemo(() => blocks.filter((b) => b.kind === 'ask_question'), [blocks]);
 
+  const browserPanel = hasBrowserTimeline ? (
+    <BrowserActivityPanel
+      timelineEntries={events ?? []}
+      streaming={streaming}
+      screenshots={browserScreenshots}
+    />
+  ) : null;
+
   const toolCount = blocks.filter((b) =>
     ['tool', 'subagent', 'explored', 'todos', 'plan_proposal'].includes(b.kind),
   ).length;
@@ -356,13 +364,7 @@ function SessionTail({
             submitted={askSubmittedIds?.has(b.event.askId)}
           />
         ))}
-        {hasBrowserTimeline ? (
-          <BrowserActivityPanel
-            timelineEntries={events ?? []}
-            streaming={streaming}
-            screenshots={browserScreenshots}
-          />
-        ) : null}
+        {browserPanel}
         {hasClassicMeta && (
           <TouchableOpacity style={styles.summaryBar} onPress={() => setExpanded(true)}>
             <View style={[styles.barDot, { backgroundColor: agentColor || colors.gray500 }]} />
@@ -394,13 +396,7 @@ function SessionTail({
         <Text style={styles.expandHint}>{'\u25BE'}</Text>
       </TouchableOpacity>
 
-      {hasBrowserTimeline ? (
-        <BrowserActivityPanel
-          timelineEntries={events ?? []}
-          streaming={streaming}
-          screenshots={browserScreenshots}
-        />
-      ) : null}
+      {browserPanel}
 
       {askBlocks.map((b) => (
         <AskUserQuestion

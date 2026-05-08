@@ -33,8 +33,11 @@ describe('BrowserActivityPanel', () => {
     ];
     render(<BrowserActivityPanel timelineEntries={timeline} streaming={false} screenshots={{}} />);
     expect(screen.getByTestId('browser-activity-panel')).toBeTruthy();
+    const btn = screen.getByRole('button', { name: /Browser Activity/i });
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
     expect(screen.getByText(/Browser Activity/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button'));
+    fireEvent.click(btn);
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText(/Opened example\.com/)).toBeTruthy();
   });
 });
