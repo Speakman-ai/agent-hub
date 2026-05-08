@@ -34,11 +34,22 @@ const OP_REF_PATTERN = /op:\/\/[^\s"'`]+/g;
 
 /**
  * Heuristic: mask long base64/hex token-like strings.
- * Matches ≥32 contiguous alphanumeric+base64 chars to catch resolved API keys,
- * tokens, and passwords without false-positives on short strings.
  *
- * Conservative: only chars [A-Za-z0-9+/=_-] to avoid matching file paths or
- * other non-secret long strings.
+ * Character class [A-Za-z0-9+/=_-] covers:
+ *   - Standard base64 (A-Za-z0-9+/=)
+ *   - URL-safe base64 (replaces + with - and / with _), used by 1Password
+ *     Service Account tokens (`ops_...`) and many modern API key formats
+ *
+ * This matches the same class as the bash `op_redact()` helper in
+ * scripts/_common.sh so both layers catch the same token shapes.
+ *
+ * JWT-style tokens (`header.payload.signature`) are masked per-segment since
+ * `.` is not in the class. The dot separators remain visible, but the
+ * individual segments are redacted — adequate to prevent value leakage.
+ * Folding `.` into the class would generate too many false positives on
+ * file paths and version strings.
+ *
+ * Threshold of 32 chars avoids false-positives on short non-secret strings.
  */
 const LONG_TOKEN_PATTERN = /[A-Za-z0-9+/=_-]{32,}/g;
 

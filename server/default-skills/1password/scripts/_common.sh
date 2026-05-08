@@ -8,9 +8,13 @@
 # Exposes:
 #   require_op_cli        → asserts op is on PATH, exits 2 if missing
 #   require_op_auth       → asserts auth is available, exits 2 if not
+#   require_python3       → asserts python3 is on PATH, exits 2 if missing
 #   op_die MESSAGE        → print to stderr + exit 1
 #   op_redact TEXT        → mask op:// refs and token-looking values in TEXT
-#   OP_WRITE_CONFIRMED    → gate for mutation scripts (must be "yes")
+#
+# NOTE: require_op_cli and require_op_auth are NOT called at source time.
+# Each wrapper calls them inside real-work command functions so unknown
+# subcommands and usage-banner paths can run without configured auth.
 
 set -euo pipefail
 
@@ -97,22 +101,24 @@ op_die() {
 # op_redact TEXT — mask op:// references and long token-like values
 #
 # Replaces:
-#   - op://vault/item/field URIs with [redacted:op://...]
-#   - Anything that looks like a long bearer token / secret (32+ contiguous
-#     non-whitespace chars containing mixed case / digits) with [redacted]
+#   - op://vault/item/field URIs with [redacted:op-ref]
+#     (placeholder deliberately omits "op://" to avoid re-introducing the
+#      pattern into already-redacted output)
+#   - Long token-like strings (≥32 contiguous chars from [A-Za-z0-9+/=_-])
+#     with [redacted] — char class mirrors op-redact.ts LONG_TOKEN_PATTERN
+#     so both layers catch the same shapes (standard base64, URL-safe base64,
+#     and ops_... Service Account tokens)
 #
-# This is a best-effort heuristic. The primary safety measure is never calling
-# op read / op item get in a way that pipes values directly back to the model.
-# Use scripts/op-read.sh which routes through this redaction layer.
+# This is a best-effort heuristic. Use scripts/op-read.sh which routes
+# error output through this layer.
 #
 # Usage:
-#   output=$(op item get "My Item" 2>&1)
-#   op_redact "$output"
+#   err=$(op item get "My Item" 2>&1) || { op_redact "$err" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 op_redact() {
   local text="$1"
-  # Mask op:// URIs
-  text=$(echo "$text" | sed -E 's|op://[^ \t"]+|[redacted:op://...]|g')
+  # Mask op:// URIs — placeholder must not contain op:// to avoid re-triggering
+  text=$(echo "$text" | sed -E 's|op://[^ \t"]+|[redacted:op-ref]|g')
   # Mask long token-like strings (≥32 non-space chars with mixed charset).
   # Char class matches standard base64 + URL-safe base64 (_-) + padding (=)
   # to catch ops_... Service Account tokens and similar formats.

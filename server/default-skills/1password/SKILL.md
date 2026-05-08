@@ -44,17 +44,18 @@ create or update items.
 
 All scripts require the **1Password CLI (`op`)** on `$PATH`.
 
-### `python3`
-
-`op-list.sh` and `op-read.sh item` use **Python 3** for JSON formatting.
-
-- macOS: `brew install python3`
-- Linux: `sudo apt-get install python3` (Debian/Ubuntu) or `sudo yum install python3` (RHEL)
-- Verify: `python3 --version`
-
 - macOS: `brew install --cask 1password-cli`
 - Linux / other: https://developer.1password.com/docs/cli/get-started#install
 - Verify: `op --version`
+
+### `python3`
+
+`op-list.sh` and `op-read.sh item` use **Python 3** (3.6+) for JSON formatting.
+Present by default on macOS and standard Linux distributions.
+
+- macOS: `brew install python3` (if missing)
+- Linux: `sudo apt-get install python3` (Debian/Ubuntu) or `sudo yum install python3` (RHEL)
+- Verify: `python3 --version`
 
 ### Authentication
 
@@ -100,9 +101,9 @@ directly with care.
 # Check authentication / identity
 scripts/op-read.sh whoami
 
-# Read a single field value (output is masked in logs)
-scripts/op-read.sh "op://Personal/AWS/access_key_id"
-scripts/op-read.sh --vault Personal --item "AWS Dev" --field access_key_id
+# Read a single field value to stdout — capture; do NOT echo to chat
+API_KEY=$(scripts/op-read.sh "op://Personal/AWSAccount/access_key_id")
+my-tool --api-key "$API_KEY"
 
 # List items (safe, read-only)
 scripts/op-list.sh
