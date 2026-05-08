@@ -572,6 +572,17 @@ describe('createStreamParser — Cursor Agent', () => {
     expect(events).toHaveLength(0);
   });
 
+  it('ignores interaction_query frames (headless Cursor; no unknown tail noise)', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'interaction_query',
+        session_id: 's-cursor',
+        query: 'Allow this MCP server to run?',
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
   it('parses streaming assistant events (with timestamp_ms)', () => {
     const events = parse([
       JSON.stringify({
