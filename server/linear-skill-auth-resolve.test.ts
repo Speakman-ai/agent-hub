@@ -20,6 +20,18 @@ describe('resolveLinearApiKey', () => {
     expect(result.fromEnv).toBe(false);
   });
 
+  it('returns undefined when LINEAR_API_KEY is whitespace-only', () => {
+    const result = resolveLinearApiKey({ LINEAR_API_KEY: '   ' });
+    expect(result.apiKey).toBeUndefined();
+    expect(result.fromEnv).toBe(false);
+  });
+
+  it('trims surrounding whitespace from a valid key', () => {
+    const result = resolveLinearApiKey({ LINEAR_API_KEY: '  lin_api_abc123\n' });
+    expect(result.apiKey).toBe('lin_api_abc123');
+    expect(result.fromEnv).toBe(true);
+  });
+
   it('never throws when env is empty', () => {
     expect(() => resolveLinearApiKey({})).not.toThrow();
   });

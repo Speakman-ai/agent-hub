@@ -95,19 +95,15 @@ showing the previous values of fields that changed:
 ## HMAC signature verification
 
 Every webhook POST includes a `Linear-Signature` header. Verify it before
-processing any payload:
+processing any payload.
 
-```bash
-EXPECTED=$(echo -n "$RAW_BODY" | openssl dgst -sha256 -hmac "$LINEAR_WEBHOOK_SECRET" | awk '{print $2}')
-if [ "$LINEAR_SIGNATURE" != "$EXPECTED" ]; then
-  echo "Signature mismatch — rejecting" >&2
-  exit 1
-fi
-```
+**Always use a constant-time comparison** — string equality (`===`, `!=`)
+leaks timing information that an attacker can use to forge signatures.
 
-In Node.js:
+### Node.js (recommended)
+
 ```typescript
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 function verifyLinearSignature(
   rawBody: string,
@@ -117,11 +113,32 @@ function verifyLinearSignature(
   const expected = createHmac('sha256', secret)
     .update(rawBody, 'utf8')
     .digest('hex');
-  return expected === signature;
+  // timingSafeEqual requires equal-length Buffers; pads nothing — if lengths
+  // differ the signature is trivially invalid, so we short-circuit first.
+  if (expected.length !== signature.length) return false;
+  return timingSafeEqual(Buffer.from(expected, 'utf8'), Buffer.from(signature, 'utf8'));
 }
 ```
 
-Always compare with a constant-time equality function to prevent timing attacks.
+### Bash (delegate to Node or Python for constant-time compare)
+
+Bash has no built-in constant-time string comparison; use a one-liner helper
+instead of a shell `if [ … ]` test:
+
+```bash
+# Compute expected signature
+EXPECTED=$(echo -n "$RAW_BODY" \
+  | openssl dgst -sha256 -hmac "$LINEAR_WEBHOOK_SECRET" \
+  | awk '{print $2}')
+
+# Constant-time compare via Node.js (avoids shell timing leak)
+node -e "
+const { timingSafeEqual } = require('crypto');
+const a = Buffer.from(process.argv[1], 'utf8');
+const b = Buffer.from(process.argv[2], 'utf8');
+process.exit(a.length === b.length && timingSafeEqual(a, b) ? 0 : 1);
+" "$LINEAR_SIGNATURE" "$EXPECTED" || { echo 'Signature mismatch — rejecting' >&2; exit 1; }
+```
 
 ## Example payloads
 

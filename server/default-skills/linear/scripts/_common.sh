@@ -74,6 +74,9 @@ linear_gql() {
   local tmpbody tmphdr
   tmpbody=$(mktemp)
   tmphdr=$(mktemp)
+  # Ensure tempfiles are removed even if the script is interrupted mid-run
+  # (SIGINT, SIGTERM, or an unexpected exit from a subshell failure).
+  trap 'rm -f "$tmpbody" "$tmphdr"' EXIT
 
   local attempts=0
 

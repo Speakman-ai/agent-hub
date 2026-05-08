@@ -207,8 +207,13 @@ cmd_issue_search() {
   [[ $# -lt 1 ]] && linear_die "issue search <query>"
   local query="$*"
 
+  # Encode via python3 so quotes, backslashes, and Unicode in the query string
+  # don't produce malformed JSON variables.
+  local q_json
+  q_json=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$query")
+
   local q='query IS($q:String!){issueSearch(query:$q,first:25){nodes{id identifier title state{name}assignee{name}url}pageInfo{hasNextPage endCursor}}}'
-  linear_gql "$q" "{\"q\":\"$query\"}" \
+  linear_gql "$q" "{\"q\":$q_json}" \
     | python3 -c "
 import sys, json
 data = json.load(sys.stdin)

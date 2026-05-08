@@ -1,18 +1,28 @@
 /**
  * linear-skill-auth-resolve.ts
  *
- * Thin helper that resolves the LINEAR_API_KEY for the linear default skill.
+ * Thin helper that resolves and validates the LINEAR_API_KEY for the linear
+ * default skill.
  *
  * Resolution order:
  *  1. `env.LINEAR_API_KEY` — Agent Hub injects this at spawn time when the
  *     user has stored the key in the per-user credential store
  *     (Settings → Skills → Credentials → Linear).
- *  2. Absent — returns `undefined`. The shell script layer handles the user-
- *     facing error message.
+ *  2. Absent or whitespace-only → `apiKey: undefined`. The shell script layer
+ *     (`_common.sh:require_linear_key`) handles the user-facing error message.
  *
- * The helper intentionally does NOT log, throw, or print the key. Callers
- * that need a runtime assertion should check for `undefined` and surface an
- * appropriate error through their own error channel.
+ * The helper intentionally does NOT log, throw, or print the key. It trims
+ * whitespace so a pasted key with trailing newlines is still treated as valid.
+ *
+ * Current in-tree callers
+ * -----------------------
+ * - `server/linear-skill-auth-resolve.test.ts` (unit tests)
+ *
+ * Intended future callers
+ * -----------------------
+ * - Session Health integration — to report "LINEAR_API_KEY configured: yes/no"
+ *   without exposing the key value in diagnostics.
+ * - Skill status endpoint — to surface configuration state in the Skills UI.
  */
 
 export interface LinearAuthContext {
@@ -39,10 +49,11 @@ export interface LinearAuthContext {
 export function resolveLinearApiKey(
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
 ): LinearAuthContext {
-  const apiKey = env['LINEAR_API_KEY'];
+  const raw = env['LINEAR_API_KEY'];
+  const apiKey = raw !== undefined && raw.trim() !== '' ? raw.trim() : undefined;
   return {
-    apiKey: apiKey !== '' ? apiKey : undefined,
-    fromEnv: apiKey !== undefined && apiKey !== '',
+    apiKey,
+    fromEnv: apiKey !== undefined,
   };
 }
 
