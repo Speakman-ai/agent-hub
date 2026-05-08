@@ -83,25 +83,9 @@ import {
   deleteUserSkillCredentialByKey,
 } from '../skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from '../skill-credentials-resolve.js';
-import { getProjects } from '../project-model.js';
+import { findAgent } from '../project-model.js';
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
-
-function skillCredentialWorkspaceRoots(): readonly string[] {
-  const roots: string[] = [];
-  const seen = new Set<string>();
-  try {
-    for (const project of getProjects()) {
-      const w = typeof project.ahw === 'string' ? project.ahw.trim() : '';
-      if (!w || seen.has(w)) continue;
-      seen.add(w);
-      roots.push(w);
-    }
-  } catch {
-    /* best-effort: fall through to bundled / registry-only resolution */
-  }
-  return roots;
-}
 
 function issueToken(user: { id: string; username: string }, role: Role, jwtSecret: string) {
   const token = signJwt(user.username, jwtSecret, {
@@ -580,17 +564,35 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
-    const body = (req.body ?? {}) as { skill_id?: unknown; key_name?: unknown; value?: unknown };
+    const body = (req.body ?? {}) as {
+      skill_id?: unknown;
+      key_name?: unknown;
+      value?: unknown;
+      agent_id?: unknown;
+    };
     const skill_id = typeof body.skill_id === 'string' ? body.skill_id.trim() : '';
     const key_name = typeof body.key_name === 'string' ? body.key_name.trim() : '';
+    const agent_id = typeof body.agent_id === 'string' ? body.agent_id.trim() : '';
     const value = typeof body.value === 'string' ? body.value : '';
-    if (!skill_id || !key_name) {
-      res.status(400).json({ error: 'skill_id and key_name are required' });
+    if (!skill_id || !key_name || !agent_id) {
+      res.status(400).json({ error: 'skill_id, key_name, and agent_id are required' });
+      return;
+    }
+
+    const foundAgent = findAgent(agent_id);
+    if (!foundAgent) {
+      res.status(404).json({ error: 'Agent not found' });
+      return;
+    }
+    const workspace =
+      typeof foundAgent.project.ahw === 'string' ? foundAgent.project.ahw.trim() : '';
+    if (!workspace) {
+      res.status(404).json({ error: 'No workspace configured for this agent' });
       return;
     }
 
     const parsed = readCredentialsSchemaForSkill(skill_id, {
-      projectWorkspaces: skillCredentialWorkspaceRoots(),
+      projectWorkspaces: [workspace],
     });
     if (parsed.error) {
       res.status(400).json({ error: `invalid credential schema for skill: ${parsed.error}` });

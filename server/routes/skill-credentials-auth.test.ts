@@ -64,6 +64,25 @@ async function setupOwner(app: ReturnType<typeof buildGatedApp>): Promise<string
   return res.body.token as string;
 }
 
+/** Hydrates `project.ahw` via `persist/projects/<projectId>/` — required for PUT schema resolution. */
+function registerMinimalAgentProject(agentId = 'cred-agent'): void {
+  const repo = path.join(_skillCredTestRoot, 'repo');
+  mkdirSync(repo, { recursive: true });
+  writeFileSync(
+    path.join(_skillCredTestRoot, 'projects.json'),
+    JSON.stringify([
+      {
+        id: 'p-cred',
+        name: 'Cred',
+        cwd: repo,
+        agents: [{ id: agentId, name: 'Bot', engine: 'claude-code', cwd: repo }],
+      },
+    ]) + '\n',
+    'utf8',
+  );
+  reloadProjects(_skillCredTestRoot);
+}
+
 beforeEach(() => {
   _skillCredTestRoot = mkdtempSync(path.join(tmpdir(), 'skill-cred-test-'));
   _skillCredApiKeyOverride = null;
@@ -89,6 +108,7 @@ describe('/api/auth/me/skill-credentials', () => {
   });
 
   it('PUT round-trips with masked GET and DELETE clears row', async () => {
+    registerMinimalAgentProject('cred-agent');
     const app = buildGatedApp();
     const token = await setupOwner(app);
 
@@ -99,6 +119,7 @@ describe('/api/auth/me/skill-credentials', () => {
         skill_id: 'github',
         key_name: 'GH_TOKEN',
         value: 'ghp_integration_test_value_xx',
+        agent_id: 'cred-agent',
       });
     expect(put.status).toBe(200);
     expect(put.body.credential.key_name).toBe('GH_TOKEN');
@@ -172,12 +193,14 @@ credentials:
         skill_id: 'ws-only-skill',
         key_name: 'WORKSPACE_SECRET',
         value: 'secret-from-worktree',
+        agent_id: 'a1',
       });
     expect(put.status).toBe(200);
     expect(put.body.credential.key_name).toBe('WORKSPACE_SECRET');
   });
 
   it('noop on optional credential save with empty value when no stored row exists', async () => {
+    registerMinimalAgentProject('cred-agent');
     const app = buildGatedApp();
     const token = await setupOwner(app);
     const put = await supertest(app)
@@ -187,6 +210,7 @@ credentials:
         skill_id: 'github',
         key_name: 'GH_TOKEN',
         value: '   ',
+        agent_id: 'cred-agent',
       });
     expect(put.status).toBe(200);
     expect(put.body.skipped).toBe(true);
@@ -199,6 +223,7 @@ credentials:
   });
 
   it('clears optional credential when PUT with empty value and a row exists', async () => {
+    registerMinimalAgentProject('cred-agent');
     const app = buildGatedApp();
     const token = await setupOwner(app);
 
@@ -209,6 +234,7 @@ credentials:
         skill_id: 'github',
         key_name: 'GH_TOKEN',
         value: 'ghp_clear_me',
+        agent_id: 'cred-agent',
       })
       .expect(200);
 
@@ -219,6 +245,7 @@ credentials:
         skill_id: 'github',
         key_name: 'GH_TOKEN',
         value: '',
+        agent_id: 'cred-agent',
       });
     expect(clear.status).toBe(200);
     expect(clear.body.cleared).toBe(true);
@@ -231,6 +258,7 @@ credentials:
   });
 
   it('rejects PUT for unknown credential key names', async () => {
+    registerMinimalAgentProject('cred-agent');
     const app = buildGatedApp();
     const token = await setupOwner(app);
     const put = await supertest(app)
@@ -240,7 +268,151 @@ credentials:
         skill_id: 'github',
         key_name: 'NOT_A_REAL_KEY',
         value: 'x',
+        agent_id: 'cred-agent',
       });
     expect(put.status).toBe(400);
+  });
+
+  it('rejects PUT without agent_id', async () => {
+    registerMinimalAgentProject('cred-agent');
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+    const put = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'github',
+        key_name: 'GH_TOKEN',
+        value: 'x',
+      });
+    expect(put.status).toBe(400);
+    expect(String(put.body.error)).toContain('agent_id');
+  });
+
+  it('rejects PUT for unknown agent_id', async () => {
+    registerMinimalAgentProject('cred-agent');
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+    const put = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: 'github',
+        key_name: 'GH_TOKEN',
+        value: 'x',
+        agent_id: 'no-such-agent',
+      });
+    expect(put.status).toBe(404);
+  });
+
+  it('validates credential keys against the agent workspace, not another project', async () => {
+    const repoA = path.join(_skillCredTestRoot, 'repo-a');
+    const repoB = path.join(_skillCredTestRoot, 'repo-b');
+    mkdirSync(repoA, { recursive: true });
+    mkdirSync(repoB, { recursive: true });
+    writeFileSync(
+      path.join(_skillCredTestRoot, 'projects.json'),
+      JSON.stringify([
+        {
+          id: 'p-alpha',
+          name: 'Alpha',
+          cwd: repoA,
+          agents: [
+            {
+              id: 'alpha-a',
+              name: 'A',
+              engine: 'claude-code',
+              cwd: repoA,
+            },
+          ],
+        },
+        {
+          id: 'p-beta',
+          name: 'Beta',
+          cwd: repoB,
+          agents: [
+            {
+              id: 'beta-a',
+              name: 'B',
+              engine: 'claude-code',
+              cwd: repoB,
+            },
+          ],
+        },
+      ]) + '\n',
+      'utf8',
+    );
+    reloadProjects(_skillCredTestRoot);
+
+    const ahwA = path.join(_skillCredTestRoot, 'persist', 'projects', 'p-alpha');
+    const ahwB = path.join(_skillCredTestRoot, 'persist', 'projects', 'p-beta');
+    const dup = 'dup-skill';
+
+    function writeDupSkill(ahwRoot: string, keyName: string) {
+      const dir = path.join(ahwRoot, 'skills', dup);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        path.join(dir, 'SKILL.md'),
+        `---
+name: dup-skill
+credentials:
+  - name: ${keyName}
+    label: Token
+    required: false
+    type: secret
+---
+`,
+        'utf8',
+      );
+    }
+    writeDupSkill(ahwA, 'KEY_ALPHA');
+    writeDupSkill(ahwB, 'KEY_BETA');
+
+    const app = buildGatedApp();
+    const token = await setupOwner(app);
+
+    await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: dup,
+        key_name: 'KEY_ALPHA',
+        value: 'va',
+        agent_id: 'alpha-a',
+      })
+      .expect(200);
+
+    const wrongKey = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: dup,
+        key_name: 'KEY_BETA',
+        value: 'vb',
+        agent_id: 'alpha-a',
+      });
+    expect(wrongKey.status).toBe(400);
+
+    await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: dup,
+        key_name: 'KEY_BETA',
+        value: 'vb',
+        agent_id: 'beta-a',
+      })
+      .expect(200);
+
+    const wrongKeyBeta = await supertest(app)
+      .put('/api/auth/me/skill-credentials')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        skill_id: dup,
+        key_name: 'KEY_ALPHA',
+        value: 'va2',
+        agent_id: 'beta-a',
+      });
+    expect(wrongKeyBeta.status).toBe(400);
   });
 });

@@ -216,14 +216,16 @@ tempted to paste secrets into chat or kanban cards.
 `type`, `docs_url`). Registry import and `POST /api/skills/registry`
 reject malformed blocks.
 
-**Schema resolution (`PUT` validation).** Before accepting a key/value, the
-server loads the skill's `credentials:` block in this order: **each loaded
-project workspace** `{project.ahw}/skills/{skill_id}` (directory +
-`SKILL.md`, or a legacy flat `.md` — same layout as
-`GET /api/agents/:agentId/skills/:skillId`), **then** bundled
-`server/default-skills/{skill_id}/SKILL.md`, **then** the matching
-`skill_registry` row. Hydrated `project.ahw` comes from the in-memory
-projects list (typically `<dataDir>/projects/<id>`).
+**Schema resolution (`PUT` validation).** The request body must include **`agent_id`**
+(the agent whose Skills panel issued the save). The server resolves the skill's
+`credentials:` block using **only that agent's project workspace**
+`{project.ahw}/skills/{skill_id}` (directory + `SKILL.md`, or legacy flat `.md`),
+**then** bundled `server/default-skills/{skill_id}/SKILL.md`, **then** the
+matching `skill_registry` row — the same order as
+`GET /api/agents/:agentId/skills/:skillId`. Hydrated `project.ahw` comes from
+the in-memory projects list (typically `<dataDir>/persist/projects/<id>`). This
+avoids ambiguous “first matching workspace across all projects” behavior on
+multi-project hosts.
 
 **Optional keys.** When a credential is `required: false`, an **empty or
 whitespace-only** `value` yields **no DB row** if none exists yet — the
@@ -240,7 +242,7 @@ be present; global `x-api-key` break-glass alone returns **401**):
 | Endpoint | Method | Purpose |
 | -------- | ------ | ------- |
 | `/me/skill-credentials` | GET | `{ credentials: [...] }` — `masked_preview`, timestamps; filter with `?skillId=` |
-| `/me/skill-credentials` | PUT | Body `{ skill_id, key_name, value }` — `key_name` must appear in that skill's declared schema |
+| `/me/skill-credentials` | PUT | Body `{ skill_id, key_name, value, agent_id }` — `key_name` must appear in the schema for that skill as resolved for **that** agent (see above) |
 | `/me/skill-credentials/:id` | DELETE | Hard-delete the row |
 
 **Spawn merge.** For interactive chat, decrypted values are merged into

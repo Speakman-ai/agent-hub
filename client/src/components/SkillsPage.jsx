@@ -134,6 +134,7 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
           skill_id: skill.id,
           key_name: spec.name,
           value: String(val),
+          agent_id: agentId,
         });
         const pack = await api.getSkillCredentials(skill.id);
         setCredentialRows(pack.credentials || []);
@@ -144,7 +145,7 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
         setCredSaving(null);
       }
     },
-    [credentialInputs, skill.id],
+    [credentialInputs, skill.id, agentId],
   );
 
   const deleteCredential = useCallback(
