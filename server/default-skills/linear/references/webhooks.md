@@ -115,15 +115,17 @@ function verifyLinearSignature(
     .digest('hex');
   // timingSafeEqual requires equal-length Buffers; pads nothing — if lengths
   // differ the signature is trivially invalid, so we short-circuit first.
-  if (expected.length !== signature.length) return false;
-  return timingSafeEqual(Buffer.from(expected, 'utf8'), Buffer.from(signature, 'utf8'));
+  const expectedBuf = Buffer.from(expected, 'hex');
+  const actualBuf = Buffer.from(signature, 'hex');
+  if (expectedBuf.length !== actualBuf.length) return false;
+  return timingSafeEqual(expectedBuf, actualBuf);
 }
 ```
 
-### Bash (delegate to Node or Python for constant-time compare)
+### Bash (delegate to Node.js for constant-time compare)
 
-Bash has no built-in constant-time string comparison; use a one-liner helper
-instead of a shell `if [ … ]` test:
+Bash has no built-in constant-time string comparison; delegate to Node.js
+instead of using a shell `if [ … ]` test:
 
 ```bash
 # Compute expected signature
@@ -134,8 +136,8 @@ EXPECTED=$(echo -n "$RAW_BODY" \
 # Constant-time compare via Node.js (avoids shell timing leak)
 node -e "
 const { timingSafeEqual } = require('crypto');
-const a = Buffer.from(process.argv[1], 'utf8');
-const b = Buffer.from(process.argv[2], 'utf8');
+const a = Buffer.from(process.argv[1], 'hex');
+const b = Buffer.from(process.argv[2], 'hex');
 process.exit(a.length === b.length && timingSafeEqual(a, b) ? 0 : 1);
 " "$LINEAR_SIGNATURE" "$EXPECTED" || { echo 'Signature mismatch — rejecting' >&2; exit 1; }
 ```

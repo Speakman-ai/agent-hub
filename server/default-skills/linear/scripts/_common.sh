@@ -8,12 +8,9 @@
 # Exposes:
 #   $LINEAR_API_KEY   resolved API key (or exits with an error if unset)
 #   $LINEAR_GQL_URL   GraphQL endpoint (default https://api.linear.app/graphql)
-#   linear_gql QUERY [VARIABLES_JSON]  → single request, prints JSON to stdout
+#   linear_gql QUERY [VARIABLES_JSON]  → runs a GraphQL request, prints JSON to stdout
 #   require_linear_key                  → asserts LINEAR_API_KEY is set
 #   linear_die MESSAGE                  → print to stderr + exit 1
-#   pp_json                             → pretty-print JSON from stdin
-#
-# Prerequisites: bash 4+, curl, python3
 
 set -euo pipefail
 
@@ -49,16 +46,12 @@ linear_die() {
 # ---------------------------------------------------------------------------
 # linear_gql QUERY [VARIABLES_JSON]
 #
-# Sends exactly ONE GraphQL POST to the Linear API.
-# - Uses mktemp for both the response-body and response-header files so
-#   parallel calls in the same process tree don't collide.
-# - The HTTP status code is captured via curl -w '%{http_code}' on that
-#   same single invocation — there is no second curl call.
-# - Retries once on HTTP 429, honouring X-RateLimit-Reset from the
-#   response headers BEFORE deleting the header tempfile (capped at 10 s).
-# - python3 is the sole error reporter: non-JSON responses and GraphQL
-#   errors are printed to stderr then exit 1. The shell does not double-
-#   print on the failure path.
+# Sends a GraphQL request to the Linear API.
+# - Automatically retries once on HTTP 429 (rate limit) after waiting for
+#   X-RateLimit-Reset (capped at 10 s).
+# - Prints the full JSON response to stdout.
+# - Exits non-zero and prints errors to stderr when the response contains
+#   a top-level "errors" array.
 # ---------------------------------------------------------------------------
 linear_gql() {
   require_linear_key
@@ -71,40 +64,37 @@ linear_gql() {
     "$(printf '%s' "$query" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')" \
     "$variables")
 
-  local tmpbody tmphdr
-  tmpbody=$(mktemp)
-  tmphdr=$(mktemp)
-  # Ensure tempfiles are removed even if the script is interrupted mid-run
-  # (SIGINT, SIGTERM, or an unexpected exit from a subshell failure).
-  trap 'rm -f "$tmpbody" "$tmphdr"' EXIT
-
   local attempts=0
+  # Use mktemp to avoid PID-collision and symlink attacks; honours $TMPDIR.
+  local hdr_file
+  hdr_file=$(mktemp)
+  # Ensure the tempfile is always removed, even on SIGINT/SIGTERM.
+  # shellcheck disable=SC2064
+  trap "rm -f '$hdr_file'" EXIT
 
   while true; do
     attempts=$((attempts + 1))
 
-    # Single curl: body → tmpbody, headers → tmphdr, status code → http_code.
-    # No second request is made — mutations fire exactly once.
-    local http_code
-    http_code=$(curl -sS \
+    # Single curl: body → stdout, headers → hdr_file.
+    # Both are inspected before the file is removed.
+    local raw_out
+    raw_out=$(curl -sS \
       -X POST \
       -H "Content-Type: application/json" \
       -H "Authorization: ${LINEAR_API_KEY}" \
       --data-raw "$body" \
-      -D "$tmphdr" \
-      -o "$tmpbody" \
-      -w '%{http_code}' \
+      -D "$hdr_file" \
       "$LINEAR_GQL_URL" 2>&1) || true
 
-    local raw_out
-    raw_out=$(cat "$tmpbody")
+    local http_code
+    http_code=$(grep -i '^HTTP/' "$hdr_file" 2>/dev/null | tail -1 | awk '{print $2}' || echo "200")
 
-    # Handle rate limiting BEFORE removing tmphdr (we still need the headers)
     if [[ "$http_code" == "429" ]] && [[ "$attempts" -lt 2 ]]; then
-      # Read reset header before deleting the file
+      # Read reset header BEFORE deleting the file
       local reset_at wait_sec=5
-      reset_at=$(grep -i 'x-ratelimit-reset' "$tmphdr" 2>/dev/null \
-        | awk '{print $2}' | tr -d '\r' || echo "")
+      reset_at=$(grep -i 'x-ratelimit-reset' "$hdr_file" 2>/dev/null | awk '{print $2}' | tr -d '\r' || echo "")
+      rm -f "$hdr_file"
+      hdr_file=$(mktemp)
       if [[ -n "$reset_at" ]]; then
         local now
         now=$(date +%s)
@@ -112,22 +102,21 @@ linear_gql() {
         [[ "$wait_sec" -lt 1 ]] && wait_sec=1
         [[ "$wait_sec" -gt 10 ]] && wait_sec=10
       fi
-      rm -f "$tmphdr"
       echo "warn: rate-limited; retrying in ${wait_sec}s..." >&2
       sleep "$wait_sec"
       continue
     fi
 
-    rm -f "$tmphdr"
+    rm -f "$hdr_file"
 
-    # Check for non-JSON or GraphQL errors.
-    # python3 is the sole error reporter — no double-printing from the shell.
+    # Check GraphQL-layer errors (status 200 but errors array present).
+    # python3 is the sole error reporter; non-JSON responses are also caught.
     if ! echo "$raw_out" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
-except json.JSONDecodeError:
-    print('error: Linear returned non-JSON response (proxy or network error?)', file=sys.stderr)
+except Exception:
+    print('error: Linear returned non-JSON response (check API endpoint or network)', file=sys.stderr)
     sys.exit(1)
 errs = d.get('errors')
 if errs:
@@ -135,12 +124,10 @@ if errs:
         print(e.get('message', str(e)), file=sys.stderr)
     sys.exit(1)
 "; then
-      rm -f "$tmpbody"
       exit 1
     fi
 
     echo "$raw_out"
-    rm -f "$tmpbody"
     return 0
   done
 }
