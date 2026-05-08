@@ -1827,6 +1827,12 @@ export interface ChatMessage {
    * (see `server/secrets.ts`).
    */
   extraEnv?: Record<string, string>;
+  /**
+   * Internal: invoked at most once with true when the user message for this turn
+   * was persisted (queued or immediate). False otherwise. Used so review-feedback
+   * webhook dedup does not advance when `handleChat` drops a system inject (e.g. queue full).
+   */
+  _onUserMessagePersisted?: (accepted: boolean) => void;
 }
 
 export interface RoomChatMessage {

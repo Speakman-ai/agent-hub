@@ -9,7 +9,7 @@ import { routeDeps } from '../index.js';
 import { dispatchReviewFeedback } from '../routes/webhooks.js';
 import { getStmts } from '../db.js';
 import { findProject, findAgent } from '../project-model.js';
-import type { KanbanCardRow } from '../types.js';
+import type { KanbanCardRow, ChatMessage } from '../types.js';
 
 let request: supertest.Agent;
 
@@ -58,9 +58,16 @@ describe('session_created broadcast coverage', () => {
     expect(proj).toBeDefined();
 
     const broadcast = vi.fn();
-    const handleChat = vi.fn().mockResolvedValue(undefined);
+    const handleChat = vi.fn(
+      async (
+        _ws: unknown,
+        msg: ChatMessage & { _onUserMessagePersisted?: (ok: boolean) => void },
+      ) => {
+        msg._onUserMessagePersisted?.(true);
+      },
+    );
 
-    dispatchReviewFeedback(
+    await dispatchReviewFeedback(
       { stmts, broadcast, findAgent, handleChat },
       card,
       proj!,

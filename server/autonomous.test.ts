@@ -16,7 +16,9 @@ vi.mock('./routes/board.js', () => ({
 
 vi.mock('./routes/webhooks.js', () => ({
   notifyDispatchFailure: vi.fn(),
-  dispatchReviewFeedback: vi.fn(),
+  dispatchReviewFeedback: vi
+    .fn()
+    .mockResolvedValue({ sessionId: null, userMessagePersisted: true }),
 }));
 
 vi.mock('./config.js', () => ({

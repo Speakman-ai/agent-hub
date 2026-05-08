@@ -751,15 +751,13 @@ async function reconcileKanbanWithGitHub(): Promise<void> {
  * Scans cards in **Review** and **In Progress** (author work often lives there
  * after a `changes_requested` webhook moves the card). For each card with a
  * PR URL, compares GitHub `CHANGES_REQUESTED` review ids to
- * `lastDispatchedReviewId` (also updated when the webhook path dispatches).
- * New ids are pushed through `dispatchReviewFeedback`.
+ * `lastDispatchedReviewId` (also updated when the webhook path dispatches and
+ * the user message is actually persisted). New ids are pushed through
+ * `dispatchReviewFeedback`.
  *
- * Note: this used to also dispatch the lead-review pipeline for "orphan"
- * cards in Review without an active review session. That path is no longer
- * needed — review now fires from the GitHub webhook on every push, not from
- * card movement.
+ * Exported for Vitest; production only schedules this via `startReviewPollingFallback`.
  */
-async function pollForMissedReviews(): Promise<void> {
+export async function pollForMissedReviews(): Promise<void> {
   const d = getDeps();
   const projects = d.getProjects();
   const ghAuthenticatedUser = d.getGhAuthenticatedUser();
@@ -846,10 +844,16 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
             d.broadcast({ type: 'kanban_update', projectId: project.id });
           }
 
-          dispatchReviewFeedback(webhookHandlerDeps, card, project, feedbackMessage);
-
-          const latestId = Math.max(...newReviews.map((r) => r.id));
-          recordDispatchedChangesRequestedReview(card.id, latestId);
+          const result = await dispatchReviewFeedback(
+            webhookHandlerDeps,
+            card,
+            project,
+            feedbackMessage,
+          );
+          if (result.userMessagePersisted) {
+            const latestId = Math.max(...newReviews.map((r) => r.id));
+            recordDispatchedChangesRequestedReview(card.id, latestId);
+          }
         }
       } catch {
         // gh CLI not available or API error — skip silently
