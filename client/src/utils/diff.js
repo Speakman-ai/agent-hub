@@ -34,23 +34,31 @@ function parseCodexFileChanges(changes) {
     };
   }
 
-  const rows = [];
-  for (const c of changes) {
+  const removals = [];
+  const additions = [];
+
+  for (let i = 0; i < changes.length; i++) {
+    const c = changes[i];
+    if (i > 0) {
+      removals.push('');
+      additions.push('· · ·');
+    }
+
     const p = c?.path ?? '';
     const kind = String(c?.kind ?? '').toLowerCase();
     const label = kind === 'add' ? 'add' : kind === 'delete' ? 'delete' : 'update';
     if (typeof c?.unified_diff === 'string' && c.unified_diff.trim()) {
-      rows.push(`${label}  ${p}`);
-      for (const line of c.unified_diff.split('\n')) {
-        rows.push(line);
-      }
+      const parsed = parseApplyPatchContent(c.unified_diff);
+      removals.push(...parsed.removals);
+      additions.push(`${label}  ${p}`);
+      additions.push(...parsed.additions);
     } else if (typeof c?.content === 'string' && c.content.trim()) {
-      rows.push(`${label}  ${p}`);
+      additions.push(`${label}  ${p}`);
       for (const line of c.content.split('\n')) {
-        rows.push(line);
+        additions.push(line);
       }
     } else {
-      rows.push(
+      additions.push(
         `${label}  ${p || '(unknown path)'} — line-level diff not included in Codex JSON output`,
       );
     }
@@ -66,8 +74,8 @@ function parseCodexFileChanges(changes) {
         : changes[0]?.kind === 'delete'
           ? 'Delete'
           : 'Update',
-    removals: [],
-    additions: rows,
+    removals,
+    additions,
   };
 }
 
@@ -83,6 +91,8 @@ function parseApplyPatchContent(patch) {
   const removals = [];
   const additions = [];
   for (const rawLine of patch.split('\n')) {
+    if (rawLine.startsWith('diff --git')) continue;
+    if (rawLine.startsWith('index ')) continue;
     if (rawLine.startsWith('--- ') || rawLine.startsWith('+++ ')) continue;
     if (rawLine.startsWith('@@')) continue;
     if (rawLine === '\\ No newline at end of file') continue;
@@ -169,6 +179,10 @@ export function parseDiffLines(tool, input) {
     if (cursor) {
       removals = cursor.removals;
       additions = cursor.additions;
+    } else if (typeof input?.unified_diff === 'string' && input.unified_diff.trim()) {
+      const u = parseApplyPatchContent(input.unified_diff);
+      removals = u.removals;
+      additions = u.additions;
     } else {
       const old = input?.old_string ?? input?.oldString ?? '';
       const replacement = input?.new_string ?? input?.newString ?? '';

@@ -21,6 +21,7 @@ function shouldDeferCursorFileToolCall(toolName: string, input: Record<string, u
   }
   // Edit
   if (input.strReplace || input.multiStrReplace || input.applyPatch) return false;
+  if (typeof input.unified_diff === 'string' && input.unified_diff.trim()) return false;
   if (input.changes && Array.isArray(input.changes)) return false;
   if (typeof input.old_string === 'string' || typeof input.oldString === 'string') return false;
   if (typeof input.new_string === 'string' || typeof input.newString === 'string') return false;
