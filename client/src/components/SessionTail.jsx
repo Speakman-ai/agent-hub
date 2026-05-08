@@ -13,6 +13,7 @@ import {
 } from '../utils/coordinationBlocks.js';
 import { deriveAssistantTailOutcome } from '../utils/assistantTailOutcome.js';
 import { stripAssistantControlBlocks } from '../utils/controlBlocks.js';
+import { formatSystemBannerModelLine } from '../../../shared/utils/systemBannerModel.js';
 import AskUserQuestion from './AskUserQuestion.jsx';
 import HandoffCard from './HandoffCard.jsx';
 import DelegateCard from './DelegateCard.jsx';
@@ -291,7 +292,14 @@ function SessionTail({
           {blocks.map((block, i) => {
             switch (block.kind) {
               case 'system':
-                return <SystemBanner key={`b${i}`} system={block.event} />;
+                return (
+                  <SystemBanner
+                    key={`b${i}`}
+                    system={block.event}
+                    messageEngine={message?.engine}
+                    messageModel={message?.model}
+                  />
+                );
               case 'thinking':
                 return <ThinkingBlock key={`b${i}`} text={block.event.text} />;
               case 'subagent':
@@ -562,17 +570,37 @@ function Header({ agentColor, engine, model, streaming, createdAt, outcome }) {
   );
 }
 
-function SystemBanner({ system }) {
-  // Compact badge showing model + cwd. Sessionid only on hover.
+function SystemBanner({ system, messageEngine, messageModel }) {
+  // Compact badge showing model + cwd. Session id only on hover.
+  const modelLine = formatSystemBannerModelLine({
+    streamModel: system?.model,
+    sessionModel: messageModel,
+    sessionEngine: messageEngine,
+  });
+  const titleParts = [];
+  if (system?.sessionId) titleParts.push(`session ${system.sessionId}`);
+  if (
+    trimmedModelId(system?.model) &&
+    trimmedModelId(messageModel) &&
+    system.model !== messageModel
+  ) {
+    titleParts.push(`CLI ${trimmedModelId(system.model)} · Hub ${trimmedModelId(messageModel)}`);
+  }
   return (
     <div
       className="text-xs text-gray-500 bg-gray-900/50 rounded-md px-2 py-1 font-mono truncate"
-      title={system.sessionId ? `session ${system.sessionId}` : ''}
+      title={titleParts.join(' — ') || undefined}
     >
-      {system.model || 'unknown model'}
-      {system.cwd && <span className="text-gray-600"> · {system.cwd}</span>}
+      {modelLine}
+      {system?.cwd && <span className="text-gray-600"> · {system.cwd}</span>}
     </div>
   );
+}
+
+function trimmedModelId(v) {
+  if (v == null) return '';
+  const s = String(v).trim();
+  return s;
 }
 
 function ThinkingBlock({ text, defaultOpen }) {

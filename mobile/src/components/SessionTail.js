@@ -11,6 +11,7 @@ import {
   deriveStreamingBrowserHint,
   mergeBrowserTimelineRows,
 } from '../../../shared/utils/browserActivityTimeline.js';
+import { formatSystemBannerModelLine } from '../../../shared/utils/systemBannerModel.js';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
 import AskUserQuestion from './AskUserQuestion';
@@ -590,15 +591,21 @@ function SessionTail({
           case 'ask_question':
             return null;
 
-          case 'system':
+          case 'system': {
+            const modelLine = formatSystemBannerModelLine({
+              streamModel: block.event?.model,
+              sessionModel: message?.model,
+              sessionEngine: message?.engine,
+            });
             return (
               <View key={idx} style={styles.systemRow}>
                 <Text style={styles.systemText} numberOfLines={1}>
-                  {block.event?.model || 'unknown model'}
+                  {modelLine}
                   {block.event?.cwd ? ` · ${block.event.cwd}` : ''}
                 </Text>
               </View>
             );
+          }
 
           case 'result': {
             const evt = block.event;
