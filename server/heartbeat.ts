@@ -4,7 +4,7 @@ import { trackChild, killProcessGroup } from './process-groups.js';
 import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
-import config, { buildSpawnEnv, defaultModelForEngine, fileConfig } from './config.js';
+import config, { buildSpawnEnv, fileConfig } from './config.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { resolveCronSkillPrincipalAgentId } from './cron-skill-principal.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -15,6 +15,8 @@ import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
 import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
+import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
+import { runOneShotPrompt, type OneShotDetailed } from './one-shot-spawn.js';
 import {
   runCertRenewalHeartbeat,
   CERT_RENEWAL_CRON,
@@ -370,17 +372,40 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
         ? agent.heartbeat.model.trim()
         : undefined;
     const hbProject = getProjects().find((p) => p.id === agent.projectId);
-    const result = (await runClaude(agent.heartbeat.prompt, heartbeatCwd, agent.systemPrompt, {
-      timeoutMs,
-      model: heartbeatModel,
-      skillCredentialMerge: hbProject
-        ? {
-            ownerId: getOrgOwnerUserId(),
-            agentId: agent.id,
-            project: hbProject,
-          }
-        : undefined,
-    })) as string;
+    // Resolve the engine just-in-time so a heartbeat run can fall back to
+    // any other authenticated CLI when Claude is unavailable. Throws
+    // NoEnginesAvailableError when nothing is configured — caught below
+    // and surfaced as a clear "set up credentials" error in the log.
+    const preferredEngine = (agent as EnrichedAgent & { engine?: string }).engine ?? 'claude-code';
+    const resolved = await resolveOneShotEngine(config, {
+      preferred: preferredEngine,
+      preferredModel: heartbeatModel,
+    });
+    const heartbeatEnv = buildSpawnEnv(config);
+    if (hbProject) {
+      mergeSkillCredentialSpawnEnv(heartbeatEnv, {
+        ownerId: getOrgOwnerUserId(),
+        agentId: agent.id,
+        project: hbProject,
+      });
+    }
+    if (resolved.fallbackUsed) {
+      console.warn(
+        `[Heartbeat] ${agent.name}: preferred engine "${preferredEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
+      );
+    }
+    const result = await runOneShotPrompt(
+      {
+        engine: resolved.engine,
+        model: resolved.model,
+        prompt: agent.heartbeat.prompt,
+        systemPrompt: agent.systemPrompt,
+        cwd: heartbeatCwd,
+        timeoutMs,
+        env: heartbeatEnv,
+      },
+      config,
+    );
     stmts.updateHeartbeatLog.run(result, 'success', logId);
     console.log(`[Heartbeat] ${agent.name} completed successfully`);
 
@@ -389,7 +414,11 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
     await notifySlack(agent.name, result);
     return { id: logId, status: 'success', result };
   } catch (err) {
-    const errorMsg = (err as Error).message || 'Unknown error';
+    const isNoEngines = err instanceof NoEnginesAvailableError;
+    const rawMsg = (err as Error).message || 'Unknown error';
+    const errorMsg = isNoEngines
+      ? `No AI engine credentials available — heartbeat cannot run.\n${rawMsg}`
+      : rawMsg;
     stmts.updateHeartbeatLog.run(errorMsg, 'error', logId);
     console.error(`[Heartbeat] ${agent.name} failed:`, errorMsg);
 
@@ -522,7 +551,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
   // once here so both the CLI invocation and the session record share the
   // same value (otherwise the session row would always read the default
   // even when the actual run picked something else).
-  const cronModel = cronJob.model || defaultModelForEngine('claude-code');
+  const requestedModel = cronJob.model || null;
 
   try {
     const resolvedCwd = resolveCronCwd(cronJob);
@@ -531,19 +560,40 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     const cronSkillAgentId = cronProject
       ? resolveCronSkillPrincipalAgentId(cronJob, cronProject)
       : undefined;
-    const detailed = (await runClaude(cronJob.prompt, cronCwd, undefined, {
-      timeoutMs,
-      detailed: true,
-      model: cronModel,
-      skillCredentialMerge:
-        cronProject && cronSkillAgentId
-          ? {
-              ownerId: getOrgOwnerUserId(),
-              agentId: cronSkillAgentId,
-              project: cronProject,
-            }
-          : undefined,
-    })) as DetailedResult;
+    // Cron jobs historically targeted Claude Code only; preserve that as
+    // the preferred engine, but fall back to any other authed engine
+    // when Claude is unavailable. NoEnginesAvailableError bubbles into
+    // the outer catch block where it's surfaced verbatim.
+    const resolved = await resolveOneShotEngine(config, {
+      preferred: 'claude-code',
+      preferredModel: requestedModel,
+    });
+    const cronEnv = buildSpawnEnv(config);
+    if (cronProject && cronSkillAgentId) {
+      mergeSkillCredentialSpawnEnv(cronEnv, {
+        ownerId: getOrgOwnerUserId(),
+        agentId: cronSkillAgentId,
+        project: cronProject,
+      });
+    }
+    if (resolved.fallbackUsed) {
+      console.warn(
+        `[Cron] "${cronJob.name}": preferred engine "claude-code" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
+      );
+    }
+    const cronModel = resolved.model;
+    const detailed: OneShotDetailed = await runOneShotPrompt(
+      {
+        engine: resolved.engine,
+        model: resolved.model,
+        prompt: cronJob.prompt,
+        cwd: cronCwd,
+        timeoutMs,
+        env: cronEnv,
+        detailed: true,
+      },
+      config,
+    );
     const durationMs = Date.now() - startTime;
     const result = detailed.stdout || detailed.stderr || '(empty response)';
     stmts.updateCronResult.run(result, cronJob.id);
@@ -589,7 +639,19 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       if (!session) {
         const sessionId = uuidv4();
         const sessionName = `Cron: ${cronJob.name}`;
-        stmts.createSession.run(sessionId, '_cron', sessionName, 'claude-code', cronModel, 0, 0, 1);
+        // Persist the engine actually used so the session row matches reality
+        // when fallback kicked in (otherwise the row reads "claude-code"
+        // even when the run resolved to e.g. cursor-agent).
+        stmts.createSession.run(
+          sessionId,
+          '_cron',
+          sessionName,
+          resolved.engine,
+          cronModel,
+          0,
+          0,
+          1,
+        );
         // System-spawned cron sessions belong to the org owner.
         setSessionOwner(sessionId, getOrgOwnerUserId());
         stmts.updateSessionCronId.run(cronJob.id, sessionId);
@@ -601,7 +663,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         session!.id,
         'assistant',
         result,
-        'claude-code',
+        resolved.engine,
         null,
         null,
         null,
@@ -646,7 +708,11 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     return { id: logId, status: 'success', result };
   } catch (err) {
     const typedErr = err as Error & { stdout?: string; stderr?: string };
-    const errorMsg = typedErr.message || 'Unknown error';
+    const isNoEngines = err instanceof NoEnginesAvailableError;
+    const baseMsg = typedErr.message || 'Unknown error';
+    const errorMsg = isNoEngines
+      ? `No AI engine credentials available — cron cannot run.\n${baseMsg}`
+      : baseMsg;
     const durationMs = Date.now() - startTime;
     const cronResult = formatCronErrorResult(errorMsg, typedErr.stdout, typedErr.stderr);
     stmts.updateCronResult.run(cronResult, cronJob.id);
