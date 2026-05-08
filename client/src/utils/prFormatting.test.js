@@ -18,6 +18,7 @@ import {
   reviewStateColor,
   prListRowSuggestsResolvableWork,
   prListRowResolveDisabledHeuristic,
+  buildPrActivityTimeline,
 } from './prFormatting.js';
 
 describe('prNumberFromUrl', () => {
@@ -506,5 +507,42 @@ describe('mergeButtonState', () => {
   it('null PR → disabled', () => {
     expect(mergeButtonState(null).enabled).toBe(false);
     expect(mergeButtonState(undefined).enabled).toBe(false);
+  });
+});
+
+describe('buildPrActivityTimeline', () => {
+  it('orders events oldest-first and interleaves kinds by tie-breaker at same ms', () => {
+    const t0 = '2026-05-01T10:00:00Z';
+    const t1 = '2026-05-01T11:00:00Z';
+    const pr = {
+      created_at: t0,
+      user: 'bob',
+      merged_at: t1,
+    };
+    const detail = {
+      reviews: [{ id: 10, user: 'r1', state: 'APPROVED', body: 'ok', submitted_at: t0 }],
+      comments: [{ id: 20, user: 'c1', body: 'hi', created_at: t0 }],
+      checks: [
+        { id: 30, name: 'CI', status: 'completed', conclusion: 'success', completed_at: t0 },
+      ],
+    };
+    const out = buildPrActivityTimeline(pr, detail);
+    expect(out.map((x) => x.kind)).toEqual(['opened', 'check', 'comment', 'review', 'merged']);
+  });
+
+  it('emits closed without merging when merged_at is absent', () => {
+    const pr = {
+      created_at: '2026-05-01T09:00:00Z',
+      closed_at: '2026-05-02T09:00:00Z',
+      user: 'u',
+    };
+    const out = buildPrActivityTimeline(pr, { reviews: [], comments: [], checks: [] });
+    expect(out.map((x) => x.kind)).toEqual(['opened', 'closed']);
+  });
+
+  it('skips merged and closed lifecycle rows when timestamps are missing', () => {
+    const pr = { created_at: '2026-05-01T09:00:00Z', merged_at: 'not-a-date' };
+    const out = buildPrActivityTimeline(pr, {});
+    expect(out.every((x) => x.kind === 'opened')).toBe(true);
   });
 });

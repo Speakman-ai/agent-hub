@@ -28,6 +28,7 @@ import {
   reviewDecisionListBadge,
   mergePipelineListBadge,
   prListRowResolveDisabledHeuristic,
+  buildPrActivityTimeline,
 } from '../utils/prFormatting';
 import PrCapturesSection from '../components/PrCapturesSection';
 import { resolveAgentIdFromProject, reviewerAgentIdFromProject } from '../utils/projectAgents';
@@ -192,6 +193,132 @@ function PrListItem({
   );
 }
 
+function PrActivityBlock({ pr, detail, styles }) {
+  const activity = buildPrActivityTimeline(pr, detail);
+  if (!activity.length) {
+    return <Text style={styles.emptyText}>No recorded activity for this pull request.</Text>;
+  }
+  return (
+    <View style={{ marginBottom: 16 }}>
+      {activity.map((item) => (
+        <View key={item.id} style={styles.activityItem}>
+          <Text style={styles.activityGlyph} accessibilityLabel={item.kind}>
+            {item.kind === 'opened'
+              ? '\u{1F504}'
+              : item.kind === 'merged'
+                ? '\u{1F500}'
+                : item.kind === 'closed'
+                  ? '\u2715'
+                  : item.kind === 'review'
+                    ? '\u{1F441}'
+                    : item.kind === 'comment'
+                      ? '\u{1F4AC}'
+                      : item.kind === 'check'
+                        ? '\u2713'
+                        : '\u2022'}
+          </Text>
+          <View style={styles.activityBody}>
+            <ActivityRowBody item={item} styles={styles} />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function ActivityRowBody({ item, styles }) {
+  const k = item.kind;
+  const time =
+    typeof item.at === 'string'
+      ? relativePrTime(item.at)
+      : item.atMs
+        ? relativePrTime(new Date(item.atMs).toISOString())
+        : '';
+
+  if (k === 'opened') {
+    const u = item.user ? `@${item.user}` : 'someone';
+    return (
+      <Text style={styles.activityLine}>
+        <Text style={styles.activityStrong}>Opened</Text> by {u}
+        {time ? <Text style={styles.activityMuted}> · {time}</Text> : null}
+      </Text>
+    );
+  }
+  if (k === 'merged') {
+    return (
+      <Text style={styles.activityLine}>
+        <Text style={styles.activityStrong}>Merged</Text>
+        {time ? <Text style={styles.activityMuted}> · {time}</Text> : null}
+      </Text>
+    );
+  }
+  if (k === 'closed') {
+    return (
+      <Text style={styles.activityLine}>
+        <Text style={styles.activityStrong}>Closed</Text> without merging
+        {time ? <Text style={styles.activityMuted}> · {time}</Text> : null}
+      </Text>
+    );
+  }
+  if (k === 'review' && item.review) {
+    const r = item.review;
+    const s = (r.state || '').toUpperCase();
+    let c = colors.gray400;
+    if (s === 'APPROVED') c = colors.emerald400;
+    else if (s === 'CHANGES_REQUESTED') c = colors.red400;
+    else if (s === 'COMMENTED') c = colors.blue400;
+    return (
+      <View style={styles.reviewBlock}>
+        <View style={styles.reviewHeader}>
+          <Text style={styles.reviewUser}>@{r.user || 'unknown'}</Text>
+          <Text style={[styles.reviewState, { color: c }]}>{s || 'REVIEW'}</Text>
+          <Text style={styles.reviewTime}>{relativePrTime(r.submitted_at)}</Text>
+        </View>
+        {r.body ? (
+          <Text style={styles.reviewBody} numberOfLines={6}>
+            {r.body}
+          </Text>
+        ) : null}
+      </View>
+    );
+  }
+  if (k === 'comment' && item.comment) {
+    const c = item.comment;
+    return (
+      <View style={styles.reviewBlock}>
+        <View style={styles.reviewHeader}>
+          <Text style={styles.reviewUser}>@{c.user || 'unknown'}</Text>
+          <Text style={styles.reviewTime}>{relativePrTime(c.created_at)}</Text>
+        </View>
+        {c.body ? (
+          <Text style={styles.reviewBody} numberOfLines={8}>
+            {c.body}
+          </Text>
+        ) : null}
+      </View>
+    );
+  }
+  if (k === 'check' && item.check) {
+    const chk = item.check;
+    const lbl = (chk.conclusion || chk.status || '').toLowerCase();
+    return (
+      <TouchableOpacity
+        style={styles.activityCheckCard}
+        onPress={() => chk.html_url && Linking.openURL(chk.html_url)}
+        disabled={!chk.html_url}
+      >
+        <Text style={styles.activityLine}>
+          <Text style={styles.activityStrong}>CI check</Text>
+          <Text style={styles.activityMuted}> — {chk.name || 'unnamed'}</Text>
+          {lbl ? <Text style={styles.activityMuted}> · {lbl}</Text> : null}
+          {time ? <Text style={styles.activityMuted}> · {time}</Text> : null}
+        </Text>
+      </TouchableOpacity>
+    );
+  }
+  return null;
+}
+
 function PrDetail({
   detail,
   projectId,
@@ -325,6 +452,12 @@ function PrDetail({
         )}
       </View>
 
+      <Text style={styles.activitySectionHeader}>Activity</Text>
+      <Text style={styles.activitySub}>
+        Chronological history from GitHub (open/merge/close, checks, reviews, and issue comments).
+      </Text>
+      <PrActivityBlock detail={detail} pr={pr} styles={styles} />
+
       {/* CI Checks list */}
       <Text style={styles.sectionHeader}>CI Checks</Text>
       {(!detail.checks || detail.checks.length === 0) && (
@@ -366,54 +499,6 @@ function PrDetail({
             </TouchableOpacity>
           );
         })}
-
-      {/* Reviews */}
-      <Text style={styles.sectionHeader}>Reviews</Text>
-      {(!detail.reviews || detail.reviews.length === 0) && (
-        <Text style={styles.emptyText}>No reviews yet.</Text>
-      )}
-      {Array.isArray(detail.reviews) &&
-        detail.reviews.map((r) => {
-          const s = (r.state || '').toUpperCase();
-          let c = colors.gray400;
-          if (s === 'APPROVED') c = colors.emerald400;
-          else if (s === 'CHANGES_REQUESTED') c = colors.red400;
-          else if (s === 'COMMENTED') c = colors.blue400;
-          return (
-            <View key={r.id} style={styles.reviewBlock}>
-              <View style={styles.reviewHeader}>
-                <Text style={styles.reviewUser}>@{r.user || 'unknown'}</Text>
-                <Text style={[styles.reviewState, { color: c }]}>{s || 'REVIEW'}</Text>
-                <Text style={styles.reviewTime}>{relativePrTime(r.submitted_at)}</Text>
-              </View>
-              {r.body ? (
-                <Text style={styles.reviewBody} numberOfLines={6}>
-                  {r.body}
-                </Text>
-              ) : null}
-            </View>
-          );
-        })}
-
-      {/* Issue Comments */}
-      <Text style={styles.sectionHeader}>Comments</Text>
-      {(!detail.comments || detail.comments.length === 0) && (
-        <Text style={styles.emptyText}>No comments.</Text>
-      )}
-      {Array.isArray(detail.comments) &&
-        detail.comments.map((c) => (
-          <View key={c.id} style={styles.reviewBlock}>
-            <View style={styles.reviewHeader}>
-              <Text style={styles.reviewUser}>@{c.user || 'unknown'}</Text>
-              <Text style={styles.reviewTime}>{relativePrTime(c.created_at)}</Text>
-            </View>
-            {c.body ? (
-              <Text style={styles.reviewBody} numberOfLines={8}>
-                {c.body}
-              </Text>
-            ) : null}
-          </View>
-        ))}
 
       {/* PR Captures (screenshots + videos attached to this PR) */}
       {projectId && pr.number ? (
@@ -1076,6 +1161,56 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   openGithubText: { color: colors.blue400, fontSize: 13 },
+  activitySectionHeader: {
+    color: colors.gray300,
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 20,
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  activitySub: {
+    color: colors.gray500,
+    fontSize: 11,
+    marginBottom: 10,
+    lineHeight: 16,
+  },
+  activityItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 12,
+  },
+  activityGlyph: {
+    width: 22,
+    fontSize: 15,
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  activityBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  activityLine: {
+    color: colors.gray200,
+    fontSize: 13,
+  },
+  activityStrong: {
+    fontWeight: '700',
+    color: colors.white,
+  },
+  activityMuted: {
+    color: colors.gray500,
+    fontSize: 13,
+  },
+  activityCheckCard: {
+    padding: 10,
+    backgroundColor: colors.gray900,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+  },
   summaryStrip: {
     flexDirection: 'row',
     flexWrap: 'wrap',

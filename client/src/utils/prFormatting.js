@@ -409,3 +409,126 @@ export function prListRowResolveDisabledHeuristic(pr) {
   if (!ms || ms === 'unknown') return false;
   return pr.mergeable === true && ms === 'clean';
 }
+
+/**
+ * Parse an ISO 8601 timestamp to epoch ms, or null if invalid.
+ * @param {string|null|undefined} iso
+ * @returns {number|null}
+ */
+function prActivityAtMs(iso) {
+  if (!iso || typeof iso !== 'string') return null;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Build a single chronological activity feed for the PR detail view by merging
+ * lifecycle milestones, reviews, issue comments, and check runs (using
+ * completed_at, else started_at). Oldest events first — mirrors the GitHub PR
+ * conversation ordering users expect from `/pulls/:id` data already returned by
+ * `GET /api/projects/:projectId/pulls/:number`.
+ *
+ * @param {Record<string, unknown>} pr
+ * @param {{ reviews?: unknown[]; comments?: unknown[]; checks?: unknown[] }|null|undefined} detail
+ * @returns {Array<Record<string, unknown>>}
+ */
+export function buildPrActivityTimeline(pr, detail) {
+  /** @type {Array<Record<string, unknown>>} */
+  const items = [];
+
+  const openedMs = prActivityAtMs(pr?.created_at);
+  if (openedMs !== null) {
+    items.push({
+      id: 'lifecycle-opened',
+      kind: 'opened',
+      at: pr.created_at,
+      atMs: openedMs,
+      user: pr.user ?? null,
+    });
+  }
+
+  const reviews = Array.isArray(detail?.reviews) ? detail.reviews : [];
+  for (const r of reviews) {
+    const raw = /** @type {Record<string, unknown>} */ (r);
+    const ms = prActivityAtMs(/** @type {string|undefined} */ (raw.submitted_at));
+    if (ms === null) continue;
+    const rid = raw.id != null ? String(raw.id) : `r-${ms}`;
+    items.push({
+      id: `review-${rid}`,
+      kind: 'review',
+      at: raw.submitted_at,
+      atMs: ms,
+      review: raw,
+    });
+  }
+
+  const comments = Array.isArray(detail?.comments) ? detail.comments : [];
+  for (const c of comments) {
+    const raw = /** @type {Record<string, unknown>} */ (c);
+    const ms = prActivityAtMs(/** @type {string|undefined} */ (raw.created_at));
+    if (ms === null) continue;
+    const cid = raw.id != null ? String(raw.id) : `c-${ms}`;
+    items.push({
+      id: `comment-${cid}`,
+      kind: 'comment',
+      at: raw.created_at,
+      atMs: ms,
+      comment: raw,
+    });
+  }
+
+  const checks = Array.isArray(detail?.checks) ? detail.checks : [];
+  checks.forEach((chk, i) => {
+    const raw = /** @type {Record<string, unknown>} */ (chk);
+    const completed = prActivityAtMs(/** @type {string|undefined} */ (raw.completed_at));
+    const started = prActivityAtMs(/** @type {string|undefined} */ (raw.started_at));
+    const ms = completed ?? started;
+    if (ms === null) return;
+    const at =
+      (typeof raw.completed_at === 'string' && completed !== null
+        ? raw.completed_at
+        : raw.started_at) || null;
+    const cid = raw.id != null && String(raw.id) !== '' ? String(raw.id) : `idx-${i}`;
+    items.push({
+      id: `check-${cid}-${ms}`,
+      kind: 'check',
+      at,
+      atMs: ms,
+      check: raw,
+    });
+  });
+
+  if (pr?.merged_at) {
+    const m = prActivityAtMs(pr.merged_at);
+    if (m !== null) {
+      items.push({
+        id: 'lifecycle-merged',
+        kind: 'merged',
+        at: pr.merged_at,
+        atMs: m,
+      });
+    }
+  } else if (pr?.closed_at) {
+    const c = prActivityAtMs(pr.closed_at);
+    if (c !== null) {
+      items.push({
+        id: 'lifecycle-closed',
+        kind: 'closed',
+        at: pr.closed_at,
+        atMs: c,
+      });
+    }
+  }
+
+  const kindOrder = { opened: 0, check: 1, comment: 2, review: 3, merged: 4, closed: 5 };
+  items.sort((a, b) => {
+    const ams = /** @type {number} */ (a.atMs);
+    const bms = /** @type {number} */ (b.atMs);
+    if (ams !== bms) return ams - bms;
+    const ak = /** @type {string} */ (a.kind);
+    const bk = /** @type {string} */ (b.kind);
+    return (kindOrder[ak] ?? 9) - (kindOrder[bk] ?? 9);
+  });
+
+  return items;
+}

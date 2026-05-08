@@ -200,6 +200,43 @@ describe('fetchPrDetail', () => {
     expect((out.pr as Record<string, unknown>).mergeable).toBe(true);
   });
 
+  it('maps mergedAt and closedAt from `gh pr view` JSON on the CLI tier', async () => {
+    cliMock.mockResolvedValue({
+      stdout: JSON.stringify({
+        number: 99,
+        title: 'Merged via CLI',
+        state: 'MERGED',
+        isDraft: false,
+        url: 'https://github.com/o/r/pull/99',
+        author: { login: 'alice' },
+        headRefName: 'feat',
+        baseRefName: 'main',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z',
+        mergedAt: '2026-01-02T12:00:00Z',
+        closedAt: '2026-01-02T12:00:00Z',
+        additions: 0,
+        deletions: 0,
+        changedFiles: 0,
+        body: '',
+        mergeable: 'UNKNOWN',
+        reviewDecision: null,
+        labels: [],
+        reviews: [],
+        comments: [],
+        statusCheckRollup: [],
+      }),
+    });
+
+    const { fetchPrDetail } = await import('./pr-detail-fetch.js');
+    const config = baseConfig();
+    const out = await fetchPrDetail(config, { owner: 'o', repo: 'r' }, 99);
+
+    expect(out.source).toBe('gh-cli');
+    expect((out.pr as Record<string, unknown>).merged_at).toBe('2026-01-02T12:00:00Z');
+    expect((out.pr as Record<string, unknown>).closed_at).toBe('2026-01-02T12:00:00Z');
+  });
+
   it('propagates CLI failure as an error when both tiers fail', async () => {
     cliMock.mockRejectedValue(new Error('gh: command not found'));
     const { fetchPrDetail } = await import('./pr-detail-fetch.js');

@@ -115,6 +115,12 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'sess-99');
   });
 
+  it('shows the Activity timeline on the PR detail view', async () => {
+    await renderAndOpenDetail();
+    expect(await screen.findByText('Activity')).toBeTruthy();
+    expect(screen.getByText(/Chronological history from GitHub/i)).toBeTruthy();
+  });
+
   it('disables the button while the request is in flight', async () => {
     let resolveFn;
     api.resolvePR.mockReturnValue(

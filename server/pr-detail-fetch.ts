@@ -152,9 +152,10 @@ export async function fetchPrDetail(
     }
   }
 
-  // Tier 2: gh CLI
+  // Tier 2: gh CLI — include mergedAt/closedAt so Activity / lifecycle matches OAuth+REST
+  // (`normalizePrSummary` already maps these on App/User tiers).
   const viewJsonFields =
-    'number,title,state,isDraft,url,author,headRefName,baseRefName,createdAt,updatedAt,additions,deletions,changedFiles,body,mergeable,reviewDecision,reviewRequests,labels,reviews,comments,statusCheckRollup';
+    'number,title,state,isDraft,url,author,headRefName,baseRefName,createdAt,updatedAt,mergedAt,closedAt,additions,deletions,changedFiles,body,mergeable,reviewDecision,reviewRequests,labels,reviews,comments,statusCheckRollup';
   const stdout = await callCli(config, [
     'pr',
     'view',
@@ -185,8 +186,8 @@ export async function fetchPrDetail(
       base: data.baseRefName,
       created_at: data.createdAt,
       updated_at: data.updatedAt,
-      merged_at: null,
-      closed_at: null,
+      merged_at: data.mergedAt ?? null,
+      closed_at: data.closedAt ?? null,
       body: data.body,
       mergeable: mergeableFromCli(data.mergeable),
       mergeable_state: data.mergeable,

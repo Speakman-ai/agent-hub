@@ -303,3 +303,106 @@ export function prListRowResolveDisabledHeuristic(pr) {
   if (!ms || ms === 'unknown') return false;
   return pr.mergeable === true && ms === 'clean';
 }
+
+function prActivityAtMs(iso) {
+  if (!iso || typeof iso !== 'string') return null;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Chronological PR activity for the detail view (opened, checks, comments,
+ * reviews, merged/closed). Oldest first. See client `buildPrActivityTimeline`.
+ */
+export function buildPrActivityTimeline(pr, detail) {
+  const items = [];
+
+  const openedMs = prActivityAtMs(pr?.created_at);
+  if (openedMs !== null) {
+    items.push({
+      id: 'lifecycle-opened',
+      kind: 'opened',
+      at: pr.created_at,
+      atMs: openedMs,
+      user: pr.user ?? null,
+    });
+  }
+
+  const reviews = Array.isArray(detail?.reviews) ? detail.reviews : [];
+  for (const r of reviews) {
+    const ms = prActivityAtMs(r?.submitted_at);
+    if (ms === null) continue;
+    const rid = r.id != null ? String(r.id) : `r-${ms}`;
+    items.push({
+      id: `review-${rid}`,
+      kind: 'review',
+      at: r.submitted_at,
+      atMs: ms,
+      review: r,
+    });
+  }
+
+  const comments = Array.isArray(detail?.comments) ? detail.comments : [];
+  for (const c of comments) {
+    const ms = prActivityAtMs(c?.created_at);
+    if (ms === null) continue;
+    const cid = c.id != null ? String(c.id) : `c-${ms}`;
+    items.push({
+      id: `comment-${cid}`,
+      kind: 'comment',
+      at: c.created_at,
+      atMs: ms,
+      comment: c,
+    });
+  }
+
+  const checks = Array.isArray(detail?.checks) ? detail.checks : [];
+  checks.forEach((chk, i) => {
+    const completed = prActivityAtMs(chk?.completed_at);
+    const started = prActivityAtMs(chk?.started_at);
+    const ms = completed ?? started;
+    if (ms === null) return;
+    const at =
+      (typeof chk.completed_at === 'string' && completed !== null
+        ? chk.completed_at
+        : chk.started_at) || null;
+    const cid = chk.id != null && String(chk.id) !== '' ? String(chk.id) : `idx-${i}`;
+    items.push({
+      id: `check-${cid}-${ms}`,
+      kind: 'check',
+      at,
+      atMs: ms,
+      check: chk,
+    });
+  });
+
+  if (pr?.merged_at) {
+    const m = prActivityAtMs(pr.merged_at);
+    if (m !== null) {
+      items.push({
+        id: 'lifecycle-merged',
+        kind: 'merged',
+        at: pr.merged_at,
+        atMs: m,
+      });
+    }
+  } else if (pr?.closed_at) {
+    const c = prActivityAtMs(pr.closed_at);
+    if (c !== null) {
+      items.push({
+        id: 'lifecycle-closed',
+        kind: 'closed',
+        at: pr.closed_at,
+        atMs: c,
+      });
+    }
+  }
+
+  const kindOrder = { opened: 0, check: 1, comment: 2, review: 3, merged: 4, closed: 5 };
+  items.sort((a, b) => {
+    if (a.atMs !== b.atMs) return a.atMs - b.atMs;
+    return (kindOrder[a.kind] ?? 9) - (kindOrder[b.kind] ?? 9);
+  });
+
+  return items;
+}
