@@ -39,8 +39,10 @@ import { getRequest } from './helpers.js';
  * observe externally:
  *   - `rev-parse HEAD` succeeds (refs + objects readable),
  *   - `.git/index` exists (working-tree checkout step finished writing it),
- *   - no `.lock` files held by an in-flight git command,
- *   - no `incoming-*` / `tmp_*` pack-staging dirs under `.git/objects/`.
+ *   - no `*.lock` files held by an in-flight git command anywhere under
+ *     `.git/`, `.git/refs/**`, or `.git/objects/pack/`,
+ *   - no `incoming-*` / `tmp_*` pack-staging dirs under `.git/objects/`,
+ *   - no `tmp_pack_*` / `*.lock` artifacts in `.git/objects/pack/`.
  */
 async function waitForClone(clonePath: string, timeoutMs = 15_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -49,18 +51,57 @@ async function waitForClone(clonePath: string, timeoutMs = 15_000): Promise<bool
     try {
       execSync(`git -C ${JSON.stringify(clonePath)} rev-parse HEAD`, { stdio: 'ignore' });
       const indexReady = existsSync(path.join(gitDir, 'index'));
-      const noLocks =
-        !existsSync(path.join(gitDir, 'index.lock')) &&
-        !existsSync(path.join(gitDir, 'HEAD.lock')) &&
-        !existsSync(path.join(gitDir, 'config.lock'));
       const noStagingObjects = !hasIncomingObjects(gitDir);
-      if (indexReady && noLocks && noStagingObjects) {
+      const noInProgress = !hasInProgressArtifacts(gitDir);
+      if (indexReady && noStagingObjects && noInProgress) {
         return true;
       }
     } catch {
       /* not ready */
     }
     await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
+/** True while `git clone` still has lock or temp artifacts under `.git`. */
+function hasInProgressArtifacts(gitDir: string): boolean {
+  if (!existsSync(gitDir)) return false;
+  // index.lock at the top of .git/
+  if (existsSync(path.join(gitDir, 'index.lock'))) return true;
+  // *.lock files at the top of .git/ (HEAD.lock, packed-refs.lock, config.lock, …)
+  try {
+    if (readdirSync(gitDir).some((e) => e.endsWith('.lock'))) return true;
+  } catch {
+    /* ignore */
+  }
+  // tmp_pack_* and *.lock under objects/pack/
+  try {
+    const packDir = path.join(gitDir, 'objects', 'pack');
+    if (existsSync(packDir)) {
+      const entries = readdirSync(packDir);
+      if (entries.some((e) => e.startsWith('tmp_') || e.endsWith('.lock'))) return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  // *.lock anywhere in refs/ (refs/heads/main.lock, …)
+  try {
+    return refsHasLock(path.join(gitDir, 'refs'));
+  } catch {
+    return false;
+  }
+}
+
+function refsHasLock(dir: string): boolean {
+  if (!existsSync(dir)) return false;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (refsHasLock(full)) return true;
+    } else if (entry.name.endsWith('.lock')) {
+      return true;
+    }
   }
   return false;
 }
