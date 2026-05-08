@@ -14,7 +14,8 @@ import {
   getBrowserSession,
   launchBrowserSession,
   closeBrowserSession,
-  bumpBrowserSessionActivity,
+  incrementBrowserToolOpEntered,
+  notifyBrowserToolOpEnded,
   DEFAULT_TIMEOUT_MS,
   type BrowserSession,
   type BrowserSessionOptions,
@@ -702,9 +703,8 @@ export async function runBrowserReActStep(
       ui: { summary: 'Browser failed to start', errorLine: msg },
     };
   }
-  bumpBrowserSessionActivity(chatSessionId);
-  const sh = asV3(session.stagehand);
   const opTimeoutMs = sessionLaunchOpts.timeoutMs ?? session.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const sh = asV3(session.stagehand);
 
   const finish = (b: BrowserReActStepOutcome): BrowserReActStepOutcome => {
     logBrowserToolAudit({
@@ -713,7 +713,7 @@ export async function runBrowserReActStep(
       ok: b.hostExit === 0,
       hostExit: b.hostExit,
       detail: typeof b.hostDetail === 'string' ? b.hostDetail : undefined,
-      urlSnippet: input.url,
+      urlSnippet: opRaw === 'navigate' ? input.url?.trim() : undefined,
     });
     return b;
   };
@@ -728,6 +728,7 @@ export async function runBrowserReActStep(
     return lines.join('\n');
   };
 
+  incrementBrowserToolOpEntered(chatSessionId);
   try {
     switch (op) {
       case 'close': {
@@ -945,5 +946,7 @@ export async function runBrowserReActStep(
       hostDetail: 'threw',
       ui: { summary: 'Browser threw an error', errorLine: msg },
     });
+  } finally {
+    notifyBrowserToolOpEnded(chatSessionId);
   }
 }

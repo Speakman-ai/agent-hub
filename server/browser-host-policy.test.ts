@@ -30,15 +30,15 @@ describe('browser-host-policy', () => {
     expect(DEFAULT_BLOCKED_AD_TRACKER_HOST_SUFFIXES.length).toBeGreaterThanOrEqual(5);
   });
 
-  it('clamps concurrent-context test override into a safe range', () => {
+  it('clamps concurrent-context test override to the same upper bound as config loading (32)', () => {
     __setBrowserConcurrencyForTests(99);
-    expect(getBrowserMaxConcurrentContexts()).toBe(48);
+    expect(getBrowserMaxConcurrentContexts()).toBe(32);
     __setBrowserConcurrencyForTests(-5);
     expect(getBrowserMaxConcurrentContexts()).toBe(1);
     __setBrowserConcurrencyForTests(7);
     expect(getBrowserMaxConcurrentContexts()).toBe(7);
     resetBrowserSecurityTestOverrides();
     expect(getBrowserMaxConcurrentContexts()).toBeGreaterThanOrEqual(1);
-    expect(getBrowserMaxConcurrentContexts()).toBeLessThanOrEqual(48);
+    expect(getBrowserMaxConcurrentContexts()).toBeLessThanOrEqual(32);
   });
 });

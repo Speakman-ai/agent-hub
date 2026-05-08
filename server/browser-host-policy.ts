@@ -21,6 +21,7 @@ export const DEFAULT_BLOCKED_AD_TRACKER_HOST_SUFFIXES: readonly string[] = Objec
 ]);
 
 let testConcurrencyOverride: number | null = null;
+let testIdleMsOverride: number | null = null;
 
 /** Vitest-only: override max concurrent Chromium contexts without mutating disk config. */
 export function __setBrowserConcurrencyForTests(limit: number | null): void {
@@ -29,7 +30,11 @@ export function __setBrowserConcurrencyForTests(limit: number | null): void {
 
 export function resetBrowserSecurityTestOverrides(): void {
   testConcurrencyOverride = null;
+  testIdleMsOverride = null;
 }
+
+/** Matches `browserMaxConcurrentContexts` upper clamp in `config.ts` (operator-facing cap). */
+const BROWSER_CONTEXT_CAP = 32;
 
 function clampInt(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n)) return lo;
@@ -40,12 +45,26 @@ function clampInt(n: number, lo: number, hi: number): number {
 }
 
 export function getBrowserMaxConcurrentContexts(): number {
-  if (testConcurrencyOverride != null) return clampInt(testConcurrencyOverride, 1, 48);
-  return clampInt(config.browserMaxConcurrentContexts, 1, 48);
+  if (testConcurrencyOverride != null)
+    return clampInt(testConcurrencyOverride, 1, BROWSER_CONTEXT_CAP);
+  return clampInt(config.browserMaxConcurrentContexts, 1, BROWSER_CONTEXT_CAP);
 }
 
 export function getBrowserIdleTimeoutMs(): number {
+  if (testIdleMsOverride != null) {
+    const v = Math.trunc(testIdleMsOverride);
+    if (!Number.isFinite(v)) {
+      return clampInt(config.browserIdleTimeoutMs, 30_000, 3_600_000);
+    }
+    // Lower floor for Vitest timer tests only — production always uses `config` path.
+    return Math.min(Math.max(v, 250), 3_600_000);
+  }
   return clampInt(config.browserIdleTimeoutMs, 30_000, 3_600_000);
+}
+
+/** Vitest-only: clamped like production idle bounds. Pass `null` to clear. */
+export function __setBrowserIdleMsForTests(ms: number | null): void {
+  testIdleMsOverride = ms;
 }
 
 export function browserAllowDownloadsFromConfig(): boolean {

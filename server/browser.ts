@@ -202,6 +202,8 @@ const launchInFlight = new Map<string, Promise<BrowserSession>>();
 let pendingBrowserConstruction = 0;
 /** Auto-close timers — one per live {@link BrowserSession} id. */
 const idleCloseTimerBySessionId = new Map<string, NodeJS.Timeout>();
+/** In-flight host browser (`runBrowserReActStep`) nesting — idle close defers until zero. */
+const activeBrowserToolOpsBySessionId = new Map<string, number>();
 
 function clearBrowserIdleTimer(id: string): void {
   const t = idleCloseTimerBySessionId.get(id);
@@ -214,14 +216,39 @@ function scheduleBrowserIdleClose(id: string): void {
   const ms = getBrowserIdleTimeoutMs();
   const t = setTimeout(() => {
     idleCloseTimerBySessionId.delete(id);
+    if ((activeBrowserToolOpsBySessionId.get(id) ?? 0) > 0) {
+      scheduleBrowserIdleClose(id);
+      return;
+    }
     void closeBrowserSession(id).catch(() => {});
   }, ms);
   idleCloseTimerBySessionId.set(id, t);
 }
 
 /**
- * Reset the idle auto-close timer after any successful browser ensure or tool step.
- * No-op when the session is not registered (e.g. already closed).
+ * Mark the beginning of `runBrowserReActStep`; pairs with {@link notifyBrowserToolOpEnded}.
+ */
+export function incrementBrowserToolOpEntered(chatSessionId: string): void {
+  activeBrowserToolOpsBySessionId.set(
+    chatSessionId,
+    (activeBrowserToolOpsBySessionId.get(chatSessionId) ?? 0) + 1,
+  );
+}
+
+/** Mark the end of `runBrowserReActStep` and restart the idle countdown from completion. */
+export function notifyBrowserToolOpEnded(chatSessionId: string): void {
+  const prior = activeBrowserToolOpsBySessionId.get(chatSessionId) ?? 0;
+  const n = Math.max(0, prior - 1);
+  if (n <= 0) activeBrowserToolOpsBySessionId.delete(chatSessionId);
+  else activeBrowserToolOpsBySessionId.set(chatSessionId, n);
+  bumpBrowserSessionActivity(chatSessionId);
+}
+
+/**
+ * Restart the idle auto-close countdown (`browserIdleTimeoutMs`) starting **now**.
+ * Idle teardown is deferred while any {@link incrementBrowserToolOpEntered} pairing is pending.
+ *
+ * Typical callers: notifyBrowserToolOpEnded (browser-tools after each completed step).
  */
 export function bumpBrowserSessionActivity(id: string): void {
   if (!sessions.has(id)) return;
@@ -319,6 +346,7 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
       timeoutMs: builtOpts.actTimeoutMs,
       close: async () => {
         clearBrowserIdleTimer(id);
+        activeBrowserToolOpsBySessionId.delete(id);
         sessions.delete(id);
         try {
           await sh.close();
@@ -373,6 +401,7 @@ export async function closeAllBrowserSessions(): Promise<void> {
   const snapshot = Array.from(sessions.values());
   sessions.clear();
   pendingBrowserConstruction = 0;
+  activeBrowserToolOpsBySessionId.clear();
   await Promise.allSettled(
     snapshot.map(async (s) => {
       try {
@@ -396,6 +425,7 @@ export function __resetBrowserRegistryForTests(): void {
   sessions.clear();
   launchInFlight.clear();
   pendingBrowserConstruction = 0;
+  activeBrowserToolOpsBySessionId.clear();
   for (const t of idleCloseTimerBySessionId.values()) clearTimeout(t);
   idleCloseTimerBySessionId.clear();
 }
@@ -406,6 +436,7 @@ export function __resetBrowserRegistryForTests(): void {
  */
 export function __unregisterBrowserSessionForTests(id: string): void {
   clearBrowserIdleTimer(id);
+  activeBrowserToolOpsBySessionId.delete(id);
   sessions.delete(id);
 }
 
