@@ -15,6 +15,7 @@ import {
   SSH_NOT_SUPPORTED_MESSAGE,
 } from '../clone-url-auth.js';
 import { getActiveAccessToken } from '../github-connections-store.js';
+import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { getUserByUsername, createUser } from '../users-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { getOrCreateBoard } from './board.js';
@@ -1010,6 +1011,12 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     if (cursorBin !== undefined && setCursorBin) {
       setCursorBin(cursorBin);
       config.cursorBin = cursorBin;
+      // Drop any stale cursor-auth cache so the wizard's post-configure
+      // GET /api/config/models check probes a fresh `cursor-agent status`
+      // against the new bin instead of returning a stale `false` left over
+      // from an earlier poll. Without this, Save & Continue can fail on the
+      // happy path until the 60s TTL expires.
+      invalidateCursorAuthCache();
     }
     if (codexBin !== undefined && setCodexBin) {
       setCodexBin(codexBin);

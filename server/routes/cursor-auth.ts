@@ -9,6 +9,7 @@ import {
   parseCursorStatusJson,
   computeCursorUiStatus,
 } from '../cursor-auth-parse.js';
+import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 
 const HOME = os.homedir();
 
@@ -184,6 +185,15 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
         resetActiveLogin();
       }
 
+      // The login child just exited — auth state may have flipped from
+      // unauthenticated → authenticated (or back, on a failed retry). The
+      // cursor-auth cache used by GET /api/config/models is keyed on bin
+      // path only, so without this drop the wizard's Save & Continue check
+      // can keep seeing the pre-login `false` for up to 60s. Invalidate
+      // unconditionally so the next models poll re-probes `cursor-agent
+      // status` against reality.
+      invalidateCursorAuthCache();
+
       if (!responded) {
         responded = true;
         if (code === 0) {
@@ -268,6 +278,9 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
         error: combined || `cursor-agent logout exited with code ${code}`,
       });
     }
+    // Auth state just flipped to logged-out; clear the cache so the next
+    // models poll reflects reality instead of a cached `true`.
+    invalidateCursorAuthCache();
     res.json({ ok: true, output: combined || 'Logged out' });
   });
 
