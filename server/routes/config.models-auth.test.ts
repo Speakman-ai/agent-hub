@@ -93,6 +93,84 @@ describe('GET /api/config/models — authenticated engine contract', () => {
     }
   });
 
+  it('PATCH /api/config { cursorBin } invalidates the cursor-auth cache so the next models call re-probes', async () => {
+    // Reviewer's race (PR #842): `getCursorAuthenticatedCached` memoizes for 60s,
+    // keyed on the resolved cursor bin path. Without invalidation on a PATCH
+    // that touches `cursorBin`, the wizard's post-configure Save & Continue
+    // check can keep seeing a stale `false` even after the user has finished
+    // `cursor-agent login`. We can't trigger a real OAuth flow in tests, but
+    // we can simulate the same auth-state flip by rewriting the fixture
+    // binary in place: it always sits at the same path, so the cache key
+    // doesn't move — only the probe result changes. The fix invalidates on
+    // PATCH regardless of whether the bin string itself changed.
+    const fixture = writeCursorFixture('cursor-status-flip', false);
+    try {
+      await request.patch('/api/config').send({ cursorBin: fixture }).expect(200);
+      const beforeLogin = await request.get('/api/config/models').expect(200);
+      expect(beforeLogin.body.engineAuth['cursor-agent']).toBe(false);
+
+      // Simulate `cursor-agent login` succeeding: same binary path, but it
+      // now reports authenticated. If the cache weren't invalidated by the
+      // PATCH below we'd see the stale `false` for up to 60s.
+      writeFileSync(
+        fixture,
+        `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+if (argv.includes('status') && argv.includes('--format') && argv.includes('json')) {
+  console.log(JSON.stringify({ isAuthenticated: true }));
+}
+`,
+        { mode: 0o755 },
+      );
+      chmodSync(fixture, 0o755);
+
+      // Re-PATCH the same cursorBin path. Without the fix this is a no-op
+      // for cache purposes; with the fix it drops the cached entry so the
+      // next /api/config/models re-runs the probe.
+      await request.patch('/api/config').send({ cursorBin: fixture }).expect(200);
+
+      const afterLogin = await request.get('/api/config/models').expect(200);
+      expect(afterLogin.body.engineAuth['cursor-agent']).toBe(true);
+      expect(afterLogin.body.engineValidModels['cursor-agent'].length).toBeGreaterThan(0);
+    } finally {
+      if (existsSync(fixture)) unlinkSync(fixture);
+    }
+  });
+
+  it('POST /api/setup/configure { cursorBin } invalidates the cursor-auth cache for the next models poll', async () => {
+    // Same race as the PATCH test, but driven through the SetupWizard's
+    // primary write surface. Step 3 of the wizard hits /setup/configure and
+    // then immediately polls /api/config/models — if that poll returns a
+    // cached `false` from a pre-login status spawn, Save & Continue
+    // refuses to advance even though the wizard's own status probe shows
+    // the user authenticated.
+    const fixture = writeCursorFixture('cursor-setup-configure-flip', false);
+    try {
+      await request.post('/api/setup/configure').send({ cursorBin: fixture }).expect(200);
+      const before = await request.get('/api/config/models').expect(200);
+      expect(before.body.engineAuth['cursor-agent']).toBe(false);
+
+      writeFileSync(
+        fixture,
+        `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+if (argv.includes('status') && argv.includes('--format') && argv.includes('json')) {
+  console.log(JSON.stringify({ isAuthenticated: true }));
+}
+`,
+        { mode: 0o755 },
+      );
+      chmodSync(fixture, 0o755);
+
+      await request.post('/api/setup/configure').send({ cursorBin: fixture }).expect(200);
+
+      const after = await request.get('/api/config/models').expect(200);
+      expect(after.body.engineAuth['cursor-agent']).toBe(true);
+    } finally {
+      if (existsSync(fixture)) unlinkSync(fixture);
+    }
+  });
+
   it('treats a saved claude setup-token as Claude auth even without API key or CLI OAuth', async () => {
     // Snapshot env so other tests inheriting credentials don't decide this case.
     const savedApiKeyEnv = process.env.ANTHROPIC_API_KEY;

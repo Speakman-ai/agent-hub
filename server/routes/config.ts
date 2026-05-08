@@ -24,6 +24,7 @@ import { refreshShellPath, getCachedShellPath } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { parseCursorStatusJson } from '../cursor-auth-parse.js';
+import { getCursorAuthenticatedCached, invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
 import { normalizeCronModel } from './crons.js';
@@ -225,24 +226,6 @@ function runCursorStatus(binPath: string): Promise<boolean> {
   });
 }
 
-/** Avoid spawning `cursor-agent status` on every models poll — UI hits this often. */
-const CURSOR_AUTH_CACHE_MS = 60_000;
-let cursorAuthCache: { bin: string; value: boolean; ts: number } | null = null;
-
-async function getCursorAuthenticatedCached(cursorBin: string): Promise<boolean> {
-  const now = Date.now();
-  if (
-    cursorAuthCache &&
-    cursorAuthCache.bin === cursorBin &&
-    now - cursorAuthCache.ts < CURSOR_AUTH_CACHE_MS
-  ) {
-    return cursorAuthCache.value;
-  }
-  const value = await runCursorStatus(cursorBin);
-  cursorAuthCache = { bin: cursorBin, value, ts: now };
-  return value;
-}
-
 interface SlackConfigData {
   accounts: Array<{
     botToken?: string;
@@ -341,7 +324,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       codexApiKeyConfigured ||
       (codexAuth.present && (codexAuth.mode === 'chatgpt' || codexAuth.mode === 'apikey'));
     const cursorBin = deps.getCursorBin?.() ?? config.cursorBin;
-    const cursorAuthenticated = await getCursorAuthenticatedCached(cursorBin);
+    const cursorAuthenticated = await getCursorAuthenticatedCached(cursorBin, runCursorStatus);
 
     res.json(
       buildAuthenticatedModelConfig(config, {
@@ -402,6 +385,14 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
     if ('cursorBin' in updates && typeof updates.cursorBin === 'string' && deps.setCursorBin) {
       deps.setCursorBin(updates.cursorBin);
+      // The cursor-auth cache is keyed on the resolved bin string, so a new
+      // path technically misses the cache — but we still invalidate so any
+      // stale entry for the *new* bin (left over from a previous probe) is
+      // dropped. The wizard can otherwise see a cached `false` for up to
+      // 60s after the user finishes `cursor-agent login`, which manifests
+      // as Save & Continue refusing to advance even though the status
+      // endpoint reports authenticated.
+      invalidateCursorAuthCache();
     }
     if ('geminiBin' in updates && typeof updates.geminiBin === 'string' && deps.setGeminiBin) {
       deps.setGeminiBin(updates.geminiBin);

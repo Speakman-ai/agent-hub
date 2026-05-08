@@ -9,6 +9,7 @@ import {
   parseCursorStatusJson,
   computeCursorUiStatus,
 } from '../cursor-auth-parse.js';
+import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 
 const HOME = os.homedir();
 
@@ -54,6 +55,14 @@ function runCursor(
 let activeLoginProc: ChildProcess | null = null;
 let activeLoginId: string | null = null;
 
+function parseCursorBinQuery(req: Request): string | null {
+  const q = req.query.cursorBin;
+  const raw = Array.isArray(q) ? q[0] : q;
+  if (typeof raw !== 'string') return null;
+  const t = raw.trim();
+  return t.length > 0 ? t : null;
+}
+
 export default function createCursorAuthRoutes(deps: RouteDeps): Router {
   const { config, broadcast, getCursorBin } = deps;
   const router = Router();
@@ -65,8 +74,8 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
     activeLoginId = null;
   };
 
-  router.get('/api/config/cursor-auth', async (_req: Request, res: Response) => {
-    const path = binPath();
+  router.get('/api/config/cursor-auth', async (req: Request, res: Response) => {
+    const path = parseCursorBinQuery(req) ?? binPath();
     const binaryPresent = existsSync(path);
     const loginInProgress = !!activeLoginProc;
 
@@ -176,6 +185,15 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
         resetActiveLogin();
       }
 
+      // The login child just exited — auth state may have flipped from
+      // unauthenticated → authenticated (or back, on a failed retry). The
+      // cursor-auth cache used by GET /api/config/models is keyed on bin
+      // path only, so without this drop the wizard's Save & Continue check
+      // can keep seeing the pre-login `false` for up to 60s. Invalidate
+      // unconditionally so the next models poll re-probes `cursor-agent
+      // status` against reality.
+      invalidateCursorAuthCache();
+
       if (!responded) {
         responded = true;
         if (code === 0) {
@@ -260,6 +278,9 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
         error: combined || `cursor-agent logout exited with code ${code}`,
       });
     }
+    // Auth state just flipped to logged-out; clear the cache so the next
+    // models poll reflects reality instead of a cached `true`.
+    invalidateCursorAuthCache();
     res.json({ ok: true, output: combined || 'Logged out' });
   });
 

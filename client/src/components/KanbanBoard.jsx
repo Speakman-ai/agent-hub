@@ -495,6 +495,7 @@ export default function KanbanBoard({
         labels: detailForm.labels,
         githubIssueUrl: detailForm.github_issue_url,
         prUrl: detailForm.pr_url,
+        assign_model: detailForm.assign_model || null,
       });
       fetchBoard();
       setSelectedCard(null);
@@ -1563,6 +1564,66 @@ export default function KanbanBoard({
                             Session active
                           </span>
                         </div>
+                        {/* Model override display/edit for assigned cards */}
+                        {modelConfig &&
+                          (() => {
+                            const selAgent = agents.find(
+                              (a) => a.name === (selectedCard.assignee || detailForm.assignee),
+                            );
+                            const eng = selAgent?.engine || 'claude-code';
+                            const opts = modelConfig.engineValidModels?.[eng] || [];
+                            if (opts.length === 0) return null;
+                            return (
+                              <div className="mb-3">
+                                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">
+                                  Session model
+                                </label>
+                                <select
+                                  value={detailForm.assign_model || ''}
+                                  onChange={(e) =>
+                                    setDetailForm((f) => ({ ...f, assign_model: e.target.value }))
+                                  }
+                                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                                >
+                                  <option value="">Agent default</option>
+                                  {opts.map((m) => (
+                                    <option key={m} value={m}>
+                                      {m}
+                                    </option>
+                                  ))}
+                                </select>
+                                {detailForm.assign_model !== (selectedCard.assign_model || '') && (
+                                  <button
+                                    onClick={async () => {
+                                      setSaving(true);
+                                      try {
+                                        const updated = await api.updateCard(
+                                          projectId,
+                                          selectedCard.id,
+                                          {
+                                            assign_model: detailForm.assign_model || null,
+                                          },
+                                        );
+                                        setSelectedCard((c) => ({
+                                          ...c,
+                                          assign_model: detailForm.assign_model || null,
+                                        }));
+                                        fetchBoard();
+                                      } catch (err) {
+                                        console.error('Failed to update model override:', err);
+                                      } finally {
+                                        setSaving(false);
+                                      }
+                                    }}
+                                    disabled={saving}
+                                    className="mt-1 w-full text-xs bg-indigo-700 hover:bg-indigo-600 text-white px-3 py-1 rounded-lg transition-colors disabled:opacity-50"
+                                  >
+                                    {saving ? 'Saving…' : 'Save model override'}
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })()}
                         <button
                           onClick={() => {
                             const agent = agents.find((a) => a.name === selectedCard.assignee);
