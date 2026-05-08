@@ -163,6 +163,46 @@ describe('Sidebar — actionable session visibility', () => {
     expect(screen.queryByTestId('project-collapsed-actionable')).not.toBeInTheDocument();
     expect(screen.queryByText('Only idle session')).not.toBeInTheDocument();
   });
+
+  it('treats Resolve PR sessions with only changes_ready as non-actionable when agent is collapsed', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-resolve', name: '[Resolve PR #77] Fix thing' }],
+      activeTaskSessionIds: {},
+      changesReadyBySession: { 's-resolve': { branch: 'fix/77' } },
+    });
+    render(<Sidebar {...props} />);
+
+    expect(screen.getByText('[Resolve PR #77] Fix thing')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '▾' }));
+
+    expect(screen.queryByText('[Resolve PR #77] Fix thing')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agent-sessions-list')).not.toBeInTheDocument();
+  });
+
+  it('shows external-link control for Resolve PR sessions with changes_ready when githubRepo is set', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-resolve', name: '[Resolve PR #77] Fix thing' }],
+      activeTaskSessionIds: {},
+      changesReadyBySession: { 's-resolve': { branch: 'fix/77' } },
+      projects: [
+        {
+          id: PROJECT_ID,
+          name: 'Test Project',
+          color: '#22d3ee',
+          githubRepo: 'acme/widgets',
+          agents: [
+            { id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true },
+            { id: OTHER_AGENT_ID, name: 'Secondary Agent', color: '#a78bfa', active: true },
+          ],
+        },
+      ],
+    });
+    render(<Sidebar {...props} />);
+
+    expect(screen.getByTestId('resolve-pr-external-link')).toBeInTheDocument();
+    expect(screen.queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
+  });
 });
 
 describe('Sidebar — New Project + Import existing project CTAs', () => {

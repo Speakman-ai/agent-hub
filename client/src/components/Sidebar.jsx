@@ -10,6 +10,7 @@ import {
   Trash2,
   GitFork,
   GitPullRequest,
+  ExternalLink,
   List,
   ListOrdered,
   AlertTriangle,
@@ -25,6 +26,10 @@ import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
 import humanCron from '../../../shared/utils/humanCron.js';
+import {
+  inferPrUrlFromSessionTitle,
+  isResolvePrSessionTitle,
+} from '../../../shared/utils/sessionTitlePr.js';
 import AgentAvatar from './AgentAvatar.jsx';
 import { daysUntilPurge } from '../utils/time.js';
 import SidebarSessionOrchestration from './SidebarSessionOrchestration.jsx';
@@ -156,7 +161,8 @@ export default function Sidebar({
   // - it has a pending PR/changes ready (tracked via changesReadyBySession)
   // - (future) it's awaiting user input (requires backend `awaiting_input` flag; not yet wired)
   const isSessionActionable = (session) =>
-    !!activeTaskSessionIds[session.id] || !!changesReadyBySession[session.id];
+    !!activeTaskSessionIds[session.id] ||
+    (!!changesReadyBySession[session.id] && !isResolvePrSessionTitle(session.name));
 
   const orchestrationSession =
     currentView === 'chat' && activeSessionId
@@ -434,6 +440,13 @@ export default function Sidebar({
                                       const isRunning = !!activeTaskSessionIds[session.id];
                                       const isEditing = editingSessionId === session.id;
                                       const prReady = changesReadyBySession[session.id];
+                                      const resolvePrHref =
+                                        prReady && isResolvePrSessionTitle(session.name)
+                                          ? inferPrUrlFromSessionTitle(
+                                              session.name,
+                                              project.githubRepo,
+                                            )
+                                          : null;
                                       return (
                                         <div
                                           key={session.id}
@@ -487,42 +500,62 @@ export default function Sidebar({
                                               className="flex-1 text-xs bg-gray-700 text-gray-200 px-2 py-1.5 md:py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500 mx-1"
                                             />
                                           ) : (
-                                            <button
-                                              type="button"
-                                              onClick={() => focusSession(agent.id, session.id)}
-                                              onDoubleClick={(e) => {
-                                                e.stopPropagation();
-                                                setEditingSessionId(session.id);
-                                                setEditingSessionName(session.name);
-                                              }}
-                                              className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
-                                            >
-                                              {isRunning && (
-                                                <span
-                                                  className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
-                                                  title="Task running"
-                                                />
-                                              )}
-                                              {subagentsBySession[session.id]?.running > 0 && (
-                                                <span
-                                                  className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
-                                                  title={`${subagentsBySession[session.id].running} subagent${subagentsBySession[session.id].running === 1 ? '' : 's'} running`}
+                                            <>
+                                              {resolvePrHref && (
+                                                <button
+                                                  type="button"
+                                                  data-testid="resolve-pr-external-link"
+                                                  className="flex-shrink-0 p-1 mr-0.5 rounded text-sky-400 hover:text-sky-300 hover:bg-gray-700/50"
+                                                  title="Open existing PR on GitHub"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    window.open(
+                                                      resolvePrHref,
+                                                      '_blank',
+                                                      'noopener,noreferrer',
+                                                    );
+                                                  }}
                                                 >
-                                                  <GitFork size={10} />
-                                                  {subagentsBySession[session.id].running}
-                                                </span>
+                                                  <ExternalLink size={11} />
+                                                </button>
                                               )}
-                                              {prReady && (
-                                                <span
-                                                  data-testid="pr-ready-indicator"
-                                                  className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
-                                                  title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
-                                                >
-                                                  <GitPullRequest size={11} />
-                                                </span>
-                                              )}
-                                              <span className="truncate">{session.name}</span>
-                                            </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => focusSession(agent.id, session.id)}
+                                                onDoubleClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setEditingSessionId(session.id);
+                                                  setEditingSessionName(session.name);
+                                                }}
+                                                className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
+                                              >
+                                                {isRunning && (
+                                                  <span
+                                                    className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0"
+                                                    title="Task running"
+                                                  />
+                                                )}
+                                                {subagentsBySession[session.id]?.running > 0 && (
+                                                  <span
+                                                    className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
+                                                    title={`${subagentsBySession[session.id].running} subagent${subagentsBySession[session.id].running === 1 ? '' : 's'} running`}
+                                                  >
+                                                    <GitFork size={10} />
+                                                    {subagentsBySession[session.id].running}
+                                                  </span>
+                                                )}
+                                                {prReady && !resolvePrHref && (
+                                                  <span
+                                                    data-testid="pr-ready-indicator"
+                                                    className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
+                                                    title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
+                                                  >
+                                                    <GitPullRequest size={11} />
+                                                  </span>
+                                                )}
+                                                <span className="truncate">{session.name}</span>
+                                              </button>
+                                            </>
                                           )}
                                           {deletingSessionIds.has(session.id) ? (
                                             <span className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs animate-spin pointer-events-none">
@@ -854,6 +887,10 @@ export default function Sidebar({
                         {actionableSessions.map((session) => {
                           const isRunning = !!activeTaskSessionIds[session.id];
                           const prReady = changesReadyBySession[session.id];
+                          const resolvePrHref =
+                            prReady && isResolvePrSessionTitle(session.name)
+                              ? inferPrUrlFromSessionTitle(session.name, project.githubRepo)
+                              : null;
                           return (
                             <button
                               type="button"
@@ -872,13 +909,22 @@ export default function Sidebar({
                                   title="Task running"
                                 />
                               )}
-                              {prReady && (
+                              {prReady && !resolvePrHref && (
                                 <span
                                   data-testid="pr-ready-indicator"
                                   className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
                                   title={`PR ready to create${prReady.branch ? ` (${prReady.branch})` : ''}`}
                                 >
                                   <GitPullRequest size={11} />
+                                </span>
+                              )}
+                              {resolvePrHref && (
+                                <span
+                                  className="flex items-center text-sky-400 flex-shrink-0"
+                                  title="Existing PR — open session for GitHub link"
+                                  aria-hidden
+                                >
+                                  <ExternalLink size={11} />
                                 </span>
                               )}
                               <span className="truncate">{session.name}</span>
