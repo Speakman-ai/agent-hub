@@ -68,9 +68,9 @@ CREDS="$(aws sts assume-role \
   --query 'Credentials' \
   --output json)"
 
-export AWS_ACCESS_KEY_ID="$(echo "${CREDS}" | python3 -c "import sys,json;print(json.load(sys.stdin)['AccessKeyId'])")"
-export AWS_SECRET_ACCESS_KEY="$(echo "${CREDS}" | python3 -c "import sys,json;print(json.load(sys.stdin)['SecretAccessKey'])")"
-export AWS_SESSION_TOKEN="$(echo "${CREDS}" | python3 -c "import sys,json;print(json.load(sys.stdin)['SessionToken'])")"
+export AWS_ACCESS_KEY_ID="$(echo "${CREDS}"     | jq -r '.AccessKeyId')"
+export AWS_SECRET_ACCESS_KEY="$(echo "${CREDS}" | jq -r '.SecretAccessKey')"
+export AWS_SESSION_TOKEN="$(echo "${CREDS}"     | jq -r '.SessionToken')"
 ```
 
 After this, all `aws` calls in the shell use the assumed role until the session

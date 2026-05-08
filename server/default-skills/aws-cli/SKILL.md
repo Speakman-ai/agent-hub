@@ -37,6 +37,18 @@ All scripts require **`aws` CLI v2** on `$PATH`.
 Credentials must be configured in `~/.aws/credentials` or `~/.aws/config`
 (or via environment variables / IAM role). See `references/profiles-and-regions.md`.
 
+### jq (recommended)
+
+Some reference snippets (manual pagination loops, sorted output) pipe through
+**`jq`** for JSON filtering. Install if not already present:
+
+- macOS: `brew install jq`
+- Linux: `sudo apt-get install jq` / `sudo yum install jq`
+- Verify: `jq --version`
+
+Where `jq` is unavailable the same results can usually be achieved with
+`--query` (JMESPath) and `--output text` — see `references/jmespath-recipes.md`.
+
 ---
 
 ## Safety Model — Read-Default, Write-on-Confirm

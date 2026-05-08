@@ -43,8 +43,8 @@ aws iam list-users --no-paginate
 # First page (default max-items varies by service)
 aws ec2 describe-instances --max-items 50 --output json > page1.json
 
-# Extract the NextToken
-NEXT="$(python3 -c "import sys,json; d=json.load(open('page1.json')); print(d.get('NextToken',''))")"
+# Extract the NextToken (uses jq; alternatively: --query NextToken --output text)
+NEXT="$(jq -r '.NextToken // empty' page1.json)"
 
 # Next page
 aws ec2 describe-instances --max-items 50 --starting-token "${NEXT}" --output json > page2.json
@@ -62,15 +62,9 @@ while true; do
   fi
 
   # Process this page
-  echo "${RESULT}" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-for r in d.get('Reservations', []):
-    for i in r.get('Instances', []):
-        print(i['InstanceId'], i['State']['Name'])
-"
+  echo "${RESULT}" | jq -r '.Reservations[].Instances[] | [.InstanceId, .State.Name] | @tsv'
 
-  NEXT_TOKEN="$(echo "${RESULT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('NextToken',''))" 2>/dev/null)"
+  NEXT_TOKEN="$(echo "${RESULT}" | jq -r '.NextToken // empty' 2>/dev/null)"
   [[ -z "${NEXT_TOKEN}" ]] && break
 done
 ```
