@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
+import { safeHttpHref } from '../utils/safeHttpUrl.js';
 import ClawHubBrowser from './ClawHubBrowser.jsx';
 import McpServersSection from './McpServersSection.jsx';
 import {
@@ -126,7 +127,10 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
   const saveCredential = useCallback(
     async (spec) => {
       const val = credentialInputs[spec.name] ?? '';
-      if (spec.required && !String(val).trim()) return;
+      if (spec.required && !String(val).trim()) {
+        setCredError('This credential is required — enter a value before saving.');
+        return;
+      }
       setCredSaving(spec.name);
       setCredError(null);
       try {
@@ -273,6 +277,7 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
                   ) : (
                     credentialSchema.map((spec) => {
                       const row = rowForKey(spec.name);
+                      const docsHref = safeHttpHref(spec.docs_url);
                       const inputType =
                         spec.type === 'secret' || spec.type === 'json' ? 'password' : 'text';
                       return (
@@ -287,11 +292,11 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
                               {spec.description ? (
                                 <p className="mt-1 text-[11px] text-gray-400">{spec.description}</p>
                               ) : null}
-                              {spec.docs_url ? (
+                              {docsHref ? (
                                 <a
-                                  href={spec.docs_url}
+                                  href={docsHref}
                                   target="_blank"
-                                  rel="noreferrer"
+                                  rel="noreferrer noopener"
                                   className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300"
                                 >
                                   Documentation <ExternalLink size={11} />

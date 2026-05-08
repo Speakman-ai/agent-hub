@@ -55,4 +55,30 @@ describe('parseCredentialsDeclaration', () => {
     expect(r.credentials[0]!.type).toBe('secret');
     expect(r.credentials[0]!.required).toBe(true);
   });
+
+  it('omits docs_url when scheme is not http(s)', () => {
+    const r = parseCredentialsDeclaration([
+      { name: 'X', type: 'secret', docs_url: 'javascript:alert(1)' },
+      { name: 'Y', type: 'secret', docs_url: 'data:text/html,hi' },
+      { name: 'Z', type: 'secret', docs_url: 'file:///etc/passwd' },
+    ]);
+    expect(r.error).toBeNull();
+    expect(r.credentials[0]!.docs_url).toBeUndefined();
+    expect(r.credentials[1]!.docs_url).toBeUndefined();
+    expect(r.credentials[2]!.docs_url).toBeUndefined();
+  });
+
+  it('normalizes http(s) docs_url to href string', () => {
+    const r = parseCredentialsDeclaration([
+      { name: 'A', type: 'string', docs_url: 'https://example.com/path' },
+    ]);
+    expect(r.error).toBeNull();
+    expect(r.credentials[0]!.docs_url).toBe('https://example.com/path');
+  });
+
+  it('omits docs_url for invalid URL strings', () => {
+    const r = parseCredentialsDeclaration([{ name: 'W', type: 'secret', docs_url: 'not a url' }]);
+    expect(r.error).toBeNull();
+    expect(r.credentials[0]!.docs_url).toBeUndefined();
+  });
 });

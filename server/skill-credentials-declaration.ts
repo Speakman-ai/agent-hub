@@ -20,6 +20,20 @@ export interface ParsedCredentials {
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ALLOWED_TYPES: SkillCredentialType[] = ['string', 'secret', 'file', 'json'];
 
+/** Only http(s) absolute URLs — avoids javascript:/data: in credential doc links. */
+function normalizeCredentialDocsUrl(raw: string): string | undefined {
+  const trimmed = raw.trim().slice(0, 500);
+  if (!trimmed) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+  return parsed.href;
+}
+
 export function parseCredentialsDeclaration(raw: unknown): ParsedCredentials {
   if (raw === undefined || raw === null) {
     return { credentials: [], error: null };
@@ -59,7 +73,7 @@ export function parseCredentialsDeclaration(raw: unknown): ParsedCredentials {
     const description =
       typeof obj.description === 'string' ? obj.description.trim().slice(0, 2000) : '';
     const docsUrlRaw = typeof obj.docs_url === 'string' ? obj.docs_url.trim() : '';
-    const docs_url = docsUrlRaw ? docsUrlRaw.slice(0, 500) : undefined;
+    const docs_url = docsUrlRaw ? normalizeCredentialDocsUrl(docsUrlRaw) : undefined;
     const required = typeof obj.required === 'boolean' ? obj.required : true;
     credentials.push({
       name,

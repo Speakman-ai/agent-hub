@@ -36,7 +36,7 @@ describe('cron seed cwd', () => {
   it('uses process.cwd when defaultCwd is missing from config', async () => {
     const expected = process.cwd();
     const { getDb } = await import('../db.js');
-    const rows = getDb().prepare<{ cwd: string }>('SELECT cwd FROM crons ORDER BY id').all();
+    const rows = getDb().prepare<[], { cwd: string }>('SELECT cwd FROM crons ORDER BY id').all();
     expect(rows.length).toBeGreaterThanOrEqual(1);
     for (const r of rows) {
       expect(typeof r.cwd).toBe('string');
