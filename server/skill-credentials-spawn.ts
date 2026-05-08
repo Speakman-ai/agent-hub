@@ -3,6 +3,7 @@ import type { Project } from './types.js';
 import { listEnabledSkills } from './agent-skills-list.js';
 import { mergeDecryptedSkillCredentialsIntoEnv } from './skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from './skill-credentials-resolve.js';
+import { hasLinearApiKey } from './linear-skill-auth-resolve.js';
 
 /**
  * Injects per-user skill credential env vars for every skill currently enabled
@@ -43,6 +44,16 @@ export function mergeSkillCredentialSpawnEnv(
       allowedKeysBySkillId.set(skillId, new Set(schema.credentials.map((c) => c.name)));
     }
     mergeDecryptedSkillCredentialsIntoEnv(ownerId, skillIds, base, allowedKeysBySkillId);
+    // Emit a soft diagnostic when the linear skill is enabled but its API key
+    // is absent from the final spawn env (not stored + not in host environment).
+    if (
+      skillIds.includes('linear') &&
+      !hasLinearApiKey(base as Record<string, string | undefined>)
+    ) {
+      console.warn(
+        `TOOL_ERROR | ${new Date().toISOString()} | skill-credentials | linear | warn | LINEAR_API_KEY not configured — linear skill is enabled but the key is missing; store it via Settings → Skills → Credentials | ${JSON.stringify({ v: 2, sev: 'soft', resolution: 'none', tags: ['skill-credentials', 'linear', 'missing-key'] })}`,
+      );
+    }
   } catch (err) {
     const summary = (err as Error).message
       .replace(/[\r\n|]+/g, ' ')
