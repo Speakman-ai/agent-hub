@@ -101,7 +101,7 @@ op_die() {
 # op_redact TEXT — mask op:// references and long token-like values
 #
 # Replaces:
-#   - op://vault/item/field URIs with [redacted-op-ref]
+#   - op://vault/item/field URIs with [redacted:op-ref]
 #     (placeholder deliberately omits "op://" to avoid re-introducing the
 #      pattern into already-redacted output)
 #   - Long token-like strings (≥32 contiguous chars from [A-Za-z0-9+/=_-])
@@ -118,7 +118,7 @@ op_die() {
 op_redact() {
   local text="$1"
   # Mask op:// URIs — placeholder must not contain op:// to avoid re-triggering
-  text=$(echo "$text" | sed -E 's|op://[^ \t"]+|[redacted-op-ref]|g')
+  text=$(echo "$text" | sed -E 's|op://[^ \t"]+|[redacted:op-ref]|g')
   # Mask long token-like strings (≥32 non-space chars with mixed charset).
   # Char class matches standard base64 + URL-safe base64 (_-) + padding (=)
   # to catch ops_... Service Account tokens and similar formats.

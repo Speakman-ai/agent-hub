@@ -80,18 +80,23 @@ cmd_read() {
     ref="op://${vault}/${item}/${field}"
   fi
 
-  # Read the value — output is intentionally NOT printed to stdout here.
-  # We write it to a file descriptor so the caller can capture it, but we
-  # don't echo it in a way the model would log.
-  local value
-  value=$(op read "$ref" 2>&1) || {
-    # Redact error output in case it somehow contains the value
-    local err
-    err=$(op_redact "$value")
-    op_die "op read failed: $err"
-  }
+  # Capture stderr separately so warnings / error messages from op do not
+  # contaminate the resolved secret value on stdout. On failure, redact the
+  # captured stderr before printing it so stray secret material is masked.
+  local err_file
+  err_file=$(mktemp)
+  # shellcheck disable=SC2064  (mktemp path is fixed at creation, not expansion time)
+  trap "rm -f '$err_file'" RETURN
 
-  # Write value to stdout for capture — agent must NOT echo this to chat
+  local value
+  if ! value=$(op read "$ref" 2>"$err_file"); then
+    local err_msg
+    err_msg=$(op_redact "$(cat "$err_file")")
+    op_die "op read failed: $err_msg"
+  fi
+
+  # Write raw secret value to stdout for caller capture.
+  # The agent MUST NOT echo this to chat — pass it directly to a subprocess.
   printf '%s' "$value"
 }
 
