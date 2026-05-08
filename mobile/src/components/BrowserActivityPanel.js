@@ -42,7 +42,11 @@ export default function BrowserActivityPanel({ timelineEntries, streaming, scree
           <Text style={styles.hint}>{hint}</Text>
         </View>
       )}
-      <TouchableOpacity accessibilityRole="button" onPress={() => setOpen((v) => !v)}>
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityState={{ expanded: showDetail }}
+        onPress={() => setOpen((v) => !v)}
+      >
         <View style={styles.headerRow}>
           <Text style={styles.globeSm}>{'\uD83C\uDF10'}</Text>
           <Text style={styles.header}>
@@ -97,7 +101,9 @@ export default function BrowserActivityPanel({ timelineEntries, streaming, scree
                     />
                   ) : null}
                   {!shot && row.hasScreenshot ? (
-                    <Text style={styles.muted}>Screenshot captured (preview not available)</Text>
+                    <Text style={styles.muted}>
+                      Screenshot captured (preview too large or not synced)
+                    </Text>
                   ) : null}
                 </View>
               </View>

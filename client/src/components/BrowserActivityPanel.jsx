@@ -43,6 +43,7 @@ export default function BrowserActivityPanel({ timelineEntries, streaming, scree
       )}
       <button
         type="button"
+        aria-expanded={showDetail}
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-400 font-medium w-full text-left"
       >
