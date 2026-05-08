@@ -25,13 +25,18 @@ const STEP_LABELS = [
   'First Project',
 ];
 
-function StepIndicator({ currentStep }) {
+function StepIndicator({ currentStep, minStep = 1 }) {
   return (
     <div className="flex items-center justify-center gap-3 mb-8">
       {STEP_LABELS.map((label, i) => {
         const stepNum = i + 1;
+        // Steps before `minStep` were intentionally skipped (e.g. wizard
+        // launched from "no AI credentials" path with org already in place).
+        // Render them as already-completed so the indicator reflects the
+        // true entry point rather than implying the user can return to them.
+        const isSkipped = stepNum < minStep;
         const isActive = stepNum === currentStep;
-        const isCompleted = stepNum < currentStep;
+        const isCompleted = stepNum < currentStep || isSkipped;
         return (
           <div key={label} className="flex items-center gap-2">
             {i > 0 && (
@@ -96,8 +101,13 @@ function ToggleSwitch({ enabled, onChange }) {
   );
 }
 
-export default function SetupWizard({ onComplete, setupStatus }) {
-  const [step, setStep] = useState(1);
+export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }) {
+  // `initialStep` lets the host (App.jsx) jump the wizard to AI credentials
+  // when an org already exists but the user has no usable AI credentials
+  // (e.g. fresh sandbox reset). The minimum back-target stays pinned to
+  // `initialStep` so users can't navigate to earlier steps that were
+  // intentionally skipped.
+  const [step, setStep] = useState(initialStep);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
@@ -494,7 +504,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   return (
     <div className="fixed inset-0 z-[70] bg-gray-950 flex items-center justify-center">
       <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-8">
-        <StepIndicator currentStep={step} />
+        <StepIndicator currentStep={step} minStep={initialStep} />
 
         {/* Step 1: Welcome */}
         {step === 1 && (
@@ -1115,12 +1125,14 @@ export default function SetupWizard({ onComplete, setupStatus }) {
 
             {/* Actions */}
             <div className="flex gap-3 pt-1">
-              <button
-                onClick={() => setStep(2)}
-                className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
-              >
-                Back
-              </button>
+              {initialStep < 3 && (
+                <button
+                  onClick={() => setStep(2)}
+                  className="bg-gray-700 hover:bg-gray-600 text-gray-200 font-medium px-4 py-2.5 rounded-lg text-sm transition-colors"
+                >
+                  Back
+                </button>
+              )}
               <button
                 onClick={handleSaveAndContinue}
                 disabled={!step3CanContinue}

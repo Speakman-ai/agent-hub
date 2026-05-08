@@ -263,6 +263,11 @@ export default function App() {
   // First-run setup
   const [setupStatus, setSetupStatus] = useState(null);
   const [showSetup, setShowSetup] = useState(false);
+  // When the wizard is triggered specifically because the user has no AI
+  // credentials (rather than because this is a true first-run install), we
+  // jump straight to the AI-credentials step and hide Back below it. Org +
+  // Welcome are skipped because the org already exists. See App init below.
+  const [setupInitialStep, setSetupInitialStep] = useState(1);
   // Full-screen "Connecting…" only until org migration + org list + setup probe.
   // Project/session data loads in the main layout (sidebar shows its own spinner).
   const [initializing, setInitializing] = useState(true);
@@ -1841,6 +1846,22 @@ export default function App() {
       }
 
       // Step 2: Check setup status
+      //
+      // Two triggers for the SetupWizard, in priority order:
+      //
+      //   1. **No AI credentials.** If the current user has zero usable AI
+      //      engines (per-user Claude OR host-level Claude/Cursor/Codex), the
+      //      wizard is shown unconditionally — they can't spawn an agent
+      //      without picking one of the three. This catches the
+      //      sandbox-reset case where orgs and a default user already exist
+      //      but `auth.json`/host CLIs were wiped. Without it, init falls
+      //      through to the project picker and the user has no obvious
+      //      route to the credentials UI.
+      //   2. **First run.** Brand-new install with no projects yet. We split
+      //      on `getOrgs()`: with no orgs we walk the full wizard (welcome →
+      //      org → creds → github → first project); with orgs already
+      //      present we open the adaptive project wizard, since this is
+      //      typically a returning user adding their first project.
       try {
         const statusRes = await fetch(`${getApiBase()}/setup/status`, {
           headers: getAuthHeaders(),
@@ -1848,8 +1869,15 @@ export default function App() {
         });
         const status = await statusRes.json();
         setSetupStatus(status);
-        if (status.firstRun) {
+        if (status.hasAnyAiCredentials === false) {
+          // If an org already exists, skip Welcome + Organization and land
+          // directly on the AI-credentials step. With no orgs (true greenfield)
+          // we still want the full wizard.
+          setSetupInitialStep(getOrgs() ? 3 : 1);
+          setShowSetup(true);
+        } else if (status.firstRun) {
           if (!getOrgs()) {
+            setSetupInitialStep(1);
             setShowSetup(true);
           } else {
             openAdaptiveProjectWizard();
@@ -3681,8 +3709,10 @@ export default function App() {
         {showSetup && setupStatus && (
           <SetupWizard
             setupStatus={setupStatus}
+            initialStep={setupInitialStep}
             onComplete={() => {
               setShowSetup(false);
+              setSetupInitialStep(1);
               openAdaptiveProjectWizard();
             }}
           />
