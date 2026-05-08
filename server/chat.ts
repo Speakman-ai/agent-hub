@@ -1042,6 +1042,54 @@ export function mergePendingContextWithCap(
   return `${body}${truncatedMarker}`.trim();
 }
 
+/** Shape returned by {@link ChatHandlerDeps.resolveSlashSkill} (success or error). */
+export interface SlashSkillResolveShape {
+  error?: string;
+  skillName?: string;
+  userArgs?: string;
+}
+
+export interface SlashSkillTurnAugmentation {
+  slashSkillSuffix: string;
+  cliContent: string;
+}
+
+/**
+ * Slash `/skillId` turns: inject skill body via `loadSkillByName` into the
+ * enriched prompt suffix, and pass only the user args to the CLI as
+ * `cliContent` (no legacy `<skill>` XML). Kept exported for regression
+ * tests — `createChatHandler` delegates here.
+ */
+export function augmentChatTurnForSlashSkill(args: {
+  slashResult: SlashSkillResolveShape | null;
+  project: Project;
+  agent: Agent;
+  sessionId: string;
+  stmts: Stmts;
+  broadcast: BroadcastFn;
+  isAutoContinuation: boolean;
+  content: string;
+}): SlashSkillTurnAugmentation {
+  const { slashResult, project, agent, sessionId, stmts, broadcast, isAutoContinuation, content } =
+    args;
+  let cliContent = content;
+  let slashSkillSuffix = '';
+  if (slashResult && !slashResult.error && slashResult.skillName && !isAutoContinuation) {
+    const userArgs = slashResult.userArgs || 'Please use this skill as instructed.';
+    const slashSkillsDir = resolveWorkspaceSkillsDir(project, agent);
+    slashSkillSuffix = `\n\n${loadSkillByName({
+      name: slashResult.skillName,
+      reason: 'slash-command',
+      paths: { skillsDir: slashSkillsDir },
+      sessionId,
+      stmts,
+      broadcast,
+    })}`;
+    cliContent = userArgs;
+  }
+  return { slashSkillSuffix, cliContent };
+}
+
 // ─── createChatHandler (factory) ───────────────────────────────────
 
 export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerResult {
@@ -1431,20 +1479,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const engine: string = session!.engine || 'claude-code';
     const model: string = session!.model || DEFAULT_MODEL;
     const paths = resolveProjectPaths(project as Project, agent as Agent);
-    let slashSkillSuffix = '';
-    if (slashResult && !slashResult.error && slashResult.skillName && !isAutoContinuation) {
-      const args = slashResult.userArgs || 'Please use this skill as instructed.';
-      const slashSkillsDir = resolveWorkspaceSkillsDir(project, agent);
-      slashSkillSuffix = `\n\n${loadSkillByName({
-        name: slashResult.skillName,
-        reason: 'slash-command',
-        paths: { skillsDir: slashSkillsDir },
-        sessionId,
-        stmts: stmts as Stmts,
-        broadcast,
-      })}`;
-      cliContent = args;
-    }
+    const slashAug = augmentChatTurnForSlashSkill({
+      slashResult,
+      project: project as Project,
+      agent: agent as Agent,
+      sessionId,
+      stmts: stmts as Stmts,
+      broadcast,
+      isAutoContinuation,
+      content,
+    });
+    const slashSkillSuffix = slashAug.slashSkillSuffix;
+    cliContent = slashAug.cliContent;
 
     let routedSkillSuffix = '';
     const loadedRoutedSkillIds = new Set<string>();
