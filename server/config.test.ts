@@ -70,17 +70,14 @@ describe('config.ts — TEST_MODE safety rail', () => {
   });
 });
 
-describe('config.ts ↔ cursor-agent install parity', () => {
-  // Guards the coupling between the server's cursorBin default and the
-  // provisioning / deploy steps that install the Cursor CLI. If someone
-  // flips one without the other, sessions with engine=cursor-agent fail
-  // to spawn on freshly provisioned EC2 boxes with a cryptic ENOENT —
-  // this test catches it early.
+describe('config.ts ↔ cursor-agent + codex CLI install parity', () => {
+  // Guards coupling between server defaults / spawn paths and provisioning that
+  // installs Cursor Agent + Codex on EC2 (ENOENT on missing CLIs).
   //
-  // Covers three rollout paths:
-  //   1. scripts/ensure-cursor-agent.sh — invoked on every deploy
-  //   2. ops/terraform/bootstrap*.sh.tftpl — EC2 user_data (templatefile)
-  //   3. The three deploy workflows that call the script
+  // Rollout paths:
+  //   1. scripts/ensure-cursor-agent.sh + scripts/ensure-codex.sh — deploy workflows
+  //   2. ops/terraform/bootstrap*.sh.tftpl + agent-hub-user-data.tftpl
+  //   3. GitHub deploy workflows (SSM inner script)
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const repoRoot = path.resolve(__dirname, '..');
@@ -92,6 +89,8 @@ describe('config.ts ↔ cursor-agent install parity', () => {
     'bootstrap-minimal.sh.tftpl',
   );
   const installScript = path.join(repoRoot, 'scripts', 'ensure-cursor-agent.sh');
+  const codexInstallScript = path.join(repoRoot, 'scripts', 'ensure-codex.sh');
+  const userDataTpl = path.join(repoRoot, 'ops', 'terraform', 'agent-hub-user-data.tftpl');
 
   it('cursorBin default tracks the installer-managed path ($HOME/.local/bin/agent)', async () => {
     vi.resetModules();
@@ -124,6 +123,27 @@ describe('config.ts ↔ cursor-agent install parity', () => {
     expect(minimalTpl).toMatch(installerRe);
   });
 
+  it('Terraform bootstrap templates install @openai/codex on the host', () => {
+    const dockerTpl = fs.readFileSync(terraformBootstrapDocker, 'utf8');
+    const minimalTpl = fs.readFileSync(terraformBootstrapMinimal, 'utf8');
+    const ud = fs.readFileSync(userDataTpl, 'utf8');
+    const codexRe = /npm\s+install\s+-g\s+@openai\/codex/;
+    expect(dockerTpl).toMatch(codexRe);
+    expect(minimalTpl).toMatch(codexRe);
+    expect(ud).toMatch(codexRe);
+  });
+
+  it('scripts/ensure-codex.sh installs via npm and symlinks into ~/.local/bin', () => {
+    const script = fs.readFileSync(codexInstallScript, 'utf8');
+    expect(script).toMatch(/@openai\/codex/);
+    expect(script).toMatch(/\.local\/bin\/codex/);
+  });
+
+  it('Terraform agent-hub-user-data invokes ensure-codex on PM2 bootstrap', () => {
+    const ud = fs.readFileSync(userDataTpl, 'utf8');
+    expect(ud).toMatch(/ensure-codex\.sh/);
+  });
+
   it('all three deploy workflows invoke scripts/ensure-cursor-agent.sh', () => {
     const workflows = [
       path.join(repoRoot, '.github', 'workflows', 'deploy-dev.yml'),
@@ -134,6 +154,9 @@ describe('config.ts ↔ cursor-agent install parity', () => {
       const body = fs.readFileSync(wf, 'utf8');
       expect(body, `${path.basename(wf)} should invoke ensure-cursor-agent.sh`).toMatch(
         /scripts\/ensure-cursor-agent\.sh/,
+      );
+      expect(body, `${path.basename(wf)} should invoke ensure-codex.sh`).toMatch(
+        /scripts\/ensure-codex\.sh/,
       );
     }
   });

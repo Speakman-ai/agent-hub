@@ -99,6 +99,10 @@ RUN npm install -g @anthropic-ai/claude-code
 # See https://geminicli.com/docs/ for install + auth details.
 RUN npm install -g @google/gemini-cli
 
+# OpenAI Codex CLI — places `codex` on npm's global PATH (`/usr/local/bin` on
+# official Node images), matching `codexBin` static fallback in server/config.ts.
+RUN npm install -g @openai/codex
+
 WORKDIR /app
 
 # Copy built node_modules and source from build stage
@@ -113,8 +117,14 @@ COPY --from=client-build /app/client/dist ./client/dist
 # Set up data volume and uploads
 RUN mkdir -p /data /app/uploads && chown -R node:node /data /app/uploads /app
 
-# Install Playwright Chromium as the node user
+# Cursor Agent CLI — official installer drops the `agent` symlink at
+# ~/.local/bin/agent; config.ts defaults cursorBin there for HOME=/home/node so
+# Settings auth flows work without manual path overrides. Install URL:
+# https://cursor.com/docs/cli/installation
 USER node
+RUN curl -fsSL https://cursor.com/install | bash
+
+# Install Playwright Chromium as the node user
 RUN npx --yes playwright install chromium
 
 ENV AGENT_HUB_DATA_DIR=/data

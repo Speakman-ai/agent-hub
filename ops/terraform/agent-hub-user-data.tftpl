@@ -230,6 +230,9 @@ usermod -aG docker ${app_user} || true
 sudo -H -u ${app_user} bash -c 'curl -fsSL https://cursor.com/install | bash' \
   || echo "cursor-agent host install failed (server still works in container)" >&2
 
+npm install -g @openai/codex \
+  || echo "codex CLI host install failed (server still works in container)" >&2
+
 # SSM agent safety net (preinstalled on AL2023-ECS and Ubuntu EC2 already).
 if [ ! -x /usr/bin/amazon-ssm-agent ] && [ ! -x /snap/bin/amazon-ssm-agent ] && [ ! -d /usr/lib/ssh/ssm ]; then
   curl -fSsL "${ssm_deb_url}" -o /tmp/ssm.deb 2>/dev/null \
@@ -457,7 +460,7 @@ cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped 
 %{ endif ~}
 
 %{ if use_pm2_bootstrap ~}
-sudo -H -u ${app_user} bash -c "set -e; cd $REPO_DIR; if [ -x scripts/ensure-cursor-agent.sh ]; then bash scripts/ensure-cursor-agent.sh; fi"
+sudo -H -u ${app_user} bash -c "set -e; cd $REPO_DIR; if [ -x scripts/ensure-cursor-agent.sh ]; then bash scripts/ensure-cursor-agent.sh; fi; if [ -x scripts/ensure-codex.sh ]; then bash scripts/ensure-codex.sh; fi"
 sudo -H -u ${app_user} bash -c "set -e; cd $REPO_DIR; npm install --include=dev; (cd server && npm install --include=dev); (cd client && npm install --include=dev && npm run build)"
 mkdir -p /home/${app_user}/.pm2
 chown -R ${app_user}:${app_user} /home/${app_user}/.pm2
