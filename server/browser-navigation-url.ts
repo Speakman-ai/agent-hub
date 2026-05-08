@@ -3,7 +3,13 @@
  *
  * Blocks non-http(s) schemes, credentials-in-URL, loopback, RFC1918,
  * link-local / metadata-style targets, and obvious IPv6 equivalents.
- * This is URL-string policy only — it cannot defeat DNS rebinding.
+ *
+ * Limits (URL-string policy only):
+ * - Cannot defeat DNS rebinding: a public hostname may later resolve to an
+ *   internal address after validation.
+ * - HTTP redirects: `browser-tools` applies the same rules to each main-frame
+ *   document request via CDP Fetch when available, and validates the committed
+ *   `page.url()` after navigation as a backstop.
  */
 
 import { isIPv4, isIPv6 } from 'node:net';

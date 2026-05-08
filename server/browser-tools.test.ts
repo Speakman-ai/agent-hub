@@ -319,6 +319,16 @@ describe('browser-tools — direct helpers', () => {
     expect(page.goto).not.toHaveBeenCalled();
   });
 
+  it('browserNavigate rejects disallowed committed URL after goto', async () => {
+    const page = makeMockPage();
+    page.goto.mockResolvedValueOnce(null);
+    vi.spyOn(page, 'url').mockReturnValue('http://127.0.0.1/after-redirect');
+    const sh = asV3(makeMockStagehand(page));
+    const r = await browserNavigate(sh, 'https://example.com/');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/landed on a disallowed URL/i);
+  });
+
   it('browserWaitFixed networkidle vs selector', async () => {
     const page = makeMockPage();
     const sh = asV3(makeMockStagehand(page));

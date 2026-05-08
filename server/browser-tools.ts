@@ -207,6 +207,63 @@ function getActivePage(stagehand: V3) {
   return page;
 }
 
+/** Minimal CDP session shape (Stagehand Page keeps `mainSession` private). */
+type CdpSessionLike = {
+  send(method: string, params?: object): Promise<unknown>;
+  on(event: string, handler: (params: unknown) => void): void;
+  off(event: string, handler: (params: unknown) => void): void;
+};
+
+type PageWithMainSession = { mainSession?: CdpSessionLike };
+
+/**
+ * Pause main-frame document requests during navigation and apply
+ * {@link validateBrowserNavigationUrl} so redirect targets cannot bypass policy.
+ * Best-effort: if Fetch cannot be enabled, only post-navigation URL checks apply.
+ */
+async function withDocumentNavigationUrlPolicy(
+  stagehand: V3,
+  run: () => Promise<void>,
+): Promise<void> {
+  const page = getActivePage(stagehand);
+  const ms = (page as unknown as PageWithMainSession).mainSession;
+  if (!ms?.send || !ms?.on || !ms?.off) {
+    await run();
+    return;
+  }
+  const handler = (raw: unknown) => {
+    const params = raw as { requestId: string; request: { url: string; resourceType: string } };
+    const { requestId, request } = params;
+    const continueReq = () => {
+      void ms.send('Fetch.continueRequest', { requestId }).catch(() => {});
+    };
+    if (request.resourceType !== 'Document') {
+      continueReq();
+      return;
+    }
+    const next = validateBrowserNavigationUrl(request.url);
+    if (!next.ok) {
+      void ms
+        .send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' })
+        .catch(() => {});
+      return;
+    }
+    continueReq();
+  };
+  try {
+    await ms.send('Fetch.enable', {
+      patterns: [{ urlPattern: '*', requestStage: 'Request' }],
+    });
+    ms.on('Fetch.requestPaused', handler);
+    await run();
+  } catch {
+    await run();
+  } finally {
+    ms.off('Fetch.requestPaused', handler);
+    await ms.send('Fetch.disable').catch(() => {});
+  }
+}
+
 export function resolveStagehandModelName(): string {
   const fromEnv = process.env.STAGEHAND_MODEL?.trim();
   if (fromEnv) return fromEnv;
@@ -245,9 +302,21 @@ export async function browserNavigate(stagehand: V3, url: string): Promise<Brows
   }
   try {
     const page = getActivePage(stagehand);
-    const res = await page.goto(policy.href, { waitUntil: 'load', timeoutMs: 30_000 });
-    void res;
-    return result('navigate', true, { url: page.url() });
+    await withDocumentNavigationUrlPolicy(stagehand, async () => {
+      const res = await page.goto(policy.href, { waitUntil: 'load', timeoutMs: 30_000 });
+      void res;
+    });
+    const finalUrl = page.url();
+    const landed = validateBrowserNavigationUrl(finalUrl);
+    if (!landed.ok) {
+      return result(
+        'navigate',
+        false,
+        undefined,
+        `Navigation landed on a disallowed URL: ${landed.error}`,
+      );
+    }
+    return result('navigate', true, { url: finalUrl });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return result('navigate', false, undefined, msg);
@@ -473,7 +542,8 @@ export async function runBrowserReActStep(
     const display = shrinkBrowserToolResultForMarkdown(r);
     const lines = [`## ${title}`, '', '```json', JSON.stringify(display, null, 2), '```'];
     if (r.ok && r.imageBase64) {
-      lines.push('', `![screenshot](data:image/png;base64,${r.imageBase64})`);
+      const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
+      lines.push('', `![screenshot](data:${mime};base64,${r.imageBase64})`);
     }
     return lines.join('\n');
   };
