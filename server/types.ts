@@ -1821,6 +1821,15 @@ export interface ChatMessage {
    * itself is somehow misconfigured without role === 'intake'.
    */
   _reroutedFromBugReport?: boolean;
+  /**
+   * Set to true when this message was dispatched by
+   * `POST /api/projects/:projectId/board/cards/:cardId/assign`. The bug-report
+   * reroute guard treats explicit user-driven assigns as authoritative — the
+   * chosen assignee owns the card even if its description happens to embed a
+   * `## Bug Report` header that would otherwise trip the heuristic. See
+   * `server/bug-report-reroute.ts`.
+   */
+  _fromBoardAssign?: boolean;
   hookSpecificOutput?: { sessionTitle?: string; [key: string]: unknown };
   /**
    * Additional environment variables to inject into the spawned CLI process.

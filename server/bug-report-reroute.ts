@@ -18,16 +18,24 @@ import type { Agent, Project } from './types.js';
  * Detect whether a chat message body is a bug-report payload produced by
  * `buildBugReportPrompt` (or any client pasting the same structured header).
  *
- * Matches the literal header emitted at the top of the prompt:
+ * Matches the literal header at the **start** of the body:
  *   "## Bug Report"
  *
- * We only inspect the first ~500 chars so a long body with an incidental
- * header later on isn't treated as one.
+ * Leading whitespace (newlines, spaces) before the header is tolerated so a
+ * payload with a couple of blank leading lines still routes correctly. The
+ * regex is intentionally **not** multiline — anchoring on the head of the
+ * string prevents a `## Bug Report` line buried inside another markdown
+ * envelope (e.g. the `# Task: …\n## Description\n<card.description>` envelope
+ * built by `POST /board/cards/:cardId/assign`) from triggering an unwanted
+ * reroute. See card e1e519d9 / PR linked from there for the full failure mode.
+ *
+ * We only inspect the first ~500 chars to keep the regex bounded — a head
+ * that long is already plenty for the canonical structured header.
  */
 export function isBugReportPayload(content: string): boolean {
   if (typeof content !== 'string' || content.length === 0) return false;
   const head = content.slice(0, 500);
-  return /^\s*##\s+Bug Report\b/m.test(head);
+  return /^\s*##\s+Bug Report\b/.test(head);
 }
 
 /**
@@ -54,15 +62,20 @@ export function extractBugReportTitle(content: string): string | null {
  *   - the message has not already been rerouted once (avoids loops)
  *   - the message is not being replayed from the per-session queue (queue
  *     replays go to their original agent; reroute happens on first arrival)
+ *   - the message did not originate from `POST /board/cards/:cardId/assign`
+ *     (an explicit user action — respect the chosen assignee even if the
+ *     card description happens to embed a `## Bug Report` header in some
+ *     pathological way the head-anchored regex still matches)
  */
 export function resolveBugReportReroute(
   project: Project,
   addressedAgent: Agent,
   content: string,
-  flags: { fromQueue?: boolean; alreadyRerouted?: boolean } = {},
+  flags: { fromQueue?: boolean; alreadyRerouted?: boolean; fromBoardAssign?: boolean } = {},
 ): Agent | null {
   if (flags.fromQueue) return null;
   if (flags.alreadyRerouted) return null;
+  if (flags.fromBoardAssign) return null;
   if (addressedAgent.role === 'intake') return null;
   if (!isBugReportPayload(content)) return null;
   const intake = (project.agents || []).find((a) => a.role === 'intake');
