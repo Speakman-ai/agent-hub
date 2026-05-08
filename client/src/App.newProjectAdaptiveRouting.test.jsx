@@ -242,4 +242,30 @@ describe('App — "+ New Project" CTA routes to adaptive flow', () => {
     // Sidebar should reflect the kanban view
     expect(screen.getByTestId('sidebar-mock').dataset.currentView).toBe('kanban:proj-2');
   });
+
+  it('routes to import wizard when onProjectCreated fires with action:"import"', async () => {
+    render(<App />);
+
+    await waitFor(() => expect(typeof globalThis.__ahNewProjectCTA).toBe('function'), {
+      timeout: 3000,
+    });
+
+    await act(async () => {
+      globalThis.__ahNewProjectCTA();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('adaptive-flow-mock')).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      globalThis.__ahAdaptiveOnProjectCreated({
+        action: 'import',
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('adaptive-flow-mock')).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId('legacy-wizard-mock')).toBeInTheDocument();
+  });
 });
