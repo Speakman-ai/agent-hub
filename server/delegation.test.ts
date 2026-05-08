@@ -18,18 +18,24 @@ vi.mock('child_process', () => ({
 }));
 
 // buildSpawnEnv pokes a few env-sensitive helpers — stub to a bare object.
-vi.mock('./config.js', () => ({
-  buildSpawnEnv: vi.fn(() => ({})),
-  defaultModelForEngine: vi.fn((engine: string) =>
-    engine === 'cursor-agent'
-      ? 'gpt-default'
-      : engine === 'codex-cli'
-        ? 'gpt-5.3-codex'
-        : engine === 'gemini-cli'
-          ? 'gemini-2.5-pro'
-          : 'claude-default',
-  ),
-}));
+// Must retain the real default export: delegation pulls agent-skills-list → db,
+// and db initializes from `config.default.dataDir` at module load.
+vi.mock('./config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./config.js')>();
+  return {
+    ...actual,
+    buildSpawnEnv: vi.fn(() => ({})),
+    defaultModelForEngine: vi.fn((engine: string) =>
+      engine === 'cursor-agent'
+        ? 'gpt-default'
+        : engine === 'codex-cli'
+          ? 'gpt-5.3-codex'
+          : engine === 'gemini-cli'
+            ? 'gemini-2.5-pro'
+            : 'claude-default',
+    ),
+  };
+});
 
 vi.mock('./codex-auth.js', () => ({
   detectCodexAuthMode: vi.fn(() => ({

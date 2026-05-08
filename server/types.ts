@@ -110,6 +110,13 @@ export interface CronRow {
    * write.
    */
   model: string | null;
+  /**
+   * When set, identifies the project agent whose enabled skills and per-skill
+   * overrides determine spawn credential injection for this cron. Null → use
+   * `project.cronSkillPrincipalAgentId` if valid, otherwise the sole agent when
+   * the project has exactly one agent (`server/cron-skill-principal.ts`).
+   */
+  skill_principal_agent_id: string | null;
   created_at: string;
 }
 
@@ -1490,6 +1497,12 @@ export interface Project {
   browserViewportHeight?: number;
   /** Default page-load / browser-op timeout in ms for agents that do not override. */
   browserPageLoadTimeoutMs?: number;
+  /**
+   * Agent id whose skill toggles apply to scheduled cron runs when the cron row’s
+   * `skill_principal_agent_id` is unset. Unused for single-agent projects (they
+   * default to that agent automatically). Persisted in `projects.json`.
+   */
+  cronSkillPrincipalAgentId?: string;
   agents: Agent[];
   [key: string]: unknown;
 }
@@ -1929,6 +1942,7 @@ export interface RouteDeps {
     transcript: string,
     options: { engine: string; model?: string; cwd?: string },
     config: AppConfig,
+    skillCredentialMerge?: { ownerId: string | null; agentId: string; project: Project },
   ) => Promise<string>;
   DEFAULT_MODEL: string;
   activeProcesses: Map<string, import('child_process').ChildProcess>;

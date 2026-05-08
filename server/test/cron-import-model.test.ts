@@ -15,14 +15,9 @@ beforeAll(async () => {
  * Both `POST /api/projects/:projectId/import` (v3 project export) and
  * `POST /api/config/import` (legacy v1/v2 export) call
  * `stmts.createCron.run(...)` directly. When the prepared statement gained
- * the 9th `model` column, those two call sites were initially missed —
- * better-sqlite3 throws `RangeError: Too few parameter values were provided`
- * at runtime, so a single cron in the payload would 500 the whole import.
- *
- * These tests pin both endpoints to the 9-arg signature and assert that
- * `model` is validated through `normalizeCronModel`: valid ids round-trip,
- * unknown ids quietly fall back to null (engine default) instead of
- * blowing up the batch, and crons missing the field still import cleanly.
+ * the 10th `skill_principal_agent_id` column alongside `model`, import call
+ * sites must stay arity-matched — better-sqlite3 throws `RangeError: Too few
+ * parameter values were provided` otherwise.
  */
 describe('config import: cron `model` field', () => {
   const validModels = config.engineValidModels['claude-code'] || [];
@@ -36,7 +31,7 @@ describe('config import: cron `model` field', () => {
   });
 
   describe('POST /api/config/import (legacy v1/v2)', () => {
-    it('imports a cron with a valid model id (9-arg createCron signature)', async () => {
+    it('imports a cron with a valid model id (10-arg createCron signature)', async () => {
       const cronName = `import-valid-${Math.random().toString(36).slice(2, 8)}`;
       const res = await request
         .post('/api/config/import')
@@ -123,7 +118,7 @@ describe('config import: cron `model` field', () => {
       return project.id as string;
     }
 
-    it('imports a cron with a valid model id (9-arg createCron signature)', async () => {
+    it('imports a cron with a valid model id (10-arg createCron signature)', async () => {
       const projectId = await someProjectId();
       const cronName = `pimport-valid-${Math.random().toString(36).slice(2, 8)}`;
 

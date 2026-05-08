@@ -17,6 +17,9 @@ import { trackChild, killProcessGroup } from './process-groups.js';
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { buildSpawnEnv } from './config.js';
+import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
+import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
 import { createStreamParser } from './stream-parser.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
@@ -301,7 +304,20 @@ export async function handleDesignChat(
     let spawnErrored = false;
     let codexThreadPersisted = !!(engine === 'codex-cli' && design.engine_session_id);
 
-    const spawnEnv = { ...buildSpawnEnv(config), AGENT_HUB_SESSION_ID: `design:${designId}` };
+    const spawnEnv = {
+      ...buildSpawnEnv(config),
+      AGENT_HUB_SESSION_ID: `design:${designId}`,
+    } as NodeJS.ProcessEnv;
+    const designOwnerId =
+      getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
+    const linkedProject = design.linkedProjects?.[0];
+    if (linkedProject && designOwnerId) {
+      mergeSkillCredentialSpawnEnv(spawnEnv, {
+        ownerId: designOwnerId,
+        agentId: DESIGN_SKILL_PRINCIPAL_AGENT_ID,
+        project: linkedProject,
+      });
+    }
 
     const finalTextOut = await new Promise<string>((resolve, reject) => {
       const timeout = config.defaultTimeoutMs;

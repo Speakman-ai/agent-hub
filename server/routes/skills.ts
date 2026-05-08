@@ -14,7 +14,8 @@ import {
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
-import type { RouteDeps, SkillRegistryRow, AgentSkillOverrideRow, Project } from '../types.js';
+import type { RouteDeps, SkillRegistryRow, AgentSkillOverrideRow } from '../types.js';
+import { extractCredentialsFromSkillContent } from '../skill-credentials-resolve.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
@@ -29,7 +30,7 @@ interface SkillFrontmatter {
   content: string;
 }
 
-interface SkillInfo {
+export interface SkillInfo {
   id: string;
   name: string;
   description: string;
@@ -218,21 +219,35 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
         if (!existsSync(skillMd)) return res.status(404).json({ error: 'SKILL.md not found' });
         const raw = readFileSync(skillMd, 'utf-8');
         const { data } = matter(raw);
+        const credPack = extractCredentialsFromSkillContent(raw);
+        if (credPack.error) {
+          return res.status(400).json({
+            error: `invalid credentials in SKILL.md frontmatter: ${credPack.error}`,
+          });
+        }
         res.json({
           id: req.params.skillId,
           name: (data.name as string) || req.params.skillId,
           description: (data.description as string) || '',
           content: raw,
           path: skillPath,
+          credentials: credPack.credentials,
         });
       } else if (existsSync(skillPath)) {
         const raw = readFileSync(skillPath, 'utf-8');
+        const credPackFlat = extractCredentialsFromSkillContent(raw);
+        if (credPackFlat.error) {
+          return res.status(400).json({
+            error: `invalid credentials in SKILL.md frontmatter: ${credPackFlat.error}`,
+          });
+        }
         res.json({
           id: req.params.skillId,
           name: (req.params.skillId as string).replace('.md', ''),
           description: '',
           content: raw,
           path: skillPath,
+          credentials: credPackFlat.credentials,
         });
       } else {
         const defaultPath = path.join(DEFAULT_SKILLS_DIR, req.params.skillId as string);
@@ -241,12 +256,19 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
           if (existsSync(skillMd)) {
             const raw = readFileSync(skillMd, 'utf-8');
             const { data } = matter(raw);
+            const credPackDef = extractCredentialsFromSkillContent(raw);
+            if (credPackDef.error) {
+              return res.status(400).json({
+                error: `invalid credentials in SKILL.md frontmatter: ${credPackDef.error}`,
+              });
+            }
             return res.json({
               id: req.params.skillId,
               name: (data.name as string) || req.params.skillId,
               description: (data.description as string) || '',
               content: raw,
               path: defaultPath,
+              credentials: credPackDef.credentials,
             });
           }
         }
@@ -289,6 +311,12 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
         req.body;
       if (!name) return res.status(400).json({ error: 'name is required' });
       const skillId = id || (name as string).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const credCheck = extractCredentialsFromSkillContent((content as string) ?? '');
+      if (credCheck.error) {
+        return res.status(400).json({
+          error: `invalid credentials in SKILL.md frontmatter: ${credCheck.error}`,
+        });
+      }
       stmts.createSkillRegistryItem.run(
         skillId,
         name,
@@ -404,6 +432,13 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
       const response = await fetch(rawUrl);
       if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
       const content = await response.text();
+
+      const credImport = extractCredentialsFromSkillContent(content);
+      if (credImport.error) {
+        return res.status(400).json({
+          error: `invalid credentials in SKILL.md frontmatter: ${credImport.error}`,
+        });
+      }
 
       const { data } = matter(content);
       const name = (data.name as string) || path.basename(url).replace('.md', '');

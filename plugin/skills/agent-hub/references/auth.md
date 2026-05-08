@@ -18,6 +18,7 @@ Back to [SKILL.md](../SKILL.md).
 - [Config locations](#config-locations)
 - [Endpoints at a glance](#endpoints-at-a-glance)
 - [Per-user Claude credentials](#per-user-claude-credentials)
+- [Per-user skill credentials](#per-user-skill-credentials)
 - [JWT `uid` claim & pre-migration fallback](#jwt-uid-claim--pre-migration-fallback)
 - [Rate limiting — `trust proxy` is coupled to the proxy topology](#rate-limiting--trust-proxy-is-coupled-to-the-proxy-topology)
 
@@ -141,6 +142,9 @@ Prefix everything with `/api/auth`. All require auth unless flagged
 | `POST /invites/:token/accept`                  | **public**   | redeem invite (per-IP rate-limited)      |
 | `GET  /me/claude-auth`                         | any          | masked per-user Claude credentials       |
 | `PUT  /me/claude-auth`                         | any          | upsert per-user Claude credentials       |
+| `GET  /me/skill-credentials`                   | any          | masked per-user skill secrets (optional `?skillId=`) |
+| `PUT  /me/skill-credentials`                   | any          | upsert one skill credential key (schema-enforced)    |
+| `DELETE /me/skill-credentials/:id`             | any          | revoke a stored skill credential row                 |
 | `POST /keys`                                   | any          | create per-user `ahub_*` API key (token returned ONCE) |
 | `GET  /keys`                                   | any          | list caller's active API keys (no token) |
 | `DELETE /keys/:id`                             | any          | revoke an API key the caller owns        |
@@ -200,6 +204,71 @@ missing (apiKey-only callers + local-bundled-server bypass) and `404`
 when the user row is unknown. Encryption-at-rest is tracked as a
 follow-up — credentials currently sit on the users row in plaintext,
 mirroring the existing `github_user_token` precedent.
+
+## Per-user skill credentials
+
+Third-party tokens for **installed skills** (Linear, GitHub PAT, etc.) live
+in a dedicated store — not on the `users` row — so operators are not
+tempted to paste secrets into chat or kanban cards.
+
+**Declaration.** Each skill may list keys under a `credentials:` array in
+**SKILL.md** frontmatter (`name`, `label`, `description`, `required`,
+`type`, `docs_url`). Registry import and `POST /api/skills/registry`
+reject malformed blocks.
+
+**Schema resolution (`PUT` validation).** The request body must include **`agent_id`**
+(the agent whose Skills panel issued the save). The server resolves the skill's
+`credentials:` block using **only that agent's project workspace**
+`{project.ahw}/skills/{skill_id}` (directory + `SKILL.md`, or legacy flat `.md`),
+**then** bundled `server/default-skills/{skill_id}/SKILL.md`, **then** the
+matching `skill_registry` row — the same order as
+`GET /api/agents/:agentId/skills/:skillId`. Hydrated `project.ahw` comes from
+the in-memory projects list (typically `<dataDir>/persist/projects/<id>`). This
+avoids ambiguous “first matching workspace across all projects” behavior on
+multi-project hosts.
+
+**Optional keys.** When a credential is `required: false`, an **empty or
+whitespace-only** `value` yields **no DB row** if none exists yet — the
+handler responds with `{ skipped: true, credential: null }`.
+
+**Storage & crypto.** Rows in `orgs.db` table `user_skill_credentials`
+(`user_skill_credential_audit` for `upsert` / `delete`). Ciphertext uses
+`encryptSecret` / `decryptSecret` from `server/pr-env-store.ts` (same
+AES-256-GCM key file as PR-env tier-2 secrets).
+
+**REST surface** (all under `/api/auth`, JWT required — `authUserId` must
+be present; global `x-api-key` break-glass alone returns **401**):
+
+| Endpoint | Method | Purpose |
+| -------- | ------ | ------- |
+| `/me/skill-credentials` | GET | `{ credentials: [...] }` — `masked_preview`, timestamps; filter with `?skillId=` |
+| `/me/skill-credentials` | PUT | Body `{ skill_id, key_name, value, agent_id }` — `key_name` must appear in the schema for that skill as resolved for **that** agent (see above) |
+| `/me/skill-credentials/:id` | DELETE | Hard-delete the row |
+
+**Spawn merge.** `mergeSkillCredentialSpawnEnv` in
+`server/skill-credentials-spawn.ts` decrypts stored values and merges them
+into the child `env` for every **enabled** skill for that agent (project +
+bundled defaults, honouring per-agent disable overrides). Keys already set in
+the resolved env are **not** overwritten. Call sites:
+
+| Surface | Call path | Whose credential rows (`user_id`) |
+| ------- | --------- | ----------------------------------- |
+| Interactive 1:1 chat | `server/chat.ts` | Session owner (`ownerId` from the session row) |
+| Session rewind | `server/routes/sessions.ts` (`mergeSkillCredentialSpawnEnv` on rewind env) | Session owner if known, else org owner (`getSessionOwner` / `getOrgOwnerUserId`) |
+| Session summarize — REST `POST /api/sessions/:sessionId/summarize` | `server/routes/sessions.ts` → `summarizeTranscript` | Session owner if known, else org owner |
+| Chat auto-summarize (long reply) | `server/chat.ts` → `summarizeTranscript` | Interactive session owner (`ownerId` in chat) |
+| Conference room — WebSocket one-shot CLI | `server/room-chat.ts` | Authenticated WebSocket user if present, else org owner (`getWsAuthUserId` \|\| `getOrgOwnerUserId`) |
+| Conference room — REST **summarize** | `server/routes/rooms.ts` → `summarizeTranscript` | **Org owner only** (`getOrgOwnerUserId`) — not the browser user |
+| Design Studio chat | `server/design-chat.ts` | WebSocket user if present, else org owner (`DESIGN_SKILL_PRINCIPAL_AGENT_ID` → `__design_studio__` skill toggles) |
+| Heartbeats | `server/heartbeat.ts` (`runClaude` `skillCredentialMerge`) | Org owner |
+| Crons | `server/heartbeat.ts` (`runCronJob` → `runClaude`; `cron-skill-principal.ts`) | Org owner — agent id from `crons.skill_principal_agent_id`, else `project.cronSkillPrincipalAgentId`, else sole project agent |
+| Workflows | `server/workflow-runner.ts` | Org owner |
+| Slack bot replies | `server/slack.ts` | Org owner |
+| Delegation / synthesis spawns | `server/delegation.ts` | Parent session owner if known, else org owner (`getSessionOwner` \|\| `getOrgOwnerUserId`) |
+
+On **single-user** installs the org owner and the interactive user are usually
+the same — differences matter in multi-user orgs (saved secrets follow the
+`user_id` column, not the agent).
 
 ## JWT `uid` claim & pre-migration fallback
 

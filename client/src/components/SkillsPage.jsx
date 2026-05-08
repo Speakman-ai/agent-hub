@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api.js';
+import { safeHttpHref } from '../utils/safeHttpUrl.js';
 import ClawHubBrowser from './ClawHubBrowser.jsx';
 import McpServersSection from './McpServersSection.jsx';
 import {
@@ -85,23 +86,111 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
   const [expanded, setExpanded] = useState(false);
   const [fullContent, setFullContent] = useState(skill.content || null);
   const [loading, setLoading] = useState(false);
+  const [credentialSchema, setCredentialSchema] = useState([]);
+  const [credentialRows, setCredentialRows] = useState([]);
+  const [credLoading, setCredLoading] = useState(false);
+  const [credError, setCredError] = useState(null);
+  const [credSaving, setCredSaving] = useState(null);
+  const [credentialInputs, setCredentialInputs] = useState({});
 
   const override = overrides?.find((o) => o.skill_id === skill.id);
   const isEnabled = override ? !!override.enabled : true;
+
+  const credentialSchemaKey = useMemo(
+    () => JSON.stringify(credentialSchema ?? []),
+    [credentialSchema],
+  );
+
+  useEffect(() => {
+    if (!expanded || credentialSchemaKey === '[]' || !agentId) return;
+    let cancelled = false;
+    (async () => {
+      setCredLoading(true);
+      setCredError(null);
+      try {
+        const pack = await api.getSkillCredentials(skill.id);
+        if (!cancelled) setCredentialRows(pack.credentials || []);
+      } catch (err) {
+        if (!cancelled) {
+          setCredError(err?.message || String(err));
+          setCredentialRows([]);
+        }
+      } finally {
+        if (!cancelled) setCredLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, skill.id, agentId, credentialSchemaKey]);
+
+  const rowForKey = useCallback(
+    (keyName) => credentialRows.find((r) => r.key_name === keyName),
+    [credentialRows],
+  );
+
+  const saveCredential = useCallback(
+    async (spec) => {
+      const val = credentialInputs[spec.name] ?? '';
+      if (spec.required && !String(val).trim()) {
+        setCredError('This credential is required — enter a value before saving.');
+        return;
+      }
+      setCredSaving(spec.name);
+      setCredError(null);
+      try {
+        await api.putSkillCredential({
+          skill_id: skill.id,
+          key_name: spec.name,
+          value: String(val),
+          agent_id: agentId,
+        });
+        const pack = await api.getSkillCredentials(skill.id);
+        setCredentialRows(pack.credentials || []);
+        setCredentialInputs((prev) => ({ ...prev, [spec.name]: '' }));
+      } catch (err) {
+        setCredError(err?.message || String(err));
+      } finally {
+        setCredSaving(null);
+      }
+    },
+    [credentialInputs, skill.id, agentId],
+  );
+
+  const deleteCredential = useCallback(
+    async (spec) => {
+      const row = rowForKey(spec.name);
+      if (!row?.id) return;
+      setCredSaving(spec.name);
+      setCredError(null);
+      try {
+        await api.deleteSkillCredential(row.id);
+        const pack = await api.getSkillCredentials(skill.id);
+        setCredentialRows(pack.credentials || []);
+      } catch (err) {
+        setCredError(err?.message || String(err));
+      } finally {
+        setCredSaving(null);
+      }
+    },
+    [rowForKey, skill.id],
+  );
 
   const handleExpand = async () => {
     if (expanded) {
       setExpanded(false);
       return;
     }
-    if (!fullContent && agentId) {
+    if (agentId) {
       setLoading(true);
       try {
         const data = await api.getSkill(agentId, skill.id);
         setFullContent(data.content);
+        setCredentialSchema(Array.isArray(data.credentials) ? data.credentials : []);
       } catch (err) {
         const detail = err?.message ? `: ${err.message}` : '.';
         setFullContent(`Failed to load skill content${detail}`);
+        setCredentialSchema([]);
         console.error('Failed to load skill content:', err);
       } finally {
         setLoading(false);
@@ -171,11 +260,121 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
           {loading ? (
             <p className="text-xs text-gray-500">Loading...</p>
           ) : (
-            <div className="prose prose-invert prose-sm max-w-none text-xs">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-                {fullContent || ''}
-              </ReactMarkdown>
-            </div>
+            <>
+              <div className="prose prose-invert prose-sm max-w-none text-xs">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                  {fullContent || ''}
+                </ReactMarkdown>
+              </div>
+              {credentialSchema.length > 0 && agentId && (
+                <div className="mt-5 rounded-lg border border-gray-700/80 bg-gray-900/35 p-3">
+                  <div className="mb-3 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Shield size={14} className="flex-shrink-0 text-amber-400" />
+                      <span className="text-xs font-medium text-gray-200">Credentials</span>
+                    </div>
+                    <p className="text-[10px] text-gray-500 leading-relaxed pl-0 sm:pl-6">
+                      Stored per signed-in user, merged into CLI spawns for enabled skills. GitHub
+                      sign-in under Settings wins over same-named skill vars (GH_TOKEN /
+                      GITHUB_TOKEN).
+                    </p>
+                    <p className="text-[10px] text-gray-500/90 leading-relaxed pl-0 sm:pl-6">
+                      Multi-user orgs: interactive chat, session summarize/rewind, and delegation
+                      use the session owner&apos;s saved keys when known. Conference rooms and
+                      Design Studio use the authenticated connection when present, otherwise the org
+                      owner. Scheduled work (heartbeats, crons, workflows), Slack, and room
+                      summarize use the org owner&apos;s vault.
+                    </p>
+                  </div>
+                  {credLoading ? (
+                    <p className="text-xs text-gray-500">Loading saved values…</p>
+                  ) : credError ? (
+                    <p className="text-xs text-amber-300/95">{credError}</p>
+                  ) : (
+                    credentialSchema.map((spec) => {
+                      const row = rowForKey(spec.name);
+                      const docsHref = safeHttpHref(spec.docs_url);
+                      const inputType =
+                        spec.type === 'secret' || spec.type === 'json' ? 'password' : 'text';
+                      return (
+                        <div
+                          key={spec.name}
+                          className="mb-4 border-b border-gray-800 pb-4 last:mb-0 last:border-b-0 last:pb-0"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-xs font-medium text-gray-200">{spec.label}</div>
+                              <div className="font-mono text-[10px] text-gray-500">{spec.name}</div>
+                              {spec.description ? (
+                                <p className="mt-1 text-[11px] text-gray-400">{spec.description}</p>
+                              ) : null}
+                              {docsHref ? (
+                                <a
+                                  href={docsHref}
+                                  target="_blank"
+                                  rel="noreferrer noopener"
+                                  className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300"
+                                >
+                                  Documentation <ExternalLink size={11} />
+                                </a>
+                              ) : null}
+                            </div>
+                            {row?.masked_preview ? (
+                              <span className="text-[10px] text-gray-500">
+                                Saved:{' '}
+                                <span className="font-mono text-gray-300">
+                                  {row.masked_preview}
+                                </span>
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <input
+                              type={inputType}
+                              autoComplete="off"
+                              spellCheck={false}
+                              placeholder={spec.required ? 'Required' : 'Optional — paste to set'}
+                              value={credentialInputs[spec.name] ?? ''}
+                              onChange={(e) =>
+                                setCredentialInputs((p) => ({ ...p, [spec.name]: e.target.value }))
+                              }
+                              className="min-w-[160px] flex-1 rounded-md border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-100 placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              disabled={credSaving === spec.name}
+                              onClick={() => saveCredential(spec)}
+                              className="rounded-md bg-indigo-600 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                            >
+                              {credSaving === spec.name ? 'Saving…' : 'Save'}
+                            </button>
+                            {row?.id ? (
+                              <button
+                                type="button"
+                                disabled={credSaving === spec.name}
+                                onClick={() => deleteCredential(spec)}
+                                className="rounded-md border border-gray-600 px-2.5 py-1.5 text-[11px] text-gray-300 hover:bg-gray-750 disabled:opacity-40"
+                              >
+                                Revoke
+                              </button>
+                            ) : null}
+                          </div>
+                          {row?.last_used_at ? (
+                            <p className="mt-1 text-[10px] text-gray-600">
+                              Last used:{' '}
+                              {new Date(row.last_used_at).toLocaleString(undefined, {
+                                dateStyle: 'short',
+                                timeStyle: 'short',
+                              })}
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

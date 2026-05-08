@@ -4,6 +4,7 @@ import { mkdirSync, existsSync, readFileSync, readdirSync } from 'fs';
 import config from './config.js';
 import type { OrgRow } from './types.js';
 import { MCP_SERVERS_SCHEMA } from './mcp-servers-schema.js';
+import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -148,6 +149,17 @@ export function initOrgsDb(): void {
   // resolved at spawn time keyed on session.owner_user_id. See
   // server/mcp-servers-store.ts for the read/write surface.
   orgsDb.exec(MCP_SERVERS_SCHEMA);
+  orgsDb.exec(USER_SKILL_CREDENTIALS_SCHEMA);
+
+  // Add `masked_preview` to user_skill_credentials on installs predating the
+  // pre-computed mask. Nullable column → backfill happens lazily on the
+  // first list/upsert that touches each row. CREATE TABLE IF NOT EXISTS
+  // above is intentionally idempotent and won't add the column on its own.
+  try {
+    orgsDb.prepare('SELECT masked_preview FROM user_skill_credentials LIMIT 1').get();
+  } catch {
+    orgsDb.exec('ALTER TABLE user_skill_credentials ADD COLUMN masked_preview TEXT');
+  }
 
   // Migration: drop the two Nango-era tables. The Nango integration was
   // ripped out in favour of the MCP-server registry; these tables held
