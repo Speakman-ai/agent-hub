@@ -447,6 +447,10 @@ export default function Sidebar({
                                               project.githubRepo,
                                             )
                                           : null;
+                                      const showCreatePrReadyGlyph =
+                                        !!prReady &&
+                                        !resolvePrHref &&
+                                        !isResolvePrSessionTitle(session.name);
                                       return (
                                         <div
                                           key={session.id}
@@ -544,7 +548,7 @@ export default function Sidebar({
                                                     {subagentsBySession[session.id].running}
                                                   </span>
                                                 )}
-                                                {prReady && !resolvePrHref && (
+                                                {showCreatePrReadyGlyph && (
                                                   <span
                                                     data-testid="pr-ready-indicator"
                                                     className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"
@@ -891,6 +895,8 @@ export default function Sidebar({
                             prReady && isResolvePrSessionTitle(session.name)
                               ? inferPrUrlFromSessionTitle(session.name, project.githubRepo)
                               : null;
+                          const showCreatePrReadyGlyph =
+                            !!prReady && !resolvePrHref && !isResolvePrSessionTitle(session.name);
                           return (
                             <button
                               type="button"
@@ -909,7 +915,7 @@ export default function Sidebar({
                                   title="Task running"
                                 />
                               )}
-                              {prReady && !resolvePrHref && (
+                              {showCreatePrReadyGlyph && (
                                 <span
                                   data-testid="pr-ready-indicator"
                                   className="flex items-center text-purple-400 flex-shrink-0 animate-pulse"

@@ -25,6 +25,7 @@ export function inferPrUrlFromSessionTitle(sessionName, githubRepo) {
   if (!repoStr) return null;
 
   const resolve = name.match(/^\[Resolve PR #(\d+)\]/i);
+  // Review: titles are handled here for URL inference only; UI "resolve flow" gating uses isResolvePrSessionTitle ([Resolve PR #N] only).
   const review = name.match(/^Review: PR #(\d+)\b/i);
   const n = resolve?.[1] ?? review?.[1];
   if (!n) return null;
