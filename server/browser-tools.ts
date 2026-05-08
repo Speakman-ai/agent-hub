@@ -312,7 +312,7 @@ export async function browserNavigate(
   try {
     const page = getActivePage(stagehand);
     await withDocumentNavigationUrlPolicy(stagehand, async () => {
-      const res = await page.goto(policy.href, { waitUntil: 'load', timeoutMs });
+      const res = await page.goto(policy.href, { waitUntil: 'load', timeout: timeoutMs });
       void res;
     });
     const finalUrl = page.url();
@@ -456,7 +456,7 @@ export async function browserBack(
   try {
     const page = getActivePage(stagehand);
     await withDocumentNavigationUrlPolicy(stagehand, async () => {
-      await page.goBack({ waitUntil: 'load', timeoutMs });
+      await page.goBack({ waitUntil: 'load', timeout: timeoutMs });
     });
     const finalUrl = page.url();
     const landed = validateBrowserNavigationUrl(finalUrl);
@@ -482,7 +482,7 @@ export async function browserForward(
   try {
     const page = getActivePage(stagehand);
     await withDocumentNavigationUrlPolicy(stagehand, async () => {
-      await page.goForward({ waitUntil: 'load', timeoutMs });
+      await page.goForward({ waitUntil: 'load', timeout: timeoutMs });
     });
     const finalUrl = page.url();
     const landed = validateBrowserNavigationUrl(finalUrl);
@@ -512,15 +512,15 @@ export async function browserWaitFixed(
     const page = getActivePage(stagehand);
     const lower = c.toLowerCase();
     if (lower === 'networkidle' || lower === 'network_idle' || lower === 'network-idle') {
-      await page.waitForLoadState('networkidle', timeoutMs);
+      await page.waitForLoadState('networkidle', { timeout: timeoutMs });
       return result('wait', true, { kind: 'networkidle' });
     }
     if (lower === 'load') {
-      await page.waitForLoadState('load', timeoutMs);
+      await page.waitForLoadState('load', { timeout: timeoutMs });
       return result('wait', true, { kind: 'load' });
     }
     if (lower === 'domcontentloaded' || lower === 'dom') {
-      await page.waitForLoadState('domcontentloaded', timeoutMs);
+      await page.waitForLoadState('domcontentloaded', { timeout: timeoutMs });
       return result('wait', true, { kind: 'domcontentloaded' });
     }
     const selPrefix = /^selector:\s*/i.exec(c);

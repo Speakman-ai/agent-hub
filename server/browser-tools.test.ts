@@ -124,7 +124,7 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.hostExit).toBe(0);
     expect(page.goto).toHaveBeenCalledWith('https://example.com/path?q=1', {
       waitUntil: 'load',
-      timeoutMs: 30_000,
+      timeout: 30_000,
     });
     expect(r.markdown).toContain('Browser: navigate');
     expect(r.markdown).toContain('"ok": true');
@@ -147,7 +147,7 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.hostExit).toBe(0);
     expect(page.goto).toHaveBeenCalledWith('https://example.com/over', {
       waitUntil: 'load',
-      timeoutMs: 60_000,
+      timeout: 60_000,
     });
   });
 
@@ -168,7 +168,7 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.hostExit).toBe(0);
     expect(page.goto).toHaveBeenCalledWith('https://example.com/session-only', {
       waitUntil: 'load',
-      timeoutMs: 12_345,
+      timeout: 12_345,
     });
   });
 
@@ -262,7 +262,7 @@ describe('browser-tools — runBrowserReActStep', () => {
     });
     const r = await runBrowserReActStep('wait-net', { op: 'wait', condition: 'networkidle' });
     expect(r.hostExit).toBe(0);
-    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', 30_000);
+    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 30_000 });
     expect(page.waitForSelector).not.toHaveBeenCalled();
     expect(r.markdown).toContain('"kind": "networkidle"');
   });
@@ -413,7 +413,7 @@ describe('browser-tools — direct helpers', () => {
     const sh = asV3(makeMockStagehand(page));
     const a = await browserWaitFixed(sh, 'network_idle');
     expect(a.ok).toBe(true);
-    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', 30_000);
+    expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 30_000 });
     const b = await browserWaitFixed(sh, 'selector:  .btn');
     expect(b.ok).toBe(true);
     expect(page.waitForSelector).toHaveBeenCalledWith('.btn', {
