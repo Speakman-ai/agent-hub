@@ -1903,7 +1903,7 @@ export interface RouteDeps {
   ensureProjectRoom: (project: Project) => RoomWithAgents | null;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
   pendingReviewComments: Map<string, unknown>;
-  lastDispatchedReviewId: Map<string, string>;
+  lastDispatchedReviewId: Map<string, number>;
   scheduleAutonomousEpic: (projectId: string, epic: KanbanEpicRow) => void;
   autonomousCrons: Map<string, unknown>;
   runAutonomousLoop: (projectId: string) => Promise<void>;

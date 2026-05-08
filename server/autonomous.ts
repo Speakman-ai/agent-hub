@@ -7,6 +7,10 @@ import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cro
 import { getOrCreateBoard } from './routes/board.js';
 import { notifyDispatchFailure, dispatchReviewFeedback } from './routes/webhooks.js';
 import { createEscalation } from './routes/escalations.js';
+import {
+  lastDispatchedReviewId,
+  recordDispatchedChangesRequestedReview,
+} from './review-feedback-dedup.js';
 import { defaultModelForEngine } from './config.js';
 import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
 import { pickAgentForCard, pickLead } from './routing.js';
@@ -56,12 +60,6 @@ interface WebhookHandlerDeps {
 // ─── Module-level state ────────────────────────────────────────────────────
 const autonomousCrons = new Map<string, cron.ScheduledTask>();
 const autonomousProjects = new Set<string>();
-/**
- * Tracks the highest GitHub review id we've already dispatched feedback for,
- * keyed by kanban card id. Used by `pollForMissedReviews` so we don't re-dispatch
- * the same `changes_requested` review when webhook delivery is missed.
- */
-const lastDispatchedReviewId = new Map<string, number>();
 let reviewPollCron: cron.ScheduledTask | null = null;
 
 // ─── Injected dependencies (set via init()) ────────────────────────────────
@@ -750,10 +748,11 @@ async function reconcileKanbanWithGitHub(): Promise<void> {
 
 /**
  * Catch `changes_requested` reviews where the GitHub webhook was missed.
- * For each project's Review-column cards with PRs, look at the most recent
- * `CHANGES_REQUESTED` review on the PR. If we've never dispatched feedback
- * for a review id higher than what we've already seen, push it through the
- * standard `dispatchReviewFeedback` path.
+ * Scans cards in **Review** and **In Progress** (author work often lives there
+ * after a `changes_requested` webhook moves the card). For each card with a
+ * PR URL, compares GitHub `CHANGES_REQUESTED` review ids to
+ * `lastDispatchedReviewId` (also updated when the webhook path dispatches).
+ * New ids are pushed through `dispatchReviewFeedback`.
  *
  * Note: this used to also dispatch the lead-review pipeline for "orphan"
  * cards in Review without an active review session. That path is no longer
@@ -763,7 +762,6 @@ async function reconcileKanbanWithGitHub(): Promise<void> {
 async function pollForMissedReviews(): Promise<void> {
   const d = getDeps();
   const projects = d.getProjects();
-  const activeProcesses = d.getActiveProcesses();
   const ghAuthenticatedUser = d.getGhAuthenticatedUser();
   const webhookHandlerDeps = d.getWebhookHandlerDeps();
 
@@ -777,12 +775,20 @@ async function pollForMissedReviews(): Promise<void> {
     }>;
     const reviewCol = cols.find((c) => c.name.toLowerCase() === 'review');
     const inProgressCol = cols.find((c) => c.name.toLowerCase() === 'in progress');
-    if (!reviewCol) continue;
+    if (!reviewCol && !inProgressCol) continue;
 
-    const cards = d.stmts.getKanbanCardsByColumn.all(reviewCol.id) as KanbanCardRow[];
-    for (const card of cards) {
+    const seenCardIds = new Set<string>();
+    const cardsToScan: KanbanCardRow[] = [];
+    for (const col of [reviewCol, inProgressCol].filter(Boolean) as Array<(typeof cols)[0]>) {
+      for (const c of d.stmts.getKanbanCardsByColumn.all(col.id) as KanbanCardRow[]) {
+        if (seenCardIds.has(c.id)) continue;
+        seenCardIds.add(c.id);
+        cardsToScan.push(c);
+      }
+    }
+
+    for (const card of cardsToScan) {
       if (!card.pr_url) continue;
-      if (card.session_id && activeProcesses.has(card.session_id)) continue;
 
       const prMatch = card.pr_url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
       if (!prMatch) continue;
@@ -843,7 +849,7 @@ Your PR #${prNumber} has **${newReviews.length}** pending "changes requested" re
           dispatchReviewFeedback(webhookHandlerDeps, card, project, feedbackMessage);
 
           const latestId = Math.max(...newReviews.map((r) => r.id));
-          lastDispatchedReviewId.set(card.id, latestId);
+          recordDispatchedChangesRequestedReview(card.id, latestId);
         }
       } catch {
         // gh CLI not available or API error — skip silently

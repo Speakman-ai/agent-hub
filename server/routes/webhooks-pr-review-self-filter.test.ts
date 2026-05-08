@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AGENT_HUB_BOT_SENTINEL, handleWebhookPrReview } from './webhooks.js';
+import { lastDispatchedReviewId } from '../review-feedback-dedup.js';
 import type { Project, KanbanCardRow, KanbanColumnRow } from '../types.js';
 
 // Regression coverage for `handleWebhookPrReview`'s self-trigger filter.
@@ -107,6 +108,7 @@ function payload(reviewOverrides: { state: string; body?: string; senderLogin: s
       html_url: 'https://github.com/owner/repo',
     },
     review: {
+      id: 9_009_001,
       state: reviewOverrides.state,
       body: reviewOverrides.body || '',
       user: { login: reviewOverrides.senderLogin },
@@ -118,6 +120,7 @@ function payload(reviewOverrides: { state: string; body?: string; senderLogin: s
 describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    lastDispatchedReviewId.clear();
   });
 
   it("dispatches when a human on the auth'd account submits CHANGES_REQUESTED (no sentinel)", () => {
@@ -139,12 +142,13 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
     );
 
     expect(handled).toBe(true);
-    // Card must move to In Progress so the next missed-review poll scan
-    // doesn't stampede — and because that's the column author sessions run in.
+    // Card moves to In Progress — workflow home for author follow-up; the poll
+    // fallback also scans In Progress so missed webhooks still reach busy cards.
     expect(deps.stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-in-progress', 0, 'card-1');
     // A fresh author session is spawned (card.session_id was null).
     expect(deps.stmts.createSession.run).toHaveBeenCalledTimes(1);
     expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    expect(lastDispatchedReviewId.get('card-1')).toBe(9_009_001);
     const chatMsg = (deps.handleChat.mock.calls[0] as unknown as unknown[])?.[1] as {
       content: string;
     };
@@ -240,5 +244,6 @@ describe('handleWebhookPrReview — self-filter narrowed to sentinel', () => {
 
     expect(handled).toBe(true);
     expect(deps.handleChat).toHaveBeenCalledTimes(1);
+    expect(lastDispatchedReviewId.get('card-1')).toBe(9_009_001);
   });
 });

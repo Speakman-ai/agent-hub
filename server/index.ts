@@ -580,7 +580,7 @@ export const routeDeps: RouteDeps = {
   ensureProjectRoom,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
   pendingReviewComments,
-  lastDispatchedReviewId: lastDispatchedReviewId as unknown as Map<string, string>,
+  lastDispatchedReviewId,
   scheduleAutonomousEpic,
   autonomousCrons,
   runAutonomousLoop,

@@ -1381,7 +1381,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (!isInterrupt) {
         const currentQueue = stmts.getQueuedMessages.all(sessionId) as MessageQueueRow[];
         if (currentQueue.length >= MAX_QUEUE_SIZE) {
-          if (ws)
+          if (ws) {
             ws.send(
               JSON.stringify({
                 type: 'error',
@@ -1389,6 +1389,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 error: `Queue is full (max ${MAX_QUEUE_SIZE} messages). Wait for current task to complete.`,
               }),
             );
+          } else {
+            console.error(
+              `[chat] Queue full (${MAX_QUEUE_SIZE}); dropped non-interrupt inject for session ${sessionId}` +
+                ` (agent ${agentId}). Webhook / review feedback may need a free slot or manual nudge.`,
+            );
+          }
           return;
         }
       }

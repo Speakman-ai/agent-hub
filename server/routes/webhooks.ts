@@ -27,6 +27,7 @@ import {
   clearAllAnalyzePhaseTimers,
   scheduleReviewerAnalyzePhaseTransition,
 } from '../reviewer-analyze-phase-timer.js';
+import { recordDispatchedChangesRequestedReview } from '../review-feedback-dedup.js';
 import { getProjectMode } from '../project-mode.js';
 import { setSessionOwner, getOrgOwnerUserId } from '../session-ownership.js';
 import type {
@@ -104,6 +105,7 @@ interface GitHubWebhookPayload {
     line?: number;
   };
   review?: {
+    id?: number;
     user?: GitHubUser;
     state: string;
     body?: string;
@@ -1912,6 +1914,13 @@ ${reviewBody || '(No body — check inline comments on the PR)'}
     console.log(
       `[Webhook/Kanban] Changes requested on "${card.title}" by ${sender} — dispatched to session ${sessionId || '(failed)'}`,
     );
+
+    if (sessionId) {
+      const rid = typeof review.id === 'number' ? review.id : Number(review.id);
+      if (Number.isFinite(rid) && rid > 0) {
+        recordDispatchedChangesRequestedReview(card.id, rid);
+      }
+    }
 
     if (prNumber) {
       const existing = stmts.getRecentEscalationByTypeAndPr.get(
