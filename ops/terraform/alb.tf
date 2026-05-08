@@ -118,17 +118,9 @@ resource "aws_security_group" "agenthub_alb" {
   }
 }
 
-# App port on EC2: only the ALB may connect (in addition to any CIDRs you open on the instance for direct access).
-resource "aws_vpc_security_group_ingress_rule" "agenthub_app_from_alb" {
-  count = var.enable_dedicated_alb ? 1 : 0
-
-  security_group_id = aws_security_group.instance.id
-  from_port         = var.agent_hub_target_port
-  to_port           = var.agent_hub_target_port
-  ip_protocol       = "tcp"
-  # IPv4-only: ALB ENIs use security group reference (replaces 0.0.0.0/0 to the app port)
-  referenced_security_group_id = aws_security_group.agenthub_alb[0].id
-}
+# App port on EC2: only the ALB may connect — defined inline on
+# aws_security_group.instance (see main.tf). Do not add aws_vpc_security_group_ingress_rule
+# for the same port; inline blocks revoke standalone rules on apply.
 
 # --- Application load balancer ---
 
