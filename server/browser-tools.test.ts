@@ -130,6 +130,48 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.markdown).toContain('"ok": true');
   });
 
+  it('navigate: prefers sessionLaunchOpts.timeoutMs over cached BrowserSession.timeoutMs', async () => {
+    const page = makeMockPage();
+    __registerBrowserSessionForTests({
+      id: 'nav-timeout-override',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: 5_000,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep(
+      'nav-timeout-override',
+      { op: 'navigate', url: 'https://example.com/over' },
+      { timeoutMs: 60_000 },
+    );
+    expect(r.hostExit).toBe(0);
+    expect(page.goto).toHaveBeenCalledWith('https://example.com/over', {
+      waitUntil: 'load',
+      timeoutMs: 60_000,
+    });
+  });
+
+  it('navigate: uses session.timeoutMs when sessionLaunchOpts omit timeoutMs', async () => {
+    const page = makeMockPage();
+    __registerBrowserSessionForTests({
+      id: 'nav-timeout-session',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      timeoutMs: 12_345,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep(
+      'nav-timeout-session',
+      { op: 'navigate', url: 'https://example.com/session-only' },
+      {},
+    );
+    expect(r.hostExit).toBe(0);
+    expect(page.goto).toHaveBeenCalledWith('https://example.com/session-only', {
+      waitUntil: 'load',
+      timeoutMs: 12_345,
+    });
+  });
+
   it('extract: rejects oversize schema before Stagehand extract', async () => {
     const page = makeMockPage();
     const stagehand = makeMockStagehand(page);

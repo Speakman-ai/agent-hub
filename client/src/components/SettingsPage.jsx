@@ -4953,7 +4953,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
       } else {
         browserPayload.browserToolsDefaultEnabled = false;
       }
-      const mergeOptDim = (raw, prevVal, field, min, max) => {
+      const mergeOptDim = (raw, prevVal, field, min, max, label) => {
         const t = String(raw ?? '').trim();
         if (t === '') {
           if (prevVal != null) browserPayload[field] = null;
@@ -4962,7 +4962,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         const n = parseInt(t, 10);
         if (!Number.isFinite(n) || n < min || n > max) {
           showToast?.(
-            `${field}: use an integer between ${min} and ${max}, or leave empty.`,
+            `${label}: use an integer between ${min} and ${max}, or leave empty.`,
             'error',
           );
           return false;
@@ -4971,7 +4971,14 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
         return true;
       };
       if (
-        !mergeOptDim(bf.viewportW, projRow?.browserViewportWidth, 'browserViewportWidth', 320, 3840)
+        !mergeOptDim(
+          bf.viewportW,
+          projRow?.browserViewportWidth,
+          'browserViewportWidth',
+          320,
+          3840,
+          'Viewport width',
+        )
       ) {
         return;
       }
@@ -4982,6 +4989,7 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
           'browserViewportHeight',
           240,
           2160,
+          'Viewport height',
         )
       ) {
         return;

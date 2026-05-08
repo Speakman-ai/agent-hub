@@ -582,7 +582,7 @@ export async function runBrowserReActStep(
     };
   }
   const sh = asV3(session.stagehand);
-  const opTimeoutMs = session.timeoutMs;
+  const opTimeoutMs = sessionLaunchOpts.timeoutMs ?? session.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const fmt = (r: BrowserToolResult, title: string) => {
     const display = shrinkBrowserToolResultForMarkdown(r);
