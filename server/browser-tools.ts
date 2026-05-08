@@ -20,7 +20,7 @@ import {
   type BrowserSession,
   type BrowserSessionOptions,
 } from './browser.js';
-import { logBrowserToolAudit } from './browser-tool-audit.js';
+import { logBrowserToolAudit, redactUrlForBrowserAudit } from './browser-tool-audit.js';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -713,7 +713,7 @@ export async function runBrowserReActStep(
       ok: b.hostExit === 0,
       hostExit: b.hostExit,
       detail: typeof b.hostDetail === 'string' ? b.hostDetail : undefined,
-      urlSnippet: opRaw === 'navigate' ? input.url?.trim() : undefined,
+      urlSnippet: opRaw === 'navigate' ? redactUrlForBrowserAudit(input.url) : undefined,
     });
     return b;
   };

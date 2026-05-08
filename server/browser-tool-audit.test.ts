@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { logBrowserToolAudit } from './browser-tool-audit.js';
+import { logBrowserToolAudit, redactUrlForBrowserAudit } from './browser-tool-audit.js';
 
 describe('browser-tool-audit', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
@@ -34,5 +34,34 @@ describe('browser-tool-audit', () => {
     expect(parsed.hostExit).toBe(1);
     expect(parsed.detail).toContain('Only http');
     expect(parsed.urlSnippet).toBe('https://example.test/path');
+  });
+
+  it('strips query and hash from navigate urlSnippet in emitted JSON', () => {
+    logBrowserToolAudit({
+      chatSessionId: 's',
+      op: 'navigate',
+      ok: true,
+      hostExit: 0,
+      urlSnippet: redactUrlForBrowserAudit(
+        'https://app.example/oauth?access_token=sekret&code=abc#frag',
+      ),
+    });
+    const line = logSpy.mock.calls[0][0].replace(/^\[browser-tool-audit\]\s*/, '');
+    const parsed = JSON.parse(line) as Record<string, unknown>;
+    expect(parsed.urlSnippet).toBe('https://app.example/oauth');
+    expect(String(parsed.urlSnippet)).not.toContain('token');
+    expect(String(parsed.urlSnippet)).not.toContain('code=');
+  });
+});
+
+describe('redactUrlForBrowserAudit', () => {
+  it('drops search and hash', () => {
+    expect(redactUrlForBrowserAudit('https://h.test/p?q=1')).toBe('https://h.test/p');
+    expect(redactUrlForBrowserAudit('https://h.test/x#h')).toBe('https://h.test/x');
+  });
+
+  it('returns undefined for empty input', () => {
+    expect(redactUrlForBrowserAudit(undefined)).toBeUndefined();
+    expect(redactUrlForBrowserAudit('  ')).toBeUndefined();
   });
 });

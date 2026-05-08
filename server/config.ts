@@ -102,6 +102,21 @@ function envMeansFalse(key: keyof NodeJS.ProcessEnv): boolean {
   return v === '0' || v === 'false' || v === 'no' || v === 'off';
 }
 
+/**
+ * Booleans in config.json — accept strict `true`/`false` plus common string forms
+ * when configs are generated or hand-edited inconsistently.
+ */
+export function coerceConfigBooleanLoose(raw: unknown, defaultValue: boolean): boolean {
+  if (raw === true) return true;
+  if (raw === false || raw === null) return false;
+  if (typeof raw === 'string') {
+    const s = raw.trim().toLowerCase();
+    if (s === '1' || s === 'true' || s === 'yes' || s === 'on') return true;
+    if (s === '0' || s === 'false' || s === 'no' || s === 'off' || s === '') return false;
+  }
+  return defaultValue;
+}
+
 // ─── Auto-migrate legacy projects directory ─────────────────────
 const DEFAULT_PROJECTS_DIR = path.join(HOME, '.agent-hub', 'projects');
 const LEGACY_PROJECTS_DIR = path.join(HOME, '.openclaw', 'projects');
@@ -345,7 +360,8 @@ const config: AppConfig = {
     3_600_000,
   ),
   browserAllowDownloads:
-    envMeansTrue('AGENT_HUB_BROWSER_ALLOW_DOWNLOADS') || fileConfig.browserAllowDownloads === true,
+    envMeansTrue('AGENT_HUB_BROWSER_ALLOW_DOWNLOADS') ||
+    coerceConfigBooleanLoose(fileConfig.browserAllowDownloads, false),
   browserBlockAdsTrackers: envMeansFalse('AGENT_HUB_BROWSER_BLOCK_ADS')
     ? false
     : fileConfig.browserBlockAdsTrackers !== false,
