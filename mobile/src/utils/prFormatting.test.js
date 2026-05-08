@@ -13,6 +13,7 @@ import {
   mergePipelineListBadge,
   prListRowSuggestsResolvableWork,
   prListRowResolveDisabledHeuristic,
+  buildPrActivityTimeline,
 } from './prFormatting';
 
 describe('prNumberFromUrl', () => {
@@ -322,5 +323,22 @@ describe('prListRow resolve heuristics', () => {
         check_rollup: [],
       }),
     ).toBe(true);
+  });
+});
+
+describe('buildPrActivityTimeline', () => {
+  it('orders events oldest-first with kind tie-breaker at same timestamp', () => {
+    const t0 = '2026-05-01T10:00:00Z';
+    const t1 = '2026-05-01T11:00:00Z';
+    const pr = { created_at: t0, user: 'bob', merged_at: t1 };
+    const detail = {
+      reviews: [
+        { id: 10, user: 'r1', state: 'APPROVED', body: 'ok', submitted_at: t0 },
+      ],
+      comments: [{ id: 20, user: 'c1', body: 'hi', created_at: t0 }],
+      checks: [{ id: 30, name: 'CI', status: 'completed', conclusion: 'success', completed_at: t0 }],
+    };
+    const out = buildPrActivityTimeline(pr, detail);
+    expect(out.map((x) => x.kind)).toEqual(['opened', 'check', 'comment', 'review', 'merged']);
   });
 });
