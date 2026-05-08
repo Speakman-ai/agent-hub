@@ -33,6 +33,7 @@ source "$DIR/_common.sh"
 # inject — render a template file with op:// references resolved
 # ---------------------------------------------------------------------------
 cmd_inject() {
+  require_op_auth
   local input="" output=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -57,6 +58,7 @@ cmd_inject() {
 # run — inject secrets and exec child command
 # ---------------------------------------------------------------------------
 cmd_run() {
+  require_op_auth
   local env_file="" dry_run=false
   local op_args=()
 

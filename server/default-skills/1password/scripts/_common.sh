@@ -57,7 +57,7 @@ require_op_auth() {
   fi
 
   # 3. Existing interactive session
-  if op whoami &>/dev/null 2>&1; then
+  if op whoami &>/dev/null; then
     return 0
   fi
 
@@ -113,44 +113,31 @@ op_redact() {
   local text="$1"
   # Mask op:// URIs
   text=$(echo "$text" | sed -E 's|op://[^ \t"]+|[redacted:op://...]|g')
-  # Mask long token-like strings (≥32 non-space chars with mixed charset)
-  # Conservative: only mask strings that look like base64/hex tokens, not paths
-  text=$(echo "$text" | sed -E 's/[A-Za-z0-9+/]{32,}={0,2}/[redacted]/g')
+  # Mask long token-like strings (≥32 non-space chars with mixed charset).
+  # Char class matches standard base64 + URL-safe base64 (_-) + padding (=)
+  # to catch ops_... Service Account tokens and similar formats.
+  # Aligned with op-redact.ts LONG_TOKEN_PATTERN.
+  text=$(echo "$text" | sed -E 's/[A-Za-z0-9+/=_-]{32,}/[redacted]/g')
   echo "$text"
 }
 
 # ---------------------------------------------------------------------------
-# assert_write_confirmed — gate for mutation scripts
-#
-# Mutation scripts must set OP_WRITE_CONFIRMED=yes before calling any op
-# write command. The agent is responsible for asking the user first and
-# only setting the gate after receiving explicit confirmation.
-#
-# Usage (in op-write.sh, after presenting the plan to the user):
-#   assert_write_confirmed "op item create 'New Key' in vault Personal"
+# require_python3 — verify python3 is on PATH (needed for JSON formatting)
 # ---------------------------------------------------------------------------
-assert_write_confirmed() {
-  local action="${1:-this write operation}"
-  if [[ "${OP_WRITE_CONFIRMED:-}" != "yes" ]]; then
-    cat >&2 <<HELP
-error: write confirmation required.
+require_python3() {
+  if ! command -v python3 &>/dev/null; then
+    cat >&2 <<'HELP'
+error: python3 not found on PATH.
 
-You are about to execute: $action
+The 1Password skill scripts use python3 for JSON formatting.
 
-This operation MUST be confirmed by the user before proceeding.
+Install Python 3:
+  macOS:  brew install python3
+  Linux:  sudo apt-get install python3  (Debian/Ubuntu)
+          sudo yum install python3       (RHEL/CentOS)
 
-Steps:
-  1. Show the user a summary of what will change (vault, item title, field
-     names — NOT secret values).
-  2. Wait for explicit confirmation ("yes", "go ahead", "do it", etc.).
-  3. Then set OP_WRITE_CONFIRMED=yes and re-run the command.
-
-No secrets will be written without confirmation.
+After installing, verify with:  python3 --version
 HELP
     exit 2
   fi
 }
-
-# Run prerequisite checks immediately when sourced so wrappers don't repeat them.
-require_op_cli
-require_op_auth

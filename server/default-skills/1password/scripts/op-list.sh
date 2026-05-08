@@ -23,6 +23,8 @@ source "$DIR/_common.sh"
 # items — list items (default)
 # ---------------------------------------------------------------------------
 cmd_items() {
+  require_op_auth
+  require_python3
   local vault="" category="" tags="" limit=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -47,7 +49,7 @@ items = json.load(sys.stdin)
 if not items:
     print('(no items found)')
     sys.exit(0)
-print(f'{'Title':<40} {'Category':<20} {'Vault':<20} UUID')
+print(f"{'Title':<40} {'Category':<20} {'Vault':<20} UUID")
 print('-' * 100)
 for item in items:
     title    = (item.get('title') or '')[:38]
@@ -63,6 +65,8 @@ print(f'\n{len(items)} item(s)')
 # vaults — list all accessible vaults
 # ---------------------------------------------------------------------------
 cmd_vaults() {
+  require_op_auth
+  require_python3
   op vault list --format json \
     | python3 -c "
 import sys, json
@@ -70,7 +74,7 @@ vaults = json.load(sys.stdin)
 if not vaults:
     print('(no vaults accessible)')
     sys.exit(0)
-print(f'{'Name':<30} {'Type':<15} UUID')
+print(f"{'Name':<30} {'Type':<15} UUID")
 print('-' * 75)
 for v in vaults:
     name  = (v.get('name') or '')[:28]
@@ -85,6 +89,8 @@ print(f'\n{len(vaults)} vault(s)')
 # documents — list documents in a vault
 # ---------------------------------------------------------------------------
 cmd_documents() {
+  require_op_auth
+  require_python3
   local vault=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -103,7 +109,7 @@ docs = json.load(sys.stdin)
 if not docs:
     print('(no documents found)')
     sys.exit(0)
-print(f'{'Title':<40} {'Vault':<20} UUID')
+print(f"{'Title':<40} {'Vault':<20} UUID")
 print('-' * 80)
 for d in docs:
     title = (d.get('title') or '')[:38]
@@ -118,6 +124,7 @@ print(f'\n{len(docs)} document(s)')
 # templates — list available item categories
 # ---------------------------------------------------------------------------
 cmd_templates() {
+  require_op_auth
   op item template list
 }
 
