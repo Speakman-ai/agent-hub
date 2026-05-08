@@ -7,8 +7,11 @@ import {
   browserNavigate,
   browserWaitFixed,
   browserScroll,
+  browserScreenshot,
   shrinkBrowserToolResultForMarkdown,
+  validateBrowserExtractSchema,
   BROWSER_TOOL_MARKDOWN_DATA_MAX_BYTES,
+  BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE,
 } from './browser-tools.js';
 import { __registerBrowserSessionForTests, __resetBrowserRegistryForTests } from './browser.js';
 
@@ -119,6 +122,61 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.markdown).toContain('"ok": true');
   });
 
+  it('extract: rejects oversize schema before Stagehand extract', async () => {
+    const page = makeMockPage();
+    const stagehand = makeMockStagehand(page);
+    const extractFn = stagehand.extract as ReturnType<typeof vi.fn>;
+    __registerBrowserSessionForTests({
+      id: 'ext-schema',
+      stagehand,
+      createdAt: Date.now(),
+      close: async () => {},
+    });
+    const bad: Record<string, unknown> = {};
+    for (let i = 0; i < BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE + 1; i++) {
+      bad[`p${i}`] = { type: 'string' };
+    }
+    const r = await runBrowserReActStep('ext-schema', {
+      op: 'extract',
+      instruction: 'list items',
+      schema: bad,
+    });
+    expect(r.hostExit).toBe(1);
+    expect(extractFn).not.toHaveBeenCalled();
+    expect(r.markdown).toMatch(/too many keys/);
+  });
+
+  it('screenshot: success markdown uses JPEG data URL', async () => {
+    const page = makeMockPage();
+    page.screenshot.mockResolvedValueOnce(Buffer.from([0xff, 0xd8, 0xff, 0xdb]));
+    __registerBrowserSessionForTests({
+      id: 'shot-ok',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('shot-ok', { op: 'screenshot' });
+    expect(r.hostExit).toBe(0);
+    expect(page.screenshot).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'jpeg', quality: 72 }),
+    );
+    expect(r.markdown).toContain('data:image/jpeg;base64,');
+  });
+
+  it('screenshot: rejects encoded image over markdown cap', async () => {
+    const page = makeMockPage();
+    page.screenshot.mockResolvedValueOnce(Buffer.alloc(600_000, 9));
+    __registerBrowserSessionForTests({
+      id: 'shot-big',
+      stagehand: makeMockStagehand(page),
+      createdAt: Date.now(),
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('shot-big', { op: 'screenshot' });
+    expect(r.hostExit).toBe(1);
+    expect(r.markdown).toMatch(/maximum (encoded )?size/i);
+  });
+
   it('extract: large JSON in result is shrunk in markdown', async () => {
     const big: Record<string, string> = {};
     const chunk = 'y'.repeat(6000);
@@ -215,6 +273,39 @@ describe('browser-tools — runBrowserReActStep', () => {
   });
 });
 
+describe('browser-tools — validateBrowserExtractSchema', () => {
+  it('accepts a small JSON schema object', () => {
+    const r = validateBrowserExtractSchema({
+      type: 'object',
+      properties: { title: { type: 'string' } },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.parsed.type).toBe('object');
+  });
+
+  it('rejects too many keys on one object', () => {
+    const o: Record<string, unknown> = {};
+    for (let i = 0; i < BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE + 1; i++) {
+      o[`k${i}`] = { type: 'string' };
+    }
+    expect(validateBrowserExtractSchema(o).ok).toBe(false);
+  });
+
+  it('rejects excessive JSON byte size', () => {
+    const r = validateBrowserExtractSchema({ blob: 'x'.repeat(50_000) });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/exceeds/i);
+  });
+
+  it('rejects excessive nesting', () => {
+    let inner: Record<string, unknown> = { type: 'string' };
+    for (let i = 0; i < 20; i++) {
+      inner = { wrap: inner };
+    }
+    expect(validateBrowserExtractSchema({ root: inner }).ok).toBe(false);
+  });
+});
+
 describe('browser-tools — direct helpers', () => {
   beforeEach(() => {
     __resetBrowserRegistryForTests();
@@ -241,6 +332,22 @@ describe('browser-tools — direct helpers', () => {
       timeout: 30_000,
       pierceShadow: true,
     });
+  });
+
+  it('browserScreenshot encodes JPEG and rejects oversize base64', async () => {
+    const page = makeMockPage();
+    page.screenshot.mockResolvedValueOnce(Buffer.from([0xff, 0xd8, 0xff]));
+    const sh = asV3(makeMockStagehand(page));
+    const ok = await browserScreenshot(sh);
+    expect(ok.ok).toBe(true);
+    expect(page.screenshot).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'jpeg', quality: 72 }),
+    );
+
+    page.screenshot.mockResolvedValueOnce(Buffer.alloc(650_000, 1));
+    const bad = await browserScreenshot(sh);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error).toMatch(/maximum encoded size/i);
   });
 
   it('browserScroll rejects unknown direction', async () => {

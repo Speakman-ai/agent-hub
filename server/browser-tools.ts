@@ -42,12 +42,22 @@ export const BROWSER_REACT_OP_SET: ReadonlySet<string> = new Set(BROWSER_REACT_O
 /** Max UTF-8 bytes of `data` JSON embedded in ReAct continuation markdown (per tool result). */
 export const BROWSER_TOOL_MARKDOWN_DATA_MAX_BYTES = 24_000;
 
+/** Limits Stagehand `jsonSchemaToZod` work from pathological ReAct-supplied schemas. */
+export const BROWSER_EXTRACT_SCHEMA_MAX_JSON_BYTES = 24_000;
+export const BROWSER_EXTRACT_SCHEMA_MAX_DEPTH = 14;
+export const BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE = 80;
+export const BROWSER_EXTRACT_SCHEMA_MAX_ARRAY_LENGTH = 96;
+export const BROWSER_EXTRACT_SCHEMA_MAX_NODES = 400;
+
+/** Max base64 length for screenshot data-URL line in continuation markdown (~562 KiB raw). */
+export const BROWSER_SCREENSHOT_BASE64_MAX_CHARS = 750_000;
+
 export interface BrowserToolResult {
   ok: boolean;
   op: BrowserToolOp;
   data?: unknown;
   error?: string;
-  /** Present for screenshot op — PNG base64 (no data: prefix). */
+  /** Present for screenshot op — image base64 (no data: prefix); typically JPEG. */
   imageBase64?: string;
 }
 
@@ -87,6 +97,85 @@ export function shrinkBrowserToolResultForMarkdown(
 
 function asV3(stagehand: unknown): V3 {
   return stagehand as V3;
+}
+
+type ExtractSchemaWalkState = { nodes: number };
+
+function walkExtractSchemaJson(
+  v: unknown,
+  depth: number,
+  st: ExtractSchemaWalkState,
+): { ok: true } | { ok: false; error: string } {
+  if (depth > BROWSER_EXTRACT_SCHEMA_MAX_DEPTH) {
+    return { ok: false, error: 'extract schema nesting is too deep' };
+  }
+  if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+    return { ok: true };
+  }
+  if (Array.isArray(v)) {
+    st.nodes++;
+    if (st.nodes > BROWSER_EXTRACT_SCHEMA_MAX_NODES) {
+      return { ok: false, error: 'extract schema is too large (node budget exceeded)' };
+    }
+    if (v.length > BROWSER_EXTRACT_SCHEMA_MAX_ARRAY_LENGTH) {
+      return { ok: false, error: 'extract schema array is too long' };
+    }
+    for (const item of v) {
+      const r = walkExtractSchemaJson(item, depth + 1, st);
+      if (!r.ok) return r;
+    }
+    return { ok: true };
+  }
+  if (typeof v === 'object') {
+    st.nodes++;
+    if (st.nodes > BROWSER_EXTRACT_SCHEMA_MAX_NODES) {
+      return { ok: false, error: 'extract schema is too large (node budget exceeded)' };
+    }
+    const keys = Object.keys(v as object);
+    if (keys.length > BROWSER_EXTRACT_SCHEMA_MAX_KEYS_PER_NODE) {
+      return { ok: false, error: 'extract schema object has too many keys' };
+    }
+    for (const k of keys) {
+      const r = walkExtractSchemaJson((v as Record<string, unknown>)[k], depth + 1, st);
+      if (!r.ok) return r;
+    }
+    return { ok: true };
+  }
+  return { ok: false, error: 'extract schema has unsupported value type' };
+}
+
+/**
+ * Reject oversized / pathological JSON Schema objects before `jsonSchemaToZod`.
+ * Uses JSON round-trip so the walk cannot chase circular structures.
+ */
+export function validateBrowserExtractSchema(
+  schema: Record<string, unknown>,
+): { ok: true; parsed: Record<string, unknown> } | { ok: false; error: string } {
+  let ser: string;
+  try {
+    ser = JSON.stringify(schema);
+  } catch {
+    return { ok: false, error: 'extract schema must be JSON-serializable' };
+  }
+  if (Buffer.byteLength(ser, 'utf8') > BROWSER_EXTRACT_SCHEMA_MAX_JSON_BYTES) {
+    return {
+      ok: false,
+      error: `extract schema JSON exceeds ${BROWSER_EXTRACT_SCHEMA_MAX_JSON_BYTES} UTF-8 bytes`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(ser);
+  } catch {
+    return { ok: false, error: 'extract schema failed to parse' };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'extract schema JSON must be a non-null object at the root' };
+  }
+  const st: ExtractSchemaWalkState = { nodes: 0 };
+  const w = walkExtractSchemaJson(parsed, 0, st);
+  if (!w.ok) return w;
+  return { ok: true, parsed: parsed as Record<string, unknown> };
 }
 
 /**
@@ -189,7 +278,6 @@ export async function browserType(
 ): Promise<BrowserToolResult> {
   const t = target.trim();
   if (!t) return result('type', false, undefined, 'target is required');
-  if (text === undefined) return result('type', false, undefined, 'text is required');
   try {
     if (looksLikeSelectorTarget(t)) {
       const page = getActivePage(stagehand);
@@ -212,7 +300,11 @@ export async function browserExtract(
 ): Promise<BrowserToolResult> {
   try {
     if (schema && typeof schema === 'object' && instruction?.trim()) {
-      const zodSchema = jsonSchemaToZod(schema as unknown as JsonSchema);
+      const policy = validateBrowserExtractSchema(schema);
+      if (!policy.ok) {
+        return result('extract', false, undefined, policy.error);
+      }
+      const zodSchema = jsonSchemaToZod(policy.parsed as unknown as JsonSchema);
       const data = await stagehand.extract(instruction.trim(), zodSchema);
       return result('extract', true, data);
     }
@@ -231,9 +323,17 @@ export async function browserExtract(
 export async function browserScreenshot(stagehand: V3): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(stagehand);
-    const buf = await page.screenshot({ type: 'png' });
+    const buf = await page.screenshot({ type: 'jpeg', quality: 72 });
     const b64 = Buffer.from(buf).toString('base64');
-    return { ok: true, op: 'screenshot', data: { mime: 'image/png' }, imageBase64: b64 };
+    if (b64.length > BROWSER_SCREENSHOT_BASE64_MAX_CHARS) {
+      return result(
+        'screenshot',
+        false,
+        undefined,
+        'Screenshot exceeds maximum encoded size for chat context',
+      );
+    }
+    return { ok: true, op: 'screenshot', data: { mime: 'image/jpeg' }, imageBase64: b64 };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return result('screenshot', false, undefined, msg);
@@ -430,7 +530,8 @@ export async function runBrowserReActStep(
           '```',
         ];
         if (r.ok && imageBase64) {
-          lines.push('', `![screenshot](data:image/png;base64,${imageBase64})`);
+          const mime = (r.data as { mime?: string } | undefined)?.mime ?? 'image/jpeg';
+          lines.push('', `![screenshot](data:${mime};base64,${imageBase64})`);
         }
         return {
           markdown: lines.join('\n'),
