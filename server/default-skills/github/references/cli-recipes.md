@@ -73,11 +73,15 @@ scripts/gh-pr.sh review 57 --comment \
 # Post a regular comment (not a review)
 scripts/gh-pr.sh comment 57 --body "Rebased on main — ready for another look."
 
-# Merge (squash, clean up branch)
+# Merge (squash, clean up branch) — squash is the default if no method given
 scripts/gh-pr.sh merge 57 --squash --delete-branch
 
 # Merge with rebase
 scripts/gh-pr.sh merge 57 --rebase
+
+# Enqueue for auto-merge (requires merge queues to be enabled on the repo;
+# --squash is explicit here because gh requires a method with --auto)
+scripts/gh-pr.sh merge 57 --squash --auto
 
 # Close without merging
 scripts/gh-pr.sh close 57
