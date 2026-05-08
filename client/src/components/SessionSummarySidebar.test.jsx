@@ -145,13 +145,13 @@ describe('<SessionSummarySidebar /> — project PR detail fetch', () => {
         draft: false,
         merged_at: null,
       },
-      reviews: [],
-      comments: [],
       checks: [
         { name: 'lint', status: 'completed', conclusion: 'success' },
         { name: 'unit', status: 'completed', conclusion: 'failure' },
         { name: 'e2e', status: 'in_progress', conclusion: null },
       ],
+      reviews: [],
+      comments: [],
     });
 
     render(<SessionSummarySidebar sessionId="sess-status" isLive={false} />);

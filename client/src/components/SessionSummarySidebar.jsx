@@ -149,9 +149,8 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
         if (cancelled) return;
         // The endpoint returns `{ repo, source, pr: {...}, reviews, comments, checks }`.
         // Unwrap so this component can keep reading fields off `pull` directly
-        // (`pull.title`, `pull.state`, `pull.head`, etc.). Stash the raw checks
-        // under `_checks` for the rollup pill / per-check list.
-        setPull(d?.pr ? { ...d.pr, _checks: Array.isArray(d.checks) ? d.checks : [] } : null);
+        // (`pull.title`, `pull.state`, `pull.head`, etc.).
+        setPull(d?.pr ? { ...d.pr, checks: Array.isArray(d.checks) ? d.checks : [] } : null);
       })
       .catch(() => {
         if (!cancelled) setPullError(true);
@@ -334,10 +333,10 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
                   {pullError && (
                     <p className="text-gray-500 mt-1">Could not load CI status from GitHub.</p>
                   )}
-                  {pull && Array.isArray(pull._checks) && pull._checks.length > 0 && (
+                  {pull && Array.isArray(pull.checks) && pull.checks.length > 0 && (
                     <>
                       {(() => {
-                        const cs = summarizeChecks(pull._checks);
+                        const cs = summarizeChecks(pull.checks);
                         const cb = checksBadge(cs);
                         return (
                           <div className="mt-2 flex items-center gap-1.5">
@@ -359,7 +358,7 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
                         );
                       })()}
                       <ul className="mt-2 space-y-1" aria-label="Check runs">
-                        {pull._checks.slice(0, 8).map((chk, i) => {
+                        {pull.checks.slice(0, 8).map((chk, i) => {
                           const st = checkRowStyle(chk);
                           const Icon = CHECK_ICONS[st.iconKey] || AlertCircle;
                           return (
