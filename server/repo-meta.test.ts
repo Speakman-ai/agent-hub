@@ -123,3 +123,26 @@ describe('server/Dockerfile — better-sqlite3 native binding', () => {
     expect(dockerfile).toMatch(/apt-get\s+install[\s\S]*?python3[\s\S]*?make[\s\S]*?g\+\+/);
   });
 });
+
+/**
+ * Hub container defaults (`server/config.ts`) expect `codex` at /usr/local/bin and
+ * Cursor's `agent` at ~/.local/bin/agent for HOME=/home/node. The prod Dockerfile
+ * must bake both in so shipped environments don't require manual bin paths.
+ */
+describe('server/Dockerfile — Cursor Agent + Codex CLI', () => {
+  const dockerfile = readFileSync(path.join(serverDir, 'Dockerfile'), 'utf8');
+
+  it('installs @openai/codex globally (npm bin matches codexBin fallback)', () => {
+    expect(dockerfile).toMatch(/npm\s+install\s+-g\s+@openai\/codex/);
+  });
+
+  it('runs the Cursor installer as node before Playwright so ~/.local/bin/agent exists', () => {
+    expect(dockerfile).toMatch(
+      /USER node\s*\nRUN\s+curl[^\n]*cursor\.com\/install[^\n]*\|\s*bash/s,
+    );
+    const curlInstall = dockerfile.search(/RUN\s+curl[^\n]*cursor\.com\/install[^\n]*\|\s*bash/);
+    const playwright = dockerfile.indexOf('playwright install chromium');
+    expect(curlInstall).toBeGreaterThan(-1);
+    expect(playwright).toBeGreaterThan(curlInstall);
+  });
+});
