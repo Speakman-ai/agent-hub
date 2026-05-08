@@ -20,7 +20,7 @@ import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 const STEP_LABELS = [
   'Welcome',
   'Organization',
-  'Configure Claude',
+  'AI credentials',
   'Connect GitHub',
   'First Project',
 ];
@@ -122,9 +122,33 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   const [orgTestResult, setOrgTestResult] = useState(null);
 
   const claudeEngine = setupStatus?.engines?.['claude-code'] || {};
+  const cursorEngine = setupStatus?.engines?.['cursor-agent'] || {};
+  const codexEngine = setupStatus?.engines?.['codex-cli'] || {};
 
   const [claudePath, setClaudePath] = useState(claudeEngine.path || '');
   const [claudeEnabled, setClaudeEnabled] = useState(claudeEngine.available || false);
+  const [cursorPath, setCursorPath] = useState(cursorEngine.path || '');
+  const [cursorEnabled, setCursorEnabled] = useState(false);
+  const [codexPath, setCodexPath] = useState(codexEngine.path || '');
+  const [codexEnabled, setCodexEnabled] = useState(false);
+
+  const [cursorAuthState, setCursorAuthState] = useState(null);
+  const [cursorAuthError, setCursorAuthError] = useState(null);
+  const [codexAuthState, setCodexAuthState] = useState(null);
+  const [codexAuthError, setCodexAuthError] = useState(null);
+  const [codexApiKeyInput, setCodexApiKeyInput] = useState('');
+  const [codexApiKeySaving, setCodexApiKeySaving] = useState(false);
+  const [codexApiKeyStatus, setCodexApiKeyStatus] = useState(null);
+
+  useEffect(() => {
+    const c = setupStatus?.engines?.['claude-code'];
+    const u = setupStatus?.engines?.['cursor-agent'];
+    const x = setupStatus?.engines?.['codex-cli'];
+    if (c?.path != null && c.path !== '') setClaudePath(c.path);
+    if (typeof c?.available === 'boolean') setClaudeEnabled(c.available);
+    if (u?.path != null && u.path !== '') setCursorPath(u.path);
+    if (x?.path != null && x.path !== '') setCodexPath(x.path);
+  }, [setupStatus]);
 
   // Step 3 — Claude credential gate. The CLI binary path alone isn't enough
   // for first-run users: every spawned `claude` invocation needs an API key
@@ -143,6 +167,34 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   const [oauthTokenInput, setOauthTokenInput] = useState('');
   const [oauthTokenSaving, setOauthTokenSaving] = useState(false);
   const [oauthTokenStatus, setOauthTokenStatus] = useState(null);
+
+  const fetchCursorAuth = async () => {
+    setCursorAuthError(null);
+    try {
+      const res = await fetch(`${getApiBase()}/config/cursor-auth`, {
+        headers: { ...getAuthHeaders() },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setCursorAuthState(await res.json());
+    } catch (err) {
+      setCursorAuthError(err.message || 'Failed to load Cursor auth status');
+      setCursorAuthState(null);
+    }
+  };
+
+  const fetchCodexAuth = async () => {
+    setCodexAuthError(null);
+    try {
+      const res = await fetch(`${getApiBase()}/config/codex-auth`, {
+        headers: { ...getAuthHeaders() },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setCodexAuthState(await res.json());
+    } catch (err) {
+      setCodexAuthError(err.message || 'Failed to load Codex auth status');
+      setCodexAuthState(null);
+    }
+  };
 
   const fetchClaudeAuth = async () => {
     setAuthLoading(true);
@@ -165,9 +217,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   useEffect(() => {
     if (step === 3 && orgMode !== 'remote') {
       fetchClaudeAuth();
+      fetchCursorAuth();
+      fetchCodexAuth();
     }
-    // We intentionally re-run when entering Step 3 so that retries / coming
-    // back from Step 4 always reflect the freshest server state.
   }, [step, orgMode]);
 
   const credsConfigured = !!(
@@ -233,6 +285,51 @@ export default function SetupWizard({ onComplete, setupStatus }) {
       setOauthTokenStatus({ type: 'error', msg: err.message });
     } finally {
       setOauthTokenSaving(false);
+    }
+  };
+
+  const codexCredsConfigured =
+    codexAuthState?.activeMethod && codexAuthState.activeMethod !== 'none';
+  const cursorCredsConfigured = cursorAuthState?.activeMethod === 'oauth';
+
+  const anyEngineEnabled = claudeEnabled || cursorEnabled || codexEnabled;
+
+  const handleSaveCodexApiKey = async () => {
+    const trimmedKey = codexApiKeyInput.trim();
+    const binPath = codexPath.trim();
+    if (!trimmedKey || !binPath) return;
+    setCodexApiKeySaving(true);
+    setCodexApiKeyStatus(null);
+    try {
+      const patchRes = await fetch(`${getApiBase()}/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ codexBin: binPath }),
+      });
+      if (!patchRes.ok) {
+        const err = await patchRes.json().catch(() => ({ error: `HTTP ${patchRes.status}` }));
+        throw new Error(err.error || 'Failed to save Codex binary path');
+      }
+      const res = await fetch(`${getApiBase()}/config/codex-auth/api-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ apiKey: trimmedKey }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(err.error || `Save failed: ${res.status}`);
+      }
+      const result = await res.json().catch(() => ({}));
+      setCodexApiKeyStatus({
+        type: 'success',
+        msg: result.masked ? `Saved: ${result.masked}` : 'Saved',
+      });
+      setCodexApiKeyInput('');
+      await fetchCodexAuth();
+    } catch (err) {
+      setCodexApiKeyStatus({ type: 'error', msg: err.message });
+    } finally {
+      setCodexApiKeySaving(false);
     }
   };
 
@@ -322,13 +419,37 @@ export default function SetupWizard({ onComplete, setupStatus }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
-          claudeBin: claudeEnabled ? claudePath : '',
+          claudeBin: claudeEnabled ? claudePath.trim() : '',
+          cursorBin: cursorEnabled ? cursorPath.trim() : '',
+          codexBin: codexEnabled ? codexPath.trim() : '',
         }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error(err.error || `Configuration failed: ${res.status}`);
       }
+
+      if (cursorEnabled || codexEnabled) {
+        const modelsRes = await fetch(`${getApiBase()}/config/models`, {
+          headers: { ...getAuthHeaders() },
+        });
+        if (!modelsRes.ok) {
+          throw new Error(`Could not verify engine credentials (HTTP ${modelsRes.status}).`);
+        }
+        const modelsBody = await modelsRes.json();
+        const engineAuth = modelsBody.engineAuth || {};
+        if (cursorEnabled && !engineAuth['cursor-agent']) {
+          throw new Error(
+            'Cursor Agent is enabled but not signed in. On the machine running this Hub, run `cursor-agent login` in a terminal, then click Save & Continue again — or disable Cursor Agent above.',
+          );
+        }
+        if (codexEnabled && !engineAuth['codex-cli']) {
+          throw new Error(
+            'Codex CLI is enabled but is not authenticated. Paste an OpenAI-compatible API key above, complete `codex login` on the server, or disable Codex above.',
+          );
+        }
+      }
+
       setStep(4);
     } catch (err) {
       setError(err.message);
@@ -337,9 +458,18 @@ export default function SetupWizard({ onComplete, setupStatus }) {
     }
   };
 
+  const claudeGateOk = !claudeEnabled || credsConfigured;
+  const pathsOk =
+    (!claudeEnabled || claudePath.trim()) &&
+    (!cursorEnabled || cursorPath.trim()) &&
+    (!codexEnabled || codexPath.trim());
+
+  const step3CanContinue =
+    orgMode !== 'remote' && anyEngineEnabled && pathsOk && claudeGateOk && !saving;
+
   return (
     <div className="fixed inset-0 z-[70] bg-gray-950 flex items-center justify-center">
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-xl p-8">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-8">
         <StepIndicator currentStep={step} />
 
         {/* Step 1: Welcome */}
@@ -351,7 +481,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
             <div>
               <h1 className="text-2xl font-bold text-white mb-3">Welcome to Agent Hub</h1>
               <p className="text-gray-400 text-sm leading-relaxed max-w-md mx-auto">
-                Let&apos;s get you set up. First, we&apos;ll configure your organization profile.
+                We&apos;ll create your organization, then set up AI credentials (Claude, Cursor, or
+                Codex). If your first project is a code repo, we&apos;ll connect GitHub next so
+                clones and PRs work.
               </p>
             </div>
             <button
@@ -520,8 +652,8 @@ export default function SetupWizard({ onComplete, setupStatus }) {
             <div className="text-center mb-2">
               <h1 className="text-xl font-bold text-white mb-1">Configure Your Tools</h1>
               <p className="text-gray-400 text-sm">
-                Agent Hub uses Claude Code to power your AI agents. Let&apos;s make sure it&apos;s
-                set up.
+                Enable at least one engine and add credentials. Agents cannot run chats without a
+                signed-in CLI or API key.
               </p>
             </div>
 
@@ -576,10 +708,215 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               </div>
             </div>
 
-            {/* Warning if not enabled */}
-            {!claudeEnabled && (
+            {/* Cursor Agent card */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-full bg-sky-500 inline-block" />
+                  <span className="font-medium text-white text-sm">Cursor Agent</span>
+                </div>
+                <ToggleSwitch enabled={cursorEnabled} onChange={setCursorEnabled} />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs">
+                {cursorEngine.available ? (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-emerald-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-emerald-400">Detected at {cursorEngine.path}</span>
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-red-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    <span className="text-red-400">Not found</span>
+                  </>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1">
+                  Binary Path (cursor-agent)
+                </label>
+                <input
+                  type="text"
+                  value={cursorPath}
+                  onChange={(e) => setCursorPath(e.target.value)}
+                  placeholder="/usr/local/bin/cursor-agent"
+                  disabled={!cursorEnabled}
+                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-mono"
+                />
+              </div>
+              {cursorEnabled && (
+                <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3 text-xs space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-gray-200">Sign in to Cursor</span>
+                    {cursorCredsConfigured ? (
+                      <span className="flex items-center gap-1 text-emerald-400">
+                        <CheckCircle2 size={12} /> Connected
+                      </span>
+                    ) : (
+                      <span className="text-yellow-400">Required on server</span>
+                    )}
+                  </div>
+                  <p className="text-gray-500 leading-relaxed">
+                    On this Hub&apos;s host, run{' '}
+                    <code className="text-gray-300">cursor-agent login</code> in a terminal, then
+                    press Save &amp; Continue. Device login links also work from Settings → Cursor
+                    after onboarding.
+                  </p>
+                  {cursorAuthError && (
+                    <p className="text-red-400 flex items-center gap-1">
+                      <AlertCircle size={12} /> {cursorAuthError}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className="text-xs text-emerald-400 hover:text-emerald-300 underline"
+                    onClick={() => fetchCursorAuth()}
+                  >
+                    Refresh status
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Codex CLI card */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-full bg-amber-500 inline-block" />
+                  <span className="font-medium text-white text-sm">Codex CLI</span>
+                </div>
+                <ToggleSwitch enabled={codexEnabled} onChange={setCodexEnabled} />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs">
+                {codexEngine.available ? (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-emerald-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-emerald-400">Detected at {codexEngine.path}</span>
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-red-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    <span className="text-red-400">Not found</span>
+                  </>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1">
+                  Binary Path (codex)
+                </label>
+                <input
+                  type="text"
+                  value={codexPath}
+                  onChange={(e) => setCodexPath(e.target.value)}
+                  placeholder="/usr/local/bin/codex"
+                  disabled={!codexEnabled}
+                  className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-mono"
+                />
+              </div>
+              {codexEnabled && (
+                <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3 text-xs space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-gray-200">Codex credentials</span>
+                    {codexCredsConfigured ? (
+                      <span className="flex items-center gap-1 text-emerald-400">
+                        <CheckCircle2 size={12} /> Authenticated ({codexAuthState?.activeMethod})
+                      </span>
+                    ) : (
+                      <span className="text-yellow-400">API key or login required</span>
+                    )}
+                  </div>
+                  <p className="text-gray-500 leading-relaxed">
+                    Paste an API key used by Codex/OpenAI-compatible endpoints, or use{' '}
+                    <code className="text-gray-300">codex login</code> on the server. Keys are saved
+                    to this org&apos;s config.
+                  </p>
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium text-gray-400">API key</label>
+                    <input
+                      type="password"
+                      value={codexApiKeyInput}
+                      onChange={(e) => {
+                        setCodexApiKeyInput(e.target.value);
+                        setCodexApiKeyStatus(null);
+                      }}
+                      placeholder="sk-proj-... or CODEX_API_KEY"
+                      autoComplete="off"
+                      data-1p-ignore
+                      data-lpignore="true"
+                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveCodexApiKey}
+                      disabled={!codexApiKeyInput.trim() || !codexPath.trim() || codexApiKeySaving}
+                      className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      {codexApiKeySaving ? <Loader2 size={12} className="animate-spin" /> : null}
+                      {codexApiKeySaving ? 'Saving…' : 'Save API key'}
+                    </button>
+                    {codexApiKeyStatus && (
+                      <div
+                        className={`flex items-center gap-1.5 ${codexApiKeyStatus.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}
+                      >
+                        {codexApiKeyStatus.type === 'success' ? (
+                          <CheckCircle2 size={12} />
+                        ) : (
+                          <AlertCircle size={12} />
+                        )}
+                        <span>{codexApiKeyStatus.msg}</span>
+                      </div>
+                    )}
+                  </div>
+                  {codexAuthError && (
+                    <p className="text-red-400 flex items-center gap-1">
+                      <AlertCircle size={12} /> {codexAuthError}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className="text-xs text-emerald-400 hover:text-emerald-300 underline"
+                    onClick={() => fetchCodexAuth()}
+                  >
+                    Refresh status
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {!anyEngineEnabled && (
               <p className="text-yellow-400 text-xs text-center">
-                Claude Code must be enabled to continue.
+                Turn on at least one engine (Claude Code, Cursor Agent, or Codex CLI) to continue.
               </p>
             )}
 
@@ -762,7 +1099,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
               </button>
               <button
                 onClick={handleSaveAndContinue}
-                disabled={!claudeEnabled || saving || (!credsConfigured && orgMode !== 'remote')}
+                disabled={!step3CanContinue}
                 className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {saving && (
@@ -799,9 +1136,11 @@ export default function SetupWizard({ onComplete, setupStatus }) {
             <div className="text-center mb-2">
               <h1 className="text-xl font-bold text-white mb-1">Connect GitHub</h1>
               <p className="text-gray-400 text-sm">
-                Link your GitHub account so Agent Hub can list, merge, and comment on your PRs as
-                you. Each user signs in with their own GitHub identity. You can skip this and set it
-                up later from Settings.
+                This is the right moment if your first project will be a{' '}
+                <strong className="text-gray-300">GitHub codebase</strong>— clones, PRs, and
+                reviewer bots need your GitHub login (and often the hub&apos;s GitHub App). Each
+                user connects their own account. Skip if you&apos;re starting non-repo work; you can
+                finish this later in Settings.
               </p>
             </div>
 
@@ -841,7 +1180,8 @@ export default function SetupWizard({ onComplete, setupStatus }) {
             <div>
               <h1 className="text-xl font-bold text-white mb-2">Open Your First Project</h1>
               <p className="text-gray-400 text-sm leading-relaxed max-w-sm mx-auto">
-                Point Agent Hub at a code repository and we&apos;ll set up AI agents for it.
+                If you use GitHub or the clone-from-URL path, you should have finished the previous
+                step. We&apos;ll launch the project wizard next.
               </p>
             </div>
             <div className="flex flex-col items-center gap-3">

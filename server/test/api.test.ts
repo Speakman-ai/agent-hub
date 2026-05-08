@@ -1687,9 +1687,22 @@ describe('Usage', () => {
 
 describe('Setup', () => {
   describe('GET /api/setup/status', () => {
-    it('returns setup status', async () => {
+    it('returns setup status including engine paths', async () => {
       const res = await request.get('/api/setup/status').expect(200);
       expect(res.body).toHaveProperty('firstRun');
+      expect(res.body.engines).toEqual(
+        expect.objectContaining({
+          'claude-code': expect.objectContaining({
+            path: expect.any(String),
+          }),
+          'cursor-agent': expect.objectContaining({
+            path: expect.any(String),
+          }),
+          'codex-cli': expect.objectContaining({
+            path: expect.any(String),
+          }),
+        }),
+      );
     });
   });
 });

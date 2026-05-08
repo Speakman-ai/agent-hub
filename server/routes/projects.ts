@@ -676,6 +676,10 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     ensureContextFiles,
     getClaudeBin,
     setClaudeBin,
+    getCursorBin,
+    setCursorBin,
+    getCodexBin,
+    setCodexBin,
   } = deps;
 
   const router = Router();
@@ -945,12 +949,34 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       claudeAvailable = true;
     } catch {}
 
+    const cursorBinResolved = getCursorBin?.() ?? config.cursorBin;
+    let cursorAvailable = false;
+    try {
+      execSync(`"${cursorBinResolved}" --version`, { timeout: 5000, stdio: 'pipe' });
+      cursorAvailable = true;
+    } catch {}
+
+    const codexBinResolved = getCodexBin?.() ?? config.codexBin;
+    let codexAvailable = false;
+    try {
+      execSync(`"${codexBinResolved}" --version`, { timeout: 5000, stdio: 'pipe' });
+      codexAvailable = true;
+    } catch {}
+
     res.json({
       firstRun: projects.length === 0,
       engines: {
         'claude-code': {
           available: claudeAvailable,
           path: getClaudeBin(),
+        },
+        'cursor-agent': {
+          available: cursorAvailable,
+          path: cursorBinResolved,
+        },
+        'codex-cli': {
+          available: codexAvailable,
+          path: codexBinResolved,
         },
       },
       dataDir: config.dataDir,
@@ -959,7 +985,11 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/setup/configure', (req: Request, res: Response) => {
-    const { claudeBin } = req.body as { claudeBin?: string };
+    const { claudeBin, cursorBin, codexBin } = req.body as {
+      claudeBin?: string;
+      cursorBin?: string;
+      codexBin?: string;
+    };
 
     const configPath = path.join(config.dataDir, 'config.json');
     let fileConfig: Record<string, unknown> = {};
@@ -968,12 +998,22 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     } catch {}
 
     if (claudeBin !== undefined) fileConfig.claudeBin = claudeBin;
+    if (cursorBin !== undefined) fileConfig.cursorBin = cursorBin;
+    if (codexBin !== undefined) fileConfig.codexBin = codexBin;
 
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2) + '\n');
 
     if (claudeBin !== undefined) {
       setClaudeBin(claudeBin);
       config.claudeBin = claudeBin;
+    }
+    if (cursorBin !== undefined && setCursorBin) {
+      setCursorBin(cursorBin);
+      config.cursorBin = cursorBin;
+    }
+    if (codexBin !== undefined && setCodexBin) {
+      setCodexBin(codexBin);
+      config.codexBin = codexBin;
     }
 
     res.json({ ok: true, message: 'Configuration updated.' });
