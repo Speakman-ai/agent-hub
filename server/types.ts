@@ -1288,6 +1288,12 @@ export interface Agent {
    * `undefined` / `true` → delegation enabled (default behaviour).
    */
   delegationEnabled?: boolean;
+  /**
+   * When explicitly `false`, host-mediated browser tools (`<agenthub:react>`
+   * `tool: browser`) are omitted from the enriched prompt and rejected at
+   * execution time. `undefined` / `true` → enabled (default).
+   */
+  browserToolsEnabled?: boolean;
   hooks?: Record<string, HookConfig[]>;
   mcpServers?: Record<string, McpServerConfig>;
   installCommand?: string;

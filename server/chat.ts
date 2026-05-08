@@ -319,12 +319,28 @@ export function planAutoContinuationRetry(opts: {
   return { action: 'drop', reason: 'retries-exhausted' };
 }
 
-export const AUTO_CONTINUATION_PROMPT =
-  'Continue your previous answer using the newly loaded skill/wiki/web/browser context from this same turn. ' +
-  'Use a think -> act -> observe loop when needed. ' +
-  'When you need tools, emit <agenthub:react>{"actions":[{"tool":"wiki","query":"kanban api"}]}</agenthub:react> with your own real query strings; add more action objects for skill, web, or browser as needed (browser example: {"tool":"browser","op":"navigate","url":"https://example.com"}). ' +
-  'The JSON between the tags must parse with JSON.parse (no comments, no trailing commas, no doc placeholders like an actions array written as bracket-dot-dot-dot-bracket). ' +
-  'Answer the original user request directly when done.';
+/** Host browser tools via ReAct — enabled unless explicitly `browserToolsEnabled === false`. */
+export function agentBrowserToolsEnabled(agent: Pick<Agent, 'browserToolsEnabled'>): boolean {
+  return agent.browserToolsEnabled !== false;
+}
+
+/** Auto-continuation user message — browser wording omitted when tools are off for the agent. */
+export function buildAutoContinuationPrompt(browserToolsEnabled = true): string {
+  const loadedCtx = browserToolsEnabled ? 'skill/wiki/web/browser' : 'skill/wiki/web';
+  const toolGuidance = browserToolsEnabled
+    ? 'add more action objects for skill, web, or browser as needed (browser example: {"tool":"browser","op":"navigate","url":"https://example.com"}). '
+    : 'add skill or web actions only — omit browser entries from the actions array (browser tools are disabled for this agent). ';
+  return (
+    `Continue your previous answer using the newly loaded ${loadedCtx} context from this same turn. ` +
+    'Use a think -> act -> observe loop when needed. ' +
+    `When you need tools, emit <agenthub:react>{"actions":[{"tool":"wiki","query":"kanban api"}]}</agenthub:react> with your own real query strings; ${toolGuidance}` +
+    'The JSON between the tags must parse with JSON.parse (no comments, no trailing commas, no doc placeholders like an actions array written as bracket-dot-dot-dot-bracket). ' +
+    'Answer the original user request directly when done.'
+  );
+}
+
+/** Continuation hint when browser tools are enabled (backward-compat constant). */
+export const AUTO_CONTINUATION_PROMPT = buildAutoContinuationPrompt(true);
 
 /** One-time DB align for legacy hybrid RAG gate rows (`budget_version` 0 + `consumed` ≥ 1). */
 function persistLegacyWikiHybridGateIfNeeded(session: SessionRow, sessionId: string): void {
@@ -528,20 +544,28 @@ ${skillsList.join('\n')}`;
   }
 
   const isFirstMessage = options.isFirstMessage !== false; // default true for backward compat
+  const browserToolsOn = agentBrowserToolsEnabled(agent as Agent);
 
   if (isFirstMessage) {
+    const reactExampleJson = browserToolsOn
+      ? '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}'
+      : '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."}]}';
+    const browserToolLines = browserToolsOn
+      ? `- \`browser\` — host Chromium via Stagehand (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — natural language or CSS/XPath; \`type\` also needs \`text\`), \`extract\` (optional \`instruction\`, optional JSON \`schema\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. Requires Playwright Chromium on the server and an LLM API key for natural-language \`act\`/\`extract\` (override model with \`STAGEHAND_MODEL\`).
+- **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`act\`/\`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
+      : `- **Browser tools** are turned off for this agent (\`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them.`;
+
     prompt += `\n\n## ReAct Loop
 When you need extra context mid-answer, use a host-mediated ReAct action block (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
 <agenthub:react>
-{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}
+${reactExampleJson}
 </agenthub:react>
 Replace each string with real values you need (the example must stay valid JSON — never replace the \`actions\` array with bracket-dot-dot-dot-bracket or other non-JSON shorthand).
 Supported tools:
 - \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
 - \`skill\` — load a registered Agent Hub skill (field: \`name\`).
 - \`web\` — live web search via Serper (field: \`query\`). Only works when the server has \`SERPER_API_KEY\` or \`WEB_SEARCH_API_KEY\` set; otherwise the host returns a clear configuration error.
-- \`browser\` — host Chromium via Stagehand (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — natural language or CSS/XPath; \`type\` also needs \`text\`), \`extract\` (optional \`instruction\`, optional JSON \`schema\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. Requires Playwright Chromium on the server and an LLM API key for natural-language \`act\`/\`extract\` (override model with \`STAGEHAND_MODEL\`).
-- **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`act\`/\`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.
+${browserToolLines}
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
   }
 
@@ -2618,7 +2642,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (actions.length > maxAct) {
           reactObservations.push(`- Action list exceeded ${maxAct}; truncated to budget.`);
         }
-        const boundedActions = actions.slice(0, maxAct);
+        let boundedActions = actions.slice(0, maxAct);
+        const browserAllowed = agentBrowserToolsEnabled(agent);
+        if (!browserAllowed) {
+          const removed = boundedActions.filter((a) => a.tool === 'browser').length;
+          if (removed > 0) {
+            boundedActions = boundedActions.filter((a) => a.tool !== 'browser');
+            reactObservations.push(
+              `- ${removed} browser action(s) skipped: browser tools are disabled for agent "${agent.id}".`,
+            );
+            const gateMsg =
+              '## Browser tools disabled\n\nHost browser tools are turned off for this agent (`browserToolsEnabled: false`). Remove `tool: browser` entries from your `<agenthub:react>` block, or ask an operator to re-enable them under Settings → Agents.';
+            assistantContextToAppend = assistantContextToAppend
+              ? `${assistantContextToAppend}\n\n${gateMsg}`
+              : gateMsg;
+          }
+        }
         for (let actionIdx = 0; actionIdx < boundedActions.length; actionIdx++) {
           const action = boundedActions[actionIdx]!;
           const hostStepStart = Date.now();
@@ -3235,7 +3274,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             type: 'chat',
             agentId,
             sessionId,
-            content: AUTO_CONTINUATION_PROMPT,
+            content: buildAutoContinuationPrompt(agentBrowserToolsEnabled(agent)),
             _autoContinuation: true,
             _continuationDepth: continuationDepth + 1,
             _chainStartedAtMs: chainStartedAtMs,

@@ -99,6 +99,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       'role',
       'canReview',
       'delegationEnabled',
+      'browserToolsEnabled',
     ] as const;
     for (const key of allowed) {
       if ((req.body as Record<string, unknown>)[key] !== undefined)
@@ -109,8 +110,18 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/agents', (req: Request, res: Response) => {
-    const { id, projectId, name, engine, model, systemPrompt, color, heartbeat, role } =
-      req.body as Record<string, unknown>;
+    const {
+      id,
+      projectId,
+      name,
+      engine,
+      model,
+      systemPrompt,
+      color,
+      heartbeat,
+      role,
+      browserToolsEnabled,
+    } = req.body as Record<string, unknown>;
     if (!id || !/^[a-zA-Z0-9-]+$/.test(id as string)) {
       return res.status(400).json({ error: 'id is required and must be alphanumeric+hyphens' });
     }
@@ -133,6 +144,9 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       heartbeat: (heartbeat as Agent['heartbeat']) || { enabled: false, interval: '', prompt: '' },
     };
     if (role) agent.role = role as string;
+    if (browserToolsEnabled !== undefined) {
+      agent.browserToolsEnabled = Boolean(browserToolsEnabled);
+    }
     mkdirSync(path.join(project.ahw, 'agents', agent.id), { recursive: true });
     project.agents.push(agent);
     saveProjects();

@@ -5544,6 +5544,49 @@ function AgentConfigSection({ agents: initialAgents, projects = [], onAgentsChan
                     />
                   </div>
 
+                  <div className="border-t border-gray-700 pt-3">
+                    <div className="flex items-center gap-3 mb-2">
+                      <label className="text-xs text-gray-400 font-medium">
+                        Host browser tools (ReAct)
+                      </label>
+                      <button
+                        type="button"
+                        data-testid="agent-browser-tools-toggle"
+                        onClick={() => {
+                          const current =
+                            edit.browserToolsEnabled !== undefined
+                              ? edit.browserToolsEnabled
+                              : agent.browserToolsEnabled !== false;
+                          setEdit(agent.id, 'browserToolsEnabled', !current);
+                        }}
+                        className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                          (
+                            edit.browserToolsEnabled !== undefined
+                              ? edit.browserToolsEnabled
+                              : agent.browserToolsEnabled !== false
+                          )
+                            ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                            : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                        }`}
+                      >
+                        {(
+                          edit.browserToolsEnabled !== undefined
+                            ? edit.browserToolsEnabled
+                            : agent.browserToolsEnabled !== false
+                        )
+                          ? 'ON'
+                          : 'OFF'}
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      When ON, the enriched prompt documents{' '}
+                      <code className="font-mono">{'{"tool":"browser",...}'}</code> in{' '}
+                      <code className="font-mono">&lt;agenthub:react&gt;</code> and the host runs
+                      Stagehand/Playwright steps. When OFF, browser actions are stripped and the
+                      model is told not to emit them.
+                    </p>
+                  </div>
+
                   <div>
                     <label className={labelClass}>
                       PR Reviewer (GitHub username — overrides project default)

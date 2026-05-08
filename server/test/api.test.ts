@@ -678,6 +678,20 @@ describe('Agents', () => {
         .expect(200);
       expect(res.body.delegationEnabled).toBe(true);
     });
+
+    it('persists browserToolsEnabled=false and round-trips it', async () => {
+      const agent = await createAgent();
+      const res = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ browserToolsEnabled: false })
+        .expect(200);
+
+      expect(res.body.browserToolsEnabled).toBe(false);
+
+      const list = await request.get('/api/agents').expect(200);
+      const fetched = list.body.find((a: { id: string }) => a.id === agent.id);
+      expect(fetched?.browserToolsEnabled).toBe(false);
+    });
   });
 
   describe('DELETE /api/agents/:agentId', () => {

@@ -98,6 +98,23 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toContain('Wiki Documentation Guidelines');
   });
 
+  it('includes browser in ReAct example by default', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('## ReAct Loop');
+    expect(prompt).toContain('"tool":"browser"');
+  });
+
+  it('omits browser from ReAct instructions when browserToolsEnabled is false', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent({ browserToolsEnabled: false }), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toContain('## ReAct Loop');
+    expect(prompt).not.toContain('"tool":"browser"');
+    expect(prompt).toMatch(/browser tools.*off/i);
+  });
+
   it('excludes wiki guidelines on subsequent messages', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: false,
