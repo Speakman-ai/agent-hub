@@ -10,9 +10,9 @@
 #   op-read.sh whoami                             # show current identity (no secrets)
 #   op-read.sh item <title-or-uuid>              # show item details (fields visible!)
 #
-# IMPORTANT: The success-path stdout is the raw secret value — the agent must
-# use it (e.g. pass it to a command), NOT echo it back to chat. Error output
-# is redacted before printing so stray secret material does not leak in logs.
+# IMPORTANT: The output of op-read.sh is safe to capture but MUST NOT be echoed
+# back to the user verbatim. The agent must use the value (e.g. pass it to a
+# command), not display it.
 
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,6 @@ source "$DIR/_common.sh"
 # whoami — show identity without exposing any secrets
 # ---------------------------------------------------------------------------
 cmd_whoami() {
-  require_op_auth
   op whoami
 }
 
@@ -30,8 +29,6 @@ cmd_whoami() {
 # item — show item metadata (field labels but NOT values by default)
 # ---------------------------------------------------------------------------
 cmd_item() {
-  require_op_auth
-  require_python3
   local title="${1:-}"
   [[ -z "$title" ]] && op_die "usage: op-read.sh item <title-or-uuid>"
   # Show fields list (labels only, no values) so agent can discover field names
@@ -58,7 +55,6 @@ for f in data.get('fields', []):
 # so the model never sees it in a log-visible context.
 # ---------------------------------------------------------------------------
 cmd_read() {
-  require_op_auth
   local ref=""
   local vault="" item="" field=""
 

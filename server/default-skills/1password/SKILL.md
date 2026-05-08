@@ -44,14 +44,6 @@ create or update items.
 
 All scripts require the **1Password CLI (`op`)** on `$PATH`.
 
-### `python3`
-
-`op-list.sh` and `op-read.sh item` use **Python 3** for JSON formatting.
-
-- macOS: `brew install python3`
-- Linux: `sudo apt-get install python3` (Debian/Ubuntu) or `sudo yum install python3` (RHEL)
-- Verify: `python3 --version`
-
 - macOS: `brew install --cask 1password-cli`
 - Linux / other: https://developer.1password.com/docs/cli/get-started#install
 - Verify: `op --version`
@@ -77,10 +69,14 @@ in interactive sessions — not crons or heartbeats.
 immediately.
 
 **Write operations** (`op item create`, `op item edit`, `op document create`,
-`op document edit`) are **out of scope for this skill version**. Do not
-attempt them with the current scripts. If a user requests a write operation,
-explain that write support is not yet available and suggest using the `op` CLI
-directly with care.
+`op document edit`) **require explicit user confirmation** before the script
+executes. Show what will change (vault, item title, field names) — **never the
+secret values themselves**.
+
+> This is a behavioural contract on the agent, not a runtime guard in the
+> scripts. The wrapper `op-write-gate.sh` will hard-exit unless the
+> `OP_WRITE_CONFIRMED=yes` env var is set. The agent must present a summary and
+> receive explicit "yes" / "go ahead" from the user before setting the gate.
 
 ## Security Rules (non-negotiable)
 
@@ -118,6 +114,12 @@ scripts/op-run.sh --env-file .env.tpl -- docker-compose up -d
 
 # Render a config template with op:// references resolved
 scripts/op-run.sh inject -i config.tpl -o config.resolved
+
+# Create or edit items (shows plan + requires OP_WRITE_CONFIRMED=yes)
+scripts/op-write.sh create --vault Personal --title "New Key" \
+  --category Login --field username=alice --field 'password=hunter2'
+
+scripts/op-write.sh edit "My Item" --field api_key=new_value
 ```
 
 ## Full Reference
@@ -138,8 +140,6 @@ scripts/op-run.sh inject -i config.tpl -o config.resolved
   card comments.
 - When diagnosing auth failures, use `op whoami` — its output contains no
   secrets.
-- Do not attempt `op item create` / `op item edit` — write support is not yet
-  shipped. Direct the user to use the `op` CLI directly for writes.
-- All wrappers exit `2` with an actionable message when `op` is missing,
-  `python3` is missing, the session is expired, or the Service Account token
-  is invalid.
+- Never run `op item create` / `op item edit` without prior user confirmation.
+- All wrappers exit `2` with an actionable message when `op` is missing, the
+  session is expired, or the Service Account token is invalid.
