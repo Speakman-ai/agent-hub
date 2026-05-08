@@ -245,11 +245,30 @@ be present; global `x-api-key` break-glass alone returns **401**):
 | `/me/skill-credentials` | PUT | Body `{ skill_id, key_name, value, agent_id }` — `key_name` must appear in the schema for that skill as resolved for **that** agent (see above) |
 | `/me/skill-credentials/:id` | DELETE | Hard-delete the row |
 
-**Spawn merge.** For interactive chat, decrypted values are merged into
-the child process env for every **enabled** skill (project + bundled
-defaults, honouring per-agent disable overrides). Keys already set in
-the resolved env are **not** overwritten. Implementation:
-`server/skill-credentials-spawn.ts` (called from `server/chat.ts`).
+**Spawn merge.** `mergeSkillCredentialSpawnEnv` in
+`server/skill-credentials-spawn.ts` decrypts stored values and merges them
+into the child `env` for every **enabled** skill for that agent (project +
+bundled defaults, honouring per-agent disable overrides). Keys already set in
+the resolved env are **not** overwritten. Call sites:
+
+| Surface | Call path | Whose credential rows (`user_id`) |
+| ------- | --------- | ----------------------------------- |
+| Interactive 1:1 chat | `server/chat.ts` | Session owner (`ownerId` from the session row) |
+| Session rewind | `server/routes/sessions.ts` (`mergeSkillCredentialSpawnEnv` on rewind env) | Session owner if known, else org owner (`getSessionOwner` / `getOrgOwnerUserId`) |
+| Session summarize — REST `POST /api/sessions/:sessionId/summarize` | `server/routes/sessions.ts` → `summarizeTranscript` | Session owner if known, else org owner |
+| Chat auto-summarize (long reply) | `server/chat.ts` → `summarizeTranscript` | Interactive session owner (`ownerId` in chat) |
+| Conference room — WebSocket one-shot CLI | `server/room-chat.ts` | Authenticated WebSocket user if present, else org owner (`getWsAuthUserId` \|\| `getOrgOwnerUserId`) |
+| Conference room — REST **summarize** | `server/routes/rooms.ts` → `summarizeTranscript` | **Org owner only** (`getOrgOwnerUserId`) — not the browser user |
+| Design Studio chat | `server/design-chat.ts` | WebSocket user if present, else org owner |
+| Heartbeats | `server/heartbeat.ts` (`runClaude` `skillCredentialMerge`) | Org owner |
+| Crons | `server/heartbeat.ts` (`runCronJob` → `runClaude`) | Org owner |
+| Workflows | `server/workflow-runner.ts` | Org owner |
+| Slack bot replies | `server/slack.ts` | Org owner |
+| Delegation / synthesis spawns | `server/delegation.ts` | Parent session owner if known, else org owner (`getSessionOwner` \|\| `getOrgOwnerUserId`) |
+
+On **single-user** installs the org owner and the interactive user are usually
+the same — differences matter in multi-user orgs (saved secrets follow the
+`user_id` column, not the agent).
 
 ## JWT `uid` claim & pre-migration fallback
 

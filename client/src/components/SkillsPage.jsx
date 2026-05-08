@@ -268,13 +268,23 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
               </div>
               {credentialSchema.length > 0 && agentId && (
                 <div className="mt-5 rounded-lg border border-gray-700/80 bg-gray-900/35 p-3">
-                  <div className="mb-3 flex items-center gap-2">
-                    <Shield size={14} className="flex-shrink-0 text-amber-400" />
-                    <span className="text-xs font-medium text-gray-200">Credentials</span>
-                    <span className="text-[10px] text-gray-500">
-                      Stored per user, injected into spawned sessions. GitHub sign-in under Settings
-                      wins over same-named skill vars (GH_TOKEN / GITHUB_TOKEN).
-                    </span>
+                  <div className="mb-3 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Shield size={14} className="flex-shrink-0 text-amber-400" />
+                      <span className="text-xs font-medium text-gray-200">Credentials</span>
+                    </div>
+                    <p className="text-[10px] text-gray-500 leading-relaxed pl-0 sm:pl-6">
+                      Stored per signed-in user, merged into CLI spawns for enabled skills. GitHub
+                      sign-in under Settings wins over same-named skill vars (GH_TOKEN /
+                      GITHUB_TOKEN).
+                    </p>
+                    <p className="text-[10px] text-gray-500/90 leading-relaxed pl-0 sm:pl-6">
+                      Multi-user orgs: interactive chat, session summarize/rewind, and delegation
+                      use the session owner&apos;s saved keys when known. Conference rooms and
+                      Design Studio use the authenticated connection when present, otherwise the org
+                      owner. Scheduled work (heartbeats, crons, workflows), Slack, and room
+                      summarize use the org owner&apos;s vault.
+                    </p>
                   </div>
                   {credLoading ? (
                     <p className="text-xs text-gray-500">Loading saved values…</p>

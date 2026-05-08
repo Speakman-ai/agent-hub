@@ -237,7 +237,8 @@ export function mergeDecryptedSkillCredentialsIntoEnv(
   const placeholders = ids.map(() => '?').join(',');
   const stmt = db.prepare(
     `SELECT id, skill_id, key_name, value_enc FROM user_skill_credentials
-     WHERE user_id = ? AND skill_id IN (${placeholders})`,
+     WHERE user_id = ? AND skill_id IN (${placeholders})
+     ORDER BY skill_id ASC, key_name ASC, id ASC`,
   );
   const rows = stmt.all(userId, ...ids) as Array<{
     id: string;
