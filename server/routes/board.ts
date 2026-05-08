@@ -536,6 +536,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         sessionId,
         content: contextMessage,
         hookSpecificOutput: { sessionTitle: card.title },
+        // Explicit user-driven kanban assign — opt out of the bug-report
+        // reroute guard so a card whose description embeds `## Bug Report`
+        // (e.g. one filed through the bug-report intake endpoint) still
+        // lands on the chosen assignee. See `server/bug-report-reroute.ts`.
+        _fromBoardAssign: true,
         ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
       }).catch((err: Error) => {
         console.error(`[Board Assign] handleChat failed for session ${sessionId}:`, err.message);

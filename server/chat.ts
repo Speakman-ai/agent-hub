@@ -1216,6 +1216,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const intakeTarget = resolveBugReportReroute(project, agent, content, {
         fromQueue: msg._fromQueue,
         alreadyRerouted: msg._reroutedFromBugReport,
+        fromBoardAssign: msg._fromBoardAssign,
       });
       if (intakeTarget) {
         const intakeSessionId = uuidv4();

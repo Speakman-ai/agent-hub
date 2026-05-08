@@ -71,6 +71,32 @@ describe('isBugReportPayload', () => {
     expect(isBugReportPayload(buried)).toBe(false);
   });
 
+  it('does not match a "## Bug Report" header buried under another markdown header', () => {
+    // Regression for card e1e519d9: the kanban assign endpoint builds a
+    // context envelope of the shape "# Task: …\n## Description\n<card.desc>",
+    // and a card description that came from the bug-report intake will
+    // itself start with "## Bug Report". The detector must see this as the
+    // **task envelope**, not as a fresh bug report — otherwise every assign
+    // of such a card bounces back to intake.
+    const envelope =
+      '# Task: Move features & orchestration timeline to sidebar\n' +
+      '\n' +
+      '## Description\n' +
+      '## Bug Report\n' +
+      '**Severity:** medium\n' +
+      '**Source:** Electron 1.11.0\n';
+    expect(isBugReportPayload(envelope)).toBe(false);
+  });
+
+  it('does not match a "## Bug Report" header that follows any non-whitespace prefix', () => {
+    // Stronger than the buried-deep case: any leading non-whitespace
+    // character (a markdown header, a stray word, a bullet, etc.) before
+    // the "## Bug Report" line means the body is not a fresh bug report.
+    expect(isBugReportPayload('hi\n## Bug Report\n**Title:** x')).toBe(false);
+    expect(isBugReportPayload('# Foo\n## Bug Report\n**Title:** x')).toBe(false);
+    expect(isBugReportPayload('- item\n## Bug Report\n**Title:** x')).toBe(false);
+  });
+
   it('matches only the exact "## Bug Report" header, not close variants', () => {
     // The trailing \b in the regex requires a word→non-word transition, so
     // "## Bug Reports" (plural) does NOT match and neither does "## Bug".
@@ -139,6 +165,17 @@ describe('resolveBugReportReroute', () => {
   it('does not reroute messages already flagged as rerouted (prevents loops)', () => {
     const target = resolveBugReportReroute(projectWithIntake, leadAgent, BUG_REPORT_BODY, {
       alreadyRerouted: true,
+    });
+    expect(target).toBeNull();
+  });
+
+  it('does not reroute messages dispatched by the kanban assign endpoint', () => {
+    // Belt-and-suspenders: even if a body containing the bug-report header
+    // somehow reaches the head-anchored detector (e.g. a card description
+    // that literally starts with "## Bug Report"), an explicit user-driven
+    // assign must respect the chosen assignee.
+    const target = resolveBugReportReroute(projectWithIntake, leadAgent, BUG_REPORT_BODY, {
+      fromBoardAssign: true,
     });
     expect(target).toBeNull();
   });
