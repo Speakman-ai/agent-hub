@@ -763,6 +763,27 @@ describe('createStreamParser — Cursor Agent', () => {
     expect(res.isError).toBe(false);
   });
 
+  it('emits Edit tool_use on started when args include unified_diff (not deferred to completed)', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'tool_call',
+        subtype: 'started',
+        call_id: 'e-ud',
+        tool_call: {
+          editToolCall: {
+            args: { path: 'f.ts', unified_diff: '-a\n+b' },
+          },
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_use');
+    const use = events[0] as { tool: string; input: Record<string, unknown> };
+    expect(use.tool).toBe('Edit');
+    expect(use.input.path).toBe('f.ts');
+    expect(use.input.unified_diff).toBe('-a\n+b');
+  });
+
   it('handles unknown tool variants gracefully', () => {
     const events = parse([
       JSON.stringify({

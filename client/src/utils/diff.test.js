@@ -106,17 +106,57 @@ describe('parseDiffLines', () => {
     });
     expect(result.filePath).toBe('2 files');
     expect(result.action).toBe('Patch');
-    expect(result.additions).toHaveLength(2);
+    expect(result.additions).toHaveLength(3);
     expect(result.additions[0]).toMatch(/^add\s+a\.ts/);
-    expect(result.additions[1]).toMatch(/^delete\s+b\.ts/);
+    expect(result.additions[1]).toBe('· · ·');
+    expect(result.additions[2]).toMatch(/^delete\s+b\.ts/);
   });
 
-  it('renders Codex unified_diff when present', () => {
+  it('renders Codex unified_diff as removals/additions (not duplicated +/- gutters)', () => {
     const result = parseDiffLines('Edit', {
       changes: [{ path: 'x.ts', kind: 'update', unified_diff: '-old\n+new' }],
     });
     expect(result.filePath).toBe('x.ts');
-    expect(result.additions).toEqual(['update  x.ts', '-old', '+new']);
+    expect(result.removals).toEqual(['old']);
+    expect(result.additions).toEqual(['update  x.ts', 'new']);
+  });
+
+  it('parses Codex git-style unified_diff headers', () => {
+    const patch = [
+      'diff --git a/x.ts b/x.ts',
+      'index 1111111..2222222 100644',
+      '--- a/x.ts',
+      '+++ b/x.ts',
+      '@@ -1,1 +1,1 @@',
+      '-alpha',
+      '+beta',
+    ].join('\n');
+    const result = parseDiffLines('Edit', {
+      changes: [{ path: 'x.ts', kind: 'update', unified_diff: patch }],
+    });
+    expect(result.removals).toEqual(['alpha']);
+    expect(result.additions).toEqual(['update  x.ts', 'beta']);
+  });
+
+  it('parses Cursor Edit root-level unified_diff when no strReplace', () => {
+    const result = parseDiffLines('Edit', {
+      path: 'z.ts',
+      unified_diff: '-a\n+b',
+    });
+    expect(result.filePath).toBe('z.ts');
+    expect(result.removals).toEqual(['a']);
+    expect(result.additions).toEqual(['b']);
+  });
+
+  it('parses Codex multi-file unified_diff with file separators', () => {
+    const result = parseDiffLines('Edit', {
+      changes: [
+        { path: 'a.ts', kind: 'update', unified_diff: '-x\n+y' },
+        { path: 'b.ts', kind: 'update', unified_diff: '-p\n+q' },
+      ],
+    });
+    expect(result.removals).toEqual(['x', '', 'p']);
+    expect(result.additions).toEqual(['update  a.ts', 'y', '· · ·', 'update  b.ts', 'q']);
   });
 
   it('parses Cursor Agent editToolCall strReplace (nested oldText/newText)', () => {

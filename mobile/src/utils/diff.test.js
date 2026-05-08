@@ -81,6 +81,23 @@ describe('parseDiffLines', () => {
     expect(additions[0]).toContain('line-level diff not included');
   });
 
+  it('parses Codex unified_diff into removals and additions', () => {
+    const { removals, additions } = parseDiffLines('Edit', {
+      changes: [{ path: 'x.ts', kind: 'update', unified_diff: '-old\n+new' }],
+    });
+    expect(removals).toEqual(['old']);
+    expect(additions).toEqual(['update  x.ts', 'new']);
+  });
+
+  it('parses Cursor Edit root-level unified_diff', () => {
+    const { removals, additions } = parseDiffLines('Edit', {
+      path: 'z.ts',
+      unified_diff: '-a\n+b',
+    });
+    expect(removals).toEqual(['a']);
+    expect(additions).toEqual(['b']);
+  });
+
   it('parses Cursor Agent editToolCall strReplace (nested oldText/newText)', () => {
     const { filePath, removals, additions } = parseDiffLines('Edit', {
       path: 'server/design-multi-engine.ts',
