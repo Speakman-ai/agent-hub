@@ -54,6 +54,14 @@ function runCursor(
 let activeLoginProc: ChildProcess | null = null;
 let activeLoginId: string | null = null;
 
+function parseCursorBinQuery(req: Request): string | null {
+  const q = req.query.cursorBin;
+  const raw = Array.isArray(q) ? q[0] : q;
+  if (typeof raw !== 'string') return null;
+  const t = raw.trim();
+  return t.length > 0 ? t : null;
+}
+
 export default function createCursorAuthRoutes(deps: RouteDeps): Router {
   const { config, broadcast, getCursorBin } = deps;
   const router = Router();
@@ -65,8 +73,8 @@ export default function createCursorAuthRoutes(deps: RouteDeps): Router {
     activeLoginId = null;
   };
 
-  router.get('/api/config/cursor-auth', async (_req: Request, res: Response) => {
-    const path = binPath();
+  router.get('/api/config/cursor-auth', async (req: Request, res: Response) => {
+    const path = parseCursorBinQuery(req) ?? binPath();
     const binaryPresent = existsSync(path);
     const loginInProgress = !!activeLoginProc;
 

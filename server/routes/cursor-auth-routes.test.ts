@@ -86,6 +86,32 @@ describe('cursor-auth routes', () => {
     expect(spawnMock).toHaveBeenCalled();
   });
 
+  it('GET /api/config/cursor-auth prefers cursorBin query over getCursorBin when probing status', async () => {
+    const otherBin = join(tmpDir, 'wizard-cursor-agent');
+    writeFileSync(otherBin, '');
+
+    const statusJson = JSON.stringify({
+      isAuthenticated: true,
+      userInfo: { email: 'wiz@example.com' },
+    });
+    spawnMock.mockImplementation((cmd: string, args: string[]) => {
+      expect(cmd).toBe(otherBin);
+      if (args[0] === 'status' && args[1] === '--format' && args[2] === 'json') {
+        return fakeSpawnProc({ stdoutChunks: [statusJson], closeCode: 0 });
+      }
+      return fakeSpawnProc({ closeCode: 1 });
+    });
+
+    const res = await request(app)
+      .get(`/api/config/cursor-auth`)
+      .query({ cursorBin: otherBin })
+      .expect(200);
+
+    expect(res.body.activeMethod).toBe('oauth');
+    expect(res.body.binary.path).toBe(otherBin);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
   it('POST /api/config/cursor-auth/login responds once with loginUrl when NO_OPEN_BROWSER output includes URL', async () => {
     spawnMock.mockImplementation(() =>
       fakeSpawnProc({

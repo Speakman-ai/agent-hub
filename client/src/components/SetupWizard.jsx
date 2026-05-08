@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Bot,
   Rocket,
@@ -170,10 +170,13 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   const [oauthTokenSaving, setOauthTokenSaving] = useState(false);
   const [oauthTokenStatus, setOauthTokenStatus] = useState(null);
 
-  const fetchCursorAuth = async () => {
+  const fetchCursorAuth = useCallback(async () => {
     setCursorAuthError(null);
     try {
-      const res = await fetch(`${getApiBase()}/config/cursor-auth`, {
+      const binForProbe = cursorEnabled && cursorPath.trim().length > 0 ? cursorPath.trim() : null;
+      const qs =
+        binForProbe != null ? `?${new URLSearchParams({ cursorBin: binForProbe }).toString()}` : '';
+      const res = await fetch(`${getApiBase()}/config/cursor-auth${qs}`, {
         headers: { ...getAuthHeaders() },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -182,7 +185,7 @@ export default function SetupWizard({ onComplete, setupStatus }) {
       setCursorAuthError(err.message || 'Failed to load Cursor auth status');
       setCursorAuthState(null);
     }
-  };
+  }, [cursorEnabled, cursorPath]);
 
   const fetchCodexAuth = async () => {
     setCodexAuthError(null);
@@ -219,10 +222,21 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   useEffect(() => {
     if (step === 3 && orgMode !== 'remote') {
       fetchClaudeAuth();
-      fetchCursorAuth();
       fetchCodexAuth();
     }
   }, [step, orgMode]);
+
+  // Cursor status must follow the path typed in the wizard (not only the
+  // server's persisted config) so correcting a bad auto-detect unblocks the
+  // gate before Save & Continue runs /setup/configure.
+  useEffect(() => {
+    if (step !== 3 || orgMode === 'remote') return;
+    void fetchCursorAuth();
+    const id = window.setTimeout(() => {
+      void fetchCursorAuth();
+    }, 400);
+    return () => window.clearTimeout(id);
+  }, [step, orgMode, cursorEnabled, cursorPath, fetchCursorAuth]);
 
   const credsConfigured = !!(
     authState?.apiKey?.configured ||

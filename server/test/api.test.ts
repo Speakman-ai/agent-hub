@@ -1708,20 +1708,32 @@ describe('Setup', () => {
 
   describe('POST /api/setup/configure', () => {
     it('round-trips cursorBin and codexBin and GET status engines stay serializable', async () => {
+      const beforeCfg = await request.get('/api/config').expect(200);
+      const restoreCursorBin = beforeCfg.body.cursorBin as string;
+      const restoreCodexBin = beforeCfg.body.codexBin as string;
+
       const suffix = `${Date.now()}-${++_uniqueCounter}`;
       const cursorBin = `/tmp/agent-hub-setup-cursor-${suffix}`;
       const codexBin = `/tmp/agent-hub-setup-codex-${suffix}`;
-      await request.post('/api/setup/configure').send({ cursorBin, codexBin }).expect(200);
 
-      const cfg = await request.get('/api/config').expect(200);
-      expect(cfg.body.cursorBin).toBe(cursorBin);
-      expect(cfg.body.codexBin).toBe(codexBin);
+      try {
+        await request.post('/api/setup/configure').send({ cursorBin, codexBin }).expect(200);
 
-      const status = await request.get('/api/setup/status').expect(200);
-      expect(status.body.engines['cursor-agent'].path).toBe(cursorBin);
-      expect(status.body.engines['codex-cli'].path).toBe(codexBin);
-      expect(typeof status.body.engines['cursor-agent'].available).toBe('boolean');
-      expect(typeof status.body.engines['codex-cli'].available).toBe('boolean');
+        const cfg = await request.get('/api/config').expect(200);
+        expect(cfg.body.cursorBin).toBe(cursorBin);
+        expect(cfg.body.codexBin).toBe(codexBin);
+
+        const status = await request.get('/api/setup/status').expect(200);
+        expect(status.body.engines['cursor-agent'].path).toBe(cursorBin);
+        expect(status.body.engines['codex-cli'].path).toBe(codexBin);
+        expect(typeof status.body.engines['cursor-agent'].available).toBe('boolean');
+        expect(typeof status.body.engines['codex-cli'].available).toBe('boolean');
+      } finally {
+        await request
+          .patch('/api/config')
+          .send({ cursorBin: restoreCursorBin, codexBin: restoreCodexBin })
+          .expect(200);
+      }
     });
   });
 });

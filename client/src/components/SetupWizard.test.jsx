@@ -356,6 +356,70 @@ describe('SetupWizard — Step 3 Claude credential gate', () => {
   });
 });
 
+describe('SetupWizard — Step 3 Cursor path auth probe', () => {
+  function jsonResponse(body, status = 200) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  it('calls cursor-auth with cursorBin query for the in-form Cursor binary path', async () => {
+    const wizardPath = '/home/test/.local/bin/cursor-agent';
+    const fetchMock = vi.fn(async (url) => {
+      const u = String(url);
+      if (u.includes('/config/claude-auth')) {
+        return jsonResponse({
+          oauth: { loggedIn: false },
+          apiKey: { configured: false },
+          oauthToken: { configured: false },
+          activeMethod: null,
+        });
+      }
+      if (u.includes('/config/cursor-auth')) {
+        const parsed = new URL(u, 'http://localhost');
+        expect(parsed.searchParams.get('cursorBin')).toBe(wizardPath);
+        return jsonResponse({
+          oauth: { loggedIn: true },
+          activeMethod: 'oauth',
+          uiStatus: 'authenticated',
+        });
+      }
+      if (u.includes('/config/codex-auth')) {
+        return jsonResponse({ activeMethod: 'none' });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <SetupWizard
+        setupStatus={{
+          engines: {
+            'claude-code': { available: true, path: '/usr/bin/claude' },
+            'cursor-agent': { available: true, path: wizardPath },
+          },
+        }}
+        onComplete={() => {}}
+      />,
+    );
+
+    createOrg.mockResolvedValue({ id: 'org-test' });
+    await advanceToOrgStep();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    });
+    await waitFor(() => expect(screen.getByText(/Configure Your Tools/i)).toBeInTheDocument());
+
+    await waitFor(() => {
+      const cursorCalls = fetchMock.mock.calls.filter(([u]) =>
+        String(u).includes('/config/cursor-auth'),
+      );
+      expect(cursorCalls.length).toBeGreaterThan(0);
+    });
+  });
+});
+
 describe('SetupWizard — web build hides the Connection Mode toggle', () => {
   // The web client is *served by* the Agent Hub server it talks to, so a
   // Local/Remote toggle is incoherent here: there is no other server it
