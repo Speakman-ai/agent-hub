@@ -5,8 +5,14 @@ import { Loader2, Shield, AlertCircle, Copy, ExternalLink, LogIn, LogOut } from 
 /**
  * Cursor Agent — `cursor-agent login` with NO_OPEN_BROWSER on the Hub host
  * (see `agent login --help` from the Cursor Agent CLI).
+ *
+ * Props:
+ *   onAuthChange — optional callback fired with the latest auth payload
+ *     after every internal fetch. The setup wizard uses this so its own
+ *     `cursorCredsConfigured` gate refreshes when the user completes the
+ *     browser-login flow inside an embedded copy of this section.
  */
-export default function CursorAuthSection() {
+export default function CursorAuthSection({ onAuthChange } = {}) {
   const [auth, setAuth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -29,6 +35,7 @@ export default function CursorAuthSection() {
     try {
       const data = await api.getCursorAuth();
       setAuth(data);
+      if (typeof onAuthChange === 'function') onAuthChange(data);
     } catch (err) {
       setAuth(null);
       setError(err.message || 'Failed to load Cursor Agent auth status');
@@ -68,12 +75,14 @@ export default function CursorAuthSection() {
             if (st.uiStatus === 'authenticated') {
               clearLoginTimers();
               setAuth(st);
+              if (typeof onAuthChange === 'function') onAuthChange(st);
               setLoginUrl(null);
               setLoginLoading(false);
               setActionMsg({ type: 'success', msg: 'Authenticated with Cursor Agent.' });
             } else if (!st.loginInProgress) {
               clearLoginTimers();
               setAuth(st);
+              if (typeof onAuthChange === 'function') onAuthChange(st);
               setLoginUrl(null);
               setLoginLoading(false);
               if (st.uiStatus !== 'authenticated') {

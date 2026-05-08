@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Bot,
   Rocket,
@@ -10,12 +10,18 @@ import {
   Terminal,
   CheckCircle2,
   AlertCircle,
+  Globe,
+  LogIn,
+  ExternalLink,
+  Copy,
 } from 'lucide-react';
 import { getApiBase, getAuthHeaders, saveConnectionConfig } from '../utils/connection.js';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs.js';
 import { testConnection } from '../utils/connection.js';
+import { api } from '../utils/api.js';
 import GithubConnectionSection from './GithubConnectionSection.jsx';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
+import CursorAuthSection from './CursorAuthSection.jsx';
 
 const STEP_LABELS = [
   'Welcome',
@@ -149,6 +155,27 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const [codexApiKeyInput, setCodexApiKeyInput] = useState('');
   const [codexApiKeySaving, setCodexApiKeySaving] = useState(false);
   const [codexApiKeyStatus, setCodexApiKeyStatus] = useState(null);
+
+  // Codex `codex login --device-auth` flow — mirrors the SettingsPage panel so
+  // first-run users can complete a ChatGPT sign-in without leaving the wizard.
+  const [codexDeviceLoading, setCodexDeviceLoading] = useState(false);
+  const [codexDeviceAuthUrl, setCodexDeviceAuthUrl] = useState(null);
+  const [codexDeviceUserCode, setCodexDeviceUserCode] = useState(null);
+  const [codexDeviceMsg, setCodexDeviceMsg] = useState(null);
+  const [codexDeviceCopied, setCodexDeviceCopied] = useState(false);
+  const codexDeviceTimersRef = useRef({ intervalId: null, timeoutId: null });
+
+  const clearCodexDeviceTimers = () => {
+    const { intervalId, timeoutId } = codexDeviceTimersRef.current;
+    if (intervalId !== null) clearInterval(intervalId);
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    codexDeviceTimersRef.current = { intervalId: null, timeoutId: null };
+  };
+
+  // Always release the polling timers when the wizard unmounts — otherwise
+  // a 15-minute device-login window would keep firing GETs against a
+  // detached component.
+  useEffect(() => () => clearCodexDeviceTimers(), []);
 
   useEffect(() => {
     const c = setupStatus?.engines?.['claude-code'];
@@ -319,6 +346,89 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const cursorCredsConfigured = cursorAuthState?.activeMethod === 'oauth';
 
   const anyEngineEnabled = claudeEnabled || cursorEnabled || codexEnabled;
+
+  const handleCodexDeviceLogin = async () => {
+    clearCodexDeviceTimers();
+    setCodexDeviceLoading(true);
+    setCodexDeviceAuthUrl(null);
+    setCodexDeviceUserCode(null);
+    setCodexDeviceMsg(null);
+    try {
+      const data = await api.startCodexDeviceLogin();
+      if (data.deviceAuthUrl && data.userCode) {
+        setCodexDeviceAuthUrl(data.deviceAuthUrl);
+        setCodexDeviceUserCode(data.userCode);
+        // Open the verification page automatically — falls back to the
+        // copy-link button below if the popup blocker eats it.
+        if (typeof window !== 'undefined') window.open(data.deviceAuthUrl, '_blank');
+        // 15-minute hard cap matches the OpenAI device code lifetime.
+        const timeoutId = setTimeout(() => {
+          clearCodexDeviceTimers();
+          setCodexDeviceLoading(false);
+        }, 900_000);
+        const intervalId = setInterval(async () => {
+          try {
+            const st = await api.getCodexAuth();
+            if (st.uiStatus === 'authenticated' && !st.loginInProgress) {
+              clearCodexDeviceTimers();
+              setCodexAuthState(st);
+              setCodexDeviceAuthUrl(null);
+              setCodexDeviceUserCode(null);
+              setCodexDeviceLoading(false);
+              setCodexDeviceMsg({
+                type: 'success',
+                msg: 'Codex is authenticated on this host.',
+              });
+            } else if (!st.loginInProgress && st.uiStatus !== 'authenticated') {
+              clearCodexDeviceTimers();
+              setCodexAuthState(st);
+              setCodexDeviceAuthUrl(null);
+              setCodexDeviceUserCode(null);
+              setCodexDeviceLoading(false);
+              setCodexDeviceMsg({
+                type: 'error',
+                msg: st.statusError || 'Device login did not complete.',
+              });
+            }
+          } catch {
+            /* keep polling */
+          }
+        }, 3000);
+        codexDeviceTimersRef.current = { intervalId, timeoutId };
+      } else {
+        setCodexDeviceLoading(false);
+        setCodexDeviceMsg({
+          type: 'error',
+          msg: data.output || 'Could not start device login.',
+        });
+      }
+    } catch (err) {
+      setCodexDeviceLoading(false);
+      setCodexDeviceMsg({ type: 'error', msg: err.message || 'Device login failed' });
+    }
+  };
+
+  const handleCodexDeviceCancel = async () => {
+    clearCodexDeviceTimers();
+    try {
+      await api.cancelCodexDeviceLogin();
+    } catch {
+      /* ignore */
+    }
+    setCodexDeviceLoading(false);
+    setCodexDeviceAuthUrl(null);
+    setCodexDeviceUserCode(null);
+    setCodexDeviceMsg(null);
+  };
+
+  const handleCopyCodexDeviceCode = () => {
+    if (!codexDeviceUserCode) return;
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(codexDeviceUserCode);
+    }
+    setCodexDeviceCopied(true);
+    setTimeout(() => setCodexDeviceCopied(false), 2000);
+  };
 
   const handleSaveCodexApiKey = async () => {
     const trimmedKey = codexApiKeyInput.trim();
@@ -933,35 +1043,18 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                 )}
               </div>
               {cursorEnabled && (
-                <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3 text-xs space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-gray-200">Sign in to Cursor</span>
-                    {cursorCredsConfigured ? (
-                      <span className="flex items-center gap-1 text-emerald-400">
-                        <CheckCircle2 size={12} /> Connected
-                      </span>
-                    ) : (
-                      <span className="text-yellow-400">Required on server</span>
-                    )}
-                  </div>
-                  <p className="text-gray-500 leading-relaxed">
-                    On this Hub&apos;s host, run{' '}
-                    <code className="text-gray-300">cursor-agent login</code> in a terminal, then
-                    press Save &amp; Continue. Device login links also work from Settings → Cursor
-                    after onboarding.
-                  </p>
-                  {cursorAuthError && (
-                    <p className="text-red-400 flex items-center gap-1">
-                      <AlertCircle size={12} /> {cursorAuthError}
-                    </p>
-                  )}
-                  <button
-                    type="button"
-                    className="text-xs text-emerald-400 hover:text-emerald-300 underline"
-                    onClick={() => fetchCursorAuth()}
-                  >
-                    Refresh status
-                  </button>
+                <div
+                  className="rounded-lg border border-gray-700 bg-gray-900/50 p-3 text-xs space-y-2"
+                  data-testid="cursor-credentials"
+                >
+                  {/* Live "Sign in with browser" panel — same component used on
+                      Settings. The wizard's own /config/cursor-auth probe (for
+                      the gate, lines above) keeps its cursorBin query so a path
+                      typed in this form is honored before it's persisted; this
+                      embedded section reads/writes the persisted-config status
+                      and bubbles auth changes back via onAuthChange so the gate
+                      flips the moment the browser sign-in lands. */}
+                  <CursorAuthSection onAuthChange={() => void fetchCursorAuth()} />
                 </div>
               )}
             </div>
@@ -973,7 +1066,13 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   <span className="w-4 h-4 rounded-full bg-amber-500 inline-block" />
                   <span className="font-medium text-white text-sm">Codex CLI</span>
                 </div>
-                <ToggleSwitch enabled={codexEnabled} onChange={setCodexEnabled} />
+                <ToggleSwitch
+                  enabled={codexEnabled}
+                  onChange={(val) => {
+                    if (!val) clearCodexDeviceTimers();
+                    setCodexEnabled(val);
+                  }}
+                />
               </div>
               <div className="flex items-center gap-1.5 text-xs">
                 {codexEngine.available ? (
@@ -1017,10 +1116,87 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                     )}
                   </div>
                   <p className="text-gray-500 leading-relaxed">
-                    Paste an API key used by Codex/OpenAI-compatible endpoints, or use{' '}
-                    <code className="text-gray-300">codex login</code> on the server. Keys are saved
-                    to this org&apos;s config.
+                    Paste an API key used by Codex/OpenAI-compatible endpoints, or sign in with a
+                    ChatGPT-linked Codex account using device authorization — no SSH required.
                   </p>
+
+                  {/* ChatGPT device-code login (codex login --device-auth) */}
+                  <div
+                    className="rounded-lg border border-gray-700 bg-gray-900/50 p-3 space-y-2"
+                    data-testid="codex-device-login"
+                  >
+                    <div className="flex items-center gap-1.5 font-medium text-gray-200">
+                      <Globe size={12} /> ChatGPT sign-in (device code)
+                    </div>
+                    <p className="text-gray-500 leading-relaxed">
+                      Starts <code className="text-gray-300">codex login --device-auth</code> on the
+                      Hub. Open the verification URL, paste the one-time code, then wait for this
+                      panel to show Authenticated.
+                    </p>
+                    {codexDeviceAuthUrl && (
+                      <div className="rounded border border-gray-700 bg-gray-900/80 p-2 space-y-1.5">
+                        <p className="text-gray-400">Verification page</p>
+                        <a
+                          href={codexDeviceAuthUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-400 hover:underline break-all flex items-center gap-1"
+                        >
+                          {codexDeviceAuthUrl} <ExternalLink size={10} />
+                        </a>
+                        <p className="text-gray-400 pt-0.5">One-time code</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <code className="text-base tracking-widest text-white">
+                            {codexDeviceUserCode}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={handleCopyCodexDeviceCode}
+                            className="text-gray-400 hover:text-white flex items-center gap-1"
+                          >
+                            <Copy size={10} /> {codexDeviceCopied ? 'Copied' : 'Copy code'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleCodexDeviceLogin}
+                        disabled={codexDeviceLoading || !codexEngine.available}
+                        className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition-colors"
+                      >
+                        {codexDeviceLoading ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <LogIn size={12} />
+                        )}
+                        {codexDeviceLoading ? 'Waiting for OpenAI…' : 'Start ChatGPT device login'}
+                      </button>
+                      {codexDeviceLoading && (
+                        <button
+                          type="button"
+                          onClick={handleCodexDeviceCancel}
+                          className="text-gray-400 hover:text-white px-2 py-1.5"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                    {codexDeviceMsg && (
+                      <p
+                        className={`flex items-center gap-1 ${codexDeviceMsg.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}
+                      >
+                        {codexDeviceMsg.type === 'success' ? (
+                          <CheckCircle2 size={12} />
+                        ) : (
+                          <AlertCircle size={12} />
+                        )}
+                        <span>{codexDeviceMsg.msg}</span>
+                      </p>
+                    )}
+                  </div>
+
                   <div className="space-y-2">
                     <label className="block text-xs font-medium text-gray-400">API key</label>
                     <input
