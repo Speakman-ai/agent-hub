@@ -7,6 +7,12 @@ CREATE TABLE IF NOT EXISTS user_skill_credentials (
   skill_id TEXT NOT NULL,
   key_name TEXT NOT NULL,
   value_enc TEXT NOT NULL,
+  -- Pre-computed last-4 mask (e.g. "••••a1b2"). Populated at upsert time so
+  -- the list path can render previews without an O(n) AES decrypt sweep on
+  -- every GET /api/auth/me/skill-credentials. Nullable for backward
+  -- compatibility with rows written before the column existed; rowToMasked
+  -- falls back to a one-time decrypt + lazy backfill in that case.
+  masked_preview TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_used_at TEXT,

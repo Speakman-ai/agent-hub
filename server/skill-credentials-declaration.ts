@@ -74,7 +74,12 @@ export function parseCredentialsDeclaration(raw: unknown): ParsedCredentials {
       typeof obj.description === 'string' ? obj.description.trim().slice(0, 2000) : '';
     const docsUrlRaw = typeof obj.docs_url === 'string' ? obj.docs_url.trim() : '';
     const docs_url = docsUrlRaw ? normalizeCredentialDocsUrl(docsUrlRaw) : undefined;
-    const required = typeof obj.required === 'boolean' ? obj.required : true;
+    // Default-false: a SKILL.md that omits the `required` field opts that
+    // credential into "nice to have, blank is OK". Earlier the default was
+    // true, which silently made every undeclared credential mandatory and
+    // surprised authors of optional-token skills. Authors who want a hard
+    // requirement must say so explicitly with `required: true`.
+    const required = typeof obj.required === 'boolean' ? obj.required : false;
     credentials.push({
       name,
       label,

@@ -584,6 +584,22 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(404).json({ error: 'Agent not found' });
       return;
     }
+    // RBAC gate: a JWT-authenticated caller must be a member of the active
+    // org before they can use one of that org's agents as the schema-source
+    // for a credential PUT. Without this, agent ids (which are
+    // discoverable globally via the in-memory project list) could be used
+    // to validate against any project's `SKILL.md` and seed credentials in
+    // the caller's own user row keyed only on `(user_id, skill_id, key_name)`.
+    // apiKey + local-bundled bypass continue working — they're already
+    // treated as full Owner privilege everywhere else.
+    if (!authedReq.authViaApiKey && !authedReq.authLocalOrgBypass) {
+      const orgId = getActiveOrgId();
+      const role = orgId ? getMembershipRole(authedReq.authUserId, orgId) : null;
+      if (!role) {
+        res.status(403).json({ error: 'You are not a member of this org.' });
+        return;
+      }
+    }
     const workspace =
       typeof foundAgent.project.ahw === 'string' ? foundAgent.project.ahw.trim() : '';
     if (!workspace) {

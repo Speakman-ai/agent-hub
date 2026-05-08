@@ -151,6 +151,16 @@ export function initOrgsDb(): void {
   orgsDb.exec(MCP_SERVERS_SCHEMA);
   orgsDb.exec(USER_SKILL_CREDENTIALS_SCHEMA);
 
+  // Add `masked_preview` to user_skill_credentials on installs predating the
+  // pre-computed mask. Nullable column → backfill happens lazily on the
+  // first list/upsert that touches each row. CREATE TABLE IF NOT EXISTS
+  // above is intentionally idempotent and won't add the column on its own.
+  try {
+    orgsDb.prepare('SELECT masked_preview FROM user_skill_credentials LIMIT 1').get();
+  } catch {
+    orgsDb.exec('ALTER TABLE user_skill_credentials ADD COLUMN masked_preview TEXT');
+  }
+
   // Migration: drop the two Nango-era tables. The Nango integration was
   // ripped out in favour of the MCP-server registry; these tables held
   // operator-tier OAuth secrets and per-user OAuth `connection_id`s

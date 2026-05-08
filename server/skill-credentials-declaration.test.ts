@@ -49,11 +49,13 @@ describe('parseCredentialsDeclaration', () => {
     expect(r.error).toMatch(/duplicate/i);
   });
 
-  it('defaults type to secret and required true', () => {
+  it('defaults type to secret and required false', () => {
     const r = parseCredentialsDeclaration([{ name: 'BAR' }]);
     expect(r.error).toBeNull();
     expect(r.credentials[0]!.type).toBe('secret');
-    expect(r.credentials[0]!.required).toBe(true);
+    // Default-false (was true previously). Authors must opt in to mandatory
+    // by setting `required: true` explicitly — see review thread on PR #825.
+    expect(r.credentials[0]!.required).toBe(false);
   });
 
   it('omits docs_url when scheme is not http(s)', () => {

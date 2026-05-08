@@ -56,6 +56,17 @@ export function existsUserSkillCredential(
   return !!row;
 }
 
+interface RawCredentialRow {
+  id: string;
+  skill_id: string;
+  key_name: string;
+  value_enc: string;
+  masked_preview: string | null;
+  created_at: string;
+  updated_at: string;
+  last_used_at: string | null;
+}
+
 export function upsertUserSkillCredential(opts: {
   userId: string;
   skillId: string;
@@ -65,6 +76,11 @@ export function upsertUserSkillCredential(opts: {
 }): SkillCredentialMaskedRow {
   const value = opts.value ?? '';
   const enc = encryptSecret(value);
+  // Compute and persist the last-4 mask synchronously here so the list
+  // path never has to decrypt to render. We hold the plaintext for one
+  // line of code regardless; storing only its non-sensitive suffix is
+  // strictly less exposure than the previous decrypt-on-list shape.
+  const preview = maskLast4(value);
   const db = getOrgsDb();
 
   const existing = db
@@ -77,8 +93,10 @@ export function upsertUserSkillCredential(opts: {
 
   if (existing) {
     db.prepare(
-      `UPDATE user_skill_credentials SET value_enc = ?, updated_at = ?, last_used_at = NULL WHERE id = ?`,
-    ).run(enc, now, existing.id);
+      `UPDATE user_skill_credentials
+       SET value_enc = ?, masked_preview = ?, updated_at = ?, last_used_at = NULL
+       WHERE id = ?`,
+    ).run(enc, preview, now, existing.id);
     appendAudit({
       userId: opts.userId,
       skillId: opts.skillId,
@@ -88,23 +106,16 @@ export function upsertUserSkillCredential(opts: {
     });
     const row = db
       .prepare('SELECT * FROM user_skill_credentials WHERE id = ?')
-      .get(existing.id) as {
-      id: string;
-      skill_id: string;
-      key_name: string;
-      value_enc: string;
-      created_at: string;
-      updated_at: string;
-      last_used_at: string | null;
-    };
+      .get(existing.id) as RawCredentialRow;
     return rowToMasked(row);
   }
 
   const id = uuidv4();
   db.prepare(
-    `INSERT INTO user_skill_credentials (id, user_id, skill_id, key_name, value_enc, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, opts.userId, opts.skillId, opts.keyName, enc, now, now);
+    `INSERT INTO user_skill_credentials
+       (id, user_id, skill_id, key_name, value_enc, masked_preview, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, opts.userId, opts.skillId, opts.keyName, enc, preview, now, now);
   appendAudit({
     userId: opts.userId,
     skillId: opts.skillId,
@@ -112,15 +123,9 @@ export function upsertUserSkillCredential(opts: {
     action: 'upsert',
     actorUserId: opts.actorUserId,
   });
-  const row = db.prepare('SELECT * FROM user_skill_credentials WHERE id = ?').get(id) as {
-    id: string;
-    skill_id: string;
-    key_name: string;
-    value_enc: string;
-    created_at: string;
-    updated_at: string;
-    last_used_at: string | null;
-  };
+  const row = db
+    .prepare('SELECT * FROM user_skill_credentials WHERE id = ?')
+    .get(id) as RawCredentialRow;
   return rowToMasked(row);
 }
 
@@ -168,48 +173,54 @@ export function listMaskedUserSkillCredentials(
   skillIdFilter?: string | null,
 ): SkillCredentialMaskedRow[] {
   const db = getOrgsDb();
-  let rows: Array<{
-    id: string;
-    skill_id: string;
-    key_name: string;
-    value_enc: string;
-    created_at: string;
-    updated_at: string;
-    last_used_at: string | null;
-  }>;
+  let rows: RawCredentialRow[];
   if (skillIdFilter) {
     rows = db
       .prepare(
         'SELECT * FROM user_skill_credentials WHERE user_id = ? AND skill_id = ? ORDER BY skill_id, key_name',
       )
-      .all(userId, skillIdFilter) as typeof rows;
+      .all(userId, skillIdFilter) as RawCredentialRow[];
   } else {
     rows = db
       .prepare('SELECT * FROM user_skill_credentials WHERE user_id = ? ORDER BY skill_id, key_name')
-      .all(userId) as typeof rows;
+      .all(userId) as RawCredentialRow[];
   }
 
   return rows.map((r) => rowToMasked(r));
 }
 
-function rowToMasked(row: {
-  id: string;
-  skill_id: string;
-  key_name: string;
-  value_enc: string;
-  created_at: string;
-  updated_at: string;
-  last_used_at: string | null;
-}): SkillCredentialMaskedRow {
+/**
+ * Lazy backfill: rows written before `masked_preview` existed land here with
+ * a NULL preview. We decrypt them once, persist the suffix, and never look
+ * at the ciphertext on subsequent list calls. This keeps the list path's
+ * crypto cost at O(rows-without-preview) instead of O(all-rows).
+ */
+function backfillPreview(rowId: string, value_enc: string): string | null {
   let preview: string | null = null;
   try {
-    if (row.value_enc) {
-      const plain = decryptSecret(row.value_enc);
-      preview = maskLast4(plain);
+    if (value_enc) {
+      preview = maskLast4(decryptSecret(value_enc));
     }
   } catch {
     preview = '••••????';
   }
+  if (preview !== null) {
+    try {
+      getOrgsDb()
+        .prepare('UPDATE user_skill_credentials SET masked_preview = ? WHERE id = ?')
+        .run(preview, rowId);
+    } catch {
+      /* best-effort backfill — surface the value either way */
+    }
+  }
+  return preview;
+}
+
+function rowToMasked(row: RawCredentialRow): SkillCredentialMaskedRow {
+  const preview =
+    row.masked_preview !== null && row.masked_preview !== undefined
+      ? row.masked_preview
+      : backfillPreview(row.id, row.value_enc);
   return {
     id: row.id,
     skill_id: row.skill_id,
@@ -224,11 +235,20 @@ function rowToMasked(row: {
 /**
  * Build env entries for all stored keys for the given skill ids. Does not
  * overwrite existing keys in `into` when they are already non-empty strings.
+ *
+ * When `allowedKeysBySkillId` is provided, rows whose `(skill_id, key_name)`
+ * pair is not in the allowlist are skipped. This is what enforces the
+ * spawning agent's credential-declaration boundary: a key that exists in
+ * project B's `SKILL.md` (and was accepted there at PUT time) must NOT
+ * decrypt into project A's spawn env. Callers that don't have a schema
+ * context (tests, ad-hoc scripts) may omit the param to merge everything,
+ * preserving the historical behavior for the no-context case.
  */
 export function mergeDecryptedSkillCredentialsIntoEnv(
   userId: string,
   skillIds: string[],
   into: NodeJS.ProcessEnv,
+  allowedKeysBySkillId?: Map<string, ReadonlySet<string>> | null,
 ): void {
   const ids = [...new Set(skillIds)].filter(Boolean);
   if (ids.length === 0) return;
@@ -251,6 +271,13 @@ export function mergeDecryptedSkillCredentialsIntoEnv(
   const touchedRowIds: string[] = [];
 
   for (const row of rows) {
+    if (allowedKeysBySkillId) {
+      const allowed = allowedKeysBySkillId.get(row.skill_id);
+      // Missing entry = skill has no declared credentials in this spawn's
+      // resolved schema → skip every row for it. Empty Set has the same
+      // effect. Both are intentional: the schema is authoritative.
+      if (!allowed || !allowed.has(row.key_name)) continue;
+    }
     try {
       const val = decryptSecret(row.value_enc).trim();
       if (!val) continue;

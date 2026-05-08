@@ -54,4 +54,60 @@ describe('mergeDecryptedSkillCredentialsIntoEnv', () => {
 
     expect(env.SHARED_KEY).toBe('from-alpha');
   });
+
+  it('honours the per-skill schema allowlist — keys outside the allowlist do NOT merge', () => {
+    // Simulate the cross-project leak the reviewer flagged in PR #825 [7/10]:
+    // the row was accepted via project B's forked SKILL.md (extra env key),
+    // but project A's spawn resolves a stricter schema. The extra key must
+    // not appear in project A's spawn env even though it sits in storage.
+    upsertUserSkillCredential({
+      userId,
+      skillId: 'github',
+      keyName: 'GH_TOKEN',
+      value: 'declared',
+      actorUserId: userId,
+    });
+    upsertUserSkillCredential({
+      userId,
+      skillId: 'github',
+      keyName: 'PROJECT_B_ONLY_KEY',
+      value: 'leaked-if-broken',
+      actorUserId: userId,
+    });
+
+    const allow = new Map<string, ReadonlySet<string>>([['github', new Set(['GH_TOKEN'])]]);
+    const env: NodeJS.ProcessEnv = {};
+    mergeDecryptedSkillCredentialsIntoEnv(userId, ['github'], env, allow);
+
+    expect(env.GH_TOKEN).toBe('declared');
+    expect(env.PROJECT_B_ONLY_KEY).toBeUndefined();
+  });
+
+  it('skill-id missing from the allowlist Map is treated as an empty allowlist (no merges)', () => {
+    upsertUserSkillCredential({
+      userId,
+      skillId: 'github',
+      keyName: 'GH_TOKEN',
+      value: 'declared',
+      actorUserId: userId,
+    });
+    // Empty allowlist — caller resolved the schema and got `error` or
+    // `[]`. Either way the spawn should leak nothing.
+    const env: NodeJS.ProcessEnv = {};
+    mergeDecryptedSkillCredentialsIntoEnv(userId, ['github'], env, new Map());
+    expect(env.GH_TOKEN).toBeUndefined();
+  });
+
+  it('omitting the allowlist preserves historical no-filter behavior', () => {
+    upsertUserSkillCredential({
+      userId,
+      skillId: 'github',
+      keyName: 'GH_TOKEN',
+      value: 'plain',
+      actorUserId: userId,
+    });
+    const env: NodeJS.ProcessEnv = {};
+    mergeDecryptedSkillCredentialsIntoEnv(userId, ['github'], env);
+    expect(env.GH_TOKEN).toBe('plain');
+  });
 });
