@@ -22,7 +22,6 @@ import CursorAuthSection from './CursorAuthSection.jsx';
 import PoolSection from './PoolSection.jsx';
 import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
 import PrEnvProjectWizard from './PrEnvProjectWizard.jsx';
-import UserMcpServersSection from './McpServersSection.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
@@ -7117,7 +7116,7 @@ export function ToolErrorsSection({ projects }) {
  * Grouping mirrors mental model rather than alphabetical order:
  *   - Workspace: org/account/general level config the user touches first
  *   - Agents & Auth: per-agent and per-engine credential surfaces
- *   - Automation: scheduled & external integrations
+ *   - Automation: heartbeats, crons, Slack
  *   - Operations: observability & infra-adjacent panels
  */
 const SETTINGS_GROUPS = [
@@ -7129,7 +7128,6 @@ const SETTINGS_GROUPS = [
       { id: 'account', iconName: 'UserCircle', text: 'Account' },
       { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
       { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
-      { id: 'integrations', iconName: 'Plug', text: 'Integrations' },
     ],
   },
   {
@@ -7225,13 +7223,24 @@ export default function SettingsPage({
   // first render — the wizard mounts inside ProjectsSection and won't
   // appear from any other tab.
   const [tab, setTab] = useState(
-    initialPrEnvWizard?.projectId ? 'projects' : initialTab || 'general',
+    initialPrEnvWizard?.projectId
+      ? 'projects'
+      : initialTab === 'integrations'
+        ? 'general'
+        : initialTab || 'general',
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
+  // Legacy MCP location was Settings → Integrations; MCP now lives under Skills & Context → MCP.
+  useEffect(() => {
+    if (initialTab === 'integrations' && typeof onNavigate === 'function') {
+      onNavigate('skills:mcp');
+    }
+  }, [initialTab, onNavigate]);
+
   // When navigating directly to a specific tab (e.g. from OrgSwitcher)
   useEffect(() => {
-    if (initialTab) setTab(initialTab);
+    if (initialTab && initialTab !== 'integrations') setTab(initialTab);
   }, [initialTab]);
 
   // Find the currently active tab metadata across all groups (for mobile header).
@@ -7383,7 +7392,6 @@ export default function SettingsPage({
                 </>
               )}
               {tab === 'logs' && <ServerLogsSection wsRef={wsRef} />}
-              {tab === 'integrations' && <UserMcpServersSection />}
             </SettingsErrorBoundary>
           </div>
         </div>

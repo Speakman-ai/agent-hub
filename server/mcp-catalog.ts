@@ -1,5 +1,5 @@
 /**
- * MCP server catalog — well-known integrations the Settings UI surfaces as
+ * MCP server catalog — well-known servers the Skills → MCP UI surfaces as
  * one-click "Add" tiles. Each entry is a template: the user picks one,
  * fills in the required env / header values, and the server materialises
  * an `mcp_servers` row from it.
