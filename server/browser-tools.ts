@@ -256,7 +256,11 @@ async function withDocumentNavigationUrlPolicy(
     });
     ms.on('Fetch.requestPaused', handler);
     await run();
-  } catch {
+  } catch (err) {
+    console.warn(
+      '[browser-tools] Fetch.enable failed; main-frame redirect URL policy is degraded for this navigation:',
+      err instanceof Error ? err.message : String(err),
+    );
     await run();
   } finally {
     ms.off('Fetch.requestPaused', handler);
@@ -443,7 +447,9 @@ export async function browserScroll(stagehand: V3, direction: string): Promise<B
 export async function browserBack(stagehand: V3): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(stagehand);
-    await page.goBack({ waitUntil: 'load', timeoutMs: 30_000 });
+    await withDocumentNavigationUrlPolicy(stagehand, async () => {
+      await page.goBack({ waitUntil: 'load', timeoutMs: 30_000 });
+    });
     const finalUrl = page.url();
     const landed = validateBrowserNavigationUrl(finalUrl);
     if (!landed.ok) {
@@ -464,7 +470,9 @@ export async function browserBack(stagehand: V3): Promise<BrowserToolResult> {
 export async function browserForward(stagehand: V3): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(stagehand);
-    await page.goForward({ waitUntil: 'load', timeoutMs: 30_000 });
+    await withDocumentNavigationUrlPolicy(stagehand, async () => {
+      await page.goForward({ waitUntil: 'load', timeoutMs: 30_000 });
+    });
     const finalUrl = page.url();
     const landed = validateBrowserNavigationUrl(finalUrl);
     if (!landed.ok) {
