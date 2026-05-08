@@ -32,7 +32,8 @@ export function redactUrlForBrowserAudit(raw: string | undefined): string | unde
   }
 }
 
-const MAX_AUDIT_DETAIL_BYTES = 512;
+/** Max length for audit `detail` fields (`.slice` uses UTF-16 code units, not byte length). */
+const MAX_AUDIT_DETAIL_CHARS = 512;
 
 /**
  * Build a safe `detail` field for {@link logBrowserToolAudit}: URL-shaped
@@ -64,12 +65,12 @@ export function sanitizeBrowserToolAuditDetail(params: {
   if (/^https?:\/\//i.test(trimmed)) {
     const red = redactUrlForBrowserAudit(trimmed);
     if (red)
-      return red.length > MAX_AUDIT_DETAIL_BYTES
-        ? `${red.slice(0, MAX_AUDIT_DETAIL_BYTES - 1)}…`
+      return red.length > MAX_AUDIT_DETAIL_CHARS
+        ? `${red.slice(0, MAX_AUDIT_DETAIL_CHARS - 1)}…`
         : red;
   }
 
-  return hostDetail.slice(0, MAX_AUDIT_DETAIL_BYTES);
+  return hostDetail.slice(0, MAX_AUDIT_DETAIL_CHARS);
 }
 
 export function logBrowserToolAudit(entry: BrowserToolAuditEntry): void {
@@ -80,7 +81,7 @@ export function logBrowserToolAudit(entry: BrowserToolAuditEntry): void {
     op: entry.op,
     ok: entry.ok,
     hostExit: entry.hostExit,
-    ...(entry.detail ? { detail: entry.detail.slice(0, MAX_AUDIT_DETAIL_BYTES) } : {}),
+    ...(entry.detail ? { detail: entry.detail.slice(0, MAX_AUDIT_DETAIL_CHARS) } : {}),
     ...(entry.urlSnippet ? { urlSnippet: entry.urlSnippet.slice(0, 220) } : {}),
   });
   console.log(`[browser-tool-audit] ${line}`);

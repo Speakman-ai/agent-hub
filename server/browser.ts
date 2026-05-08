@@ -198,7 +198,7 @@ export function buildStagehandOptions(opts: BrowserSessionOptions = {}): Stageha
 const sessions = new Map<string, BrowserSession>();
 /** In-flight {@link launchBrowserSession} for pinned ids — prevents duplicate Chromium for concurrent callers. */
 const launchInFlight = new Map<string, Promise<BrowserSession>>();
-/** Launches that passed the capacity gate but have not yet registered in {@link sessions}. */
+/** In-flight launches reserved against the cap (incremented before the gate; includes init before {@link sessions} insert). */
 let pendingBrowserConstruction = 0;
 /** Auto-close timers — one per live {@link BrowserSession} id. */
 const idleCloseTimerBySessionId = new Map<string, NodeJS.Timeout>();
@@ -278,6 +278,20 @@ export function __resetStagehandLoaderForTests(): void {
 }
 
 /**
+ * Capacity gate evaluated **after** this launch has reserved a slot (`pendingBrowserConstruction++`),
+ * eliminating a TOCTOU where parallel callers observed `pending === 0` before any reservation.
+ *
+ * Exported for invariant tests in `browser-launch-capacity-gate.test.ts`.
+ */
+export function exceedsBrowserConcurrencyAfterReservation(
+  liveSessionsCount: number,
+  pendingIncludingThisReservation: number,
+  maxContexts: number,
+): boolean {
+  return liveSessionsCount + pendingIncludingThisReservation > maxContexts;
+}
+
+/**
  * Launch an isolated browser session. Each call creates a fresh Stagehand
  * (and therefore a fresh Chromium context) so sessions do not share
  * cookies, local storage, or service-worker caches.
@@ -309,14 +323,19 @@ export async function launchBrowserSession(
 
 async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise<BrowserSession> {
   const maxContexts = getBrowserMaxConcurrentContexts();
-  if (sessions.size + pendingBrowserConstruction >= maxContexts) {
-    throw new Error(
-      `Host browser capacity reached (${maxContexts} concurrent contexts). Close an idle browser session or retry later.`,
-    );
-  }
-
   pendingBrowserConstruction++;
   try {
+    if (
+      exceedsBrowserConcurrencyAfterReservation(
+        sessions.size,
+        pendingBrowserConstruction,
+        maxContexts,
+      )
+    ) {
+      throw new Error(
+        `Host browser capacity reached (${maxContexts} concurrent contexts). Close an idle browser session or retry later.`,
+      );
+    }
     const Stagehand = await loadStagehand();
     // If the caller didn't pin an executablePath, default to Playwright's
     // managed Chromium. This avoids Stagehand's chrome-launcher falling back
