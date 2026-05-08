@@ -4,6 +4,7 @@ import os from 'os';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
+import { promisify } from 'util';
 
 // Per-FILE isolation. vitest invokes setupFiles before each test file is
 // imported, so by overriding AGENT_HUB_DATA_DIR to a fresh random subdir
@@ -61,7 +62,7 @@ process.env.CODEX_BIN = NO_REAL_CLI;
 const FORBIDDEN_BIN_RE = /(?:^|[/\\])(claude|claude-code|cursor-agent|gemini|codex)(?:\.exe)?$/i;
 
 function makeGuard<T extends (...args: unknown[]) => unknown>(name: string, original: T): T {
-  return ((...args: unknown[]) => {
+  const wrapped = ((...args: unknown[]) => {
     const cmd = typeof args[0] === 'string' ? args[0] : '';
     if (cmd && FORBIDDEN_BIN_RE.test(cmd)) {
       throw new Error(
@@ -74,6 +75,18 @@ function makeGuard<T extends (...args: unknown[]) => unknown>(name: string, orig
     }
     return (original as (...a: unknown[]) => unknown)(...args);
   }) as T;
+  // Preserve util.promisify.custom so `promisify(execFile)` keeps its
+  // documented `{ stdout, stderr }` resolution shape. Without this, the
+  // generic callback-based promisify takes over and resolves to just the
+  // raw stdout string — breaking every caller that destructures the result
+  // (e.g. worktree.ts's runGit uses `const { stdout } = await execFileP(...)`,
+  // which would then read `.stdout` off a string and throw).
+  const customSym = (promisify as unknown as { custom: symbol }).custom;
+  const customImpl = (original as unknown as Record<symbol, unknown>)[customSym];
+  if (typeof customImpl === 'function') {
+    (wrapped as unknown as Record<symbol, unknown>)[customSym] = customImpl;
+  }
+  return wrapped;
 }
 
 // child_process is a CJS module; require it via createRequire so we can mutate
