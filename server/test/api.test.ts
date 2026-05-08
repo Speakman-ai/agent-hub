@@ -548,6 +548,38 @@ describe('Agents', () => {
       const proj = await createProject();
       await request.post('/api/agents').send({ id: agent.id, projectId: proj.id }).expect(409);
     });
+
+    it('persists browserToolsEnabled=false on create', async () => {
+      const proj = await createProject();
+      const res = await request
+        .post('/api/agents')
+        .send({
+          id: 'bt-off-agent',
+          projectId: proj.id,
+          name: 'Browser off',
+          engine: 'claude-code',
+          browserToolsEnabled: false,
+        })
+        .expect(201);
+
+      expect(res.body.browserToolsEnabled).toBe(false);
+    });
+
+    it('rejects non-boolean browserToolsEnabled on create', async () => {
+      const proj = await createProject();
+      const res = await request
+        .post('/api/agents')
+        .send({
+          id: 'bt-bad-create',
+          projectId: proj.id,
+          name: 'Bad bool',
+          engine: 'claude-code',
+          browserToolsEnabled: 'false',
+        })
+        .expect(400);
+
+      expect(res.body.error).toMatch(/browserToolsEnabled must be a boolean/i);
+    });
   });
 
   describe('GET /api/agents', () => {
@@ -677,6 +709,30 @@ describe('Agents', () => {
         .send({ delegationEnabled: true })
         .expect(200);
       expect(res.body.delegationEnabled).toBe(true);
+    });
+
+    it('persists browserToolsEnabled=false and round-trips it', async () => {
+      const agent = await createAgent();
+      const res = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ browserToolsEnabled: false })
+        .expect(200);
+
+      expect(res.body.browserToolsEnabled).toBe(false);
+
+      const list = await request.get('/api/agents').expect(200);
+      const fetched = list.body.find((a: { id: string }) => a.id === agent.id);
+      expect(fetched?.browserToolsEnabled).toBe(false);
+    });
+
+    it('rejects non-boolean browserToolsEnabled on patch', async () => {
+      const agent = await createAgent();
+      const res = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ browserToolsEnabled: 'false' })
+        .expect(400);
+
+      expect(res.body.error).toMatch(/browserToolsEnabled must be a boolean/i);
     });
   });
 

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   AUTO_CONTINUATION_MAX_RETRIES,
   AUTO_CONTINUATION_PROMPT,
+  buildAutoContinuationPrompt,
   clipUtf8StringToMaxBytes,
   detectReActBlock,
   mergePendingContextWithCap,
@@ -11,6 +12,19 @@ import {
   utf8SuffixMaxBytes,
 } from './chat.js';
 import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
+
+describe('buildAutoContinuationPrompt', () => {
+  it('matches AUTO_CONTINUATION_PROMPT when browser tools are enabled', () => {
+    expect(buildAutoContinuationPrompt(true)).toBe(AUTO_CONTINUATION_PROMPT);
+  });
+
+  it('omits browser-specific guidance when browser tools are disabled', () => {
+    const p = buildAutoContinuationPrompt(false);
+    expect(p).not.toContain('"tool":"browser"');
+    expect(p).not.toContain('skill, web, or browser');
+    expect(p).toContain('browser tools are disabled');
+  });
+});
 
 describe('AUTO_CONTINUATION_PROMPT', () => {
   it('uses a copy-paste-safe ReAct JSON example (no invalid actions:[...] shorthand)', () => {
