@@ -26,6 +26,7 @@ import type {
 } from '../types.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
+import { closeBrowserSession } from '../browser.js';
 import {
   normalizeOrchestrationMetaInput,
   parseOrchestrationMetaJson,
@@ -46,6 +47,15 @@ function safeParse(s: string): Record<string, unknown> {
   } catch {
     return { type: 'unknown', text: s };
   }
+}
+
+function closeBrowserBestEffort(sessionId: string): void {
+  void closeBrowserSession(sessionId).catch((err) => {
+    console.warn(
+      `[sessions] closeBrowserSession failed (${sessionId}):`,
+      err instanceof Error ? err.message : String(err),
+    );
+  });
 }
 
 export function buildTranscript(
@@ -509,6 +519,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         }
         activeProcesses.delete(session.id);
       }
+      closeBrowserBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -529,6 +540,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     for (const session of sessions) {
       if (session.deleted_at) continue;
       if (activeProcesses.has(session.id)) continue;
+      closeBrowserBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -564,6 +576,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
       activeProcesses.delete(sessionId);
     }
+
+    closeBrowserBestEffort(sessionId);
 
     stmts.softDeleteSession.run(sessionId);
 

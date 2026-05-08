@@ -4,9 +4,9 @@
  * This module centralizes the configuration and lifecycle management for the
  * Stagehand-wrapped Playwright browser instances agents use during chat
  * sessions. It purposefully does not expose raw Playwright types to the rest
- * of the server; higher-level tools (see `browser-tools.ts`, added in a
- * follow-up PR) will interact with a session through the `BrowserSession`
- * handle returned from `launchBrowserSession()`.
+ * of the server; higher-level tools live in `browser-tools.ts` and interact
+ * with a session through the `BrowserSession` handle returned from
+ * `launchBrowserSession()`.
  *
  * Design notes:
  *   • Each call to `launchBrowserSession()` spins up a dedicated Stagehand
@@ -183,6 +183,8 @@ export function buildStagehandOptions(opts: BrowserSessionOptions = {}): Stageha
 // ─── Session registry ───────────────────────────────────────────
 
 const sessions = new Map<string, BrowserSession>();
+/** In-flight {@link launchBrowserSession} for pinned ids — prevents duplicate Chromium for concurrent callers. */
+const launchInFlight = new Map<string, Promise<BrowserSession>>();
 
 /** Minimal shape we rely on from the Stagehand constructor at runtime. */
 interface StagehandLike {
@@ -201,16 +203,42 @@ async function loadStagehand(): Promise<new (opts: unknown) => StagehandLike> {
   return _stagehandCtor;
 }
 
+/** Test-only: clear lazy Stagehand constructor cache after `vi.mock('@browserbasehq/stagehand')`. */
+export function __resetStagehandLoaderForTests(): void {
+  _stagehandCtor = null;
+}
+
 /**
  * Launch an isolated browser session. Each call creates a fresh Stagehand
  * (and therefore a fresh Chromium context) so sessions do not share
  * cookies, local storage, or service-worker caches.
+ *
+ * When `opts.id` is set, concurrent calls with the same id share one launch
+ * (singleflight) and reuse an existing registered session if present.
+ * Unpinned launches always create a new browser.
  *
  * Throws if Chromium is not installed or Stagehand fails to connect.
  */
 export async function launchBrowserSession(
   opts: BrowserSessionOptions = {},
 ): Promise<BrowserSession> {
+  const pinnedId = opts.id;
+  if (pinnedId) {
+    const hit = sessions.get(pinnedId);
+    if (hit) return hit;
+    let inflight = launchInFlight.get(pinnedId);
+    if (!inflight) {
+      inflight = performLaunchBrowserSession(opts).finally(() => {
+        launchInFlight.delete(pinnedId);
+      });
+      launchInFlight.set(pinnedId, inflight);
+    }
+    return inflight;
+  }
+  return performLaunchBrowserSession(opts);
+}
+
+async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise<BrowserSession> {
   const Stagehand = await loadStagehand();
   // If the caller didn't pin an executablePath, default to Playwright's
   // managed Chromium. This avoids Stagehand's chrome-launcher falling back
@@ -269,6 +297,9 @@ export async function closeBrowserSession(id: string): Promise<boolean> {
  * cannot block the others from being torn down.
  */
 export async function closeAllBrowserSessions(): Promise<void> {
+  const pending = Array.from(launchInFlight.values());
+  launchInFlight.clear();
+  await Promise.allSettled(pending);
   const snapshot = Array.from(sessions.values());
   sessions.clear();
   await Promise.allSettled(
@@ -292,6 +323,7 @@ export async function closeAllBrowserSessions(): Promise<void> {
  */
 export function __resetBrowserRegistryForTests(): void {
   sessions.clear();
+  launchInFlight.clear();
 }
 
 /**

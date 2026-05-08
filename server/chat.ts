@@ -125,6 +125,7 @@ import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-obse
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
+import { runBrowserReActStep, BROWSER_REACT_OP_SET } from './browser-tools.js';
 import { effectivePrBaseBranch } from './kanban-pr-base.js';
 
 const stmts = _stmts!;
@@ -319,9 +320,9 @@ export function planAutoContinuationRetry(opts: {
 }
 
 export const AUTO_CONTINUATION_PROMPT =
-  'Continue your previous answer using the newly loaded skill/wiki/web context from this same turn. ' +
+  'Continue your previous answer using the newly loaded skill/wiki/web/browser context from this same turn. ' +
   'Use a think -> act -> observe loop when needed. ' +
-  'When you need tools, emit <agenthub:react>{"actions":[{"tool":"wiki","query":"kanban api"}]}</agenthub:react> with your own real query strings; add more action objects for skill or web as needed. ' +
+  'When you need tools, emit <agenthub:react>{"actions":[{"tool":"wiki","query":"kanban api"}]}</agenthub:react> with your own real query strings; add more action objects for skill, web, or browser as needed (browser example: {"tool":"browser","op":"navigate","url":"https://example.com"}). ' +
   'The JSON between the tags must parse with JSON.parse (no comments, no trailing commas, no doc placeholders like an actions array written as bracket-dot-dot-dot-bracket). ' +
   'Answer the original user request directly when done.';
 
@@ -341,12 +342,21 @@ function persistLegacyWikiHybridGateIfNeeded(session: SessionRow, sessionId: str
   }
 }
 
-type ReActTool = 'wiki' | 'skill' | 'web';
+type ReActTool = 'wiki' | 'skill' | 'web' | 'browser';
 
 interface ReActAction {
   tool: ReActTool;
   query?: string;
   name?: string;
+  /** browser — see server/browser-tools.ts */
+  op?: string;
+  url?: string;
+  target?: string;
+  text?: string;
+  instruction?: string;
+  schema?: Record<string, unknown>;
+  direction?: string;
+  condition?: string;
 }
 
 interface ParsedReAct {
@@ -523,13 +533,15 @@ ${skillsList.join('\n')}`;
     prompt += `\n\n## ReAct Loop
 When you need extra context mid-answer, use a host-mediated ReAct action block (emit as a naked XML tag — do NOT wrap it in backtick/code fences):
 <agenthub:react>
-{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."}]}
+{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}
 </agenthub:react>
 Replace each string with real values you need (the example must stay valid JSON — never replace the \`actions\` array with bracket-dot-dot-dot-bracket or other non-JSON shorthand).
 Supported tools:
 - \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
 - \`skill\` — load a registered Agent Hub skill (field: \`name\`).
 - \`web\` — live web search via Serper (field: \`query\`). Only works when the server has \`SERPER_API_KEY\` or \`WEB_SEARCH_API_KEY\` set; otherwise the host returns a clear configuration error.
+- \`browser\` — host Chromium via Stagehand (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — natural language or CSS/XPath; \`type\` also needs \`text\`), \`extract\` (optional \`instruction\`, optional JSON \`schema\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. Requires Playwright Chromium on the server and an LLM API key for natural-language \`act\`/\`extract\` (override model with \`STAGEHAND_MODEL\`).
+- **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`act\`/\`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
   }
 
@@ -871,9 +883,74 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       actions.push({ tool: 'web', query });
       continue;
     }
+    if (a.tool === 'browser') {
+      const op = typeof a.op === 'string' ? a.op.trim().toLowerCase() : '';
+      if (!op || !BROWSER_REACT_OP_SET.has(op)) {
+        return {
+          error: 'malformed',
+          detail: 'browser action requires op as a supported browser operation',
+        };
+      }
+      const url = typeof a.url === 'string' ? a.url : undefined;
+      const targetRaw =
+        (typeof a.target === 'string' ? a.target : undefined) ||
+        (typeof (a as { selector_or_description?: unknown }).selector_or_description === 'string'
+          ? String((a as { selector_or_description: string }).selector_or_description)
+          : undefined);
+      const target = targetRaw?.trim() || undefined;
+      const text = typeof a.text === 'string' ? a.text : undefined;
+      const instruction = typeof a.instruction === 'string' ? a.instruction : undefined;
+      const direction = typeof a.direction === 'string' ? a.direction : undefined;
+      const condition = typeof a.condition === 'string' ? a.condition : undefined;
+      let schema: Record<string, unknown> | undefined;
+      if (
+        a.schema !== undefined &&
+        a.schema !== null &&
+        typeof a.schema === 'object' &&
+        !Array.isArray(a.schema)
+      ) {
+        schema = a.schema as Record<string, unknown>;
+      }
+      if (op === 'navigate' && !url?.trim()) {
+        return { error: 'malformed', detail: 'browser navigate requires non-empty url' };
+      }
+      if ((op === 'click' || op === 'type') && !target) {
+        return {
+          error: 'malformed',
+          detail: `browser ${op} requires target (or selector_or_description)`,
+        };
+      }
+      if (op === 'type' && text === undefined) {
+        return { error: 'malformed', detail: 'browser type requires text' };
+      }
+      if (op === 'scroll' && !direction?.trim()) {
+        return { error: 'malformed', detail: 'browser scroll requires direction' };
+      }
+      if (op === 'wait' && !condition?.trim()) {
+        return { error: 'malformed', detail: 'browser wait requires condition' };
+      }
+      if (op === 'extract' && schema && !instruction?.trim()) {
+        return {
+          error: 'malformed',
+          detail: 'browser extract with schema requires instruction',
+        };
+      }
+      actions.push({
+        tool: 'browser',
+        op,
+        url,
+        target,
+        text,
+        instruction,
+        schema,
+        direction,
+        condition,
+      });
+      continue;
+    }
     return {
       error: 'malformed',
-      detail: 'Unsupported action.tool; expected "wiki", "skill", or "web"',
+      detail: 'Unsupported action.tool; expected "wiki", "skill", "web", or "browser"',
     };
   }
   return { actions };
@@ -2696,6 +2773,30 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 hostDetail = 'empty_wiki_result';
               }
               hostDetail = hostDetail || (action.query ?? '').slice(0, 120) || undefined;
+              continue;
+            }
+
+            if (action.tool === 'browser') {
+              const b = await runBrowserReActStep(sessionId, {
+                op: action.op ?? '',
+                url: action.url,
+                target: action.target,
+                text: action.text,
+                instruction: action.instruction,
+                schema: action.schema,
+                direction: action.direction,
+                condition: action.condition,
+              });
+              if (b.markdown.trim()) {
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${b.markdown.trim()}`
+                  : b.markdown.trim();
+                reactObservations.push(
+                  `- browser(${action.op}) host step finished (exit ${b.hostExit}).`,
+                );
+              }
+              hostExit = b.hostExit;
+              hostDetail = b.hostDetail || action.op;
               continue;
             }
           } catch (err: unknown) {

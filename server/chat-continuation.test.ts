@@ -18,6 +18,8 @@ describe('AUTO_CONTINUATION_PROMPT', () => {
     expect(AUTO_CONTINUATION_PROMPT).toContain(
       '{"actions":[{"tool":"wiki","query":"kanban api"}]}',
     );
+    expect(AUTO_CONTINUATION_PROMPT).toContain('skill, web, or browser');
+    expect(AUTO_CONTINUATION_PROMPT).toContain('"tool":"browser"');
   });
 });
 
@@ -173,6 +175,50 @@ describe('ReAct block parse', () => {
     expect(parsed).not.toMatchObject({ error: 'malformed' });
     if (!('error' in parsed)) {
       expect(parsed.actions[0]).toEqual({ tool: 'wiki', query: 'kanban\nstreaming\nparity' });
+    }
+  });
+
+  it('parses browser navigate actions', () => {
+    const text =
+      '<agenthub:react>{"actions":[{"tool":"browser","op":"navigate","url":"https://example.com"}]}</agenthub:react>';
+    const parsed = parseReActBlock(text);
+    expect(parsed).not.toMatchObject({ error: 'malformed' });
+    if (!('error' in parsed)) {
+      expect(parsed.actions).toEqual([
+        { tool: 'browser', op: 'navigate', url: 'https://example.com' },
+      ]);
+    }
+  });
+
+  it('maps selector_or_description to target for browser click', () => {
+    const payload = JSON.stringify({
+      actions: [{ tool: 'browser', op: 'click', selector_or_description: '#submit' }],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    expect(parsed).not.toMatchObject({ error: 'malformed' });
+    if (!('error' in parsed)) {
+      expect(parsed.actions[0]).toMatchObject({
+        tool: 'browser',
+        op: 'click',
+        target: '#submit',
+      });
+    }
+  });
+
+  it('rejects browser extract with schema but no instruction', () => {
+    const payload = JSON.stringify({
+      actions: [
+        {
+          tool: 'browser',
+          op: 'extract',
+          schema: { type: 'object', properties: { title: { type: 'string' } } },
+        },
+      ],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    expect(parsed).toMatchObject({ error: 'malformed' });
+    if ('error' in parsed) {
+      expect(parsed.detail).toMatch(/extract with schema requires instruction/);
     }
   });
 });
