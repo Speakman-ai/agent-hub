@@ -64,38 +64,34 @@ linear_gql() {
     "$(printf '%s' "$query" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')" \
     "$variables")
 
-  local response http_code
   local attempts=0
+  # Use mktemp to avoid PID-collision and symlink attacks in /tmp
+  local hdr_file
+  hdr_file=$(mktemp /tmp/linear_headers.XXXXXX)
 
   while true; do
     attempts=$((attempts + 1))
 
-    # -w appends "|||<http_code>" so we can peel out the status
-    response=$(curl -fsS \
-      -o /dev/null \
-      -w '%{http_code}' \
-      -X POST \
-      -H "Content-Type: application/json" \
-      -H "Authorization: ${LINEAR_API_KEY}" \
-      --data-raw "$body" \
-      "$LINEAR_GQL_URL" 2>/dev/null || true)
-
-    # Re-run capturing body
+    # Single curl: body → stdout, headers → hdr_file.
+    # Both are inspected before the file is removed.
     local raw_out
     raw_out=$(curl -sS \
       -X POST \
       -H "Content-Type: application/json" \
       -H "Authorization: ${LINEAR_API_KEY}" \
       --data-raw "$body" \
-      -D /tmp/linear_headers_$$ \
-      "$LINEAR_GQL_URL" 2>&1)
-    http_code=$(grep -i '^HTTP/' /tmp/linear_headers_$$ 2>/dev/null | tail -1 | awk '{print $2}' || echo "200")
-    rm -f /tmp/linear_headers_$$
+      -D "$hdr_file" \
+      "$LINEAR_GQL_URL" 2>&1) || true
+
+    local http_code
+    http_code=$(grep -i '^HTTP/' "$hdr_file" 2>/dev/null | tail -1 | awk '{print $2}' || echo "200")
 
     if [[ "$http_code" == "429" ]] && [[ "$attempts" -lt 2 ]]; then
-      local reset_at
-      reset_at=$(grep -i 'x-ratelimit-reset' /tmp/linear_headers_$$ 2>/dev/null | awk '{print $2}' | tr -d '\r' || echo "")
-      local wait_sec=5
+      # Read reset header BEFORE deleting the file
+      local reset_at wait_sec=5
+      reset_at=$(grep -i 'x-ratelimit-reset' "$hdr_file" 2>/dev/null | awk '{print $2}' | tr -d '\r' || echo "")
+      rm -f "$hdr_file"
+      hdr_file=$(mktemp /tmp/linear_headers.XXXXXX)
       if [[ -n "$reset_at" ]]; then
         local now
         now=$(date +%s)
@@ -108,23 +104,23 @@ linear_gql() {
       continue
     fi
 
-    # Check GraphQL-layer errors (status 200 but errors array present)
-    if echo "$raw_out" | python3 -c "
+    rm -f "$hdr_file"
+
+    # Check GraphQL-layer errors (status 200 but errors array present).
+    # python3 is the sole error reporter; non-JSON responses are also caught.
+    if ! echo "$raw_out" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
-    errs = d.get('errors')
-    if errs:
-        for e in errs:
-            print(e.get('message', str(e)), file=sys.stderr)
-        sys.exit(1)
 except Exception:
-    pass
-" 2>&1; then
-      : # no errors
-    else
-      # python3 exited non-zero (errors found) — already printed to stderr above
-      echo "$raw_out" >&2
+    print('error: Linear returned non-JSON response (check API endpoint or network)', file=sys.stderr)
+    sys.exit(1)
+errs = d.get('errors')
+if errs:
+    for e in errs:
+        print(e.get('message', str(e)), file=sys.stderr)
+    sys.exit(1)
+"; then
       exit 1
     fi
 

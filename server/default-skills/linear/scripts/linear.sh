@@ -294,7 +294,7 @@ cmd_issue_update() {
   if [[ -n "$state_name" ]]; then
     # We need the team_id to resolve states — get it from the issue first
     local issue_info team_id
-    issue_info=$(linear_gql 'query{issue(id:"'"$issue_id"'"){team{id}}}')
+    issue_info=$(linear_gql 'query IssueTeam($id:String!){issue(id:$id){team{id}}}' "{\"id\":\"$issue_id\"}")
     team_id=$(echo "$issue_info" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['issue']['team']['id'])")
     local state_id
     state_id=$(_resolve_state_id "$team_id" "$state_name")

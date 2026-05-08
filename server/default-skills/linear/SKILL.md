@@ -42,6 +42,9 @@ export LINEAR_API_KEY="lin_api_xxxxxxxxxxxxxxxx"
 
 To mint a key: **Linear → Settings → API → Personal API keys → Create key**.
 
+The scripts also require **`python3`** (3.6+) to be available on `PATH` — used
+for JSON serialisation and pretty-printing.
+
 ## Safety Model — Read-default, Write-on-confirm
 
 **Read operations** (list, get, search) run immediately.
@@ -50,6 +53,10 @@ with the user before executing, unless the user has already given explicit
 approval ("go ahead", "do it", "create it").
 
 Show a brief summary of what will change before running any mutation.
+
+> **Note:** this is a behavioural contract on the agent — the wrapper scripts
+> do not enforce a confirmation gate at runtime. The agent must follow this
+> pattern; the scripts will not block dangerous mutations on their own.
 
 ## Quick Reference
 
