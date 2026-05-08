@@ -18,25 +18,62 @@
  */
 
 import type supertest from 'supertest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { execSync, execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import { getRequest } from './helpers.js';
 
-/** Spin until the clone lands or the deadline elapses. */
-async function waitForClone(clonePath: string, timeoutMs = 10_000): Promise<boolean> {
+/**
+ * Poll until git clone is *fully* done — not just "HEAD is readable".
+ *
+ * The previous version returned the moment `git rev-parse HEAD` succeeded.
+ * `rev-parse HEAD` works as soon as refs are written, which is well before
+ * git finishes the working-tree checkout / pack staging. The fixture's
+ * `rmSync(root, { recursive: true })` then races the still-running git
+ * child and intermittently fails with `ENOTEMPTY` when git creates a new
+ * file in `.git/` between rm walking the dir and rm trying to rmdir it.
+ *
+ * Wait for the strongest "git clone has nothing left to do" signal we can
+ * observe externally:
+ *   - `rev-parse HEAD` succeeds (refs + objects readable),
+ *   - `.git/index` exists (working-tree checkout step finished writing it),
+ *   - no `.lock` files held by an in-flight git command,
+ *   - no `incoming-*` / `tmp_*` pack-staging dirs under `.git/objects/`.
+ */
+async function waitForClone(clonePath: string, timeoutMs = 15_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
+  const gitDir = path.join(clonePath, '.git');
   while (Date.now() < deadline) {
     try {
       execSync(`git -C ${JSON.stringify(clonePath)} rev-parse HEAD`, { stdio: 'ignore' });
-      return true;
+      const indexReady = existsSync(path.join(gitDir, 'index'));
+      const noLocks =
+        !existsSync(path.join(gitDir, 'index.lock')) &&
+        !existsSync(path.join(gitDir, 'HEAD.lock')) &&
+        !existsSync(path.join(gitDir, 'config.lock'));
+      const noStagingObjects = !hasIncomingObjects(gitDir);
+      if (indexReady && noLocks && noStagingObjects) {
+        return true;
+      }
     } catch {
-      await new Promise((r) => setTimeout(r, 100));
+      /* not ready */
     }
+    await new Promise((r) => setTimeout(r, 50));
   }
   return false;
+}
+
+/** Detect git's transient pack-staging dirs that exist only mid-clone. */
+function hasIncomingObjects(gitDir: string): boolean {
+  const objectsDir = path.join(gitDir, 'objects');
+  if (!existsSync(objectsDir)) return false;
+  try {
+    return readdirSync(objectsDir).some((n) => n.startsWith('incoming-') || n.startsWith('tmp_'));
+  } catch {
+    return false;
+  }
 }
 
 let request: supertest.Agent;
