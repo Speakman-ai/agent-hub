@@ -2,6 +2,9 @@ import { spawn, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { v4 as uuidv4 } from 'uuid';
 import { buildSpawnEnv } from './config.js';
+import { getProjects } from './project-model.js';
+import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { getWsAuthUserId, getOrgOwnerUserId, type AuthStampedWs } from './session-ownership.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type {
   Stmts,
@@ -359,7 +362,19 @@ ${otherAgents.length > 0 ? `EXAMPLE: "I think we should try X. @${otherAgents[0]
         let errorOutput = '';
         const timeout = config.conferenceTimeoutMs;
 
-        const roomEnv = buildSpawnEnv(config);
+        const roomEnv = { ...buildSpawnEnv(config) };
+        const roomOwnerId =
+          getWsAuthUserId(ws as unknown as AuthStampedWs | null) || getOrgOwnerUserId();
+        if (room.project_id && roomOwnerId) {
+          const proj = getProjects().find((p) => p.id === room.project_id);
+          if (proj) {
+            mergeSkillCredentialSpawnEnv(roomEnv, {
+              ownerId: roomOwnerId,
+              agentId: agent.id,
+              project: proj,
+            });
+          }
+        }
 
         const proc = spawn(CLAUDE_BIN, args, {
           cwd: agent.cwd || process.env.HOME,

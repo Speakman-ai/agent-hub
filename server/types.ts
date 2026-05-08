@@ -1929,6 +1929,7 @@ export interface RouteDeps {
     transcript: string,
     options: { engine: string; model?: string; cwd?: string },
     config: AppConfig,
+    skillCredentialMerge?: { ownerId: string | null; agentId: string; project: Project },
   ) => Promise<string>;
   DEFAULT_MODEL: string;
   activeProcesses: Map<string, import('child_process').ChildProcess>;

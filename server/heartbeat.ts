@@ -5,6 +5,7 @@ import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
 import config, { buildSpawnEnv, defaultModelForEngine, fileConfig } from './config.js';
+import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
@@ -163,6 +164,15 @@ interface RunClaudeOptions {
    * being resolved against the engine default.
    */
   model?: string | null;
+  /**
+   * When set, merges decrypted per-user skill credentials into the spawn env
+   * (same contract as interactive chat).
+   */
+  skillCredentialMerge?: {
+    ownerId: string | null;
+    agentId: string;
+    project: Project;
+  };
 }
 
 interface DetailedResult {
@@ -218,6 +228,9 @@ export function runClaude(
     const timeout = options.timeoutMs || config.defaultTimeoutMs;
 
     const heartbeatEnv = buildSpawnEnv(config);
+    if (options.skillCredentialMerge) {
+      mergeSkillCredentialSpawnEnv(heartbeatEnv, options.skillCredentialMerge);
+    }
 
     const proc = spawn(CLAUDE_BIN, args, {
       cwd,
@@ -355,9 +368,17 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
       typeof agent.heartbeat.model === 'string' && agent.heartbeat.model.trim()
         ? agent.heartbeat.model.trim()
         : undefined;
+    const hbProject = getProjects().find((p) => p.id === agent.projectId);
     const result = (await runClaude(agent.heartbeat.prompt, heartbeatCwd, agent.systemPrompt, {
       timeoutMs,
       model: heartbeatModel,
+      skillCredentialMerge: hbProject
+        ? {
+            ownerId: getOrgOwnerUserId(),
+            agentId: agent.id,
+            project: hbProject,
+          }
+        : undefined,
     })) as string;
     stmts.updateHeartbeatLog.run(result, 'success', logId);
     console.log(`[Heartbeat] ${agent.name} completed successfully`);
@@ -505,10 +526,19 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
   try {
     const resolvedCwd = resolveCronCwd(cronJob);
     const cronCwd = await getOrCreateProcessWorktree(resolvedCwd, `cron-${cronJob.id}`);
+    const cronProject = findProjectForCron(cronJob);
+    const cronSkillAgentId = cronProject?.agents?.[0]?.id ?? '_cron';
     const detailed = (await runClaude(cronJob.prompt, cronCwd, undefined, {
       timeoutMs,
       detailed: true,
       model: cronModel,
+      skillCredentialMerge: cronProject
+        ? {
+            ownerId: getOrgOwnerUserId(),
+            agentId: cronSkillAgentId,
+            project: cronProject,
+          }
+        : undefined,
     })) as DetailedResult;
     const durationMs = Date.now() - startTime;
     const result = detailed.stdout || detailed.stderr || '(empty response)';

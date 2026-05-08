@@ -8,6 +8,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getMemoryContext, appendDailyNote } from './memory.js';
 import config, { buildSpawnEnv } from './config.js';
+import { getProjects } from './project-model.js';
+import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { getOrgOwnerUserId } from './session-ownership.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { EnrichedAgent, Stmts, SlackMessageRow } from './types.js';
 
@@ -169,6 +172,7 @@ function runAgent(
   userMessage: string,
   cwd: string,
   engine = 'claude-code',
+  slackAgent?: EnrichedAgent | null,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     let args: string[];
@@ -205,9 +209,22 @@ function runAgent(
     let output = '';
     let errorOutput = '';
 
+    const spawnEnv = { ...buildSpawnEnv(config) };
+    const slackOwnerId = getOrgOwnerUserId();
+    if (slackAgent && slackOwnerId) {
+      const proj = getProjects().find((p) => p.id === slackAgent.projectId);
+      if (proj) {
+        mergeSkillCredentialSpawnEnv(spawnEnv, {
+          ownerId: slackOwnerId,
+          agentId: slackAgent.id,
+          project: proj,
+        });
+      }
+    }
+
     const proc = spawn(bin, args, {
       cwd,
-      env: buildSpawnEnv(config),
+      env: spawnEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -343,6 +360,7 @@ async function handleMessage(
       prompt,
       agent?.cwd || config.defaultCwd,
       agent?.engine || 'claude-code',
+      agent,
     );
 
     const shouldThread = !!message.thread_ts;

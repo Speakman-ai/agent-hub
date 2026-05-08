@@ -3256,6 +3256,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 cwd: project.cwd,
               },
               config,
+              {
+                ownerId,
+                agentId: agent.id,
+                project,
+              },
             )
               .then((summary: string) => {
                 if (summary && summary.trim()) {

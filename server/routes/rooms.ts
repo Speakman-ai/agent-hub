@@ -8,6 +8,7 @@ import type {
   EnrichedAgent,
   RoomAgentDetail,
 } from '../types.js';
+import { getOrgOwnerUserId } from '../session-ownership.js';
 
 interface RoomAgentInfo {
   id: string;
@@ -126,10 +127,21 @@ export default function createRoomRoutes(deps: RouteDeps): Router {
 
       const transcript = buildTranscript(messages, { isRoom: true });
 
+      const roomAgents = stmts.getRoomAgents.all(req.params.id) as RoomAgentRow[];
+      const firstRoomAgent = roomAgents[0];
+      const project = room.project_id ? findProject(room.project_id) : null;
+
       const summary = await summarizeTranscript(
         transcript,
         { engine: 'claude-code', model: DEFAULT_MODEL },
         config,
+        project && firstRoomAgent
+          ? {
+              ownerId: getOrgOwnerUserId(),
+              agentId: firstRoomAgent.agent_id,
+              project,
+            }
+          : undefined,
       );
 
       res.json({ summary });

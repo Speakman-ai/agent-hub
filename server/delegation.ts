@@ -13,6 +13,8 @@ import {
   delegationSessionUiMeta,
   clearDelegationUiMeta,
 } from './delegation-state.js';
+import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
+import { getSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { applyAssistantTextChunkForDelegationKickoff } from './delegation-kickoff-buffer.js';
 import { extractJsonFromTagBody } from './action-block-parsing.js';
@@ -569,6 +571,12 @@ export async function handleDelegation(
           const timeout = cfg.conferenceTimeoutMs || 600000;
 
           const spawnEnv = buildSpawnEnv(cfg);
+          const credOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
+          mergeSkillCredentialSpawnEnv(spawnEnv, {
+            ownerId: credOwnerId,
+            agentId: subAgent.id,
+            project,
+          });
 
           const proc = spawn(spec.bin, spec.args, {
             cwd: spawnCwd,
@@ -927,6 +935,12 @@ export async function synthesizeResults(
       let stderr = '';
 
       const synthEnv = buildSpawnEnv(cfg);
+      const synthOwnerId = getSessionOwner(sessionId) || getOrgOwnerUserId();
+      mergeSkillCredentialSpawnEnv(synthEnv, {
+        ownerId: synthOwnerId,
+        agentId: enrichedAgent.id,
+        project,
+      });
 
       let bin = getClaudeBin();
       let args: string[] = [];

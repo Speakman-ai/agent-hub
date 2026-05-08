@@ -4,6 +4,7 @@ import { getOrCreateProcessWorktree } from './worktree.js';
 import { buildEnrichedPrompt } from './chat.js';
 import { getProjectMode } from './project-mode.js';
 import config from './config.js';
+import { getOrgOwnerUserId } from './session-ownership.js';
 import { substituteWorkflowTemplate, mergeWorkflowTriggerPayload } from './workflow-templates.js';
 import type { Stmts, BroadcastFn, EnrichedAgent, Project } from './types.js';
 
@@ -272,6 +273,11 @@ export async function runWorkflowSequential(
         try {
           const out = (await runClaude(userContent, workDir, systemPrompt, {
             timeoutMs,
+            skillCredentialMerge: {
+              ownerId: getOrgOwnerUserId(),
+              agentId: enriched.id,
+              project: stepProject,
+            },
           })) as string;
           if (workflowRunCancelRequested.has(runId)) {
             stmts.updateWorkflowStepRunComplete.run(

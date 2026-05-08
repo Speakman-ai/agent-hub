@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -96,8 +96,13 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
   const override = overrides?.find((o) => o.skill_id === skill.id);
   const isEnabled = override ? !!override.enabled : true;
 
+  const credentialSchemaKey = useMemo(
+    () => JSON.stringify(credentialSchema ?? []),
+    [credentialSchema],
+  );
+
   useEffect(() => {
-    if (!expanded || !credentialSchema?.length || !agentId) return;
+    if (!expanded || credentialSchemaKey === '[]' || !agentId) return;
     let cancelled = false;
     (async () => {
       setCredLoading(true);
@@ -117,7 +122,7 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
     return () => {
       cancelled = true;
     };
-  }, [expanded, skill.id, agentId, credentialSchema?.length]);
+  }, [expanded, skill.id, agentId, credentialSchemaKey]);
 
   const rowForKey = useCallback(
     (keyName) => credentialRows.find((r) => r.key_name === keyName),
@@ -267,7 +272,8 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
                     <Shield size={14} className="flex-shrink-0 text-amber-400" />
                     <span className="text-xs font-medium text-gray-200">Credentials</span>
                     <span className="text-[10px] text-gray-500">
-                      Stored per user, injected into spawned sessions
+                      Stored per user, injected into spawned sessions. GitHub sign-in under Settings
+                      wins over same-named skill vars (GH_TOKEN / GITHUB_TOKEN).
                     </span>
                   </div>
                   {credLoading ? (

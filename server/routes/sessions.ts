@@ -23,7 +23,9 @@ import type {
   EnrichedAgent,
   KanbanCardRow,
   SkillInvocationRow,
+  Project,
 } from '../types.js';
+import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { closeBrowserSession } from '../browser.js';
@@ -38,6 +40,8 @@ import {
   setSessionOwner,
   inheritOwnerFromSession,
   userOwnsSession,
+  getSessionOwner,
+  getOrgOwnerUserId,
 } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
 
@@ -168,6 +172,7 @@ export function summarizeTranscript(
   transcript: string,
   { engine, model, cwd }: { engine: string; model?: string; cwd?: string },
   config: AppConfig,
+  skillCredentialMerge?: { ownerId: string | null; agentId: string; project: Project },
 ): Promise<string> {
   const systemPrompt = SUMMARIZE_SYSTEM_PROMPT;
   const userPrompt = buildSummarizeUserPrompt(transcript);
@@ -195,9 +200,14 @@ export function summarizeTranscript(
     let errorOutput = '';
     const timeout = config.defaultTimeoutMs;
 
+    const spawnEnv = { ...buildSpawnEnv(config) };
+    if (skillCredentialMerge) {
+      mergeSkillCredentialSpawnEnv(spawnEnv, skillCredentialMerge);
+    }
+
     const proc = spawn(bin, args, {
       cwd: cwd || process.env.HOME,
-      env: buildSpawnEnv(config),
+      env: spawnEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -844,6 +854,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           cwd: project?.cwd,
         },
         config,
+        project && session.agent_id
+          ? {
+              ownerId: getSessionOwner(session.id) || getOrgOwnerUserId(),
+              agentId: session.agent_id,
+              project,
+            }
+          : undefined,
       );
 
       res.json({ summary });
@@ -924,10 +941,22 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
       const REWIND_TIMEOUT_MS = 30_000;
 
+      const rewindEnv = { ...buildSpawnEnv(config) };
+      const rewindOwnerId = getSessionOwner(req.params.sessionId) || getOrgOwnerUserId();
+      const rewindLookup = findAgent(session.agent_id);
+      if (rewindLookup?.project && rewindOwnerId) {
+        mergeSkillCredentialSpawnEnv(rewindEnv, {
+          ownerId: rewindOwnerId,
+          agentId: session.agent_id,
+          project: rewindLookup.project,
+        });
+      }
+
       const proc = spawn(claudeBin, args, {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
+        env: rewindEnv,
       });
       trackChild(proc);
 
