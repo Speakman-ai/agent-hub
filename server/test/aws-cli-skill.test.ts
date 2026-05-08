@@ -203,6 +203,16 @@ describe('aws-whoami.sh credential error handling', () => {
     });
     // Should exit non-zero (1 for cred error, or 2 for cli missing)
     expect(result.status).not.toBe(0);
+    // Must surface actionable guidance — not a silent non-zero exit
+    const combined = result.stderr + result.stdout;
+    const hasCredGuidance =
+      combined.includes('aws sso login') ||
+      combined.includes('aws configure') ||
+      combined.includes('No AWS credentials') ||
+      combined.includes('AWS session token has expired') ||
+      combined.includes('failed') ||
+      combined.includes('error:');
+    expect(hasCredGuidance).toBe(true);
   });
 });
 

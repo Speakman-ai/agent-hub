@@ -48,12 +48,12 @@ fi
 echo "# Profile: ${RESOLVED_PROFILE}  Region: ${RESOLVED_REGION}" >&2
 echo "" >&2
 
-# Run the command; capture output for masking
-OUTPUT="$(aws_cmd "${REMAINING_ARGS[@]}" 2>&1)"
-EXIT_CODE=$?
+# Run the command; capture output for masking without letting set -e abort on failure
+EXIT_CODE=0
+OUTPUT="$(aws_cmd "${REMAINING_ARGS[@]}" 2>&1)" || EXIT_CODE=$?
 
 # Mask any accidental credential material
 SAFE_OUTPUT="$(mask_secrets "${OUTPUT}")"
 
-echo "${SAFE_OUTPUT}"
+printf '%s\n' "${SAFE_OUTPUT}"
 exit "${EXIT_CODE}"

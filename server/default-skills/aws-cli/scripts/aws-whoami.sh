@@ -26,8 +26,9 @@ echo "Profile  : ${RESOLVED_PROFILE}"
 echo "Region   : ${RESOLVED_REGION}"
 echo ""
 
-# Call STS
-IDENTITY_JSON="$(aws_cmd sts get-caller-identity --output json 2>&1)"
+# Call STS — capture output + exit code without letting set -e abort the script
+IDENTITY_EXIT=0
+IDENTITY_JSON="$(aws_cmd sts get-caller-identity --output json 2>&1)" || IDENTITY_EXIT=$?
 
 # Detect common errors
 if echo "${IDENTITY_JSON}" | grep -qi "ExpiredToken\|ExpiredTokenException"; then
@@ -48,6 +49,13 @@ if echo "${IDENTITY_JSON}" | grep -qi "NoCredentialProviders\|Unable to locate c
   echo "  aws sso login --profile ${RESOLVED_PROFILE}   (for SSO profiles)" >&2
   echo "  export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=..." >&2
   exit 1
+fi
+
+# Unrecognized error — surface whatever aws returned and exit with its code
+if [[ ${IDENTITY_EXIT} -ne 0 ]]; then
+  echo "error: sts get-caller-identity failed (exit ${IDENTITY_EXIT})." >&2
+  echo "${IDENTITY_JSON}" >&2
+  exit "${IDENTITY_EXIT}"
 fi
 
 # Mask any accidental key material before printing
