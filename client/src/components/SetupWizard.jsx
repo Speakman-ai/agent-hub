@@ -128,9 +128,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   const [claudePath, setClaudePath] = useState(claudeEngine.path || '');
   const [claudeEnabled, setClaudeEnabled] = useState(claudeEngine.available || false);
   const [cursorPath, setCursorPath] = useState(cursorEngine.path || '');
-  const [cursorEnabled, setCursorEnabled] = useState(false);
+  const [cursorEnabled, setCursorEnabled] = useState(cursorEngine.available || false);
   const [codexPath, setCodexPath] = useState(codexEngine.path || '');
-  const [codexEnabled, setCodexEnabled] = useState(false);
+  const [codexEnabled, setCodexEnabled] = useState(codexEngine.available || false);
 
   const [cursorAuthState, setCursorAuthState] = useState(null);
   const [cursorAuthError, setCursorAuthError] = useState(null);
@@ -147,7 +147,9 @@ export default function SetupWizard({ onComplete, setupStatus }) {
     if (c?.path != null && c.path !== '') setClaudePath(c.path);
     if (typeof c?.available === 'boolean') setClaudeEnabled(c.available);
     if (u?.path != null && u.path !== '') setCursorPath(u.path);
+    if (typeof u?.available === 'boolean') setCursorEnabled(u.available);
     if (x?.path != null && x.path !== '') setCodexPath(x.path);
+    if (typeof x?.available === 'boolean') setCodexEnabled(x.available);
   }, [setupStatus]);
 
   // Step 3 — Claude credential gate. The CLI binary path alone isn't enough
@@ -459,13 +461,21 @@ export default function SetupWizard({ onComplete, setupStatus }) {
   };
 
   const claudeGateOk = !claudeEnabled || credsConfigured;
+  const cursorGateOk = !cursorEnabled || cursorCredsConfigured;
+  const codexGateOk = !codexEnabled || codexCredsConfigured;
   const pathsOk =
     (!claudeEnabled || claudePath.trim()) &&
     (!cursorEnabled || cursorPath.trim()) &&
     (!codexEnabled || codexPath.trim());
 
   const step3CanContinue =
-    orgMode !== 'remote' && anyEngineEnabled && pathsOk && claudeGateOk && !saving;
+    orgMode !== 'remote' &&
+    anyEngineEnabled &&
+    pathsOk &&
+    claudeGateOk &&
+    cursorGateOk &&
+    codexGateOk &&
+    !saving;
 
   return (
     <div className="fixed inset-0 z-[70] bg-gray-950 flex items-center justify-center">
