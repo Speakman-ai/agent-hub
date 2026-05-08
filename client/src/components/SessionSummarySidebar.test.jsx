@@ -135,13 +135,19 @@ describe('<SessionSummarySidebar /> — project PR detail fetch', () => {
       skills: [],
     });
     api.getProjectPullDetail.mockResolvedValue({
-      title: 'Twelfth PR',
-      head: 'feature/x',
-      base: 'main',
-      state: 'open',
-      draft: false,
-      merged_at: null,
-      check_rollup: [
+      repo: 'acme/widgets',
+      source: 'rest',
+      pr: {
+        title: 'Twelfth PR',
+        head: 'feature/x',
+        base: 'main',
+        state: 'open',
+        draft: false,
+        merged_at: null,
+      },
+      reviews: [],
+      comments: [],
+      checks: [
         { name: 'lint', status: 'completed', conclusion: 'success' },
         { name: 'unit', status: 'completed', conclusion: 'failure' },
         { name: 'e2e', status: 'in_progress', conclusion: null },
@@ -177,10 +183,16 @@ describe('<SessionSummarySidebar /> — project PR detail fetch', () => {
       skills: [],
     });
     api.getProjectPullDetail.mockResolvedValue({
-      title: 'Merged PR',
-      state: 'closed',
-      merged_at: '2026-05-01T12:00:00Z',
-      check_rollup: [],
+      repo: 'acme/widgets',
+      source: 'rest',
+      pr: {
+        title: 'Merged PR',
+        state: 'closed',
+        merged_at: '2026-05-01T12:00:00Z',
+      },
+      reviews: [],
+      comments: [],
+      checks: [],
     });
 
     render(<SessionSummarySidebar sessionId="sess-merged" isLive={false} />);
