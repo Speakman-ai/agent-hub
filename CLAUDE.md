@@ -224,6 +224,22 @@ The Claude Code CLI binary appends a hidden `<system-reminder>` after every Read
 - Client utility tests are pure function tests — no React component rendering needed for utils
 - Mock external dependencies (CLI spawning, file system) when testing server logic
 
+### Tests MUST NOT spawn the real CLI binaries
+
+Server tests must never spawn the real `claude`, `cursor-agent`, `gemini`, or `codex` CLIs. This is a hard rule, not a style preference.
+
+**Why:** A real `claude` invocation holds ~250 MB RSS, takes seconds-to-minutes to settle, and — crucially — gets reparented to init if its parent test process exits before it finishes. Earlier this happened: tests that forgot to mock `child_process` left ~20 orphaned `claude` processes accumulating on the prod box, which eventually swap-thrashed the host into 83% I/O wait. We don't want that to be possible.
+
+**How it's enforced:**
+- `server/test/setup.ts` (the global vitest `setupFiles`) points `CLAUDE_BIN` / `CURSOR_BIN` / `GEMINI_BIN` / `CODEX_BIN` at `server/test/fixtures/no-real-cli-in-tests.sh`, which exits non-zero with a loud pointer to this rule.
+- The same file monkey-patches `child_process.{spawn,spawnSync,execFile,execFileSync}` to throw immediately if any of the forbidden binary names is the command.
+- Either layer will surface the offending test loudly. Don't try to defeat the guard — fix the test.
+
+**How to mock instead:**
+- Tests that exercise a chat / heartbeat / room-chat path: mock the wrapper module, not `child_process`. Example: `vi.mock('./heartbeat.js', () => ({ runClaude: vi.fn().mockResolvedValue('mocked') }));`
+- Tests that need to assert on the spawn args themselves: mock `child_process` directly with `vi.mock('child_process', ...)` and inspect calls. See `server/heartbeat-run-claude-model.test.ts` for the pattern.
+- Tests that need a fake CLI process behavior (stream events, exit codes): use a `MockProc` that implements `stdout`/`stderr`/`on('close')` rather than spawning a real binary.
+
 ### What to Test
 - **New utility functions**: Unit test inputs/outputs and edge cases
 - **New API endpoints**: Integration test with supertest (request → response)
