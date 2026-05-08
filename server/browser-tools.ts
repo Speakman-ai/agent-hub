@@ -14,10 +14,17 @@ import {
   getBrowserSession,
   launchBrowserSession,
   closeBrowserSession,
+  incrementBrowserToolOpEntered,
+  notifyBrowserToolOpEnded,
   DEFAULT_TIMEOUT_MS,
   type BrowserSession,
   type BrowserSessionOptions,
 } from './browser.js';
+import {
+  logBrowserToolAudit,
+  redactUrlForBrowserAudit,
+  sanitizeBrowserToolAuditDetail,
+} from './browser-tool-audit.js';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -663,6 +670,13 @@ export async function runBrowserReActStep(
 ): Promise<BrowserReActStepOutcome> {
   const opRaw = typeof input.op === 'string' ? input.op.trim() : '';
   if (!opRaw || !BROWSER_REACT_OP_SET.has(opRaw)) {
+    logBrowserToolAudit({
+      chatSessionId,
+      op: opRaw || 'missing',
+      ok: false,
+      hostExit: 1,
+      detail: 'bad_op',
+    });
     return {
       markdown: `## Browser tool error\nUnsupported or missing op "${opRaw}"`,
       hostExit: 1,
@@ -679,6 +693,13 @@ export async function runBrowserReActStep(
     session = await getOrCreateBrowserSessionForChat(chatSessionId, sessionLaunchOpts);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    logBrowserToolAudit({
+      chatSessionId,
+      op: opRaw,
+      ok: false,
+      hostExit: 1,
+      detail: 'launch_failed',
+    });
     return {
       markdown: `## Browser tool error\nFailed to open browser session: ${msg}`,
       hostExit: 1,
@@ -686,8 +707,25 @@ export async function runBrowserReActStep(
       ui: { summary: 'Browser failed to start', errorLine: msg },
     };
   }
-  const sh = asV3(session.stagehand);
   const opTimeoutMs = sessionLaunchOpts.timeoutMs ?? session.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const sh = asV3(session.stagehand);
+
+  const finish = (b: BrowserReActStepOutcome): BrowserReActStepOutcome => {
+    logBrowserToolAudit({
+      chatSessionId,
+      op: opRaw,
+      ok: b.hostExit === 0,
+      hostExit: b.hostExit,
+      detail: sanitizeBrowserToolAuditDetail({
+        op: opRaw,
+        hostExit: b.hostExit,
+        hostDetail: typeof b.hostDetail === 'string' ? b.hostDetail : undefined,
+        navigateUrl: input.url,
+      }),
+      urlSnippet: opRaw === 'navigate' ? redactUrlForBrowserAudit(input.url) : undefined,
+    });
+    return b;
+  };
 
   const fmt = (r: BrowserToolResult, title: string) => {
     const display = shrinkBrowserToolResultForMarkdown(r);
@@ -699,22 +737,23 @@ export async function runBrowserReActStep(
     return lines.join('\n');
   };
 
+  incrementBrowserToolOpEntered(chatSessionId);
   try {
     switch (op) {
       case 'close': {
         const closed = await closeBrowserSession(chatSessionId);
         const r = result('close', true, { closed });
-        return {
+        return finish({
           markdown: fmt(r, 'Browser: close'),
           hostExit: 0,
           hostDetail: 'close',
           ui: { summary: 'Browser session closed' },
-        };
+        });
       }
       case 'navigate': {
         const r = await browserNavigate(sh, input.url ?? '', opTimeoutMs);
         const host = r.ok ? hostHintFromNavigateData(r.data) : undefined;
-        return {
+        return finish({
           markdown: fmt(r, 'Browser: navigate'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? input.url?.slice(0, 120) : r.error,
@@ -728,11 +767,11 @@ export async function runBrowserReActStep(
                 errorLine: r.error,
                 targetSummary: input.url?.slice(0, 220),
               },
-        };
+        });
       }
       case 'click': {
         const r = await browserClick(sh, input.target ?? '');
-        return {
+        return finish({
           markdown: fmt(r, 'Browser: click'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { method?: string })?.method : r.error,
@@ -743,11 +782,11 @@ export async function runBrowserReActStep(
                 errorLine: r.error,
                 targetSummary: input.target?.slice(0, 220),
               },
-        };
+        });
       }
       case 'type': {
         const r = await browserType(sh, input.target ?? '', input.text ?? '');
-        return {
+        return finish({
           markdown: fmt(r, 'Browser: type'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { method?: string })?.method : r.error,
@@ -761,19 +800,19 @@ export async function runBrowserReActStep(
                 errorLine: r.error,
                 targetSummary: input.target?.slice(0, 160),
               },
-        };
+        });
       }
       case 'extract': {
         const r = await browserExtract(sh, input.instruction, input.schema);
         const preview = r.ok ? summarizeJsonPreview(r.data) : undefined;
-        return {
+        return finish({
           markdown: fmt(r, 'Browser: extract'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? 'extract' : r.error,
           ui: r.ok
             ? { summary: 'Extracted page data', extractPreview: preview }
             : { summary: 'Extract failed', errorLine: r.error },
-        };
+        });
       }
       case 'screenshot': {
         const r = await browserScreenshot(sh);
@@ -796,7 +835,7 @@ export async function runBrowserReActStep(
             screenshotWsUrl = dataUrl;
           }
         }
-        return {
+        return finish({
           markdown: lines.join('\n'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? 'screenshot' : r.error,
@@ -807,11 +846,11 @@ export async function runBrowserReActStep(
                 screenshotCaptured: Boolean(imageBase64),
               }
             : { summary: 'Screenshot failed', errorLine: r.error },
-        };
+        });
       }
       case 'scroll': {
         const r = await browserScroll(sh, input.direction ?? '');
-        return {
+        return finish({
           markdown: fmt(r, 'Browser: scroll'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? input.direction : r.error,
@@ -821,54 +860,54 @@ export async function runBrowserReActStep(
                 targetSummary: input.direction,
               }
             : { summary: 'Scroll failed', errorLine: r.error },
-        };
+        });
       }
       case 'back': {
         const r = await browserBack(sh, opTimeoutMs);
         const host = r.ok ? hostHintFromNavigateData(r.data) : undefined;
-        return {
+        return finish({
           markdown: fmt(r, 'Browser: back'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { url?: string } | undefined)?.url : r.error,
           ui: r.ok
             ? { summary: host ? `Back · ${host}` : 'Navigated back' }
             : { summary: 'Back navigation failed', errorLine: r.error },
-        };
+        });
       }
       case 'forward': {
         const r = await browserForward(sh, opTimeoutMs);
         const host = r.ok ? hostHintFromNavigateData(r.data) : undefined;
-        return {
+        return finish({
           markdown: fmt(r, 'Browser: forward'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { url?: string } | undefined)?.url : r.error,
           ui: r.ok
             ? { summary: host ? `Forward · ${host}` : 'Navigated forward' }
             : { summary: 'Forward navigation failed', errorLine: r.error },
-        };
+        });
       }
       case 'wait': {
         const r = await browserWaitFixed(sh, input.condition ?? '', opTimeoutMs);
-        return {
+        return finish({
           markdown: fmt(r, 'Browser: wait'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { kind?: string } | undefined)?.kind : r.error,
           ui: r.ok
             ? { summary: `Wait finished (${input.condition ?? ''})`.slice(0, 220) }
             : { summary: 'Wait timed out', errorLine: r.error },
-        };
+        });
       }
       case 'read_page': {
         const r = await browserReadPage(sh);
         const body = r.data as { text?: string } | undefined;
         const pageText = body?.text ?? '';
         if (!r.ok) {
-          return {
+          return finish({
             markdown: fmt(r, 'Browser: read_page'),
             hostExit: 1,
             hostDetail: r.error,
             ui: { summary: 'Read page failed', errorLine: r.error },
-          };
+          });
         }
         const maxShow = 24_000;
         const fullLen = pageText.length;
@@ -889,7 +928,7 @@ export async function runBrowserReActStep(
           '```',
         ];
         const preview = snippet.length <= 520 ? snippet : `${snippet.slice(0, 519)}…`;
-        return {
+        return finish({
           markdown: lines.join('\n'),
           hostExit: 0,
           hostDetail: `chars:${fullLen}`,
@@ -897,24 +936,26 @@ export async function runBrowserReActStep(
             summary: `Read ${fullLen.toLocaleString()} characters from page`,
             extractPreview: preview,
           },
-        };
+        });
       }
       default: {
-        return {
+        return finish({
           markdown: `## Browser tool error\nUnsupported op`,
           hostExit: 1,
           hostDetail: 'bad_op',
           ui: { summary: 'Unsupported browser op', errorLine: 'bad_op' },
-        };
+        });
       }
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return {
+    return finish({
       markdown: `## Browser tool error\n${msg}`,
       hostExit: 1,
       hostDetail: 'threw',
       ui: { summary: 'Browser threw an error', errorLine: msg },
-    };
+    });
+  } finally {
+    notifyBrowserToolOpEnded(chatSessionId);
   }
 }

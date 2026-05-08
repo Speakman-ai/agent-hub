@@ -13,6 +13,7 @@ import {
   DEFAULT_VIEWPORT,
   __registerBrowserSessionForTests,
   __resetBrowserRegistryForTests,
+  __unregisterBrowserSessionForTests,
   buildStagehandOptions,
   closeAllBrowserSessions,
   closeBrowserSession,
@@ -116,7 +117,8 @@ describe('session registry', () => {
       timeoutMs: DEFAULT_TIMEOUT_MS,
       stagehand: { close: closeMock, init: vi.fn() },
       close: async () => {
-        __resetBrowserRegistryForTests(); // unused, replaced by closeBrowserSession path
+        await closeMock();
+        __unregisterBrowserSessionForTests(id);
       },
     };
     return Object.assign(session, { closeMock });
