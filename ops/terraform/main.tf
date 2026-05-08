@@ -49,7 +49,10 @@ provider "aws" {
 # Resolve the latest ECS-optimized Amazon Linux 2023 AMI from SSM. This AMI has
 # Docker + SSM agent + the ECR credential helper preinstalled, which is what the
 # ECR-pull bootstrap path needs. AWS publishes the same parameter in every
-# region; TF will pick up new AL2023 releases automatically on re-apply.
+# region. The `aws_instance.app` resource ignores drift in `ami` after create
+# (see lifecycle below) so a new SSM release does not replace the host; rotate
+# intentionally with `terraform apply -replace=aws_instance.app` or by pinning
+# `ami_id` and forcing replacement when you choose.
 data "aws_ssm_parameter" "ecs_optimized_al2023" {
   count = var.use_ecs_optimized_ami && var.ami_id == null ? 1 : 0
 
@@ -286,6 +289,14 @@ resource "aws_instance" "app" {
   }
 
   lifecycle {
+    # Without this, `effective_ami_id` tracks SSM "recommended" and AWS
+    # publishing a new ECS-optimized image would plan a full instance
+    # replacement on every apply (wiping the box). Ignore post-create AMI drift;
+    # adopt a new base image only when you explicitly replace the instance
+    # (`terraform apply -replace=aws_instance.app`), or temporarily drop this
+    # line, plan, and apply.
+    ignore_changes = [ami]
+
     # PR-env first-boot wildcard cert: certbot --dns-route53 needs a contact
     # email to register with Let's Encrypt. Without it the bootstrap would
     # silently skip cert issuance (or fail at runtime), leaving host nginx
