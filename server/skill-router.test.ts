@@ -92,6 +92,19 @@ describe('routeSkillFromMessage', () => {
     expect(result?.reason).toContain('explicit');
   });
 
+  it('routes bare whole-word mention for short skill ids like linear', () => {
+    const SKILLS_WITH_LINEAR = [
+      ...ALL_SKILLS,
+      { id: 'linear', name: 'Linear', description: 'Linear MCP workflows' },
+    ];
+    const result = routeSkillFromMessage({
+      message: 'Open my Linear issues for the current cycle.',
+      skills: SKILLS_WITH_LINEAR,
+    });
+    expect(result?.skillId).toBe('linear');
+    expect(result?.reason).toContain('explicit');
+  });
+
   it('returns null when a manual <agenthub:skill> block is already present', () => {
     const result = routeSkillFromMessage({
       message: '<agenthub:skill>{"name":"kanban"}</agenthub:skill>',

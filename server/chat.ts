@@ -1274,10 +1274,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     }
 
     let cliContent: string = content;
-    if (slashResult) {
-      const args = slashResult.userArgs || 'Please use this skill as instructed.';
-      cliContent = `<skill name="${slashResult.skillName}">\n${slashResult.skillContent}\n</skill>\n\n${args}`;
-    }
 
     let session = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (!session) {
@@ -1432,6 +1428,20 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     const engine: string = session!.engine || 'claude-code';
     const model: string = session!.model || DEFAULT_MODEL;
     const paths = resolveProjectPaths(project as Project, agent as Agent);
+    let slashSkillSuffix = '';
+    if (slashResult && !slashResult.error && slashResult.skillName && !isAutoContinuation) {
+      const args = slashResult.userArgs || 'Please use this skill as instructed.';
+      slashSkillSuffix = `\n\n${loadSkillByName({
+        name: slashResult.skillName,
+        reason: 'slash-command',
+        paths: { skillsDir: paths.skillsDir },
+        sessionId,
+        stmts: stmts as Stmts,
+        broadcast,
+      })}`;
+      cliContent = args;
+    }
+
     let routedSkillSuffix = '';
     const loadedRoutedSkillIds = new Set<string>();
     if (!slashResult && !isAutoContinuation) {
@@ -1489,6 +1499,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       () => stmts.updateSessionPendingSkillContext.run(null, sessionId),
     );
     if (pendingSkillSuffix) enrichedPrompt += pendingSkillSuffix;
+    if (slashSkillSuffix) enrichedPrompt += slashSkillSuffix;
     if (routedSkillSuffix) enrichedPrompt += routedSkillSuffix;
 
     const projectId =

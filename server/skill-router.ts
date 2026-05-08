@@ -29,6 +29,13 @@ const THIRD_PARTY_KANBAN_RE = /\b(linear|jira|trello|asana|github projects?)\b/i
 const THIRD_PARTY_WIKI_RE = /\b(notion|confluence)\b/i;
 const DESIGN_ARTIFACT_DIR_RE = /(?:^|\/)designs\/[^/]+\/?$/i;
 
+/** Skills with dedicated `builtInScore` heuristics — skip bare-word `explicitMentionScore` for these ids so common English ("design", "kanban") does not hijack routing. */
+const BUILT_IN_ROUTE_SKILL_IDS = new Set(
+  ['kanban', 'wiki-search', 'using-git-worktrees', 'designs', 'design', 'agent-hub'].map((s) =>
+    s.toLowerCase(),
+  ),
+);
+
 function normalize(text: string): string {
   return text.toLowerCase();
 }
@@ -51,7 +58,15 @@ function explicitMentionScore(message: string, skill: SkillLike): number {
   for (const alias of aliases) {
     const aliasRe = phraseRegex(alias);
     const allowBareAlias =
-      alias.includes('-') || alias.includes('_') || alias.includes(' ') || alias.length >= 12;
+      alias.includes('-') ||
+      alias.includes('_') ||
+      alias.includes(' ') ||
+      alias.length >= 12 ||
+      // Short directory-style ids (e.g. `linear`) must still auto-route on a whole-word
+      // mention. Excludes built-in ids whose names collide with common English.
+      (alias.length >= 5 &&
+        alias === id &&
+        !BUILT_IN_ROUTE_SKILL_IDS.has(skill.id.trim().toLowerCase()));
     if (allowBareAlias && aliasRe.test(raw)) return 120;
     const withSkillWord = new RegExp(
       `\\b(?:use|load|trigger|route|invoke)\\s+${escapeRegExp(alias)}\\s+skill\\b`,
