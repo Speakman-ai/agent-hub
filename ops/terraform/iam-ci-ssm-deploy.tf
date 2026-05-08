@@ -42,8 +42,7 @@ resource "aws_iam_role_policy" "github_actions_ecr_push_ssm_dev_deploy" {
           "arn:aws:ec2:${var.aws_region}:${local.ci_ssm_account_id}:instance/${local.ci_ssm_instance_id}",
           "arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript",
           "arn:aws:ssm:${var.aws_region}:${local.ci_ssm_account_id}:document/AWS-RunShellScript",
-          "arn:aws:ssm:${var.aws_region}:${local.ci_ssm_account_id}:managed-instance/${local.ci_ssm_instance_id}",
-          # Run Command also evaluates against in-account command resources created for the invocation.
+          # Run Command creation also evaluates in-account ephemeral resources for the invocation.
           "arn:aws:ssm:${var.aws_region}:${local.ci_ssm_account_id}:*"
         ]
       },

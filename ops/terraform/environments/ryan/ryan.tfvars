@@ -41,8 +41,9 @@ alb_ingress_cidr_blocks = ["0.0.0.0/0"]
 manage_github_oidc_role = false
 
 # After CI pushes :main to ECR Public, GitHub Actions restarts agenthub-server on
-# this instance (SSM). Requires `terraform apply` once to attach the IAM policy
-# to role agent-hub-ci-ecr-push. Instance id must match push-image.yml.
+# this instance (SSM). Requires `terraform apply` (with DynamoDB/S3 state access)
+# to keep inline IAM on agent-hub-ci-ecr-push aligned; re-run whenever the sandbox
+# instance is replaced. Instance id must match DEV_SANDBOX_INSTANCE_ID in push-image.yml.
 enable_ci_ssm_deploy_after_ecr_push = true
 ci_ssm_deploy_instance_id           = "i-08b54d5b72e54baed"
 
