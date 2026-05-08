@@ -19,7 +19,8 @@
 #   - Meant for READ operations. Do not use for writes — confirm with the user
 #     first and call `aws` directly (with profile/region from _common.sh).
 #   - Output is masked through mask_secrets() before printing.
-#   - --no-paginate is NOT added automatically; add it yourself when needed.
+#   - The AWS CLI auto-paginates by default (all pages merged). Pass --no-paginate
+#     if you want ONLY the first page (e.g. quick sampling or manual paging).
 
 set -euo pipefail
 

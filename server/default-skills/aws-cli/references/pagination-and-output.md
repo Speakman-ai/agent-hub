@@ -158,7 +158,7 @@ aws ec2 describe-instances | jq '.Reservations[].Instances[] | {id:.InstanceId, 
 
 | Issue | Cause | Fix |
 |---|---|---|
-| Missing items | No `--no-paginate` | Add `--no-paginate` or loop over pages |
+| Missing items on first call | `--no-paginate` was passed (first page only) | Remove `--no-paginate`; CLI auto-paginates by default |
 | `NextToken` expired | Token stale (usually 24h) | Re-run from first page |
 | Slow fetch | Large bucket/table | Use `--page-size` to tune; add `--max-items` cap |
 | S3 `list-objects-v2` vs `list-objects` | V2 uses `ContinuationToken` not `NextToken` | Use `--starting-token` (CLI normalises both) |
