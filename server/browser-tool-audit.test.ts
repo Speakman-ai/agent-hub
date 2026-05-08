@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { logBrowserToolAudit, redactUrlForBrowserAudit } from './browser-tool-audit.js';
+import {
+  logBrowserToolAudit,
+  redactUrlForBrowserAudit,
+  sanitizeBrowserToolAuditDetail,
+} from './browser-tool-audit.js';
 
 describe('browser-tool-audit', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
@@ -63,5 +67,59 @@ describe('redactUrlForBrowserAudit', () => {
   it('returns undefined for empty input', () => {
     expect(redactUrlForBrowserAudit(undefined)).toBeUndefined();
     expect(redactUrlForBrowserAudit('  ')).toBeUndefined();
+  });
+});
+
+describe('sanitizeBrowserToolAuditDetail', () => {
+  it('redacts successful navigate detail from navigateUrl even when hostDetail was truncated raw URL', () => {
+    expect(
+      sanitizeBrowserToolAuditDetail({
+        op: 'navigate',
+        hostExit: 0,
+        hostDetail:
+          'https://evil.test/callback?token=THIS_SHOULDNOT_APPEAR_AND_IS_LONG_' + 'x'.repeat(90),
+        navigateUrl: 'https://evil.test/callback?token=sekret&id=999',
+      }),
+    ).toBe('https://evil.test/callback');
+  });
+
+  it('redacts back/forward success hostDetail URLs', () => {
+    expect(
+      sanitizeBrowserToolAuditDetail({
+        op: 'back',
+        hostExit: 0,
+        hostDetail: 'https://a.test/r?sig=opaque',
+      }),
+    ).toBe('https://a.test/r');
+  });
+
+  describe('with mocked console.log', () => {
+    let logSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      logSpy.mockRestore();
+    });
+
+    it('emitted audit JSON has no ? or # in detail for navigational success', () => {
+      logBrowserToolAudit({
+        chatSessionId: 'audit',
+        op: 'forward',
+        ok: true,
+        hostExit: 0,
+        detail: sanitizeBrowserToolAuditDetail({
+          op: 'forward',
+          hostExit: 0,
+          hostDetail: 'https://z.example/dashboard?jwt=evil#x',
+        }),
+      });
+      const line = logSpy.mock.calls[0][0].replace(/^\[browser-tool-audit\]\s*/, '');
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      expect(parsed.detail).toBe('https://z.example/dashboard');
+      expect(String(parsed.detail)).not.toMatch(/[?#]/);
+    });
   });
 });
