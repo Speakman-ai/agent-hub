@@ -36,12 +36,17 @@ import {
   __resetStagehandLoaderForTests,
   launchBrowserSession,
 } from './browser.js';
+import {
+  resetBrowserSecurityTestOverrides,
+  __setBrowserConcurrencyForTests,
+} from './browser-host-policy.js';
 
 describe('launchBrowserSession — pinned id singleflight', () => {
   beforeEach(() => {
     __resetBrowserRegistryForTests();
     __resetStagehandLoaderForTests();
     concurrencyMock.resetConstructCount();
+    resetBrowserSecurityTestOverrides();
     vi.clearAllMocks();
   });
 
@@ -69,5 +74,12 @@ describe('launchBrowserSession — pinned id singleflight', () => {
     ]);
     expect(a).toBe(b);
     expect(concurrencyMock.getConstructCount()).toBe(1);
+  });
+
+  it('rejects launches that exceed configured global concurrency', async () => {
+    __setBrowserConcurrencyForTests(2);
+    await launchBrowserSession({ id: 'cap-a' });
+    await launchBrowserSession({ id: 'cap-b' });
+    await expect(launchBrowserSession({ id: 'cap-c' })).rejects.toThrow(/capacity reached/i);
   });
 });

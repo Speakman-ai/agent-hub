@@ -19,12 +19,23 @@
  *   • A module-level `sessions` registry tracks live sessions so that a
  *     graceful process shutdown (or an ad-hoc admin endpoint) can close all
  *     of them in one call.
+ *   • Global concurrency, idle auto-close, Playwright route guards (ads /
+ *     trackers, downloads), and operator audit lines are configured via
+ *     `AppConfig` (`browserMaxConcurrentContexts`, `browserIdleTimeoutMs`, …).
  *   • The heavy `@browserbasehq/stagehand` import is deferred to the first
  *     launch so `import './browser.js'` stays cheap at module-load time
  *     (unit tests and the API bootstrap do not need to pay for it).
  */
 
 import { randomUUID } from 'crypto';
+import type { V3 } from '@browserbasehq/stagehand';
+import {
+  browserAllowDownloadsFromConfig,
+  browserBlockAdsTrackersFromConfig,
+  getBrowserIdleTimeoutMs,
+  getBrowserMaxConcurrentContexts,
+} from './browser-host-policy.js';
+import { installBrowserSessionHardening } from './browser-session-hardening.js';
 
 // ─── Public defaults ────────────────────────────────────────────
 
@@ -187,6 +198,35 @@ export function buildStagehandOptions(opts: BrowserSessionOptions = {}): Stageha
 const sessions = new Map<string, BrowserSession>();
 /** In-flight {@link launchBrowserSession} for pinned ids — prevents duplicate Chromium for concurrent callers. */
 const launchInFlight = new Map<string, Promise<BrowserSession>>();
+/** Launches that passed the capacity gate but have not yet registered in {@link sessions}. */
+let pendingBrowserConstruction = 0;
+/** Auto-close timers — one per live {@link BrowserSession} id. */
+const idleCloseTimerBySessionId = new Map<string, NodeJS.Timeout>();
+
+function clearBrowserIdleTimer(id: string): void {
+  const t = idleCloseTimerBySessionId.get(id);
+  if (t) clearTimeout(t);
+  idleCloseTimerBySessionId.delete(id);
+}
+
+function scheduleBrowserIdleClose(id: string): void {
+  clearBrowserIdleTimer(id);
+  const ms = getBrowserIdleTimeoutMs();
+  const t = setTimeout(() => {
+    idleCloseTimerBySessionId.delete(id);
+    void closeBrowserSession(id).catch(() => {});
+  }, ms);
+  idleCloseTimerBySessionId.set(id, t);
+}
+
+/**
+ * Reset the idle auto-close timer after any successful browser ensure or tool step.
+ * No-op when the session is not registered (e.g. already closed).
+ */
+export function bumpBrowserSessionActivity(id: string): void {
+  if (!sessions.has(id)) return;
+  scheduleBrowserIdleClose(id);
+}
 
 /** Minimal shape we rely on from the Stagehand constructor at runtime. */
 interface StagehandLike {
@@ -241,36 +281,59 @@ export async function launchBrowserSession(
 }
 
 async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise<BrowserSession> {
-  const Stagehand = await loadStagehand();
-  // If the caller didn't pin an executablePath, default to Playwright's
-  // managed Chromium. This avoids Stagehand's chrome-launcher falling back
-  // to system-level Chrome (which isn't installed on our EC2 host).
-  const effectiveOpts: BrowserSessionOptions = { ...opts };
-  if (!effectiveOpts.executablePath) {
-    effectiveOpts.executablePath = await resolveDefaultChromiumPath();
+  const maxContexts = getBrowserMaxConcurrentContexts();
+  if (sessions.size + pendingBrowserConstruction >= maxContexts) {
+    throw new Error(
+      `Host browser capacity reached (${maxContexts} concurrent contexts). Close an idle browser session or retry later.`,
+    );
   }
-  const builtOpts = buildStagehandOptions(effectiveOpts);
-  const sh = new Stagehand(builtOpts);
-  await sh.init();
 
-  const id = opts.id ?? randomUUID();
-  const session: BrowserSession = {
-    id,
-    stagehand: sh,
-    createdAt: Date.now(),
-    timeoutMs: builtOpts.actTimeoutMs,
-    close: async () => {
-      sessions.delete(id);
-      try {
-        await sh.close();
-      } catch (err) {
-        // Cleanup is best-effort; the underlying process may have already exited.
-        console.warn(`[browser] Failed to close session ${id}: ${String(err)}`);
-      }
-    },
-  };
-  sessions.set(id, session);
-  return session;
+  pendingBrowserConstruction++;
+  try {
+    const Stagehand = await loadStagehand();
+    // If the caller didn't pin an executablePath, default to Playwright's
+    // managed Chromium. This avoids Stagehand's chrome-launcher falling back
+    // to system-level Chrome (which isn't installed on our EC2 host).
+    const effectiveOpts: BrowserSessionOptions = { ...opts };
+    if (!effectiveOpts.executablePath) {
+      effectiveOpts.executablePath = await resolveDefaultChromiumPath();
+    }
+    const builtOpts = buildStagehandOptions(effectiveOpts);
+    const sh = new Stagehand(builtOpts);
+    await sh.init();
+
+    try {
+      await installBrowserSessionHardening(sh as V3, {
+        allowDownloads: browserAllowDownloadsFromConfig(),
+        blockAdsTrackers: browserBlockAdsTrackersFromConfig(),
+      });
+    } catch (hardErr) {
+      console.warn(`[browser] Session hardening (routes / downloads) failed: ${String(hardErr)}`);
+    }
+
+    const id = opts.id ?? randomUUID();
+    const session: BrowserSession = {
+      id,
+      stagehand: sh,
+      createdAt: Date.now(),
+      timeoutMs: builtOpts.actTimeoutMs,
+      close: async () => {
+        clearBrowserIdleTimer(id);
+        sessions.delete(id);
+        try {
+          await sh.close();
+        } catch (err) {
+          // Cleanup is best-effort; the underlying process may have already exited.
+          console.warn(`[browser] Failed to close session ${id}: ${String(err)}`);
+        }
+      },
+    };
+    sessions.set(id, session);
+    scheduleBrowserIdleClose(id);
+    return session;
+  } finally {
+    pendingBrowserConstruction--;
+  }
 }
 
 /** Lookup a previously-launched session by id. */
@@ -291,6 +354,7 @@ export function listBrowserSessions(): BrowserSession[] {
 export async function closeBrowserSession(id: string): Promise<boolean> {
   const session = sessions.get(id);
   if (!session) return false;
+  clearBrowserIdleTimer(id);
   await session.close();
   return true;
 }
@@ -304,8 +368,11 @@ export async function closeAllBrowserSessions(): Promise<void> {
   const pending = Array.from(launchInFlight.values());
   launchInFlight.clear();
   await Promise.allSettled(pending);
+  for (const t of idleCloseTimerBySessionId.values()) clearTimeout(t);
+  idleCloseTimerBySessionId.clear();
   const snapshot = Array.from(sessions.values());
   sessions.clear();
+  pendingBrowserConstruction = 0;
   await Promise.allSettled(
     snapshot.map(async (s) => {
       try {
@@ -328,6 +395,18 @@ export async function closeAllBrowserSessions(): Promise<void> {
 export function __resetBrowserRegistryForTests(): void {
   sessions.clear();
   launchInFlight.clear();
+  pendingBrowserConstruction = 0;
+  for (const t of idleCloseTimerBySessionId.values()) clearTimeout(t);
+  idleCloseTimerBySessionId.clear();
+}
+
+/**
+ * Drop a registry entry without calling Stagehand (for fake sessions from
+ * {@link __registerBrowserSessionForTests}).
+ */
+export function __unregisterBrowserSessionForTests(id: string): void {
+  clearBrowserIdleTimer(id);
+  sessions.delete(id);
 }
 
 /**

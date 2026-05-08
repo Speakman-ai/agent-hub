@@ -85,6 +85,23 @@ function resolveInt(envKey: string | null, fileKey: string | null, fallback: num
   return Number.isNaN(n) ? fallback : n;
 }
 
+/** Parse `raw` when numeric; clamp into `[lo, hi]` (fallback when non-finite). */
+function clampFiniteInt(raw: unknown, fallback: number, lo: number, hi: number): number {
+  let n = typeof raw === 'number' && Number.isFinite(raw) ? Math.trunc(raw) : Math.trunc(fallback);
+  if (!Number.isFinite(n)) n = Math.trunc(fallback);
+  return Math.min(Math.max(n, lo), hi);
+}
+
+function envMeansTrue(key: keyof NodeJS.ProcessEnv): boolean {
+  const v = process.env[key]?.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+function envMeansFalse(key: keyof NodeJS.ProcessEnv): boolean {
+  const v = process.env[key]?.trim().toLowerCase();
+  return v === '0' || v === 'false' || v === 'no' || v === 'off';
+}
+
 // ─── Auto-migrate legacy projects directory ─────────────────────
 const DEFAULT_PROJECTS_DIR = path.join(HOME, '.agent-hub', 'projects');
 const LEGACY_PROJECTS_DIR = path.join(HOME, '.openclaw', 'projects');
@@ -313,6 +330,25 @@ const config: AppConfig = {
 
   // ── Captures ──────────────────────────────────────────────────
   capturesEnabled: resolve('AGENT_HUB_CAPTURES_ENABLED', 'capturesEnabled', 'false') === 'true',
+
+  // ── Host browser sessions (Stagehand / Playwright Chromium) ──
+  browserMaxConcurrentContexts: clampFiniteInt(
+    resolveInt('AGENT_HUB_BROWSER_MAX_CONTEXTS', 'browserMaxConcurrentContexts', 3),
+    3,
+    1,
+    32,
+  ),
+  browserIdleTimeoutMs: clampFiniteInt(
+    resolveInt('AGENT_HUB_BROWSER_IDLE_MS', 'browserIdleTimeoutMs', 5 * 60 * 1000),
+    300_000,
+    30_000,
+    3_600_000,
+  ),
+  browserAllowDownloads:
+    envMeansTrue('AGENT_HUB_BROWSER_ALLOW_DOWNLOADS') || fileConfig.browserAllowDownloads === true,
+  browserBlockAdsTrackers: envMeansFalse('AGENT_HUB_BROWSER_BLOCK_ADS')
+    ? false
+    : fileConfig.browserBlockAdsTrackers !== false,
 
   // ── Derived / helpers ──────────────────────────────────────────
   get allValidModels(): string[] {

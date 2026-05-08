@@ -45,6 +45,10 @@ function makeConfig(): AppConfig {
     codexApiKey: null,
     slackWebhookUrl: null,
     capturesEnabled: false,
+    browserMaxConcurrentContexts: 3,
+    browserIdleTimeoutMs: 300_000,
+    browserAllowDownloads: false,
+    browserBlockAdsTrackers: true,
     get allValidModels() {
       return Object.values(this.engineValidModels).flat();
     },

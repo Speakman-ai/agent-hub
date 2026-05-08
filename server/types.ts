@@ -1601,6 +1601,14 @@ export interface AppConfig {
   codexApiKey: string | null;
   slackWebhookUrl: string | null;
   capturesEnabled: boolean;
+  /** Max simultaneous host Chromium contexts (distinct pinned chat sessions). */
+  browserMaxConcurrentContexts: number;
+  /** Idle auto-close for host browser contexts (ms). */
+  browserIdleTimeoutMs: number;
+  /** When false, Playwright downloads are canceled at start. */
+  browserAllowDownloads: boolean;
+  /** Block common ad/tracker third-party hosts at route level when true. */
+  browserBlockAdsTrackers: boolean;
   readonly allValidModels: string[];
 }
 
