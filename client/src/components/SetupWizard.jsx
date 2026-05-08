@@ -358,9 +358,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
       if (data.deviceAuthUrl && data.userCode) {
         setCodexDeviceAuthUrl(data.deviceAuthUrl);
         setCodexDeviceUserCode(data.userCode);
-        // Open the verification page automatically — falls back to the
-        // copy-link button below if the popup blocker eats it.
-        if (typeof window !== 'undefined') window.open(data.deviceAuthUrl, '_blank');
+        // Rely on the visible link below — auto-open is blocked by Safari
+        // and strict-mode Chrome after the async gap in handleCodexDeviceLogin.
         // 15-minute hard cap matches the OpenAI device code lifetime.
         const timeoutId = setTimeout(() => {
           clearCodexDeviceTimers();

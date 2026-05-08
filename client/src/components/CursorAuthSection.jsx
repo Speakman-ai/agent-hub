@@ -12,7 +12,7 @@ import { Loader2, Shield, AlertCircle, Copy, ExternalLink, LogIn, LogOut } from 
  *     `cursorCredsConfigured` gate refreshes when the user completes the
  *     browser-login flow inside an embedded copy of this section.
  */
-export default function CursorAuthSection({ onAuthChange } = {}) {
+export default function CursorAuthSection({ onAuthChange }) {
   const [auth, setAuth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
