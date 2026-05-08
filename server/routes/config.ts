@@ -1,9 +1,8 @@
 import { Router, Request, Response } from 'express';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import { exec, execFile } from 'child_process';
-import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { localDateStr } from '../memory.js';
 import {
@@ -23,13 +22,11 @@ import type {
 import { refreshShellPath, getCachedShellPath } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
-import { parseCursorStatusJson } from '../cursor-auth-parse.js';
-import { getCursorAuthenticatedCached, invalidateCursorAuthCache } from '../cursor-auth-cache.js';
-import { detectCodexAuthMode } from '../codex-auth.js';
+import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
 import { normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
 import { getProjects } from '../project-model.js';
-import { normalizeOAuthExpiresAtMs } from '../oauth-expiry.js';
+import { getEngineAuthStatus } from '../engine-auth-status.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -207,45 +204,9 @@ interface LegacyExportData {
   };
 }
 
-function hasClaudeOauth(): boolean {
-  const credentialsPath = path.join(os.homedir(), '.claude', '.credentials.json');
-  if (!existsSync(credentialsPath)) return false;
-  try {
-    const raw = JSON.parse(readFileSync(credentialsPath, 'utf-8')) as {
-      claudeAiOauth?: { expiresAt?: number };
-    };
-    if (!raw?.claudeAiOauth) return false;
-    const expiresAt = raw.claudeAiOauth.expiresAt;
-    if (typeof expiresAt === 'number') return Date.now() < normalizeOAuthExpiresAtMs(expiresAt);
-    // Missing expiresAt: some tooling may omit it while OAuth is still valid; we
-    // still treat that as unauthenticated here so the models list stays conservative.
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-function runCursorStatus(binPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (!existsSync(binPath)) return resolve(false);
-    const proc = execFile(
-      binPath,
-      ['status', '--format', 'json'],
-      { cwd: os.homedir(), timeout: 12_000, env: process.env },
-      (err, stdout, stderr) => {
-        const stdoutText = String(stdout ?? '');
-        const stderrText = String(stderr ?? '');
-        if (err) {
-          const parsed = parseCursorStatusJson(stdoutText, stderrText);
-          return resolve(parsed.ok && !!parsed.isAuthenticated);
-        }
-        const parsed = parseCursorStatusJson(stdoutText, stderrText);
-        resolve(parsed.ok && !!parsed.isAuthenticated);
-      },
-    );
-    proc.on('error', () => resolve(false));
-  });
-}
+// Host-level Claude OAuth probe and the cursor-status shellout used to live
+// here. They were moved to `engine-auth-status.ts` so `/api/setup/status` can
+// reuse them. `/api/config/models` below now delegates to `getEngineAuthStatus`.
 
 interface SlackConfigData {
   accounts: Array<{
@@ -322,37 +283,21 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
   });
 
   router.get('/api/config/models', async (_req: Request, res: Response) => {
-    // `claudeCodeOAuthToken` is the `claude setup-token` bearer; `buildSpawnEnv` exports it as
-    // `CLAUDE_CODE_OAUTH_TOKEN`, so a configured setup token is a valid auth source even when the
-    // CLI's `~/.claude/.credentials.json` OAuth login is missing or expired. Without this, the
-    // engine picker hides Claude despite Settings showing the token saved.
-    const claudeAuthenticated = !!(
-      config.anthropicApiKey ||
-      process.env.ANTHROPIC_API_KEY ||
-      config.claudeCodeOAuthToken ||
-      process.env.CLAUDE_CODE_OAUTH_TOKEN ||
-      hasClaudeOauth()
-    );
-    const geminiAuthenticated = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
-    const codexApiKeyConfigured = !!(
-      config.codexApiKey ||
-      process.env.CODEX_API_KEY ||
-      process.env.OPENAI_API_KEY
-    );
-    const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
-    const codexAuth = detectCodexAuthMode(codexHome);
-    const codexAuthenticated =
-      codexApiKeyConfigured ||
-      (codexAuth.present && (codexAuth.mode === 'chatgpt' || codexAuth.mode === 'apikey'));
+    // Engine auth resolution lives in `engine-auth-status.ts` (shared with
+    // `/api/setup/status`) so the spawn-time view of "is X usable?" can't
+    // drift from the Settings / wizard view. Gemini auth stays inline here
+    // because it's API-key-only and not yet a first-class engine in the
+    // engine-status helper.
     const cursorBin = deps.getCursorBin?.() ?? config.cursorBin;
-    const cursorAuthenticated = await getCursorAuthenticatedCached(cursorBin, runCursorStatus);
+    const engineStatus = await getEngineAuthStatus({ config, cursorBin });
+    const geminiAuthenticated = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
 
     res.json(
       buildAuthenticatedModelConfig(config, {
-        'claude-code': claudeAuthenticated,
-        'cursor-agent': cursorAuthenticated,
+        'claude-code': engineStatus.claude,
+        'cursor-agent': engineStatus.cursor,
         'gemini-cli': geminiAuthenticated,
-        'codex-cli': codexAuthenticated,
+        'codex-cli': engineStatus.codex,
       }),
     );
   });

@@ -1690,6 +1690,17 @@ describe('Setup', () => {
     it('returns setup status including engine paths', async () => {
       const res = await request.get('/api/setup/status').expect(200);
       expect(res.body).toHaveProperty('firstRun');
+      // hasAnyAiCredentials drives the SetupWizard "no creds" trigger in
+      // App.jsx — must always be present (boolean) regardless of host state.
+      expect(res.body).toHaveProperty('hasAnyAiCredentials');
+      expect(typeof res.body.hasAnyAiCredentials).toBe('boolean');
+      expect(res.body.engineAuth).toEqual(
+        expect.objectContaining({
+          'claude-code': expect.any(Boolean),
+          'cursor-agent': expect.any(Boolean),
+          'codex-cli': expect.any(Boolean),
+        }),
+      );
       expect(res.body.engines).toEqual(
         expect.objectContaining({
           'claude-code': expect.objectContaining({

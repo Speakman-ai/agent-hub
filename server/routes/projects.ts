@@ -19,6 +19,7 @@ import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { getUserByUsername, createUser } from '../users-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { getOrCreateBoard } from './board.js';
+import { getEngineAuthStatus } from '../engine-auth-status.js';
 import type { AuthenticatedRequest } from '../auth.js';
 
 const execAsync = promisify(exec);
@@ -941,7 +942,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     res.json(enriched);
   });
 
-  router.get('/api/setup/status', (_req: Request, res: Response) => {
+  router.get('/api/setup/status', async (req: Request, res: Response) => {
     const projects = getProjects();
     let claudeAvailable = false;
 
@@ -964,19 +965,47 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       codexAvailable = true;
     } catch {}
 
+    // `hasAnyAiCredentials` mirrors the auth-resolution that `buildSpawnEnv`
+    // applies — per-user Claude credentials win, with host config / env vars
+    // / on-disk OAuth as fallback. The client uses this to decide whether to
+    // pop the SetupWizard regardless of `firstRun`, so an existing user who
+    // hits a freshly-reset instance still sees the AI-credentials walkthrough
+    // instead of being dropped into the project picker with no working
+    // engine. See `engine-auth-status.ts` for the full contract.
+    const authedReq = req as AuthenticatedRequest;
+    let engineAuth: { claude: boolean; cursor: boolean; codex: boolean; any: boolean };
+    try {
+      engineAuth = await getEngineAuthStatus({
+        config,
+        cursorBin: cursorBinResolved,
+        userId: authedReq.authUserId ?? null,
+      });
+    } catch {
+      engineAuth = { claude: false, cursor: false, codex: false, any: false };
+    }
+
     res.json({
       firstRun: projects.length === 0,
+      hasAnyAiCredentials: engineAuth.any,
+      engineAuth: {
+        'claude-code': engineAuth.claude,
+        'cursor-agent': engineAuth.cursor,
+        'codex-cli': engineAuth.codex,
+      },
       engines: {
         'claude-code': {
           available: claudeAvailable,
+          authenticated: engineAuth.claude,
           path: getClaudeBin(),
         },
         'cursor-agent': {
           available: cursorAvailable,
+          authenticated: engineAuth.cursor,
           path: cursorBinResolved,
         },
         'codex-cli': {
           available: codexAvailable,
+          authenticated: engineAuth.codex,
           path: codexBinResolved,
         },
       },
