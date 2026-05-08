@@ -163,6 +163,102 @@ describe('Sidebar — actionable session visibility', () => {
     expect(screen.queryByTestId('project-collapsed-actionable')).not.toBeInTheDocument();
     expect(screen.queryByText('Only idle session')).not.toBeInTheDocument();
   });
+
+  it('keeps Resolve PR sessions with changes_ready visible when the agent is collapsed', () => {
+    // Reviewer feedback (PR #839): Resolve-PR sessions that only have
+    // `changes_ready` must stay visible in the collapsed sidebar so users can
+    // reopen them without expanding. The misleading "create PR" purple glyph
+    // is suppressed independently (see other tests) — visibility and glyph
+    // semantics are decoupled.
+    const props = buildProps({
+      sessions: [{ id: 's-resolve', name: '[Resolve PR #77] Fix thing' }],
+      activeTaskSessionIds: {},
+      changesReadyBySession: { 's-resolve': { branch: 'fix/77' } },
+    });
+    render(<Sidebar {...props} />);
+
+    expect(screen.getByText('[Resolve PR #77] Fix thing')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '▾' }));
+
+    // Session row remains rendered after collapse.
+    expect(screen.getByText('[Resolve PR #77] Fix thing')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-sessions-list')).toBeInTheDocument();
+    // But the misleading "create PR" pulse must not appear for the Resolve PR title.
+    expect(screen.queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
+  });
+
+  it('keeps Resolve PR sessions with changes_ready visible in the project-collapsed actionable list', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-resolve', name: '[Resolve PR #77] Fix thing' }],
+      activeTaskSessionIds: {},
+      changesReadyBySession: { 's-resolve': { branch: 'fix/77' } },
+    });
+    render(<Sidebar {...props} />);
+
+    fireEvent.click(screen.getByText('Test Project')); // collapse project
+
+    const collapsedPanel = screen.getByTestId('project-collapsed-actionable');
+    expect(within(collapsedPanel).getByText('[Resolve PR #77] Fix thing')).toBeInTheDocument();
+    // No misleading "create PR" pulse on the Resolve PR row.
+    expect(within(collapsedPanel).queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
+  });
+
+  it('shows external-link control for Resolve PR sessions with changes_ready when githubRepo is set', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-resolve', name: '[Resolve PR #77] Fix thing' }],
+      activeTaskSessionIds: {},
+      changesReadyBySession: { 's-resolve': { branch: 'fix/77' } },
+      projects: [
+        {
+          id: PROJECT_ID,
+          name: 'Test Project',
+          color: '#22d3ee',
+          githubRepo: 'acme/widgets',
+          agents: [
+            { id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true },
+            { id: OTHER_AGENT_ID, name: 'Secondary Agent', color: '#a78bfa', active: true },
+          ],
+        },
+      ],
+    });
+    render(<Sidebar {...props} />);
+
+    expect(screen.getByTestId('resolve-pr-external-link')).toBeInTheDocument();
+    expect(screen.queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
+  });
+
+  it('omits the create-PR pulse for Resolve PR titles when githubRepo is missing and no URL is embedded', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-resolve', name: '[Resolve PR #88] Fix thing' }],
+      activeTaskSessionIds: {},
+      changesReadyBySession: { 's-resolve': { branch: 'fix/88' } },
+    });
+    render(<Sidebar {...props} />);
+
+    const list = screen.getByTestId('agent-sessions-list');
+    expect(within(list).getByText('[Resolve PR #88] Fix thing')).toBeInTheDocument();
+    expect(within(list).queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
+    expect(within(list).queryByTestId('resolve-pr-external-link')).not.toBeInTheDocument();
+  });
+
+  it('omits the create-PR pulse in project-collapsed actionable rows for Resolve PR + changes_ready without a PR URL', () => {
+    const props = buildProps({
+      sessions: [{ id: 's-resolve-run', name: '[Resolve PR #3] work' }],
+      activeTaskSessionIds: { 's-resolve-run': true },
+      changesReadyBySession: { 's-resolve-run': { branch: 'fix/3' } },
+    });
+    render(<Sidebar {...props} />);
+
+    fireEvent.click(screen.getByText('Test Project'));
+
+    const collapsedPanel = screen.getByTestId('project-collapsed-actionable');
+    expect(within(collapsedPanel).getByText('[Resolve PR #3] work')).toBeInTheDocument();
+    expect(within(collapsedPanel).queryByTestId('pr-ready-indicator')).not.toBeInTheDocument();
+    expect(
+      within(collapsedPanel).queryByTestId('resolve-pr-external-link'),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe('Sidebar — New Project + Import existing project CTAs', () => {

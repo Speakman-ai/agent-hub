@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -20,8 +20,14 @@ import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
 import ChangesReadyBox from '../components/ChangesReadyBox';
+import ResolveSessionPrBanner from '../components/ResolveSessionPrBanner';
 import { resolveAutoMergeDefault } from '../utils/changesReady';
 import { isWorkflowProject } from '../utils/project-mode';
+import {
+  inferPrUrlFromSessionTitle,
+  isResolvePrSessionTitle,
+  parseResolvePrNumberFromTitle,
+} from '../../../shared/utils/sessionTitlePr.js';
 
 export default function ChatScreen() {
   const {
@@ -60,6 +66,7 @@ export default function ChatScreen() {
     askSubmitted,
     handleAskSubmit,
     reloadMessages,
+    sessions,
   } = useApp();
 
   const flatListRef = useRef(null);
@@ -94,6 +101,17 @@ export default function ChatScreen() {
   const pendingChanges = changesReady?.[activeSessionId];
   const activeProject = projects?.find((p) => p.id === activeAgent?.projectId);
   const workflowProject = isWorkflowProject(activeProject);
+  const activeSession = useMemo(
+    () => sessions?.find((s) => s.id === activeSessionId) ?? null,
+    [sessions, activeSessionId],
+  );
+  const activeResolvePrBannerInfo = useMemo(() => {
+    if (!activeSession?.name || !isResolvePrSessionTitle(activeSession.name)) return null;
+    return {
+      prUrl: inferPrUrlFromSessionTitle(activeSession.name, activeProject?.githubRepo),
+      prNumber: parseResolvePrNumberFromTitle(activeSession.name),
+    };
+  }, [activeSession, activeProject]);
 
   // Build list data: messages + thinking + streaming indicators
   const listData = [
@@ -107,7 +125,18 @@ export default function ChatScreen() {
     ...(activeDelegation?.tasks?.length > 0
       ? [{ type: 'delegation', key: 'delegation', data: activeDelegation }]
       : []),
-    ...(pendingChanges && !workflowProject && !thinking && !streamingContent
+    ...(pendingChanges &&
+    !workflowProject &&
+    !thinking &&
+    !streamingContent &&
+    activeResolvePrBannerInfo
+      ? [{ type: 'resolve-pr-banner', key: 'resolve-pr-banner', data: activeResolvePrBannerInfo }]
+      : []),
+    ...(pendingChanges &&
+    !workflowProject &&
+    !thinking &&
+    !streamingContent &&
+    !activeResolvePrBannerInfo
       ? [{ type: 'changes-ready', key: 'changes-ready', data: pendingChanges }]
       : []),
   ];
@@ -192,6 +221,16 @@ export default function ChatScreen() {
               onCancel={handleDelegationCancel}
             />
           </View>
+        );
+      case 'resolve-pr-banner':
+        return (
+          <ResolveSessionPrBanner
+            sessionId={activeSessionId}
+            prUrl={item.data.prUrl}
+            prNumber={item.data.prNumber}
+            branchLabel={pendingChanges?.branch}
+            onDismiss={dismissChangesReady}
+          />
         );
       case 'changes-ready':
         return (

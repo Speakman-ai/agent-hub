@@ -16,6 +16,12 @@ import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
 import SkillInvocationsPanel from './components/SkillInvocationsPanel.jsx';
 import ChangesReadyBox from './components/ChangesReadyBox.jsx';
+import ResolveSessionPrBanner from './components/ResolveSessionPrBanner.jsx';
+import {
+  inferPrUrlFromSessionTitle,
+  isResolvePrSessionTitle,
+  parseResolvePrNumberFromTitle,
+} from '../../shared/utils/sessionTitlePr.js';
 import ProgressPanel, { mergeProgressEvent } from './components/ProgressPanel.jsx';
 import ReactLoopObservabilityPanel from './components/ReactLoopObservabilityPanel.jsx';
 import OrchestrationTimelinePanel from './components/OrchestrationTimelinePanel.jsx';
@@ -360,6 +366,7 @@ export default function App() {
   pullsProjectIdRef.current = pullsProjectId;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
+  const chatGithubRepo = projects.find((p) => p.id === activeAgent?.projectId)?.githubRepo ?? null;
   const chatProjectIsWorkflow =
     projects.find((p) => p.id === activeAgent?.projectId)?.mode === 'workflow';
 
@@ -2703,6 +2710,13 @@ export default function App() {
     () => sessions.find((s) => s.id === activeSessionId) || null,
     [sessions, activeSessionId],
   );
+  const activeResolvePrBannerInfo = useMemo(() => {
+    if (!activeSession?.name || !isResolvePrSessionTitle(activeSession.name)) return null;
+    return {
+      prUrl: inferPrUrlFromSessionTitle(activeSession.name, chatGithubRepo),
+      prNumber: parseResolvePrNumberFromTitle(activeSession.name),
+    };
+  }, [activeSession, chatGithubRepo]);
   const orchestrationTimelineEntries = useMemo(() => {
     if (!activeSessionId) return [];
     const out = [];
@@ -3470,10 +3484,36 @@ export default function App() {
                               <div className="px-4 max-w-[95%] sm:max-w-[90%] lg:hidden">
                                 <SkillInvocationsPanel invocations={sessionSkillInvocations} />
                               </div>
+                              {/* Resolve PR sessions fix an existing PR — never offer Create PR / merge here */}
+                              {changesReady[activeSessionId] &&
+                                !streamingMsgId &&
+                                !chatProjectIsWorkflow &&
+                                activeResolvePrBannerInfo && (
+                                  <ResolveSessionPrBanner
+                                    prUrl={activeResolvePrBannerInfo.prUrl}
+                                    prNumber={activeResolvePrBannerInfo.prNumber}
+                                    branchLabel={changesReady[activeSessionId]?.branch}
+                                    sessionId={activeSessionId}
+                                    onDismiss={(sessionId) => {
+                                      setChangesReady((prev) => {
+                                        const next = { ...prev };
+                                        delete next[sessionId];
+                                        return next;
+                                      });
+                                      setCreatePrLogBySession((prev) => {
+                                        if (!prev[sessionId]) return prev;
+                                        const next = { ...prev };
+                                        delete next[sessionId];
+                                        return next;
+                                      });
+                                    }}
+                                  />
+                                )}
                               {/* Ad-hoc PR creation prompt — shown when agent finishes work with uncommitted changes */}
                               {changesReady[activeSessionId] &&
                                 !streamingMsgId &&
-                                !chatProjectIsWorkflow && (
+                                !chatProjectIsWorkflow &&
+                                !activeResolvePrBannerInfo && (
                                   <ChangesReadyBox
                                     sessionId={activeSessionId}
                                     changes={changesReady[activeSessionId]}
