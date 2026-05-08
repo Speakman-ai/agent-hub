@@ -57,8 +57,13 @@ vi.mock('./project-paths.js', () => ({
   contextFilePath: () => null,
 }));
 
+const mockFindProject = vi.hoisted(() =>
+  vi.fn((_id: string): import('./types.js').Project | null => null),
+);
+
 vi.mock('./project-model.js', () => ({
   allAgents: () => [],
+  findProject: (id: string) => mockFindProject(id),
 }));
 
 import { buildEnrichedPrompt } from './chat.js';
@@ -89,6 +94,8 @@ describe('buildEnrichedPrompt — Available Skills guidance', () => {
   beforeEach(() => {
     mkdirSync(tmpBase, { recursive: true });
     mockSkills.length = 0;
+    mockFindProject.mockReset();
+    mockFindProject.mockImplementation(() => null);
   });
 
   afterEach(() => {

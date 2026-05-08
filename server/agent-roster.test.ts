@@ -10,8 +10,9 @@ import type { EnrichedAgent } from './types.js';
 
 const tmpBase = path.join(os.tmpdir(), `agent-roster-test-${Date.now()}`);
 
-const { mockAllAgents } = vi.hoisted(() => ({
+const { mockAllAgents, mockFindProject } = vi.hoisted(() => ({
   mockAllAgents: vi.fn((): EnrichedAgent[] => []),
+  mockFindProject: vi.fn((_id: string): import('./types.js').Project | null => null),
 }));
 
 vi.mock('./db.js', () => ({
@@ -48,6 +49,7 @@ vi.mock('./project-paths.js', () => ({
 
 vi.mock('./project-model.js', () => ({
   allAgents: () => mockAllAgents(),
+  findProject: (id: string) => mockFindProject(id),
 }));
 
 import { buildEnrichedPrompt, formatProjectAgentRosterSection } from './chat.js';
@@ -187,6 +189,8 @@ describe('buildEnrichedPrompt — project agent roster', () => {
   beforeEach(() => {
     mkdirSync(tmpBase, { recursive: true });
     mockAllAgents.mockReset();
+    mockFindProject.mockReset();
+    mockFindProject.mockImplementation(() => null);
   });
 
   afterEach(() => {
