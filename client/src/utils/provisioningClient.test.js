@@ -2,11 +2,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { provisionProject, subscribeProvisioningEvents } from './provisioningClient.js';
 
 // Mock the shared connection module so the helper hits a known base URL
-// without pulling in the whole auth wiring.
+// without pulling in the whole auth wiring. `appendAuthToWsUrl` is
+// overridden per-test (see `setAppendAuth` below) so suites can verify
+// both the no-credential and credential-present paths.
+let mockAppendAuth = (url) => url;
 vi.mock('./connection.js', () => ({
   getApiBase: () => 'http://localhost:3051/api',
   getAuthHeaders: () => ({ Authorization: 'Bearer test' }),
+  appendAuthToWsUrl: (url) => mockAppendAuth(url),
 }));
+function setAppendAuth(fn) {
+  mockAppendAuth = fn;
+}
+afterEach(() => {
+  mockAppendAuth = (url) => url;
+});
 
 describe('provisionProject', () => {
   beforeEach(() => {
@@ -399,5 +409,98 @@ describe('subscribeProvisioningEvents', () => {
     onEvent.mockClear();
     firstWatchdog();
     expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  // Regression: server-issued wsUrls (POST /api/projects/provision and
+  // POST /api/settings/pr-env/provision) come back without an auth
+  // credential. The client must splice ?token= / ?apiKey= in before
+  // opening the socket — otherwise multi-user hubs close the upgrade
+  // with 4401 and surface "Provisioning stream dropped and could not be
+  // resumed." See `appendAuthToWsUrl` in connection.js.
+  describe('auth token append', () => {
+    it('routes the initial wsUrl through appendAuthToWsUrl', () => {
+      setAppendAuth((url) => `${url}${url.includes('?') ? '&' : '?'}token=jwt-abc`);
+      const sockets = [];
+      const factory = (url) => {
+        const sock = { url, onmessage: null, onclose: null, onerror: null, close: vi.fn() };
+        sockets.push(sock);
+        return sock;
+      };
+      subscribeProvisioningEvents('ws://job', {
+        onEvent: vi.fn(),
+        watchdogMs: 60_000,
+        webSocketFactory: factory,
+        setTimeoutFn: () => 1,
+        clearTimeoutFn: vi.fn(),
+      });
+      expect(sockets[0].url).toBe('ws://job?token=jwt-abc');
+    });
+
+    it('leaves the wsUrl unchanged when no credential is available', () => {
+      setAppendAuth((url) => url);
+      const sockets = [];
+      const factory = (url) => {
+        const sock = { url, onmessage: null, onclose: null, onerror: null, close: vi.fn() };
+        sockets.push(sock);
+        return sock;
+      };
+      subscribeProvisioningEvents('ws://job', {
+        onEvent: vi.fn(),
+        watchdogMs: 60_000,
+        webSocketFactory: factory,
+        setTimeoutFn: () => 1,
+        clearTimeoutFn: vi.fn(),
+      });
+      expect(sockets[0].url).toBe('ws://job');
+    });
+
+    it('re-appends auth on the reconnect URL alongside ?since=', () => {
+      // appendAuthToWsUrl is called fresh on every connect, so a token
+      // rotation between initial-connect and reconnect would still
+      // produce a valid URL. The reconnect URL must contain BOTH the
+      // auth credential and ?since=<lastSeq>.
+      setAppendAuth((url) => `${url}${url.includes('?') ? '&' : '?'}token=jwt-xyz`);
+      const sockets = [];
+      const factory = (url) => {
+        const sock = {
+          url,
+          onmessage: null,
+          onclose: null,
+          onerror: null,
+          closed: false,
+          close: vi.fn(function () {
+            this.closed = true;
+          }),
+        };
+        sockets.push(sock);
+        return sock;
+      };
+      const scheduled = [];
+      const setTimeoutFn = (fn) => {
+        scheduled.push(fn);
+        return scheduled.length;
+      };
+      subscribeProvisioningEvents('ws://job', {
+        onEvent: vi.fn(),
+        onClose: vi.fn(),
+        watchdogMs: 60_000,
+        reconnectBackoffMs: 0,
+        maxReconnects: 1,
+        webSocketFactory: factory,
+        setTimeoutFn,
+        clearTimeoutFn: vi.fn(),
+      });
+      expect(sockets[0].url).toBe('ws://job?token=jwt-xyz');
+      sockets[0].onmessage({
+        data: JSON.stringify({ type: 'phase', phase: 'validate', status: 'ok', seq: 4 }),
+      });
+      sockets[0].onclose();
+      // Run the most recently scheduled callback (the reconnect).
+      scheduled[scheduled.length - 1]();
+      expect(sockets.length).toBe(2);
+      // The reconnect URL must carry both the credential AND ?since=.
+      expect(sockets[1].url).toContain('token=jwt-xyz');
+      expect(sockets[1].url).toContain('since=4');
+    });
   });
 });

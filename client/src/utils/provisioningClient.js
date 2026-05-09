@@ -29,7 +29,7 @@
  * ─────────────────────────────────────────────────────────────────────
  */
 
-import { getApiBase, getAuthHeaders } from './connection.js';
+import { getApiBase, getAuthHeaders, appendAuthToWsUrl } from './connection.js';
 
 /**
  * Kick off a provisioning job.
@@ -313,7 +313,13 @@ export function subscribeProvisioningEvents(wsUrl, handlers) {
         state.reconnectHandle = setT(() => {
           state.reconnectHandle = null;
           if (state.closed) return;
-          const nextUrl = appendSinceQuery(wsUrl, state.lastSeq >= 0 ? state.lastSeq : undefined);
+          // Re-resolve auth on every reconnect — the JWT could have
+          // rotated since the initial connect, and the server's `?since=`
+          // replay still requires a valid credential.
+          const nextUrl = appendSinceQuery(
+            appendAuthToWsUrl(wsUrl),
+            state.lastSeq >= 0 ? state.lastSeq : undefined,
+          );
           attachSocket(nextUrl, { isReconnect: true });
         }, effectiveBackoffMs);
         return;
@@ -367,7 +373,14 @@ export function subscribeProvisioningEvents(wsUrl, handlers) {
     }
   }
 
-  attachSocket(wsUrl, { isReconnect: false });
+  // The wsUrl returned by /api/projects/provision and
+  // /api/settings/pr-env/provision is bare — the server can't know the
+  // caller's JWT. Browsers can't add headers to `new WebSocket(...)` and
+  // the server's WS auth path only reads `?token=` / `?apiKey=` from the
+  // URL, so we splice the credential in here. Single-user dev (no JWT
+  // configured) falls through unchanged.
+  const authedInitialUrl = appendAuthToWsUrl(wsUrl);
+  attachSocket(authedInitialUrl, { isReconnect: false });
 
   return {
     close: () => {

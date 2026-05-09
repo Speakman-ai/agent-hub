@@ -103,6 +103,42 @@ export function getWsUrl() {
   return jwt ? `${base}?token=${encodeURIComponent(jwt)}` : base;
 }
 
+/**
+ * Append the caller's auth credential (JWT preferred, apiKey fallback) to
+ * an absolute server-issued WebSocket URL.
+ *
+ * Background: REST calls authenticate via the `Authorization` header
+ * (`getAuthHeaders`) but `new WebSocket(...)` cannot set custom headers
+ * from the browser. The server's WS auth path
+ * (`authenticateWsDetailed` in `server/auth.ts`) only reads `?token=` /
+ * `?apiKey=` from the URL — cookies are *not* consulted. Server routes
+ * that hand back a `wsUrl` (e.g. `/api/projects/provision`,
+ * `/api/settings/pr-env/provision`) cannot inject the user's JWT
+ * themselves, so the client must splice it in before opening the socket.
+ *
+ * Returns the URL unchanged when no credential is available (single-user
+ * dev) or when the input isn't a string — callers shouldn't have to
+ * special-case those paths.
+ */
+export function appendAuthToWsUrl(wsUrl) {
+  if (typeof wsUrl !== 'string' || !wsUrl) return wsUrl;
+  const jwt = getJwtToken();
+  let credParam = null;
+  if (jwt) {
+    credParam = `token=${encodeURIComponent(jwt)}`;
+  } else {
+    const config = getConnectionConfig();
+    if (config.apiKey) {
+      credParam = `apiKey=${encodeURIComponent(config.apiKey)}`;
+    }
+  }
+  if (!credParam) return wsUrl;
+  // Don't double-append if the caller already attached a credential.
+  if (/[?&](token|apiKey)=/.test(wsUrl)) return wsUrl;
+  const sep = wsUrl.includes('?') ? '&' : '?';
+  return `${wsUrl}${sep}${credParam}`;
+}
+
 /** Reload the app after an org switch. In Electron, navigates the window
  *  to the correct URL (local or remote). In the browser, just reloads. */
 export function reloadForOrgSwitch() {
