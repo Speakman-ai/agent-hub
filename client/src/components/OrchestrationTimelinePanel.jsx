@@ -16,6 +16,7 @@ import {
   prStateBadge,
   checksBadge,
   summarizeChecks,
+  shouldFetchProjectPullDetail,
 } from '../utils/prFormatting.js';
 
 function formatTime(ts) {
@@ -97,8 +98,12 @@ export default function OrchestrationTimelinePanel({ entries, sessionId, compact
           return;
         }
 
-        // Fetch PR detail (checks) only when project + PR number are available
-        if (projectId) {
+        // Fetch PR detail (checks) only when project + PR number are available,
+        // and only when the PR URL refers to the same repo as the project.
+        // Cross-repo links (or title-inferred URLs) must not trigger a lookup
+        // against /api/projects/:id/pulls/:n — that would hit the wrong repo.
+        const repoAligned = shouldFetchProjectPullDetail(linkedPrUrl, data?.projectGithubRepo);
+        if (projectId && repoAligned) {
           api
             .getProjectPullDetail(projectId, Number(prNum))
             .then((d) => {
