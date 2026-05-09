@@ -54,10 +54,15 @@ function kindLabel(k) {
 }
 
 /**
- * Right-hand session metadata panel: linked PR, skills, changed files, run snapshot, context reads.
- * Desktop (lg+): fixed column. Data from GET /api/sessions/:id/summary + optional PR detail.
+ * Session metadata panel: linked PR, skills, changed files, run snapshot, context reads.
+ *
+ * `variant="panel"` (default) — desktop-only right-hand column with border-l styling.
+ * `variant="sidebar"` — inline block for embedding inside the left sidebar (no fixed width,
+ *   no border-l, no hidden-on-small-screen). Content is slightly more compact.
+ *
+ * Data from GET /api/sessions/:id/summary + optional PR detail.
  */
-export default function SessionSummarySidebar({ sessionId, isLive }) {
+export default function SessionSummarySidebar({ sessionId, isLive, variant = 'panel' }) {
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
@@ -216,9 +221,15 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
 
   const showSummarySkeleton = summaryInitialLoading && !loadError;
 
+  const isSidebar = variant === 'sidebar';
+
   return (
     <aside
-      className="hidden lg:flex w-[min(20rem,32vw)] shrink-0 border-l border-gray-800/80 bg-gray-950/40 flex flex-col min-h-0"
+      className={
+        isSidebar
+          ? 'flex flex-col min-h-0 w-full'
+          : 'hidden lg:flex w-[min(20rem,32vw)] shrink-0 border-l border-gray-800/80 bg-gray-950/40 flex flex-col min-h-0'
+      }
       aria-label="Session summary"
     >
       <div className="p-3 border-b border-gray-800/60 flex items-start justify-between gap-2">
@@ -239,7 +250,7 @@ export default function SessionSummarySidebar({ sessionId, isLive }) {
         )}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-xs">
+      <div className={`p-3 space-y-3 text-xs ${isSidebar ? '' : 'flex-1 min-h-0 overflow-y-auto'}`}>
         {loadError && (
           <p className="text-amber-300/90 border border-amber-500/20 rounded-lg px-2 py-1.5">
             {loadError}
