@@ -214,6 +214,23 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       return res.json(duplicate);
     }
 
+    // Session-id deduplication: when an agent has been spawned via
+    // `POST /board/cards/:cardId/assign`, that endpoint stamps the new
+    // session id on the assigned card. If the agent then follows the
+    // "Bias to Action" prompt and POSTs a new card with `session_id` set
+    // to its own session, we end up with two cards covering the same
+    // logical task with the same session_id (see card ddfa8ba5 for the
+    // 2026-05 repro). Return the originally-linked card instead of
+    // creating a duplicate. Title-dedup above already runs first so
+    // legitimate "rename a card" flows aren't affected.
+    const sessionIdRaw = (body.sessionId ?? body.session_id) as string | undefined;
+    if (sessionIdRaw && typeof sessionIdRaw === 'string' && sessionIdRaw.trim()) {
+      const linked = stmts.getKanbanCardBySession.get(sessionIdRaw) as KanbanCardRow | undefined;
+      if (linked && linked.board_id === board.id) {
+        return res.json(linked);
+      }
+    }
+
     const existingCards = stmts.getKanbanCardsByColumn.all(columnId) as KanbanCardRow[];
     const maxPos =
       existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
@@ -518,7 +535,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         );
       } else {
         contextLines.push(
-          `\n---\nYou have been assigned this task from the project kanban board. Review the description above and begin working on it. Update the kanban card with progress as you go.`,
+          `\n---`,
+          `You have been assigned this task from the project kanban board. Review the description above and begin working on it.`,
+          ``,
+          `**This session is already linked to kanban card \`${req.params.cardId}\`.** Do **NOT** create a new card for this work — the card already exists and tracks your progress. The "Bias to Action — create a card" guidance in your system prompt does not apply here. Instead:`,
+          `- **Comment** on this card to record findings, blockers, or PR links: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\``,
+          `- **Move** this card as state changes (In Progress → Review → Done): \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\``,
+          `- **Update** title/description/labels in place: \`PUT /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}\``,
+          ``,
+          `If the work splits into genuinely separate follow-ups, create child cards in Backlog with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,
         );
       }
 
