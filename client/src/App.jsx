@@ -3102,6 +3102,9 @@ export default function App() {
             }}
             electronSuppressHealthFetch={isElectron}
             electronHealthSnapshot={electronDesktopHealth}
+            orchestrationTimelineEntries={orchestrationTimelineEntries}
+            summarySessionId={activeSessionId}
+            summaryIsLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
           />
         </div>
 
@@ -3318,7 +3321,7 @@ export default function App() {
                   }}
                 />
               ) : (
-                <div className="flex-1 flex flex-col lg:flex-row min-h-0 min-w-0 overflow-hidden">
+                <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
                   <div className="flex-1 flex flex-col min-w-0 min-h-0">
                     {/* Messages */}
                     <div
@@ -3327,12 +3330,8 @@ export default function App() {
                       className="flex-1 overflow-y-auto p-3 md:p-6 relative"
                     >
                       <div className="mx-auto" ref={messagesColumnRef}>
-                        {/* Cursor-style timed checklist — rendered at top of chat
-                      whenever the session has emitted `[[STEP:...]]` markers.
-                      Collapses automatically once all steps resolve. */}
-                        {orchestrationTimelineEntries.length > 0 && (
-                          <OrchestrationTimelinePanel entries={orchestrationTimelineEntries} />
-                        )}
+                        {/* Orchestration timeline is now rendered in the left sidebar
+                      (see Sidebar.jsx > Session activity panel). */}
                         {(sessionProgress[activeSessionId] || []).length > 0 && (
                           <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
                             <ProgressPanel
@@ -3649,12 +3648,8 @@ export default function App() {
                       onFileError={(msg) => showToast(msg, 'error', 6000)}
                     />
                   </div>
-                  {activeSessionId && (
-                    <SessionSummarySidebar
-                      sessionId={activeSessionId}
-                      isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                    />
-                  )}
+                  {/* SessionSummarySidebar (features panel) is now rendered inside the
+                    left sidebar — see Sidebar.jsx > Session activity panel. */}
                 </div>
               )}
             </>
