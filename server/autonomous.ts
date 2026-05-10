@@ -32,6 +32,87 @@ import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 
 const execFileAsync = promisify(execFile);
 
+// ─── Umbrella feature-branch management (opt-in) ───────────────────────────
+//
+// Per-run umbrella branching is OPT-IN via the epic's `pr_base_branch` field.
+//
+//   • Field BLANK (null/empty)  → no umbrella branch is created. Every card's
+//     auto-PR targets the repo's default branch (main/master). This is the
+//     default behaviour — autonomous mode behaves like a regular dev workflow
+//     unless the operator explicitly asks for an integration branch.
+//   • Field has a VALUE (e.g. `feature/q3-launch`) → that branch name is
+//     respected as the PR base for every card dispatched in the run. The
+//     operator is responsible for ensuring the branch exists on origin
+//     (`auto-git.ts` falls back to the default branch with a logged reason
+//     if `git ls-remote` doesn't find it). The value is never overwritten
+//     or cleared by the autonomous loop.
+//
+// `createUmbrellaBranch` (below) remains exported for tests and as a helper
+// that an operator-facing route may call in the future, but the autonomous
+// dispatch path no longer invokes it automatically.
+
+const AUTONOMOUS_BRANCH_PREFIX = 'feature/autonomous-';
+
+/**
+ * Creates an umbrella feature branch on the remote rooted at the current
+ * remote HEAD (main/master). Returns the branch name on success, null on any
+ * failure (caller falls back to PR-to-main behaviour).
+ *
+ * Exported for unit testing.
+ */
+export async function createUmbrellaBranch(
+  project: Project,
+  epic: KanbanEpicRow,
+): Promise<string | null> {
+  const cwd = project.cwd;
+  if (!cwd) return null;
+
+  const epicShort = epic.id.replace(/-/g, '').substring(0, 8);
+  const runShort = crypto.randomUUID().replace(/-/g, '').substring(0, 8);
+  const branchName = `${AUTONOMOUS_BRANCH_PREFIX}${epicShort}-${runShort}`;
+
+  try {
+    // Fetch to ensure remote refs are current (shallow ok — we just need the SHA).
+    await execFileAsync('git', ['fetch', 'origin', '--no-tags'], { cwd, timeout: 30_000 });
+
+    // Resolve the remote HEAD SHA. Try symbolic-ref first (fastest), then
+    // fall back to explicit branch names used by most repos.
+    let sha: string | null = null;
+    for (const ref of ['origin/HEAD', 'origin/main', 'origin/master']) {
+      try {
+        const { stdout } = await execFileAsync('git', ['rev-parse', ref], { cwd, timeout: 5_000 });
+        sha = stdout.trim();
+        if (sha) break;
+      } catch {
+        // try next candidate
+      }
+    }
+
+    if (!sha) {
+      console.warn(
+        `[Autonomous] Cannot resolve remote HEAD for project "${project.name}" — umbrella branch skipped, PRs will target default branch`,
+      );
+      return null;
+    }
+
+    // Push the SHA directly as the new branch — no local checkout needed.
+    await execFileAsync('git', ['push', 'origin', `${sha}:refs/heads/${branchName}`], {
+      cwd,
+      timeout: 30_000,
+    });
+
+    console.log(
+      `[Autonomous] ✅ Created umbrella branch "${branchName}" for epic "${epic.name}" (base SHA: ${sha.substring(0, 7)})`,
+    );
+    return branchName;
+  } catch (err) {
+    console.error(
+      `[Autonomous] Failed to create umbrella branch for epic "${epic.name}": ${(err as Error).message} — PRs will target default branch`,
+    );
+    return null;
+  }
+}
+
 // ─── Dependency Types ───────────────────────────────────────────────────────
 
 interface AutonomousDeps {
@@ -114,6 +195,15 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
     allEpicCardsForDone.every((c) => isColumnDone(colNameByIdForEpic[c.column_id]));
 
   if (epicWorkComplete && epic.autonomous) {
+    // Operator-set integration branch — flag it so the operator knows to open
+    // the final PR from it. With auto-umbrella creation removed, this path
+    // only fires when someone explicitly typed a branch name into the epic.
+    if (epic.pr_base_branch && !epic.pr_base_branch.startsWith(AUTONOMOUS_BRANCH_PREFIX)) {
+      console.log(
+        `[Autonomous] 🎉 Epic "${epic.name}" complete — integration branch "${epic.pr_base_branch}" is ready. Open a PR from it to merge all changes into main.`,
+      );
+    }
+
     d.stmts.updateKanbanEpic.run(
       epic.name,
       epic.description,
@@ -124,6 +214,8 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
       epic.autonomous_max_iterations,
       epic.autonomous_model ?? null,
       epic.orchestration_budgets_json ?? null,
+      // Preserve whatever the operator set (or null). We never auto-clear or
+      // overwrite the operator's value here.
       epic.pr_base_branch ?? null,
       epic.id,
     );
@@ -163,6 +255,15 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
     );
     return;
   }
+
+  // ── Umbrella / integration branch (opt-in via operator-set value) ──────
+  // We do NOT auto-create a branch when `epic.pr_base_branch` is blank.
+  // Blank → every card's auto-PR targets the repo's default branch (handled
+  // by `auto-git.ts` falling back when `effectivePrBaseBranch()` returns
+  // null). Operator-set values are passed through as-is — `auto-git.ts`
+  // verifies the branch exists on origin and falls back with a logged
+  // reason if it doesn't, so a typo doesn't strand the run.
+  // ───────────────────────────────────────────────────────────────────────
 
   // Label-based routing: every eligible card is dispatchable. The intake
   // ("ticketing") agent stamps labels at card-creation time; we route to

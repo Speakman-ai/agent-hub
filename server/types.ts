@@ -209,6 +209,18 @@ export interface SlackMessageRow {
   timestamp: string;
 }
 
+export interface SlackBotRow {
+  id: string;
+  name: string;
+  bot_token: string;
+  app_token: string;
+  agent_id: string;
+  channel_map: string; // JSON: { [channelId]: { label: string; agentId?: string } }
+  enabled: number; // 0 | 1
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DelegationRow {
   id: string;
   session_id: string;
@@ -913,6 +925,14 @@ export interface Stmts {
   addSlackMessage: Stmt;
   getSlackMessages: Stmt;
   getAllSlackMessages: Stmt;
+
+  // Slack bot configs (DB-backed)
+  listSlackBots: Stmt;
+  getSlackBot: Stmt;
+  insertSlackBot: Stmt;
+  updateSlackBot: Stmt;
+  deleteSlackBot: Stmt;
+  deleteSlackBotsByAgent: Stmt;
 
   // Delegations
   createDelegation: Stmt;

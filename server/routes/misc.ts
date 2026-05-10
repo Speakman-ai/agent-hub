@@ -4,7 +4,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { db } from '../db.js';
-import { getSlackStatus, restartSlack, getSlackMessages, getAllSlackMessages } from '../slack.js';
 import type { RouteDeps, EnrichedAgent, AppConfig, Stmts, Project } from '../types.js';
 import { getLogBuffer } from '../server-log.js';
 import { PUSH_EVENT_TYPES } from '../push.js';
@@ -244,29 +243,6 @@ export default function createMiscRoutes(deps: RouteDeps): Router {
     } catch (err: unknown) {
       console.error('Usage query error:', err);
       res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.get('/api/slack/status', (_req: Request, res: Response) => {
-    res.json(getSlackStatus());
-  });
-
-  router.post('/api/slack/restart', async (_req: Request, res: Response) => {
-    try {
-      await restartSlack(allAgents(), stmts);
-      res.json({ ok: true, status: getSlackStatus() });
-    } catch (err: unknown) {
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  router.get('/api/slack/messages', (req: Request, res: Response) => {
-    const agentId = req.query.agentId as string | undefined;
-    const limit = parseInt(req.query.limit as string) || 50;
-    if (agentId) {
-      res.json(getSlackMessages(agentId, limit));
-    } else {
-      res.json(getAllSlackMessages(limit));
     }
   });
 

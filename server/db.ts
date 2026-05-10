@@ -196,6 +196,19 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_slack_agent ON slack_messages(agent_id);
     CREATE INDEX IF NOT EXISTS idx_slack_timestamp ON slack_messages(timestamp);
 
+    -- DB-backed Slack bot configurations (UI-managed alternative to slack-config.json).
+    CREATE TABLE IF NOT EXISTS slack_bots (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      bot_token TEXT NOT NULL,
+      app_token TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      channel_map TEXT NOT NULL DEFAULT '{}',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- Persistent next-run tracking so heartbeats survive server restarts.
     -- Agents themselves live in agents.json, so this table is keyed by agent id.
     CREATE TABLE IF NOT EXISTS heartbeat_state (
@@ -2153,6 +2166,20 @@ function initDb(dataDir: string): void {
       'SELECT * FROM slack_messages WHERE agent_id = ? ORDER BY timestamp DESC LIMIT ?',
     ),
     getAllSlackMessages: db.prepare('SELECT * FROM slack_messages ORDER BY timestamp DESC LIMIT ?'),
+
+    // Slack bot configs (DB-backed)
+    listSlackBots: db.prepare('SELECT * FROM slack_bots ORDER BY created_at ASC'),
+    getSlackBot: db.prepare('SELECT * FROM slack_bots WHERE id = ?'),
+    insertSlackBot: db.prepare(
+      `INSERT INTO slack_bots (id, name, bot_token, app_token, agent_id, channel_map, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    updateSlackBot: db.prepare(
+      `UPDATE slack_bots SET name = ?, bot_token = ?, app_token = ?, agent_id = ?,
+       channel_map = ?, enabled = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    deleteSlackBot: db.prepare('DELETE FROM slack_bots WHERE id = ?'),
+    deleteSlackBotsByAgent: db.prepare('DELETE FROM slack_bots WHERE agent_id = ?'),
 
     // Delegations
     createDelegation: db.prepare(

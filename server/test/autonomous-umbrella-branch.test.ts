@@ -1,0 +1,248 @@
+/**
+ * Unit tests for the autonomous-mode umbrella feature branch helper +
+ * dispatch-path contract.
+ *
+ * `createUmbrellaBranch` is tested in isolation by mocking child_process so
+ * no real git operations happen. We verify:
+ *   1. Branch names follow the `feature/autonomous-{epicId8}-{uuid8}` pattern.
+ *   2. The function calls `git fetch` then `git rev-parse` then `git push`.
+ *   3. It falls back gracefully when the remote ref can't be resolved.
+ *   4. It falls back gracefully when git push fails.
+ *
+ * Dispatch-path contract (added when umbrella creation became opt-in):
+ *   5. `runAutonomousLoop` MUST NOT auto-call `createUmbrellaBranch`. When
+ *      `epic.pr_base_branch` is blank, PRs target the default branch; when
+ *      it's set, the operator-supplied value is used as-is.
+ */
+import './setup.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+// ── mock child_process BEFORE importing the module under test ──────────────
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return {
+    ...actual,
+    execFile: vi.fn(),
+  };
+});
+
+import { execFile } from 'child_process';
+import { createUmbrellaBranch } from '../autonomous.js';
+import type { KanbanEpicRow, Project } from '../types.js';
+
+const mockedExecFile = execFile as unknown as ReturnType<typeof vi.fn>;
+
+// Minimal fake project + epic for the helper
+function makeProject(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'proj-1',
+    name: 'Test Project',
+    cwd: '/tmp/fake-repo',
+    ahw: '/tmp/fake-workspace',
+    agents: [],
+    ...overrides,
+  } as unknown as Project;
+}
+
+function makeEpic(overrides: Partial<KanbanEpicRow> = {}): KanbanEpicRow {
+  return {
+    id: 'aabbccdd-eeff-0011-2233-445566778899',
+    board_id: 'board-1',
+    name: 'Test Epic',
+    description: null,
+    color: '#3B82F6',
+    autonomous: 1,
+    autonomous_interval: 60,
+    autonomous_max_concurrent: 2,
+    autonomous_max_iterations: 3,
+    autonomous_model: null,
+    orchestration_budgets_json: null,
+    pr_base_branch: null,
+    position: 0,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+/** Simulate a successful execFile call returning stdout. */
+function mockExecSuccess(stdout: string) {
+  return (_cmd: unknown, _args: unknown, _opts: unknown, cb: (...args: unknown[]) => void) => {
+    cb(null, { stdout, stderr: '' });
+  };
+}
+
+/** Simulate a failing execFile call. */
+function mockExecFail(msg: string) {
+  return (_cmd: unknown, _args: unknown, _opts: unknown, cb: (...args: unknown[]) => void) => {
+    cb(new Error(msg), { stdout: '', stderr: '' });
+  };
+}
+
+beforeEach(() => {
+  mockedExecFile.mockReset();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('createUmbrellaBranch', () => {
+  it('returns a branch name matching the feature/autonomous- prefix pattern', async () => {
+    // fetch → success, rev-parse origin/HEAD → sha, push → success
+    let callIdx = 0;
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        callIdx++;
+        if (callIdx === 1) {
+          // git fetch origin --depth=1
+          expect(args).toContain('fetch');
+          cb(null, { stdout: '', stderr: '' });
+        } else if (callIdx === 2) {
+          // git rev-parse origin/HEAD
+          expect(args).toContain('rev-parse');
+          cb(null, { stdout: 'abc1234567890def\n', stderr: '' });
+        } else {
+          // git push origin sha:refs/heads/...
+          expect(args).toContain('push');
+          cb(null, { stdout: '', stderr: '' });
+        }
+      },
+    );
+
+    const result = await createUmbrellaBranch(makeProject(), makeEpic());
+    expect(result).not.toBeNull();
+    expect(result).toMatch(/^feature\/autonomous-[a-f0-9]{8}-[a-f0-9]{8}$/);
+  });
+
+  it('falls back to origin/main when origin/HEAD resolution fails', async () => {
+    let callIdx = 0;
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        callIdx++;
+        if (callIdx === 1) {
+          // fetch
+          cb(null, { stdout: '', stderr: '' });
+        } else if (callIdx === 2) {
+          // rev-parse origin/HEAD → fail
+          cb(new Error('unknown ref'), { stdout: '', stderr: '' });
+        } else if (callIdx === 3) {
+          // rev-parse origin/main → success
+          expect(args).toContain('rev-parse');
+          expect(args).toContain('origin/main');
+          cb(null, { stdout: 'deadbeef1234\n', stderr: '' });
+        } else {
+          // push
+          cb(null, { stdout: '', stderr: '' });
+        }
+      },
+    );
+
+    const result = await createUmbrellaBranch(makeProject(), makeEpic());
+    expect(result).toMatch(/^feature\/autonomous-/);
+  });
+
+  it('returns null when all ref resolutions fail', async () => {
+    let callIdx = 0;
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, _args: unknown, _opts: unknown, cb: (...a: unknown[]) => void) => {
+        callIdx++;
+        if (callIdx === 1) {
+          // fetch
+          cb(null, { stdout: '', stderr: '' });
+        } else {
+          // all rev-parse attempts fail
+          cb(new Error('bad ref'), { stdout: '', stderr: '' });
+        }
+      },
+    );
+
+    const result = await createUmbrellaBranch(makeProject(), makeEpic());
+    expect(result).toBeNull();
+  });
+
+  it('returns null when git push fails', async () => {
+    let callIdx = 0;
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, _args: unknown, _opts: unknown, cb: (...a: unknown[]) => void) => {
+        callIdx++;
+        if (callIdx === 1) {
+          // fetch
+          cb(null, { stdout: '', stderr: '' });
+        } else if (callIdx === 2) {
+          // rev-parse origin/HEAD
+          cb(null, { stdout: 'abc123\n', stderr: '' });
+        } else {
+          // push → fail
+          cb(new Error('permission denied'), { stdout: '', stderr: '' });
+        }
+      },
+    );
+
+    const result = await createUmbrellaBranch(makeProject(), makeEpic());
+    expect(result).toBeNull();
+  });
+
+  it('returns null immediately when project.cwd is empty', async () => {
+    const result = await createUmbrellaBranch(makeProject({ cwd: '' }), makeEpic());
+    expect(result).toBeNull();
+    expect(mockedExecFile).not.toHaveBeenCalled();
+  });
+
+  it('does NOT get auto-invoked from runAutonomousLoop (umbrella creation is opt-in)', () => {
+    // Contract: when an operator leaves `epic.pr_base_branch` blank, the
+    // dispatch path must NOT auto-create a `feature/autonomous-...` branch.
+    // This is enforced as a source-shape assertion: the body of
+    // `runAutonomousLoop` must not contain a call to `createUmbrellaBranch`.
+    // If a future change re-introduces auto-creation, this test fails.
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(path.resolve(here, '..', 'autonomous.ts'), 'utf8');
+
+    // Locate the runAutonomousLoop function body.
+    const startMatch = src.match(/export async function runAutonomousLoop\b/);
+    expect(startMatch, 'runAutonomousLoop export not found in autonomous.ts').toBeTruthy();
+    const start = startMatch!.index!;
+
+    // Walk braces to find the end of the function body.
+    const openBrace = src.indexOf('{', start);
+    expect(openBrace).toBeGreaterThan(start);
+    let depth = 0;
+    let end = -1;
+    for (let i = openBrace; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    expect(end, 'runAutonomousLoop function body braces are unbalanced').toBeGreaterThan(openBrace);
+
+    const body = src.slice(openBrace, end + 1);
+    expect(
+      body.includes('createUmbrellaBranch('),
+      'runAutonomousLoop must not call createUmbrellaBranch — umbrella branches are now opt-in via operator-set pr_base_branch',
+    ).toBe(false);
+  });
+
+  it('embeds the first 8 hex chars of the epic id (dashes stripped) in the branch name', async () => {
+    const epicId = 'aabbccdd-eeff-0011-2233-445566778899';
+    // 'aabbccdd-eeff-...' → remove dashes → 'aabbccddeeff...' → first 8 → 'aabbccdd'
+    const expectedPrefix = 'aabbccdd';
+
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, _args: unknown, _opts: unknown, cb: (...a: unknown[]) => void) => {
+        cb(null, { stdout: 'sha123\n', stderr: '' });
+      },
+    );
+
+    const result = await createUmbrellaBranch(makeProject(), makeEpic({ id: epicId }));
+    expect(result).toMatch(new RegExp(`^feature\\/autonomous-${expectedPrefix}-`));
+  });
+});

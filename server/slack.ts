@@ -12,7 +12,29 @@ import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { getOrgOwnerUserId } from './session-ownership.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
-import type { EnrichedAgent, Stmts, SlackMessageRow } from './types.js';
+import type { EnrichedAgent, Stmts, SlackMessageRow, SlackBotRow } from './types.js';
+import { decryptSecret } from './pr-env-store.js';
+
+/**
+ * Decrypt a stored secret, falling back to the raw stored value when the
+ * blob isn't in `iv:tag:ciphertext` shape. `slack_bots` is a brand-new
+ * table in the PR introducing this module, so today every row is encrypted.
+ * A hand-inserted row (manual SQL fix-up, restored backup) wouldn't be —
+ * we'd rather forward the plaintext to Bolt and let `auth.test` fail with
+ * a real Slack error than 500 the entire `startSlack` boot path on
+ * `Malformed ciphertext blob`. Anything else (e.g. wrong AES key)
+ * re-throws so we don't silently mask a real misconfiguration.
+ */
+function safeDecryptSecret(value: string): string {
+  if (!value) return value;
+  try {
+    return decryptSecret(value);
+  } catch (err) {
+    const msg = (err as Error).message ?? '';
+    if (msg.includes('Malformed ciphertext blob')) return value;
+    throw err;
+  }
+}
 
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_BIN: string = config.claudeBin;
@@ -21,11 +43,28 @@ const GEMINI_BIN: string = config.geminiBin;
 const CODEX_BIN: string = config.codexBin;
 const TIMEOUT_MS: number = config.slackTimeoutMs;
 
-interface SlackAccount {
+export interface SlackAccount {
   name: string;
   botToken: string;
   appToken: string;
   agentId: string;
+  /** Per-channel agent overrides: channelId → agentId */
+  channelMap?: Record<string, string>;
+}
+
+/**
+ * Resolve the target agentId for an inbound message.
+ * Checks channelMap first; falls back to account.agentId.
+ */
+export function resolveAgentForChannel(
+  account: SlackAccount,
+  channelId: string | undefined,
+): string {
+  if (channelId) {
+    const override = account.channelMap?.[channelId];
+    if (override) return override;
+  }
+  return account.agentId;
 }
 
 interface SlackConfig {
@@ -447,11 +486,13 @@ async function startBot(account: SlackAccount, agents: EnrichedAgent[]): Promise
       socketMode: true,
     });
 
-    const agent = agents.find((a) => a.id === account.agentId);
-
     boltApp.message(async (args: SlackEventMiddlewareArgs<'message'>) => {
-      enqueueMessage(account.agentId, () =>
-        handleMessage(account, agent, args as unknown as HandleMessageArgs),
+      // Resolve agent per-message so channel_map overrides take effect.
+      const channelId = (args.message as { channel?: string }).channel;
+      const resolvedAgentId = resolveAgentForChannel(account, channelId);
+      const resolvedAgent = agents.find((a) => a.id === resolvedAgentId);
+      enqueueMessage(resolvedAgentId, () =>
+        handleMessage(account, resolvedAgent, args as unknown as HandleMessageArgs),
       );
     });
 
@@ -515,22 +556,65 @@ async function stopAllBots(): Promise<void> {
   agentQueues.clear();
 }
 
+/** Convert a DB slack_bots row into the SlackAccount shape used internally. */
+export function dbBotToAccount(row: SlackBotRow): SlackAccount {
+  let channelMap: Record<string, string> | undefined;
+  try {
+    const parsed = JSON.parse(row.channel_map) as Record<
+      string,
+      { label?: string; agentId?: string }
+    >;
+    const mapped: Record<string, string> = {};
+    for (const [channelId, entry] of Object.entries(parsed)) {
+      if (entry.agentId) mapped[channelId] = entry.agentId;
+    }
+    if (Object.keys(mapped).length > 0) channelMap = mapped;
+  } catch {
+    /* ignore bad JSON */
+  }
+  return {
+    name: row.name,
+    botToken: safeDecryptSecret(row.bot_token),
+    appToken: safeDecryptSecret(row.app_token),
+    agentId: row.agent_id,
+    channelMap,
+  };
+}
+
 export async function startSlack(agents: EnrichedAgent[], stmts: Stmts): Promise<void> {
   dbStmts = stmts;
   _agentConfigs = agents;
 
-  const slackConfig = loadSlackConfig();
-  if (!slackConfig.accounts || slackConfig.accounts.length === 0) {
+  // Merge file-backed config (legacy) + DB-backed bots.
+  const fileConfig = loadSlackConfig();
+  const fileAccounts: SlackAccount[] = fileConfig.accounts || [];
+
+  let dbAccounts: SlackAccount[] = [];
+  try {
+    const rows = stmts.listSlackBots.all() as SlackBotRow[];
+    dbAccounts = rows.filter((r) => r.enabled).map(dbBotToAccount);
+  } catch (err) {
+    // DB may not have the table yet during initial startup
+    console.warn('[Slack] Could not load DB bots:', (err as Error).message);
+  }
+
+  // Deduplicate by name — DB rows take precedence over file entries with the same name.
+  const dbNames = new Set(dbAccounts.map((a) => a.name));
+  const mergedAccounts = [...dbAccounts, ...fileAccounts.filter((a) => !dbNames.has(a.name))];
+
+  if (mergedAccounts.length === 0) {
     console.log('No Slack accounts configured');
     return;
   }
 
-  console.log(`Starting ${slackConfig.accounts.length} Slack bot(s)...`);
+  console.log(
+    `Starting ${mergedAccounts.length} Slack bot(s) (${dbAccounts.length} DB, ${mergedAccounts.length - dbAccounts.length} file)...`,
+  );
 
-  await Promise.allSettled(slackConfig.accounts.map((account) => startBot(account, agents)));
+  await Promise.allSettled(mergedAccounts.map((account) => startBot(account, agents)));
 
   const connected = [...bots.values()].filter((b) => b.connected).length;
-  const total = slackConfig.accounts.length;
+  const total = mergedAccounts.length;
   console.log(`Slack: ${connected}/${total} bots connected`);
 }
 
