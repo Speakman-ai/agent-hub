@@ -22,13 +22,28 @@ const GEMINI_BIN: string = config.geminiBin;
 const CODEX_BIN: string = config.codexBin;
 const TIMEOUT_MS: number = config.slackTimeoutMs;
 
-interface SlackAccount {
+export interface SlackAccount {
   name: string;
   botToken: string;
   appToken: string;
   agentId: string;
   /** Per-channel agent overrides: channelId → agentId */
   channelMap?: Record<string, string>;
+}
+
+/**
+ * Resolve the target agentId for an inbound message.
+ * Checks channelMap first; falls back to account.agentId.
+ */
+export function resolveAgentForChannel(
+  account: SlackAccount,
+  channelId: string | undefined,
+): string {
+  if (channelId) {
+    const override = account.channelMap?.[channelId];
+    if (override) return override;
+  }
+  return account.agentId;
 }
 
 interface SlackConfig {
@@ -453,8 +468,7 @@ async function startBot(account: SlackAccount, agents: EnrichedAgent[]): Promise
     boltApp.message(async (args: SlackEventMiddlewareArgs<'message'>) => {
       // Resolve agent per-message so channel_map overrides take effect.
       const channelId = (args.message as { channel?: string }).channel;
-      const overrideAgentId = channelId ? account.channelMap?.[channelId] : undefined;
-      const resolvedAgentId = overrideAgentId || account.agentId;
+      const resolvedAgentId = resolveAgentForChannel(account, channelId);
       const resolvedAgent = agents.find((a) => a.id === resolvedAgentId);
       enqueueMessage(resolvedAgentId, () =>
         handleMessage(account, resolvedAgent, args as unknown as HandleMessageArgs),
@@ -522,7 +536,7 @@ async function stopAllBots(): Promise<void> {
 }
 
 /** Convert a DB slack_bots row into the SlackAccount shape used internally. */
-function dbBotToAccount(row: SlackBotRow): SlackAccount {
+export function dbBotToAccount(row: SlackBotRow): SlackAccount {
   let channelMap: Record<string, string> | undefined;
   try {
     const parsed = JSON.parse(row.channel_map) as Record<
