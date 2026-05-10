@@ -430,6 +430,19 @@ export const api = {
   getSlackMessages: (agentId, limit = 50) =>
     fetchJSON(`/slack/messages?${agentId ? `agentId=${agentId}&` : ''}limit=${limit}`),
 
+  // Slack bot management
+  listSlackBots: () => fetchJSON('/slack/bots'),
+  createSlackBot: (data) =>
+    fetchJSON('/slack/bots', { method: 'POST', body: JSON.stringify(data) }),
+  updateSlackBot: (id, data) =>
+    fetchJSON(`/slack/bots/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteSlackBot: (id) => fetchJSON(`/slack/bots/${id}`, { method: 'DELETE' }),
+  toggleSlackBot: (id) => fetchJSON(`/slack/bots/${id}/toggle`, { method: 'POST' }),
+  testSlackBotConnection: (id, data) =>
+    fetchJSON(`/slack/bots/${id}/test`, { method: 'POST', body: JSON.stringify(data || {}) }),
+  testSlackTokens: (data) =>
+    fetchJSON('/slack/test-tokens', { method: 'POST', body: JSON.stringify(data) }),
+
   // Setup
   getSetupStatus: () => fetchJSON('/setup/status'),
   configureSetup: (data) =>

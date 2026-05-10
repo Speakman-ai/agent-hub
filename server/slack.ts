@@ -12,7 +12,7 @@ import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { getOrgOwnerUserId } from './session-ownership.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
-import type { EnrichedAgent, Stmts, SlackMessageRow } from './types.js';
+import type { EnrichedAgent, Stmts, SlackMessageRow, SlackBotRow } from './types.js';
 
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_BIN: string = config.claudeBin;
@@ -515,22 +515,50 @@ async function stopAllBots(): Promise<void> {
   agentQueues.clear();
 }
 
+/** Convert a DB slack_bots row into the SlackAccount shape used internally. */
+function dbBotToAccount(row: SlackBotRow): SlackAccount {
+  return {
+    name: row.name,
+    botToken: row.bot_token,
+    appToken: row.app_token,
+    agentId: row.agent_id,
+  };
+}
+
 export async function startSlack(agents: EnrichedAgent[], stmts: Stmts): Promise<void> {
   dbStmts = stmts;
   _agentConfigs = agents;
 
-  const slackConfig = loadSlackConfig();
-  if (!slackConfig.accounts || slackConfig.accounts.length === 0) {
+  // Merge file-backed config (legacy) + DB-backed bots.
+  const fileConfig = loadSlackConfig();
+  const fileAccounts: SlackAccount[] = fileConfig.accounts || [];
+
+  let dbAccounts: SlackAccount[] = [];
+  try {
+    const rows = stmts.listSlackBots.all() as SlackBotRow[];
+    dbAccounts = rows.filter((r) => r.enabled).map(dbBotToAccount);
+  } catch (err) {
+    // DB may not have the table yet during initial startup
+    console.warn('[Slack] Could not load DB bots:', (err as Error).message);
+  }
+
+  // Deduplicate by name — DB rows take precedence over file entries with the same name.
+  const dbNames = new Set(dbAccounts.map((a) => a.name));
+  const mergedAccounts = [...dbAccounts, ...fileAccounts.filter((a) => !dbNames.has(a.name))];
+
+  if (mergedAccounts.length === 0) {
     console.log('No Slack accounts configured');
     return;
   }
 
-  console.log(`Starting ${slackConfig.accounts.length} Slack bot(s)...`);
+  console.log(
+    `Starting ${mergedAccounts.length} Slack bot(s) (${dbAccounts.length} DB, ${mergedAccounts.length - dbAccounts.length} file)...`,
+  );
 
-  await Promise.allSettled(slackConfig.accounts.map((account) => startBot(account, agents)));
+  await Promise.allSettled(mergedAccounts.map((account) => startBot(account, agents)));
 
   const connected = [...bots.values()].filter((b) => b.connected).length;
-  const total = slackConfig.accounts.length;
+  const total = mergedAccounts.length;
   console.log(`Slack: ${connected}/${total} bots connected`);
 }
 

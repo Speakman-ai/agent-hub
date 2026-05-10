@@ -3896,19 +3896,544 @@ function CronSection({ projects = [], onNavigate, showToast }) {
 
 /* WebhookSection removed — webhooks are now auto-managed when saving project repos */
 
-function SlackSection() {
-  const [status, setStatus] = useState([]);
-  const [messages, setMessages] = useState([]);
-  const [restarting, setRestarting] = useState(false);
-  const [selectedAgent, setSelectedAgent] = useState(null);
-  const [loading, setLoading] = useState(true);
+// ─── Slack Setup Wizard ───────────────────────────────────────────────────────
 
-  const loadStatus = async () => {
+const WIZARD_STEPS = [
+  { id: 'intro', label: 'Create App' },
+  { id: 'tokens', label: 'Get Tokens' },
+  { id: 'configure', label: 'Configure' },
+  { id: 'test', label: 'Test & Save' },
+];
+
+function SlackSetupWizard({ agents, onSaved, onCancel, existingBot }) {
+  const [step, setStep] = useState(existingBot ? 2 : 0);
+  const [form, setForm] = useState({
+    name: existingBot?.name || '',
+    bot_token: existingBot ? '****masked****' : '',
+    app_token: existingBot ? '****masked****' : '',
+    agent_id: existingBot?.agent_id || agents[0]?.id || '',
+  });
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null); // null | { ok, team, user, error }
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const isMasked = (v) => v === '****masked****' || v?.includes('****');
+
+  const handleChange = (field) => (e) => {
+    setForm((prev) => ({ ...prev, [field]: e.target.value }));
+    if (field === 'bot_token' || field === 'app_token') setTestResult(null);
+  };
+
+  const handleTestTokens = async () => {
+    if (!form.bot_token || isMasked(form.bot_token)) return;
+    setTesting(true);
+    setTestResult(null);
     try {
-      const data = await api.getSlackStatus();
-      setStatus(data);
+      const result = await api.testSlackTokens({ bot_token: form.bot_token });
+      setTestResult(result);
     } catch (err) {
-      console.error('Failed to load Slack status:', err);
+      setTestResult({ ok: false, error: err.message || 'Connection failed' });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!form.name.trim() || !form.agent_id) {
+      setError('Name and agent are required');
+      return;
+    }
+    // Require tokens if creating new; allow masked for updates
+    if (!existingBot && (!form.bot_token || !form.app_token)) {
+      setError('Both tokens are required for a new bot');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = {
+        name: form.name.trim(),
+        agent_id: form.agent_id,
+        ...(isMasked(form.bot_token) ? {} : { bot_token: form.bot_token.trim() }),
+        ...(isMasked(form.app_token) ? {} : { app_token: form.app_token.trim() }),
+      };
+      if (existingBot) {
+        await api.updateSlackBot(existingBot.id, payload);
+      } else {
+        // Must provide tokens for new bots
+        await api.createSlackBot({
+          ...payload,
+          bot_token: form.bot_token.trim(),
+          app_token: form.app_token.trim(),
+        });
+      }
+      onSaved();
+    } catch (err) {
+      setError(err.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const stepContent = {
+    0: (
+      <div className="space-y-5">
+        <div className="bg-blue-950/40 border border-blue-800/40 rounded-xl p-4 text-sm space-y-3">
+          <p className="font-medium text-blue-300 flex items-center gap-2">
+            <Info size={15} /> Step 1 — Create a Slack App
+          </p>
+          <ol className="space-y-2 text-gray-300 list-decimal ml-4">
+            <li>
+              Go to{' '}
+              <a
+                href="https://api.slack.com/apps"
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-400 underline"
+              >
+                api.slack.com/apps <ExternalLink size={11} className="inline" />
+              </a>{' '}
+              and click <strong>Create New App → From scratch</strong>.
+            </li>
+            <li>
+              Give it a name and pick your workspace, then click <strong>Create App</strong>.
+            </li>
+            <li>
+              Under <strong>OAuth &amp; Permissions → Scopes → Bot Token Scopes</strong>, add:
+              <code className="ml-1 bg-gray-800 px-1.5 py-0.5 rounded text-xs">
+                chat:write, channels:history, channels:read, files:read, reactions:write,
+                im:history, im:write, mpim:history, groups:history
+              </code>
+            </li>
+            <li>
+              Under <strong>Socket Mode</strong>, enable it and create an{' '}
+              <strong>App-Level Token</strong> with scope{' '}
+              <code className="bg-gray-800 px-1 rounded text-xs">connections:write</code>. Copy this
+              token — it starts with <code className="bg-gray-800 px-1 rounded text-xs">xapp-</code>
+              .
+            </li>
+            <li>
+              Under <strong>Event Subscriptions → Subscribe to bot events</strong>, add{' '}
+              <code className="bg-gray-800 px-1 rounded text-xs">message.channels</code>,{' '}
+              <code className="bg-gray-800 px-1 rounded text-xs">message.im</code>,{' '}
+              <code className="bg-gray-800 px-1 rounded text-xs">message.groups</code>.
+            </li>
+            <li>
+              Under <strong>OAuth &amp; Permissions</strong>, click{' '}
+              <strong>Install to Workspace</strong>. Copy the <strong>Bot User OAuth Token</strong>{' '}
+              (starts with <code className="bg-gray-800 px-1 rounded text-xs">xoxb-</code>).
+            </li>
+          </ol>
+        </div>
+        <div className="flex justify-end">
+          <button
+            onClick={() => setStep(1)}
+            className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+          >
+            I've created the app →
+          </button>
+        </div>
+      </div>
+    ),
+
+    1: (
+      <div className="space-y-4">
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 text-sm space-y-3">
+          <p className="text-gray-300 font-medium">Enter your Slack tokens:</p>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">
+              Bot User OAuth Token <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="password"
+              value={form.bot_token}
+              onChange={handleChange('bot_token')}
+              placeholder="xoxb-..."
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
+            />
+            <p className="text-[11px] text-gray-500 mt-1">
+              Found at OAuth &amp; Permissions → Bot User OAuth Token
+            </p>
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">
+              App-Level Token <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="password"
+              value={form.app_token}
+              onChange={handleChange('app_token')}
+              placeholder="xapp-..."
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500"
+            />
+            <p className="text-[11px] text-gray-500 mt-1">
+              Found at Basic Information → App-Level Tokens (Socket Mode)
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {form.bot_token && !isMasked(form.bot_token) && (
+            <button
+              onClick={handleTestTokens}
+              disabled={testing}
+              className="flex items-center gap-1.5 text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {testing ? <Loader2 size={13} className="animate-spin" /> : <Plug size={13} />}
+              {testing ? 'Testing…' : 'Test Bot Token'}
+            </button>
+          )}
+          {testResult && (
+            <span
+              className={`text-xs flex items-center gap-1 ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}
+            >
+              {testResult.ok ? (
+                <>
+                  <CheckCircle2 size={13} /> Connected as @{testResult.user} in {testResult.team}
+                </>
+              ) : (
+                <>
+                  <AlertCircle size={13} /> {testResult.error}
+                </>
+              )}
+            </span>
+          )}
+        </div>
+        <div className="flex justify-between">
+          <button
+            onClick={() => setStep(0)}
+            className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded-lg border border-gray-700 transition-colors"
+          >
+            ← Back
+          </button>
+          <button
+            onClick={() => setStep(2)}
+            disabled={!form.bot_token || !form.app_token}
+            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+          >
+            Next →
+          </button>
+        </div>
+      </div>
+    ),
+
+    2: (
+      <div className="space-y-4">
+        <div>
+          <label className="text-xs text-gray-400 block mb-1">
+            Bot name <span className="text-red-400">*</span>
+          </label>
+          <input
+            type="text"
+            value={form.name}
+            onChange={handleChange('name')}
+            placeholder="e.g. my-team-bot"
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-gray-400 block mb-1">
+            Default agent <span className="text-red-400">*</span>
+          </label>
+          <select
+            value={form.agent_id}
+            onChange={handleChange('agent_id')}
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+          >
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} ({a.id})
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-gray-500 mt-1">
+            All Slack messages will route to this agent by default. You can add per-channel
+            overrides after saving.
+          </p>
+        </div>
+        {error && <p className="text-xs text-red-400">{error}</p>}
+        <div className="flex justify-between">
+          <button
+            onClick={() => setStep(existingBot ? 2 : 1)}
+            className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded-lg border border-gray-700 transition-colors"
+          >
+            ← Back
+          </button>
+          <button
+            onClick={() => setStep(3)}
+            disabled={!form.name.trim() || !form.agent_id}
+            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+          >
+            Next →
+          </button>
+        </div>
+      </div>
+    ),
+
+    3: (
+      <div className="space-y-4">
+        <div className="bg-gray-800 rounded-xl p-4 space-y-2 text-sm">
+          <p className="text-gray-400 text-xs font-medium uppercase tracking-wide mb-2">Summary</p>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Bot name</span>
+            <span className="font-medium">{form.name || '—'}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Agent</span>
+            <span className="font-medium font-mono text-xs">{form.agent_id}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Bot token</span>
+            <span className="text-gray-300 font-mono text-xs">
+              {isMasked(form.bot_token) ? '(unchanged)' : form.bot_token.substring(0, 10) + '…'}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">App token</span>
+            <span className="text-gray-300 font-mono text-xs">
+              {isMasked(form.app_token) ? '(unchanged)' : form.app_token.substring(0, 10) + '…'}
+            </span>
+          </div>
+        </div>
+        {!existingBot && !isMasked(form.bot_token) && (
+          <div>
+            <button
+              onClick={handleTestTokens}
+              disabled={testing}
+              className="flex items-center gap-1.5 text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {testing ? <Loader2 size={13} className="animate-spin" /> : <Plug size={13} />}
+              {testing ? 'Testing…' : 'Test Connection'}
+            </button>
+            {testResult && (
+              <p
+                className={`text-xs mt-2 flex items-center gap-1 ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}
+              >
+                {testResult.ok ? (
+                  <>
+                    <CheckCircle2 size={13} /> @{testResult.user} in {testResult.team}
+                  </>
+                ) : (
+                  <>
+                    <AlertCircle size={13} /> {testResult.error}
+                  </>
+                )}
+              </p>
+            )}
+          </div>
+        )}
+        {error && <p className="text-xs text-red-400">{error}</p>}
+        <div className="flex justify-between">
+          <button
+            onClick={() => setStep(2)}
+            className="text-xs text-gray-400 hover:text-gray-200 px-3 py-1.5 rounded-lg border border-gray-700 transition-colors"
+          >
+            ← Back
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+            {saving ? 'Saving…' : existingBot ? 'Save Changes' : 'Connect Bot'}
+          </button>
+        </div>
+      </div>
+    ),
+  };
+
+  return (
+    <div className="bg-gray-850 border border-gray-700 rounded-2xl p-5">
+      {/* Progress bar */}
+      <div className="flex items-center gap-0 mb-6">
+        {WIZARD_STEPS.map((s, i) => (
+          <div key={s.id} className="flex items-center flex-1 last:flex-none">
+            <button
+              onClick={() => {
+                if (i <= step || existingBot) setStep(i);
+              }}
+              className={`flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold shrink-0 transition-colors ${
+                i < step
+                  ? 'bg-emerald-600 text-white'
+                  : i === step
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-400'
+              }`}
+            >
+              {i < step ? <CheckCircle2 size={14} /> : i + 1}
+            </button>
+            <span
+              className={`ml-1.5 text-xs whitespace-nowrap mr-1 ${i === step ? 'text-gray-200' : 'text-gray-500'}`}
+            >
+              {s.label}
+            </span>
+            {i < WIZARD_STEPS.length - 1 && (
+              <div className={`flex-1 h-px mx-1 ${i < step ? 'bg-emerald-600' : 'bg-gray-700'}`} />
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Step content */}
+      {stepContent[step]}
+    </div>
+  );
+}
+
+// ─── Per-bot channel map editor ───────────────────────────────────────────────
+
+function ChannelMapEditor({ bot, agents, onSaved }) {
+  const [channelMap, setChannelMap] = useState(
+    typeof bot.channel_map === 'object' ? bot.channel_map : {},
+  );
+  const [newChannel, setNewChannel] = useState({ id: '', label: '', agentId: bot.agent_id });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleAdd = () => {
+    if (!newChannel.id.trim()) return;
+    setChannelMap((prev) => ({
+      ...prev,
+      [newChannel.id.trim()]: {
+        label: newChannel.label.trim() || newChannel.id.trim(),
+        agentId: newChannel.agentId || bot.agent_id,
+      },
+    }));
+    setNewChannel({ id: '', label: '', agentId: bot.agent_id });
+  };
+
+  const handleRemove = (chId) => {
+    setChannelMap((prev) => {
+      const n = { ...prev };
+      delete n[chId];
+      return n;
+    });
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.updateSlackBot(bot.id, { channel_map: channelMap });
+      onSaved();
+    } catch (err) {
+      setError(err.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-gray-700 pt-3 space-y-3">
+      <p className="text-xs font-medium text-gray-400">Channel Routing</p>
+      <p className="text-[11px] text-gray-500">
+        By default all channels route to{' '}
+        <code className="bg-gray-800 px-1 rounded">{bot.agent_id}</code>. Add per-channel overrides
+        below to route specific channels to different agents.
+      </p>
+
+      {/* Existing mappings */}
+      {Object.keys(channelMap).length > 0 && (
+        <div className="space-y-1.5">
+          {Object.entries(channelMap).map(([chId, cfg]) => (
+            <div key={chId} className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2">
+              <span className="font-mono text-xs text-blue-300 w-32 truncate">{chId}</span>
+              <span className="text-xs text-gray-400 flex-1 truncate">{cfg.label || chId}</span>
+              <span className="text-xs text-gray-500 font-mono">
+                → {cfg.agentId || bot.agent_id}
+              </span>
+              <button
+                onClick={() => handleRemove(chId)}
+                className="text-gray-500 hover:text-red-400 ml-1"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add new mapping */}
+      <div className="flex gap-2 flex-wrap">
+        <input
+          type="text"
+          value={newChannel.id}
+          onChange={(e) => setNewChannel((p) => ({ ...p, id: e.target.value }))}
+          placeholder="Channel ID (e.g. C0123456)"
+          className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-blue-500 w-44"
+        />
+        <input
+          type="text"
+          value={newChannel.label}
+          onChange={(e) => setNewChannel((p) => ({ ...p, label: e.target.value }))}
+          placeholder="#channel-name"
+          className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500 w-36"
+        />
+        <select
+          value={newChannel.agentId}
+          onChange={(e) => setNewChannel((p) => ({ ...p, agentId: e.target.value }))}
+          className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500"
+        >
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={handleAdd}
+          disabled={!newChannel.id.trim()}
+          className="flex items-center gap-1 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 px-2.5 py-1.5 rounded-lg transition-colors"
+        >
+          <Plus size={12} /> Add
+        </button>
+      </div>
+
+      {error && <p className="text-xs text-red-400">{error}</p>}
+
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+      >
+        {saving ? <Loader2 size={12} className="animate-spin" /> : null}
+        Save Channel Map
+      </button>
+    </div>
+  );
+}
+
+// ─── Main SlackSection ─────────────────────────────────────────────────────────
+
+function SlackSection() {
+  const [bots, setBots] = useState([]);
+  const [liveStatus, setLiveStatus] = useState([]); // live connection state from /status
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showWizard, setShowWizard] = useState(false);
+  const [editingBot, setEditingBot] = useState(null);
+  const [expandedBot, setExpandedBot] = useState(null);
+  const [expandedChannels, setExpandedChannels] = useState(null);
+  const [selectedMsgAgent, setSelectedMsgAgent] = useState(null);
+  const [testingId, setTestingId] = useState(null);
+  const [testResults, setTestResults] = useState({});
+  const [restarting, setRestarting] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
+  const [agents, setAgents] = useState([]);
+
+  const loadAll = async () => {
+    try {
+      const [botsData, statusData, agentsData] = await Promise.all([
+        api.listSlackBots(),
+        api.getSlackStatus(),
+        api.getAgents(),
+      ]);
+      setBots(botsData || []);
+      setLiveStatus(statusData || []);
+      setAgents(agentsData || []);
+    } catch (err) {
+      console.error('Failed to load Slack data:', err);
     } finally {
       setLoading(false);
     }
@@ -3919,20 +4444,83 @@ function SlackSection() {
       const data = await api.getSlackMessages(agentId, 20);
       setMessages(data);
     } catch (err) {
-      console.error('Failed to load Slack messages:', err);
+      console.error('Failed to load messages:', err);
     }
   };
 
   useEffect(() => {
-    loadStatus();
+    loadAll();
     loadMessages();
   }, []);
+
+  // Merge live status into bot list for connection display
+  const botsWithStatus = bots.map((bot) => {
+    const live = liveStatus.find((s) => s.name === bot.name);
+    return {
+      ...bot,
+      connected: live?.connected ?? false,
+      lastMessage: live?.lastMessage ?? null,
+      liveError: live?.error ?? null,
+    };
+  });
+
+  // Also include file-backed bots that appear in status but not in DB
+  const dbNames = new Set(bots.map((b) => b.name));
+  const fileOnlyBots = liveStatus
+    .filter((s) => !dbNames.has(s.name))
+    .map((s) => ({
+      ...s,
+      id: null,
+      bot_token: null,
+      app_token: null,
+      channel_map: {},
+      enabled: 1,
+      _fileOnly: true,
+    }));
+
+  const allBots = [...botsWithStatus, ...fileOnlyBots];
+
+  const handleDelete = async (id) => {
+    if (!id || !window.confirm('Delete this Slack bot? It will stop receiving messages.')) return;
+    setDeletingId(id);
+    try {
+      await api.deleteSlackBot(id);
+      await loadAll();
+    } catch (err) {
+      console.error('Delete failed:', err);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleToggle = async (id) => {
+    try {
+      await api.toggleSlackBot(id);
+      await loadAll();
+    } catch (err) {
+      console.error('Toggle failed:', err);
+    }
+  };
+
+  const handleTestConnection = async (bot) => {
+    if (!bot.id) return;
+    setTestingId(bot.id);
+    setTestResults((prev) => ({ ...prev, [bot.id]: null }));
+    try {
+      const result = await api.testSlackBotConnection(bot.id);
+      setTestResults((prev) => ({ ...prev, [bot.id]: result }));
+    } catch (err) {
+      setTestResults((prev) => ({ ...prev, [bot.id]: { ok: false, error: err.message } }));
+    } finally {
+      setTestingId(null);
+    }
+  };
 
   const handleRestart = async () => {
     setRestarting(true);
     try {
       await api.restartSlack();
-      await loadStatus();
+      await loadAll();
     } catch (err) {
       console.error('Restart failed:', err);
     } finally {
@@ -3940,126 +4528,311 @@ function SlackSection() {
     }
   };
 
-  const handleSelectAgent = (agentId) => {
-    if (selectedAgent === agentId) {
-      setSelectedAgent(null);
-      loadMessages();
-    } else {
-      setSelectedAgent(agentId);
-      loadMessages(agentId);
-    }
-  };
-
   if (loading) {
-    return <div className="text-gray-500 text-sm">Loading Slack status...</div>;
+    return (
+      <div className="text-gray-500 text-sm flex items-center gap-2">
+        <Loader2 size={14} className="animate-spin" /> Loading Slack bots…
+      </div>
+    );
+  }
+
+  if (showWizard || editingBot) {
+    return (
+      <div>
+        <div className="flex items-center gap-2 mb-4">
+          <button
+            onClick={() => {
+              setShowWizard(false);
+              setEditingBot(null);
+            }}
+            className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1"
+          >
+            <ChevronRight size={13} className="rotate-180" /> Back
+          </button>
+          <h3 className="text-sm font-semibold">
+            {editingBot ? `Edit: ${editingBot.name}` : 'Connect a Slack Bot'}
+          </h3>
+        </div>
+        <SlackSetupWizard
+          agents={agents}
+          existingBot={editingBot}
+          onSaved={() => {
+            setShowWizard(false);
+            setEditingBot(null);
+            loadAll();
+          }}
+          onCancel={() => {
+            setShowWizard(false);
+            setEditingBot(null);
+          }}
+        />
+      </div>
+    );
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Slack Bots</h3>
-        <button
-          onClick={handleRestart}
-          disabled={restarting}
-          className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
-        >
-          <span className="flex items-center gap-1.5">
-            {restarting ? (
-              <>
-                <Loader2 size={14} className="animate-spin" /> Restarting...
-              </>
-            ) : (
-              <>
-                <RefreshCw size={14} /> Restart All
-              </>
-            )}
-          </span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleRestart}
+            disabled={restarting}
+            className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {restarting ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+            {restarting ? 'Restarting…' : 'Restart All'}
+          </button>
+          <button
+            onClick={() => setShowWizard(true)}
+            className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            <Plus size={13} /> Add Bot
+          </button>
+        </div>
       </div>
 
-      {status.length === 0 ? (
-        <p className="text-sm text-gray-500">No Slack accounts configured</p>
+      {/* Bot list */}
+      {allBots.length === 0 ? (
+        <div className="bg-gray-800/50 border border-dashed border-gray-700 rounded-xl p-8 text-center">
+          <MessageSquare size={28} className="mx-auto text-gray-600 mb-3" />
+          <p className="text-sm text-gray-400 font-medium">No Slack bots configured</p>
+          <p className="text-xs text-gray-500 mt-1 mb-4">
+            Connect a Slack app to let your agents respond to messages directly in Slack.
+          </p>
+          <button
+            onClick={() => setShowWizard(true)}
+            className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2 mx-auto"
+          >
+            <Plus size={14} /> Connect First Bot
+          </button>
+        </div>
       ) : (
         <div className="space-y-3">
-          {status.map((bot) => (
-            <div
-              key={bot.name}
-              className="bg-gray-800 rounded-xl p-4 cursor-pointer hover:bg-gray-750"
-              onClick={() => handleSelectAgent(bot.agentId)}
-            >
-              <div className="flex items-center gap-3">
-                <span
-                  className={`w-3 h-3 rounded-full flex-shrink-0 ${
-                    bot.connected
-                      ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]'
-                      : 'bg-red-400'
-                  }`}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                    <span className="font-medium text-sm">{bot.name}</span>
-                    <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded font-mono truncate max-w-[120px] sm:max-w-none">
-                      → {bot.agentId}
-                    </span>
-                  </div>
-                  {bot.channels && (
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      Channels: {bot.channels.join(', ')}
-                    </p>
-                  )}
-                  {bot.error && <p className="text-xs text-red-400 mt-0.5">{bot.error}</p>}
-                  {bot.lastMessage && (
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      Last message: {relativeTime(bot.lastMessage)}
-                    </p>
-                  )}
-                </div>
-                <span
-                  className={`text-xs px-2.5 py-1 rounded-md ${
-                    bot.connected
-                      ? 'bg-emerald-800/50 text-emerald-400'
-                      : 'bg-red-900/50 text-red-400'
-                  }`}
+          {allBots.map((bot) => {
+            const testResult = bot.id ? testResults[bot.id] : null;
+            const isExpanded = expandedBot === (bot.id || bot.name);
+            const isChannelsExpanded = expandedChannels === (bot.id || bot.name);
+            const chanCount = bot.channel_map ? Object.keys(bot.channel_map).length : 0;
+
+            return (
+              <div key={bot.id || bot.name} className="bg-gray-800 rounded-xl overflow-hidden">
+                {/* Bot header */}
+                <div
+                  className="flex items-center gap-3 p-4 cursor-pointer"
+                  onClick={() => setExpandedBot(isExpanded ? null : bot.id || bot.name)}
                 >
-                  {bot.connected ? 'Connected' : 'Disconnected'}
-                </span>
+                  {/* Status indicator */}
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                      bot.connected
+                        ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.6)]'
+                        : bot.enabled === 0
+                          ? 'bg-gray-500'
+                          : 'bg-red-400'
+                    }`}
+                  />
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-medium text-sm">{bot.name}</span>
+                      {bot._fileOnly && (
+                        <span className="text-[10px] bg-yellow-900/40 text-yellow-400 px-1.5 py-0.5 rounded border border-yellow-800/30">
+                          file-only
+                        </span>
+                      )}
+                      {bot.enabled === 0 && (
+                        <span className="text-[10px] bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">
+                          disabled
+                        </span>
+                      )}
+                      <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded font-mono truncate">
+                        → {bot.agent_id || bot.agentId}
+                      </span>
+                    </div>
+                    {bot.liveError && (
+                      <p className="text-[11px] text-red-400 mt-0.5">{bot.liveError}</p>
+                    )}
+                    {bot.lastMessage && (
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        Last: {relativeTime(bot.lastMessage)}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Status badge */}
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded-md flex-shrink-0 ${
+                      bot.connected
+                        ? 'bg-emerald-800/50 text-emerald-400'
+                        : bot.enabled === 0
+                          ? 'bg-gray-700 text-gray-400'
+                          : 'bg-red-900/40 text-red-400'
+                    }`}
+                  >
+                    {bot.connected ? 'Connected' : bot.enabled === 0 ? 'Disabled' : 'Disconnected'}
+                  </span>
+
+                  <ChevronDown
+                    size={15}
+                    className={`text-gray-500 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-180' : ''}`}
+                  />
+                </div>
+
+                {/* Expanded actions */}
+                {isExpanded && (
+                  <div className="border-t border-gray-700 px-4 pb-4 pt-3 space-y-3">
+                    {/* Action row */}
+                    <div className="flex flex-wrap gap-2">
+                      {bot.id && (
+                        <>
+                          <button
+                            onClick={() => setEditingBot(bot)}
+                            className="text-xs flex items-center gap-1 bg-gray-700 hover:bg-gray-600 px-2.5 py-1.5 rounded-lg transition-colors"
+                          >
+                            <Pencil size={12} /> Edit
+                          </button>
+                          <button
+                            onClick={() => handleTestConnection(bot)}
+                            disabled={testingId === bot.id}
+                            className="text-xs flex items-center gap-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-2.5 py-1.5 rounded-lg transition-colors"
+                          >
+                            {testingId === bot.id ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Plug size={12} />
+                            )}
+                            Test Connection
+                          </button>
+                          <button
+                            onClick={() => handleToggle(bot.id)}
+                            className={`text-xs flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition-colors ${
+                              bot.enabled
+                                ? 'bg-gray-700 hover:bg-yellow-900/40 text-gray-300 hover:text-yellow-400'
+                                : 'bg-emerald-900/30 hover:bg-emerald-900/50 text-emerald-400'
+                            }`}
+                          >
+                            {bot.enabled ? 'Disable' : 'Enable'}
+                          </button>
+                          <button
+                            onClick={() => handleDelete(bot.id)}
+                            disabled={deletingId === bot.id}
+                            className="text-xs flex items-center gap-1 bg-gray-700 hover:bg-red-900/40 text-gray-400 hover:text-red-400 disabled:opacity-50 px-2.5 py-1.5 rounded-lg transition-colors ml-auto"
+                          >
+                            {deletingId === bot.id ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={12} />
+                            )}
+                            Delete
+                          </button>
+                        </>
+                      )}
+                      <button
+                        onClick={() => {
+                          setSelectedMsgAgent(
+                            selectedMsgAgent === (bot.agent_id || bot.agentId)
+                              ? null
+                              : bot.agent_id || bot.agentId,
+                          );
+                          loadMessages(bot.agent_id || bot.agentId);
+                        }}
+                        className="text-xs flex items-center gap-1 bg-gray-700 hover:bg-gray-600 px-2.5 py-1.5 rounded-lg transition-colors"
+                      >
+                        <MessageSquare size={12} /> Messages
+                      </button>
+                    </div>
+
+                    {/* Test result */}
+                    {testResult && (
+                      <p
+                        className={`text-xs flex items-center gap-1.5 ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}
+                      >
+                        {testResult.ok ? (
+                          <>
+                            <CheckCircle2 size={13} /> @{testResult.user} in {testResult.team}
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle size={13} /> {testResult.error}
+                          </>
+                        )}
+                      </p>
+                    )}
+
+                    {/* Channel map (DB bots only) */}
+                    {bot.id && (
+                      <div>
+                        <button
+                          onClick={() =>
+                            setExpandedChannels(isChannelsExpanded ? null : bot.id || bot.name)
+                          }
+                          className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1"
+                        >
+                          <ChevronRight
+                            size={12}
+                            className={isChannelsExpanded ? 'rotate-90' : ''}
+                          />
+                          Channel Routing
+                          {chanCount > 0 && (
+                            <span className="ml-1 bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded text-[10px]">
+                              {chanCount}
+                            </span>
+                          )}
+                        </button>
+                        {isChannelsExpanded && (
+                          <ChannelMapEditor bot={bot} agents={agents} onSaved={loadAll} />
+                        )}
+                      </div>
+                    )}
+
+                    {/* Messages panel */}
+                    {selectedMsgAgent === (bot.agent_id || bot.agentId) && (
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        {messages.length === 0 ? (
+                          <p className="text-xs text-gray-500">No messages yet</p>
+                        ) : (
+                          messages.map((msg) => (
+                            <div key={msg.id} className="bg-gray-900 rounded-lg p-2.5 text-xs">
+                              <div className="flex items-center gap-2 mb-1 text-gray-500">
+                                <span className="font-mono">{msg.channel_id}</span>
+                                <span>·</span>
+                                <span>{relativeTime(msg.timestamp)}</span>
+                              </div>
+                              <p className="text-blue-300 mb-0.5">
+                                <span className="text-gray-500">User: </span>
+                                {msg.user_message?.substring(0, 180)}
+                                {msg.user_message?.length > 180 ? '…' : ''}
+                              </p>
+                              <p className="text-gray-300">
+                                <span className="text-gray-500">Bot: </span>
+                                {msg.bot_response?.substring(0, 260)}
+                                {msg.bot_response?.length > 260 ? '…' : ''}
+                              </p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* Recent messages */}
-      <div className="mt-6">
-        <h4 className="text-sm font-semibold text-gray-400 mb-3">
-          Recent Messages{selectedAgent ? ` (${selectedAgent})` : ''}
-        </h4>
-        {messages.length === 0 ? (
-          <p className="text-xs text-gray-500">No messages yet</p>
-        ) : (
-          <div className="space-y-2 max-h-96 overflow-y-auto">
-            {messages.map((msg) => (
-              <div key={msg.id} className="bg-gray-800 rounded-lg p-3 text-xs">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-gray-500 font-mono">{msg.agent_id}</span>
-                  <span className="text-gray-600">·</span>
-                  <span className="text-gray-500">{relativeTime(msg.timestamp)}</span>
-                  <span className="text-gray-600">·</span>
-                  <span className="text-gray-600 font-mono">{msg.channel_id}</span>
-                </div>
-                <p className="text-blue-300 mb-1">
-                  <span className="text-gray-500">User:</span> {msg.user_message?.substring(0, 200)}
-                  {msg.user_message?.length > 200 ? '...' : ''}
-                </p>
-                <p className="text-gray-300">
-                  <span className="text-gray-500">Bot:</span> {msg.bot_response?.substring(0, 300)}
-                  {msg.bot_response?.length > 300 ? '...' : ''}
-                </p>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* File-config note */}
+      {fileOnlyBots.length > 0 && (
+        <p className="text-[11px] text-gray-500 flex items-start gap-1.5 mt-2">
+          <Info size={12} className="shrink-0 mt-0.5" />
+          {fileOnlyBots.length} bot{fileOnlyBots.length > 1 ? 's are' : ' is'} managed via{' '}
+          <code className="bg-gray-800 px-1 rounded">server/slack-config.json</code>. Use the UI to
+          migrate them for full management support.
+        </p>
+      )}
     </div>
   );
 }
