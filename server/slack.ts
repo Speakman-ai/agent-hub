@@ -13,6 +13,7 @@ import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { getOrgOwnerUserId } from './session-ownership.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { EnrichedAgent, Stmts, SlackMessageRow, SlackBotRow } from './types.js';
+import { decryptSecret } from './pr-env-store.js';
 
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_BIN: string = config.claudeBin;
@@ -26,6 +27,8 @@ interface SlackAccount {
   botToken: string;
   appToken: string;
   agentId: string;
+  /** Per-channel agent overrides: channelId → agentId */
+  channelMap?: Record<string, string>;
 }
 
 interface SlackConfig {
@@ -447,11 +450,14 @@ async function startBot(account: SlackAccount, agents: EnrichedAgent[]): Promise
       socketMode: true,
     });
 
-    const agent = agents.find((a) => a.id === account.agentId);
-
     boltApp.message(async (args: SlackEventMiddlewareArgs<'message'>) => {
-      enqueueMessage(account.agentId, () =>
-        handleMessage(account, agent, args as unknown as HandleMessageArgs),
+      // Resolve agent per-message so channel_map overrides take effect.
+      const channelId = (args.message as { channel?: string }).channel;
+      const overrideAgentId = channelId ? account.channelMap?.[channelId] : undefined;
+      const resolvedAgentId = overrideAgentId || account.agentId;
+      const resolvedAgent = agents.find((a) => a.id === resolvedAgentId);
+      enqueueMessage(resolvedAgentId, () =>
+        handleMessage(account, resolvedAgent, args as unknown as HandleMessageArgs),
       );
     });
 
@@ -517,11 +523,26 @@ async function stopAllBots(): Promise<void> {
 
 /** Convert a DB slack_bots row into the SlackAccount shape used internally. */
 function dbBotToAccount(row: SlackBotRow): SlackAccount {
+  let channelMap: Record<string, string> | undefined;
+  try {
+    const parsed = JSON.parse(row.channel_map) as Record<
+      string,
+      { label?: string; agentId?: string }
+    >;
+    const mapped: Record<string, string> = {};
+    for (const [channelId, entry] of Object.entries(parsed)) {
+      if (entry.agentId) mapped[channelId] = entry.agentId;
+    }
+    if (Object.keys(mapped).length > 0) channelMap = mapped;
+  } catch {
+    /* ignore bad JSON */
+  }
   return {
     name: row.name,
-    botToken: row.bot_token,
-    appToken: row.app_token,
+    botToken: decryptSecret(row.bot_token),
+    appToken: decryptSecret(row.app_token),
     agentId: row.agent_id,
+    channelMap,
   };
 }
 

@@ -73,7 +73,7 @@ export async function createUmbrellaBranch(
 
   try {
     // Fetch to ensure remote refs are current (shallow ok — we just need the SHA).
-    await execFileAsync('git', ['fetch', 'origin', '--depth=1'], { cwd, timeout: 30_000 });
+    await execFileAsync('git', ['fetch', 'origin', '--no-tags'], { cwd, timeout: 30_000 });
 
     // Resolve the remote HEAD SHA. Try symbolic-ref first (fastest), then
     // fall back to explicit branch names used by most repos.

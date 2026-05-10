@@ -3918,7 +3918,7 @@ function SlackSetupWizard({ agents, onSaved, onCancel, existingBot }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
-  const isMasked = (v) => v === '****masked****' || v?.includes('****');
+  const isMasked = (v) => v === '****masked****' || v?.startsWith('****');
 
   const handleChange = (field) => (e) => {
     setForm((prev) => ({ ...prev, [field]: e.target.value }));
