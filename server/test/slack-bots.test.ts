@@ -128,3 +128,71 @@ describe('Slack bot validation', () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 });
+
+describe('Slack bot — channel_map shape validation', () => {
+  // dbBotToAccount expects Record<string, { label?, agentId? }>. A second
+  // shape (flat Record<string, string>) would persist successfully and then
+  // no-op on dispatch — silent regression. The route-level validator catches
+  // it at write time so the only persisted shape matches what the dispatcher
+  // reads.
+  it('POST — 400 when channel_map is an array', async () => {
+    const res = await request.post('/api/slack/bots').send({
+      name: 'cm-shape-array',
+      bot_token: 'xoxb-test',
+      app_token: 'xapp-test',
+      agent_id: 'a',
+      channel_map: ['C001', 'C002'],
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/channel_map must be an object/);
+  });
+
+  it('POST — 400 when channel_map entries are flat strings', async () => {
+    const res = await request.post('/api/slack/bots').send({
+      name: 'cm-shape-flat',
+      bot_token: 'xoxb-test',
+      app_token: 'xapp-test',
+      agent_id: 'a',
+      // Flat shape: { channelId: agentId } — wrong, must be { agentId: '...' }.
+      channel_map: { C001: 'agent-front' },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/channel_map\[C001\]/);
+  });
+
+  it('POST — 400 when channel_map entry agentId is non-string', async () => {
+    const res = await request.post('/api/slack/bots').send({
+      name: 'cm-shape-nonstr',
+      bot_token: 'xoxb-test',
+      app_token: 'xapp-test',
+      agent_id: 'a',
+      channel_map: { C001: { agentId: 42 } },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/agentId must be a string/);
+  });
+
+  it('POST — 201 when channel_map has the documented shape (label + agentId)', async () => {
+    const res = await request.post('/api/slack/bots').send({
+      name: 'cm-shape-ok',
+      bot_token: 'xoxb-test',
+      app_token: 'xapp-test',
+      agent_id: 'a',
+      channel_map: { C001: { label: 'frontend', agentId: 'agent-front' } },
+    });
+    expect(res.status).toBe(201);
+    // Cleanup so the row doesn't leak into other test files via shared workers.
+    if (res.body?.id) await request.delete(`/api/slack/bots/${res.body.id}`);
+  });
+
+  it('POST — 201 when channel_map is omitted (undefined → defaults to {})', async () => {
+    const res = await request.post('/api/slack/bots').send({
+      name: 'cm-shape-omitted',
+      bot_token: 'xoxb-test',
+      app_token: 'xapp-test',
+      agent_id: 'a',
+    });
+    expect(res.status).toBe(201);
+    if (res.body?.id) await request.delete(`/api/slack/bots/${res.body.id}`);
+  });
+});

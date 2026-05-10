@@ -15,6 +15,27 @@ import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { EnrichedAgent, Stmts, SlackMessageRow, SlackBotRow } from './types.js';
 import { decryptSecret } from './pr-env-store.js';
 
+/**
+ * Decrypt a stored secret, falling back to the raw stored value when the
+ * blob isn't in `iv:tag:ciphertext` shape. `slack_bots` is a brand-new
+ * table in the PR introducing this module, so today every row is encrypted.
+ * A hand-inserted row (manual SQL fix-up, restored backup) wouldn't be —
+ * we'd rather forward the plaintext to Bolt and let `auth.test` fail with
+ * a real Slack error than 500 the entire `startSlack` boot path on
+ * `Malformed ciphertext blob`. Anything else (e.g. wrong AES key)
+ * re-throws so we don't silently mask a real misconfiguration.
+ */
+function safeDecryptSecret(value: string): string {
+  if (!value) return value;
+  try {
+    return decryptSecret(value);
+  } catch (err) {
+    const msg = (err as Error).message ?? '';
+    if (msg.includes('Malformed ciphertext blob')) return value;
+    throw err;
+  }
+}
+
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
 const CLAUDE_BIN: string = config.claudeBin;
 const CURSOR_BIN: string = config.cursorBin;
@@ -553,8 +574,8 @@ export function dbBotToAccount(row: SlackBotRow): SlackAccount {
   }
   return {
     name: row.name,
-    botToken: decryptSecret(row.bot_token),
-    appToken: decryptSecret(row.app_token),
+    botToken: safeDecryptSecret(row.bot_token),
+    appToken: safeDecryptSecret(row.app_token),
     agentId: row.agent_id,
     channelMap,
   };

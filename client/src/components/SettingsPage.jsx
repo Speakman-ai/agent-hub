@@ -3918,6 +3918,13 @@ function SlackSetupWizard({ agents, onSaved, onCancel, existingBot }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
+  // Masked-token sentinel: the API returns either the literal '****masked****'
+  // (legacy callers) or a partially-masked form like 'xoxb-****…-ab12cd' that
+  // begins with the prefix + leading '****'. The leading '****' check is
+  // intentional — real Slack tokens never start with '****', so it's a safe
+  // sentinel for "user did not edit this token field; preserve the stored
+  // value." Don't soften this to .includes('****') — that would also match
+  // legitimate tokens that happen to contain the substring.
   const isMasked = (v) => v === '****masked****' || v?.startsWith('****');
 
   const handleChange = (field) => (e) => {

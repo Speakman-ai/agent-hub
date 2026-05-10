@@ -105,6 +105,35 @@ describe('dbBotToAccount — token decryption', () => {
     expect(account.botToken).toBe('xoxb-plain');
     expect(account.appToken).toBe('xapp-plain');
   });
+
+  it('falls back to the raw stored value when decryptSecret throws Malformed ciphertext blob', () => {
+    // Simulates a hand-inserted plaintext row (manual SQL fix-up / restored
+    // backup): pr-env-store.decryptSecret throws on any blob that isn't
+    // iv:tag:ciphertext. The safeDecryptSecret wrapper inside slack.ts
+    // should swallow that specific error and forward the raw value, so
+    // GET /api/slack/bots and startSlack don't 500 the entire path.
+    const decryptSpy = vi.mocked(decryptSecret);
+    decryptSpy.mockImplementationOnce(() => {
+      throw new Error('[pr-env-store] Malformed ciphertext blob');
+    });
+    decryptSpy.mockImplementationOnce(() => {
+      throw new Error('[pr-env-store] Malformed ciphertext blob');
+    });
+    const row = makeRow({ bot_token: 'xoxb-legacy-plain', app_token: 'xapp-legacy-plain' });
+    const account = dbBotToAccount(row);
+    expect(account.botToken).toBe('xoxb-legacy-plain');
+    expect(account.appToken).toBe('xapp-legacy-plain');
+  });
+
+  it('re-throws non-blob errors so real misconfiguration is not silently masked', () => {
+    // Wrong AES key, corrupt blob, etc. should NOT be swallowed — the only
+    // recoverable case is the well-known "Malformed ciphertext blob" string.
+    vi.mocked(decryptSecret).mockImplementationOnce(() => {
+      throw new Error('Unsupported state or unable to authenticate data');
+    });
+    const row = makeRow({ bot_token: 'enc:corrupt' });
+    expect(() => dbBotToAccount(row)).toThrow(/Unsupported state/);
+  });
 });
 
 describe('resolveAgentForChannel', () => {
