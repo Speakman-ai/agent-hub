@@ -1,5 +1,6 @@
 /**
- * Unit tests for the autonomous-mode umbrella feature branch logic.
+ * Unit tests for the autonomous-mode umbrella feature branch helper +
+ * dispatch-path contract.
  *
  * `createUmbrellaBranch` is tested in isolation by mocking child_process so
  * no real git operations happen. We verify:
@@ -8,13 +9,16 @@
  *   3. It falls back gracefully when the remote ref can't be resolved.
  *   4. It falls back gracefully when git push fails.
  *
- * The integration-level contract (epic.pr_base_branch is set in DB after the
- * first dispatch tick) is verified by inspecting the kanban_epics row after
- * triggering the loop — but that requires a real running server so we skip it
- * here; the DB query path is covered by existing autonomous-eligible-order tests.
+ * Dispatch-path contract (added when umbrella creation became opt-in):
+ *   5. `runAutonomousLoop` MUST NOT auto-call `createUmbrellaBranch`. When
+ *      `epic.pr_base_branch` is blank, PRs target the default branch; when
+ *      it's set, the operator-supplied value is used as-is.
  */
 import './setup.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import path from 'path';
 
 // ── mock child_process BEFORE importing the module under test ──────────────
 vi.mock('child_process', async (importOriginal) => {
@@ -186,6 +190,45 @@ describe('createUmbrellaBranch', () => {
     const result = await createUmbrellaBranch(makeProject({ cwd: '' }), makeEpic());
     expect(result).toBeNull();
     expect(mockedExecFile).not.toHaveBeenCalled();
+  });
+
+  it('does NOT get auto-invoked from runAutonomousLoop (umbrella creation is opt-in)', () => {
+    // Contract: when an operator leaves `epic.pr_base_branch` blank, the
+    // dispatch path must NOT auto-create a `feature/autonomous-...` branch.
+    // This is enforced as a source-shape assertion: the body of
+    // `runAutonomousLoop` must not contain a call to `createUmbrellaBranch`.
+    // If a future change re-introduces auto-creation, this test fails.
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(path.resolve(here, '..', 'autonomous.ts'), 'utf8');
+
+    // Locate the runAutonomousLoop function body.
+    const startMatch = src.match(/export async function runAutonomousLoop\b/);
+    expect(startMatch, 'runAutonomousLoop export not found in autonomous.ts').toBeTruthy();
+    const start = startMatch!.index!;
+
+    // Walk braces to find the end of the function body.
+    const openBrace = src.indexOf('{', start);
+    expect(openBrace).toBeGreaterThan(start);
+    let depth = 0;
+    let end = -1;
+    for (let i = openBrace; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    expect(end, 'runAutonomousLoop function body braces are unbalanced').toBeGreaterThan(openBrace);
+
+    const body = src.slice(openBrace, end + 1);
+    expect(
+      body.includes('createUmbrellaBranch('),
+      'runAutonomousLoop must not call createUmbrellaBranch — umbrella branches are now opt-in via operator-set pr_base_branch',
+    ).toBe(false);
   });
 
   it('embeds the first 8 hex chars of the epic id (dashes stripped) in the branch name', async () => {

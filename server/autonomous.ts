@@ -32,24 +32,24 @@ import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 
 const execFileAsync = promisify(execFile);
 
-// ─── Umbrella feature-branch management ────────────────────────────────────
+// ─── Umbrella feature-branch management (opt-in) ───────────────────────────
 //
-// When an autonomous run kicks off, we create a single shared feature branch
-// (e.g. `feature/autonomous-{epicId8}-{uuid8}`) on the remote and store it
-// as `epic.pr_base_branch`. Every worktree spawned for that run branches FROM
-// it, and every PR targets it — so the whole run lands as one coherent unit
-// rather than a spray of PRs directly onto main.
+// Per-run umbrella branching is OPT-IN via the epic's `pr_base_branch` field.
 //
-// Lifecycle:
-//   1. First dispatch tick with eligible cards AND `pr_base_branch` is null or
-//      starts with our `feature/autonomous-` prefix (stale branch from a
-//      previous completed run) → create a fresh umbrella branch.
-//   2. Operator-set custom `pr_base_branch` (doesn't start with our prefix) →
-//      always respected, never overwritten or cleared.
-//   3. Run completes (all epic cards Done) → log the umbrella branch name so
-//      the operator knows to open a final PR, but leave `pr_base_branch` set
-//      so the next run creates a fresh one automatically (it'll detect the
-//      stale `feature/autonomous-` prefix).
+//   • Field BLANK (null/empty)  → no umbrella branch is created. Every card's
+//     auto-PR targets the repo's default branch (main/master). This is the
+//     default behaviour — autonomous mode behaves like a regular dev workflow
+//     unless the operator explicitly asks for an integration branch.
+//   • Field has a VALUE (e.g. `feature/q3-launch`) → that branch name is
+//     respected as the PR base for every card dispatched in the run. The
+//     operator is responsible for ensuring the branch exists on origin
+//     (`auto-git.ts` falls back to the default branch with a logged reason
+//     if `git ls-remote` doesn't find it). The value is never overwritten
+//     or cleared by the autonomous loop.
+//
+// `createUmbrellaBranch` (below) remains exported for tests and as a helper
+// that an operator-facing route may call in the future, but the autonomous
+// dispatch path no longer invokes it automatically.
 
 const AUTONOMOUS_BRANCH_PREFIX = 'feature/autonomous-';
 
@@ -195,11 +195,12 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
     allEpicCardsForDone.every((c) => isColumnDone(colNameByIdForEpic[c.column_id]));
 
   if (epicWorkComplete && epic.autonomous) {
-    // If we created the umbrella branch for this run, notify the operator
-    // that it's ready for a final PR to main.
-    if (epic.pr_base_branch?.startsWith(AUTONOMOUS_BRANCH_PREFIX)) {
+    // Operator-set integration branch — flag it so the operator knows to open
+    // the final PR from it. With auto-umbrella creation removed, this path
+    // only fires when someone explicitly typed a branch name into the epic.
+    if (epic.pr_base_branch && !epic.pr_base_branch.startsWith(AUTONOMOUS_BRANCH_PREFIX)) {
       console.log(
-        `[Autonomous] 🎉 Epic "${epic.name}" complete — umbrella branch "${epic.pr_base_branch}" is ready. Open a PR from it to merge all changes into main.`,
+        `[Autonomous] 🎉 Epic "${epic.name}" complete — integration branch "${epic.pr_base_branch}" is ready. Open a PR from it to merge all changes into main.`,
       );
     }
 
@@ -213,9 +214,8 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
       epic.autonomous_max_iterations,
       epic.autonomous_model ?? null,
       epic.orchestration_budgets_json ?? null,
-      // Keep the umbrella branch on the epic record so the operator can see
-      // which branch to PR from. The next run will detect the
-      // `feature/autonomous-` prefix and create a fresh one.
+      // Preserve whatever the operator set (or null). We never auto-clear or
+      // overwrite the operator's value here.
       epic.pr_base_branch ?? null,
       epic.id,
     );
@@ -256,39 +256,13 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
     return;
   }
 
-  // ── Umbrella feature branch ─────────────────────────────────────────────
-  // Create a shared feature branch for this autonomous run if one hasn't
-  // been set by the operator (custom base) or was not yet created.
-  // Condition: pr_base_branch is null  → definitely a fresh run
-  //            pr_base_branch starts with our prefix → stale branch from a
-  //              previous completed run; create a fresh one for this run.
-  // If the operator set a custom value (no prefix match) we leave it alone.
-  const needsUmbrella =
-    !epic.pr_base_branch || epic.pr_base_branch.startsWith(AUTONOMOUS_BRANCH_PREFIX);
-
-  if (needsUmbrella) {
-    const umbrellaBranch = await createUmbrellaBranch(project, epic);
-    if (umbrellaBranch) {
-      // Persist to DB so every card dispatched in this (and future ticks of
-      // this) run inherits the branch via `effectivePrBaseBranch()`.
-      d.stmts.updateKanbanEpic.run(
-        epic.name,
-        epic.description,
-        epic.color,
-        epic.autonomous,
-        epic.autonomous_interval,
-        epic.autonomous_max_concurrent,
-        epic.autonomous_max_iterations,
-        epic.autonomous_model ?? null,
-        epic.orchestration_budgets_json ?? null,
-        umbrellaBranch,
-        epic.id,
-      );
-      // Mutate the in-memory epic so cards dispatched in THIS tick also see it.
-      epic.pr_base_branch = umbrellaBranch;
-      d.broadcast({ type: 'kanban_update', projectId });
-    }
-  }
+  // ── Umbrella / integration branch (opt-in via operator-set value) ──────
+  // We do NOT auto-create a branch when `epic.pr_base_branch` is blank.
+  // Blank → every card's auto-PR targets the repo's default branch (handled
+  // by `auto-git.ts` falling back when `effectivePrBaseBranch()` returns
+  // null). Operator-set values are passed through as-is — `auto-git.ts`
+  // verifies the branch exists on origin and falls back with a logged
+  // reason if it doesn't, so a typo doesn't strand the run.
   // ───────────────────────────────────────────────────────────────────────
 
   // Label-based routing: every eligible card is dispatchable. The intake
