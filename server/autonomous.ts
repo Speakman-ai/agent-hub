@@ -32,6 +32,87 @@ import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 
 const execFileAsync = promisify(execFile);
 
+// ─── Umbrella feature-branch management ────────────────────────────────────
+//
+// When an autonomous run kicks off, we create a single shared feature branch
+// (e.g. `feature/autonomous-{epicId8}-{uuid8}`) on the remote and store it
+// as `epic.pr_base_branch`. Every worktree spawned for that run branches FROM
+// it, and every PR targets it — so the whole run lands as one coherent unit
+// rather than a spray of PRs directly onto main.
+//
+// Lifecycle:
+//   1. First dispatch tick with eligible cards AND `pr_base_branch` is null or
+//      starts with our `feature/autonomous-` prefix (stale branch from a
+//      previous completed run) → create a fresh umbrella branch.
+//   2. Operator-set custom `pr_base_branch` (doesn't start with our prefix) →
+//      always respected, never overwritten or cleared.
+//   3. Run completes (all epic cards Done) → log the umbrella branch name so
+//      the operator knows to open a final PR, but leave `pr_base_branch` set
+//      so the next run creates a fresh one automatically (it'll detect the
+//      stale `feature/autonomous-` prefix).
+
+const AUTONOMOUS_BRANCH_PREFIX = 'feature/autonomous-';
+
+/**
+ * Creates an umbrella feature branch on the remote rooted at the current
+ * remote HEAD (main/master). Returns the branch name on success, null on any
+ * failure (caller falls back to PR-to-main behaviour).
+ *
+ * Exported for unit testing.
+ */
+export async function createUmbrellaBranch(
+  project: Project,
+  epic: KanbanEpicRow,
+): Promise<string | null> {
+  const cwd = project.cwd;
+  if (!cwd) return null;
+
+  const epicShort = epic.id.replace(/-/g, '').substring(0, 8);
+  const runShort = crypto.randomUUID().replace(/-/g, '').substring(0, 8);
+  const branchName = `${AUTONOMOUS_BRANCH_PREFIX}${epicShort}-${runShort}`;
+
+  try {
+    // Fetch to ensure remote refs are current (shallow ok — we just need the SHA).
+    await execFileAsync('git', ['fetch', 'origin', '--depth=1'], { cwd, timeout: 30_000 });
+
+    // Resolve the remote HEAD SHA. Try symbolic-ref first (fastest), then
+    // fall back to explicit branch names used by most repos.
+    let sha: string | null = null;
+    for (const ref of ['origin/HEAD', 'origin/main', 'origin/master']) {
+      try {
+        const { stdout } = await execFileAsync('git', ['rev-parse', ref], { cwd, timeout: 5_000 });
+        sha = stdout.trim();
+        if (sha) break;
+      } catch {
+        // try next candidate
+      }
+    }
+
+    if (!sha) {
+      console.warn(
+        `[Autonomous] Cannot resolve remote HEAD for project "${project.name}" — umbrella branch skipped, PRs will target default branch`,
+      );
+      return null;
+    }
+
+    // Push the SHA directly as the new branch — no local checkout needed.
+    await execFileAsync('git', ['push', 'origin', `${sha}:refs/heads/${branchName}`], {
+      cwd,
+      timeout: 30_000,
+    });
+
+    console.log(
+      `[Autonomous] ✅ Created umbrella branch "${branchName}" for epic "${epic.name}" (base SHA: ${sha.substring(0, 7)})`,
+    );
+    return branchName;
+  } catch (err) {
+    console.error(
+      `[Autonomous] Failed to create umbrella branch for epic "${epic.name}": ${(err as Error).message} — PRs will target default branch`,
+    );
+    return null;
+  }
+}
+
 // ─── Dependency Types ───────────────────────────────────────────────────────
 
 interface AutonomousDeps {
@@ -114,6 +195,14 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
     allEpicCardsForDone.every((c) => isColumnDone(colNameByIdForEpic[c.column_id]));
 
   if (epicWorkComplete && epic.autonomous) {
+    // If we created the umbrella branch for this run, notify the operator
+    // that it's ready for a final PR to main.
+    if (epic.pr_base_branch?.startsWith(AUTONOMOUS_BRANCH_PREFIX)) {
+      console.log(
+        `[Autonomous] 🎉 Epic "${epic.name}" complete — umbrella branch "${epic.pr_base_branch}" is ready. Open a PR from it to merge all changes into main.`,
+      );
+    }
+
     d.stmts.updateKanbanEpic.run(
       epic.name,
       epic.description,
@@ -124,6 +213,9 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
       epic.autonomous_max_iterations,
       epic.autonomous_model ?? null,
       epic.orchestration_budgets_json ?? null,
+      // Keep the umbrella branch on the epic record so the operator can see
+      // which branch to PR from. The next run will detect the
+      // `feature/autonomous-` prefix and create a fresh one.
       epic.pr_base_branch ?? null,
       epic.id,
     );
@@ -163,6 +255,41 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
     );
     return;
   }
+
+  // ── Umbrella feature branch ─────────────────────────────────────────────
+  // Create a shared feature branch for this autonomous run if one hasn't
+  // been set by the operator (custom base) or was not yet created.
+  // Condition: pr_base_branch is null  → definitely a fresh run
+  //            pr_base_branch starts with our prefix → stale branch from a
+  //              previous completed run; create a fresh one for this run.
+  // If the operator set a custom value (no prefix match) we leave it alone.
+  const needsUmbrella =
+    !epic.pr_base_branch || epic.pr_base_branch.startsWith(AUTONOMOUS_BRANCH_PREFIX);
+
+  if (needsUmbrella) {
+    const umbrellaBranch = await createUmbrellaBranch(project, epic);
+    if (umbrellaBranch) {
+      // Persist to DB so every card dispatched in this (and future ticks of
+      // this) run inherits the branch via `effectivePrBaseBranch()`.
+      d.stmts.updateKanbanEpic.run(
+        epic.name,
+        epic.description,
+        epic.color,
+        epic.autonomous,
+        epic.autonomous_interval,
+        epic.autonomous_max_concurrent,
+        epic.autonomous_max_iterations,
+        epic.autonomous_model ?? null,
+        epic.orchestration_budgets_json ?? null,
+        umbrellaBranch,
+        epic.id,
+      );
+      // Mutate the in-memory epic so cards dispatched in THIS tick also see it.
+      epic.pr_base_branch = umbrellaBranch;
+      d.broadcast({ type: 'kanban_update', projectId });
+    }
+  }
+  // ───────────────────────────────────────────────────────────────────────
 
   // Label-based routing: every eligible card is dispatchable. The intake
   // ("ticketing") agent stamps labels at card-creation time; we route to
