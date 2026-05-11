@@ -30,6 +30,8 @@ import { getActiveAccessToken } from './github-connections-store.js';
 import {
   resolveOAuthAppCredentials,
   applyGithubSpawnCredentials,
+  applyReviewerSpawnIsolation,
+  selectGithubSpawnToken,
 } from './spawn-github-credentials.js';
 import type { DelegationResult } from './delegation.js';
 import {
@@ -2159,48 +2161,54 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           );
         }
         const base = buildSpawnEnv(config, { userOverride });
-        // Reviewer agents post formal GitHub reviews via the bot identity so they
-        // bypass GitHub's "can't review your own PR" rule for human-author PRs.
-        // Bot wins over the user's own token here even when the user is
-        // signed in — the whole point of the reviewer role is to *not* be
-        // the human (so GitHub doesn't reject the review with "can't review
-        // your own PR"). For non-reviewer agents we fall through to the
-        // user's stored GitHub connection below.
-        if (config.botGithubToken && agent.role === 'reviewer') {
-          applyGithubSpawnCredentials(base, config.botGithubToken);
-        } else {
-          // Per-user GitHub auth: when the session owner has signed in via
-          // Settings → Sign in with GitHub (or pasted a PAT), inject their
-          // token as GH_TOKEN/GITHUB_TOKEN plus a process-scoped git
-          // credential helper so `gh`, `git push`, and `git fetch` against
-          // GitHub HTTPS remotes authenticate as the human at the keyboard
-          // — without leaking that credential into the host's gitconfig.
-          // Best-effort: if the lookup or refresh fails the spawn proceeds
-          // unauthenticated and the user can reconnect from Settings.
-          try {
-            if (ownerId) {
-              const oauthCreds = resolveOAuthAppCredentials(config);
-              const userGhToken = await getActiveAccessToken(ownerId, oauthCreds);
-              if (userGhToken) {
-                applyGithubSpawnCredentials(base, userGhToken);
-              }
-            }
-          } catch (err) {
-            const summary = (err as Error).message
-              .replace(/[\r\n|]+/g, ' ')
-              .trim()
-              .slice(0, 200);
-            const meta = JSON.stringify({
-              v: 2,
-              sev: 'soft',
-              resolution: 'recovered',
-              session: sessionId,
-              tags: ['per-user-github-auth', 'spawn'],
-            });
-            console.error(
-              `TOOL_ERROR | ${new Date().toISOString()} | per-user-github-auth | spawn lookup | error | ${summary} | ${meta}`,
-            );
+        // Resolve the session owner's per-user GitHub OAuth/PAT (if any).
+        // We always perform the lookup so non-reviewer spawns get the
+        // human-identity path; the reviewer policy in
+        // `selectGithubSpawnToken` deliberately ignores this value to
+        // prevent identity leaks. Best-effort: failures are observable
+        // via TOOL_ERROR but never block the spawn.
+        let userGhToken: string | null = null;
+        try {
+          if (ownerId) {
+            const oauthCreds = resolveOAuthAppCredentials(config);
+            userGhToken = await getActiveAccessToken(ownerId, oauthCreds);
           }
+        } catch (err) {
+          const summary = (err as Error).message
+            .replace(/[\r\n|]+/g, ' ')
+            .trim()
+            .slice(0, 200);
+          const meta = JSON.stringify({
+            v: 2,
+            sev: 'soft',
+            resolution: 'recovered',
+            session: sessionId,
+            tags: ['per-user-github-auth', 'spawn'],
+          });
+          console.error(
+            `TOOL_ERROR | ${new Date().toISOString()} | per-user-github-auth | spawn lookup | error | ${summary} | ${meta}`,
+          );
+        }
+        // Pick the credential to inject. The policy lives in
+        // `selectGithubSpawnToken` so reviewer/non-reviewer behaviour is
+        // testable in isolation and chat.ts can't drift from it:
+        //   - reviewer role → bot installation token only (no per-user
+        //     fallback, which historically mis-attributed reviews to the
+        //     org owner's human GitHub account).
+        //   - non-reviewer → per-user OAuth token so `gh`/`git push`
+        //     authenticate as the human at the keyboard.
+        const tokenToInject = selectGithubSpawnToken({
+          role: agent.role,
+          botGithubToken: config.botGithubToken,
+          userGhToken,
+        });
+        applyGithubSpawnCredentials(base, tokenToInject);
+        if (agent.role === 'reviewer') {
+          // Sever `gh`'s fallback chain so the reviewer never inherits
+          // the host operator's `gh auth login` (`~/.config/gh/hosts.yml`)
+          // and the GitHub skill refuses any direct `gh pr review` call.
+          // See `applyReviewerSpawnIsolation` for the full rationale.
+          applyReviewerSpawnIsolation(base, config);
         }
         if (config.apiKey) {
           base.AGENT_HUB_API_KEY = config.apiKey;

@@ -44,6 +44,7 @@ import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
+import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
 import {
   getAppInfo,
   getAppInstallations,
@@ -303,6 +304,18 @@ ensureDocsAgents();
 ensureIntakeAgents();
 ensureReviewerAgents();
 ensureContextFiles();
+
+// Pre-create the empty `GH_CONFIG_DIR` reviewer spawns are routed to.
+// `applyReviewerSpawnIsolation` resolves the same path; doing the mkdir
+// here keeps the first reviewer spawn from racing the directory and
+// makes the isolation directory inspectable on disk for operators.
+try {
+  ensureReviewerGhConfigDir(config);
+} catch (err) {
+  console.error(
+    `[Reviewer] Failed to provision GH_CONFIG_DIR isolation directory: ${(err as Error).message}`,
+  );
+}
 
 // Sync default + per-project skill dirs to the Claude Code CLI so both
 // bundled skills and ClawHub-installed project skills register at startup.
