@@ -173,12 +173,16 @@ Hope that helps.`;
     expect(result.task?.target).toBe('client');
   });
 
-  it('accepts target="fullstack" for the draft-PR / PR-env path', () => {
+  it('rejects target="fullstack" — PR-env subsystem removed', () => {
+    // The fullstack escape hatch (draft PR + PR-env container pool) was
+    // removed along with PR Environments. Only `client` / `server` are
+    // valid targets now; `fullstack` falls through to `invalid-target`.
     const result = detectPreviewBlock(
       `<agenthub:preview>{"target":"fullstack","route":"/dashboard"}</agenthub:preview>`,
     );
     expect(result.present).toBe(true);
-    expect(result.task).toEqual({ target: 'fullstack', route: '/dashboard' });
+    expect(result.task).toBeNull();
+    expect(result.reason).toBe('invalid-target');
   });
 
   it('tolerates a fenced code block inside the tag', () => {

@@ -27,8 +27,7 @@ export default function PreviewAttachment({ event, onRetry, onTouch, onConfigure
   if (kind === 'preview_failed') return <PreviewFailed event={event} onRetry={onRetry} />;
 
   // Default: a live preview event.
-  const { previewUrl, fullUrl, port, route, target, screenshotPath, agentReason, prUrl, prNumber } =
-    event;
+  const { previewUrl, fullUrl, port, route, target, screenshotPath, agentReason } = event;
   const renderUrl = fullUrl || previewUrl || '';
 
   return (
@@ -51,16 +50,6 @@ export default function PreviewAttachment({ event, onRetry, onTouch, onConfigure
           <span className="rounded bg-gray-800 px-2 py-0.5 text-xs uppercase text-gray-400">
             {target}
           </span>
-        )}
-        {prUrl && typeof prNumber === 'number' && (
-          <a
-            href={prUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded bg-purple-800/60 px-2 py-0.5 text-xs font-medium text-purple-100 hover:bg-purple-700/60"
-          >
-            Draft PR #{prNumber}
-          </a>
         )}
       </div>
       {agentReason && <div className="mb-2 text-xs italic text-gray-400">{agentReason}</div>}
