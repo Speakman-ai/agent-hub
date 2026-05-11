@@ -30,7 +30,7 @@ vi.mock('child_process', async (importOriginal) => {
 });
 
 import { execFile } from 'child_process';
-import { createUmbrellaBranch } from '../autonomous.js';
+import { createUmbrellaBranch, ensureOperatorBaseBranch } from '../autonomous.js';
 import type { KanbanEpicRow, Project } from '../types.js';
 
 const mockedExecFile = execFile as unknown as ReturnType<typeof vi.fn>;
@@ -244,5 +244,193 @@ describe('createUmbrellaBranch', () => {
 
     const result = await createUmbrellaBranch(makeProject(), makeEpic({ id: epicId }));
     expect(result).toMatch(new RegExp(`^feature\\/autonomous-${expectedPrefix}-`));
+  });
+});
+
+describe('ensureOperatorBaseBranch', () => {
+  it('returns "skipped" when branch name is null/empty/whitespace', async () => {
+    expect(await ensureOperatorBaseBranch(makeProject(), null)).toBe('skipped');
+    expect(await ensureOperatorBaseBranch(makeProject(), '')).toBe('skipped');
+    expect(await ensureOperatorBaseBranch(makeProject(), '   ')).toBe('skipped');
+    expect(mockedExecFile).not.toHaveBeenCalled();
+  });
+
+  it('returns "skipped" without touching git when project.cwd is empty', async () => {
+    const result = await ensureOperatorBaseBranch(makeProject({ cwd: '' }), 'feature/auth');
+    expect(result).toBe('skipped');
+    expect(mockedExecFile).not.toHaveBeenCalled();
+  });
+
+  it('returns "skipped" for the reserved auto-generated umbrella prefix', async () => {
+    const result = await ensureOperatorBaseBranch(
+      makeProject(),
+      'feature/autonomous-aabbccdd-11223344',
+    );
+    expect(result).toBe('skipped');
+    expect(mockedExecFile).not.toHaveBeenCalled();
+  });
+
+  it('returns "invalid" and never pushes when the branch name fails safe-regex', async () => {
+    const result = await ensureOperatorBaseBranch(makeProject(), 'feature/auth;rm -rf /');
+    expect(result).toBe('invalid');
+    expect(mockedExecFile).not.toHaveBeenCalled();
+  });
+
+  it('returns "exists" when ls-remote finds the branch on origin (no push)', async () => {
+    let pushCalled = false;
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') {
+          // Real ls-remote output looks like: "<sha>\trefs/heads/<name>"
+          return cb(null, { stdout: 'abc1234\trefs/heads/feature/auth\n', stderr: '' });
+        }
+        if (args[0] === 'push') pushCalled = true;
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const result = await ensureOperatorBaseBranch(makeProject(), 'feature/auth');
+    expect(result).toBe('exists');
+    expect(pushCalled).toBe(false);
+  });
+
+  it('creates the branch when ls-remote returns empty (operator-set name, rooted at origin/HEAD)', async () => {
+    const pushArgs: string[][] = [];
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'rev-parse' && args[1] === 'origin/HEAD') {
+          return cb(null, { stdout: 'deadbeef1234567890\n', stderr: '' });
+        }
+        if (args[0] === 'push') {
+          pushArgs.push(args);
+          return cb(null, { stdout: '', stderr: '' });
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const result = await ensureOperatorBaseBranch(makeProject(), 'feature/auth');
+    expect(result).toBe('created');
+    expect(pushArgs).toHaveLength(1);
+    // Verify the push uses the operator-supplied name, not an auto-generated one
+    expect(pushArgs[0]).toEqual(['push', 'origin', 'deadbeef1234567890:refs/heads/feature/auth']);
+  });
+
+  it('falls back to origin/main when origin/HEAD rev-parse fails, still creating the operator branch', async () => {
+    const pushArgs: string[][] = [];
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'rev-parse' && args[1] === 'origin/HEAD') {
+          return cb(new Error('unknown ref'), { stdout: '', stderr: '' });
+        }
+        if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
+          return cb(null, { stdout: 'mainshaaaaa\n', stderr: '' });
+        }
+        if (args[0] === 'push') {
+          pushArgs.push(args);
+          return cb(null, { stdout: '', stderr: '' });
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const result = await ensureOperatorBaseBranch(makeProject(), 'feature/auth');
+    expect(result).toBe('created');
+    expect(pushArgs[0]).toEqual(['push', 'origin', 'mainshaaaaa:refs/heads/feature/auth']);
+  });
+
+  it('returns "failed" when push fails (e.g. permission denied) — caller treats as non-fatal', async () => {
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'rev-parse') return cb(null, { stdout: 'sha\n', stderr: '' });
+        if (args[0] === 'push')
+          return cb(new Error('permission denied'), { stdout: '', stderr: '' });
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const result = await ensureOperatorBaseBranch(makeProject(), 'feature/auth');
+    expect(result).toBe('failed');
+  });
+
+  it('returns "failed" when all rev-parse candidates fail (no SHA to push)', async () => {
+    let pushCalled = false;
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') return cb(null, { stdout: '', stderr: '' });
+        if (args[0] === 'rev-parse')
+          return cb(new Error('unknown ref'), { stdout: '', stderr: '' });
+        if (args[0] === 'push') pushCalled = true;
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const result = await ensureOperatorBaseBranch(makeProject(), 'feature/auth');
+    expect(result).toBe('failed');
+    expect(pushCalled).toBe(false);
+  });
+
+  it('tolerates a fetch failure and still performs the ls-remote check', async () => {
+    mockedExecFile.mockImplementation(
+      (_cmd: unknown, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+        if (args[0] === 'fetch') return cb(new Error('network down'), { stdout: '', stderr: '' });
+        if (args[0] === 'ls-remote') {
+          // ls-remote talks to origin directly and finds the branch
+          return cb(null, { stdout: 'abc\trefs/heads/feature/auth\n', stderr: '' });
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+
+    const result = await ensureOperatorBaseBranch(makeProject(), 'feature/auth');
+    expect(result).toBe('exists');
+  });
+});
+
+describe('runAutonomousLoop — operator base branch contract', () => {
+  it('runAutonomousLoop calls ensureOperatorBaseBranch when epic.pr_base_branch is set, not when blank', () => {
+    // Source-shape assertion: the dispatch loop must reach for
+    // `ensureOperatorBaseBranch` (gated by an `epic.pr_base_branch` truthiness
+    // check) so an operator-typed branch is created before per-card PRs try
+    // to target it.
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(path.resolve(here, '..', 'autonomous.ts'), 'utf8');
+
+    const startMatch = src.match(/export async function runAutonomousLoop\b/);
+    expect(startMatch, 'runAutonomousLoop export not found in autonomous.ts').toBeTruthy();
+    const start = startMatch!.index!;
+    const openBrace = src.indexOf('{', start);
+    let depth = 0;
+    let end = -1;
+    for (let i = openBrace; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    const body = src.slice(openBrace, end + 1);
+    expect(
+      body.includes('ensureOperatorBaseBranch('),
+      'runAutonomousLoop must call ensureOperatorBaseBranch so operator-set epic.pr_base_branch values are auto-created on origin before PRs target them',
+    ).toBe(true);
+    // And it must be guarded by an explicit truthiness check so blank values
+    // don't trigger any git work.
+    expect(
+      /epic\.pr_base_branch\s*&&[\s\S]{0,200}ensureOperatorBaseBranch\(/.test(body),
+      'ensureOperatorBaseBranch must only be called when epic.pr_base_branch is truthy',
+    ).toBe(true);
   });
 });
