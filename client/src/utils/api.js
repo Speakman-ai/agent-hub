@@ -51,22 +51,6 @@ export const api = {
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       return null;
     }),
-  /**
-   * Trigger a 30-second test boot of the project's preview runtime
-   * (PR-env wizard "Test it now" button). Returns
-   * `{ status: 'ok' | 'error', screenshotUrl?, logsTail?, error? }`.
-   * The endpoint is implemented server-side as
-   * `POST /api/projects/:id/preview/test-boot` — used by
-   * `PrEnvProjectWizard.jsx` to render an inline screenshot before the
-   * user saves their preview config.
-   */
-  testBootPreview: (projectId) =>
-    fetchJSON(`/projects/${projectId}/preview/test-boot`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-      timeout: null,
-    }),
-
   // Hub workflows (manual runs — MVP)
   getProjectWorkflows: (projectId) => fetchJSON(`/projects/${projectId}/workflows`),
   getProjectWorkflow: (projectId, workflowId) =>
@@ -842,32 +826,6 @@ export const api = {
   // Container pool observability (W4)
   getPoolMetrics: (windowHours = 24) => fetchJSON(`/pool/metrics?windowHours=${windowHours}`),
   getPoolAlerts: (status = 'active') => fetchJSON(`/pool/alerts?status=${status}`),
-
-  // PR environments settings (Tier 1 + Tier 2)
-  // GET returns secrets masked as `••••••••` when set, empty string when unset.
-  // PUT is partial-preserving: the mask sentinel is NOT overwritten server-side.
-  //
-  // The legacy `POST /settings/pr-env/validate` endpoint is unchanged
-  // server-side (cron / monitoring callers still depend on it), but the
-  // web UI helper was removed in Wizard PR 2b — the wizard's own
-  // `verify` phase replaces the read-only validator panel. The mobile
-  // app keeps its own `validatePrEnvSettings` helper for the Settings →
-  // PR Env screen.
-  getPrEnvSettings: () => fetchJSON('/settings/pr-env'),
-  updatePrEnvSettings: (payload) =>
-    fetchJSON('/settings/pr-env', { method: 'PUT', body: JSON.stringify(payload) }),
-
-  // PR environments provisioning wizard. The wizard fans these calls into
-  // `subscribeProvisioningEvents` for the live event stream — see
-  // `client/src/components/PrEnvironmentsSection.jsx`.
-  // POST /provision returns `{ jobId, wsUrl }`; GET /provision/last returns
-  // `{ jobId, outcome, finishedAt } | { jobId: null }`.
-  startPrEnvProvision: (payload) =>
-    fetchJSON('/settings/pr-env/provision', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  getLastPrEnvProvision: () => fetchJSON('/settings/pr-env/provision/last'),
 
   // MCP servers (per-user). Replaces the deleted Nango integration surface;
   // configured under Skills & Context → MCP (not Settings).
