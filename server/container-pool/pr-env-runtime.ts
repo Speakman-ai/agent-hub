@@ -30,8 +30,27 @@ import type {
 } from './pr-env-builder.js';
 import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
 import type { NginxFsOps, NginxRunner } from './nginx-writer.js';
-import type { PrEnvConfigRow } from '../pr-env-store.js';
 import type { GitHubAppConfig } from '../types.js';
+
+/**
+ * Raw (plaintext) shape of the formerly-persisted `pr_env_config` singleton
+ * row. The DB table and its store module were removed in PR-Env Removal #3
+ * (the kill switch is permanently ON in prod); this type is retained locally
+ * because `readPrEnvConfig` still accepts a `dbRow` parameter for its
+ * legacy contract. Callers pass `null` now.
+ */
+export interface PrEnvConfigRow {
+  enabled: boolean;
+  repoFullName: string;
+  previewHost: string;
+  previewBaseUrl: string;
+  certRenewalLive: boolean;
+  portRangeMin: number | null;
+  portRangeMax: number | null;
+  route53AccessKeyId: string;
+  route53SecretAccessKey: string;
+  route53HostedZoneId: string;
+}
 import { getInstallationToken } from '../github-app.js';
 
 /**

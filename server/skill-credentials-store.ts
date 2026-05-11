@@ -1,9 +1,10 @@
 /**
- * Per-user skill credentials — encrypted with the same AES-GCM helper as
- * PR-environment secrets (`pr-env-store.ts` / pr-env-secret.key).
+ * Per-user skill credentials — encrypted with the shared install-wide
+ * AES-GCM helper. Same key file (`pr-env-secret.key`) is reused across
+ * subsystems; see `secret-crypto.ts` for the rationale.
  */
 
-import { encryptSecret, decryptSecret } from './pr-env-store.js';
+import { encryptSecret, decryptSecret } from './secret-crypto.js';
 import { getOrgsDb } from './orgs.js';
 import { v4 as uuidv4 } from 'uuid';
 

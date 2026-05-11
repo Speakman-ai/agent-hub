@@ -2,16 +2,11 @@ import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import express, { Router, Request, Response } from 'express';
-import config, { defaultModelForEngine, fileConfig } from '../config.js';
+import config, { defaultModelForEngine } from '../config.js';
 import { getOrCreateBoard } from './board.js';
 import { createEscalation } from './escalations.js';
 import { runCapture, postPrComment } from '../capture-engine.js';
 import { githubApiRequest, resolveInstallationId, getInstallationToken } from '../github-app.js';
-import { dispatchPrEnvBuild, dispatchPrEnvTeardown } from '../container-pool/pr-env-dispatch.js';
-import { getPrEnvBuilderDeps, readPrEnvConfig } from '../container-pool/pr-env-runtime.js';
-import { readPrEnvConfigRow } from '../pr-env-store.js';
-import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
-import { getDb } from '../db.js';
 import {
   CHECK_RUN_NAME,
   DEFAULT_REVIEWER_PHASES,
@@ -1665,70 +1660,12 @@ async function handleKanbanWebhookEvent(
     }
   }
 
-  // ─── PR-env Builder Dispatch (W2) ───────────────────────────────
-  // opened / synchronize → build (or rebuild) a Docker-Compose preview env
-  // bound to the PR. closed → tear it down. This sits ABOVE the
-  // `if (!card && …) return false` short-circuit below because PR envs
-  // belong to the PR itself, not the optional kanban card — synchronize
-  // events on unlinked PRs still need to rebuild. Gated by the
-  // operator-owned `prEnv.enabled` toggle (DB row → file fallback);
-  // `getPrEnvBuilderDeps()` returns null when disabled and the dispatch
-  // becomes a no-op.
-  //
-  // Kill-switch override: the PR-env subsystem is being removed
-  // (epic 88367984). When the kill switch is on we skip dispatch entirely
-  // and log a one-line skip so operators tailing the webhook log can prove
-  // no container-pool activity was triggered.
-  if (
-    isPrEnvKillSwitchOn() &&
-    event === 'pull_request' &&
-    payload.pull_request &&
-    payload.repository?.full_name &&
-    (action === 'opened' || action === 'synchronize' || action === 'closed')
-  ) {
-    console.log(
-      `[Webhook/PR-Env] kill switch ON — skipped ${action} dispatch for ` +
-        `${payload.repository.full_name}#${payload.pull_request.number}`,
-    );
-  }
-  if (
-    event === 'pull_request' &&
-    payload.pull_request &&
-    payload.repository?.full_name &&
-    (action === 'opened' || action === 'synchronize' || action === 'closed') &&
-    !isPrEnvKillSwitchOn()
-  ) {
-    const pr = payload.pull_request;
-    const repoFullName = payload.repository.full_name;
-    const prEnvDispatchDeps = {
-      db: getDb(),
-      stmts,
-      getBuilderDeps: () =>
-        getPrEnvBuilderDeps(
-          readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config),
-          getDb(),
-        ),
-      getProjectConfig: () => {
-        if (!project?.prEnv) return null;
-        return { config: project.prEnv, slug: project.id };
-      },
-    };
-    if (action === 'closed') {
-      void dispatchPrEnvTeardown(prEnvDispatchDeps, {
-        repoFullName,
-        prNumber: pr.number,
-        card: card || null,
-      });
-    } else if (pr.head?.ref) {
-      void dispatchPrEnvBuild(prEnvDispatchDeps, {
-        repoFullName,
-        prNumber: pr.number,
-        branch: pr.head.ref,
-        commitSha: pr.head.sha,
-        card: card || null,
-      });
-    }
-  }
+  // PR-env builder dispatch was removed as part of the "Strip PR
+  // Environments" epic (88367984). `pull_request.opened` / `synchronize`
+  // / `closed` events used to fan out to the PR-env build / teardown
+  // dispatchers here; that path is gone. Worktree previews (per-session,
+  // host-side) are the supported replacement. The reviewer dispatch
+  // below continues unchanged.
 
   // Short-circuit: if no card and not a PR open event, nothing to do
   if (!card && !(event === 'pull_request' && action === 'opened')) return false;
