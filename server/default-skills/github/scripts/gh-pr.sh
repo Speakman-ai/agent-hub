@@ -121,6 +121,31 @@ cmd_checkout() {
 # ---------------------------------------------------------------------------
 cmd_review() {
   [[ $# -lt 1 ]] && gh_die "pr review <number> --approve | --request-changes [--body <text>] | --comment --body <text>"
+
+  # Reviewer-agent lock: Agent Hub injects AGENT_HUB_REVIEWER_LOCK=1 into
+  # reviewer-role spawn envs so the only correct identity path is the
+  # server-side App endpoint at POST /api/pr/review. `gh pr review` here
+  # would inherit whatever credential `gh` finds (host login, env tokens,
+  # or operator OAuth) and historically attributed reviews to a human
+  # account instead of the GitHub App. Fail loud rather than leak.
+  if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" == "1" ]]; then
+    cat >&2 <<LOCKED
+error: gh-pr.sh review is disabled inside Agent Hub reviewer sessions.
+
+Reviewer agents must post formal reviews through the App-mediated
+endpoint so reviews land with the GitHub App identity instead of the
+host operator's gh login. Use:
+
+  curl -sS -X POST "\$AGENT_HUB_URL/api/pr/review" \\
+    -H "X-API-Key: \$AGENT_HUB_API_KEY" \\
+    -H "Content-Type: application/json" \\
+    -d '{"prUrl":"<pr url>","event":"APPROVE|COMMENT|REQUEST_CHANGES","body":"<markdown>"}'
+
+(Read-only subcommands like view/diff/list/status/checks remain available.)
+LOCKED
+    exit 2
+  fi
+
   local number="$1"; shift
 
   local approve=false req_changes=false comment=false body=""

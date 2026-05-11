@@ -34,6 +34,8 @@
  *   pattern and works for both classic PATs and short-lived OAuth
  *   user-to-server tokens.
  */
+import { mkdirSync } from 'fs';
+import path from 'path';
 import type { AppConfig } from './types.js';
 
 export interface ResolvedOAuthAppCredentials {
@@ -131,4 +133,111 @@ export function applyGithubSpawnCredentials(
   env.GIT_CONFIG_COUNT = String(prevCount + 1);
   env[`GIT_CONFIG_KEY_${idx}`] = 'credential.https://github.com.helper';
   env[`GIT_CONFIG_VALUE_${idx}`] = GIT_CREDENTIAL_HELPER_SNIPPET;
+}
+
+/**
+ * Reviewer-agent isolation directory name (under `config.dataDir`).
+ *
+ * Kept as a single source-of-truth constant so both the spawn-side
+ * application and any startup-time `mkdirSync` agree on the path.
+ */
+export const REVIEWER_GH_CONFIG_DIR_NAME = 'reviewer-gh-config';
+
+/**
+ * Resolve the reviewer-agent `GH_CONFIG_DIR`. Returns an absolute path
+ * inside `config.dataDir`. Pure — does not touch the filesystem; pair
+ * with `ensureReviewerGhConfigDir` at startup if you want the directory
+ * to exist before any reviewer spawn.
+ */
+export function resolveReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): string {
+  return path.join(config.dataDir, REVIEWER_GH_CONFIG_DIR_NAME);
+}
+
+/**
+ * Ensure the reviewer-isolation `GH_CONFIG_DIR` exists. Idempotent.
+ * Call once at server startup so the first reviewer spawn doesn't race
+ * the directory creation. `gh` falls back to printing a not-logged-in
+ * status when the config dir exists but contains no `hosts.yml`, which
+ * is exactly the behaviour we want.
+ */
+export function ensureReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): string {
+  const dir = resolveReviewerGhConfigDir(config);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * Apply reviewer-agent spawn-env isolation. Three effects:
+ *
+ *   1. `GH_CONFIG_DIR` → an empty Hub-managed directory under
+ *      `config.dataDir`. This severs `gh`'s fallback to
+ *      `~/.config/gh/hosts.yml`, so a reviewer agent never inherits the
+ *      host operator's `gh auth login` identity. (Historical leak: PR
+ *      reviews attributed to whoever happened to be logged into `gh`
+ *      on the box — see card `Reviewer spawn leaks host gh identity`.)
+ *
+ *   2. `AGENT_HUB_REVIEWER_LOCK=1` — a sentinel the GitHub skill's
+ *      `gh-pr.sh review` subcommand checks. When set, the script
+ *      refuses to run and points the agent at `POST /api/pr/review`,
+ *      which is the only correct identity path (server-side App
+ *      installation token).
+ *
+ *   3. Scrubs `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and
+ *      `GITHUB_ENTERPRISE_TOKEN` from the env. `buildSpawnEnv` clones
+ *      `process.env` wholesale, so any token the operator exported in
+ *      the shell that started the Hub (or PM2/systemd ambient env)
+ *      would otherwise survive into the reviewer spawn even when
+ *      `selectGithubSpawnToken` correctly returns `null`. `gh` reads
+ *      `GH_TOKEN` at the highest priority — ahead of `GH_CONFIG_DIR` —
+ *      so the config-dir isolation alone is insufficient. Callers must
+ *      invoke this function BEFORE `applyGithubSpawnCredentials` so
+ *      the bot token (when present) is re-set by the credential helper
+ *      after the scrub.
+ *
+ * Caller should pre-create the directory at startup via
+ * `ensureReviewerGhConfigDir(config)`. Idempotent on env mutation.
+ */
+export function applyReviewerSpawnIsolation(
+  env: NodeJS.ProcessEnv,
+  config: Pick<AppConfig, 'dataDir'>,
+): void {
+  env.GH_CONFIG_DIR = resolveReviewerGhConfigDir(config);
+  env.AGENT_HUB_REVIEWER_LOCK = '1';
+  // Scrub any inherited GitHub token vars. `gh` reads GH_TOKEN at
+  // higher priority than GH_CONFIG_DIR, so these must be explicitly
+  // removed to prevent host-env tokens leaking into reviewer spawns.
+  delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
+  delete env.GH_ENTERPRISE_TOKEN;
+  delete env.GITHUB_ENTERPRISE_TOKEN;
+}
+
+/**
+ * Decide the GitHub credential to inject into a spawn env, given the
+ * agent role and available tokens. Encapsulates the policy:
+ *
+ *   - **Reviewer role**: only the `botGithubToken` (server-side bot/App
+ *     identity) is allowed. Falling back to the org owner's per-user
+ *     OAuth token would mis-attribute reviews to a human account. When
+ *     no bot token is configured the reviewer spawns with no GitHub
+ *     credential at all — `POST /api/pr/review` (App-mediated, handled
+ *     entirely server-side) is the correct submission path.
+ *
+ *   - **Non-reviewer role**: prefer the per-user OAuth/PAT token so
+ *     `gh push` / `git push` authenticate as the human at the keyboard.
+ *     Reviewer-specific isolation does not apply here.
+ *
+ * Returns the resolved token string (to feed into
+ * `applyGithubSpawnCredentials`) or `null` if the spawn should remain
+ * unauthenticated. Pure — caller wires the env mutation.
+ */
+export function selectGithubSpawnToken(opts: {
+  role: string | undefined;
+  botGithubToken: string | null | undefined;
+  userGhToken: string | null | undefined;
+}): string | null {
+  if (opts.role === 'reviewer') {
+    return opts.botGithubToken ? opts.botGithubToken : null;
+  }
+  return opts.userGhToken ? opts.userGhToken : null;
 }
