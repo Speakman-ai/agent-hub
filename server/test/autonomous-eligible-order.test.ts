@@ -2,13 +2,12 @@
  * Verifies the ordering contract of `getEligibleAutonomousCards`.
  *
  * The autonomous dispatch loop drains cards in this exact order:
- *   1. Column: "To Do" before "Backlog".
- *   2. Within a column: `priority` (urgent → high → medium → low → unset).
- *   3. Within a column + priority: `position` ASC (visual top of the column).
+ *   1. Column: only "To Do" is eligible (Backlog was dropped in May 2026).
+ *   2. Within the column: `priority` (urgent → high → medium → low → unset).
+ *   3. Within priority: `position` ASC (visual top of the column).
  *
- * Column ordering is the operator's coarsest signal: an urgent Backlog card
- * never jumps ahead of a low-priority To Do card. Within a single column,
- * higher-priority work drains first; `position` is only the tiebreaker.
+ * Cards in any other column (In Progress, Review, Done, custom) are skipped —
+ * the autonomous loop never picks them up regardless of priority.
  */
 import type supertest from 'supertest';
 import { getRequest, createProject, createCard } from './helpers.js';
@@ -30,7 +29,7 @@ async function setup(): Promise<{
   projectId: string;
   epicId: string;
   todoCol: string;
-  backlogCol: string;
+  inProgressCol: string;
 }> {
   const project = await createProject();
   const projectId = project.id as string;
@@ -38,7 +37,7 @@ async function setup(): Promise<{
   const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
   const body = boardRes.body as BoardBody;
   const todoCol = body.columns.find((c) => c.name === 'To Do')!.id;
-  const backlogCol = body.columns.find((c) => c.name === 'Backlog')!.id;
+  const inProgressCol = body.columns.find((c) => c.name === 'In Progress')!.id;
 
   const epicRes = await request
     .post(`/api/projects/${projectId}/board/epics`)
@@ -46,7 +45,7 @@ async function setup(): Promise<{
     .expect(200);
   const epicId = (epicRes.body as KanbanEpicRow).id;
 
-  return { projectId, epicId, todoCol, backlogCol };
+  return { projectId, epicId, todoCol, inProgressCol };
 }
 
 async function makeCardInEpic(
@@ -68,27 +67,20 @@ async function makeCardInEpic(
 }
 
 describe('getEligibleAutonomousCards — ordering contract', () => {
-  it('drains all To Do cards before any Backlog cards, regardless of priority', async () => {
-    const { projectId, epicId, todoCol, backlogCol } = await setup();
+  it('only considers cards in the To Do column', async () => {
+    const { projectId, epicId, todoCol, inProgressCol } = await setup();
 
-    // Interleave insertions across the two columns to prove the SQL — not
-    // insertion order — does the sorting. Backlog cards are deliberately
-    // higher-priority than the To Do cards to prove the column gate wins.
-    await makeCardInEpic(projectId, epicId, backlogCol, 'backlog-urgent', 'urgent');
-    await makeCardInEpic(projectId, epicId, todoCol, 'todo-low-1', 'low');
-    await makeCardInEpic(projectId, epicId, backlogCol, 'backlog-high', 'high');
-    await makeCardInEpic(projectId, epicId, todoCol, 'todo-low-2', 'low');
+    // Insert urgent cards in non-To Do columns to prove they are not picked up.
+    await makeCardInEpic(projectId, epicId, inProgressCol, 'in-progress-urgent', 'urgent');
+    await makeCardInEpic(projectId, epicId, todoCol, 'todo-low', 'low');
 
     const rows = getStmts().getEligibleAutonomousCards.all(epicId, 999) as KanbanCardRow[];
     const titles = rows.map((r) => r.title);
 
-    // Both To Do cards come first (column gate), then both Backlog cards
-    // (sorted urgent → high within Backlog).
-    expect(titles).toEqual(['todo-low-1', 'todo-low-2', 'backlog-urgent', 'backlog-high']);
-    expect(titles.indexOf('todo-low-2')).toBeLessThan(titles.indexOf('backlog-urgent'));
+    expect(titles).toEqual(['todo-low']);
   });
 
-  it('sorts by priority within a single column (urgent → high → medium → low)', async () => {
+  it('sorts by priority within the To Do column (urgent → high → medium → low)', async () => {
     const { projectId, epicId, todoCol } = await setup();
 
     // Insert in scrambled order so we know SQL is doing the sort, not insertion

@@ -26,10 +26,15 @@ describe('hasUnresolvedBlockers', () => {
 });
 
 describe('isColumnBlockerSensitive', () => {
-  it('returns false for Backlog and Done variants', () => {
-    expect(isColumnBlockerSensitive('Backlog')).toBe(false);
+  it('returns false for Done variants', () => {
     expect(isColumnBlockerSensitive('Done')).toBe(false);
     expect(isColumnBlockerSensitive('Deployed / Done')).toBe(false);
+  });
+
+  it('returns false for "Backlog" as back-compat for custom boards', () => {
+    // Default boards no longer seed a Backlog column, but custom boards may
+    // still carry one — keep treating it as blocker-insensitive.
+    expect(isColumnBlockerSensitive('Backlog')).toBe(false);
   });
 
   it('returns true for In Progress, Review, and other columns', () => {
@@ -53,12 +58,15 @@ describe('shouldConfirmMove', () => {
     ).toBe(false);
   });
 
-  it('skips when target is Done or Backlog', () => {
-    expect(
-      shouldConfirmMove(card([{ done: false }]), 'src', { id: 'b', name: 'Backlog' }),
-    ).toBe(false);
+  it('skips when target is Done', () => {
     expect(
       shouldConfirmMove(card([{ done: false }]), 'src', { id: 'd', name: 'Done' }),
+    ).toBe(false);
+  });
+
+  it('skips when target is "Backlog" (back-compat for custom boards)', () => {
+    expect(
+      shouldConfirmMove(card([{ done: false }]), 'src', { id: 'b', name: 'Backlog' }),
     ).toBe(false);
   });
 

@@ -35,7 +35,7 @@ Options:
 
 Example:
   PROJECT_ID=agent-hub kanban-list.sh --column "In Progress"
-  PROJECT_ID=agent-hub kanban-list.sh --epic 1234-... --column Backlog
+  PROJECT_ID=agent-hub kanban-list.sh --epic 1234-... --column "To Do"
 EOF
 }
 

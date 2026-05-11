@@ -26,17 +26,16 @@ describe('POST /api/projects/:projectId/import — kanban assign_model', () => {
         kanban: {
           board: { name: 'Import Test Board' },
           columns: [
-            { id: 'lex-bl', name: 'Backlog', position: 0, color: '#6B7280' },
-            { id: 'lex-td', name: 'To Do', position: 1, color: '#3B82F6' },
-            { id: 'lex-ip', name: 'In Progress', position: 2, color: '#F59E0B' },
-            { id: 'lex-rv', name: 'Review', position: 3, color: '#8B5CF6' },
-            { id: 'lex-dn', name: 'Done', position: 4, color: '#10B981' },
+            { id: 'lex-td', name: 'To Do', position: 0, color: '#3B82F6' },
+            { id: 'lex-ip', name: 'In Progress', position: 1, color: '#F59E0B' },
+            { id: 'lex-rv', name: 'Review', position: 2, color: '#8B5CF6' },
+            { id: 'lex-dn', name: 'Done', position: 3, color: '#10B981' },
           ],
           epics: [],
           cards: [
             {
               id: 'lex-card-1',
-              column_id: 'lex-bl',
+              column_id: 'lex-td',
               title: uniqueTitle,
               description: '',
               priority: 'medium',
@@ -75,17 +74,16 @@ describe('POST /api/projects/:projectId/import — kanban assign_model', () => {
         kanban: {
           board: { name: 'Import Test Board' },
           columns: [
-            { id: 'lex-bl', name: 'Backlog', position: 0, color: '#6B7280' },
-            { id: 'lex-td', name: 'To Do', position: 1, color: '#3B82F6' },
-            { id: 'lex-ip', name: 'In Progress', position: 2, color: '#F59E0B' },
-            { id: 'lex-rv', name: 'Review', position: 3, color: '#8B5CF6' },
-            { id: 'lex-dn', name: 'Done', position: 4, color: '#10B981' },
+            { id: 'lex-td', name: 'To Do', position: 0, color: '#3B82F6' },
+            { id: 'lex-ip', name: 'In Progress', position: 1, color: '#F59E0B' },
+            { id: 'lex-rv', name: 'Review', position: 2, color: '#8B5CF6' },
+            { id: 'lex-dn', name: 'Done', position: 3, color: '#10B981' },
           ],
           epics: [],
           cards: [
             {
               id: 'lex-card-bad',
-              column_id: 'lex-bl',
+              column_id: 'lex-td',
               title: uniqueTitle,
               description: '',
               priority: 'medium',

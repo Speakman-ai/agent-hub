@@ -32,7 +32,7 @@ Expected output (empty result → no wiki coverage yet, safe to proceed):
 ### 2. Check the board for a duplicate card
 
 ```bash
-PROJECT_ID=agent-hub scripts/kanban-list.sh --column Backlog \
+PROJECT_ID=agent-hub scripts/kanban-list.sh --column "To Do" \
   | python3 -c "import json,sys; [print(c['id'], '-', c['title']) for c in json.load(sys.stdin) if 'windows' in c['title'].lower()]"
 ```
 
@@ -50,7 +50,7 @@ so the card is linked to this session and the sidebar auto-renames.
 ```bash
 PROJECT_ID=agent-hub scripts/kanban-create-card.sh \
   --title "Windows: ah-api.mjs direct-invoke detection silently no-ops" \
-  --column Backlog \
+  --column "To Do" \
   --priority high \
   --labels bug,windows,cli \
   --session-id "$AGENT_HUB_SESSION_ID" \
@@ -75,7 +75,7 @@ Expected output (abbreviated — the card JSON with a fresh `id`):
 {
   "id": "7b1e4a2c-…",
   "title": "Windows: ah-api.mjs direct-invoke detection silently no-ops",
-  "column_id": "4d0…-backlog-…",
+  "column_id": "4d0…-todo-…",
   "priority": "high",
   "labels": "bug,windows,cli",
   "session_id": "45fb2a2b-…",
@@ -114,6 +114,6 @@ The sidebar title in the web UI updates to the card title within ~1s via the
 - **Don't** pass `--epic-id` unless you know the epic UUID. The create endpoint
   doesn't accept it; the wrapper chains a second call to `/cards/:id/epic`.
 - **Don't** hard-code column UUIDs. They're per-project and rotate when a board
-  is recreated. Always use `--column "Backlog"` and let the wrapper resolve.
+  is recreated. Always use `--column "To Do"` and let the wrapper resolve.
 - If the title contains quotes or newlines, keep using `--description "$(cat <<'MD' … MD)"`
   so bash doesn't mangle it.

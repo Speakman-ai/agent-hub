@@ -1,7 +1,7 @@
 # Kanban — Cards, Columns, Comments, Epics
 
 Every project has a board. Default columns (by name; IDs are per-project):
-**Backlog → To Do → In Progress → Review → Done**. Always use
+**To Do → In Progress → Review → Done**. Always use
 `scripts/board.sh` / `scripts/epics.sh` — never inline curl — so auth and
 `PROJECT_ID` are handled uniformly.
 
@@ -74,4 +74,4 @@ a project re-creates its board.
 2. `scripts/board.sh move` to **In Progress** when you start.
 3. `scripts/board.sh comment` when you open a PR or hit a blocker.
 4. Move to **Review** when the PR is open, **Done** on merge.
-5. Trivial fixes can skip cards; found bugs go to **Backlog**.
+5. Trivial fixes can skip cards; found bugs go to **To Do**.

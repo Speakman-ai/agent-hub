@@ -19,7 +19,7 @@ const SAMPLE = {
     totalBoards: 4,
     totalCards: 42,
     byColumn: [
-      { columnName: 'Backlog', count: 20 },
+      { columnName: 'To Do', count: 20 },
       { columnName: 'In Progress', count: 6 },
       { columnName: 'Review', count: 5 },
     ],
@@ -31,7 +31,7 @@ const SAMPLE = {
       id: 'c1',
       title: 'Add dashboard view',
       timestamp: new Date(Date.now() - 60_000).toISOString(),
-      meta: { column: 'Backlog', priority: 'medium', projectId: 'proj-dash' },
+      meta: { column: 'To Do', priority: 'medium', projectId: 'proj-dash' },
     },
     {
       type: 'session_created',
@@ -104,7 +104,7 @@ describe('DashboardView', () => {
     });
 
     const byColumn = screen.getByTestId('kanban-by-column');
-    expect(byColumn).toHaveTextContent('Backlog');
+    expect(byColumn).toHaveTextContent('To Do');
     expect(byColumn).toHaveTextContent('In Progress');
     expect(byColumn).toHaveTextContent('Review');
     // Largest count should be visible verbatim

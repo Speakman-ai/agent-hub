@@ -56,7 +56,7 @@ scripts/server.sh agents     # list all agents
 
 Full reference: **[references/kanban.md](references/kanban.md)**
 
-Every project has a board with columns **Backlog → To Do → In Progress → Review → Done**.
+Every project has a board with columns **To Do → In Progress → Review → Done**.
 Cards carry `priority`, `assignee`, `labels`, `session_id`, and optional
 `epic_id`. Use them to self-report work: create a card when you pick up a
 task, move it as you progress, comment when you open a PR.
@@ -193,7 +193,7 @@ script invocations + expected JSON responses for a common task.
 | **[delegate-to-subagent](examples/delegate-to-subagent.md)**                   | Fan out parallel audits to specialist sub-agents via `<delegate>`    |
 | **[post-heartbeat-summary](examples/post-heartbeat-summary.md)**               | End a scheduled heartbeat run with a structured thread summary       |
 | **[search-and-link-wiki-page](examples/search-and-link-wiki-page.md)**         | FTS-search the wiki and link the canonical page into a card comment  |
-| **[move-card-through-workflow](examples/move-card-through-workflow.md)**       | Walk a card Backlog → To Do → In Progress → Review → Done            |
+| **[move-card-through-workflow](examples/move-card-through-workflow.md)**       | Walk a card To Do → In Progress → Review → Done                      |
 
 Start from the example nearest to the task you're picking up, adapt the
 invocations, and fall back to the matching `references/` doc only if your

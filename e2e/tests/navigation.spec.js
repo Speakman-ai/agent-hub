@@ -25,7 +25,7 @@ test.describe('Sidebar navigation', () => {
     const kanbanButton = page.locator(`[title="Kanban board"], svg.lucide-layout-grid`).first();
     await expect(kanbanButton).toBeVisible({ timeout: 5000 });
     await kanbanButton.click();
-    await expect(page.getByText('Backlog')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('To Do')).toBeVisible({ timeout: 5000 });
   });
 
   test('navigates to Wiki for a project', async ({ seededApp }) => {

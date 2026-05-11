@@ -19,8 +19,11 @@ export function hasUnresolvedBlockers(card) {
 
 /**
  * Mirror of the server's `isColumnBlockerSensitive`. Any column whose name
- * contains "backlog" or "done" (case-insensitive) is NOT sensitive — moving
- * a blocked card there is fine. Any other column should prompt the user.
+ * contains "done" (case-insensitive) is NOT sensitive — moving a blocked
+ * card there is fine. "backlog" is also treated as non-sensitive for
+ * back-compat: the default seed no longer includes a Backlog column, but
+ * custom boards may still carry one and dragging a blocked card back into
+ * it should not prompt. Any other column should prompt the user.
  *
  * Kept in sync with server/kanban-blockers.ts so a rename on either side
  * behaves identically.
@@ -38,7 +41,8 @@ export function isColumnBlockerSensitive(columnName) {
  *
  * Three things must all be true:
  *   1. The card has unresolved blockers.
- *   2. The target column is blocker-sensitive (not Backlog or Done).
+ *   2. The target column is blocker-sensitive (not Done; and not the
+ *      back-compat "Backlog" lane).
  *   3. The card is actually moving columns (not reordering within the same).
  */
 export function shouldConfirmMove(card, sourceColumnId, targetColumn) {

@@ -74,7 +74,7 @@ Use \`CREATE TABLE IF NOT EXISTS\` for idempotency.
     content: `
 # Kanban Board
 
-Cards move through Backlog -> To Do -> In Progress -> Review -> Done.
+Cards move through To Do -> In Progress -> Review -> Done.
 Session IDs link cards to active Agent Hub sessions.
 `,
     category: 'architecture',

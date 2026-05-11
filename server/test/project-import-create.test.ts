@@ -156,7 +156,7 @@ describe('POST /api/projects/import — create from export', () => {
         kanban: {
           board: { name: 'Imported Board' },
           columns: [
-            { id: 'c1', name: 'Backlog', position: 0, color: '#6B7280' },
+            { id: 'c1', name: 'To Do', position: 0, color: '#3B82F6' },
             { id: 'c2', name: 'Done', position: 1, color: '#10B981' },
           ],
           epics: [],
