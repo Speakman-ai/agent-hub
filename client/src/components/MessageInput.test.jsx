@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
-import MessageInput from './MessageInput.jsx';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
+import MessageInput, { pickAudioMimeType, baseAudioContentType } from './MessageInput.jsx';
 
 /**
  * MessageInput — mid-stream submission behavior.
@@ -241,5 +241,296 @@ describe('MessageInput media attachments across sessions', () => {
       globalThis.FileReader = origFileReader;
       globalThis.Image = origImage;
     }
+  });
+});
+
+// ─── Voice transcription / mic button ─────────────────────────────
+
+describe('MessageInput voice transcription', () => {
+  const baseProps = {
+    onSend: () => {},
+    onCancel: () => {},
+    disabled: false,
+    isProcessing: false,
+    queueLength: 0,
+    agentColor: '#4F46E5',
+    skills: [],
+    askMode: false,
+  };
+
+  // ── Helper: install a deterministic fake MediaRecorder ───────────
+  function installFakeMediaRecorder({ supportedTypes = ['audio/webm;codecs=opus'] } = {}) {
+    const instances = [];
+    class FakeMediaRecorder {
+      constructor(stream, opts = {}) {
+        this.stream = stream;
+        this.mimeType = opts.mimeType || 'audio/webm;codecs=opus';
+        this.state = 'inactive';
+        this.ondataavailable = null;
+        this.onstop = null;
+        this.onerror = null;
+        instances.push(this);
+      }
+      start() {
+        this.state = 'recording';
+      }
+      stop() {
+        this.state = 'inactive';
+        // Synchronously deliver one chunk, then fire onstop.
+        if (this.ondataavailable) {
+          this.ondataavailable({ data: new Blob(['fake-audio-bytes'], { type: this.mimeType }) });
+        }
+        if (this.onstop) this.onstop();
+      }
+    }
+    FakeMediaRecorder.isTypeSupported = (t) =>
+      supportedTypes.some((s) => t.toLowerCase().startsWith(s.split(';')[0]));
+    const orig = globalThis.MediaRecorder;
+    globalThis.MediaRecorder = FakeMediaRecorder;
+    window.MediaRecorder = FakeMediaRecorder;
+    return {
+      instances,
+      restore: () => {
+        globalThis.MediaRecorder = orig;
+        window.MediaRecorder = orig;
+      },
+    };
+  }
+
+  function installFakeGetUserMedia({ deny = false } = {}) {
+    const fakeStream = { getTracks: () => [{ stop: vi.fn() }] };
+    const originalMd = navigator.mediaDevices;
+    const getUserMedia = vi.fn(async () => {
+      if (deny) {
+        const err = new Error('Permission denied');
+        err.name = 'NotAllowedError';
+        throw err;
+      }
+      return fakeStream;
+    });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      writable: true,
+      value: { getUserMedia },
+    });
+    return {
+      getUserMedia,
+      restore: () => {
+        Object.defineProperty(navigator, 'mediaDevices', {
+          configurable: true,
+          writable: true,
+          value: originalMd,
+        });
+      },
+    };
+  }
+
+  function installFetchOk(transcript) {
+    const fetchSpy = vi.fn(async (_url, init) => {
+      // Capture the body type for assertions: we expect a Blob, NOT FormData.
+      fetchSpy.lastBody = init?.body;
+      fetchSpy.lastContentType = init?.headers?.['Content-Type'];
+      return new Response(JSON.stringify({ transcript }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const orig = globalThis.fetch;
+    globalThis.fetch = fetchSpy;
+    return { fetchSpy, restore: () => (globalThis.fetch = orig) };
+  }
+
+  function installFetchStatus(status, bodyObj = {}) {
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify(bodyObj), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    const orig = globalThis.fetch;
+    globalThis.fetch = fetchSpy;
+    return { fetchSpy, restore: () => (globalThis.fetch = orig) };
+  }
+
+  let mr, gum, ft;
+  beforeEach(() => {
+    mr = installFakeMediaRecorder();
+    gum = installFakeGetUserMedia();
+  });
+  afterEach(() => {
+    ft?.restore();
+    gum.restore();
+    mr.restore();
+    vi.restoreAllMocks();
+  });
+
+  it('pickAudioMimeType prefers webm/opus when supported', () => {
+    expect(pickAudioMimeType()).toBe('audio/webm;codecs=opus');
+  });
+
+  it('pickAudioMimeType falls back to audio/mp4 when only mp4 is supported (Safari)', () => {
+    mr.restore();
+    mr = installFakeMediaRecorder({ supportedTypes: ['audio/mp4'] });
+    expect(pickAudioMimeType()).toBe('audio/mp4;codecs=mp4a.40.2');
+  });
+
+  it('pickAudioMimeType returns null when MediaRecorder is unavailable', () => {
+    mr.restore();
+    delete window.MediaRecorder;
+    delete globalThis.MediaRecorder;
+    expect(pickAudioMimeType()).toBeNull();
+  });
+
+  it('baseAudioContentType strips codec parameters', () => {
+    expect(baseAudioContentType('audio/webm;codecs=opus')).toBe('audio/webm');
+    expect(baseAudioContentType('AUDIO/MP4 ; codecs=mp4a.40.2')).toBe('audio/mp4');
+    expect(baseAudioContentType('')).toBe('audio/webm');
+  });
+
+  it('renders the mic button', () => {
+    render(<MessageInput {...baseProps} />);
+    expect(screen.getByRole('button', { name: /start voice input/i })).toBeInTheDocument();
+  });
+
+  it('records, posts a raw audio blob, and inserts the transcript', async () => {
+    ft = installFetchOk('hello world');
+    const onFileError = vi.fn();
+    render(<MessageInput {...baseProps} onFileError={onFileError} />);
+
+    const textarea = screen.getByRole('textbox');
+
+    const micBtn = screen.getByRole('button', { name: /start voice input/i });
+    await act(async () => {
+      fireEvent.click(micBtn);
+    });
+    expect(gum.getUserMedia).toHaveBeenCalledWith({ audio: true });
+
+    // Button label flips to "Stop recording"
+    expect(screen.getByRole('button', { name: /stop recording/i })).toBeInTheDocument();
+
+    const stopBtn = screen.getByRole('button', { name: /stop recording/i });
+    await act(async () => {
+      fireEvent.click(stopBtn);
+    });
+
+    await waitFor(() => expect(ft.fetchSpy).toHaveBeenCalledTimes(1));
+
+    // The endpoint expects a raw audio blob, not FormData.
+    expect(ft.fetchSpy.lastBody).toBeInstanceOf(Blob);
+    expect(ft.fetchSpy.lastContentType).toBe('audio/webm');
+
+    await waitFor(() => expect(textarea.value).toBe('hello world'));
+    expect(onFileError).not.toHaveBeenCalled();
+  });
+
+  it('appends the transcript with a leading space when text exists', async () => {
+    ft = installFetchOk('hello world');
+    render(<MessageInput {...baseProps} />);
+
+    const textarea = screen.getByRole('textbox');
+    fireEvent.change(textarea, { target: { value: 'preface' } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }));
+    });
+
+    // The caret defaults to end-of-text after React's controlled setter
+    // commits in JSDOM, so we assert the splice-with-leading-space
+    // behavior at end-of-buffer rather than mid-text.
+    await waitFor(() => expect(textarea.value).toContain('hello world'));
+    expect(textarea.value).toBe('preface hello world');
+  });
+
+  it('handles 501 with the "not configured" toast and does not insert text', async () => {
+    ft = installFetchStatus(501, { error: 'Transcription not configured' });
+    const onFileError = vi.fn();
+    render(<MessageInput {...baseProps} onFileError={onFileError} />);
+
+    const micBtn = screen.getByRole('button', { name: /start voice input/i });
+    await act(async () => {
+      fireEvent.click(micBtn);
+    });
+    const stopBtn = screen.getByRole('button', { name: /stop recording/i });
+    await act(async () => {
+      fireEvent.click(stopBtn);
+    });
+
+    await waitFor(() => expect(onFileError).toHaveBeenCalledTimes(1));
+    expect(onFileError.mock.calls[0][0]).toMatch(/not configured/i);
+    expect(screen.getByRole('textbox').value).toBe('');
+  });
+
+  it('handles 413 (too large) with a retry-able toast', async () => {
+    ft = installFetchStatus(413, { error: 'Audio too large' });
+    const onFileError = vi.fn();
+    render(<MessageInput {...baseProps} onFileError={onFileError} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }));
+    });
+
+    await waitFor(() => expect(onFileError).toHaveBeenCalledTimes(1));
+    expect(onFileError.mock.calls[0][0]).toMatch(/too long|25 ?mb/i);
+  });
+
+  it('handles network errors with a retry-able toast', async () => {
+    const fetchSpy = vi.fn(async () => {
+      throw new Error('Failed to fetch');
+    });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy;
+    ft = { restore: () => (globalThis.fetch = origFetch), fetchSpy };
+
+    const onFileError = vi.fn();
+    render(<MessageInput {...baseProps} onFileError={onFileError} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }));
+    });
+
+    await waitFor(() => expect(onFileError).toHaveBeenCalledTimes(1));
+    expect(onFileError.mock.calls[0][0]).toMatch(/failed to fetch|network|retry/i);
+  });
+
+  it('shows a friendly toast when mic permission is denied', async () => {
+    gum.restore();
+    gum = installFakeGetUserMedia({ deny: true });
+    const onFileError = vi.fn();
+    render(<MessageInput {...baseProps} onFileError={onFileError} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }));
+    });
+
+    await waitFor(() => expect(onFileError).toHaveBeenCalledTimes(1));
+    expect(onFileError.mock.calls[0][0]).toMatch(/permission denied/i);
+    // Button should NOT flip to recording state when permission was denied.
+    expect(screen.queryByRole('button', { name: /stop recording/i })).not.toBeInTheDocument();
+  });
+
+  it('does NOT auto-send the message after inserting transcript', async () => {
+    ft = installFetchOk('hello world');
+    const onSend = vi.fn();
+    render(<MessageInput {...baseProps} onSend={onSend} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }));
+    });
+
+    await waitFor(() => expect(screen.getByRole('textbox').value).toContain('hello world'));
+    expect(onSend).not.toHaveBeenCalled();
   });
 });

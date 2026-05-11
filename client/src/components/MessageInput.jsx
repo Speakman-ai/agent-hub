@@ -11,6 +11,44 @@ const genId = () =>
         return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
       });
 
+// Ordered preference list for MediaRecorder mimeType. webm/opus first
+// (Chrome/Firefox/Edge); audio/mp4 for Safari which lacks webm support.
+// Each entry maps to a content-type the server's /api/transcribe endpoint
+// accepts (express.raw({ type: 'audio/*' })).
+const AUDIO_MIME_CANDIDATES = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/mp4;codecs=mp4a.40.2', // AAC-LC in MP4 (Safari)
+  'audio/mp4',
+  'audio/ogg;codecs=opus',
+  'audio/ogg',
+];
+
+// Picks the best MediaRecorder mimeType supported by this browser, or null
+// if MediaRecorder itself is unavailable.
+export function pickAudioMimeType() {
+  if (typeof window === 'undefined' || typeof window.MediaRecorder === 'undefined') {
+    return null;
+  }
+  const MR = window.MediaRecorder;
+  if (typeof MR.isTypeSupported !== 'function') {
+    // Safari < 14 etc. Returning '' lets MediaRecorder choose its default.
+    return '';
+  }
+  for (const candidate of AUDIO_MIME_CANDIDATES) {
+    if (MR.isTypeSupported(candidate)) return candidate;
+  }
+  return '';
+}
+
+// Reduce a full MediaRecorder mimeType (e.g. "audio/webm;codecs=opus") to
+// the bare top-level/subtype the /api/transcribe endpoint accepts.
+export function baseAudioContentType(mimeType) {
+  if (!mimeType) return 'audio/webm';
+  const base = mimeType.split(';')[0].trim().toLowerCase();
+  return base || 'audio/webm';
+}
+
 export default function MessageInput({
   onSend,
   onCancel,
@@ -37,6 +75,21 @@ export default function MessageInput({
   const [dragOver, setDragOver] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // Voice transcription state.
+  // `isRecording` flips the mic button into stop-state and shows the live
+  // indicator. `isTranscribing` covers the "upload + wait for server" window
+  // — the button shows a spinner and is disabled. Splitting them keeps the
+  // UX legible (recording is user-cancellable; transcribing is not).
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const mediaStreamRef = useRef(null);
+  // Caret position captured the moment the user clicks the mic. The
+  // transcribed text is spliced in at that location so the user can keep
+  // typing during the upload without losing their insertion point.
+  const transcribeAnchorRef = useRef(null);
 
   // Slash-command autocomplete state
   const [slashQuery, setSlashQuery] = useState(null); // null = closed, string = filter
@@ -66,6 +119,42 @@ export default function MessageInput({
       setImages([]);
     }
   }
+
+  // Cancel an in-flight recording on session switch — don't paste audio
+  // from session A's prompt into session B's composer. We clear the
+  // onstop / onerror handlers BEFORE calling stop() so the buffered
+  // chunks aren't uploaded to /api/transcribe for a session the user
+  // already navigated away from.
+  useEffect(() => {
+    return () => {
+      const rec = mediaRecorderRef.current;
+      if (rec) {
+        rec.onstop = null;
+        rec.onerror = null;
+        rec.ondataavailable = null;
+        if (rec.state !== 'inactive') {
+          try {
+            rec.stop();
+          } catch {
+            /* already stopped */
+          }
+        }
+      }
+      mediaRecorderRef.current = null;
+      const stream = mediaStreamRef.current;
+      if (stream) {
+        for (const track of stream.getTracks()) {
+          try {
+            track.stop();
+          } catch {
+            /* track already ended */
+          }
+        }
+      }
+      mediaStreamRef.current = null;
+      audioChunksRef.current = [];
+    };
+  }, [draftKey]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -126,6 +215,255 @@ export default function MessageInput({
     },
     [value, slashStart, closeSlash],
   );
+
+  // ── Voice transcription ───────────────────────────────────────
+
+  // Inserts `text` at the captured caret position (or appends to the end
+  // if no anchor was captured). Joins with a single space when splicing
+  // into existing content so words don't run together.
+  const insertTranscriptAtAnchor = useCallback((text) => {
+    if (!text) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setValue((prev) => {
+      const anchor =
+        transcribeAnchorRef.current === null || transcribeAnchorRef.current === undefined
+          ? prev.length
+          : Math.min(Math.max(0, transcribeAnchorRef.current), prev.length);
+      const before = prev.slice(0, anchor);
+      const after = prev.slice(anchor);
+      const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+      const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
+      const insertion = (needsLeadingSpace ? ' ' : '') + trimmed + (needsTrailingSpace ? ' ' : '');
+      const next = before + insertion + after;
+      // Restore focus + caret to just after the inserted text. RAF defers
+      // until React has committed the new value.
+      const caret = before.length + insertion.length;
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (ta) {
+          ta.focus();
+          try {
+            ta.setSelectionRange(caret, caret);
+          } catch {
+            /* setSelectionRange can throw if textarea was unmounted */
+          }
+        }
+      });
+      return next;
+    });
+    transcribeAnchorRef.current = null;
+  }, []);
+
+  // Hard-stops any in-flight recording and releases the mic. Safe to call
+  // from cleanup paths (unmount, draftKey switch, error fallthrough) — all
+  // refs are guarded.
+  const teardownRecording = useCallback(() => {
+    const rec = mediaRecorderRef.current;
+    if (rec && rec.state !== 'inactive') {
+      try {
+        rec.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    mediaRecorderRef.current = null;
+    const stream = mediaStreamRef.current;
+    if (stream) {
+      for (const track of stream.getTracks()) {
+        try {
+          track.stop();
+        } catch {
+          /* track already ended */
+        }
+      }
+    }
+    mediaStreamRef.current = null;
+    audioChunksRef.current = [];
+    setIsRecording(false);
+  }, []);
+
+  const reportTranscribeError = useCallback(
+    (msg) => {
+      if (typeof onFileError === 'function') onFileError(msg);
+      else if (typeof window !== 'undefined') console.warn('[transcribe]', msg);
+    },
+    [onFileError],
+  );
+
+  // Uploads the audio blob to the server and inserts the resulting
+  // transcript at the anchor. The endpoint is express.raw({type:'audio/*'})
+  // — it wants the bare audio bytes with the correct Content-Type, NOT a
+  // multipart body. (Card AC mentions multipart; the server contract is
+  // raw and a multipart POST 415s. See card comment for rationale.)
+  const uploadForTranscription = useCallback(
+    async (blob, contentType) => {
+      setIsTranscribing(true);
+      try {
+        const res = await fetch('/api/transcribe', {
+          method: 'POST',
+          headers: { 'Content-Type': contentType },
+          body: blob,
+        });
+        if (res.status === 501) {
+          reportTranscribeError(
+            'Voice transcription not configured. Ask your admin to set OPENAI_API_KEY (Settings → Voice).',
+          );
+          return;
+        }
+        if (res.status === 413) {
+          reportTranscribeError('Recording is too long (max 25 MB). Try a shorter clip.');
+          return;
+        }
+        if (!res.ok) {
+          let detail = '';
+          try {
+            const body = await res.json();
+            detail = body?.error || body?.detail || '';
+          } catch {
+            /* non-JSON error body */
+          }
+          reportTranscribeError(
+            `Transcription failed (HTTP ${res.status})${detail ? ': ' + detail : ''}. Tap mic to retry.`,
+          );
+          return;
+        }
+        const body = await res.json().catch(() => ({}));
+        if (typeof body?.transcript !== 'string' || !body.transcript.trim()) {
+          reportTranscribeError("Couldn't hear anything — try again.");
+          return;
+        }
+        insertTranscriptAtAnchor(body.transcript);
+      } catch (err) {
+        reportTranscribeError(
+          `Transcription failed: ${err?.message || 'network error'}. Tap mic to retry.`,
+        );
+      } finally {
+        setIsTranscribing(false);
+      }
+    },
+    [reportTranscribeError, insertTranscriptAtAnchor],
+  );
+
+  const startRecording = useCallback(async () => {
+    if (isRecording || isTranscribing) return;
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      reportTranscribeError('Microphone is not available in this browser.');
+      return;
+    }
+    const mimeType = pickAudioMimeType();
+    if (mimeType === null) {
+      reportTranscribeError(
+        'Voice recording is not supported in this browser. Try Chrome, Edge, or Safari 14.1+.',
+      );
+      return;
+    }
+    // Capture caret BEFORE the permission prompt steals focus.
+    transcribeAnchorRef.current = textareaRef.current?.selectionStart ?? value.length;
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      const denied = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError';
+      reportTranscribeError(
+        denied
+          ? 'Microphone permission denied. Enable mic access in your browser settings, then tap the mic again.'
+          : `Could not start microphone: ${err?.message || err?.name || 'unknown error'}`,
+      );
+      return;
+    }
+    mediaStreamRef.current = stream;
+
+    let recorder;
+    try {
+      recorder = mimeType
+        ? new window.MediaRecorder(stream, { mimeType })
+        : new window.MediaRecorder(stream);
+    } catch (err) {
+      reportTranscribeError(
+        `Could not start recording: ${err?.message || 'unsupported audio format'}`,
+      );
+      teardownRecording();
+      return;
+    }
+
+    audioChunksRef.current = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+    };
+    // When stop() fires (user click), assemble the blob and ship it. Errors
+    // and aborts both land here — we check chunk count before uploading.
+    recorder.onstop = async () => {
+      const chunks = audioChunksRef.current;
+      audioChunksRef.current = [];
+      // Release the mic immediately so the browser indicator goes away
+      // while the upload is in flight.
+      const stream = mediaStreamRef.current;
+      if (stream) {
+        for (const track of stream.getTracks()) {
+          try {
+            track.stop();
+          } catch {
+            /* noop */
+          }
+        }
+      }
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      setIsRecording(false);
+      if (chunks.length === 0) {
+        reportTranscribeError("Couldn't capture audio — try again.");
+        return;
+      }
+      const effectiveType = recorder.mimeType || mimeType || 'audio/webm';
+      const blob = new Blob(chunks, { type: effectiveType });
+      await uploadForTranscription(blob, baseAudioContentType(effectiveType));
+    };
+    recorder.onerror = (e) => {
+      reportTranscribeError(`Recording error: ${e?.error?.message || 'unknown error'}`);
+      teardownRecording();
+    };
+
+    mediaRecorderRef.current = recorder;
+    recorder.start();
+    setIsRecording(true);
+  }, [
+    isRecording,
+    isTranscribing,
+    value,
+    reportTranscribeError,
+    teardownRecording,
+    uploadForTranscription,
+  ]);
+
+  const stopRecording = useCallback(() => {
+    const rec = mediaRecorderRef.current;
+    if (rec && rec.state !== 'inactive') {
+      try {
+        rec.stop(); // onstop handler picks up from here
+      } catch {
+        // If the recorder is already torn down, force-cleanup so the UI
+        // doesn't stay stuck in the recording state.
+        teardownRecording();
+      }
+    } else {
+      teardownRecording();
+    }
+  }, [teardownRecording]);
+
+  const handleMicClick = useCallback(() => {
+    if (isTranscribing) return;
+    if (isRecording) stopRecording();
+    else startRecording();
+  }, [isRecording, isTranscribing, startRecording, stopRecording]);
+
+  // Cleanup on unmount — never leave the mic LED on.
+  useEffect(() => {
+    return () => {
+      teardownRecording();
+    };
+  }, [teardownRecording]);
 
   // ── Image helpers (unchanged) ─────────────────────────────────
 
@@ -521,6 +859,79 @@ export default function MessageInput({
           className="hidden"
           onChange={handleFileSelect}
         />
+
+        {/* Mic / voice transcription button */}
+        <button
+          type="button"
+          onClick={handleMicClick}
+          disabled={(disabled && !isProcessing) || isTranscribing}
+          aria-label={
+            isTranscribing
+              ? 'Transcribing audio'
+              : isRecording
+                ? 'Stop recording'
+                : 'Start voice input'
+          }
+          aria-pressed={isRecording}
+          title={
+            isTranscribing
+              ? 'Transcribing...'
+              : isRecording
+                ? 'Stop recording (tap)'
+                : 'Voice input — tap to start, tap again to stop'
+          }
+          className={`px-2 py-3 transition-colors disabled:opacity-30 ${
+            isRecording
+              ? 'text-red-400 hover:text-red-300 animate-pulse'
+              : isTranscribing
+                ? 'text-gray-500'
+                : 'text-gray-400 hover:text-gray-200'
+          }`}
+        >
+          {isTranscribing ? (
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5 animate-spin"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+              />
+            </svg>
+          ) : isRecording ? (
+            // Solid square = stop
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <rect x="5" y="5" width="10" height="10" rx="1.5" />
+            </svg>
+          ) : (
+            // Microphone
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path d="M7 4a3 3 0 016 0v5a3 3 0 11-6 0V4z" />
+              <path d="M5.5 9.5a.75.75 0 011.5 0 3 3 0 006 0 .75.75 0 011.5 0 4.5 4.5 0 01-3.75 4.436V16h2.25a.75.75 0 010 1.5h-6a.75.75 0 010-1.5h2.25v-2.064A4.5 4.5 0 015.5 9.5z" />
+            </svg>
+          )}
+        </button>
 
         <textarea
           ref={textareaRef}
