@@ -3,7 +3,11 @@
  * `default-skills/github/scripts/gh-pr.sh`. Reviewer-role spawns set
  * `AGENT_HUB_REVIEWER_LOCK=1` so the only correct identity path is the
  * server-side App endpoint at `POST /api/pr/review`; the script must
- * refuse to run `gh pr review` and exit 2 with a clear pointer.
+ * refuse to run any WRITE subcommand (create, comment, merge, close,
+ * ready, review) and exit 2 with a clear pointer. Read-only subcommands
+ * (view, diff, list, status, checks, checkout) are intentionally
+ * unguarded — inspecting a PR does not attribute an identity to the
+ * GitHub App.
  *
  * Notes
  * -----
@@ -82,14 +86,14 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
   });
 
   it('does NOT block read-only subcommands (sanity check)', () => {
-    // `gh-pr.sh status` does not run `gh pr review` and is not the
-    // identity-leak vector — make sure the lock isn't accidentally
-    // applied to every subcommand.
-    //
-    // We don't actually want to call out to the network; the lock check
-    // is the only thing we care about, and its absence is what we
-    // verify. The stub gh always exits 0 so the script's `gh pr status`
-    // call falls through cleanly.
+    // Read-only subcommands (view, diff, list, status, checks, checkout)
+    // are not the identity-leak vector — make sure the lock isn't
+    // accidentally applied to every subcommand. We do NOT assert on the
+    // stub's exit code: the stub `gh` always exits 0 regardless of args,
+    // which would be a stub artefact rather than a real `gh pr status`
+    // signal. The intent here is "the lock guard is not on the
+    // read-only path" — that's expressed by the absence of the lock
+    // message on stderr.
     const result = spawnSync('bash', [SCRIPT, 'status'], {
       env: {
         PATH: stubbedPath,
@@ -99,12 +103,41 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
       },
       encoding: 'utf-8',
     });
-    // status is allowed; the stub gh exits 0 so the script succeeds.
-    expect(result.status).toBe(0);
-    // And critically the lock message must NOT appear here — the lock
-    // is scoped to the `review` subcommand.
-    expect(result.stderr || '').not.toContain('gh-pr.sh review is disabled');
+    // The lock message must NOT appear here — the lock is scoped to
+    // write subcommands.
+    expect(result.stderr || '').not.toContain('is disabled inside Agent Hub reviewer sessions');
   });
+
+  // Every WRITE subcommand must refuse under the lock. We pick a
+  // minimal-args invocation for each: the lock check runs at the top
+  // of every cmd_* before flag validation, so missing required args
+  // are not reached.
+  const WRITE_SUBCOMMANDS: Array<[string, string[]]> = [
+    ['create', ['create', '--title', 'x']],
+    ['comment', ['comment', '1', '--body', 'x']],
+    ['merge', ['merge', '1']],
+    ['close', ['close', '1']],
+    ['ready', ['ready', '1']],
+    ['review', ['review', '1', '--approve']],
+  ];
+
+  for (const [name, args] of WRITE_SUBCOMMANDS) {
+    it(`blocks the ${name} subcommand under AGENT_HUB_REVIEWER_LOCK=1`, () => {
+      const result = spawnSync('bash', [SCRIPT, ...args], {
+        env: {
+          PATH: stubbedPath,
+          HOME: os.tmpdir(),
+          AGENT_HUB_REVIEWER_LOCK: '1',
+        },
+        encoding: 'utf-8',
+      });
+      expect(result.status).toBe(2);
+      const stderr = result.stderr || '';
+      expect(stderr).toContain(`gh-pr.sh ${name} is disabled`);
+      // Pointer to the correct identity path must always be present.
+      expect(stderr).toContain('/api/pr/review');
+    });
+  }
 
   it('exits 2 with usage text when AGENT_HUB_REVIEWER_LOCK is unset and required args are missing', () => {
     // Establishes the baseline: without the lock the script still

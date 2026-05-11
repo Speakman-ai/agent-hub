@@ -24,9 +24,49 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/_common.sh"
 
 # ---------------------------------------------------------------------------
+# Reviewer-agent write lock
+#
+# Agent Hub injects AGENT_HUB_REVIEWER_LOCK=1 into reviewer-role spawn envs.
+# Reviewer agents must post formal reviews (and any other write side-effect)
+# through the server-side App endpoint at `POST /api/pr/review`, so reviews
+# land under the GitHub App identity rather than whatever credential `gh`
+# happens to find (host login, env tokens, or operator OAuth).
+#
+# This helper is called at the top of every WRITE subcommand
+# (create, comment, merge, close, ready, review). Read-only subcommands
+# (view, diff, list, status, checks, checkout) are intentionally exempt —
+# inspecting a PR does not attribute an identity to the GitHub App.
+#
+# `applyReviewerSpawnIsolation` already scrubs the inherited credential
+# surface on reviewer spawns (see commit 058c609); this guard is
+# defense-in-depth so the script also refuses to act.
+# ---------------------------------------------------------------------------
+_reviewer_locked() {
+  if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" == "1" ]]; then
+    local sub="${1:-write}"
+    cat >&2 <<LOCKED
+error: gh-pr.sh ${sub} is disabled inside Agent Hub reviewer sessions.
+
+Reviewer agents must post formal reviews through the App-mediated
+endpoint so reviews land with the GitHub App identity instead of the
+host operator's gh login. Use:
+
+  curl -sS -X POST "\$AGENT_HUB_URL/api/pr/review" \\
+    -H "X-API-Key: \$AGENT_HUB_API_KEY" \\
+    -H "Content-Type: application/json" \\
+    -d '{"prUrl":"<pr url>","event":"APPROVE|COMMENT|REQUEST_CHANGES","body":"<markdown>"}'
+
+(Read-only subcommands like view/diff/list/status/checks remain available.)
+LOCKED
+    exit 2
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # pr create
 # ---------------------------------------------------------------------------
 cmd_create() {
+  _reviewer_locked create
   local title="" base="" body="" draft=false reviewer="" label=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -120,31 +160,8 @@ cmd_checkout() {
 # pr review
 # ---------------------------------------------------------------------------
 cmd_review() {
+  _reviewer_locked review
   [[ $# -lt 1 ]] && gh_die "pr review <number> --approve | --request-changes [--body <text>] | --comment --body <text>"
-
-  # Reviewer-agent lock: Agent Hub injects AGENT_HUB_REVIEWER_LOCK=1 into
-  # reviewer-role spawn envs so the only correct identity path is the
-  # server-side App endpoint at POST /api/pr/review. `gh pr review` here
-  # would inherit whatever credential `gh` finds (host login, env tokens,
-  # or operator OAuth) and historically attributed reviews to a human
-  # account instead of the GitHub App. Fail loud rather than leak.
-  if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" == "1" ]]; then
-    cat >&2 <<LOCKED
-error: gh-pr.sh review is disabled inside Agent Hub reviewer sessions.
-
-Reviewer agents must post formal reviews through the App-mediated
-endpoint so reviews land with the GitHub App identity instead of the
-host operator's gh login. Use:
-
-  curl -sS -X POST "\$AGENT_HUB_URL/api/pr/review" \\
-    -H "X-API-Key: \$AGENT_HUB_API_KEY" \\
-    -H "Content-Type: application/json" \\
-    -d '{"prUrl":"<pr url>","event":"APPROVE|COMMENT|REQUEST_CHANGES","body":"<markdown>"}'
-
-(Read-only subcommands like view/diff/list/status/checks remain available.)
-LOCKED
-    exit 2
-  fi
 
   local number="$1"; shift
 
@@ -183,6 +200,7 @@ LOCKED
 # pr comment
 # ---------------------------------------------------------------------------
 cmd_comment() {
+  _reviewer_locked comment
   [[ $# -lt 1 ]] && gh_die "pr comment <number> --body <text>"
   local number="$1"; shift
 
@@ -204,6 +222,7 @@ cmd_comment() {
 # pr merge
 # ---------------------------------------------------------------------------
 cmd_merge() {
+  _reviewer_locked merge
   [[ $# -lt 1 ]] && gh_die "pr merge <number> [--squash|--rebase|--merge] [--auto] [--delete-branch]"
   local number="$1"; shift
 
@@ -247,6 +266,7 @@ cmd_merge() {
 # pr ready — mark draft as ready for review
 # ---------------------------------------------------------------------------
 cmd_ready() {
+  _reviewer_locked ready
   [[ $# -lt 1 ]] && gh_die "pr ready <number>"
   require_gh_token
   gh pr ready "$1"
@@ -257,6 +277,7 @@ cmd_ready() {
 # pr close
 # ---------------------------------------------------------------------------
 cmd_close() {
+  _reviewer_locked close
   [[ $# -lt 1 ]] && gh_die "pr close <number>"
   require_gh_token
   gh pr close "$1"
