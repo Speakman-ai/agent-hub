@@ -480,6 +480,13 @@ export const api = {
       timeout: 35000,
     }),
 
+  // Per-user Claude credentials (each Hub user can attach their own
+  // ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN — see PR #717). Distinct
+  // from the host-wide `/config/claude-auth` surface above.
+  getMyClaudeAuth: () => fetchJSON('/auth/me/claude-auth'),
+  putMyClaudeAuth: (body) =>
+    fetchJSON('/auth/me/claude-auth', { method: 'PUT', body: JSON.stringify(body) }),
+
   getSkillCredentials: (skillId) =>
     fetchJSON(
       `/auth/me/skill-credentials${skillId ? `?skillId=${encodeURIComponent(skillId)}` : ''}`,
