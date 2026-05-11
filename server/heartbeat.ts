@@ -1025,8 +1025,12 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
 
 export async function runWikiMemorySync(): Promise<void> {
   const projects = getProjects();
+  // Wiki→Memory sync now goes through the unified one-shot resolver so
+  // it works whenever any engine is authed (Claude / Cursor / Codex /
+  // Gemini), not just Claude Code. NoEnginesAvailableError surfaces as a
+  // clear "skipping sync" log via reconcileMemoryFromWiki's catch block.
   const opts = {
-    claudeBin: config.claudeBin,
+    cfg: config,
     spawnEnv: buildSpawnEnv(config),
   };
 
