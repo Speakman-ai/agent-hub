@@ -90,6 +90,9 @@ export default function MessageInput({
   // transcribed text is spliced in at that location so the user can keep
   // typing during the upload without losing their insertion point.
   const transcribeAnchorRef = useRef(null);
+  // AbortController for the in-flight /api/transcribe fetch. Aborted on
+  // draftKey change so a session-A upload can't land in session-B's composer.
+  const transcribeAbortRef = useRef(null);
 
   // Slash-command autocomplete state
   const [slashQuery, setSlashQuery] = useState(null); // null = closed, string = filter
@@ -124,7 +127,9 @@ export default function MessageInput({
   // from session A's prompt into session B's composer. We clear the
   // onstop / onerror handlers BEFORE calling stop() so the buffered
   // chunks aren't uploaded to /api/transcribe for a session the user
-  // already navigated away from.
+  // already navigated away from. We also abort any fetch that has
+  // already started (i.e. onstop already fired but the response hasn't
+  // arrived yet) so the transcript can't splice into the new session.
   useEffect(() => {
     return () => {
       const rec = mediaRecorderRef.current;
@@ -153,6 +158,12 @@ export default function MessageInput({
       }
       mediaStreamRef.current = null;
       audioChunksRef.current = [];
+      // Abort any in-flight upload so the resolved transcript doesn't land
+      // in the wrong session's composer.
+      transcribeAbortRef.current?.abort();
+      transcribeAbortRef.current = null;
+      setIsRecording(false);
+      setIsTranscribing(false);
     };
   }, [draftKey]);
 
@@ -298,12 +309,15 @@ export default function MessageInput({
   // raw and a multipart POST 415s. See card comment for rationale.)
   const uploadForTranscription = useCallback(
     async (blob, contentType) => {
+      const controller = new AbortController();
+      transcribeAbortRef.current = controller;
       setIsTranscribing(true);
       try {
         const res = await fetch('/api/transcribe', {
           method: 'POST',
           headers: { 'Content-Type': contentType },
           body: blob,
+          signal: controller.signal,
         });
         if (res.status === 501) {
           reportTranscribeError(
@@ -335,10 +349,13 @@ export default function MessageInput({
         }
         insertTranscriptAtAnchor(body.transcript);
       } catch (err) {
+        // AbortError means the session switched mid-upload — not a user-visible error.
+        if (err?.name === 'AbortError') return;
         reportTranscribeError(
           `Transcription failed: ${err?.message || 'network error'}. Tap mic to retry.`,
         );
       } finally {
+        transcribeAbortRef.current = null;
         setIsTranscribing(false);
       }
     },

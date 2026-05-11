@@ -533,4 +533,71 @@ describe('MessageInput voice transcription', () => {
     await waitFor(() => expect(screen.getByRole('textbox').value).toContain('hello world'));
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it('drops the transcript when draftKey changes while the upload is in-flight', async () => {
+    // Set up a fetch that we can resolve manually so we can flip draftKey
+    // between stopRecording() and the server response arriving. The mock
+    // must also respect the AbortSignal so the in-flight request is
+    // properly cancelled when the draftKey cleanup fires.
+    let resolveUpload;
+    const uploadPromise = new Promise((resolve) => {
+      resolveUpload = resolve;
+    });
+    const fetchSpy = vi.fn(async (_url, init) => {
+      await new Promise((resolve, reject) => {
+        if (init?.signal?.aborted) {
+          const e = new Error('The operation was aborted');
+          e.name = 'AbortError';
+          reject(e);
+          return;
+        }
+        const onAbort = () => {
+          const e = new Error('The operation was aborted');
+          e.name = 'AbortError';
+          reject(e);
+        };
+        init?.signal?.addEventListener('abort', onAbort);
+        uploadPromise.then(() => {
+          init?.signal?.removeEventListener('abort', onAbort);
+          resolve();
+        });
+      });
+      return new Response(JSON.stringify({ transcript: 'should not land' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy;
+    ft = { restore: () => (globalThis.fetch = origFetch), fetchSpy };
+
+    const onFileError = vi.fn();
+    const { rerender } = render(
+      <MessageInput {...baseProps} onFileError={onFileError} draftKey="session-A" />,
+    );
+
+    // Start and stop recording — onstop fires, fetch starts, upload is now in-flight.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }));
+    });
+
+    // Fetch is now in-flight. Switch to session B before the response arrives.
+    await act(async () => {
+      rerender(<MessageInput {...baseProps} onFileError={onFileError} draftKey="session-B" />);
+    });
+
+    // Now let the upload resolve.
+    await act(async () => {
+      resolveUpload();
+    });
+
+    // Transcript must NOT appear in session-B's composer.
+    const textarea = screen.getByRole('textbox');
+    expect(textarea.value).toBe('');
+    // And the "not configured" / error toast must NOT have fired (AbortError is silent).
+    expect(onFileError).not.toHaveBeenCalled();
+  });
 });
