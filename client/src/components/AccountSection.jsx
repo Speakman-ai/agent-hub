@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Copy, Key, Loader2, LogOut, Plus, Trash2, Users, X } from 'lucide-react';
 import RoleBadge from './RoleBadge.jsx';
+import MyClaudeAuthSection from './MyClaudeAuthSection.jsx';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
 import { hasRole, getUserRole, logout } from '../utils/auth.js';
 
@@ -183,6 +184,8 @@ export default function AccountSection() {
           while they're the only one.
         </p>
       </div>
+
+      {me && <MyClaudeAuthSection />}
 
       {me && <ApiKeysSection />}
 
