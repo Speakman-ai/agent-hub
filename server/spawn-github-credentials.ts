@@ -167,7 +167,7 @@ export function ensureReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): s
 }
 
 /**
- * Apply reviewer-agent spawn-env isolation. Two effects:
+ * Apply reviewer-agent spawn-env isolation. Three effects:
  *
  *   1. `GH_CONFIG_DIR` → an empty Hub-managed directory under
  *      `config.dataDir`. This severs `gh`'s fallback to
@@ -182,6 +182,18 @@ export function ensureReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): s
  *      which is the only correct identity path (server-side App
  *      installation token).
  *
+ *   3. Scrubs `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and
+ *      `GITHUB_ENTERPRISE_TOKEN` from the env. `buildSpawnEnv` clones
+ *      `process.env` wholesale, so any token the operator exported in
+ *      the shell that started the Hub (or PM2/systemd ambient env)
+ *      would otherwise survive into the reviewer spawn even when
+ *      `selectGithubSpawnToken` correctly returns `null`. `gh` reads
+ *      `GH_TOKEN` at the highest priority — ahead of `GH_CONFIG_DIR` —
+ *      so the config-dir isolation alone is insufficient. Callers must
+ *      invoke this function BEFORE `applyGithubSpawnCredentials` so
+ *      the bot token (when present) is re-set by the credential helper
+ *      after the scrub.
+ *
  * Caller should pre-create the directory at startup via
  * `ensureReviewerGhConfigDir(config)`. Idempotent on env mutation.
  */
@@ -191,6 +203,13 @@ export function applyReviewerSpawnIsolation(
 ): void {
   env.GH_CONFIG_DIR = resolveReviewerGhConfigDir(config);
   env.AGENT_HUB_REVIEWER_LOCK = '1';
+  // Scrub any inherited GitHub token vars. `gh` reads GH_TOKEN at
+  // higher priority than GH_CONFIG_DIR, so these must be explicitly
+  // removed to prevent host-env tokens leaking into reviewer spawns.
+  delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
+  delete env.GH_ENTERPRISE_TOKEN;
+  delete env.GITHUB_ENTERPRISE_TOKEN;
 }
 
 /**

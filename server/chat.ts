@@ -2202,14 +2202,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           botGithubToken: config.botGithubToken,
           userGhToken,
         });
-        applyGithubSpawnCredentials(base, tokenToInject);
         if (agent.role === 'reviewer') {
-          // Sever `gh`'s fallback chain so the reviewer never inherits
-          // the host operator's `gh auth login` (`~/.config/gh/hosts.yml`)
-          // and the GitHub skill refuses any direct `gh pr review` call.
+          // Isolation runs BEFORE credential injection: it scrubs any
+          // inherited GH_TOKEN / GITHUB_TOKEN from the cloned process.env,
+          // then `applyGithubSpawnCredentials` below re-sets the bot token
+          // (when present) so the scrub doesn't clobber a valid credential.
           // See `applyReviewerSpawnIsolation` for the full rationale.
           applyReviewerSpawnIsolation(base, config);
         }
+        applyGithubSpawnCredentials(base, tokenToInject);
         if (config.apiKey) {
           base.AGENT_HUB_API_KEY = config.apiKey;
         }
