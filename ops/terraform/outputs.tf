@@ -77,38 +77,6 @@ output "ec2_docker_howto" {
   EOT
 }
 
-# --- PR Envs ------------------------------------------------------------------
-# Surfaced for downstream PRs (host nginx config, per-PR DNS automation) to
-# reference without having to re-derive locals. Null when the relevant feature
-# flag is off or the inputs are insufficient.
-
-output "pr_env_wildcard_cert_arn" {
-  description = "Validated ACM certificate ARN for *.<pr_env_preview_subdomain>.<alb_fqdn>, present when PR-env wildcard cert is effectively enabled (enable_pr_environments = true, or enable_pr_env_wildcard_cert override = true). Consumed by host nginx (NOT attached to the ALB listener)."
-  value       = one(aws_acm_certificate_validation.pr_env_wildcard[*].certificate_arn)
-}
-
-output "pr_env_route53_zone_id" {
-  description = "Hosted zone ID used by PR-env DNS automation. Equals local.route53_zone_id_effective (the zone for base_domain), or null when no zone is discoverable."
-  value       = local.route53_zone_id_effective
-}
-
-output "pr_env_enabled_effective" {
-  description = "Effective gating for the PR-env stack pieces, after resolving `enable_pr_environments` against the per-piece overrides (`enable_pr_env_wildcard_cert`, `enable_pr_env_route53_iam`, `enable_pr_env_host_nginx`, `enable_pr_env_ssm_secrets`). Each entry is the boolean Terraform actually used to decide whether to provision that piece; useful for CI assertions and operator sanity checks."
-  value = {
-    root_flag     = var.enable_pr_environments
-    wildcard_cert = local.pr_env_wildcard_cert_enabled
-    route53_iam   = local.pr_env_route53_iam_enabled
-    host_nginx    = local.pr_env_host_nginx_enabled
-    ssm_secrets   = local.pr_env_ssm_secrets_enabled
-  }
-}
-
-output "pr_env_preview_host" {
-  description = "Suffix for per-PR preview hostnames: <pr-id>.<this>. Equals <pr_env_preview_subdomain>.<alb_fqdn>; null when alb_fqdn cannot be composed."
-  value       = local.pr_env_preview_host
-}
-
-output "pr_env_preview_wildcard_dns_enabled" {
-  description = "True when Terraform manages Route 53 A alias *.<pr_env_preview_host> → dedicated ALB (PR preview hostnames resolve to the hub load balancer)."
-  value       = length(aws_route53_record.pr_env_preview_wildcard) > 0
-}
+# PR-env outputs removed in PR-Env Removal #6 alongside the wildcard ACM
+# cert, DNS-01 validation, and *.preview.<alb_fqdn> A-record. See alb.tf
+# for the teardown note.

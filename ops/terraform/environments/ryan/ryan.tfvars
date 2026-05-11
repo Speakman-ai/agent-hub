@@ -54,23 +54,3 @@ ci_ssm_deploy_instance_id           = "i-066e44ff85ec24d8e"
 #   sudo cat /home/agenthub/.agent-hub/data/initial-credentials.txt
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
-
-# ── PR Environments (per-PR preview deployments) ────────────────────────────
-# `enable_pr_environments` defaults to TRUE — the entire PR-env stack
-# (wildcard ACM cert, Route 53 inline policy, host nginx + certbot,
-# SG ports 3100-3999, Tier-3 prEnv config) is provisioned out of the box.
-# Operators only need to flip the "PR Environments" checkbox in Settings
-# (and enter Tier-1+2 secrets) post-boot to start dispatching previews.
-#
-# Tier-1+2 secrets (GitHub App private key, Route53 IAM access keys,
-# repoFullName, certRenewalLive) are intentionally NOT in this file —
-# they're entered post-boot via Settings → PR Environments and stored
-# AES-256-GCM-encrypted in the pr_env_config SQLite row.
-#
-# Required when the PR-env stack is on: the Let's Encrypt registration email
-# for the wildcard cert. Leave the per-piece `enable_pr_env_*` overrides
-# unset (= null = follow the parent) unless you are intentionally disabling
-# one piece for testing.
-cert_renewal_email = "ryanspeakman@mcsteen.com"
-# pr_env_preview_subdomain defaults to "preview" — leaving unset gives
-# the wildcard *.preview.agenthub.dev.surveytracker.io.
