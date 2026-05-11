@@ -600,4 +600,106 @@ describe('MessageInput voice transcription', () => {
     // And the "not configured" / error toast must NOT have fired (AbortError is silent).
     expect(onFileError).not.toHaveBeenCalled();
   });
+
+  it('resets isRecording / isTranscribing when draftKey changes mid-flow', async () => {
+    // Manual-resolution fetch so the upload stays in-flight when we swap
+    // draftKey. The mock respects the AbortSignal so the [draftKey] cleanup
+    // properly cancels the request.
+    let resolveUpload;
+    const fetchSpy = vi.fn(async (_url, init) => {
+      await new Promise((resolve, reject) => {
+        if (init?.signal?.aborted) {
+          const e = new Error('aborted');
+          e.name = 'AbortError';
+          reject(e);
+          return;
+        }
+        init?.signal?.addEventListener('abort', () => {
+          const e = new Error('aborted');
+          e.name = 'AbortError';
+          reject(e);
+        });
+        resolveUpload = resolve;
+      });
+      return new Response(JSON.stringify({ transcript: 'orphan' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy;
+    ft = { restore: () => (globalThis.fetch = origFetch), fetchSpy };
+
+    const { rerender } = render(<MessageInput {...baseProps} draftKey="A" />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /start voice input/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /stop recording/i }));
+    });
+
+    // Recording flipped off; we're now in the transcribing phase.
+    expect(screen.queryByRole('button', { name: /stop recording/i })).not.toBeInTheDocument();
+
+    // Swap sessions while the upload is still hanging.
+    await act(async () => {
+      rerender(<MessageInput {...baseProps} draftKey="B" />);
+    });
+
+    // After cleanup, the mic must be back to its idle "start" state — no
+    // spinner, no recording state — so the user in session B can start a
+    // fresh recording immediately.
+    const micBtn = screen.getByRole('button', { name: /start voice input/i });
+    expect(micBtn.getAttribute('aria-pressed')).toBe('false');
+
+    // Release the dangling promise so the AbortController unwinds cleanly
+    // and vitest doesn't complain about unresolved work.
+    if (resolveUpload) {
+      await act(async () => {
+        resolveUpload();
+      });
+    }
+  });
+
+  it('inserts the transcript at the caret when caret sits mid-text', async () => {
+    ft = installFetchOk('SPLICE');
+    // React's controlled-input commit resets the caret to end-of-value in
+    // JSDOM, so pin selectionStart at the prototype level. The anchor is
+    // captured at startRecording() time (selectionStart at the moment the
+    // mic button is clicked), which is what we want to exercise here.
+    const origSelectionStart = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      'selectionStart',
+    );
+    Object.defineProperty(HTMLTextAreaElement.prototype, 'selectionStart', {
+      get: () => 4,
+      set: () => {},
+      configurable: true,
+    });
+    try {
+      render(<MessageInput {...baseProps} />);
+
+      const textarea = screen.getByRole('textbox');
+      fireEvent.change(textarea, { target: { value: 'helloworld' } });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /start voice input/i }));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /stop recording/i }));
+      });
+
+      await waitFor(() => expect(textarea.value).toContain('SPLICE'));
+      // Caret was pinned at index 4 → splice between "hell" and "oworld",
+      // with single-space joins on either side.
+      expect(textarea.value).toBe('hell SPLICE oworld');
+    } finally {
+      if (origSelectionStart) {
+        Object.defineProperty(HTMLTextAreaElement.prototype, 'selectionStart', origSelectionStart);
+      } else {
+        delete HTMLTextAreaElement.prototype.selectionStart;
+      }
+    }
+  });
 });

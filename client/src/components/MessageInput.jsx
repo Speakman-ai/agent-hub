@@ -232,39 +232,56 @@ export default function MessageInput({
   // Inserts `text` at the captured caret position (or appends to the end
   // if no anchor was captured). Joins with a single space when splicing
   // into existing content so words don't run together.
-  const insertTranscriptAtAnchor = useCallback((text) => {
-    if (!text) return;
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    setValue((prev) => {
-      const anchor =
-        transcribeAnchorRef.current === null || transcribeAnchorRef.current === undefined
-          ? prev.length
-          : Math.min(Math.max(0, transcribeAnchorRef.current), prev.length);
-      const before = prev.slice(0, anchor);
-      const after = prev.slice(anchor);
-      const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
-      const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
-      const insertion = (needsLeadingSpace ? ' ' : '') + trimmed + (needsTrailingSpace ? ' ' : '');
-      const next = before + insertion + after;
-      // Restore focus + caret to just after the inserted text. RAF defers
-      // until React has committed the new value.
-      const caret = before.length + insertion.length;
-      requestAnimationFrame(() => {
-        const ta = textareaRef.current;
-        if (ta) {
-          ta.focus();
-          try {
-            ta.setSelectionRange(caret, caret);
-          } catch {
-            /* setSelectionRange can throw if textarea was unmounted */
+  //
+  // `ownerKey` is the draftKey snapshotted at fetch time. If it doesn't
+  // match the current draftKey, the user switched sessions during the
+  // upload and the transcript belongs to a different composer — bail.
+  // Belt-and-suspenders against any race where the response resolved
+  // before the AbortController abort took effect.
+  const insertTranscriptAtAnchor = useCallback(
+    (text, ownerKey) => {
+      if (!text) return;
+      if (ownerKey !== undefined && ownerKey !== draftKey) return;
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      // Snapshot the anchor BEFORE queueing setValue. The updater
+      // callback runs in a future microtask, so resetting the ref to
+      // null synchronously here would race the read inside the
+      // updater (the ref would already be null → fall back to
+      // end-of-buffer and we'd never splice mid-text).
+      const anchorSnapshot = transcribeAnchorRef.current;
+      transcribeAnchorRef.current = null;
+      setValue((prev) => {
+        const anchor =
+          anchorSnapshot === null || anchorSnapshot === undefined
+            ? prev.length
+            : Math.min(Math.max(0, anchorSnapshot), prev.length);
+        const before = prev.slice(0, anchor);
+        const after = prev.slice(anchor);
+        const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+        const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
+        const insertion =
+          (needsLeadingSpace ? ' ' : '') + trimmed + (needsTrailingSpace ? ' ' : '');
+        const next = before + insertion + after;
+        // Restore focus + caret to just after the inserted text. RAF
+        // defers until React has committed the new value.
+        const caret = before.length + insertion.length;
+        requestAnimationFrame(() => {
+          const ta = textareaRef.current;
+          if (ta) {
+            ta.focus();
+            try {
+              ta.setSelectionRange(caret, caret);
+            } catch {
+              /* setSelectionRange can throw if textarea was unmounted */
+            }
           }
-        }
+        });
+        return next;
       });
-      return next;
-    });
-    transcribeAnchorRef.current = null;
-  }, []);
+    },
+    [draftKey],
+  );
 
   // Hard-stops any in-flight recording and releases the mic. Safe to call
   // from cleanup paths (unmount, draftKey switch, error fallthrough) — all
@@ -309,6 +326,11 @@ export default function MessageInput({
   // raw and a multipart POST 415s. See card comment for rationale.)
   const uploadForTranscription = useCallback(
     async (blob, contentType) => {
+      // Snapshot the owning session at fetch time. The AbortController
+      // covers the common case (abort the request on session switch);
+      // the ownerKey is the belt-and-suspenders guard that drops the
+      // transcript if the response somehow still resolves after abort.
+      const ownerKey = draftKey;
       const controller = new AbortController();
       transcribeAbortRef.current = controller;
       setIsTranscribing(true);
@@ -347,7 +369,7 @@ export default function MessageInput({
           reportTranscribeError("Couldn't hear anything — try again.");
           return;
         }
-        insertTranscriptAtAnchor(body.transcript);
+        insertTranscriptAtAnchor(body.transcript, ownerKey);
       } catch (err) {
         // AbortError means the session switched mid-upload — not a user-visible error.
         if (err?.name === 'AbortError') return;
@@ -355,11 +377,16 @@ export default function MessageInput({
           `Transcription failed: ${err?.message || 'network error'}. Tap mic to retry.`,
         );
       } finally {
-        transcribeAbortRef.current = null;
+        // Only clear the controller if it's still the one WE installed.
+        // A concurrent session switch (or a later upload) may have
+        // overwritten the ref — don't stomp it.
+        if (transcribeAbortRef.current === controller) {
+          transcribeAbortRef.current = null;
+        }
         setIsTranscribing(false);
       }
     },
-    [reportTranscribeError, insertTranscriptAtAnchor],
+    [draftKey, reportTranscribeError, insertTranscriptAtAnchor],
   );
 
   const startRecording = useCallback(async () => {
