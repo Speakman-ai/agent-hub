@@ -113,6 +113,114 @@ export async function createUmbrellaBranch(
   }
 }
 
+// ─── Operator-set base branch — auto-create if missing ────────────────────
+//
+// When the operator types a value into `epic.pr_base_branch` (e.g.
+// `feature/auth`), they want every card dispatched under that epic to open a
+// PR against that branch. If the branch doesn't exist on `origin` yet,
+// `auto-git.ts` would otherwise silently fall back to the repo default
+// branch. We close that gap here: before dispatch, check `origin` for the
+// branch and push it (rooted at current `origin/HEAD`) if it isn't there.
+//
+// Idempotent — repeated dispatch ticks find the branch already on origin
+// and skip the push. Validation matches the same SAFE_BRANCH regex used by
+// `parsePrBaseBranchInput` so a hand-edited DB row can't smuggle a bad
+// branch name into `git push`. Failure (permission denied, network) is
+// logged and treated as non-fatal: dispatch continues, and `auto-git.ts`
+// will fall back to default branch and post an explanatory card comment.
+
+const SAFE_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
+
+export type EnsureOperatorBaseBranchOutcome =
+  | 'exists'
+  | 'created'
+  | 'invalid'
+  | 'failed'
+  | 'skipped';
+
+/**
+ * Ensure an operator-supplied PR base branch exists on `origin`. Creates it
+ * from the current `origin/HEAD` (falling back to `origin/main` / `origin/master`)
+ * if missing. Returns the outcome so the caller can log without re-doing the
+ * decision.
+ *
+ * Exported for unit testing.
+ */
+export async function ensureOperatorBaseBranch(
+  project: Project,
+  branchName: string | null | undefined,
+): Promise<EnsureOperatorBaseBranchOutcome> {
+  if (!branchName || !branchName.trim()) return 'skipped';
+  const name = branchName.trim();
+
+  // Never touch the auto-generated umbrella prefix — those names are reserved
+  // for the (currently dormant) `createUmbrellaBranch` helper and have their
+  // own lifecycle. If something writes such a value into `pr_base_branch`,
+  // skip it here and let `auto-git.ts` handle the lookup/fallback.
+  if (name.startsWith(AUTONOMOUS_BRANCH_PREFIX)) return 'skipped';
+
+  if (!SAFE_BRANCH_RE.test(name)) {
+    console.warn(
+      `[Autonomous] Refusing to ensure unsafe pr_base_branch value: ${JSON.stringify(name)}`,
+    );
+    return 'invalid';
+  }
+
+  const cwd = project.cwd;
+  if (!cwd) return 'skipped';
+
+  try {
+    // Best-effort fetch so the existence check sees recently-created branches.
+    try {
+      await execFileAsync('git', ['fetch', 'origin', '--no-tags'], { cwd, timeout: 30_000 });
+    } catch {
+      // Non-fatal: we still try ls-remote, which talks to the remote directly.
+    }
+
+    // `ls-remote --heads` is the source of truth — it bypasses stale local
+    // refs and asks origin directly.
+    const { stdout: lsOut } = await execFileAsync('git', ['ls-remote', '--heads', 'origin', name], {
+      cwd,
+      timeout: 15_000,
+    });
+    if (lsOut.trim()) {
+      return 'exists';
+    }
+
+    // Resolve a base SHA from origin/HEAD (with main/master fallback).
+    let sha: string | null = null;
+    for (const ref of ['origin/HEAD', 'origin/main', 'origin/master']) {
+      try {
+        const { stdout } = await execFileAsync('git', ['rev-parse', ref], { cwd, timeout: 5_000 });
+        sha = stdout.trim();
+        if (sha) break;
+      } catch {
+        // try next candidate
+      }
+    }
+    if (!sha) {
+      console.warn(
+        `[Autonomous] Cannot resolve remote HEAD for project "${project.name}" — operator base branch "${name}" not created; PRs will fall back to default branch`,
+      );
+      return 'failed';
+    }
+
+    await execFileAsync('git', ['push', 'origin', `${sha}:refs/heads/${name}`], {
+      cwd,
+      timeout: 30_000,
+    });
+    console.log(
+      `[Autonomous] ✅ Created operator-set base branch "${name}" for project "${project.name}" (base SHA: ${sha.substring(0, 7)})`,
+    );
+    return 'created';
+  } catch (err) {
+    console.error(
+      `[Autonomous] Failed to ensure operator base branch "${name}" for project "${project.name}": ${(err as Error).message} — PRs will fall back to default branch`,
+    );
+    return 'failed';
+  }
+}
+
 // ─── Dependency Types ───────────────────────────────────────────────────────
 
 interface AutonomousDeps {
@@ -260,10 +368,17 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   // We do NOT auto-create a branch when `epic.pr_base_branch` is blank.
   // Blank → every card's auto-PR targets the repo's default branch (handled
   // by `auto-git.ts` falling back when `effectivePrBaseBranch()` returns
-  // null). Operator-set values are passed through as-is — `auto-git.ts`
-  // verifies the branch exists on origin and falls back with a logged
-  // reason if it doesn't, so a typo doesn't strand the run.
+  // null).
+  //
+  // Operator-set values: if the branch doesn't exist on origin yet, create
+  // it (rooted at current origin/HEAD). Idempotent — once the branch is on
+  // origin, subsequent ticks short-circuit at the ls-remote check. Failure
+  // is non-fatal; `auto-git.ts` will fall back to default and comment on
+  // the card so the operator sees what happened.
   // ───────────────────────────────────────────────────────────────────────
+  if (epic.pr_base_branch && epic.pr_base_branch.trim()) {
+    await ensureOperatorBaseBranch(project, epic.pr_base_branch);
+  }
 
   // Label-based routing: every eligible card is dispatchable. The intake
   // ("ticketing") agent stamps labels at card-creation time; we route to
