@@ -2,7 +2,7 @@
  * Provisioning status — pure state model + helpers.
  *
  * Drives the "New Project → Provisioning" UI after the Adaptive Questionnaire
- * is submitted. The backend (server/container-pool/scaffold-builder) runs a
+ * is submitted. The backend scaffold-builder runs a
  * short-lived scaffold container that creates/pushes the GitHub repo and
  * lands the starter tree. While it runs, the server streams phase events
  * and raw log lines over an event channel (SSE or WS). This module is the

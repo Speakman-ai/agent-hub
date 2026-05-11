@@ -4,7 +4,7 @@
  * First PR in the "Strip PR Environments" epic. The PR-env subsystem is on
  * the way out (epic 88367984-c56e-4d31-945c-3408ad151243). This module is
  * the single boot-time gate that no-ops every PR-env code path so the
- * subsequent cards (#2–#7) can delete code, container-pool tables, crons,
+ * subsequent cards (#2–#7) can delete code, backing tables, crons,
  * UI, and Terraform calmly — without ever leaving the system in a state
  * where new PR-env activity could be kicked off.
  *
@@ -15,8 +15,8 @@
  *     (`readPrEnvConfig` short-circuits to `null` when the kill switch is
  *     on).
  *   - Every PR-env route returns `410 Gone` with the same body.
- *   - The three container-pool crons (cert-renewal, reaper, pool-alerts)
- *     are not registered.
+ *   - The three PR-env crons (cert-renewal, reaper, pool-alerts) are
+ *     no longer registered (PR-Env Removal #4 deleted them outright).
  *   - The `<agenthub:preview target="fullstack">` escape hatch and its
  *     handler module were deleted by card #2. The preview parser now
  *     rejects `target: "fullstack"` with `reason: "invalid-target"` so

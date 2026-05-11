@@ -5,9 +5,9 @@
  * from `heartbeat.ts`) and tears down rows whose `last_active_at` is
  * older than the project's configured idle TTL.
  *
- * Mirrors the container-pool reaper's invariants — see
- * `container-pool/reaper.ts` for the long-form rationale on why an
- * authoritative cleanup path is needed even when the happy-path
+ * Mirrors the invariants of the (now-deleted) PR-env reaper — there is
+ * a long-form rationale in the history of `server/<pr-env-dir>/reaper.ts`
+ * for why an authoritative cleanup path is needed even when the happy-path
  * (chat-end / session-delete hook) usually wins. The short version:
  * webhooks drop, sessions get force-killed, the server restarts mid-
  * idle. Without a reaper a stuck preview holds its port forever.
@@ -68,7 +68,7 @@ interface ScanRow {
 
 /**
  * Run one reaper pass. Never throws — operational failures are logged
- * + surfaced in `notes`. The return shape matches the container-pool
+ * + surfaced in `notes`. The return shape matches the legacy PR-env
  * reaper so dashboards / tests can assert against a uniform contract.
  */
 export async function runPreviewReaper(deps: PreviewReaperDeps): Promise<PreviewReaperTickResult> {

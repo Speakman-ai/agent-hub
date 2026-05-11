@@ -1,22 +1,24 @@
 /**
  * Kill-switch tests (epic 88367984 — strip PR Environments).
  *
- * After PR-Env Removal #3 the routes, store module, and dispatchers were
- * deleted outright. The remaining surface the kill switch still gates is:
+ * After PR-Env Removal #4 the entire PR-env backing directory was
+ * deleted along with `readPrEnvConfig()`, the cert-renewal / reaper
+ * / pool-alerts crons, and the W4 observability routes. The kill switch
+ * itself remains only as the source of truth for the `features.prEnv`
+ * flag served by `/api/config` — the UI uses it to know that the PR-env
+ * feature is dead. Surviving contract assertions:
  *
- *   - `readPrEnvConfig()` in `container-pool/pr-env-runtime.ts` — the last
- *     in-process reader; pinned here so a future caller can't slip past it.
- *   - `detectPreviewBlock()` — the `target: 'fullstack'` parse-time guard
- *     established in PR-Env Removal #2.
- *
- * The "settings / provisioning routes return 410 Gone" assertions are gone
- * because those routes are gone — there's nothing left to gate.
+ *   - `isPrEnvKillSwitchOn()` returns `true` once enabled.
+ *   - `detectPreviewBlock()` rejects `target: 'fullstack'` outright at
+ *     parse time (the dispatcher never even sees a fullstack task).
+ *   - PR-env webhook dispatch modules are gone — importing them fails.
+ *   - The PR-env backing directory is gone — importing any module under
+ *     it fails.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { __setPrEnvKillSwitchForTests, isPrEnvKillSwitchOn } from './pr-env-killswitch.js';
-import { readPrEnvConfig } from './container-pool/pr-env-runtime.js';
 
 beforeEach(() => {
   __setPrEnvKillSwitchForTests(true);
@@ -29,34 +31,6 @@ afterEach(() => {
 describe('PR-env kill switch — production contract', () => {
   it('isPrEnvKillSwitchOn() returns true once enabled', () => {
     expect(isPrEnvKillSwitchOn()).toBe(true);
-  });
-
-  it('readPrEnvConfig returns null regardless of DB / file / env state', () => {
-    // Even with a fully-populated file block AND an enabled DB row, the
-    // kill switch must win — that's the "enforced at boot regardless of
-    // config value" half of the contract.
-    const fileConfig = {
-      prEnv: {
-        enabled: true,
-        repoFullName: 'acme/widgets',
-        previewHost: 'preview.example.com',
-        previewBaseUrl: 'https://preview.example.com',
-      },
-    };
-    const dbRow = {
-      enabled: true,
-      repoFullName: 'acme/widgets',
-      previewHost: 'preview.example.com',
-      previewBaseUrl: 'https://preview.example.com',
-      route53AccessKeyId: 'AKIA',
-      route53SecretAccessKey: 'sekret',
-      route53HostedZoneId: 'Z1',
-      certRenewalLive: false,
-      portRangeMin: null,
-      portRangeMax: null,
-    } as const;
-
-    expect(readPrEnvConfig(fileConfig, {}, dbRow as never)).toBeNull();
   });
 
   it('fullstack preview block is rejected at parse time — handler is gone', async () => {
@@ -75,11 +49,18 @@ describe('PR-env kill switch — production contract', () => {
     expect(result.reason).toBe('invalid-target');
   });
 
-  it('PR-env webhook dispatch modules are gone — synchronize is a no-op', async () => {
-    // PR-Env Removal #3 deleted `container-pool/pr-env-dispatch.ts` and the
-    // `dispatchPrEnvBuild` / `dispatchPrEnvTeardown` invocations in
-    // `routes/webhooks.ts`. Pin that here so a regression that
-    // re-introduces the import is caught.
-    await expect(import('./container-pool/pr-env-dispatch.js' as string)).rejects.toThrow();
+  it('PR-env webhook dispatch modules are gone — import fails', async () => {
+    // PR-Env Removal #3 deleted the `dispatchPrEnvBuild` /
+    // `dispatchPrEnvTeardown` invocations in `routes/webhooks.ts`, and
+    // PR-Env Removal #4 deleted the entire backing directory. Pin that
+    // here so a regression that re-introduces the import is caught.
+    await expect(import('./pr-env-dispatch.js' as string)).rejects.toThrow();
+  });
+
+  it('the PR-env backing directory is gone — every module under it fails to import', async () => {
+    // PR-Env Removal #4 deleted `server/<pr-env-dir>/` outright. Pin a
+    // representative module (the runtime config reader) so any attempt
+    // to resurrect the directory has to update this test.
+    await expect(import('./pr-env-runtime.js' as string)).rejects.toThrow();
   });
 });

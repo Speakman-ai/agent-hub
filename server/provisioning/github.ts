@@ -18,9 +18,9 @@
  * Phase → action mapping inside this module:
  *   mint-token   — noop for the local-gh path (`gh auth status`
  *                  already verified in gh-create). Kept so the phase
- *                  sequence stays identical to the GitHub-App path in
- *                  `container-pool/scaffold-builder.ts`, which mints an
- *                  installation token at this step.
+ *                  sequence stays identical to the GitHub-App
+ *                  scaffold-builder path, which mints an installation
+ *                  token at this step.
  *   gh-create    — pre-flight + `gh repo create <name> --private|--public
  *                  --source=. --remote=origin` (no --push; we split the
  *                  remote creation from the push so each surfaces as a

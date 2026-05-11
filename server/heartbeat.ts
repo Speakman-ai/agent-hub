@@ -17,17 +17,6 @@ import { getProjects } from './project-model.js';
 import { setSessionOwner, getOrgOwnerUserId } from './session-ownership.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
 import { runOneShotPrompt, type OneShotDetailed } from './one-shot-spawn.js';
-import {
-  runCertRenewalHeartbeat,
-  CERT_RENEWAL_CRON,
-} from './container-pool/cert-renewal-heartbeat.js';
-import { runReaperHeartbeat, REAPER_CRON } from './container-pool/reaper-heartbeat.js';
-import {
-  runPoolAlertsHeartbeat,
-  POOL_ALERTS_CRON,
-} from './container-pool/pool-alerts-heartbeat.js';
-import { PoolAllocator } from './container-pool/allocator.js';
-import { isPrEnvKillSwitchOn } from './pr-env-killswitch.js';
 import type {
   EnrichedAgent,
   CronRow,
@@ -926,78 +915,8 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   scheduledTasks.set('system:wiki-memory-sync', wikiSyncTask);
   console.log(`[Scheduler] Wiki→Memory sync scheduled: ${WIKI_SYNC_SCHEDULE}`);
 
-  // Cert-renewal / reaper / pool-alerts heartbeats stay registered for
-  // now (the container-pool dir is targeted by PR-Env Removal #4) but
-  // run with `getConfig: () => null` so each tick short-circuits on the
-  // missing config and never touches the deleted `pr_env_config` table.
-  // The killswitch path that previously skipped registration is gone —
-  // every reader of `readPrEnvConfig` has been deleted in this card.
-  if (isPrEnvKillSwitchOn()) {
-    console.log(
-      '[Scheduler] PR-env subsystem killed — cert-renewal / reaper / pool-alerts will tick as no-ops',
-    );
-    const certRenewalTask = cron.schedule(
-      CERT_RENEWAL_CRON,
-      wrapCronTick(
-        () =>
-          runCertRenewalHeartbeat({
-            getConfig: () => null,
-          }).catch((err: unknown) => {
-            console.error('[cert-renewal] heartbeat threw:', (err as Error).message);
-          }),
-        'system:cert-renewal',
-      ),
-      defaultTickOptions({
-        intervalSeconds: estimateIntervalSeconds(CERT_RENEWAL_CRON),
-        name: 'system:cert-renewal',
-      }),
-    );
-    scheduledTasks.set('system:cert-renewal', certRenewalTask);
-    console.log(`[Scheduler] Cert-renewal heartbeat scheduled (no-op): ${CERT_RENEWAL_CRON}`);
-
-    // Container-pool reaper — every 3 min, reconciles pool_slots against
-    // the live Docker daemon and GitHub PR state so a dropped webhook
-    // doesn't leave a slot busy forever. No-op when PR-env feature is off
-    // (`getConfig()` returns null inside `runReaperHeartbeat`). The
-    // allocator is constructed lazily here because the container-pool
-    // dispatcher doesn't have a production home yet; when W1 lands in
-    // production, swap the lazy allocator out for the shared singleton.
-    const reaperAllocator = new PoolAllocator(db);
-    const reaperTask = cron.schedule(
-      REAPER_CRON,
-      wrapCronTick(
-        () =>
-          runReaperHeartbeat({
-            db,
-            allocator: reaperAllocator,
-            getConfig: () => null,
-          }).catch((err: unknown) => {
-            console.error('[reaper] heartbeat threw:', (err as Error).message);
-          }),
-        'system:reaper',
-      ),
-      defaultTickOptions({
-        intervalSeconds: estimateIntervalSeconds(REAPER_CRON),
-        name: 'system:reaper',
-      }),
-    );
-    scheduledTasks.set('system:reaper', reaperTask);
-    console.log(`[Scheduler] Container-pool reaper scheduled: ${REAPER_CRON}`);
-
-    // Pool-alerts heartbeat — every minute, evaluates pool_metrics rows
-    // against alert thresholds and fires/resolves rows in pool_alerts.
-    // Pure SQLite reads/writes, no network or process spawn.
-    const poolAlertsTask = cron.schedule(
-      POOL_ALERTS_CRON,
-      wrapCronTick(() => runPoolAlertsHeartbeat({ db }), 'system:pool-alerts'),
-      defaultTickOptions({
-        intervalSeconds: estimateIntervalSeconds(POOL_ALERTS_CRON),
-        name: 'system:pool-alerts',
-      }),
-    );
-    scheduledTasks.set('system:pool-alerts', poolAlertsTask);
-    console.log(`[Scheduler] Pool-alerts heartbeat scheduled: ${POOL_ALERTS_CRON}`);
-  } // end kill-switch guard
+  // PR-env crons (cert-renewal, reaper, pool-alerts) were removed by
+  // PR-Env Removal #4 along with the PR-env backing directory.
 
   console.log(`[Scheduler] ${scheduledTasks.size} tasks scheduled`);
 

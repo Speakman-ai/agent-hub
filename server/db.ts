@@ -1,9 +1,6 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import config from './config.js';
-import { POOL_SCHEMA } from './container-pool/schema.js';
-import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
-import { PREVIEW_AUTH_SCHEMA } from './container-pool/preview-auth-schema.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 import { WORKTREE_PREVIEWS_SCHEMA } from './preview/preview-schema.js';
 import type { Stmts } from './types.js';
@@ -1317,70 +1314,26 @@ function initDb(dataDir: string): void {
     /* column already exists */
   }
 
-  // Container pool (PR preview envs + scaffolding). Schema lives in a sibling
-  // module so unit tests can apply the identical DDL to an in-memory DB.
-  db.exec(POOL_SCHEMA);
-
-  // PR-env host port allocations (W2). Keyed by (repo, PR number) → port
-  // in the 3100..3999 reserve. Separate from pool_slots because the shape
-  // is different (arbitrary hundreds of entries, PR-keyed not slot-keyed).
-  db.exec(PORT_POOL_SCHEMA);
-
-  // Preview-URL auth (W2). Magic-link tokens (hashed) + OAuth session rows
-  // backing the `pr-N.<previewHost>` auth gate. See
-  // container-pool/preview-auth.ts for the middleware + OAuth flow.
-  db.exec(PREVIEW_AUTH_SCHEMA);
-
-  // PR-env settings table was removed as part of the "Strip PR
-  // Environments" epic (88367984). Drop the table on existing installs
-  // so it doesn't linger after upgrade; `IF EXISTS` keeps this a no-op
-  // on fresh installs that never created the row. Encrypted secrets
-  // stored in the row are abandoned with it — the wider epic has
-  // already disabled every reader.
-  try {
-    db.exec('DROP TABLE IF EXISTS pr_env_config');
-  } catch (err) {
-    console.warn('[db] DROP TABLE pr_env_config failed:', (err as Error).message);
-  }
-
-  // Migration: pool_slots gained `last_error TEXT` and `status` CHECK now
-  // includes 'failed' (added in #458). SQLite can't ALTER a CHECK constraint
-  // in-place, so we rebuild the table if the old shape is detected.
-  try {
-    db.exec('ALTER TABLE pool_slots ADD COLUMN last_error TEXT');
-  } catch (_e) {
-    /* column already exists */
-  }
-
-  // Rebuild pool_slots to extend the status CHECK set if it lacks 'failed'.
-  {
-    const ddl =
-      (
-        db
-          .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pool_slots'")
-          .get() as { sql: string } | undefined
-      )?.sql ?? '';
-    if (ddl && !ddl.includes("'failed'")) {
-      const handle = db;
-      handle.transaction(() => {
-        handle.exec(`
-          CREATE TABLE pool_slots_new (
-            slot_id          TEXT PRIMARY KEY,
-            class            TEXT NOT NULL CHECK(class IN ('pr_env','scaffold','overflow')),
-            status           TEXT NOT NULL DEFAULT 'free'
-                               CHECK(status IN ('free','reserved','busy','draining','failed')),
-            container_id     TEXT,
-            started_at       TEXT,
-            last_activity_at TEXT,
-            last_error       TEXT,
-            UNIQUE(container_id)
-          );
-          INSERT INTO pool_slots_new (slot_id, class, status, container_id, started_at, last_activity_at, last_error)
-            SELECT slot_id, class, status, container_id, started_at, last_activity_at, last_error FROM pool_slots;
-          DROP TABLE pool_slots;
-          ALTER TABLE pool_slots_new RENAME TO pool_slots;
-        `);
-      })();
+  // PR-env subsystem tables were removed by PR-Env Removal #4 along with
+  // the PR-env backing directory and the `pr_env_config` row.
+  // Drop the tables on existing installs so they don't linger after
+  // upgrade; `IF EXISTS` keeps this a no-op on fresh installs. Any
+  // encrypted secrets / per-PR data stored in these tables is abandoned
+  // with them — the wider epic has already disabled every reader.
+  for (const tbl of [
+    'pr_env_config',
+    'pool_slots',
+    'pool_queue',
+    'pool_metrics',
+    'pool_alerts',
+    'pr_env_ports',
+    'preview_auth_tokens',
+    'preview_auth_sessions',
+  ]) {
+    try {
+      db.exec(`DROP TABLE IF EXISTS ${tbl}`);
+    } catch (err) {
+      console.warn(`[db] DROP TABLE ${tbl} failed:`, (err as Error).message);
     }
   }
 
@@ -1473,42 +1426,8 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
-  // Migration: W4 eviction scoring metadata on pool_slots. Each column is
-  // nullable and independent, so ALTER ADD COLUMN is sufficient (no table
-  // rebuild). Ordered AFTER the 'failed'-status rebuild above so we don't
-  // lose these columns to the INSERT ... SELECT projection list there.
-  // The CHECK on `pr_state` is enforced only by the fresh-create DDL in
-  // POOL_SCHEMA; rows written post-migration that somehow fail the check
-  // would have to come from direct SQL edits, which we accept.
-  for (const col of [
-    'pr_number INTEGER',
-    'pr_state TEXT',
-    'pr_last_commit_at TEXT',
-    'last_http_hit_at TEXT',
-    'reviewer_activity_at TEXT',
-  ]) {
-    try {
-      db.exec(`ALTER TABLE pool_slots ADD COLUMN ${col}`);
-    } catch (_e) {
-      /* column already exists */
-    }
-  }
-
-  // Migration: W4 observability columns on pool_metrics. Per-class queue
-  // depth + cert lifetime so the dashboard can show which queue is
-  // backing up and warn before the wildcard cert expires. All nullable
-  // (or DEFAULT 0) so legacy rows continue to satisfy any NOT NULL.
-  for (const col of [
-    'queue_depth_pr_env INTEGER NOT NULL DEFAULT 0',
-    'queue_depth_scaffold INTEGER NOT NULL DEFAULT 0',
-    'cert_days_remaining REAL',
-  ]) {
-    try {
-      db.exec(`ALTER TABLE pool_metrics ADD COLUMN ${col}`);
-    } catch (_e) {
-      /* column already exists */
-    }
-  }
+  // W4 observability migrations on pool_slots / pool_metrics were removed
+  // by PR-Env Removal #4 — those tables are now dropped on boot (above).
 
   try {
     db.exec(`

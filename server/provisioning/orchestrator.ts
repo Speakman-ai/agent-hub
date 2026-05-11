@@ -448,9 +448,9 @@ async function runJob(
 
 /**
  * Default (stub) executor: emits plausible messages for every phase and
- * always succeeds. Real scaffolding lives in the container-pool path;
- * this stub keeps the route callable in environments where Docker isn't
- * wired up (dev boxes, CI).
+ * always succeeds. Real scaffolding lives in the GitHub-App / gh-CLI
+ * path; this stub keeps the route callable in environments where Docker
+ * isn't wired up (dev boxes, CI).
  */
 export const stubExecutor: ProvisioningExecutor = {
   async runPhase(phase, ctx) {

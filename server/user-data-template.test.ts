@@ -100,7 +100,7 @@ const RENDER_VARS_BASE = {
  * PrEnv Tier-3 config fixture used by the config_json_b64 tests below.
  * Mirrors the shape Terraform's locals-agent-hub.tf builds when
  * `enable_pr_env_host_nginx = true`. Kept in the test (rather than imported
- * from server/container-pool/pr-env-runtime.ts) because we want the test to
+ * from server/(removed pr-env subsystem)/pr-env-runtime.ts) because we want the test to
  * fail loudly if either side drifts away from this shape — schema drift is
  * exactly the bug class this fixture is meant to catch.
  */
@@ -247,7 +247,7 @@ describe('agent-hub-user-data.tftpl', () => {
       // reload segfault. The new shape (`pr-[0-9]*.preview.conf`) starts
       // with `pr-` (no `agent-hub-` prefix) so it cannot match the base
       // file, and matches the actual writer output (see
-      // server/container-pool/nginx-template.ts → previewConfFilename).
+      // server/(removed pr-env subsystem)/nginx-template.ts → previewConfFilename).
       expect(rendered).toMatch(/include\s+\/etc\/nginx\/conf\.d\/pr-\[0-9\]\*\.preview\.conf/);
       // Belt-and-suspenders: assert the legacy self-matching glob does NOT
       // appear, so a future copy-paste regression trips this test loudly
@@ -344,7 +344,7 @@ describe('agent-hub-user-data.tftpl', () => {
     // user-data must decode it and write it to the canonical Agent Hub
     // dataDir on first boot, with mode 0600 + ownership matching whichever
     // user the running server reads files as. The runtime resolver in
-    // server/container-pool/pr-env-runtime.ts picks DB → file → env-var per
+    // server/(removed pr-env subsystem)/pr-env-runtime.ts picks DB → file → env-var per
     // field, so populating only Tier-3 here is the intended "operator fills
     // in Tier-1+2 via Settings UI after first boot" path.
     describe('Tier-3 prEnv config.json write', () => {
@@ -394,7 +394,7 @@ describe('agent-hub-user-data.tftpl', () => {
 
       it('decoded config_json_b64 contains every field readPrEnvConfig() needs at runtime', () => {
         // Schema-match assertion. Ground truth: the field set
-        // server/container-pool/pr-env-runtime.ts checks in `missing` (the
+        // server/(removed pr-env subsystem)/pr-env-runtime.ts checks in `missing` (the
         // Tier-3 paths it refuses to start without, ignoring Tier-1+2 fields
         // that arrive via the DB). If a future PR drops a key from the
         // Terraform locals block, this test fails at the `expect` line that
@@ -471,7 +471,7 @@ describe('agent-hub-user-data.tftpl', () => {
     // disk. The IAM role attached in PR 1 already has Route 53 perms, so
     // certbot's dns-route53 plugin picks them up via EC2 metadata creds — no
     // AWS_ACCESS_KEY_ID needed in the env. Renewal is owned by the Hub server
-    // (server/container-pool/cert-renewal-heartbeat.ts), so no system cron
+    // (server/(removed pr-env subsystem)/cert-renewal-heartbeat.ts), so no system cron
     // entry is needed in user-data.
     describe('first-boot wildcard cert issuance', () => {
       const previewHost = 'preview.agent-hub.example.com';
@@ -515,7 +515,7 @@ describe('agent-hub-user-data.tftpl', () => {
       });
 
       it('does not configure a system cron for renewal (the Hub heartbeat owns renewal)', () => {
-        // Daily renewal is owned by server/container-pool/cert-renewal-heartbeat.ts.
+        // Daily renewal is owned by server/(removed pr-env subsystem)/cert-renewal-heartbeat.ts.
         // A `certbot renew` system cron would race with the heartbeat and is
         // explicitly out of scope for this PR.
         expect(r, 'no `certbot renew` system cron in user-data').not.toMatch(/\bcertbot\s+renew\b/);
@@ -558,7 +558,7 @@ describe('agent-hub-user-data.tftpl', () => {
       // Match the include glob that points at per-PR fragments. The
       // pattern MUST be `pr-[0-9]*.preview.conf` (matches the actual
       // writer output, does NOT match the base file itself); see
-      // server/container-pool/nginx-template.ts → previewConfFilename.
+      // server/(removed pr-env subsystem)/nginx-template.ts → previewConfFilename.
       // Capturing the literal glob lets us assert non-self-match below.
       const includeMatch = baseTpl.match(
         /include\s+(\/etc\/nginx\/[^/]+)\/(pr-\[0-9\]\*\.preview\.conf)/,
