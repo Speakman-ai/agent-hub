@@ -190,11 +190,27 @@ APP_PORT="${app_port}"
 
 # Pull-on-start: cheap when the digest is unchanged (a few hundred bytes for the
 # manifest), and the only correctness-preserving way to redeploy on reboot.
+#
+# CRITICAL: this loop MUST exit non-zero if all attempts fail. The original
+# implementation fell through to `exec docker run` on a pull failure, which
+# silently launched the container on the stale cached image — and systemd +
+# CI both reported success. Observed 2026-05-11: dev sandbox stuck on v1.16.0
+# for 3 days under disk-full conditions because pull failures were swallowed.
+# See kanban card 89903017 for the post-mortem.
+PULL_OK=0
 for i in 1 2 3; do
-  docker pull --quiet "\$IMAGE_URI" && break
+  if docker pull --quiet "\$IMAGE_URI"; then
+    PULL_OK=1
+    break
+  fi
   echo "docker pull failed (attempt \$i); retrying in 10s..." >&2
   sleep 10
 done
+if [ "\$PULL_OK" != "1" ]; then
+  echo "FATAL: docker pull \$IMAGE_URI failed after 3 attempts. Refusing to start with stale local image." >&2
+  echo "       Check disk space (df -h /var/lib/docker) and ECR connectivity." >&2
+  exit 1
+fi
 
 docker rm -f agenthub-server 2>/dev/null || true
 # PR-env docker-socket-bind variant removed in PR-Env Removal #6. See alb.tf
@@ -218,6 +234,15 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/docker rm -f agenthub-server
+# Reap dangling images older than 24h before each restart. The just-pulled
+# `:main` is preserved (it's tagged + fresh), but the previous untagged
+# `:main` digests left over from prior pushes get GC'd. Without this, ~30
+# deploys filled the dev sandbox disk to 98% and `docker pull` silently
+# failed. See kanban card b2528863 for the post-mortem.
+# `-f` (force) is required because prune is interactive by default.
+# `--filter until=24h` shields the freshly-pulled image from the sweep.
+# `-` prefix makes the unit tolerant of prune failures (e.g. no images yet).
+ExecStartPre=-/usr/bin/docker image prune -af --filter until=24h
 ExecStart=/usr/local/bin/agenthub-server-run.sh
 ExecStop=/usr/bin/docker stop -t 30 agenthub-server
 Restart=always

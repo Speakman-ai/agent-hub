@@ -169,6 +169,36 @@ describe('agent-hub-user-data.tftpl', () => {
       expect(rendered).toMatch(/docker pull --quiet "\\\$IMAGE_URI"/);
     });
 
+    // Regression guard for kanban 89903017. The previous wrapper had a 3-attempt
+    // pull retry loop that fell through to `exec docker run` on failure, so a
+    // disk-full / ECR-blip / network-timeout silently launched the container
+    // on the stale cached image. systemd then reported the unit healthy and CI
+    // reported "Restart Success" — even though the deployed binary was old.
+    // Observed 2026-05-11: dev sandbox stuck on v1.16.0 for 3 days. The new
+    // wrapper sets PULL_OK and `exit 1`s if no attempt succeeded.
+    it('makes docker pull failure FATAL (does not fall through to stale image)', () => {
+      expect(rendered, 'wrapper must track pull success via PULL_OK').toMatch(/PULL_OK=0/);
+      expect(rendered, 'wrapper must set PULL_OK=1 on the success branch').toMatch(/PULL_OK=1/);
+      expect(rendered, 'wrapper must exit 1 when all pull attempts fail').toMatch(
+        /if \[ "\\\$PULL_OK" != "1" \][\s\S]*?exit 1/,
+      );
+      // Specifically forbid the old fall-through shape where exec docker run
+      // immediately follows the retry loop with no PULL_OK check.
+      expect(rendered).not.toMatch(/sleep 10\s*\ndone\s*\n\s*docker rm -f agenthub-server/);
+    });
+
+    // Regression guard for kanban b2528863. Every CI push to :main writes a
+    // new image to ECR Public and the host pulls it; the previous :main
+    // becomes a dangling untagged image. Without GC the host disk filled
+    // to 98% over ~30 deploys, at which point pulls started failing. The
+    // systemd unit now runs `docker image prune` (only images older than
+    // 24h, so the just-pulled :main is preserved) before each start.
+    it('reaps dangling images >24h old before each restart via systemd ExecStartPre', () => {
+      expect(rendered).toMatch(
+        /ExecStartPre=-\/usr\/bin\/docker image prune -af --filter until=24h/,
+      );
+    });
+
     it('does not install host nginx, certbot, or the dns-route53 plugin (PR-env removal)', () => {
       expect(rendered).not.toMatch(/\$PKG_INSTALL\s+nginx\s+certbot/);
       expect(rendered).not.toContain('python3-certbot-dns-route53');
