@@ -1604,6 +1604,13 @@ function initDb(dataDir: string): void {
   // and re-pack remaining column positions. If a board has Backlog
   // but no To Do (unlikely), the column is renamed in place. Idempotent:
   // boards without a Backlog column are skipped on subsequent boots.
+  //
+  // Note: the match is exact-case "Backlog" only (not case-insensitive and
+  // not a substring). This intentionally preserves user-created columns like
+  // "Project Backlog" or "backlog" — those survive this migration. Only the
+  // default-seeded "Backlog" column (capital B, exact string) is affected.
+  // isColumnBlockerSensitive uses a case-insensitive substring match for
+  // back-compat with those custom boards; see server/kanban-blockers.ts.
   try {
     const backlogCols = db
       .prepare(`SELECT id, board_id FROM kanban_columns WHERE name = 'Backlog'`)
