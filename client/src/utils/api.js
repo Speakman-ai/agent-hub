@@ -51,6 +51,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  // One-shot preview validator. Spawns the configured startScript against
+  // the project's cwd, polls healthPath for 2xx with a 30s deadline, snaps
+  // a screenshot, and tears down. Returns
+  // `{ ok, ports: { allocated }, durationMs, screenshotUrl?, error? }`.
+  // We disable the default fetch timeout because the server-side run can
+  // legitimately take ~30s (health-check deadline) before responding.
+  testProjectPreview: (projectId) =>
+    fetchJSON(`/projects/${projectId}/preview/test`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: null,
+    }),
   deleteProject: (projectId) =>
     fetch(`${getApiBase()}/projects/${projectId}`, {
       method: 'DELETE',

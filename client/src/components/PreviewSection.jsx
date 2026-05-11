@@ -8,6 +8,8 @@ import {
   X,
   Loader2,
   Plus,
+  Play,
+  ExternalLink,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 
@@ -129,6 +131,11 @@ export default function PreviewSection({ projects = [], onProjectsChange, regist
   const [detecting, setDetecting] = useState(false);
   const [suggestion, setSuggestion] = useState(null); // { stack, startScript, port, captureRoutes, idleTTL } | { empty: true }
   const [detectError, setDetectError] = useState(null);
+  // Test-preview state.
+  //   testPhase: null → 'starting' → 'health' → 'ready' | 'failed'
+  //   testResult: server response on completion (success or failure)
+  const [testPhase, setTestPhase] = useState(null);
+  const [testResult, setTestResult] = useState(null);
 
   // Refresh local project record when the projects prop or selection changes.
   useEffect(() => {
@@ -141,6 +148,10 @@ export default function PreviewSection({ projects = [], onProjectsChange, regist
     setSaveStatus(null);
     setSuggestion(null);
     setDetectError(null);
+    // Reset test panel when switching projects so a stale Ready/Failed
+    // banner from a different project doesn't linger.
+    setTestPhase(null);
+    setTestResult(null);
   }, [projectId, projects]);
 
   // If the selected project disappeared (deleted, etc.), pick the first.
@@ -269,6 +280,40 @@ export default function PreviewSection({ projects = [], onProjectsChange, regist
   };
 
   const dismissSuggestion = () => setSuggestion(null);
+
+  // Test preview — runs the configured startScript + healthPath against
+  // the project's `cwd` in a one-shot runtime, captures a screenshot,
+  // and tears down. Disabled while the form is dirty (user must Save
+  // first so the server is testing the saved config rather than the
+  // unsaved draft).
+  const isTesting = testPhase === 'starting' || testPhase === 'health';
+
+  const handleTest = async () => {
+    if (!project || isTesting) return;
+    setTestPhase('starting');
+    setTestResult(null);
+    // Flip the visible label to "Health check…" after a short tick so
+    // the user can see the phase progress; this is a cosmetic indicator
+    // because the server runs both phases inside one HTTP call.
+    const healthTimer = setTimeout(() => {
+      setTestPhase((prev) => (prev === 'starting' ? 'health' : prev));
+    }, 800);
+    try {
+      const result = await api.testProjectPreview(project.id);
+      setTestResult(result);
+      setTestPhase(result?.ok ? 'ready' : 'failed');
+    } catch (err) {
+      setTestResult({ ok: false, error: err?.message || 'Preview test failed' });
+      setTestPhase('failed');
+    } finally {
+      clearTimeout(healthTimer);
+    }
+  };
+
+  const clearTestResult = () => {
+    setTestPhase(null);
+    setTestResult(null);
+  };
 
   if (!projects?.length) {
     return (
@@ -552,6 +597,115 @@ export default function PreviewSection({ projects = [], onProjectsChange, regist
             )}
           </div>
 
+          {/* Test result panel — appears above the save bar */}
+          {(testPhase || testResult) && (
+            <div
+              className={`border rounded-xl p-4 space-y-3 ${
+                testPhase === 'ready'
+                  ? 'border-green-500/30 bg-green-500/5'
+                  : testPhase === 'failed'
+                    ? 'border-red-500/30 bg-red-500/5'
+                    : 'border-gray-800 bg-gray-800/40'
+              }`}
+              data-testid="preview-test-panel"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  {testPhase === 'starting' && (
+                    <p
+                      className="flex items-center gap-2 text-sm text-sky-300"
+                      data-testid="preview-test-status-starting"
+                    >
+                      <Loader2 size={14} className="animate-spin" /> Starting…
+                    </p>
+                  )}
+                  {testPhase === 'health' && (
+                    <p
+                      className="flex items-center gap-2 text-sm text-sky-300"
+                      data-testid="preview-test-status-health"
+                    >
+                      <Loader2 size={14} className="animate-spin" /> Health check…
+                    </p>
+                  )}
+                  {testPhase === 'ready' && testResult && (
+                    <div className="space-y-2" data-testid="preview-test-status-ready">
+                      <p className="flex items-center gap-2 text-sm text-green-400">
+                        <CheckCircle2 size={14} /> Ready (
+                        {Math.round((testResult.durationMs || 0) / 100) / 10}s, port{' '}
+                        <code className="text-gray-300">{testResult.ports?.allocated ?? '—'}</code>)
+                      </p>
+                      {testResult.screenshotUrl && (
+                        <a
+                          href={testResult.screenshotUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-block"
+                          data-testid="preview-test-screenshot-link"
+                        >
+                          <img
+                            src={testResult.screenshotUrl}
+                            alt="Preview screenshot"
+                            className="rounded-lg border border-gray-700 max-w-md max-h-64 object-cover"
+                            data-testid="preview-test-screenshot"
+                          />
+                        </a>
+                      )}
+                      {testResult.ports?.allocated && (
+                        <p className="text-xs text-gray-500 flex items-center gap-1">
+                          <ExternalLink size={12} />
+                          <a
+                            href={`http://localhost:${testResult.ports.allocated}/`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-sky-400 hover:underline"
+                            data-testid="preview-test-live-link"
+                          >
+                            View live
+                          </a>
+                          <span className="text-gray-600">
+                            — link is informational; the runtime is already torn down.
+                          </span>
+                        </p>
+                      )}
+                      {testResult.error && (
+                        <p className="text-xs text-amber-400">Note: {testResult.error}</p>
+                      )}
+                    </div>
+                  )}
+                  {testPhase === 'failed' && testResult && (
+                    <div className="space-y-1" data-testid="preview-test-status-failed">
+                      <p className="flex items-center gap-2 text-sm text-red-400">
+                        <AlertCircle size={14} /> Failed
+                      </p>
+                      <p
+                        className="text-xs text-red-300 break-words"
+                        data-testid="preview-test-error"
+                      >
+                        {testResult.error || 'Unknown error'}
+                      </p>
+                      {testResult.ports?.allocated && (
+                        <p className="text-xs text-gray-500">
+                          Allocated port: {testResult.ports.allocated}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {!isTesting && (
+                  <button
+                    type="button"
+                    onClick={clearTestResult}
+                    aria-label="Dismiss test result"
+                    className="text-gray-500 hover:text-gray-300 shrink-0"
+                    data-testid="preview-test-dismiss"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Save bar */}
           <div className="flex items-center gap-3 sticky bottom-0 bg-gray-950/80 backdrop-blur py-3 border-t border-gray-800">
             <button
@@ -563,6 +717,23 @@ export default function PreviewSection({ projects = [], onProjectsChange, regist
             >
               {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
               {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              onClick={handleTest}
+              disabled={!form.enabled || dirty || isTesting || saving}
+              title={
+                dirty
+                  ? 'Save your changes before running a test'
+                  : !form.enabled
+                    ? 'Enable preview before running a test'
+                    : 'Run a one-shot preview validation'
+              }
+              className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-lg"
+              data-testid="preview-test-button"
+            >
+              {isTesting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+              {isTesting ? 'Testing…' : 'Test preview'}
             </button>
             {dirty && !saving && <span className="text-xs text-amber-400">Unsaved changes</span>}
             {saveStatus === 'saved' && (

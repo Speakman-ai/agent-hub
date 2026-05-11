@@ -11,6 +11,7 @@ vi.mock('../utils/api.js', () => ({
   api: {
     updateProject: vi.fn(),
     detectProjectPreview: vi.fn(),
+    testProjectPreview: vi.fn(),
   },
 }));
 
@@ -184,6 +185,93 @@ describe('PreviewSection — render & save', () => {
     );
     fireEvent.click(getByTestId('preview-detect-button'));
     expect(await findByTestId('preview-suggestion-empty')).toBeTruthy();
+  });
+
+  it('Test button is disabled while form is dirty and re-enabled after save', async () => {
+    const { getByTestId } = render(<PreviewSection projects={[projectWithPreview]} />);
+    // Clean state, preview enabled → Test button is enabled
+    expect(getByTestId('preview-test-button').disabled).toBe(false);
+    // Make dirty → Test button disabled
+    fireEvent.change(getByTestId('preview-health-path'), { target: { value: '/ping' } });
+    expect(getByTestId('preview-test-button').disabled).toBe(true);
+    // Save → Test button re-enabled
+    fireEvent.click(getByTestId('preview-save-button'));
+    await waitFor(() => {
+      expect(api.updateProject).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(getByTestId('preview-test-button').disabled).toBe(false);
+    });
+  });
+
+  it('Test button is disabled when preview is not enabled', () => {
+    const disabled = {
+      ...projectWithPreview,
+      prEnv: {
+        ...projectWithPreview.prEnv,
+        preview: { ...projectWithPreview.prEnv.preview, enabled: false },
+      },
+    };
+    const { getByTestId } = render(<PreviewSection projects={[disabled]} />);
+    expect(getByTestId('preview-test-button').disabled).toBe(true);
+  });
+
+  it('Test preview success renders Ready status + screenshot + View live link', async () => {
+    api.testProjectPreview.mockResolvedValueOnce({
+      ok: true,
+      ports: { allocated: 4200 },
+      durationMs: 1200,
+      screenshotUrl: '/uploads/preview-tests/abc.png',
+    });
+    const { getByTestId, findByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} />,
+    );
+    fireEvent.click(getByTestId('preview-test-button'));
+    // Starting indicator appears immediately
+    expect(getByTestId('preview-test-status-starting')).toBeTruthy();
+    // Eventually flips to Ready with screenshot + live link
+    const ready = await findByTestId('preview-test-status-ready');
+    expect(ready.textContent).toMatch(/Ready/);
+    expect(getByTestId('preview-test-screenshot').getAttribute('src')).toBe(
+      '/uploads/preview-tests/abc.png',
+    );
+    expect(getByTestId('preview-test-live-link').getAttribute('href')).toBe(
+      'http://localhost:4200/',
+    );
+  });
+
+  it('Test preview failure renders the server error inline', async () => {
+    api.testProjectPreview.mockResolvedValueOnce({
+      ok: false,
+      ports: { allocated: 4201 },
+      durationMs: 31000,
+      error: 'health check timed out after 30000ms (no response on /healthz).',
+    });
+    const { getByTestId, findByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} />,
+    );
+    fireEvent.click(getByTestId('preview-test-button'));
+    const failed = await findByTestId('preview-test-status-failed');
+    expect(failed.textContent).toMatch(/Failed/);
+    expect(getByTestId('preview-test-error').textContent).toMatch(/timed out/);
+  });
+
+  it('Test panel can be dismissed via the X button', async () => {
+    api.testProjectPreview.mockResolvedValueOnce({
+      ok: false,
+      ports: { allocated: null },
+      durationMs: 5,
+      error: 'spawn ENOENT',
+    });
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <PreviewSection projects={[projectWithPreview]} />,
+    );
+    fireEvent.click(getByTestId('preview-test-button'));
+    await findByTestId('preview-test-status-failed');
+    fireEvent.click(getByTestId('preview-test-dismiss'));
+    await waitFor(() => {
+      expect(queryByTestId('preview-test-panel')).toBeNull();
+    });
   });
 
   it('registers an unsaved-changes guard with the parent', async () => {
