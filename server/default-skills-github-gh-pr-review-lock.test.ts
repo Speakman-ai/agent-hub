@@ -1,13 +1,12 @@
 /**
  * Verifies the AGENT_HUB_REVIEWER_LOCK guard in
- * `default-skills/github/scripts/gh-pr.sh`. Reviewer-role spawns set
- * `AGENT_HUB_REVIEWER_LOCK=1` so the only correct identity path is the
- * server-side App endpoint at `POST /api/pr/review`; the script must
- * refuse to run any WRITE subcommand (create, comment, merge, close,
- * ready, review) and exit 2 with a clear pointer. Read-only subcommands
- * (view, diff, list, status, checks, checkout) are intentionally
- * unguarded — inspecting a PR does not attribute an identity to the
- * GitHub App.
+ * `default-skills/github/scripts/gh-pr.sh`. As of PR #896, Agent Hub
+ * injects AGENT_HUB_REVIEWER_LOCK=1 into EVERY spawn (not just
+ * reviewer-role spawns). The guard is intentionally scoped to the
+ * `review` subcommand only — that is the sole identity-attribution
+ * surface for formal GitHub reviews. Other write subcommands
+ * (create, comment, merge, close, ready) use the per-user OAuth/PAT
+ * re-injected by applyGithubSpawnCredentials and must NOT be blocked.
  *
  * Notes
  * -----
@@ -108,34 +107,52 @@ describe('gh-pr.sh review — AGENT_HUB_REVIEWER_LOCK guard', () => {
     expect(result.stderr || '').not.toContain('is disabled inside Agent Hub reviewer sessions');
   });
 
-  // Every WRITE subcommand must refuse under the lock. We pick a
-  // minimal-args invocation for each: the lock check runs at the top
-  // of every cmd_* before flag validation, so missing required args
-  // are not reached.
-  const WRITE_SUBCOMMANDS: Array<[string, string[]]> = [
-    ['create', ['create', '--title', 'x']],
-    ['comment', ['comment', '1', '--body', 'x']],
-    ['merge', ['merge', '1']],
+  // Only the `review` subcommand must refuse under the lock.
+  // Other write subcommands (create/comment/merge/close/ready) are not
+  // identity-attribution surfaces for formal reviews and must not be blocked.
+  it('blocks the review subcommand under AGENT_HUB_REVIEWER_LOCK=1', () => {
+    const result = spawnSync('bash', [SCRIPT, 'review', '1', '--approve'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        AGENT_HUB_REVIEWER_LOCK: '1',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(2);
+    const stderr = result.stderr || '';
+    expect(stderr).toContain('gh-pr.sh review is disabled');
+    expect(stderr).toContain('/api/pr/review');
+  });
+
+  // Regression: create/comment/merge/close/ready must NOT be blocked under
+  // AGENT_HUB_REVIEWER_LOCK=1. These subcommands use the per-user OAuth/PAT
+  // re-injected by applyGithubSpawnCredentials — locking them would break
+  // normal dev-agent workflows (gh-pr.sh create, comment, etc.).
+  // We assert that the lock error message is absent; the stub gh exits 0
+  // so the command itself succeeds (or fails for other reasons, e.g. missing
+  // required args — we only care that the lock guard did not fire).
+  const NON_REVIEW_WRITE_SUBCOMMANDS: Array<[string, string[]]> = [
+    ['create', ['create', '--title', 'test pr']],
+    ['comment', ['comment', '1', '--body', 'note']],
+    ['merge', ['merge', '1', '--squash']],
     ['close', ['close', '1']],
     ['ready', ['ready', '1']],
-    ['review', ['review', '1', '--approve']],
   ];
 
-  for (const [name, args] of WRITE_SUBCOMMANDS) {
-    it(`blocks the ${name} subcommand under AGENT_HUB_REVIEWER_LOCK=1`, () => {
+  for (const [name, args] of NON_REVIEW_WRITE_SUBCOMMANDS) {
+    it(`does NOT block ${name} under AGENT_HUB_REVIEWER_LOCK=1`, () => {
       const result = spawnSync('bash', [SCRIPT, ...args], {
         env: {
           PATH: stubbedPath,
           HOME: os.tmpdir(),
           AGENT_HUB_REVIEWER_LOCK: '1',
+          GH_TOKEN: 'fake-token-to-satisfy-require_gh_token',
         },
         encoding: 'utf-8',
       });
-      expect(result.status).toBe(2);
-      const stderr = result.stderr || '';
-      expect(stderr).toContain(`gh-pr.sh ${name} is disabled`);
-      // Pointer to the correct identity path must always be present.
-      expect(stderr).toContain('/api/pr/review');
+      // The lock message must NOT appear — the lock is scoped to `review` only.
+      expect(result.stderr || '').not.toContain('is disabled in Agent Hub spawns');
     });
   }
 
