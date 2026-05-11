@@ -21,11 +21,7 @@ import {
   Archive,
   RotateCcw,
   Loader2,
-  ChevronDown,
-  ChevronRight,
 } from 'lucide-react';
-import OrchestrationTimelinePanel from './OrchestrationTimelinePanel.jsx';
-import SessionSummarySidebar from './SessionSummarySidebar.jsx';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
 import OrgSwitcher from './OrgSwitcher.jsx';
@@ -90,12 +86,6 @@ export default function Sidebar({
   /** Electron: parent provides canonical /api/health so footer matches update prompt. */
   electronSuppressHealthFetch = false,
   electronHealthSnapshot = null,
-  /** Orchestration timeline entries for the active session (moved from main chat area). */
-  orchestrationTimelineEntries = [],
-  /** Session ID for the features/summary panel embedded in the sidebar. */
-  summarySessionId = null,
-  /** Whether the active session is currently live (streaming). */
-  summaryIsLive = false,
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [hoveredRoom, setHoveredRoom] = useState(null);
@@ -108,8 +98,6 @@ export default function Sidebar({
   const [editingSessionName, setEditingSessionName] = useState('');
   const [confirmAction, setConfirmAction] = useState(null); // 'clear-all' | 'clear-inactive' | null
   const [serverVersion, setServerVersion] = useState(null);
-  // Session activity panel collapse state (features + timeline in sidebar)
-  const [sessionPanelOpen, setSessionPanelOpen] = useState(true);
   const [serverGitHash, setServerGitHash] = useState(null);
   const renameSavedRef = useRef(false);
 
@@ -1091,49 +1079,6 @@ export default function Sidebar({
               </button>
             ))}
           </div>
-
-          {/* Session activity panel — features + orchestration timeline
-              Appears at the bottom of the nav when a chat session is active.
-              Replaces the right-column SessionSummarySidebar and the
-              in-chat OrchestrationTimelinePanel. */}
-          {summarySessionId && (
-            <div className="mt-3 border-t border-gray-800/60 pt-2">
-              <button
-                type="button"
-                onClick={() => setSessionPanelOpen((o) => !o)}
-                className="w-full flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold text-gray-500 uppercase tracking-wider hover:text-gray-300 transition-colors rounded"
-              >
-                {sessionPanelOpen ? (
-                  <ChevronDown size={12} className="shrink-0" />
-                ) : (
-                  <ChevronRight size={12} className="shrink-0" />
-                )}
-                Session
-              </button>
-
-              {sessionPanelOpen && (
-                <div className="space-y-2 mt-1">
-                  {/* Orchestration timeline (with PR review progress) */}
-                  {orchestrationTimelineEntries.length > 0 && (
-                    <div className="px-1">
-                      <OrchestrationTimelinePanel
-                        entries={orchestrationTimelineEntries}
-                        sessionId={summarySessionId}
-                        compact
-                      />
-                    </div>
-                  )}
-
-                  {/* Features panel (PR, skills, changed files, run snapshot) */}
-                  <SessionSummarySidebar
-                    sessionId={summarySessionId}
-                    isLive={summaryIsLive}
-                    variant="sidebar"
-                  />
-                </div>
-              )}
-            </div>
-          )}
 
           {orchestrationSession && onOrchestrationSave ? (
             <SidebarSessionOrchestration
