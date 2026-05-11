@@ -95,7 +95,22 @@ export interface PreviewBroadcastEvent {
   // — `kind === 'preview_unavailable'` payload ——
   /** Sub-reason: project has no `prEnv` block, or its `preview.enabled` is false. */
   unavailableReason?: 'no-pr-env' | 'preview-disabled';
-  /** Deep link to the project settings wizard so the user can enable preview. */
+  /**
+   * Navigation intent for the client to resolve via `setCurrentView`.
+   * The Agent Hub web app doesn't use URL routing (see
+   * `client/src/App.jsx`), so a string URL like `/projects/.../settings/...`
+   * never resolves to a real view. `wizard` is the preferred contract:
+   * `view` is a `currentView` token (e.g. `settings:preview`) the client
+   * passes directly to `setCurrentView`, and `projectId` lets the client
+   * switch active project before navigating.
+   */
+  wizard?: { view: string; projectId: string };
+  /**
+   * Legacy string URL form. Retained for one release so in-flight events
+   * from older servers still render the teach-moment card (with a
+   * non-resolving link). New clients should prefer `wizard`.
+   * @deprecated Use `wizard` instead.
+   */
   wizardUrl?: string;
 
   // — `kind === 'preview_failed'` payload ——————
@@ -124,10 +139,23 @@ export interface PreviewHandlerDeps {
    */
   takeScreenshot?: (url: string) => Promise<string | null>;
   /**
-   * Build the deep-link to the project's PR-env / preview wizard. Tests
-   * inject a fake builder so we don't depend on the client's router.
+   * Build the deep-link string URL for the project's preview wizard.
+   * Emitted as the legacy `wizardUrl` field on `preview_unavailable`
+   * events for one release of backwards compat — new clients should
+   * resolve `wizard` (the navigation intent) instead.
+   * @deprecated Prefer overriding `buildWizard` for the structured
+   *   intent payload. Both are emitted side-by-side during the
+   *   deprecation window so older client builds still render the
+   *   teach-moment card.
    */
   buildWizardUrl?: (projectId: string) => string;
+  /**
+   * Build the structured navigation intent for the client to resolve
+   * via `setCurrentView`. Defaults to `{ view: 'settings:preview',
+   * projectId }`. Tests can inject a fake to assert on the emitted
+   * payload without depending on the client's view-router conventions.
+   */
+  buildWizard?: (projectId: string) => { view: string; projectId: string };
   /**
    * How long to wait for the preview to flip to `ready` before giving
    * up and surfacing `preview_failed`. Defaults to 30s — matches the
@@ -233,12 +261,26 @@ const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_READY_POLL_INTERVAL_MS = 500;
 
 /**
- * Default wizard URL builder. Points at the per-project PR-env settings page
- * (which owns the preview sub-config). Production callers may override this
- * to point at a dedicated preview wizard once card 4 lands.
+ * Default wizard URL builder. Emitted as the legacy `wizardUrl` field on
+ * `preview_unavailable` events for backwards compat (one release).
+ *
+ * The path itself is fictional — the Agent Hub web app doesn't use URL
+ * routing, so this string never resolves to a real view. It's kept so
+ * older client builds that read `wizardUrl` instead of `wizard` still
+ * render the teach-moment card (the CTA link will simply not navigate).
  */
 function defaultBuildWizardUrl(projectId: string): string {
-  return `/projects/${encodeURIComponent(projectId)}/settings/pr-environments`;
+  return `/projects/${encodeURIComponent(projectId)}/settings/preview?focus=preview`;
+}
+
+/**
+ * Default wizard intent builder. Points the client at the per-project
+ * Preview settings tab (`settings:preview` — see
+ * `client/src/components/SettingsPage.jsx`), which is what the chat-side
+ * CTA actually wants to land on.
+ */
+function defaultBuildWizard(projectId: string): { view: string; projectId: string } {
+  return { view: 'settings:preview', projectId };
 }
 
 /**
@@ -270,6 +312,7 @@ export async function handlePreviewBlock(
     worktreePath,
     takeScreenshot,
     buildWizardUrl = defaultBuildWizardUrl,
+    buildWizard = defaultBuildWizard,
     readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
     readyPollIntervalMs = DEFAULT_READY_POLL_INTERVAL_MS,
     sleep = (ms) => new Promise<void>((r) => setTimeout(r, ms)),
@@ -287,6 +330,7 @@ export async function handlePreviewBlock(
       route: task.route,
       agentReason: task.reason,
       unavailableReason: !project.prEnv ? 'no-pr-env' : 'preview-disabled',
+      wizard: buildWizard(project.id),
       wizardUrl: buildWizardUrl(project.id),
     } satisfies PreviewBroadcastEvent as unknown as Record<string, unknown>);
     return;
@@ -303,6 +347,7 @@ export async function handlePreviewBlock(
       route: task.route,
       agentReason: task.reason,
       unavailableReason: 'no-pr-env',
+      wizard: buildWizard(project.id),
       wizardUrl: buildWizardUrl(project.id),
     } satisfies PreviewBroadcastEvent as unknown as Record<string, unknown>);
     return;

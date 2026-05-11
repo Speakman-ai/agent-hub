@@ -7,13 +7,21 @@ import { useState } from 'react';
  * The component is fully driven by the broadcast event payload — it
  * doesn't talk to the API directly. Three render variants:
  *   - `kind === 'preview'` → live iframe + screenshot thumbnail.
- *   - `kind === 'preview_unavailable'` → teach moment with a deep-link
- *     to the project preview wizard.
+ *   - `kind === 'preview_unavailable'` → teach moment with a CTA that
+ *     routes through `onConfigure(event)`. The event carries the
+ *     preferred `wizard: { view, projectId }` navigation intent and a
+ *     legacy `wizardUrl` string for one-release backwards compat. The
+ *     web app uses `currentView` state instead of URL routing, so the
+ *     parent typically maps `wizard.view` to `setCurrentView(...)` and
+ *     `wizard.projectId` to its active-project setter.
  *   - `kind === 'preview_failed'` → log tail + retry button.
  *
  * `onRetry` and `onTouch` are optional handlers wired by the parent
  * chat view. `onRetry` re-issues the original chat message; `onTouch`
- * pings the runtime so the idle-TTL clock resets.
+ * pings the runtime so the idle-TTL clock resets. `onConfigure(event)`
+ * receives the full event so the parent can read `event.wizard` and
+ * navigate. `onSkip(event)` is called when the user dismisses the
+ * teach-moment card.
  */
 export default function PreviewAttachment({ event, onRetry, onTouch, onConfigure, onSkip }) {
   const [iframeOpen, setIframeOpen] = useState(false);
@@ -97,20 +105,33 @@ export default function PreviewAttachment({ event, onRetry, onTouch, onConfigure
 }
 
 function PreviewUnavailable({ event, onConfigure, onSkip }) {
-  const { wizardUrl, unavailableReason, agentReason } = event;
+  const { wizard, wizardUrl, unavailableReason, agentReason } = event;
   const [skipped, setSkipped] = useState(false);
   const headline =
     unavailableReason === 'preview-disabled'
       ? 'Preview is disabled for this project'
       : 'Live previews aren\u2019t set up for this project yet.';
-  // Append `?focus=preview` to the server-supplied wizard URL so the
-  // wizard opens scrolled to the preview sub-section. We tolerate URLs
-  // that already carry a query string.
-  const focusedWizardUrl = wizardUrl
-    ? wizardUrl + (wizardUrl.includes('?') ? '&' : '?') + 'focus=preview'
+  // Resolution order:
+  //  1. `wizard` (preferred contract — a navigation intent the host app
+  //     maps to `setCurrentView(view)` for the right project).
+  //  2. `wizardUrl` (legacy string URL — kept for one release while
+  //     in-flight broadcasts drain. The app doesn't use URL routing, so
+  //     this href won't actually navigate, but it still renders as a
+  //     link for visual consistency with older clients).
+  const hasWizardIntent = !!(wizard && wizard.view);
+  // Append `?focus=preview` to the legacy URL so older fallback wiring
+  // can still scroll to the preview sub-section. Tolerates URLs that
+  // already carry a query string.
+  const legacyHref = wizardUrl
+    ? wizardUrl.includes('focus=preview')
+      ? wizardUrl
+      : wizardUrl + (wizardUrl.includes('?') ? '&' : '?') + 'focus=preview'
     : null;
   if (skipped) return null;
   const handleConfigure = (e) => {
+    // Always intercept the click when we can — the wizard intent (or
+    // legacy URL) is meant to be resolved through `onConfigure`, not
+    // the browser's default link follow.
     if (typeof onConfigure === 'function') {
       e.preventDefault();
       onConfigure(event);
@@ -120,6 +141,10 @@ function PreviewUnavailable({ event, onConfigure, onSkip }) {
     setSkipped(true);
     if (typeof onSkip === 'function') onSkip(event);
   };
+  // CTA visibility: render whenever we have either form of intent OR an
+  // `onConfigure` handler (the parent may know how to resolve the
+  // event even without a payload-embedded link).
+  const showCta = hasWizardIntent || !!legacyHref || typeof onConfigure === 'function';
   return (
     <div className="my-3 rounded-lg border border-amber-700/60 bg-amber-900/20 p-3 text-sm text-amber-100">
       <div className="mb-1 font-medium">{headline}</div>
@@ -136,9 +161,9 @@ function PreviewUnavailable({ event, onConfigure, onSkip }) {
         requests can boot a live worktree preview here.
       </div>
       <div className="flex gap-2">
-        {focusedWizardUrl && (
+        {showCta && (
           <a
-            href={focusedWizardUrl}
+            href={legacyHref || '#'}
             onClick={handleConfigure}
             className="rounded bg-amber-700 px-3 py-1 text-xs font-medium text-white hover:bg-amber-600"
           >
