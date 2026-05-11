@@ -80,7 +80,7 @@ export default function MyClaudeAuthSection() {
       setData(body);
       setApiKeyStatus({
         type: 'success',
-        msg: body.anthropicApiKey ? `Saved: ${body.anthropicApiKey}` : 'Cleared',
+        msg: body.anthropicApiKey ? 'Saved' : 'Cleared',
       });
       setApiKeyInput('');
     } catch (err) {
@@ -109,7 +109,7 @@ export default function MyClaudeAuthSection() {
     // Terminal-wrapped `claude setup-token` output may contain newlines
     // inside the token. Collapse whitespace before sending so the user
     // can paste straight from the terminal.
-    const collapsed = oauthInput.trim().replace(/\s+/g, '');
+    const collapsed = oauthInput.replace(/\s+/g, '');
     setOauthSaving(true);
     setOauthStatus(null);
     try {
@@ -117,7 +117,7 @@ export default function MyClaudeAuthSection() {
       setData(body);
       setOauthStatus({
         type: 'success',
-        msg: body.claudeCodeOAuthToken ? `Saved: ${body.claudeCodeOAuthToken}` : 'Cleared',
+        msg: body.claudeCodeOAuthToken ? 'Saved' : 'Cleared',
       });
       setOauthInput('');
     } catch (err) {
