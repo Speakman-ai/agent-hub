@@ -369,19 +369,26 @@ describe('selectGithubSpawnToken — reviewer vs. non-reviewer policy', () => {
 });
 
 describe('reviewer spawn env contract (end-to-end composition)', () => {
-  // These tests assemble the same helper calls chat.ts makes for the
-  // reviewer credential branch, in the same order, and assert on the
+  // These tests assemble the same helper calls chat.ts makes for every
+  // spawn credential branch, in the same order, and assert on the
   // final env shape. Call order mirrors chat.ts:
   //   1. applyReviewerSpawnIsolation  (scrub inherited tokens + set GH_CONFIG_DIR/lock)
-  //   2. applyGithubSpawnCredentials  (re-set bot token when present)
+  //   2. applyGithubSpawnCredentials  (re-set the resolved spawn token when present)
+  //
+  // Option A (card 1f9c8215-…) made step (1) universal — it runs on
+  // every spawn regardless of role, so AGENT_HUB_REVIEWER_LOCK=1 is
+  // always set and inherited GitHub tokens are always scrubbed before
+  // (2) re-injects the role-appropriate credential.
   //
   //   - reviewer + no bot token + owner OAuth → NO GH_TOKEN, NO
   //     GIT_CONFIG_* helper. Only GH_CONFIG_DIR + lock sentinel.
   //   - reviewer + bot token                  → bot token wired, lock
   //     sentinel set, GH_CONFIG_DIR isolated.
-  //   - non-reviewer + owner OAuth            → owner token wired, NO
-  //     lock sentinel, GH_CONFIG_DIR untouched (inherits whatever the
-  //     non-reviewer flow allows).
+  //   - non-reviewer + owner OAuth            → owner token wired, lock
+  //     sentinel ALSO set (universal), GH_CONFIG_DIR isolated. The
+  //     lock blocks `gh pr review` from the github skill while the
+  //     re-injected user token lets `git push` / `gh pr create` still
+  //     attribute commits to the human.
 
   it('reviewer + no botGithubToken + owner has OAuth token → spawn env has no GitHub credential', () => {
     const cfg = { dataDir: '/var/data/agent-hub' };
@@ -461,19 +468,112 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
   });
 
-  it('non-reviewer + owner has OAuth token → spawn env carries the per-user token (no regression)', () => {
+  it('non-reviewer + owner has OAuth token → user token wired AND lock sentinel set (universal isolation)', () => {
+    // Option A (card 1f9c8215-…): isolation now runs for every spawn,
+    // including non-reviewer roles. The per-user OAuth must still
+    // survive into GH_TOKEN/GITHUB_TOKEN so `git push` / `gh pr create`
+    // authenticate as the human, AND the lock sentinel must be set so
+    // the github skill's `gh pr review` write path refuses to act
+    // under the human identity.
+    const cfg = { dataDir: '/var/data/agent-hub' };
     const env: NodeJS.ProcessEnv = {};
     const tokenToInject = selectGithubSpawnToken({
       role: 'lead',
       botGithubToken: 'bot_installation_token',
       userGhToken: 'gho_owner_oauth',
     });
+    applyReviewerSpawnIsolation(env, cfg);
     applyGithubSpawnCredentials(env, tokenToInject);
-    // No isolation applied for non-reviewer roles.
 
     expect(env.GH_TOKEN).toBe('gho_owner_oauth');
     expect(env.GITHUB_TOKEN).toBe('gho_owner_oauth');
-    expect(env.GH_CONFIG_DIR).toBeUndefined();
-    expect(env.AGENT_HUB_REVIEWER_LOCK).toBeUndefined();
+    // Universal-lock contract: every spawn carries the lock sentinel
+    // regardless of role, so `gh pr review` cannot post under the
+    // session owner's account.
+    expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
+    // The credential helper still installs so git pushes authenticate
+    // as the per-user OAuth identity.
+    expect(env.GIT_CONFIG_COUNT).toBe('1');
+    expect(env.GIT_CONFIG_KEY_0).toBe('credential.https://github.com.helper');
+  });
+
+  it('non-reviewer + inherited GH_TOKEN + user token → inherited token scrubbed, user token re-injected', () => {
+    // Regression test for the option-A fix: dev/author/lead spawns
+    // historically skipped isolation, so an operator-set GH_TOKEN in
+    // process.env survived into the spawn alongside the lock-less env.
+    // After option A, isolation runs first (scrubbing the inherited
+    // token), then credential injection re-installs the per-user
+    // OAuth — net: the spawn sees the user's token, never the
+    // operator's leaked token.
+    const cfg = { dataDir: '/var/data/agent-hub' };
+    const env: NodeJS.ProcessEnv = {
+      GH_TOKEN: 'ghp_inherited_operator_token',
+      GITHUB_TOKEN: 'ghp_inherited_operator_token',
+    };
+    const tokenToInject = selectGithubSpawnToken({
+      role: 'author',
+      botGithubToken: null,
+      userGhToken: 'gho_owner_oauth',
+    });
+    applyReviewerSpawnIsolation(env, cfg);
+    applyGithubSpawnCredentials(env, tokenToInject);
+
+    expect(env.GH_TOKEN).toBe('gho_owner_oauth');
+    expect(env.GITHUB_TOKEN).toBe('gho_owner_oauth');
+    expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
+  });
+
+  it('non-reviewer + no user token → spawn env carries lock but no GitHub credential', () => {
+    // Acceptance corner of option A: when a non-reviewer agent runs in
+    // an org with no per-user OAuth on file, the spawn lands with the
+    // lock sentinel set, isolation directory wired, and NO GitHub
+    // token at all (host `gh auth login` fallback is severed by
+    // GH_CONFIG_DIR). The agent loses ad-hoc `gh` access — which is
+    // exactly the contract: identity attribution must come from a
+    // stored per-user credential, not an ambient host login.
+    const cfg = { dataDir: '/var/data/agent-hub' };
+    const env: NodeJS.ProcessEnv = {};
+    const tokenToInject = selectGithubSpawnToken({
+      role: 'lead',
+      botGithubToken: 'bot_installation_token',
+      userGhToken: null,
+    });
+    applyReviewerSpawnIsolation(env, cfg);
+    applyGithubSpawnCredentials(env, tokenToInject);
+
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
+  });
+
+  it.each([
+    'reviewer',
+    'lead',
+    'author',
+    'dev',
+    'docs',
+    'intake',
+    'cli-expert',
+    undefined,
+  ] as const)('AGENT_HUB_REVIEWER_LOCK=1 is set regardless of role (role=%s)', (role) => {
+    // Acceptance criterion for card 1f9c8215-…: "Unit test asserting
+    // AGENT_HUB_REVIEWER_LOCK=1 is in the spawn env regardless of
+    // role." This guards against any future refactor that
+    // re-introduces a role-gated guard around isolation in chat.ts.
+    const cfg = { dataDir: '/var/data/agent-hub' };
+    const env: NodeJS.ProcessEnv = {};
+    const tokenToInject = selectGithubSpawnToken({
+      role,
+      botGithubToken: 'bot_installation_token',
+      userGhToken: 'gho_owner_oauth',
+    });
+    applyReviewerSpawnIsolation(env, cfg);
+    applyGithubSpawnCredentials(env, tokenToInject);
+    expect(env.AGENT_HUB_REVIEWER_LOCK).toBe('1');
+    expect(env.GH_CONFIG_DIR).toBe(resolveReviewerGhConfigDir(cfg));
   });
 });

@@ -167,32 +167,47 @@ export function ensureReviewerGhConfigDir(config: Pick<AppConfig, 'dataDir'>): s
 }
 
 /**
- * Apply reviewer-agent spawn-env isolation. Three effects:
+ * Apply spawn-env GitHub-identity isolation. Despite the historical
+ * name ("reviewer" isolation), this is invoked on EVERY agent spawn —
+ * reviewer and non-reviewer roles alike. The naming is preserved
+ * because the function originated to fix the reviewer-pipeline identity
+ * leak; option-A universal application (card 1f9c8215-…) extended it
+ * to close the symmetric leak on non-reviewer spawns where dev/author/
+ * lead agents could post formal PR reviews under the session owner's
+ * OAuth token.
+ *
+ * Three effects:
  *
  *   1. `GH_CONFIG_DIR` → an empty Hub-managed directory under
  *      `config.dataDir`. This severs `gh`'s fallback to
- *      `~/.config/gh/hosts.yml`, so a reviewer agent never inherits the
+ *      `~/.config/gh/hosts.yml`, so a spawned agent never inherits the
  *      host operator's `gh auth login` identity. (Historical leak: PR
  *      reviews attributed to whoever happened to be logged into `gh`
- *      on the box — see card `Reviewer spawn leaks host gh identity`.)
+ *      on the box.)
  *
  *   2. `AGENT_HUB_REVIEWER_LOCK=1` — a sentinel the GitHub skill's
- *      `gh-pr.sh review` subcommand checks. When set, the script
- *      refuses to run and points the agent at `POST /api/pr/review`,
- *      which is the only correct identity path (server-side App
- *      installation token).
+ *      `gh-pr.sh` write subcommands check. When set, the script
+ *      refuses to invoke `gh pr review` (and other write subcommands)
+ *      directly and points the agent at `POST /api/pr/review`, which
+ *      is the only correct identity path for formal reviews
+ *      (server-side App installation token). Applied universally so
+ *      non-reviewer spawns also cannot post `gh pr review` under the
+ *      session owner's account.
  *
  *   3. Scrubs `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and
  *      `GITHUB_ENTERPRISE_TOKEN` from the env. `buildSpawnEnv` clones
  *      `process.env` wholesale, so any token the operator exported in
  *      the shell that started the Hub (or PM2/systemd ambient env)
- *      would otherwise survive into the reviewer spawn even when
+ *      would otherwise survive into the spawn even when
  *      `selectGithubSpawnToken` correctly returns `null`. `gh` reads
  *      `GH_TOKEN` at the highest priority — ahead of `GH_CONFIG_DIR` —
  *      so the config-dir isolation alone is insufficient. Callers must
  *      invoke this function BEFORE `applyGithubSpawnCredentials` so
- *      the bot token (when present) is re-set by the credential helper
- *      after the scrub.
+ *      the resolved spawn token (bot for reviewers, per-user OAuth/PAT
+ *      for everyone else) is re-set by the credential helper after the
+ *      scrub. Net effect for non-reviewer spawns: `git push` / `gh pr
+ *      create` continue to authenticate as the human, while the
+ *      `gh pr review` write path is blocked by the lock sentinel.
  *
  * Caller should pre-create the directory at startup via
  * `ensureReviewerGhConfigDir(config)`. Idempotent on env mutation.
