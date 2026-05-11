@@ -113,10 +113,6 @@ import createPrNudgeReviewerRoutes from './routes/pr-nudge-reviewer.js';
 import createBugReportRoutes from './routes/bug-reports.js';
 import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
-import createPrEnvSettingsRoutes from './routes/pr-env-settings.js';
-import createPrEnvProvisionRoutes from './routes/pr-env-provision.js';
-import { migrateFileConfigToDb as migratePrEnvFileToDb } from './pr-env-store.js';
-import { fileConfig as prEnvFileConfig } from './config.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
@@ -692,26 +688,11 @@ app.use(createPrNudgeReviewerRoutes(routeDeps));
 app.use(createBugReportRoutes(routeDeps));
 app.use(createAuthRoutes());
 app.use(createMcpServerRoutes());
-app.use(createPrEnvSettingsRoutes(routeDeps));
-// PR-env provisioning wizard. The route returns `{ jobId, wsUrl }`; the
-// matching WS upgrade handler lives in `server/websocket.ts`. Production
-// currently falls through to `stubExecutor` — wiring `createRealExecutor`
-// (host detection, certbot, IAM, verify) is the follow-up card.
-app.use(createPrEnvProvisionRoutes());
+// PR-env settings/provisioning routes and the `pr_env_config` DB row
+// were removed as part of the "Strip PR Environments" epic (88367984).
+// Worktree previews (per-session, host-side) are the supported preview
+// surface.
 app.use(createGithubOAuthRoutes(routeDeps));
-
-// One-shot migration: copy legacy `config.json` prEnv block into the new
-// pr_env_config DB row when the row doesn't exist yet. Idempotent after
-// the first successful run. Logged so the operator knows the UI is now
-// the source of truth.
-try {
-  const migrated = migratePrEnvFileToDb(prEnvFileConfig);
-  if (migrated) {
-    console.log('[pr-env] Migrated legacy config.json prEnv block → pr_env_config DB row');
-  }
-} catch (err) {
-  console.error('[pr-env] Failed to migrate legacy prEnv block into DB:', (err as Error).message);
-}
 
 const server = createServer(app);
 const drainingLock = new Set<string>();

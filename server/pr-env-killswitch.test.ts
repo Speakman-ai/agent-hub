@@ -1,40 +1,22 @@
 /**
  * Kill-switch tests (epic 88367984 — strip PR Environments).
  *
- * `server/test/setup.ts` disables the kill switch globally so legacy PR-env
- * suites keep exercising their code paths until cards #2–#6 delete them.
- * This file flips it back ON inside each test to assert the production
- * contract: every PR-env code path is a no-op or returns 410 Gone.
+ * After PR-Env Removal #3 the routes, store module, and dispatchers were
+ * deleted outright. The remaining surface the kill switch still gates is:
  *
- * The tests are deliberately black-box — they hit the public API surface
- * (HTTP routes, exported entry points, broadcast events) rather than
- * inspecting the kill switch state itself, so they catch regressions
- * where a new caller forgets the gate.
+ *   - `readPrEnvConfig()` in `container-pool/pr-env-runtime.ts` — the last
+ *     in-process reader; pinned here so a future caller can't slip past it.
+ *   - `detectPreviewBlock()` — the `target: 'fullstack'` parse-time guard
+ *     established in PR-Env Removal #2.
+ *
+ * The "settings / provisioning routes return 410 Gone" assertions are gone
+ * because those routes are gone — there's nothing left to gate.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import express from 'express';
-import supertest from 'supertest';
-import Database from 'better-sqlite3';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import path from 'path';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import {
-  __setPrEnvKillSwitchForTests,
-  isPrEnvKillSwitchOn,
-  PR_ENV_KILL_SWITCH_MESSAGE,
-} from './pr-env-killswitch.js';
+import { __setPrEnvKillSwitchForTests, isPrEnvKillSwitchOn } from './pr-env-killswitch.js';
 import { readPrEnvConfig } from './container-pool/pr-env-runtime.js';
-import createPrEnvSettingsRoutes from './routes/pr-env-settings.js';
-import createPrEnvProvisionRoutes from './routes/pr-env-provision.js';
-import {
-  PR_ENV_CONFIG_SCHEMA,
-  __resetPrEnvStoreForTests,
-  __setPrEnvKeyFilePathForTests,
-  writePrEnvConfig,
-} from './pr-env-store.js';
-import type { RouteDeps } from './types.js';
 
 beforeEach(() => {
   __setPrEnvKillSwitchForTests(true);
@@ -77,71 +59,13 @@ describe('PR-env kill switch — production contract', () => {
     expect(readPrEnvConfig(fileConfig, {}, dbRow as never)).toBeNull();
   });
 
-  it('PR-env settings routes return 410 Gone', async () => {
-    const keyDir = mkdtempSync(path.join(tmpdir(), 'pr-env-ks-settings-'));
-    __setPrEnvKeyFilePathForTests(path.join(keyDir, 'key'));
-    const db = new Database(':memory:');
-    db.exec(PR_ENV_CONFIG_SCHEMA);
-    // Seed a row so we can prove the GET handler isn't reached even when
-    // data exists.
-    writePrEnvConfig({ repoFullName: 'acme/widgets' }, db);
-
-    const app = express();
-    app.use(express.json());
-    app.use(
-      createPrEnvSettingsRoutes({} as unknown as RouteDeps, {
-        getDb: () => db,
-        getNginxPaths: () => ({
-          certPath: '',
-          baseVhostPath: '',
-          sitesAvailableDir: '',
-          sitesEnabledDir: '',
-        }),
-      }),
-    );
-
-    const getRes = await supertest(app).get('/api/settings/pr-env');
-    expect(getRes.status).toBe(410);
-    expect(getRes.body).toEqual({ error: PR_ENV_KILL_SWITCH_MESSAGE });
-
-    const putRes = await supertest(app).put('/api/settings/pr-env').send({});
-    expect(putRes.status).toBe(410);
-    expect(putRes.body).toEqual({ error: PR_ENV_KILL_SWITCH_MESSAGE });
-
-    const validateRes = await supertest(app).post('/api/settings/pr-env/validate').send({});
-    expect(validateRes.status).toBe(410);
-    expect(validateRes.body).toEqual({ error: PR_ENV_KILL_SWITCH_MESSAGE });
-
-    db.close();
-    rmSync(keyDir, { recursive: true, force: true });
-    __resetPrEnvStoreForTests();
-  });
-
-  it('PR-env provisioning routes return 410 Gone', async () => {
-    const app = express();
-    app.use(express.json());
-    app.use(createPrEnvProvisionRoutes());
-
-    const startRes = await supertest(app).post('/api/settings/pr-env/provision').send({
-      previewHost: 'preview.example.com',
-      hostedZoneId: 'Z1',
-      repoFullName: 'acme/widgets',
-    });
-    expect(startRes.status).toBe(410);
-    expect(startRes.body).toEqual({ error: PR_ENV_KILL_SWITCH_MESSAGE });
-
-    const lastRes = await supertest(app).get('/api/settings/pr-env/provision/last');
-    expect(lastRes.status).toBe(410);
-    expect(lastRes.body).toEqual({ error: PR_ENV_KILL_SWITCH_MESSAGE });
-  });
-
   it('fullstack preview block is rejected at parse time — handler is gone', async () => {
     // PR-Env Removal #2 deleted the fullstack preview handler module and
     // dropped `'fullstack'` from `PreviewTarget`. The parse-time gate in
-    // `detectPreviewBlock` now rejects `target: 'fullstack'` outright,
-    // so the dispatcher never even sees a fullstack task and the kill
-    // switch has nothing left to gate. Pin that contract here so a
-    // future re-introduction has to update this test.
+    // `detectPreviewBlock` rejects `target: 'fullstack'` outright, so the
+    // dispatcher never even sees a fullstack task and the kill switch has
+    // nothing left to gate. Pin that contract here so a future
+    // re-introduction has to update this test.
     const { detectPreviewBlock } = await import('./preview/preview-block.js');
     const result = detectPreviewBlock(
       `<agenthub:preview>{"target":"fullstack","route":"/"}</agenthub:preview>`,
@@ -151,28 +75,11 @@ describe('PR-env kill switch — production contract', () => {
     expect(result.reason).toBe('invalid-target');
   });
 
-  it('webhook PR-env dispatch is skipped when kill switch is on', async () => {
-    // Verify by importing the dispatch module's spies don't fire. We mock
-    // the dispatch functions and call the handler indirectly is overkill;
-    // instead exercise the gating expression directly so a regression in
-    // the conditional ordering is caught.
-    const dispatchMod = await import('./container-pool/pr-env-dispatch.js');
-    const buildSpy = vi.spyOn(dispatchMod, 'dispatchPrEnvBuild').mockResolvedValue(null);
-    const teardownSpy = vi.spyOn(dispatchMod, 'dispatchPrEnvTeardown').mockResolvedValue(undefined);
-
-    // Re-import the webhook module so the spies see the original symbols;
-    // the dispatch block is gated by isPrEnvKillSwitchOn() so neither
-    // function should ever be called by the handler when the switch is
-    // on. We can't easily simulate the full webhook handler here without
-    // wiring DB state, so we verify the contract by asserting that
-    // readPrEnvConfig (used by the same handler) returns null — proving
-    // the gate the webhook reuses is closed.
-    const cfg = readPrEnvConfig({ prEnv: { enabled: true } }, {});
-    expect(cfg).toBeNull();
-    expect(buildSpy).not.toHaveBeenCalled();
-    expect(teardownSpy).not.toHaveBeenCalled();
-
-    buildSpy.mockRestore();
-    teardownSpy.mockRestore();
+  it('PR-env webhook dispatch modules are gone — synchronize is a no-op', async () => {
+    // PR-Env Removal #3 deleted `container-pool/pr-env-dispatch.ts` and the
+    // `dispatchPrEnvBuild` / `dispatchPrEnvTeardown` invocations in
+    // `routes/webhooks.ts`. Pin that here so a regression that
+    // re-introduces the import is caught.
+    await expect(import('./container-pool/pr-env-dispatch.js' as string)).rejects.toThrow();
   });
 });

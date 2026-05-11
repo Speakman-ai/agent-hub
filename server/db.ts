@@ -4,7 +4,6 @@ import config from './config.js';
 import { POOL_SCHEMA } from './container-pool/schema.js';
 import { PORT_POOL_SCHEMA } from './container-pool/port-pool.js';
 import { PREVIEW_AUTH_SCHEMA } from './container-pool/preview-auth-schema.js';
-import { PR_ENV_CONFIG_SCHEMA, PR_ENV_CONFIG_DROP_LEGACY_GITHUB_COLUMNS } from './pr-env-schema.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 import { WORKTREE_PREVIEWS_SCHEMA } from './preview/preview-schema.js';
 import type { Stmts } from './types.js';
@@ -1332,25 +1331,16 @@ function initDb(dataDir: string): void {
   // container-pool/preview-auth.ts for the middleware + OAuth flow.
   db.exec(PREVIEW_AUTH_SCHEMA);
 
-  // PR-env settings (Tier 1 + Tier 2 config). Singleton row keyed id=1;
-  // secret columns are AES-256-GCM encrypted at rest. See pr-env-store.ts.
-  // DDL lives in pr-env-schema.ts — shared with pr-env-store.ts so both
-  // paths can never drift. The dedicated module exists to break the
-  // circular dependency (pr-env-store.ts imports `getDb` from here).
-  db.exec(PR_ENV_CONFIG_SCHEMA);
-
-  // Migration: drop legacy GitHub App columns. The dispatcher now reuses
-  // the registered Reviewer App (`AppConfig.githubApp`) so the singleton
-  // no longer carries its own App credentials. Each ALTER is wrapped
-  // because column-not-found is the expected steady-state once a prior
-  // boot already dropped them (or on a fresh install where the new
-  // schema didn't include them in the first place).
-  for (const stmt of PR_ENV_CONFIG_DROP_LEGACY_GITHUB_COLUMNS) {
-    try {
-      db.exec(stmt);
-    } catch (_e) {
-      /* column already gone — expected steady state */
-    }
+  // PR-env settings table was removed as part of the "Strip PR
+  // Environments" epic (88367984). Drop the table on existing installs
+  // so it doesn't linger after upgrade; `IF EXISTS` keeps this a no-op
+  // on fresh installs that never created the row. Encrypted secrets
+  // stored in the row are abandoned with it — the wider epic has
+  // already disabled every reader.
+  try {
+    db.exec('DROP TABLE IF EXISTS pr_env_config');
+  } catch (err) {
+    console.warn('[db] DROP TABLE pr_env_config failed:', (err as Error).message);
   }
 
   // Migration: pool_slots gained `last_error TEXT` and `status` CHECK now

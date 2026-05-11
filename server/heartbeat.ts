@@ -21,8 +21,6 @@ import {
   runCertRenewalHeartbeat,
   CERT_RENEWAL_CRON,
 } from './container-pool/cert-renewal-heartbeat.js';
-import { readPrEnvConfig } from './container-pool/pr-env-runtime.js';
-import { readPrEnvConfigRow } from './pr-env-store.js';
 import { runReaperHeartbeat, REAPER_CRON } from './container-pool/reaper-heartbeat.js';
 import {
   runPoolAlertsHeartbeat,
@@ -928,33 +926,22 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   scheduledTasks.set('system:wiki-memory-sync', wikiSyncTask);
   console.log(`[Scheduler] Wiki→Memory sync scheduled: ${WIKI_SYNC_SCHEDULE}`);
 
-  // Cert-renewal heartbeat — daily dry-run (or live, if enabled) of the
-  // wildcard preview cert. No-op when the PR-env feature flag is off.
-  // Wrapped in try/catch because readPrEnvConfig throws on partial
-  // config — we don't want one bad key to block the whole scheduler.
-  //
-  // Kill-switch override (epic 88367984): skip registering the three
-  // container-pool crons (cert-renewal, reaper, pool-alerts) entirely
-  // while the PR-env subsystem is being removed. Without this guard
-  // the crons would still run their bodies and find `getConfig()` →
-  // null on every tick, which is functionally a no-op but pollutes
-  // `/api/crons` and the scheduled-tasks list.
+  // Cert-renewal / reaper / pool-alerts heartbeats stay registered for
+  // now (the container-pool dir is targeted by PR-Env Removal #4) but
+  // run with `getConfig: () => null` so each tick short-circuits on the
+  // missing config and never touches the deleted `pr_env_config` table.
+  // The killswitch path that previously skipped registration is gone —
+  // every reader of `readPrEnvConfig` has been deleted in this card.
   if (isPrEnvKillSwitchOn()) {
-    console.log('[Scheduler] PR-env kill switch ON — skipping cert-renewal / reaper / pool-alerts');
-  } else {
+    console.log(
+      '[Scheduler] PR-env subsystem killed — cert-renewal / reaper / pool-alerts will tick as no-ops',
+    );
     const certRenewalTask = cron.schedule(
       CERT_RENEWAL_CRON,
       wrapCronTick(
         () =>
           runCertRenewalHeartbeat({
-            getConfig: () => {
-              try {
-                return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config);
-              } catch (err) {
-                console.error('[cert-renewal] config read failed:', (err as Error).message);
-                return null;
-              }
-            },
+            getConfig: () => null,
           }).catch((err: unknown) => {
             console.error('[cert-renewal] heartbeat threw:', (err as Error).message);
           }),
@@ -966,7 +953,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
       }),
     );
     scheduledTasks.set('system:cert-renewal', certRenewalTask);
-    console.log(`[Scheduler] Cert-renewal heartbeat scheduled: ${CERT_RENEWAL_CRON}`);
+    console.log(`[Scheduler] Cert-renewal heartbeat scheduled (no-op): ${CERT_RENEWAL_CRON}`);
 
     // Container-pool reaper — every 3 min, reconciles pool_slots against
     // the live Docker daemon and GitHub PR state so a dropped webhook
@@ -983,14 +970,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
           runReaperHeartbeat({
             db,
             allocator: reaperAllocator,
-            getConfig: () => {
-              try {
-                return readPrEnvConfig(fileConfig, process.env, readPrEnvConfigRow(), config);
-              } catch (err) {
-                console.error('[reaper] config read failed:', (err as Error).message);
-                return null;
-              }
-            },
+            getConfig: () => null,
           }).catch((err: unknown) => {
             console.error('[reaper] heartbeat threw:', (err as Error).message);
           }),

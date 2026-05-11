@@ -13,7 +13,7 @@ import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { getOrgOwnerUserId } from './session-ownership.js';
 import { disableNativeSkillToolArgs } from './claude-cli-args.js';
 import type { EnrichedAgent, Stmts, SlackMessageRow, SlackBotRow } from './types.js';
-import { decryptSecret } from './pr-env-store.js';
+import { decryptSecret } from './secret-crypto.js';
 
 /**
  * Decrypt a stored secret, falling back to the raw stored value when the

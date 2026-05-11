@@ -8,7 +8,7 @@ import { tmpdir } from 'os';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import path from 'path';
 
-vi.mock('../pr-env-store.js', () => ({
+vi.mock('../secret-crypto.js', () => ({
   encryptSecret(s: string) {
     return Buffer.from(s, 'utf8').toString('base64url');
   },

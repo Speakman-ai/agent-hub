@@ -7,8 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readPrEnvConfig, type PrEnvAppConfigRef } from './pr-env-runtime.js';
-import type { PrEnvConfigRow } from '../pr-env-store.js';
+import { readPrEnvConfig, type PrEnvAppConfigRef, type PrEnvConfigRow } from './pr-env-runtime.js';
 import type { GitHubAppConfig } from '../types.js';
 
 // Required env after the script-mode rewrite: prodDbPath / prEnvDataDir /

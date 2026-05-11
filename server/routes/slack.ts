@@ -22,7 +22,7 @@ import type { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import type { RouteDeps, SlackBotRow } from '../types.js';
 import { restartSlack, getSlackStatus, getSlackMessages, getAllSlackMessages } from '../slack.js';
-import { encryptSecret, decryptSecret } from '../pr-env-store.js';
+import { encryptSecret, decryptSecret } from '../secret-crypto.js';
 import { requireRole } from '../roles.js';
 
 /** Mask tokens for API responses — show prefix + trailing chars only. */

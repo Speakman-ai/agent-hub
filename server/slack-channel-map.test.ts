@@ -14,13 +14,13 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 
 // Mock decryptSecret before importing the module under test.
-vi.mock('./pr-env-store.js', () => ({
+vi.mock('./secret-crypto.js', () => ({
   encryptSecret: vi.fn((v: string) => `enc:${v}`),
   decryptSecret: vi.fn((v: string) => v.replace(/^enc:/, '')),
 }));
 
 import { dbBotToAccount, resolveAgentForChannel } from './slack.js';
-import { decryptSecret } from './pr-env-store.js';
+import { decryptSecret } from './secret-crypto.js';
 
 // Minimal SlackBotRow fixture — only fields consumed by dbBotToAccount.
 function makeRow(
@@ -114,10 +114,10 @@ describe('dbBotToAccount — token decryption', () => {
     // GET /api/slack/bots and startSlack don't 500 the entire path.
     const decryptSpy = vi.mocked(decryptSecret);
     decryptSpy.mockImplementationOnce(() => {
-      throw new Error('[pr-env-store] Malformed ciphertext blob');
+      throw new Error('[secret-crypto] Malformed ciphertext blob');
     });
     decryptSpy.mockImplementationOnce(() => {
-      throw new Error('[pr-env-store] Malformed ciphertext blob');
+      throw new Error('[secret-crypto] Malformed ciphertext blob');
     });
     const row = makeRow({ bot_token: 'xoxb-legacy-plain', app_token: 'xapp-legacy-plain' });
     const account = dbBotToAccount(row);
