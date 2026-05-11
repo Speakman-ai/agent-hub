@@ -362,6 +362,75 @@ describe('runPreviewTest — failure modes', () => {
     expect(harness.spawned[0].signalCode).toBe('SIGTERM');
   });
 
+  it('short-circuits and reports code, signal, and log tail when the child exits during boot', async () => {
+    const harness = makeSpawn();
+    const clock = makeClock();
+
+    // Drive the premature-exit path: the first health-poll attempt
+    // simulates the dev server dying mid-boot. We push a couple of
+    // stdout / stderr lines so the tail isn't empty, then emit 'exit'
+    // with a real code and a null signal (the common shape when a
+    // process exits via process.exit(N) rather than a signal). We also
+    // set the FakeChild's exitCode so the `finally` teardown's
+    // `exitCode == null && signalCode == null` guard short-circuits —
+    // otherwise `waitForExit` would block on a child that has already
+    // emitted its only 'exit' event.
+    let firstCall = true;
+    const fetch: PreviewTestHealthFetchFn = async () => {
+      if (firstCall) {
+        firstCall = false;
+        const child = harness.spawned[0];
+        child.stdout.emit('data', Buffer.from('vite v5.0.0 dev server starting\n'));
+        child.stderr.emit(
+          'data',
+          Buffer.from('Error: listen EADDRINUSE: address already in use :::4400\n'),
+        );
+        child.exitCode = 1;
+        child.emit('exit', 1, null);
+      }
+      // Subsequent loop iterations should never run because the
+      // premature-exit short-circuit triggers on the next pass — but
+      // we still need to satisfy the type if it did.
+      throw new Error('ECONNREFUSED');
+    };
+
+    const promise = runPreviewTest({
+      project: makeProject(),
+      uploadsDir: '/tmp/uploads',
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      kill: harness.kill,
+      allocatePort: async () => 4400,
+      healthTimeoutMs: 30_000,
+      healthIntervalMs: 100,
+    });
+
+    // Release the awaited sleep so the loop reaches its second
+    // top-of-loop `prematureExit` check.
+    for (let i = 0; i < 5; i++) {
+      await Promise.resolve();
+      clock.advance(120);
+    }
+
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    // The three fields the autonomous-dispatch card calls out — each
+    // pinned by its labelled token so a future refactor of the
+    // error-message format can't silently drop one.
+    expect(result.error).toMatch(/code=1/);
+    expect(result.error).toMatch(/signal=/);
+    expect(result.error).toMatch(/Log tail:/);
+    // The actual captured log content is surfaced in the tail.
+    expect(result.error).toContain('vite v5.0.0 dev server starting');
+    expect(result.error).toContain('EADDRINUSE');
+    // Port was allocated before spawn — surfaced for the user even on failure.
+    expect(result.ports.allocated).toBe(4400);
+    // Because we marked the FakeChild as already exited, the finally
+    // block should not have issued a redundant kill.
+    expect(harness.killSignals).not.toContain('SIGTERM');
+  });
+
   it('returns ok:true with a non-fatal error when screenshot fails', async () => {
     const tmp = mkdtempSync(path.join(tmpdir(), 'preview-test-'));
     try {
