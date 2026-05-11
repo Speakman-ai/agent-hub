@@ -4,6 +4,8 @@ import AdaptiveQuestionnaire from './AdaptiveQuestionnaire.jsx';
 import ProvisioningStatus from './ProvisioningStatus.jsx';
 import PostScaffoldAudit from './PostScaffoldAudit.jsx';
 import ProjectLandingHandoff from './ProjectLandingHandoff.jsx';
+import PreviewConfirm, { buildPreviewPatch } from './PreviewConfirm.jsx';
+import { getApiBase, getAuthHeaders } from '../utils/connection.js';
 import {
   provisionProject as defaultProvision,
   subscribeProvisioningEvents as defaultSubscribe,
@@ -74,6 +76,16 @@ export default function NewProjectAdaptiveFlow({
   const [createdProjectId, setCreatedProjectId] = useState(null);
   const [questionnairePayload, setQuestionnairePayload] = useState(null);
   const [landingContext, setLandingContext] = useState(null);
+  // Detected preview defaults for the new scaffold (from the server's
+  // `preview-defaults-detected` WebSocket broadcast). The server already
+  // auto-applies these to `project.prEnv.preview` server-side after the
+  // copy-template phase, but we expose them here so the user can confirm
+  // or override before they land on the project. Null when detection
+  // hasn't run yet or returned `detected: null` (unknown stack — silent).
+  const [detectedPreview, setDetectedPreview] = useState(null);
+  // User decision for the preview. null = not yet acted; { enabled: false }
+  // = skip; { enabled: true, ... } = accept or edit (form payload).
+  const [previewDecision, setPreviewDecision] = useState(null);
   const streamHandleRef = useRef(null);
   const currentPayloadRef = useRef(null);
 
@@ -83,6 +95,60 @@ export default function NewProjectAdaptiveFlow({
       streamHandleRef.current?.close?.();
     };
   }, []);
+
+  // Subscribe to the server's preview-defaults broadcast scoped to the
+  // freshly-created project. Routed through App.jsx as a `preview-defaults-ws`
+  // CustomEvent (see client/src/App.jsx WebSocket switch). The event payload
+  // is `{ type, projectId, jobId, detected: DetectedPreviewDefaults | null }`.
+  useEffect(() => {
+    const handler = (e) => {
+      const data = e.detail;
+      if (!data || data.type !== 'preview-defaults-detected') return;
+      if (!createdProjectId || data.projectId !== createdProjectId) return;
+      setDetectedPreview(data.detected || null);
+      setPreviewDecision(null);
+    };
+    window.addEventListener('preview-defaults-ws', handler);
+    return () => window.removeEventListener('preview-defaults-ws', handler);
+  }, [createdProjectId]);
+
+  // PATCH the project's prEnv.preview when the user makes an explicit
+  // accept / edit / skip decision. The server already pre-baked the
+  // detected defaults during provisioning, so the user's "Looks good"
+  // path is effectively a no-op — but we still send the patch to make the
+  // wizard self-contained and so an edit/skip actually persists.
+  // Best-effort: failures are swallowed (the scaffold already succeeded).
+  const persistPreviewDecision = useCallback(
+    async (decision) => {
+      if (!createdProjectId || !decision) return;
+      const patch = buildPreviewPatch(decision);
+      if (!patch) return;
+      try {
+        await fetch(`${getApiBase()}/projects/${createdProjectId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify(patch),
+        });
+      } catch {
+        /* best-effort */
+      }
+    },
+    [createdProjectId],
+  );
+
+  const handlePreviewConfirm = useCallback(
+    (form) => {
+      setPreviewDecision(form);
+      persistPreviewDecision(form);
+    },
+    [persistPreviewDecision],
+  );
+
+  const handlePreviewSkip = useCallback(() => {
+    const decision = { enabled: false };
+    setPreviewDecision(decision);
+    persistPreviewDecision(decision);
+  }, [persistPreviewDecision]);
 
   const start = useCallback(
     async (payload) => {
@@ -304,11 +370,26 @@ export default function NewProjectAdaptiveFlow({
 
   if (view === 'audit') {
     return (
-      <PostScaffoldAudit
-        projectId={createdProjectId}
-        onConfirmed={handleAuditConfirmed}
-        onSkip={handleAuditSkip}
-      />
+      <div className="flex flex-col w-full h-full" data-testid="new-project-audit-view">
+        {detectedPreview && (
+          <div className="shrink-0 border-b border-gray-800 bg-gray-950 px-4 py-3 sm:px-8">
+            <div className="mx-auto w-full max-w-5xl">
+              <PreviewConfirm
+                detected={detectedPreview}
+                onConfirm={handlePreviewConfirm}
+                onSkip={handlePreviewSkip}
+              />
+            </div>
+          </div>
+        )}
+        <div className="flex-1 min-h-0">
+          <PostScaffoldAudit
+            projectId={createdProjectId}
+            onConfirmed={handleAuditConfirmed}
+            onSkip={handleAuditSkip}
+          />
+        </div>
+      </div>
     );
   }
 

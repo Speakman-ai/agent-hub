@@ -1379,7 +1379,11 @@ export default function App() {
         case 'clone-progress':
         case 'clone-complete':
         case 'clone-error':
+        case 'clone-preview-defaults':
           window.dispatchEvent(new CustomEvent('clone-ws', { detail: data }));
+          break;
+        case 'preview-defaults-detected':
+          window.dispatchEvent(new CustomEvent('preview-defaults-ws', { detail: data }));
           break;
         case 'workflow_run':
         case 'workflow_run_status':

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { getApiBase, getAuthHeaders, getConnectionConfig } from '../utils/connection.js';
 import ServerBrowser from './ServerBrowser.jsx';
+import PreviewConfirm, { buildPreviewPatch } from './PreviewConfirm.jsx';
 
 export const NEW_PROJECT_WIZARD_DRAFT_KEY = 'agentHub:v1:newProjectWizardDraft';
 
@@ -163,6 +164,19 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
   const [activeTab, setActiveTab] = useState('SOUL.md');
   const [creating, setCreating] = useState(false);
 
+  // Preview-defaults confirmation state. `detectedPreview` is populated from
+  // the `clone-preview-defaults` WebSocket event broadcast after the server
+  // runs detect-preview-defaults.ts against the freshly-cloned worktree.
+  //   null                 → event hasn't fired yet, or fired with detected:null
+  //                          (unknown stack — silent empty path, no UI)
+  //   { stack, ... }       → render the PreviewConfirm panel in Step 4
+  // `previewDecision` captures the user's choice from the panel:
+  //   null                          → not yet decided
+  //   { enabled: false }            → user clicked Skip
+  //   { enabled: true, ...form }    → user accepted or edited the defaults
+  const [detectedPreview, setDetectedPreview] = useState(null);
+  const [previewDecision, setPreviewDecision] = useState(null);
+
   const [showBrowser, setShowBrowser] = useState(false);
 
   const analyzeIdRef = useRef(null);
@@ -262,6 +276,14 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
       if (data.type === 'clone-error') {
         setCloning(false);
         setCloneError(data.error || 'Clone failed.');
+      }
+      if (data.type === 'clone-preview-defaults') {
+        // server/routes/projects.ts emits this after the clone finishes and
+        // detect-preview-defaults inspects package.json. `detected` is the
+        // raw DetectedPreviewDefaults shape (stack, startScript, port,
+        // captureRoutes, idleTTL) or null for unknown stacks.
+        setDetectedPreview(data.detected || null);
+        setPreviewDecision(null);
       }
     };
     window.addEventListener('clone-ws', handler);
@@ -525,6 +547,27 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
         throw new Error(err.error || `Create failed: ${res.status}`);
       }
       const project = await res.json();
+
+      // If the user accepted / edited / skipped the detected preview config,
+      // persist that choice to the new project via the PATCH route. Onboard
+      // doesn't accept `prEnv` directly, so a separate call is required.
+      // Failures here are non-fatal — the project itself is already created;
+      // the user can edit the preview config from settings.
+      if (previewDecision) {
+        const patch = buildPreviewPatch(previewDecision);
+        if (patch) {
+          try {
+            await fetch(`${getApiBase()}/projects/${project.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              body: JSON.stringify(patch),
+            });
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+
       try {
         sessionStorage.removeItem(NEW_PROJECT_WIZARD_DRAFT_KEY);
       } catch {
@@ -548,6 +591,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
     skipGitHub,
     repoOwner,
     repoName,
+    previewDecision,
     onProjectCreated,
     onClose,
   ]);
@@ -583,6 +627,8 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
           progressText,
           progressLog,
           cloneLog,
+          detectedPreview,
+          previewDecision,
         }),
       );
     } catch {
@@ -612,6 +658,8 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
     progressText,
     progressLog,
     cloneLog,
+    detectedPreview,
+    previewDecision,
   ]);
 
   const handleRequestClose = useCallback(() => {
@@ -654,6 +702,10 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
       if (typeof d.progressText === 'string') setProgressText(d.progressText);
       if (Array.isArray(d.progressLog)) setProgressLog(d.progressLog);
       if (Array.isArray(d.cloneLog)) setCloneLog(d.cloneLog);
+      if (d.detectedPreview && typeof d.detectedPreview === 'object')
+        setDetectedPreview(d.detectedPreview);
+      if (d.previewDecision && typeof d.previewDecision === 'object')
+        setPreviewDecision(d.previewDecision);
     } catch {
       /* ignore */
     }
@@ -1483,6 +1535,18 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
         {/* Step 4: Review & Create */}
         {step === 4 && (
           <div className="space-y-4">
+            {/* Preview defaults confirmation — only when the server's
+                detect-preview-defaults broadcast returned a recognised stack.
+                Empty / null detection deliberately renders nothing so users
+                with non-web projects see no scary "no preview" modal. */}
+            {detectedPreview && (
+              <PreviewConfirm
+                detected={detectedPreview}
+                onConfirm={(form) => setPreviewDecision(form)}
+                onSkip={() => setPreviewDecision({ enabled: false })}
+              />
+            )}
+
             {/* Agent cards with checkboxes */}
             {analysisResult?.agents?.length > 0 && (
               <div>
