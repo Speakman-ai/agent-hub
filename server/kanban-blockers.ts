@@ -42,12 +42,23 @@ export function isColumnShippedLane(columnName: string | null | undefined): bool
 /**
  * Columns where the move-confirmation dialog should fire. Dragging a card
  * INTO Done with unresolved blockers is never suspicious (the user is
- * marking work finished; blockers are informational). A "Backlog" name is
- * also treated as blocker-insensitive for back-compat with any custom
- * boards that still carry that column — the default seed no longer
- * includes Backlog. Any other column (To Do, In Progress, Review, custom
- * columns) triggers the confirm dialog when blockers are unresolved.
- * Clients mirror this predicate so no server-side 409 gating is needed.
+ * marking work finished; blockers are informational).
+ *
+ * The substring `backlog` is also treated as blocker-insensitive — but
+ * with a narrow lifetime now that the default seed no longer includes
+ * Backlog. The only boards that can still hit this branch are:
+ *   (a) custom user columns whose name CONTAINS "backlog" but isn't the
+ *       literal "Backlog" (e.g. "Project Backlog", "Team backlog") —
+ *       the db.ts migration uses an exact-case `name = 'Backlog'` match
+ *       and leaves substring variants alone; and
+ *   (b) a column named literally "Backlog" that a user creates AFTER
+ *       the most recent server boot. The next boot's migration will
+ *       drop it; until then, this predicate keeps drag-into-Backlog
+ *       quiet.
+ *
+ * Any other column (To Do, In Progress, Review, other custom columns)
+ * triggers the confirm dialog when blockers are unresolved. Clients
+ * mirror this predicate so no server-side 409 gating is needed.
  */
 export function isColumnBlockerSensitive(columnName: string | null | undefined): boolean {
   if (!columnName) return true;

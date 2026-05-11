@@ -1605,12 +1605,13 @@ function initDb(dataDir: string): void {
   // but no To Do (unlikely), the column is renamed in place. Idempotent:
   // boards without a Backlog column are skipped on subsequent boots.
   //
-  // Note: the match is exact-case "Backlog" only (not case-insensitive and
-  // not a substring). This intentionally preserves user-created columns like
-  // "Project Backlog" or "backlog" — those survive this migration. Only the
-  // default-seeded "Backlog" column (capital B, exact string) is affected.
-  // isColumnBlockerSensitive uses a case-insensitive substring match for
-  // back-compat with those custom boards; see server/kanban-blockers.ts.
+  // EXACT-CASE MATCH: this filter is intentionally case-sensitive and
+  // requires the literal string "Backlog". Variants like
+  // "Project Backlog" or lowercase "backlog" survive untouched —
+  // that's the substring back-compat carve-out enforced by
+  // `isColumnBlockerSensitive` in `kanban-blockers.ts`. Tests:
+  // `server/test/db-backlog-drop-migration.test.ts` (this contract is
+  // locked in via the "Project Backlog" Board D case).
   try {
     const backlogCols = db
       .prepare(`SELECT id, board_id FROM kanban_columns WHERE name = 'Backlog'`)
@@ -1663,7 +1664,15 @@ function initDb(dataDir: string): void {
       txn();
     }
   } catch (err) {
-    console.warn('[db] Backlog column drop migration failed:', (err as Error).message);
+    // Include the message verbatim — if a constraint trips mid-transaction
+    // SQLite surfaces the offending statement which is enough to narrow
+    // down which board half-migrated. Boot continues by design: a
+    // surviving Backlog column is non-fatal (the rest of the code
+    // tolerates it via the substring-match back-compat).
+    console.warn(
+      '[db] Backlog column drop migration failed (boards may be partially migrated):',
+      (err as Error).message,
+    );
   }
 
   const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get() as { count: number };
