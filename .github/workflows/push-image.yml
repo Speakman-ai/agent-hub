@@ -46,6 +46,11 @@ jobs:
     name: Build + push
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Surface the content-addressable image digest so the deploy job can
+    # assert end-to-end that the dev sandbox is actually running the image
+    # we just built — not a stale local layer. See kanban card 89903017.
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -79,6 +84,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build + push image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -127,6 +133,10 @@ jobs:
       AWS_DEPLOY_REGION: us-east-2
       # Must stay in sync with ci_ssm_deploy_instance_id (ryan.tfvars): ryan-sandbox EC2.
       DEV_SANDBOX_INSTANCE_ID: i-066e44ff85ec24d8e
+      # Content-addressable digest of the image we just pushed. Used by the
+      # SSM verification step to confirm the dev sandbox is running THIS
+      # image and not a stale local layer (kanban 89903017).
+      EXPECTED_DIGEST: ${{ needs.push.outputs.digest }}
     steps:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -188,10 +198,55 @@ jobs:
           )
             COMMENT="CI fresh-setup reset on dev sandbox ${{ github.sha }}"
           else
-            SCRIPT=$(cat <<'EOF'
+            # End-to-end digest check (kanban 89903017): after the restart
+            # succeeds, the running container's image MUST be the one we
+            # just pushed. Catches three regressions in one assertion:
+            #   1. Silent pull failure (now fatal in the wrapper, but
+            #      belt-and-suspenders against future regressions).
+            #   2. Wrapper script drift on instances provisioned before
+            #      the fatal-on-pull-fail patch shipped.
+            #   3. Anyone retagging :main out-of-band.
+            # Note: EXPECTED_DIGEST is interpolated by the runner shell
+            # BEFORE the heredoc is sent to SSM, so the remote script gets
+            # a literal digest string.
+            SCRIPT=$(cat <<EOF
           set -euo pipefail
+          EXPECTED_DIGEST="$EXPECTED_DIGEST"
           sudo systemctl restart agenthub-server
           sudo systemctl is-active agenthub-server
+
+          # Give the wrapper a moment to pull + start before inspecting.
+          sleep 8
+
+          # Pulled-image digest on the host. \`docker image inspect ... RepoDigests\`
+          # returns entries like \`public.ecr.aws/h9t4v7h0/agent-hub@sha256:...\`.
+          LOCAL_DIGEST=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main \
+            --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
+          # Image-id the container was instantiated with (what is ACTUALLY running).
+          CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' || true)
+          LOCAL_IMAGE_ID=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main --format '{{.Id}}' || true)
+
+          echo "EXPECTED_DIGEST=\$EXPECTED_DIGEST"
+          echo "LOCAL_REPO_DIGEST=\$LOCAL_DIGEST"
+          echo "LOCAL_IMAGE_ID=\$LOCAL_IMAGE_ID"
+          echo "CONTAINER_IMAGE_ID=\$CONTAINER_IMAGE_ID"
+
+          if [ -z "\$EXPECTED_DIGEST" ]; then
+            echo "WARN: EXPECTED_DIGEST not provided by workflow; skipping digest assertion." >&2
+          elif [ "\$LOCAL_DIGEST" != "\$EXPECTED_DIGEST" ]; then
+            echo "FATAL: host :main digest (\$LOCAL_DIGEST) != just-pushed digest (\$EXPECTED_DIGEST)" >&2
+            echo "       The host did not actually pull the new image. Check disk space and ECR connectivity." >&2
+            exit 1
+          fi
+
+          if [ -n "\$CONTAINER_IMAGE_ID" ] && [ -n "\$LOCAL_IMAGE_ID" ] && [ "\$CONTAINER_IMAGE_ID" != "\$LOCAL_IMAGE_ID" ]; then
+            echo "FATAL: running container image (\$CONTAINER_IMAGE_ID) != local :main image-id (\$LOCAL_IMAGE_ID)" >&2
+            echo "       systemctl restart did not actually swap the container." >&2
+            exit 1
+          fi
+
+          echo "OK: agenthub-server is running the just-pushed image."
           EOF
           )
             COMMENT="CI deploy after ECR push ${{ github.sha }}"
