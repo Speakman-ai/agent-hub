@@ -193,6 +193,16 @@ describe('SettingsPage — tab labels', () => {
     });
   });
 
+  it('exposes a Preview tab in the Workspace group', async () => {
+    // The Preview settings panel is the only place users can configure
+    // the per-session worktree preview without hand-editing
+    // projects.json. It must appear in the sidebar under Workspace.
+    const { findByRole } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
+    );
+    expect(await findByRole('button', { name: /^Preview$/ })).toBeTruthy();
+  });
+
   it('labels the combined AI CLI auth tab "AI Authentication"', async () => {
     // Bug report: the combined Claude/Gemini/Cursor/Codex auth tab was
     // simply labeled "Auth", which is too terse and ambiguous. It should

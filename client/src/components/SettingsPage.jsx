@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, Component } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, Component } from 'react';
 import { api } from '../utils/api.js';
 import {
   buildOrchestrationBudgetsPayload,
@@ -20,6 +20,7 @@ import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
+import PreviewSection from './PreviewSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
 import * as LucideIcons from 'lucide-react';
@@ -7816,6 +7817,7 @@ const SETTINGS_GROUPS = [
       { id: 'account', iconName: 'UserCircle', text: 'Account' },
       { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
       { id: 'projects', iconName: 'FolderGit2', text: 'Projects' },
+      { id: 'preview', iconName: 'Monitor', text: 'Preview' },
     ],
   },
   {
@@ -7865,6 +7867,7 @@ const SETTINGS_ICONS = {
   FileText,
   FolderGit2,
   Plug,
+  Monitor,
 };
 
 function SettingsNavItem({ tab, active, onSelect }) {
@@ -7923,7 +7926,23 @@ export default function SettingsPage({
     return visibleSettingsGroups[0]?.tabs[0] ?? SETTINGS_GROUPS[0].tabs[0];
   }, [tab, visibleSettingsGroups]);
 
+  // Guard registered by the active section to block tab change when it
+  // has unsaved edits. Sections call `registerGuard(fn)` where `fn()`
+  // returns true (allow change) or false (block). Only the active tab
+  // owns the guard; switching tabs clears it.
+  const tabChangeGuardRef = useRef(null);
+  const registerTabChangeGuard = useCallback((fn) => {
+    tabChangeGuardRef.current = typeof fn === 'function' ? fn : null;
+  }, []);
+
   const handleSelectTab = (id) => {
+    if (id === tab) {
+      setMobileNavOpen(false);
+      return;
+    }
+    const guard = tabChangeGuardRef.current;
+    if (typeof guard === 'function' && !guard()) return;
+    tabChangeGuardRef.current = null;
     setTab(id);
     setMobileNavOpen(false);
   };
@@ -8032,6 +8051,13 @@ export default function SettingsPage({
                 />
               )}
               {tab === 'orgs' && <OrganizationsSection />}
+              {tab === 'preview' && (
+                <PreviewSection
+                  projects={projects}
+                  onProjectsChange={onAgentsChange}
+                  registerGuard={registerTabChangeGuard}
+                />
+              )}
               {tab === 'heartbeats' && (
                 <HeartbeatSection onNavigate={onNavigate} showToast={showToast} />
               )}

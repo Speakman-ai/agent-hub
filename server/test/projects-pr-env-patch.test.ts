@@ -213,16 +213,53 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
     });
   });
 
-  it('rejects with 400 when preview.enabled=true but parent enabled=false', async () => {
+  it('round-trips a preview block when parent enabled=false (worktree-preview-only mode)', async () => {
+    // PR Environments were stripped in the "Strip PR Environments" epic;
+    // `prEnv.enabled` is now a no-op for the PR-env subsystem. The
+    // worktree-preview runtime still reads `prEnv.preview` and
+    // `prEnv.healthPath`, so the parent toggle must NOT discard those
+    // fields anymore. (Earlier this combination 400'd with
+    // "preview.enabled requires prEnv.enabled".)
     const project = await createProject();
     const projectId = project.id as string;
     const res = await request
       .patch(`/api/projects/${projectId}`)
-      .send({ prEnv: { enabled: false, preview: { enabled: true } } })
+      .send({
+        prEnv: {
+          enabled: false,
+          healthPath: '/health',
+          preview: {
+            enabled: true,
+            startScript: 'npm run dev',
+            captureRoutes: ['/'],
+            idleTTL: 600,
+          },
+        },
+      })
+      .expect(200);
+    const body = res.body as { prEnv?: Record<string, unknown> };
+    expect(body.prEnv).toEqual({
+      enabled: false,
+      healthPath: '/health',
+      preview: {
+        enabled: true,
+        startScript: 'npm run dev',
+        captureRoutes: ['/'],
+        idleTTL: 600,
+      },
+    });
+  });
+
+  it('rejects with 400 when parent enabled=false carries an invalid healthPath', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ prEnv: { enabled: false, healthPath: 'no-leading-slash' } })
       .expect(400);
     const body = res.body as { error: string };
-    expect(body.error).toMatch(/preview/i);
-    expect(body.error).toMatch(/requires/i);
+    expect(body.error).toMatch(/healthPath/);
+    expect(body.error).toMatch(/start with/);
   });
 
   it('rejects with 400 when preview.captureRoutes contains a non-/-prefixed entry', async () => {
