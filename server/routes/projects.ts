@@ -540,24 +540,32 @@ export function validatePrEnvProjectConfig(
   const obj = raw as Record<string, unknown>;
   const enabled = !!obj.enabled;
   if (!enabled) {
-    // Cross-field guard: preview requires the parent feature on. Reject
-    // before we silently drop the preview block, so users see a clear
-    // error instead of wondering why their preview config disappeared.
-    if (
-      obj.preview &&
-      typeof obj.preview === 'object' &&
-      !Array.isArray(obj.preview) &&
-      !!(obj.preview as Record<string, unknown>).enabled
-    ) {
-      return {
-        ok: false,
-        error:
-          'prEnv.preview.enabled requires prEnv.enabled (preview cannot run when PR-env is off)',
-      };
+    // PR-environments were stripped in the "Strip PR Environments" epic;
+    // `prEnv.enabled` is now a no-op for that subsystem. The parent slot is
+    // still the home of the worktree-preview config (`prEnv.preview`) and
+    // the shared `prEnv.healthPath`, both of which the in-session
+    // PreviewRuntime reads regardless of the parent flag. So when parent
+    // is disabled we still validate and round-trip those two fields, while
+    // dropping anything PR-env-only (startScript, internalPort,
+    // setupCommand, dockerfilePath, env) — those are meaningless without
+    // the PR-env runner.
+    const value: ValidatedPrEnvConfig = { enabled: false };
+    if (obj.healthPath !== undefined && obj.healthPath !== null && obj.healthPath !== '') {
+      if (typeof obj.healthPath !== 'string') {
+        return { ok: false, error: 'prEnv.healthPath must be a string' };
+      }
+      const hp = obj.healthPath.trim();
+      if (hp) {
+        if (!hp.startsWith('/')) {
+          return { ok: false, error: 'prEnv.healthPath must start with `/`' };
+        }
+        value.healthPath = hp;
+      }
     }
-    // When the user toggles off, we keep the slot for round-tripping —
-    // dispatch already short-circuits on `!project.prEnv.enabled`.
-    return { ok: true, value: { enabled: false } };
+    const previewResult = validatePrEnvPreview(obj.preview);
+    if (!previewResult.ok) return { ok: false, error: previewResult.error };
+    if (previewResult.value) value.preview = previewResult.value;
+    return { ok: true, value };
   }
 
   const trimStr = (v: unknown): string | undefined => {
@@ -1061,6 +1069,43 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
     res.json(project);
+  });
+
+  // ─── Re-detect preview defaults from the project's checkout ──────
+  //
+  // The Settings → Preview panel exposes a "Re-detect from repo" action so
+  // users can re-run the same workspace sniff that the new-project /
+  // clone-from-GitHub flows do, without having to clone again. We hand
+  // back the raw `DetectedPreviewDefaults` so the client can show a diff
+  // and let the user accept-overwrite or dismiss. Pure read — no
+  // mutation of `projects.json` happens server-side; the client follows
+  // up with a normal `PATCH /api/projects/:id` if the user accepts.
+  router.post('/api/projects/:projectId/preview/detect', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const cwd = (project as { cwd?: string }).cwd;
+    if (!cwd || typeof cwd !== 'string') {
+      return res.status(400).json({ error: 'Project has no cwd configured' });
+    }
+    let detected: ReturnType<typeof detectPreviewDefaults> = null;
+    try {
+      detected = detectPreviewDefaults(cwd);
+    } catch {
+      // Treat any unexpected fs error as "no signal" — same contract
+      // as the clone path's wrapper.
+      detected = null;
+    }
+    res.json({
+      detected: detected
+        ? {
+            stack: detected.stack,
+            startScript: detected.startScript,
+            port: detected.port,
+            captureRoutes: detected.captureRoutes,
+            idleTTL: detected.idleTTL,
+          }
+        : null,
+    });
   });
 
   // ─── Branch listing for the PR base-branch picker ─────────────────

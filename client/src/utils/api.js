@@ -43,6 +43,14 @@ export const api = {
   createProject: (data) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Re-detect preview defaults by sniffing the project's checkout. Pure
+  // read — server does not mutate `projects.json`. Returns
+  // `{ detected: { stack, startScript, port, captureRoutes, idleTTL } | null }`.
+  detectProjectPreview: (projectId) =>
+    fetchJSON(`/projects/${projectId}/preview/detect`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   deleteProject: (projectId) =>
     fetch(`${getApiBase()}/projects/${projectId}`, {
       method: 'DELETE',
