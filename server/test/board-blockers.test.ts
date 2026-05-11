@@ -9,7 +9,7 @@ import { getRequest, createProject, createCard } from './helpers.js';
 let request: supertest.Agent;
 let projectId: string;
 let columns: Array<{ id: string; name: string }>;
-let backlogColumnId: string;
+let todoColumnId: string;
 let inProgressColumnId: string;
 let doneColumnId: string;
 
@@ -20,14 +20,14 @@ beforeAll(async () => {
   const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
   const body = boardRes.body as { columns: Array<{ id: string; name: string }> };
   columns = body.columns;
-  backlogColumnId = columns.find((c) => c.name === 'Backlog')?.id as string;
+  todoColumnId = columns.find((c) => c.name === 'To Do')?.id as string;
   inProgressColumnId = columns.find((c) => c.name === 'In Progress')?.id as string;
   doneColumnId = columns.find((c) => c.name === 'Done')?.id as string;
 });
 
 type CardResp = { id: string };
 
-async function makeCard(title: string, columnId = backlogColumnId): Promise<string> {
+async function makeCard(title: string, columnId = todoColumnId): Promise<string> {
   const card = (await createCard(projectId, { title, columnId })) as unknown as CardResp;
   return card.id;
 }

@@ -11,7 +11,7 @@ keep-coding-instructions: true
 # Kanban Board Management
 
 You can manage the project's kanban board to track and organize tasks.
-Cards move through columns (Backlog → To Do → In Progress → Review → Done)
+Cards move through columns (To Do → In Progress → Review → Done)
 and can declare dependencies on one another via **blockers**.
 
 ## Available Actions
@@ -139,10 +139,11 @@ card's scope, or (c) you're breaking a cycle to add a more accurate edge.
   blockers (see `hasUnresolvedBlockers` in `server/kanban-blockers.ts`).
   So for cards that run under autonomous mode, blockers effectively gate
   dispatch — but manually-picked cards do not.
-- **Backlog and Done columns are blocker-insensitive.** Dragging into
-  Backlog (still deferred) or Done (marking finished) never triggers the
-  confirmation. Every other column (To Do, In Progress, Review, custom)
-  is blocker-sensitive.
+- **The Done column is blocker-insensitive.** Dragging into Done (the
+  user is marking work finished) never triggers the confirmation. Any
+  custom column whose name still contains "Backlog" is also treated as
+  blocker-insensitive for back-compat. Every other column (To Do,
+  In Progress, Review, custom) is blocker-sensitive.
 
 Treat blockers as _guidance_: if you're about to start a card and its
 `blockers` contains an entry with `done: false`, stop and either (a)

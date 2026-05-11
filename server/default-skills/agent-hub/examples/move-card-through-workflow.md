@@ -1,6 +1,6 @@
 # Example: Walk a Card Through the Workflow
 
-**Scenario:** a new feature card starts in **Backlog**, you pick it up,
+**Scenario:** a new feature card starts in **To Do**, you pick it up,
 implement it, open a PR, and the human merges. Here's the exact sequence of
 `scripts/` calls that takes a card through every column state.
 
@@ -10,7 +10,7 @@ Back to [README](README.md) · See [`references/kanban.md`](../references/kanban
 
 ## Input (user message)
 
-> Pick up the "Add examples/ directory" card in Backlog, do the work, and keep
+> Pick up the "Add examples/ directory" card in To Do, do the work, and keep
 > the board in sync as you go.
 
 ## Walk-through
@@ -18,7 +18,7 @@ Back to [README](README.md) · See [`references/kanban.md`](../references/kanban
 ### 1. Find the card (resolve name → id)
 
 ```bash
-PROJECT_ID=agent-hub scripts/kanban-list.sh --column Backlog \
+PROJECT_ID=agent-hub scripts/kanban-list.sh --column "To Do" \
   | python3 -c "import json,sys; [print(c['id'], '-', c['title']) for c in json.load(sys.stdin) if 'examples' in c['title'].lower()]"
 ```
 
@@ -34,20 +34,19 @@ Capture the id:
 CARD_ID="a3f8c1e9-…"
 ```
 
-### 2. Move **Backlog → To Do** and claim it
+### 2. Claim the card
 
 The session you're in isn't linked to the card yet — patch `session_id` so
 the sidebar renames and `<agenthub:close-card>` becomes available.
 
 ```bash
-PROJECT_ID=agent-hub scripts/kanban-move-card.sh "$CARD_ID" "To Do"
 PROJECT_ID=agent-hub scripts/board.sh update "$CARD_ID" "{
   \"session_id\": \"$AGENT_HUB_SESSION_ID\",
   \"assignee\": \"agent-hub-backend\"
 }"
 ```
 
-Expected output (from the `update` — the moved-card JSON is returned):
+Expected output (the patched-card JSON):
 
 ```json
 {
@@ -147,9 +146,9 @@ explanatory comment. Requires step 2 (`session_id` patched onto the card).
 
 ## Copy-paste checklist
 
-- [x] Resolve card id via `kanban-list.sh --column Backlog`
+- [x] Resolve card id via `kanban-list.sh --column "To Do"`
 - [x] Patch `session_id` so the sidebar renames & close-card becomes available
-- [x] Move Backlog → To Do → In Progress → Review → Done in order
+- [x] Move To Do → In Progress → Review → Done in order
 - [x] Add a `pr_url` on the **Review** move
 - [x] Comment at each inflection point (start, PR, merge)
 - [x] Or short-circuit with `<agenthub:close-card>` for dupes / already-done
@@ -158,7 +157,7 @@ explanatory comment. Requires step 2 (`session_id` patched onto the card).
 
 - **Column names are case-insensitive** (`"in progress"`, `"In Progress"`, or
   `"IN PROGRESS"` all resolve). But they must be one of
-  `Backlog | To Do | In Progress | Review | Done` for the standard board.
+  `To Do | In Progress | Review | Done` for the standard board.
 - **`board.sh update` is a full PUT.** Only the fields you pass are changed —
   missing fields are left alone.
 - **Don't hard-code column UUIDs.** Use `kanban-move-card.sh <id> "<name>"` or

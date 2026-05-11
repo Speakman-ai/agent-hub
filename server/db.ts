@@ -1597,6 +1597,68 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // Migration: drop the "Backlog" column from every kanban board.
+  // Backlog became redundant with "To Do" — every board now starts at
+  // To Do. For each board with a Backlog column, move every Backlog
+  // card to the bottom of To Do, then delete the empty Backlog column
+  // and re-pack remaining column positions. If a board has Backlog
+  // but no To Do (unlikely), the column is renamed in place. Idempotent:
+  // boards without a Backlog column are skipped on subsequent boots.
+  try {
+    const backlogCols = db
+      .prepare(`SELECT id, board_id FROM kanban_columns WHERE name = 'Backlog'`)
+      .all() as { id: string; board_id: string }[];
+    if (backlogCols.length > 0) {
+      const findToDo = db.prepare(
+        `SELECT id FROM kanban_columns WHERE board_id = ? AND name = 'To Do' LIMIT 1`,
+      );
+      const maxCardPos = db.prepare(
+        `SELECT COALESCE(MAX(position), -1) AS p FROM kanban_cards WHERE column_id = ?`,
+      );
+      const cardsInCol = db.prepare(
+        `SELECT id FROM kanban_cards WHERE column_id = ? ORDER BY position ASC`,
+      );
+      const moveCard = db.prepare(
+        `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`,
+      );
+      const renameCol = db.prepare(
+        `UPDATE kanban_columns SET name = 'To Do', color = '#3B82F6' WHERE id = ?`,
+      );
+      const deleteCol = db.prepare(`DELETE FROM kanban_columns WHERE id = ?`);
+      const colsForBoard = db.prepare(
+        `SELECT id FROM kanban_columns WHERE board_id = ? ORDER BY position ASC, name ASC`,
+      );
+      const setColPos = db.prepare(`UPDATE kanban_columns SET position = ? WHERE id = ?`);
+      const txn = db.transaction(() => {
+        const touchedBoards = new Set<string>();
+        for (const col of backlogCols) {
+          touchedBoards.add(col.board_id);
+          const todo = findToDo.get(col.board_id) as { id: string } | undefined;
+          if (todo) {
+            let next = ((maxCardPos.get(todo.id) as { p: number }).p as number) + 1;
+            const cards = cardsInCol.all(col.id) as { id: string }[];
+            for (const c of cards) {
+              moveCard.run(todo.id, next++, c.id);
+            }
+            deleteCol.run(col.id);
+          } else {
+            // No To Do column on this board — promote Backlog in place.
+            renameCol.run(col.id);
+          }
+        }
+        for (const boardId of touchedBoards) {
+          const remaining = colsForBoard.all(boardId) as { id: string }[];
+          for (let i = 0; i < remaining.length; i++) {
+            setColPos.run(i, remaining[i].id);
+          }
+        }
+      });
+      txn();
+    }
+  } catch (err) {
+    console.warn('[db] Backlog column drop migration failed:', (err as Error).message);
+  }
+
   const cronCount = db.prepare('SELECT COUNT(*) as count FROM crons').get() as { count: number };
   if (cronCount.count === 0) {
     const seedCronCwd =
@@ -2484,20 +2546,17 @@ function initDb(dataDir: string): void {
       'SELECT * FROM kanban_epics WHERE board_id = ? AND autonomous = 1 LIMIT 1',
     ),
     getEligibleAutonomousCards: db.prepare(
-      // Autonomous dispatch drains columns in a fixed column order: 'To Do'
-      // first, then 'Backlog'. Within a column we then sort by `priority`
-      // (urgent → high → medium → low → unset) and finally by `position` ASC
-      // (the visual top of the column) as the tiebreaker. Column ordering is
-      // still the operator's coarsest signal — an urgent Backlog card never
-      // jumps ahead of a low-priority To Do card — but within a single column
-      // higher-priority work drains first.
+      // Autonomous dispatch pulls from the 'To Do' column (Backlog was
+      // dropped in May 2026). Within the column we sort by `priority`
+      // (urgent → high → medium → low → unset) and then by `position` ASC
+      // (the visual top of the column) as the tiebreaker — higher-priority
+      // work drains first.
       `SELECT c.* FROM kanban_cards c
        JOIN kanban_columns col ON c.column_id = col.id
-       WHERE c.epic_id = ? AND col.name IN ('Backlog', 'To Do')
+       WHERE c.epic_id = ? AND col.name = 'To Do'
        AND (c.assignee IS NULL OR c.assignee = '')
        AND c.autonomous_iterations < ?
        ORDER BY
-         CASE col.name WHEN 'To Do' THEN 0 WHEN 'Backlog' THEN 1 ELSE 2 END,
          CASE c.priority
            WHEN 'urgent' THEN 0
            WHEN 'high' THEN 1

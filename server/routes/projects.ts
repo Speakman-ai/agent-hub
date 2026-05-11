@@ -1279,7 +1279,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     if (createMode === 'workflow') {
       try {
         // 1. Pre-create the kanban board with default columns so the user
-        //    lands on a structured Backlog → Done view.
+        //    lands on a structured To Do → Done view.
         getOrCreateBoard(stmts, project.id);
 
         // 2. Seed a single project-coordinator "lead" agent so subsequent
@@ -1298,7 +1298,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
             systemPrompt: `You are the lead coordinator for the ${project.name} workspace — a non-coding (workflow-mode) project on Agent Hub.
 
 You own:
-- The kanban board (Backlog → Done) at /api/projects/${project.id}/board
+- The kanban board (To Do → Done) at /api/projects/${project.id}/board
 - The wiki at /api/projects/${project.id}/wiki
 - Conversations with collaborators in this workspace's conference room
 - Triaging and routing user requests to the right agent

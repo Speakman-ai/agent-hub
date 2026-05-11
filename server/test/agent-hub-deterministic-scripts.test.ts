@@ -135,7 +135,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
 
     it('kanban-create-card.sh without --title exits 2', () => {
       expect(
-        runExit(path.join(DEFAULT_SCRIPTS, 'kanban-create-card.sh'), ['--column', 'Backlog']),
+        runExit(path.join(DEFAULT_SCRIPTS, 'kanban-create-card.sh'), ['--column', 'To Do']),
       ).toBe(2);
     });
 
@@ -214,7 +214,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
             calls.push({ method: req.method ?? '', url: req.url ?? '', body });
             res.setHeader('content-type', 'application/json');
             if (req.url?.endsWith('/board')) {
-              res.end(JSON.stringify({ columns: [{ id: 'col-backlog', name: 'Backlog' }] }));
+              res.end(JSON.stringify({ columns: [{ id: 'col-todo', name: 'To Do' }] }));
             } else if (req.url?.endsWith('/board/cards')) {
               res.end(JSON.stringify({ id: cardId, title: 'test', epic_id: null }));
             } else if (req.url?.endsWith(`/cards/${cardId}/epic`)) {
@@ -231,7 +231,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
           const { port } = server.address() as AddressInfo;
           const result = await spawnAsync(
             path.join(DEFAULT_SCRIPTS, 'kanban-create-card.sh'),
-            ['--title', 'test', '--column', 'Backlog', '--epic-id', 'epic-xyz'],
+            ['--title', 'test', '--column', 'To Do', '--epic-id', 'epic-xyz'],
             {
               ...process.env,
               AGENT_HUB_URL: `http://127.0.0.1:${port}`,
@@ -269,7 +269,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
             calls.push(`${req.method} ${req.url}`);
             res.setHeader('content-type', 'application/json');
             if (req.url?.endsWith('/board')) {
-              res.end(JSON.stringify({ columns: [{ id: 'col-backlog', name: 'Backlog' }] }));
+              res.end(JSON.stringify({ columns: [{ id: 'col-todo', name: 'To Do' }] }));
             } else if (req.url?.endsWith('/board/cards')) {
               res.end(JSON.stringify({ id: 'c1', title: 'plain' }));
             } else {
@@ -284,7 +284,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
           const { port } = server.address() as AddressInfo;
           const result = await spawnAsync(
             path.join(DEFAULT_SCRIPTS, 'kanban-create-card.sh'),
-            ['--title', 'plain', '--column', 'Backlog'],
+            ['--title', 'plain', '--column', 'To Do'],
             {
               ...process.env,
               AGENT_HUB_URL: `http://127.0.0.1:${port}`,

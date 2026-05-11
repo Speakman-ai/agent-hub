@@ -6,7 +6,7 @@
 #
 # Options:
 #   --title <str>         card title (required)
-#   --column <name>       column name (default: Backlog). Resolved via
+#   --column <name>       column name (default: To Do). Resolved via
 #                         resolve-column-id.sh.
 #   --description <str>   card description (supports markdown)
 #   --priority <level>    one of: low, medium, high (default: medium)
@@ -38,7 +38,7 @@ Create a kanban card on the board for $PROJECT_ID.
 
 Options:
   --title <str>         card title                       (required)
-  --column <name>       column name (default: Backlog)
+  --column <name>       column name (default: To Do)
   --description <str>   markdown description
   --priority <level>    low | medium | high (default: medium)
   --labels <csv>        comma-separated labels
@@ -58,7 +58,7 @@ EOF
 }
 
 title=""
-column="Backlog"
+column="To Do"
 description=""
 priority="medium"
 labels=""

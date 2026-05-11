@@ -180,7 +180,7 @@ export function buildBugReportPrompt(input: BugReportInput): string {
   }
   lines.push('');
   lines.push(
-    'Create a kanban card in the Backlog column of the agent-hub project under the `user-request` epic (create the epic if missing, color `#EF4444`). Link the card to that epic. Map severity→priority (critical→urgent, high→high, medium→medium, low→low). End the session after the card is created.',
+    'Create a kanban card in the To Do column of the agent-hub project under the `user-request` epic (create the epic if missing, color `#EF4444`). Link the card to that epic. Map severity→priority (critical→urgent, high→high, medium→medium, low→low). End the session after the card is created.',
   );
   lines.push('');
   lines.push(

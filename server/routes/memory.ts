@@ -68,7 +68,7 @@ export function buildNoteProcessingPrompt(
       '- `GET /api/projects/{projectId}/board` to see the board structure',
       '- `POST /api/projects/{projectId}/board/cards` with `{title, description, columnId, priority}` to create cards',
       '',
-      'Create cards in the "Backlog" or "To Do" column as appropriate.',
+      'Create cards in the "To Do" column.',
       'Set priority based on urgency indicators in the note.',
       '',
       'After processing, respond with a summary of what cards were created.',

@@ -39,7 +39,11 @@ describe('hasUnresolvedBlockers', () => {
 });
 
 describe('isColumnBlockerSensitive', () => {
-  it('returns false for Backlog variants', () => {
+  it('returns false for "Backlog" variants (back-compat for custom boards)', () => {
+    // The default seeded board no longer includes a Backlog column. Custom
+    // boards may still carry one, and the predicate keeps treating those
+    // lanes as blocker-insensitive so the confirm dialog doesn't fire when
+    // dragging a blocked card back into them.
     expect(isColumnBlockerSensitive('Backlog')).toBe(false);
     expect(isColumnBlockerSensitive('backlog')).toBe(false);
     expect(isColumnBlockerSensitive('Project Backlog')).toBe(false);
@@ -70,7 +74,7 @@ describe('shouldConfirmMove', () => {
 
   it('returns false when card has no unresolved blockers', () => {
     expect(
-      shouldConfirmMove(card([{ id: 'a', done: true }]), 'col-backlog', {
+      shouldConfirmMove(card([{ id: 'a', done: true }]), 'col-todo', {
         id: 'col-progress',
         name: 'In Progress',
       }),
@@ -86,7 +90,7 @@ describe('shouldConfirmMove', () => {
     ).toBe(false);
   });
 
-  it('returns false when target is Backlog', () => {
+  it('returns false when target is "Backlog" (back-compat for custom boards)', () => {
     expect(
       shouldConfirmMove(card([{ id: 'a', done: false }]), 'col-progress', {
         id: 'col-backlog',
@@ -106,7 +110,7 @@ describe('shouldConfirmMove', () => {
 
   it('returns true when moving a blocked card into a sensitive column', () => {
     expect(
-      shouldConfirmMove(card([{ id: 'a', done: false }]), 'col-backlog', {
+      shouldConfirmMove(card([{ id: 'a', done: false }]), 'col-todo', {
         id: 'col-progress',
         name: 'In Progress',
       }),

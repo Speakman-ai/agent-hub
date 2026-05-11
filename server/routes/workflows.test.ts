@@ -459,7 +459,7 @@ describe('Workflows API', () => {
     const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
     const columns = board.body.columns as { id: string; name: string }[];
     const target = columns.find((c) => c.name === 'Done') ?? columns[columns.length - 1];
-    const from = columns.find((c) => c.name === 'Backlog') ?? columns[0];
+    const from = columns.find((c) => c.name === 'To Do') ?? columns[0];
 
     await request
       .post(`/api/projects/${projectId}/workflows`)

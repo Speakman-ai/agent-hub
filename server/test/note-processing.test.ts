@@ -46,7 +46,7 @@ describe('buildNoteProcessingPrompt', () => {
   it('builds plan-targeted prompt', () => {
     const prompt = buildNoteProcessingPrompt(noteContent, noteDate, 'plan', projectName);
     expect(prompt).toContain('kanban');
-    expect(prompt).toContain('Backlog');
+    expect(prompt).toContain('To Do');
     expect(prompt).toContain('cards');
   });
 

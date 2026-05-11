@@ -154,11 +154,19 @@ describe('isColumnShippedLane', () => {
 });
 
 describe('isColumnBlockerSensitive', () => {
-  it('is false for Backlog and Done variants', () => {
-    expect(isColumnBlockerSensitive('Backlog')).toBe(false);
+  it('is false for Done variants', () => {
     expect(isColumnBlockerSensitive('Done')).toBe(false);
     expect(isColumnBlockerSensitive('done')).toBe(false);
     expect(isColumnBlockerSensitive('Deployed / Done')).toBe(false);
+  });
+  it('is false for "Backlog" as back-compat for custom boards (default seed no longer includes it)', () => {
+    // The default board now starts at "To Do" — Backlog was removed. But
+    // operators may still have custom boards carrying a Backlog column, and
+    // the predicate keeps treating that lane as blocker-insensitive so the
+    // confirm dialog doesn't fire when dragging cards back into it.
+    expect(isColumnBlockerSensitive('Backlog')).toBe(false);
+    expect(isColumnBlockerSensitive('backlog')).toBe(false);
+    expect(isColumnBlockerSensitive('Project Backlog')).toBe(false);
   });
   it('is true for every other column', () => {
     expect(isColumnBlockerSensitive('To Do')).toBe(true);

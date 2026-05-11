@@ -79,7 +79,6 @@ export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
   const boardId = uuidv4();
   stmts.createKanbanBoard.run(boardId, projectId, 'Board');
   const defaultColumns = [
-    { name: 'Backlog', color: '#6B7280' },
     { name: 'To Do', color: '#3B82F6' },
     { name: 'In Progress', color: '#F59E0B' },
     { name: 'Review', color: '#8B5CF6' },
@@ -516,7 +515,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           `\nYour job:`,
           `1. **Research** this task — understand the scope, identify sub-tasks, and consider edge cases`,
           `2. **Check for duplicates** — before creating any new ticket, search the existing board to make sure a similar card doesn't already exist`,
-          `3. **Break it down** into actionable sub-tickets on the kanban board (in Backlog)`,
+          `3. **Break it down** into actionable sub-tickets on the kanban board (in To Do)`,
           `4. **Link sub-tickets** to the same epic as this card (if it has one)${card.epic_id ? ` — epic ID: \`${card.epic_id}\`` : ''}`,
           `5. **Add a comment** to this card summarizing what you created`,
           `6. **Move this card to Done** when finished`,
@@ -543,7 +542,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           `- **Move** this card as state changes (In Progress → Review → Done): \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\``,
           `- **Update** title/description/labels in place: \`PUT /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}\``,
           ``,
-          `If the work splits into genuinely separate follow-ups, create child cards in Backlog with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,
+          `If the work splits into genuinely separate follow-ups, create child cards in To Do with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,
         );
       }
 

@@ -2387,7 +2387,7 @@ describe('manualCommitAndPR — duplicate card prevention', () => {
   // linking in the UI), clicking "Create PR" must NOT create a second card.
   // Previously `manualCommitAndPR` unconditionally called `createKanbanCard`,
   // producing a duplicate in Review while the original stayed behind in
-  // Backlog/In Progress.
+  // To Do/In Progress.
   const mockBroadcast = vi.fn();
 
   function makeStmts(opts: {

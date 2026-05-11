@@ -41,12 +41,13 @@ export function isColumnShippedLane(columnName: string | null | undefined): bool
 
 /**
  * Columns where the move-confirmation dialog should fire. Dragging a card
- * INTO Backlog or Done with unresolved blockers is never suspicious:
- *  - Backlog: still deferred, blockers irrelevant.
- *  - Done: user is marking work finished; blockers are informational.
- * Any other column (To Do, In Progress, Review, custom columns) triggers
- * the confirm dialog when blockers are unresolved. Clients mirror this
- * predicate so no server-side 409 gating is needed.
+ * INTO Done with unresolved blockers is never suspicious (the user is
+ * marking work finished; blockers are informational). A "Backlog" name is
+ * also treated as blocker-insensitive for back-compat with any custom
+ * boards that still carry that column — the default seed no longer
+ * includes Backlog. Any other column (To Do, In Progress, Review, custom
+ * columns) triggers the confirm dialog when blockers are unresolved.
+ * Clients mirror this predicate so no server-side 409 gating is needed.
  */
 export function isColumnBlockerSensitive(columnName: string | null | undefined): boolean {
   if (!columnName) return true;

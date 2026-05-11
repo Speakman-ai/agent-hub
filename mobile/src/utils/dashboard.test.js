@@ -71,11 +71,11 @@ describe('priorityRows', () => {
 describe('columnRows', () => {
   it('preserves server-provided ordering and computes percent of max', () => {
     const rows = columnRows([
-      { columnName: 'Backlog', count: 20 },
+      { columnName: 'To Do', count: 20 },
       { columnName: 'In Progress', count: 5 },
       { columnName: 'Review', count: 0 },
     ]);
-    expect(rows.map((r) => r.columnName)).toEqual(['Backlog', 'In Progress', 'Review']);
+    expect(rows.map((r) => r.columnName)).toEqual(['To Do', 'In Progress', 'Review']);
     expect(rows[0].percent).toBe(100);
     expect(rows[1].percent).toBe(25);
     expect(rows[2].percent).toBe(0);

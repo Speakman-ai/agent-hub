@@ -640,7 +640,7 @@ This project is connected to GitHub. Follow this lifecycle for changes:
 5. **Commit**: Commit your changes to the feature branch. **Do NOT push or run \`gh pr create\`** — PR creation is owned by the server. If your session is linked to a kanban card, the server will push, open the PR, and move the card to "Review" automatically when your session ends. If your session is ad-hoc (no card), the user will get a "Create PR" button after your session ends and decide from there.
 
 **Existing PRs**: Check out branch, read failures (\`gh pr checks\`), fix, commit. No new cards/branches/PRs. Do NOT push or merge.
-**Shortcuts**: Trivial fixes skip card creation. Found a bug? Create "Backlog" card.`;
+**Shortcuts**: Trivial fixes skip card creation. Found a bug? Create a "To Do" card.`;
     } else if (isGitHubConnected && projectMode === 'workflow') {
       prompt += `\n\n## Development — Workflow mode
 This project is in **workflow** mode (not the default dev/kanban automation profile). Prioritize workflow definitions, runs, and step outcomes. Work in the project checkout — **per-session git worktrees are off**, and the autonomous kanban→server-PR lifecycle described elsewhere does not apply. Use Git, tests, and the wiki as usual; coordinate shipping through the product's workflow surfaces rather than Agent Hub session PR automation.`;

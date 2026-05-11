@@ -151,7 +151,7 @@ describe('Projects', () => {
       // Workflow projects must land the user on a fully-formed shell — not
       // a blank canvas. The wizard's `POST /api/projects { mode: 'workflow' }`
       // call should eagerly initialise:
-      //   - kanban board with the 5 default columns (Backlog → Done)
+      //   - kanban board with the 4 default columns (To Do → Done)
       //   - one project-coordinator "lead" agent (so downstream helpers fire)
       //   - the generic Intake agent (board-only — no git deps)
       //   - the project's conference room (containing both seeded agents)
@@ -170,7 +170,7 @@ describe('Projects', () => {
       // Board + default columns are present immediately, not lazily on first GET.
       const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
       const columnNames = (board.body.columns as Array<{ name: string }>).map((c) => c.name);
-      expect(columnNames).toEqual(['Backlog', 'To Do', 'In Progress', 'Review', 'Done']);
+      expect(columnNames).toEqual(['To Do', 'In Progress', 'Review', 'Done']);
 
       // Project now carries the seeded agents — lead + intake at minimum,
       // no docs (git-coupled), no reviewer (GitHub-gated).
@@ -1073,10 +1073,11 @@ describe('Kanban Board', () => {
       const res = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
       expect(res.body).toHaveProperty('columns');
       expect(Array.isArray(res.body.columns)).toBe(true);
-      expect(res.body.columns.length).toBe(5);
+      expect(res.body.columns.length).toBe(4);
       const names = (res.body.columns as Array<{ name: string }>).map((c) => c.name);
-      expect(names).toContain('Backlog');
+      expect(names).toContain('To Do');
       expect(names).toContain('Done');
+      expect(names).not.toContain('Backlog');
     });
   });
 

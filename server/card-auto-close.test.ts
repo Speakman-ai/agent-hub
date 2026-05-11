@@ -135,17 +135,17 @@ describe('pickDoneColumn', () => {
   });
 
   it('prefers an exact case-insensitive match on "done"', () => {
-    const cols = [makeCol('Backlog', 0), makeCol('Done', 1), makeCol('Archive', 2)];
+    const cols = [makeCol('To Do', 0), makeCol('Done', 1), makeCol('Archive', 2)];
     expect(pickDoneColumn(cols)?.name).toBe('Done');
   });
 
   it('falls back to a contains-"done" match', () => {
-    const cols = [makeCol('Backlog', 0), makeCol('All Done', 1)];
+    const cols = [makeCol('To Do', 0), makeCol('All Done', 1)];
     expect(pickDoneColumn(cols)?.name).toBe('All Done');
   });
 
   it('falls back to the rightmost column when no name match exists', () => {
-    const cols = [makeCol('Backlog', 0), makeCol('To Do', 1), makeCol('Shipped', 2)];
+    const cols = [makeCol('To Do', 0), makeCol('In Progress', 1), makeCol('Shipped', 2)];
     expect(pickDoneColumn(cols)?.name).toBe('Shipped');
   });
 

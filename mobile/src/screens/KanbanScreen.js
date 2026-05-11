@@ -38,7 +38,6 @@ import {
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 
 const DEFAULT_COLUMNS = [
-  { id: 'backlog', name: 'Backlog', color: '#6B7280' },
   { id: 'todo', name: 'To Do', color: '#3B82F6' },
   { id: 'in-progress', name: 'In Progress', color: '#F59E0B' },
   { id: 'review', name: 'Review', color: '#8B5CF6' },
@@ -1058,7 +1057,7 @@ export default function KanbanScreen({ route, navigation }) {
             onLongPress={() => handleLongPressCard(card)}
             activeOpacity={0.7}
           >
-            <Text style={styles.cardTitle} numberOfLines={2}>{card.title}</Text>
+            <Text style={styles.cardTitle}>{card.title}</Text>
             <View style={styles.cardMeta}>
               <View style={[styles.priorityDotSmall, { backgroundColor: getPriorityColor(card.priority) }]} />
               <Text style={[styles.cardPriorityText, { color: getPriorityColor(card.priority) }]}>
@@ -1099,9 +1098,6 @@ export default function KanbanScreen({ route, navigation }) {
                 ))}
               </View>
             )}
-            {card.description ? (
-              <Text style={styles.cardDesc} numberOfLines={2}>{card.description}</Text>
-            ) : null}
           </TouchableOpacity>
         ))}
       </ScrollView>
@@ -1512,7 +1508,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 2,
   },
   labelChipText: { fontSize: 11, color: colors.gray300 },
-  cardDesc: { fontSize: 13, color: colors.gray400, marginTop: 6, lineHeight: 18 },
 
   // FAB
   fab: {

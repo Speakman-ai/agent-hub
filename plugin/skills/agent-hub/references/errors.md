@@ -110,7 +110,7 @@ don't require another migration.
 
 - **`unresolved`** — the failure is still in effect at the time of logging.
 - **`recovered`** — the agent routed around it and work continued.
-- **`escalated`** — the agent opened a Backlog card / asked a human.
+- **`escalated`** — the agent opened a To Do card / asked a human.
 - **`duplicate`** — the error duplicates an existing logged line this
   session (link the prior `timestamp` or `card` in a comment).
 - **`preexisting`** — the failure predates the agent's current work and
@@ -173,7 +173,7 @@ back to emitting the line into chat so a human can transcribe it.
 
 ### Escalation
 
-If the same pattern shows up across 2+ sessions, open a Backlog card tagged
+If the same pattern shows up across 2+ sessions, open a To Do card tagged
 `tool-error` that quotes the structured lines, so the recurring failure
 gets triaged instead of repeatedly re-logged. Use `scripts/board.sh create`
 to open the card, and record the card id in the v2 tail of future
@@ -349,5 +349,5 @@ work, log a `TOOL_ERROR` and escalate.
   network dropped. The client auto-reconnects, but the in-flight message
   is lost on the server.
 - **Recovery**: re-send the prompt. If it recurs, capture the server logs
-  (`pm2 logs agent-hub` on the deployment) and file a Backlog card tagged
+  (`pm2 logs agent-hub` on the deployment) and file a To Do card tagged
   `tool-error` with the exact reproduction.

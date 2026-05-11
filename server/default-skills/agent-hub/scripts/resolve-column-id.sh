@@ -26,7 +26,7 @@ usage: resolve-column-id.sh <columnName>
 
 Resolve a kanban column name (case-insensitive) to its UUID for the project
 identified by $PROJECT_ID. Standard columns are:
-  Backlog, To Do, In Progress, Review, Done
+  To Do, In Progress, Review, Done
 
 Example:
   PROJECT_ID=agent-hub resolve-column-id.sh "In Progress"

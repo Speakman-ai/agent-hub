@@ -199,7 +199,7 @@ describe('buildWikiRagContext', () => {
         created_at: 'now',
         updated_at: 'now',
         score: 0.91,
-        matchedChunk: 'Cards move through Backlog, In Progress, Review, Done.',
+        matchedChunk: 'Cards move through To Do, In Progress, Review, Done.',
       },
     ]);
 
@@ -209,7 +209,7 @@ describe('buildWikiRagContext', () => {
       limit: 6,
     });
     expect(out).toContain('Kanban Flow');
-    expect(out).toContain('Backlog');
+    expect(out).toContain('To Do');
   });
 
   it('supports direct query retrieval for assistant-authored queries', async () => {

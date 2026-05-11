@@ -375,7 +375,7 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
 
       // Stable signature of the blocking set. Sorted so iteration order
       // doesn't false-positive a "changed" check. Includes column_id so
-      // moving a blocker from one non-Done column to another (e.g. Backlog
+      // moving a blocker from one non-Done column to another (e.g. To Do
       // → In Progress) is treated as a meaningful change worth noting.
       const signature = unresolvedLinks
         .map((b) => `${b.id}:${b.column_id ?? ''}`)
