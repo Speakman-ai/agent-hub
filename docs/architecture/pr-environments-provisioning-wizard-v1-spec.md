@@ -1,5 +1,7 @@
 # PR Environments — Provisioning Wizard V1 Spec
 
+> **ARCHIVED 2026-05-11.** PR Environments were removed in epic 'Strip PR Environments — In-Session Worktree Previews Only'. Per-PR previews are now the end user's CI concern; Agent Hub ships only in-session worktree previews. See [`preview-model-worktree-previews-only.md`](./preview-model-worktree-previews-only.md).
+
 > **Audience:** Implementer of the "Provision PR Environments" wizard
 > (replacement for the read-only validator panel in `Settings → PR
 Environments`). Captures the design contract before code is written so

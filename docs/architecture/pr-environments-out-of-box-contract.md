@@ -1,5 +1,7 @@
 # PR Environments — Out of Box Contract
 
+> **ARCHIVED 2026-05-11.** PR Environments were removed in epic 'Strip PR Environments — In-Session Worktree Previews Only'. Per-PR previews are now the end user's CI concern; Agent Hub ships only in-session worktree previews. See [`preview-model-worktree-previews-only.md`](./preview-model-worktree-previews-only.md).
+
 > **Audience:** A non-author engineer standing up a fresh Agent Hub host and
 > turning on per-PR preview environments without reading source code.
 >
