@@ -67,8 +67,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 # Docker CLI + Compose v2 plugin (no daemon, no buildx). The runtime
 # container talks to the *host* docker daemon over a bind-mounted
-# /var/run/docker.sock so PR-env orchestration (container-pool, reaper,
-# scaffold-builder) can spin up per-PR preview containers on the host.
+# /var/run/docker.sock so PR-env orchestration (legacy; removed by
+# PR-Env Removal #4) could spin up per-PR preview containers on the
+# host. Worktree previews are the supported preview surface now; the
+# docker CLI stays in the image for scaffold-builder and any future
+# host-side container ops.
 #
 # We install only the CLI + compose plugin — buildx and the daemon
 # would just bloat the image. The CLI's wire protocol is

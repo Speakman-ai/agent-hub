@@ -19,7 +19,6 @@ import GithubConnectionSection from './GithubConnectionSection.jsx';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import CursorAuthSection from './CursorAuthSection.jsx';
-import PoolSection from './PoolSection.jsx';
 import PrEnvironmentsSection from './PrEnvironmentsSection.jsx';
 import PrEnvProjectWizard from './PrEnvProjectWizard.jsx';
 import WorkflowRunsSection from './WorkflowRunsSection.jsx';
@@ -7933,7 +7932,6 @@ const SETTINGS_GROUPS = [
     label: 'Operations',
     tabs: [
       { id: 'usage', iconName: 'BarChart3', text: 'Usage' },
-      { id: 'pool', iconName: 'Activity', text: 'Pool' },
       { id: 'pr-environments', iconName: 'GitBranch', text: 'PR Environments' },
       { id: 'tool-errors', iconName: 'AlertTriangle', text: 'Tool Errors' },
       { id: 'backup', iconName: 'HardDrive', text: 'Backup' },
@@ -8198,7 +8196,6 @@ export default function SettingsPage({
                 />
               )}
               {tab === 'usage' && <UsageSection />}
-              {tab === 'pool' && <PoolSection />}
               {tab === 'pr-environments' && features.prEnv && <PrEnvironmentsSection />}
               {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
               {tab === 'backup' && (

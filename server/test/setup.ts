@@ -103,13 +103,14 @@ mkdirSync(TEST_DATA_DIR, { recursive: true });
 writeFileSync(path.join(TEST_DATA_DIR, 'projects.json'), '[]');
 
 // PR-env kill switch is ON in production (epic 88367984) — every PR-env
-// code path short-circuits. Tests need the legacy paths to keep working
-// until cards #2–#6 delete the code; flip it OFF here so historical
-// suites that exercise `readPrEnvConfig`, the PR-env routes, the
-// container-pool crons, and fullstack preview still see the old
-// behaviour. The dedicated kill-switch test
-// (`server/pr-env-killswitch.test.ts`) flips it back on for the
-// assertions that prove the production gates fire.
+// code path short-circuits. PR-Env Removal #4 has now deleted the
+// remaining backing code (the PR-env subsystem directory, three crons,
+// and W4 observability routes), so the killswitch's last in-process
+// consumer is the `features.prEnv` flag served by `/api/config`. We
+// still flip it OFF here so any pre-existing test that imports the
+// flag indirectly sees the historical "feature available" shape — the
+// dedicated killswitch test (`server/pr-env-killswitch.test.ts`) flips
+// it back on for the assertions that prove the production gate fires.
 //
 // Imported lazily so the module's module-level state is reset for every
 // test file (per-FILE isolation matches the rest of this setup).
